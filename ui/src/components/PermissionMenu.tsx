@@ -4,9 +4,10 @@ import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
 import { Switch } from "@base-ui/react/switch";
 import { ChevronDown, Shield, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { safety, useSafety, type SessionPerm } from "../lib/safety.ts";
 import { reportError } from "../lib/store.ts";
+import { useUI } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
 
 const PROFILES: { id: SessionPerm["sandbox"]; name: string; hint: string }[] = [
@@ -21,6 +22,11 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
   const modes = useSafety((s) => s.modes);
   const sandbox = useSafety((s) => s.sandbox);
   const [grantsOpen, setGrantsOpen] = useState(false);
+  // /permissions with no mode opens this menu.
+  const [open, setOpen] = useState(false);
+  const signal = useUI((s) => s.permMenu);
+  const atMount = useRef(signal);
+  useEffect(() => { if (signal !== atMount.current) setOpen(true); }, [signal]);
 
   useEffect(() => {
     safety.loadSession(sessionId).catch(reportError);
@@ -34,7 +40,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
 
   return (
     <>
-      <Popover.Root>
+      <Popover.Root open={open} onOpenChange={setOpen}>
         <Popover.Trigger
           data-testid="permission-menu"
           className={cn(

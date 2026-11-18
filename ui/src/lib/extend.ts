@@ -21,6 +21,8 @@ function registry<T extends { id: string }>() {
 
 // Slash commands of the message box. `run` gets the text after the command;
 // an item without `run` is listed as not available yet.
+// `run` may throw an Error with `usage: true` for a mistyped argument: the box
+// shows it and it is not recorded in Errors.
 export type SlashItem = {
   id: string; // the word after the slash
   label: string;

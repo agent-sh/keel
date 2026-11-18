@@ -184,7 +184,10 @@ export function Composer({
     if (!item.run) return setNotice(`/${item.id} is not available yet.`);
     setText("");
     setMenu(null);
-    try { await item.run(arg, ctx); } catch (e) { setNotice(String((e as Error).message)); reportError(e, { kind: "slash", id: item.id }); }
+    try { await item.run(arg, ctx); } catch (e) {
+      setNotice(String((e as Error).message));
+      if (!(e as { usage?: boolean }).usage) reportError(e, { kind: "slash", id: item.id }); // a mistyped argument is not a failure
+    }
   };
 
   const options = useMemo<Option[]>(() => {
@@ -208,7 +211,8 @@ export function Composer({
           disabled: !i.run,
           apply: () => {
             if (!i.run) return setNotice(`/${i.id} is not available yet.`);
-            if (i.hint) { setText(`/${i.id} `); setMenu(null); ref.current?.focus(); }
+            // A command whose argument is optional ("[...]") runs when typed in full; otherwise the argument is asked for.
+            if (i.hint && !(i.hint.startsWith("[") && menu.query === i.id)) { setText(`/${i.id} `); setMenu(null); ref.current?.focus(); }
             else runSlash(i, "");
           },
         }));

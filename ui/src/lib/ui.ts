@@ -19,6 +19,7 @@ type UIState = {
   errors: boolean;
   mcp: boolean; // the MCP servers sheet
   modelMenu: number; // bumped to ask the composer's model picker to open
+  permMenu: number; // bumped to ask the session header's permission menu to open
   enterSends: boolean;
   newWorkspace: string; // the folder the start box creates a session in ("" = daemon default)
   newModel: string;
@@ -60,6 +61,7 @@ let state: UIState = {
   errors: false,
   mcp: false,
   modelMenu: 0,
+  permMenu: 0,
   enterSends: pref("keel.enterSends", true),
   newWorkspace: pref("keel.newWorkspace", ""),
   newModel: "",

@@ -4,6 +4,7 @@ import { FolderTree } from "lucide-react";
 import { createElement, lazy } from "react";
 import { panels, slash } from "./extend.ts";
 import { fuzzy, registerCommand } from "./keys.ts";
+import { getSafetyModes, safety } from "./safety.ts";
 import { actions, getState, reportError } from "./store.ts";
 import { getUI, navigate, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
 
@@ -70,7 +71,7 @@ slash.add(
     run: (arg, { session }) => {
       if (!arg) return setUI({ modelMenu: getUI().modelMenu + 1 });
       const best = getState().models.map((m) => ({ m, s: fuzzy(arg, `${m.name} ${m.id}`) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s)[0];
-      if (!best) throw new Error(`No listed model matches "${arg}".`);
+      if (!best) throw usage(`No listed model matches "${arg}".`);
       if (session) return actions.patch(session.id, { model: best.m.id }).then(() => {});
       setUI({ newModel: best.m.id });
     },
@@ -84,12 +85,54 @@ slash.add(
   { id: "settings", label: "Open settings", run: () => navigate({ name: "settings", section: "general" }) },
   { id: "shortcuts", label: "Keyboard shortcuts", run: () => setUI({ shortcuts: true }) },
   { id: "errors", label: "Show recorded errors", run: () => setUI({ errors: true }) },
-  // Named here so the menu shows them; the lanes that build them register a `run`.
-  { id: "compact", label: "Summarize the history to free context" },
-  { id: "review", label: "Review the changes in this folder" },
-  { id: "init", label: "Write an AGENTS.md for this folder" },
-  { id: "permissions", label: "Change what runs without asking" },
-  { id: "mcp", label: "Manage tool servers" },
-  { id: "agents", label: "Show running agents" },
-  { id: "export", label: "Export this session" },
+  // Prompts the model runs in this session (the folder's own instructions).
+  {
+    id: "review",
+    label: "Review the changes in this folder and report what is wrong",
+    hint: "[base branch or what to look at]",
+    when: ({ session }) => !!session,
+    run: (arg, { session }) => actions.send(session!.id, reviewPrompt(arg)).then(() => {}),
+  },
+  {
+    id: "init",
+    label: "Write an AGENTS.md for this folder",
+    when: ({ session }) => !!session,
+    run: (_a, { session }) => actions.send(session!.id, INIT_PROMPT).then(() => {}),
+  },
+  {
+    id: "permissions",
+    label: "Change what runs without asking",
+    hint: "[ask | auto-edits | full-auto | read-only]",
+    when: ({ session }) => !!session,
+    run: async (arg, { session }) => {
+      if (!arg) return setUI({ permMenu: getUI().permMenu + 1 });
+      if (!getSafetyModes().length) await safety.loadSettings();
+      const want = arg.toLowerCase().replace(/\s+/g, "-");
+      const mode = getSafetyModes().find((m) => m.id === want || m.name.toLowerCase().replace(/\s+/g, "-") === want);
+      if (!mode) throw usage(`No mode "${arg}". Modes: ${getSafetyModes().map((m) => m.id).join(", ")}.`);
+      await safety.setPerm(session!.id, { mode: mode.id });
+    },
+  },
+  { id: "agents", label: "Show every session and agent by what it needs", run: () => navigate({ name: "board" }) },
 );
+// A placeholder never replaces a command a lane registered (import order varies).
+for (const p of [
+  { id: "compact", label: "Summarize the history to free context" },
+  { id: "mcp", label: "Manage tool servers" },
+  { id: "export", label: "Export this session" },
+]) if (!slash.all().some((i) => i.id === p.id)) slash.add(p);
+
+// What /review asks: Codex's working-tree review, as a prompt in the session.
+function reviewPrompt(arg: string) {
+  const target = /^[\w./-]+$/.test(arg) && !arg.includes(" ")
+    ? `the changes on this branch against ${arg} (git diff ${arg}...HEAD, plus uncommitted and untracked files)`
+    : "the uncommitted changes in this folder (git diff HEAD and the untracked files)";
+  const focus = arg && !/^[\w./-]+$/.test(arg) ? `\nLook in particular at: ${arg}` : "";
+  return `Review ${target}. Do not edit anything. Report what is wrong: bugs, missed cases, broken contracts, risky changes and missing tests, most serious first, each with the file and line and why it matters. Say plainly when you find nothing worth changing.${focus}`;
+}
+
+const INIT_PROMPT =
+  "Write an AGENTS.md at the root of this folder for agents that will work here. Read the project first (README, build and test files, the layout, recent git history). Cover: what the project is, how to build, test and run it, the layout of the code, and the conventions a change must follow. Keep it short and specific to this project; no generic advice. If an AGENTS.md exists, improve it instead of starting over.";
+
+// An error in what was typed after a command: shown, not recorded as a failure.
+function usage(message: string) { return Object.assign(new Error(message), { usage: true }); }

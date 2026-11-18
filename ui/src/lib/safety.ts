@@ -23,6 +23,7 @@ const set = (patch: Partial<State>) => {
   state = { ...state, ...patch };
   subs.forEach((f) => f());
 };
+export const getSafetyModes = () => state.modes;
 export function useSafety<T>(sel: (s: State) => T): T {
   return useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => sel(state));
 }
