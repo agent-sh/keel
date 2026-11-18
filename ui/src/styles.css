@@ -1,0 +1,108 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. One accent (deep sea teal), warm neutrals, quiet borders.
+   Every color in the UI comes from here; components never pick raw colors. */
+:root {
+  --bg: oklch(0.985 0.003 85);
+  --panel: oklch(0.965 0.004 85);
+  --raised: oklch(1 0 0);
+  --fg: oklch(0.22 0.01 260);
+  --muted: oklch(0.52 0.012 260);
+  --faint: oklch(0.68 0.01 260);
+  --line: oklch(0.91 0.005 85);
+  --line-strong: oklch(0.85 0.006 85);
+  --accent: oklch(0.55 0.11 200);
+  --accent-fg: oklch(0.99 0 0);
+  --accent-soft: oklch(0.94 0.03 200);
+  --danger: oklch(0.58 0.19 25);
+  --danger-soft: oklch(0.95 0.03 25);
+  --ok: oklch(0.6 0.13 155);
+  --warn: oklch(0.72 0.14 75);
+  --code-bg: oklch(0.955 0.004 85);
+  --shadow: 0 1px 2px oklch(0 0 0 / 0.04), 0 4px 16px oklch(0 0 0 / 0.05);
+}
+.dark {
+  --bg: oklch(0.17 0.006 260);
+  --panel: oklch(0.145 0.006 260);
+  --raised: oklch(0.21 0.007 260);
+  --fg: oklch(0.93 0.005 85);
+  --muted: oklch(0.68 0.01 260);
+  --faint: oklch(0.52 0.01 260);
+  --line: oklch(0.26 0.007 260);
+  --line-strong: oklch(0.33 0.008 260);
+  --accent: oklch(0.72 0.11 200);
+  --accent-fg: oklch(0.16 0.01 260);
+  --accent-soft: oklch(0.28 0.04 200);
+  --danger: oklch(0.7 0.17 25);
+  --danger-soft: oklch(0.28 0.06 25);
+  --ok: oklch(0.72 0.13 155);
+  --warn: oklch(0.8 0.13 75);
+  --code-bg: oklch(0.2 0.007 260);
+  --shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 8px 24px oklch(0 0 0 / 0.25);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-code: var(--code-bg);
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --shadow-soft: var(--shadow);
+  --animate-in: fade-up 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+html, body, #root { height: 100%; }
+/* No color transitions while the theme flips: everything changes in one frame. */
+.theme-switch, .theme-switch * { transition: none !important; }
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+  font-feature-settings: "cv11", "ss01";
+  font-size: 14.5px;
+}
+::selection { background: var(--accent-soft); }
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+
+/* Rendered markdown in assistant replies. */
+.prose-keel { line-height: 1.65; overflow-wrap: anywhere; }
+.prose-keel > * + * { margin-top: 0.75em; }
+.prose-keel h1, .prose-keel h2, .prose-keel h3 { font-weight: 600; letter-spacing: -0.01em; margin-top: 1.2em; }
+.prose-keel h1 { font-size: 1.3em; } .prose-keel h2 { font-size: 1.15em; } .prose-keel h3 { font-size: 1.02em; }
+.prose-keel ul { list-style: disc; padding-left: 1.3em; }
+.prose-keel ol { list-style: decimal; padding-left: 1.3em; }
+.prose-keel li + li { margin-top: 0.25em; }
+.prose-keel a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-keel code { font-family: var(--font-mono); font-size: 0.88em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 5px; }
+.prose-keel pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 0.8em 1em; overflow-x: auto; font-size: 0.86em; line-height: 1.55; }
+.prose-keel pre code { background: none; padding: 0; font-size: inherit; }
+.prose-keel blockquote { border-left: 3px solid var(--line-strong); padding-left: 0.9em; color: var(--muted); }
+.prose-keel table { border-collapse: collapse; font-size: 0.92em; }
+.prose-keel th, .prose-keel td { border: 1px solid var(--line); padding: 0.35em 0.7em; text-align: left; }
+.prose-keel th { background: var(--panel); font-weight: 600; }
+.prose-keel hr { border-color: var(--line); }

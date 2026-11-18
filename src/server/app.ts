@@ -1,0 +1,147 @@
+import type { ServerWebSocket } from "bun";
+import { existsSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+import type { Bus } from "../core/bus.ts";
+import type { ErrorTracker } from "../core/errors.ts";
+import type { Store } from "../core/store.ts";
+import type { Engine } from "../engine/turn.ts";
+import type { Providers } from "../providers/registry.ts";
+import index from "../../ui/index.html";
+
+export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string };
+
+const json = (data: unknown, status = 200) => Response.json(data, { status });
+const bad = (message: string, status = 400) => json({ error: message }, status);
+
+export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }) {
+  const { store, bus, engine, providers, errors } = deps;
+  const sockets = new Set<ServerWebSocket<unknown>>();
+  bus.on((f) => {
+    const msg = JSON.stringify(f);
+    for (const ws of sockets) ws.send(msg);
+  });
+
+  const session = (id: string) => store.session(id);
+
+  const wrap = (h: (req: Request & { params: any }) => Promise<Response> | Response) =>
+    async (req: any) => {
+      try {
+        return await h(req);
+      } catch (e) {
+        const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
+        return json({ error: rec.message, error_id: rec.id }, 500);
+      }
+    };
+
+  const server = Bun.serve({
+    hostname: opts.hostname,
+    port: opts.port,
+    development: opts.development ? { hmr: true, console: true } : false,
+    routes: {
+      "/": index,
+      "/s/:id": index,
+
+      "/api/models": {
+        GET: wrap(async (req) => {
+          const force = new URL(req.url).searchParams.has("refresh");
+          return json({ models: await providers.models(force), default: await providers.defaultModel() });
+        }),
+      },
+
+      "/api/sessions": {
+        GET: wrap((req) => json({ sessions: store.sessions({ archived: new URL(req.url).searchParams.has("archived") }) })),
+        POST: wrap(async (req) => {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const workspace = resolve(body.workspace || deps.workspace);
+          if (!existsSync(workspace) || !statSync(workspace).isDirectory()) return bad(`not a directory: ${workspace}`);
+          const model = body.model || (await providers.defaultModel());
+          if (!model) return bad("no model is available: no provider has credentials", 409);
+          await providers.resolve(model);
+          const s = store.createSession({ model, workspace, title: body.title });
+          bus.emit({ t: "session", session: s });
+          if (body.text) engine.send(s.id, body.text, body.images ?? []);
+          return json({ session: store.session(s.id) }, 201);
+        }),
+      },
+
+      "/api/sessions/:id": {
+        GET: wrap((req) => {
+          const s = session(req.params.id);
+          return s ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id) }) : bad("no such session", 404);
+        }),
+        PATCH: wrap(async (req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          const body = (await req.json()) as any;
+          if (body.model) await providers.resolve(body.model);
+          const next = store.updateSession(s.id, { title: body.title, model: body.model, archived: body.archived });
+          bus.emit({ t: "session", session: next });
+          return json({ session: next });
+        }),
+        DELETE: wrap((req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          engine.interrupt(s.id);
+          store.deleteSession(s.id);
+          bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle", title: s.title } });
+          return json({ ok: true });
+        }),
+      },
+
+      "/api/sessions/:id/events": {
+        GET: wrap((req) => {
+          const after = Number(new URL(req.url).searchParams.get("after") ?? 0);
+          return json({ events: store.events(req.params.id, after) });
+        }),
+      },
+
+      "/api/sessions/:id/messages": {
+        POST: wrap(async (req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          if (s.archived) return bad("the session is archived", 409);
+          const body = (await req.json()) as any;
+          const text = String(body.text ?? "").trim();
+          if (!text) return bad("text cannot be empty");
+          const ev = engine.send(s.id, text, body.images ?? []);
+          return json({ event: ev }, 201);
+        }),
+      },
+
+      "/api/sessions/:id/interrupt": {
+        POST: wrap((req) => {
+          engine.interrupt(req.params.id);
+          return json({ ok: true });
+        }),
+      },
+
+      "/api/errors": {
+        GET: wrap(() => json({ errors: store.errors() })),
+        POST: wrap(async (req) => {
+          const b = (await req.json()) as any;
+          const err = Object.assign(new Error(String(b.message ?? "client error").slice(0, 2000)), { stack: b.stack });
+          errors.capture("client", err, b.context);
+          return json({ ok: true }, 201);
+        }),
+      },
+
+      "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
+    },
+
+    fetch(req, srv) {
+      const url = new URL(req.url);
+      if (url.pathname === "/ws") {
+        if (srv.upgrade(req)) return;
+        return bad("websocket upgrade failed");
+      }
+      return bad("not found", 404);
+    },
+
+    websocket: {
+      open(ws) { sockets.add(ws); },
+      close(ws) { sockets.delete(ws); },
+      message() {},
+    },
+  });
+  return server;
+}
