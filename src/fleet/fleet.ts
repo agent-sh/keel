@@ -320,8 +320,13 @@ export class Fleet {
     });
   }
 
+  // Called when a linked daemon has messages waiting for this one (its outbox).
+  onOutbox?: (machineId: string) => void;
+
   private onRelayFrame(id: string, relay: Relay, f: any) {
+    if (f.t === "feature" && f.name === "fleet_outbox") { this.onOutbox?.(id); return; }
     if (f.t === "snapshot") {
+      this.onOutbox?.(id);
       relay.sessions = new Map((f.sessions as Session[]).map((s) => [s.id, s]));
       relay.stale = false;
       const link = this.links.get(id);

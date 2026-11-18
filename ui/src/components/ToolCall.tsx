@@ -11,7 +11,7 @@ import {
   patchFiles, planItems, questions, resultImages, resultText, shellBody, shellStatus, shortPath, stripAnsi, toolKind,
   type PlanItem, type ToolKind,
 } from "../lib/tools.ts";
-import { MachineBadge } from "./Fleet.tsx";
+import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
 import { cn } from "../lib/utils.ts";
 import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 
@@ -50,7 +50,7 @@ function summary(kind: ToolKind, name: string, input: any, cwd?: string): string
     case "skill": return [input.skill ?? input.name, input.args ?? input.arguments].filter(Boolean).join(" ");
     case "mcp": return name === "search_tools" ? `search ${input.query ?? ""}` : input.tool ?? name;
     case "plan": return planSummary(planItems(name, input));
-    default: return toolSummary(name, input) ?? JSON.stringify(input).slice(0, 120);
+    default: return toolSummary(name, input) ?? fleetSummary(name, input) ?? JSON.stringify(input).slice(0, 120);
   }
 }
 
@@ -86,7 +86,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
         <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" ? "bg-danger-soft text-danger" : state === "running" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
           <Icon className="size-3.5" />
         </span>
-        <span className="shrink-0 font-medium">{LABEL[kind] ?? use.name}</span>
+        <span className="shrink-0 font-medium">{LABEL[kind] ?? FLEET_LABEL[use.name] ?? use.name}</span>
         <span className={cn("min-w-0 truncate text-muted", kind === "shell" && input.description ? "text-ui" : "font-mono text-caption")}>{summary(kind, use.name, input, cwd)}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-micro tabular-nums">
           <MachineBadge sessionId={sessionId} callId={use.id} />

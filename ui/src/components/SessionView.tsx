@@ -10,6 +10,7 @@ import { actions, reportError, useStore } from "../lib/store.ts";
 // not need it, and a session link starts loading it with the page.
 const loadTranscript = () => import("./Transcript.tsx");
 const Transcript = lazy(() => loadTranscript().then((m) => ({ default: m.Transcript })));
+const HeldMessages = lazy(() => import("./FleetMessages.tsx").then((m) => ({ default: m.HeldMessages })));
 const SessionDock = lazy(() => import("./SessionDock.tsx").then((m) => ({ default: m.SessionDock })));
 if (location.pathname.startsWith("/s/")) loadTranscript();
 else (window.requestIdleCallback ?? setTimeout)(() => void loadTranscript());
@@ -56,6 +57,7 @@ export function SessionView({ id, header, panel = true, focus = true }: { id: st
           <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
           <div className="k-compose pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
+              <Suspense fallback={null}><HeldMessages sessionId={session.id} /></Suspense>
               <Suspense fallback={null}><SessionDock sessionId={session.id} /></Suspense>
               <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
               <ChildApprovals parentId={session.id} />

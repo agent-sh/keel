@@ -3,10 +3,13 @@
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Fleet } from "./fleet.ts";
+import { HttpError, type Messages } from "./messages.ts";
 import { remoteRun } from "./remote.ts";
 
 let fleet: Fleet | undefined;
-export const bindFleetTools = (f: Fleet) => void (fleet = f);
+let messages: Messages | undefined;
+let sessionOf: ((id: string) => import("../core/types.ts").Session | undefined) | undefined;
+export const bindFleetTools = (f: Fleet, m: Messages, s: typeof sessionOf) => { fleet = f; messages = m; sessionOf = s; };
 
 const gb = (mb?: number) => (mb === undefined ? "?" : `${(mb / 1024).toFixed(1)} GB`);
 
@@ -66,4 +69,45 @@ const runOn: Tool = {
   },
 };
 
-registerShared(machinesList, runOn);
+const sessionsList: Tool = {
+  name: "keel__sessions_list",
+  description: "List the owner's other sessions, on this daemon and on linked machines: the address to send to, title, machine, directory and phase. Leaves out this session and archived ones.",
+  input_schema: { type: "object", properties: { machine: { type: "string", description: "Only this machine's sessions" } }, additionalProperties: false },
+  readOnly: true,
+  async run(input, ctx) {
+    if (!messages) return fail("The fleet is not running.");
+    const want = typeof input.machine === "string" ? input.machine.toLowerCase() : "";
+    const rows = messages.addressable().filter((a) => a.session.id !== ctx.sessionId && !a.session.parent_id && (!want || a.machine.toLowerCase() === want || a.machine_id === want));
+    if (!rows.length) return ok("No other sessions.");
+    return ok(rows.slice(0, 100).map((a) => `${a.to}\t${a.session.title || "(untitled)"}\t${a.machine}\t${a.session.workspace}\t${a.session.phase}`).join("\n"));
+  },
+};
+
+const sessionSend: Tool = {
+  name: "keel__session_send",
+  description: "Send a message to another of the owner's sessions (an address from keel__sessions_list, a session id, or a part of its title naming one session). It reaches that session as another session's text, not the owner's. wake (default true) starts its turn when it is idle; false leaves it queued for its next pause.",
+  input_schema: {
+    type: "object",
+    properties: { to: { type: "string" }, text: { type: "string" }, wake: { type: "boolean" } },
+    required: ["to", "text"],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  async run(input, ctx) {
+    if (!messages || !sessionOf) return fail("The fleet is not running.");
+    const to = String(input.to ?? input.session ?? input.id ?? "").trim();
+    const text = String(input.text ?? input.message ?? "");
+    const missing = [!to && "to", !text.trim() && "text"].filter(Boolean);
+    if (missing.length) return fail(`Missing: ${missing.join(", ")}.`);
+    const me = sessionOf(ctx.sessionId);
+    if (!me) return fail("This session is gone.");
+    try {
+      return ok(await messages.send(me, to, text, input.wake !== false));
+    } catch (e) {
+      if (e instanceof HttpError) return fail(e.message);
+      throw e;
+    }
+  },
+};
+
+registerShared(machinesList, runOn, sessionsList, sessionSend);

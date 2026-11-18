@@ -9,10 +9,12 @@ import { instructionFiles } from "../../engine/turn.ts";
 import { localFacts } from "../../fleet/facts.ts";
 import { Fleet } from "../../fleet/fleet.ts";
 import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
-import { callerOf, LinkError, linkFetch, loopbackUrl, proven } from "../../fleet/link.ts";
+import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proven } from "../../fleet/link.ts";
 import { remoteRun } from "../../fleet/remote.ts";
 import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
+import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
+import * as alerts from "../../automation/alerts.ts";
 import { inside } from "../../safety/policy.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate } from "./permissions.ts";
@@ -28,7 +30,22 @@ export let fleet: Fleet | undefined;
 export const fleetRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, engine, errors } = deps;
   const f = (fleet = new Fleet(store, bus, errors));
-  bindFleetTools(f);
+  const msgs = new Messages(store, bus, engine, f, (id) => (gate ? gate.perm(id) : undefined), (m, s) => {
+    alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
+  });
+  bindFleetTools(f, msgs, (id) => store.session(id));
+  // A linked daemon's outbox: messages its sessions wrote for this daemon's.
+  f.onOutbox = (machineId) => {
+    (async () => {
+      const p = await f.peer(machineId);
+      const r = await linkJson<{ messages: Message[] }>(p, "/api/fleet/outbox", { method: "POST", body: JSON.stringify({ daemon_id: f.id, name: f.name }) });
+      for (const m of r.messages) {
+        const to = store.session(m.to_session);
+        // Proven by the link's answer; it counts as that daemon's when it says it was written there.
+        if (to) try { msgs.receive(to, m.text, m.from, m.wake, m.from.daemon_id === p.daemonId); } catch (e) { if (!(e instanceof HttpError)) throw e; }
+      }
+    })().catch((e) => { if (!(e instanceof LinkError)) errors.capture("server", e, { at: "fleet outbox", machine: machineId }); });
+  };
   f.start();
   const spillRoot = `${store.stateDir}/spill`;
 
@@ -266,6 +283,55 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       },
     },
 
+    "/api/fleet/messages": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        return json({ messages: msgs.list({ session_id: q.get("session_id") ?? undefined, state: q.get("state") ?? undefined }) });
+      },
+      // A message from a session of another daemon (or posted locally) to one of this daemon's.
+      POST: async (req: Request) => {
+        const c = paired(req);
+        const b = await body(req);
+        const from = b.from ?? {};
+        if (!from.session_id || !from.daemon_id) return proven(bad("from must name a session and a daemon"), c, f.id);
+        const to = store.session(String(b.to ?? ""));
+        if (!to) return proven(bad("no such session", 404), c, f.id);
+        const trusted = !!c && c.daemonId === from.daemon_id;
+        try {
+          const m = msgs.receive(to, String(b.text ?? ""), { ...from, limited: from.limited !== false }, b.wake !== false, trusted);
+          return proven(json({ id: m.id, state: m.state, reason: m.reason ?? undefined }), c, f.id);
+        } catch (e) {
+          if (e instanceof HttpError) return proven(bad(e.message, e.status), c, f.id);
+          throw e;
+        }
+      },
+    },
+
+    "/api/fleet/messages/:id": {
+      POST: async (req: any) => {
+        const b = await body(req);
+        if (!["deliver", "drop"].includes(b.decision)) return bad("decision is deliver or drop");
+        try {
+          const m = msgs.decide(req.params.id, b.decision);
+          return json({ id: m.id, state: m.state });
+        } catch (e) {
+          if (e instanceof HttpError) return bad(e.message, e.status);
+          throw e;
+        }
+      },
+    },
+
+    // A linked daemon's relay fetches what waits for it; a caller without its key gets nothing.
+    "/api/fleet/outbox": {
+      POST: async (req: Request) => {
+        const c = paired(req);
+        const b = await body(req);
+        if (!String(b.daemon_id ?? "")) return proven(bad("daemon_id cannot be empty"), c, f.id);
+        if (!c || c.daemonId !== b.daemon_id) return proven(json({ messages: [] }), c, f.id);
+        return proven(json({ messages: msgs.takeOutbound(c.daemonId) }), c, f.id);
+      },
+    },
+
     "/api/sessions/:id/fleet": {
       GET: (req: any) => {
         const s = store.session(req.params.id);
@@ -284,20 +350,21 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     // This daemon's live frames, for the other daemon's relay. Opens with the
     // sessions it shows; a comment line every 5 s keeps the stream and proves it alive.
     "/api/fleet/stream": {
-      GET: linked((req) => {
+      GET: linked((req, c) => {
         let off = () => {};
         let ping: Timer | undefined;
         const enc = new TextEncoder();
         const stop = () => { off(); clearInterval(ping); };
         const stream = new ReadableStream({
-          start(c) {
-            const send = (x: unknown) => { try { c.enqueue(enc.encode(`data: ${JSON.stringify(x)}\n\n`)); } catch { stop(); } };
+          start(ctl) {
+            const send = (x: unknown) => { try { ctl.enqueue(enc.encode(`data: ${JSON.stringify(x)}\n\n`)); } catch { stop(); } };
             send({ t: "snapshot", sessions: store.sessions() });
             off = bus.on((fr) => {
+              if (fr.t === "feature" && fr.name === "fleet_outbox") { if (fr.data?.daemon_id === c.daemonId) send(fr); return; }
               if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay
               send(fr);
             });
-            ping = setInterval(() => { try { c.enqueue(enc.encode(": ping\n\n")); } catch { stop(); } }, KEEPALIVE_MS);
+            ping = setInterval(() => { try { ctl.enqueue(enc.encode(": ping\n\n")); } catch { stop(); } }, KEEPALIVE_MS);
             req.signal?.addEventListener("abort", stop, { once: true });
           },
           cancel: stop,

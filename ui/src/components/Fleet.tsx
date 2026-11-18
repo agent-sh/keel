@@ -10,6 +10,15 @@ import { reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 
+// Names and one-line summaries of the fleet's tools on their rows.
+export const FLEET_LABEL: Record<string, string> = { keel__session_send: "Message", keel__sessions_list: "Sessions", keel__machines_list: "Machines" };
+export function fleetSummary(name: string, input: any): string | undefined {
+  if (name === "keel__session_send") return `to ${input.to ?? "?"}${input.wake === false ? " (queued)" : ""}: ${String(input.text ?? "").slice(0, 120)}`;
+  if (name === "keel__sessions_list") return input.machine ? `on ${input.machine}` : "every machine";
+  if (name === "keel__machines_list") return "the fleet";
+  return undefined;
+}
+
 const dot = (colour?: string) => <span className="size-1.5 shrink-0 rounded-full bg-accent" style={colour ? { background: colour } : undefined} />;
 
 // "on <machine>" in the session header, for a session of another daemon or one

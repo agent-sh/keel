@@ -12,6 +12,7 @@ import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ToolCall } from "./ToolCall.tsx";
 import { InputNotice, SYSTEM_INPUT } from "./automation/TranscriptExtras.tsx";
+import { isPeerMessage, PeerMessage } from "./FleetMessages.tsx";
 
 function Thinking({ text, live }: { text: string; live?: boolean }) {
   if (!text.trim() && !live) return null;
@@ -412,7 +413,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               }
               prompt = e;
               reply = [];
-              return SYSTEM_INPUT.has(e.data.kind) ? <InputNotice key={e.id} e={e} /> : <UserMessage key={e.id} e={e} s={session} all={all!} />;
+              return SYSTEM_INPUT.has(e.data.kind) ? <InputNotice key={e.id} e={e} /> : isPeerMessage(e) ? <PeerMessage key={e.id} e={e} /> : <UserMessage key={e.id} e={e} s={session} all={all!} />;
             }
             if (e.kind === "compaction") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "assistant" && e.data.stop === "refusal") return <Refusal key={e.id} e={e} s={session} />;
