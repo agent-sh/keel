@@ -107,7 +107,7 @@ export function unreadCounts(): { total: number; sessions: Record<string, number
 // the page has focus. Fresh for 45 s.
 let presence: { at: number; session_id: string | null; focused: boolean } = { at: 0, session_id: null, focused: false };
 export const setPresence = (session_id: string | null, focused: boolean) => void (presence = { at: Date.now(), session_id, focused });
-const atDesk = () => Date.now() - presence.at < 45_000 && presence.focused;
+export const atDesk = () => Date.now() - presence.at < 45_000 && presence.focused;
 const watching = (sessionId: string | null) => atDesk() && !!sessionId && presence.session_id === sessionId;
 
 const SECRETS = /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g;

@@ -10,8 +10,9 @@ import { HAIKU, shoot } from "./shots.ts";
 // canonical Base64, replay protected), registers a push token, prompts a
 // session and approves its tool call with the separate approval key. A replayed
 // request and a replayed approval are refused. A test push from the device row
-// reaches a stand-in push service and the phone confirms it; revoking from the
-// workbench cuts the phone off.
+// reaches a stand-in push service and the phone confirms it; the approval,
+// answered within the push hold, is never pushed. Revoking from the workbench
+// cuts the phone off.
 //
 // The daemon runs with KEEL_FCM_URL=http://127.0.0.1:<FCM_PORT> and a
 // service-account file whose token_uri points at the same stand-in.
@@ -140,9 +141,6 @@ test("pair a phone, approve from it, push, revoke", async ({ page, request }) =>
     expect(approval.command).toContain("touch phone.txt");
     expect(frames.some((f) => f.type === "message" && f.message.id === posted.message.id)).toBe(true);
     expect(frames.some((f) => f.type === "approval" && f.approval.id === approval.id)).toBe(true);
-    // The card is also an alert, and the phone is one of its channels.
-    await expect.poll(() => sent.find((m) => m.data.t === "approval")?.data.aid, { timeout: 10_000 }).toBe(approval.id);
-    expect(sent.find((m) => m.data.t === "approval").android.priority).toBe("HIGH");
     expect(approval.actions.map((a: string[]) => a[1])).toContain("once");
 
     // The workbench shows the same card.
@@ -161,6 +159,9 @@ test("pair a phone, approve from it, push, revoke", async ({ page, request }) =>
     await expect(page.getByTestId("approval")).toHaveCount(0);
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
     expect(existsSync(join(ws, "phone.txt"))).toBe(true);
+    // The card was an alert for the phone too, held for 20 s: answered within
+    // them, it is never pushed.
+    expect(sent.some((m) => m.data.t === "approval")).toBe(false);
     // Replaying the approval signature (in a freshly signed request) is refused.
     const again = await phone.call("POST", path, { choice: "once" }, { "x-hm-ts": ats, "x-hm-asig": asig, ...signedAt(phone, "POST", path, { choice: "once" }, ats) });
     expect(again.status()).toBe(403);

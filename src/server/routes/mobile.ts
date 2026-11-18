@@ -1,11 +1,13 @@
 // The phone: pairing and the device list for the workbench (/api/mobile), the
 // Hermes Mobile API the phone app calls (/v1), and phone push as an alert channel.
 import { renderSVG } from "uqr";
-import { registerChannel, type Alert } from "../../automation/alerts.ts";
+import { atDesk, registerChannel, type Alert } from "../../automation/alerts.ts";
+import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
 import { MobileStore } from "../../integrations/mobile/store.ts";
 import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
 import type { Deps, RouteModule } from "../app.ts";
+import { pendingQuestions } from "../../tools/interact.ts";
 import { gate } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -52,9 +54,24 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     label: "Phone push",
     available: () => push.configured() && mobile.pushTargets().length > 0,
     async deliver(a) {
-      const recs = await push.send(mobile, mobile.globalSeq(), alertPush(a));
-      for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { alert: a.id, device: r.device_id });
-      if (recs.length) changed();
+      const read = () => !!store.db.query<{ read: number }, [string]>("SELECT read FROM alerts WHERE id = ?").get(a.id)?.read;
+      const stillOpen = () => {
+        if (read()) return false;
+        if (a.kind === "approval") return gate?.approval(a.data?.approval_id)?.state === "pending";
+        if (a.kind === "question") return !!a.session_id && pendingQuestions(a.session_id).includes(a.data?.call_id);
+        return true;
+      };
+      await holdThenSend({
+        needsAnswer: a.kind === "approval" || a.kind === "question",
+        stillOpen,
+        atDesk: async () => atDesk() || (await screenUnlocked()),
+        sleep: (ms) => Bun.sleep(ms),
+        send: async () => {
+          const recs = await push.send(mobile, mobile.globalSeq(), alertPush(a));
+          for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { alert: a.id, device: r.device_id });
+          if (recs.length) changed();
+        },
+      });
     },
   });
 
