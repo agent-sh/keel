@@ -34,6 +34,12 @@ export const importRoutes: RouteModule = (deps) => {
   const imports = new Imports(store);
   imports.refresh().catch((e) => deps.errors.capture("server", e, { at: "import index" }));
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
+  // The source's model when this daemon lists it, else the default one.
+  const modelFor = async (f: Found): Promise<string | undefined> => {
+    const listed = await providers.models().catch(() => []);
+    const want = f.model && bare(f.model);
+    return (want && (listed as any[]).find((m) => m.id === f.model || bare(m.id) === want)?.id) || (await providers.defaultModel()) || undefined;
+  };
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
 
   // A session the drive list shows (by its id there): imported from the
@@ -109,19 +115,47 @@ export const importRoutes: RouteModule = (deps) => {
         const prior = imports.links(f.harness, f.id)[0];
         if (prior && !b.mode) return json({ error: "this session was imported before: open it, update it, or make a new copy", session_id: prior.session_id }, 409);
         if (!prior && (b.mode === "update" || b.mode === "open")) return bad("this session was never imported", 404);
-        let model = b.model;
-        if (!model) {
-          // The source's model when this daemon lists it, else the default one.
-          const listed = await providers.models().catch(() => []);
-          const want = f.model && bare(f.model);
-          model = (want && (listed as any[]).find((m) => m.id === f.model || bare(m.id) === want)?.id) || (await providers.defaultModel());
-        }
+        const model = b.model || (await modelFor(f));
         if (!model) return bad("no model is available: no provider has credentials", 409);
         if (b.cwd && !isDir(b.cwd)) return bad(`not a directory: ${b.cwd}`);
         const workspace = b.cwd || (isDir(f.cwd) ? f.cwd! : deps.workspace);
         const r = await imports.import(f, { mode: b.mode, model, workspace, title: b.title });
         bus.emit({ t: "session", session: r.session });
         return json({ action: r.action, session: r.session, imported_events: r.imported_events, counts: r.read.counts, notes: r.read.notes }, r.action === "created" ? 201 : 200);
+      },
+    },
+    // Many at once, one after another; one that fails does not stop the others,
+    // and one imported before is opened (or updated with mode "update"), never doubled.
+    "/api/import/batch": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        if (!Array.isArray(b.items) || !b.items.length) return bad("give items");
+        if (b.items.length > 200) return bad("at most 200 items at once");
+        const results: any[] = [];
+        const counts: Record<string, number> = {};
+        for (const item of b.items) {
+          const f = await target(item);
+          if (f instanceof Response) {
+            results.push({ ...item, ok: false, status: f.status, error: ((await f.json()) as any).error });
+            counts.failed = (counts.failed ?? 0) + 1;
+            continue;
+          }
+          try {
+            const prior = imports.links(f.harness, f.id)[0];
+            const mode = prior ? (b.mode === "new" ? "new" : b.mode === "update" ? "update" : "open") : "new";
+            const model = b.model ?? (await modelFor(f));
+            if (!model) throw new Error("no model is available: no provider has credentials");
+            const r = await imports.import(f, { mode: prior ? mode : undefined, model, workspace: isDir(f.cwd) ? f.cwd! : deps.workspace });
+            if (r.action === "created") bus.emit({ t: "session", session: r.session });
+            results.push({ harness: f.harness, id: f.id, ok: true, action: r.action, session_id: r.session.id, imported_events: r.imported_events });
+            counts[r.action] = (counts[r.action] ?? 0) + 1;
+          } catch (e) {
+            results.push({ harness: f.harness, id: f.id, ok: false, status: 500, error: (e as Error).message });
+            counts.failed = (counts.failed ?? 0) + 1;
+            deps.errors.capture("server", e, { at: "import batch", harness: f.harness, id: f.id });
+          }
+        }
+        return json({ results, counts });
       },
     },
     "/api/sessions/:id/origin": {

@@ -108,6 +108,10 @@ test("import and export", async ({ page, request }) => {
   const listed = await (await request.get(`/api/import/sessions?harness=claude&q=${tag}&refresh=1`)).json();
   expect(listed.total).toBe(2);
 
+  // A batch opens what was imported before and says which item it could not find.
+  const batch = await (await request.post("/api/import/batch", { data: { items: [{ harness: "keel", id: `keel-${tag}` }, { harness: "codex", id: "no-such-rollout" }] } })).json();
+  expect(batch.counts).toEqual({ opened: 1, failed: 1 });
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

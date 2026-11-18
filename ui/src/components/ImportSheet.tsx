@@ -138,6 +138,30 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [sel, setSel] = useState<Row | null>(null);
   const [building, setBuilding] = useState(false);
   const seq = useRef(0);
+  const [bulk, setBulk] = useState("");
+
+  // Every session the filter shows, imported 200 at a time; ones imported before are left as they are.
+  const importAll = async () => {
+    const u = new URLSearchParams({ harness, limit: "500" });
+    if (q.trim()) u.set("q", q.trim());
+    if (all) u.set("show", "all");
+    const items: { harness: Harness; id: string }[] = [];
+    for (let cursor: number | undefined = 0; cursor !== undefined; ) {
+      u.set("cursor", String(cursor));
+      const r: { sessions: Row[]; next_cursor?: number } = await api(`/api/import/sessions?${u}`);
+      for (const x of r.sessions) if (!x.imported) items.push({ harness: x.harness, id: x.id });
+      cursor = r.next_cursor;
+    }
+    let done = 0, failed = 0;
+    for (let i = 0; i < items.length; i += 200) {
+      setBulk(`Importing ${done} of ${items.length}`);
+      const r = await api<{ counts: Record<string, number> }>("/api/import/batch", { method: "POST", body: JSON.stringify({ items: items.slice(i, i + 200) }) });
+      done += (r.counts.created ?? 0) + (r.counts.opened ?? 0);
+      failed += r.counts.failed ?? 0;
+    }
+    setBulk(`Imported ${done}${failed ? `, ${failed} could not be read` : ""}`);
+    load(0);
+  };
 
   const load = useCallback(async (cursor = 0, refresh = false) => {
     const n = ++seq.current;
@@ -215,7 +239,14 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                   </Switch.Root>
                 </label>
               </div>
-              <div className="px-3 py-1.5 text-micro text-faint tabular-nums" data-testid="import-total">{rows ? `${total.toLocaleString()} session${total === 1 ? "" : "s"}${building ? " · reading the store" : ""}` : "Reading"}</div>
+              <div className="flex items-center gap-2 px-3 py-1.5 text-micro text-faint tabular-nums">
+                <span className="min-w-0 flex-1 truncate" data-testid="import-total">{bulk || (rows ? `${total.toLocaleString()} session${total === 1 ? "" : "s"}${building ? " · reading the store" : ""}` : "Reading")}</span>
+                {rows && total > 0 && !building && (
+                  <button type="button" data-testid="import-all" disabled={bulk.startsWith("Importing")} onClick={() => importAll().catch((e) => { setBulk(""); reportError(e); })} className="shrink-0 rounded-sm px-1.5 py-0.5 text-accent hover:bg-accent-soft disabled:opacity-50" title="Import every session this list shows; ones imported before stay as they are">
+                    Import all
+                  </button>
+                )}
+              </div>
               <div className="min-h-0 flex-1 overflow-y-auto" data-testid="import-list">
                 {rows?.map((r) => (
                   <button
