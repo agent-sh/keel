@@ -1,6 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
 import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
 import { actions, reportError } from "../lib/store.ts";
@@ -8,10 +8,12 @@ import { navigate, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { BackgroundButton } from "./automation/BackgroundPopover.tsx";
-import { PermissionMenu } from "./PermissionMenu.tsx";
 import { PanelToggles } from "./SidePanel.tsx";
-import { WorktreeChip } from "./WorktreeChip.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
+
+// Popovers of the header load after the page (their Base UI parts are large).
+const PermissionMenu = lazy(() => import("./PermissionMenu.tsx").then((m) => ({ default: m.PermissionMenu })));
+const WorktreeChip = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeChip })));
 
 export function SidebarButton() {
   const sidebar = useUI((s) => s.sidebar);
@@ -86,9 +88,9 @@ export function SessionHeader({ session }: { session: Session }) {
         {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">${u.cost.toFixed(u.cost < 1 ? 4 : 2)}</span> : null}
       </span>}
       <BackgroundButton sessionId={session.id} />
-      <WorktreeChip session={session} />
+      <Suspense fallback={null}><WorktreeChip session={session} /></Suspense>
       <PanelToggles session={session} />
-      <PermissionMenu sessionId={session.id} />
+      <Suspense fallback={null}><PermissionMenu sessionId={session.id} /></Suspense>
       {headerActions.all().filter((a) => !a.when || a.when(session)).map((a) => (
         <button key={a.id} type="button" title={a.label} aria-label={a.label} onClick={() => a.run(session)} className={iconButton}>{a.icon}</button>
       ))}

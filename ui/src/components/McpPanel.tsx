@@ -3,7 +3,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
 import { Tabs } from "@base-ui/react/tabs";
 import { ChevronRight, Download, Globe, KeyRound, LogOut, Plug, RefreshCw, RotateCw, SquareTerminal, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { McpServerState } from "../../../src/mcp/manager.ts";
 import type { ImportableServer } from "../../../src/mcp/config.ts";
 import { reportError } from "../lib/store.ts";
@@ -62,11 +62,11 @@ function ServerRow({ s, act }: { s: McpServerState; act: (path: string, body?: u
   const shown = s.tool_names.slice(0, 10);
   return (
     <div data-testid="mcp-server" data-name={s.name} data-state={s.state} className="group rounded-xl border border-line bg-raised px-3.5 py-3 transition-colors hover:border-line-strong">
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <span className={cn("size-2 shrink-0 rounded-full", DOT[s.state])} title={LABEL[s.state]} />
         <span className="font-medium text-ui">{s.name}</span>
         {s.bundled && (
-          <span data-testid="mcp-bundled" title="Keel brings this server itself: every session has it, no setup" className="rounded-md bg-accent-soft px-1.5 py-px text-micro font-medium text-accent">
+          <span data-testid="mcp-bundled" title="Keel brings this server itself: every session has it, no setup" className="shrink-0 whitespace-nowrap rounded-md bg-accent-soft px-1.5 py-px text-micro font-medium text-accent">
             Built in · {s.bundled}
           </span>
         )}
@@ -74,7 +74,7 @@ function ServerRow({ s, act }: { s: McpServerState; act: (path: string, body?: u
           {s.transport === "http" ? <Globe className="size-3" /> : <SquareTerminal className="size-3" />}
           {s.transport}
         </span>
-        <span className="text-caption text-faint tabular-nums" data-testid="mcp-tool-count">
+        <span className="whitespace-nowrap text-caption text-faint tabular-nums" data-testid="mcp-tool-count">
           {s.state === "ready" || s.state === "idle" ? `${s.tools} tool${s.tools === 1 ? "" : "s"}` : LABEL[s.state]}
         </span>
         <span className="ml-auto flex items-center gap-0.5">
@@ -243,15 +243,6 @@ function ImportList({ items, onImport, open }: { items: ImportableServer[]; onIm
   );
 }
 
-// Open from the palette, the /mcp command or a link; one sheet per window.
-let sheetOpen = false;
-const sheetSubs = new Set<() => void>();
-export function setMcpOpen(o: boolean) { sheetOpen = o; sheetSubs.forEach((f) => f()); }
-export function McpOverlay() {
-  const open = useSyncExternalStore((f) => (sheetSubs.add(f), () => void sheetSubs.delete(f)), () => sheetOpen);
-  return <McpPanel open={open} onOpenChange={setMcpOpen} />;
-}
-
 export function McpPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [servers, setServers] = useState<McpServerState[] | null>(null);
   const [importable, setImportable] = useState<ImportableServer[]>([]);
@@ -295,8 +286,8 @@ export function McpPanel({ open, onOpenChange }: { open: boolean; onOpenChange: 
         >
           <div className="flex items-center gap-2 border-b border-line px-4 py-3">
             <Plug className="size-4 text-muted" />
-            <Dialog.Title className="font-semibold">MCP servers</Dialog.Title>
-            <span className="ml-1 text-caption text-faint" data-testid="mcp-summary">
+            <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold">MCP servers</Dialog.Title>
+            <span className="ml-1 min-w-0 truncate text-caption text-faint" data-testid="mcp-summary">
               {servers ? `${ready.length} of ${servers.length} ready · ${tools} tools, loaded on demand` : "Loading"}
             </span>
             <button

@@ -1,15 +1,11 @@
 import { Component, lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
-import { Approvals } from "./components/ApprovalCard.tsx";
 import { ChildApprovals } from "./components/automation/ChildApprovals.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { ConfirmHost } from "./components/Confirm.tsx";
-import { McpOverlay } from "./components/McpPanel.tsx";
-import { SessionDock } from "./components/SessionDock.tsx";
 import { SessionHeader, SidebarButton } from "./components/SessionHeader.tsx";
 import { SidePanel } from "./components/SidePanel.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { StartBox } from "./components/StartBox.tsx";
-import { Transcript } from "./components/Transcript.tsx";
 import "./lib/builtins.ts";
 import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
@@ -22,6 +18,15 @@ import { cn } from "./lib/utils.ts";
 // Overlays and Settings load on first use; the first page carries the shell only.
 const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
 const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
+const McpPanel = lazy(() => import("./components/McpPanel.tsx").then((m) => ({ default: m.McpPanel })));
+// The conversation (Markdown, tool rows) is its own chunk: the start page does
+// not need it, and a session link starts loading it with the page.
+const loadTranscript = () => import("./components/Transcript.tsx");
+const Transcript = lazy(() => loadTranscript().then((m) => ({ default: m.Transcript })));
+const SessionDock = lazy(() => import("./components/SessionDock.tsx").then((m) => ({ default: m.SessionDock })));
+if (location.pathname.startsWith("/s/")) loadTranscript();
+else (window.requestIdleCallback ?? setTimeout)(() => void loadTranscript());
+const Approvals = lazy(() => import("./components/ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
 const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
 
@@ -68,11 +73,11 @@ function SessionView({ id }: { id: string }) {
       <SessionHeader session={session} />
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <Boundary><Transcript sessionId={session.id} /></Boundary>
+          <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
           <div className="pr-[var(--sbw,0px)]">
             <div className="mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
-              <SessionDock sessionId={session.id} />
-              <Approvals sessionId={session.id} />
+              <Suspense fallback={null}><SessionDock sessionId={session.id} /></Suspense>
+              <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
               <ChildApprovals parentId={session.id} />
               <Composer
                 session={session}
@@ -143,11 +148,12 @@ function Overlays() {
   const palette = useUI((s) => s.palette);
   const shortcuts = useUI((s) => s.shortcuts);
   const errors = useUI((s) => s.errors);
+  const mcp = useUI((s) => s.mcp);
   return (
     <>
       <OnFirstOpen open={palette}><Palette /></OnFirstOpen>
       <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
-      <McpOverlay />
+      <OnFirstOpen open={mcp}><McpPanel open={mcp} onOpenChange={(o) => setUI({ mcp: o })} /></OnFirstOpen>
       <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
     </>
   );

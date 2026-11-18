@@ -112,7 +112,7 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
             disabled={busy}
             data-testid="allow-once"
             onClick={() => answer({ choice: "once" })}
-            className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised"
+            className="h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised"
           >
             Allow once
           </button>
@@ -121,11 +121,11 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
             disabled={busy}
             data-testid="deny"
             onClick={() => setDenying(true)}
-            className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+            className="h-8 shrink-0 rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
           >
             Deny
           </button>
-          <span className="ml-auto text-micro text-faint">{err ? <span className="text-danger">{err}</span> : "Enter allows once, Esc denies"}</span>
+          {err ? <span className="ml-auto min-w-0 truncate text-micro text-danger" title={err}>{err}</span> : <span className="ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden">Enter allows once, Esc denies</span>}
         </div>
       )}
     </div>
@@ -142,13 +142,13 @@ function AlwaysButton({ a, busy, onGrant }: { a: Approval; busy: boolean; onGran
       <Popover.Trigger
         disabled={busy}
         data-testid="allow-always"
-        className="inline-flex h-8 items-center gap-1 rounded-lg border border-line px-3 text-ui hover:bg-hover data-popup-open:bg-hover disabled:opacity-50"
+        className="inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-line px-3 text-ui hover:bg-hover data-popup-open:bg-hover disabled:opacity-50"
       >
         Always allow <ChevronDown className="size-3.5 text-faint" />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="start" sideOffset={8} className="z-50">
-          <Popover.Popup className="w-[26rem] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+          <Popover.Popup className="w-[min(26rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
             <Popover.Title className="text-ui font-medium">Grant</Popover.Title>
             <Popover.Description className="mt-0.5 text-caption text-muted">
               {a.kind === "shell" ? "A trailing * covers any arguments. Edit the rule to narrow it." : "Calls this rule covers run without asking."}

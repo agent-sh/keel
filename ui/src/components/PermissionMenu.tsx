@@ -43,13 +43,13 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
           )}
         >
           <Icon className="size-3.5" />
-          <span data-testid="permission-mode">{mode?.name ?? perm.mode}</span>
+          <span data-testid="permission-mode" className="max-sm:sr-only">{mode?.name ?? perm.mode}</span>
           {perm.sandbox !== "off" && <span className="rounded bg-accent-soft px-1 text-micro text-accent">sandbox</span>}
           <ChevronDown className="size-3 opacity-60" />
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Positioner align="end" sideOffset={6} className="z-50">
-            <Popover.Popup className="w-[22rem] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+            <Popover.Popup className="w-[min(22rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
               <Popover.Title className="px-2 pt-1 pb-1.5 text-micro font-medium text-faint">Permissions</Popover.Title>
               <RadioGroup value={perm.mode} onValueChange={(v) => set({ mode: v as SessionPerm["mode"] })} className="flex flex-col">
                 {modes.map((m) => (

@@ -1,9 +1,11 @@
 // The tools lane's entries in the workbench: the MCP servers sheet from the
 // palette and /mcp, and one slash command per skill the session can run.
-import { setMcpOpen } from "../components/McpPanel.tsx";
 import { slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
 import { api, reportError } from "./store.ts";
+import { setUI } from "./ui.ts";
+
+const setMcpOpen = (mcp: boolean) => setUI({ mcp });
 
 registerCommand({ id: "mcp", label: "MCP servers", group: "General", words: "tools servers mcp plugins connect", run: () => setMcpOpen(true) });
 slash.add({ id: "mcp", label: "Manage tool servers", run: () => setMcpOpen(true) });

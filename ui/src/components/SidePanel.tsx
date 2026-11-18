@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { PanelRight, X } from "lucide-react";
 import { Suspense, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { panels } from "../lib/extend.ts";
@@ -12,9 +12,22 @@ const visible = (s: Session) => panels.all().filter((p) => !p.when || p.when(s))
 export function PanelToggles({ session }: { session: Session }) {
   useSyncExternalStore(panels.subscribe, panels.version);
   const open = useUI((s) => s.panel);
+  const list = visible(session);
+  if (!list.length) return null;
   return (
     <>
-      {visible(session).map((p) => (
+      {/* A phone has no room for one toggle per panel: one button opens the sheet, its tabs switch. */}
+      <button
+        type="button"
+        title="Side panel"
+        aria-label="Side panel"
+        aria-pressed={!!open}
+        onClick={() => savePref("panel", open ? null : list[0]!.id)}
+        className={cn(iconButton, "md:hidden", open && "bg-hover text-accent")}
+      >
+        <PanelRight className="size-4" />
+      </button>
+      {list.map((p) => (
         <button
           key={p.id}
           type="button"
@@ -23,7 +36,7 @@ export function PanelToggles({ session }: { session: Session }) {
           aria-pressed={open === p.id}
           data-testid={`panel-toggle-${p.id}`}
           onClick={() => savePref("panel", open === p.id ? null : p.id)}
-          className={cn(iconButton, open === p.id && "bg-hover text-accent")}
+          className={cn(iconButton, "max-md:hidden", open === p.id && "bg-hover text-accent")}
         >
           {p.icon}
         </button>

@@ -1,5 +1,5 @@
 import { MessageSquare } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
@@ -7,8 +7,9 @@ import { Composer } from "./Composer.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
-import { WorktreeToggle } from "./WorktreeChip.tsx";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
+
+const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
 
 // The start box: the folder, the model and the first message of a new session.
 export function StartBox() {
@@ -35,7 +36,7 @@ export function StartBox() {
           <p className="mb-6 text-base text-muted">Keel works in the folder below. Paste screenshots, mention files with @, and steer while it runs.</p>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />
-            <WorktreeToggle workspace={workspace} />
+            <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>
           </div>
           <div data-testid="new-composer">
             <Composer
