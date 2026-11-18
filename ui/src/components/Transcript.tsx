@@ -4,7 +4,7 @@ import type { AssistantBlock, ImageBlock, Session, StoredEvent, ToolResultBlock,
 import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { toolKind } from "../lib/tools.ts";
-import { seedComposer } from "../lib/ui.ts";
+import { getUI, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ToolCall } from "./ToolCall.tsx";
@@ -77,7 +77,7 @@ function UserMessage({ e, s }: { e: StoredEvent; s: Session }) {
   const long = text.length > 1400 || text.split("\n").length > 18;
   const [full, setFull] = useState(false);
   return (
-    <div className="group/user row-cv flex flex-col items-end gap-1.5 animate-in" data-testid="user-message">
+    <div id={`e-${e.id}`} className="group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message">
       {e.data.images?.length > 0 && <Images images={e.data.images} />}
       {text && text !== "(image)" && (
         <div className="relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">
@@ -204,6 +204,21 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => { ro.disconnect(); removeEventListener("keel:end", onEnd); };
   }, [!!events]);
 
+  // A search hit opens the session at its message.
+  const focus = useUI((s) => s.focusEvent);
+  useEffect(() => {
+    if (!focus || !events?.some((e) => e.id === focus)) return;
+    stick.current = false;
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`e-${focus}`);
+      if (!el) return;
+      el.scrollIntoView({ block: "center" });
+      el.classList.add("flash");
+      setTimeout(() => el.classList.remove("flash"), 1600);
+      if (getUI().focusEvent === focus) setUI({ focusEvent: null });
+    });
+  }, [focus, events]);
+
   if (!events) return <div className="flex-1" />;
   const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
   const lastStart = [...events].reverse().find((e) => e.kind === "turn_start");
@@ -237,7 +252,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             }
             if (e.kind === "assistant") {
               for (const b of e.data.blocks) if (b.type === "text" && b.text.trim()) reply.push(b.text);
-              return <div key={e.id} className="row-cv flex flex-col gap-3"><AssistantBlocks blocks={e.data.blocks} results={results} s={session} /></div>;
+              return <div key={e.id} id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg"><AssistantBlocks blocks={e.data.blocks} results={results} s={session} /></div>;
             }
             if (e.kind === "error") {
               return (

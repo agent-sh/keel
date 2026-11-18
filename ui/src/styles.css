@@ -243,5 +243,9 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .th-inserted { color: var(--syn-inserted); }
 .th-operator { color: var(--muted); }
 
+/* A message reached from search glows once. */
+.flash { animation: flash 1.6s var(--ease-out); }
+@keyframes flash { 0%, 30% { box-shadow: 0 0 0 6px var(--accent-soft); background: var(--accent-soft); } 100% { box-shadow: 0 0 0 6px transparent; } }
+
 /* Long transcripts: rows off screen skip layout and paint. */
 .row-cv { content-visibility: auto; contain-intrinsic-size: auto 120px; }

@@ -4,6 +4,7 @@ import { mcpRoutes } from "./mcp.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
+import { searchRoutes } from "./search.ts";
 import { workspaceRoutes } from "./workspace.ts";
 
 // Each feature module adds one line here.
@@ -14,4 +15,5 @@ export const routeModules: RouteModule[] = [
   pwaRoutes,
   mcpRoutes,
   toolRoutes,
+  searchRoutes,
 ];

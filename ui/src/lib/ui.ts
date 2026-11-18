@@ -22,6 +22,7 @@ type UIState = {
   newModel: string;
   composerSeed: { text: string; n: number } | null; // text pushed into the composer (edit, a slash command)
   panel: string | null; // the open tab of the side panel
+  focusEvent: string | null; // a message to scroll to once its session is shown (?e=)
 };
 
 function parse(): Route {
@@ -60,6 +61,7 @@ let state: UIState = {
   newModel: "",
   composerSeed: null,
   panel: pref("keel.panel", null),
+  focusEvent: new URLSearchParams(location.search).get("e"),
 };
 const subs = new Set<() => void>();
 export function setUI(patch: Partial<UIState>) {

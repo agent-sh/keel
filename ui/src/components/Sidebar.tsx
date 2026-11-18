@@ -1,5 +1,5 @@
 import { Archive, Bug, Folder, Moon, PanelLeftClose, Plus, Search, Settings, Sun, SunMoon } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { actions, useStore } from "../lib/store.ts";
 import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
@@ -53,6 +53,28 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       >
         <Archive className="size-3.5" />
       </button>
+    </div>
+  );
+}
+
+// A folder shows its newest sessions; the rest open on request (and the open one is always shown).
+const SHOWN = 6;
+function Group({ list, current }: { list: Session[]; current: string | null }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === current);
+  return (
+    <div className="flex flex-col gap-px">
+      {shown.map((s) => <Row key={s.id} s={s} active={current === s.id} />)}
+      {list.length > shown.length && (
+        <button type="button" onClick={() => setAll(true)} className="h-7 rounded-md pl-6 text-left text-caption text-faint hover:bg-hover hover:text-muted">
+          {list.length - shown.length} more
+        </button>
+      )}
+      {all && list.length > SHOWN && (
+        <button type="button" onClick={() => setAll(false)} className="h-7 rounded-md pl-6 text-left text-caption text-faint hover:bg-hover hover:text-muted">
+          Show fewer
+        </button>
+      )}
     </div>
   );
 }
@@ -121,9 +143,7 @@ export function Sidebar() {
               <Folder className="size-3.5" />
               <span className="truncate">{base(g.ws)}</span>
             </h2>
-            <div className="flex flex-col gap-px">
-              {g.list.map((s) => <Row key={s.id} s={s} active={current === s.id} />)}
-            </div>
+            <Group list={g.list} current={current} />
           </section>
         ))}
       </nav>
