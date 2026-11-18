@@ -22,6 +22,7 @@ export type Approval = {
   input: any;
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
+  notice?: string;      // why the owner is asked (the reviewer could not judge it)
   suggest: Suggest[];   // the grant "allow always" would store
   state: "pending" | "allowed" | "denied" | "cancelled";
   choice?: "once" | "session" | "always" | "deny";
@@ -38,13 +39,24 @@ CREATE TABLE IF NOT EXISTS perm_rules (id TEXT PRIMARY KEY, kind TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS approvals_session ON approvals(session_id, created);
 CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS perm_blocked (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, created);
 `;
+
+// What the reviewer of reviewer mode is asked, and what it answers.
+export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any };
+export type Verdict = { allow: boolean; risk: string; reason: string; model: string } | { unavailable: string };
+// A call the reviewer refused; the owner can let one retry of it through.
+export type Blocked = { id: string; session_id: string; tool: string; summary: string; reason: string; risk: string; model: string; key: string; retry?: boolean; created: number };
 
 type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string };
 
 export class Gate {
   private waiting = new Map<string, Waiter>();
   private roots = new Map<string, string>();
+  private retries = new Set<string>(); // session + call key: one retry the owner let through
+  // Reviewer mode's judge (set by the permission routes, which hold the providers).
+  judge: (a: ReviewAsk) => Promise<Verdict> = async () => ({ unavailable: "no reviewer is set up" });
 
   constructor(private store: Store, private bus: Bus, private sandboxed: (s: Session, p: SessionPerm) => boolean = () => false) {
     store.migrate(SCHEMA);
@@ -75,6 +87,28 @@ export class Gate {
   }
   setDefaultSandbox(p: SandboxProfile) {
     this.store.db.query("INSERT INTO perm_settings (key, value) VALUES ('default_sandbox', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(p);
+  }
+
+  setting(key: string): string | undefined {
+    return this.store.db.query<{ value: string }, [string]>("SELECT value FROM perm_settings WHERE key = ?").get(key)?.value;
+  }
+  setSetting(key: string, value: string | null) {
+    if (value) this.store.db.query("INSERT INTO perm_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+    else this.store.db.query("DELETE FROM perm_settings WHERE key = ?").run(key);
+  }
+
+  blocked(sessionId: string): Blocked[] {
+    return this.store.db.query<{ data: string }, [string]>("SELECT data FROM perm_blocked WHERE session_id = ? ORDER BY created DESC LIMIT 50").all(sessionId).map((r) => JSON.parse(r.data));
+  }
+  // The owner lets one retry of exactly that refused call through.
+  allowRetry(sessionId: string, id: string): Blocked | null {
+    const r = this.store.db.query<{ data: string }, [string, string]>("SELECT data FROM perm_blocked WHERE id = ? AND session_id = ?").get(id, sessionId);
+    if (!r) return null;
+    const b: Blocked = { ...JSON.parse(r.data), retry: true };
+    this.retries.add(`${sessionId}\u0000${b.key}`);
+    this.store.db.query("UPDATE perm_blocked SET data = ? WHERE id = ?").run(JSON.stringify(b), id);
+    this.bus.emit({ t: "feature", name: "blocked", session_id: sessionId, data: b });
+    return b;
   }
 
   perm(sessionId: string): SessionPerm {
@@ -140,6 +174,7 @@ export class Gate {
 
   // What is stored and shown of a card (secrets are kept out of it).
   redact: (a: Approval) => Approval = (a) => a;
+  private redactAny = <T,>(v: T): T => this.redact(v as any) as T;
 
   private save(a: Approval) {
     a = this.redact(a);
@@ -163,9 +198,26 @@ export class Gate {
     if ("allow" in d) return;
     if ("deny" in d) return { deny: d.deny };
     if (cls.kind === "control") return;
+    const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(target ? target.input : call.input).slice(0, 400);
+    let notice: string | undefined;
+    // Reviewer mode: what would ask goes to the reviewer first; a high-risk
+    // action, and anything it cannot judge, still goes to the owner.
+    if (this.perm(session.id).mode === "reviewer" && d.ask.risk === "low") {
+      const key = new Bun.CryptoHasher("sha256").update(`${name}\u0000${cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary}`).digest("hex").slice(0, 32);
+      if (this.retries.delete(`${session.id}\u0000${key}`)) return;
+      const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
+      if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
+      else if (v.allow) return;
+      else {
+        const b: Blocked = { id: crypto.randomUUID(), session_id: session.id, tool: name, summary: summary.slice(0, 2000), reason: v.reason, risk: v.risk, model: v.model, key, created: Date.now() };
+        this.store.db.query("INSERT INTO perm_blocked (id, session_id, data, created) VALUES (?, ?, ?, ?)").run(b.id, b.session_id, JSON.stringify(this.redactAny(b)), b.created);
+        this.bus.emit({ t: "feature", name: "blocked", session_id: session.id, data: b });
+        return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
+      }
+    }
     const a: Approval = {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind,
-      summary: cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(target ? target.input : call.input).slice(0, 400),
+      summary, notice,
       input: clip(call.input), risk: d.ask.risk, why: d.ask.why, suggest: d.ask.suggest, state: "pending", created: Date.now(),
     };
     this.save(a);

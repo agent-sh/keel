@@ -8,6 +8,7 @@ export const MODES = [
   { id: "auto-edits", name: "Auto edits", description: "Edits inside the workspace run. Commands ask, except read-only ones and sandboxed ones." },
   { id: "full-auto", name: "Full auto", description: "Everything runs. Only high-risk commands still ask." },
   { id: "read-only", name: "Read only", description: "Reads and read-only commands run. Everything else is refused." },
+  { id: "reviewer", name: "Reviewer", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
 ] as const;
 export type Mode = (typeof MODES)[number]["id"];
 export const isMode = (m: unknown): m is Mode => MODES.some((x) => x.id === m);

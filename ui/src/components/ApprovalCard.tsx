@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
+import { BlockedCards } from "./BlockedCards.tsx";
 import { SecretCards } from "./SecretCards.tsx";
 
 const TITLE: Record<Approval["kind"], string> = {
@@ -24,6 +25,7 @@ export function Approvals({ sessionId }: { sessionId: string }) {
   return (
     <>
       <SecretCards sessionId={sessionId} />
+      <BlockedCards sessionId={sessionId} />
       {cards.length > 0 && (
         <div className="mb-2 flex flex-col gap-2" data-testid="approvals">
           {cards.map((a, i) => <Card key={a.id} a={a} first={i === 0} />)}
@@ -87,6 +89,7 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
           </span>
         )}
       </div>
+      {a.notice && <p className="mx-4 mt-2 text-caption text-warn" data-testid="approval-notice">{a.notice}</p>}
       <pre className="mx-4 mt-2.5 max-h-48 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-caption leading-relaxed whitespace-pre-wrap break-all" data-testid="approval-summary">
         {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
         {a.summary}

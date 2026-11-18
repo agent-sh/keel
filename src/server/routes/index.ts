@@ -21,6 +21,7 @@ import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
+import { reviewRoutes } from "./reviews.ts";
 import { turnRoutes } from "./turns.ts";
 import { switchRoutes } from "./switch.ts";
 
@@ -36,6 +37,7 @@ export const routeModules: RouteModule[] = [
   searchRoutes,
   providersRoutes,
   worktreeRoutes,
+  reviewRoutes,
   turnRoutes,
   switchRoutes,
   usageRoutes,

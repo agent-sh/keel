@@ -16,6 +16,7 @@ export class ErrorTracker {
 
   installGlobal() {
     process.on("uncaughtException", (e) => this.capture("server", e, { kind: "uncaughtException" }));
-    process.on("unhandledRejection", (e) => this.capture("server", e, { kind: "unhandledRejection" }));
+    // The reason's type and code say where a stack-less rejection came from.
+    process.on("unhandledRejection", (e: any) => this.capture("server", e, { kind: "unhandledRejection", type: e?.constructor?.name, code: e?.code }));
   }
 }

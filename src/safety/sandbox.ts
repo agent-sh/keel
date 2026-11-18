@@ -46,7 +46,9 @@ function scopeProps(): string[] {
 }
 
 // The argv that runs `argv` confined by the session's profile.
-export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string): string[] {
+// `scratch` is the session's own tool folder (a command's working-directory
+// file, spilled output): writable in every profile.
+export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, scratch?: string): string[] {
   const st = sandboxStatus();
   if (perm.sandbox === "off" || !st.available) return argv;
   const b = [st.bwrap!, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc",
@@ -63,6 +65,7 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
       if (existsSync(full)) b.push("--ro-bind", full, full);
     }
   }
+  if (scratch && existsSync(scratch)) b.push("--bind", scratch, scratch);
   b.push("--", ...argv);
   return st.scope ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", ...scopeProps(), "--", ...b] : b;
 }

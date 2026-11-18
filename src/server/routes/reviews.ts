@@ -1,0 +1,168 @@
+// Reviews: an independent reviewer (a read-only child session on the model
+// the owner picks) over the session's uncommitted work, its branch or one
+// commit; findings the owner sends back to the working model or dismisses.
+import { registerHooks } from "../../engine/hooks.ts";
+import { fixPrompt, parseAnswer, reviewKey, reviewTask, SCHEMA, type Review, type ReviewKind, type Scope } from "../../safety/review.ts";
+import { sandboxStatus } from "../../safety/sandbox.ts";
+import { GitError, Worktrees } from "../../worktree/manager.ts";
+import type { Deps, RouteModule } from "../app.ts";
+import { join } from "node:path";
+import { gate } from "./permissions.ts";
+
+const json = (data: unknown, status = 200) => Response.json(data, { status });
+const bad = (error: string, status = 400) => json({ error }, status);
+const SCOPES: Scope[] = ["uncommitted", "branch", "commit"];
+
+export const reviewRoutes: RouteModule = (deps: Deps) => {
+  const { store, bus, engine, providers, errors } = deps;
+  store.migrate(SCHEMA);
+  store.migrate("CREATE TABLE IF NOT EXISTS review_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const wts = new Worktrees(store, join(store.stateDir, "worktrees"));
+
+  const all = (sessionId: string): Review[] =>
+    store.db.query<{ data: string }, [string]>("SELECT data FROM reviews WHERE session_id = ? ORDER BY created").all(sessionId).map((r) => JSON.parse(r.data));
+  const get = (id: string): Review | undefined => {
+    const r = store.db.query<{ data: string }, [string]>("SELECT data FROM reviews WHERE id = ?").get(id);
+    return r ? JSON.parse(r.data) : undefined;
+  };
+  const byChild = (childId: string): Review | undefined => {
+    const r = store.db.query<{ data: string }, [string]>("SELECT data FROM reviews WHERE child_id = ? AND state = 'running'").get(childId);
+    return r ? JSON.parse(r.data) : undefined;
+  };
+  const save = (r: Review) => {
+    store.db.query("INSERT INTO reviews (id, session_id, child_id, state, diff_sha, data, created) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, child_id = excluded.child_id, data = excluded.data")
+      .run(r.id, r.session_id, r.child_id, r.state, r.diff_sha256, JSON.stringify(r), r.created);
+    bus.emit({ t: "feature", name: "reviews", session_id: r.session_id, data: r });
+    return r;
+  };
+  const setting = (key: string) => store.db.query<{ value: string }, [string]>("SELECT value FROM review_settings WHERE key = ?").get(key)?.value;
+  const setSetting = (key: string, value: string | null) => {
+    if (value) store.db.query("INSERT INTO review_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+    else store.db.query("DELETE FROM review_settings WHERE key = ?").run(key);
+  };
+
+  // A review the daemon was running when it stopped has no reviewer any more.
+  for (const r of store.db.query<{ data: string }, []>("SELECT data FROM reviews WHERE state = 'running'").all().map((x) => JSON.parse(x.data) as Review))
+    save({ ...r, state: "failed", error: "the daemon stopped while the review ran", ended: Date.now() });
+
+  const finish = (r: Review, reason: string) => {
+    if (!r.child_id) return;
+    if (reason === "interrupted" || reason === "error" || reason === "refusal") {
+      save({ ...r, state: "failed", error: reason === "interrupted" ? "the review was stopped" : `the reviewer's turn ended: ${reason}`, ended: Date.now() });
+      return;
+    }
+    const evs = store.events(r.child_id);
+    let text = "";
+    for (let i = evs.length - 1; i >= 0 && !text; i--) {
+      const e = evs[i]!;
+      if (e.kind === "assistant") text = (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    }
+    try {
+      save({ ...r, ...parseAnswer(text), state: "done", ended: Date.now() });
+    } catch (e) {
+      save({ ...r, state: "failed", error: (e as Error).message, ended: Date.now() });
+    }
+  };
+
+  registerHooks({
+    turnEnd(s, reason) {
+      const r = byChild(s.id);
+      if (r) finish(r, reason);
+    },
+  });
+
+  const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
+  const guard = async (f: () => Promise<Response>) => {
+    try { return await f(); } catch (e) {
+      if (e instanceof GitError) return bad(e.message, e.status);
+      throw e;
+    }
+  };
+
+  return {
+    "/api/reviews/settings": {
+      GET: () => json({ model: setting("model") ?? null }),
+      PUT: async (req: any) => {
+        const b = await body(req);
+        if (b.model) await providers.resolve(String(b.model));
+        setSetting("model", b.model ? String(b.model) : null);
+        return json({ model: setting("model") ?? null });
+      },
+    },
+    "/api/sessions/:id/reviews": {
+      GET: (req: any) => (store.session(req.params.id) ? json({ reviews: all(req.params.id) }) : bad("no such session", 404)),
+      POST: (req: any) => guard(async () => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (s.parent_id) return bad("a review runs from the session that owns the work, not from a child session");
+        const b = await body(req);
+        const scope: Scope = b.scope ?? "uncommitted";
+        if (!SCOPES.includes(scope)) return bad(`scope is ${SCOPES.join(", ")}`);
+        const kind: ReviewKind = b.kind === "security" ? "security" : "code";
+        const focus = typeof b.focus === "string" && b.focus.trim() ? b.focus.trim().slice(0, 2000) : undefined;
+        const model = String(b.model || setting("model") || s.model);
+        let info;
+        try { ({ info } = await providers.resolve(model)); } catch (e) { return bad(`the reviewer cannot start: ${(e as Error).message}`, 409); }
+        const d = await wts.changeDiff(s, scope, scope === "commit" ? b.commit : b.base);
+        if (!d.files.length) return bad(scope === "uncommitted" ? "there is no uncommitted work to review" : "there is no change in that scope to review");
+        const key = reviewKey(d.diff, kind, focus);
+        const earlier = all(s.id).reverse().find((r) => r.diff_sha256 === key && r.state !== "failed");
+        if (earlier) return json({ review: earlier, skipped: true, note: "this exact change was reviewed already" });
+        // Half the reviewer's window for the diff (about four characters a token).
+        const room = Math.max(20_000, info.context * 2);
+        const cut = d.diff.length > room || d.truncated;
+        const task = reviewTask({ kind, scope, target: d.target, focus, diff: d.diff.slice(0, room), cut, files: d.files });
+        const child = store.createSession({ model, workspace: s.workspace, title: `${kind === "security" ? "Security review" : "Review"}: ${s.title || "session"}`.slice(0, 80) });
+        store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(s.id, child.id);
+        // Read-only, and confined with no network where the sandbox can run.
+        const sb = sandboxStatus().available;
+        gate?.setPerm(child.id, { mode: "read-only", sandbox: sb ? "read-only" : "off", network: !sb });
+        const r = save({
+          id: Bun.randomUUIDv7(), session_id: s.id, child_id: child.id, kind, scope, target: d.target, focus, model: info.id,
+          diff_sha256: key, files: d.files.length, state: "running", findings: [], created: Date.now(),
+        });
+        bus.emit({ t: "session", session: store.session(child.id)! });
+        try {
+          engine.send(child.id, task, { meta: { kind: "review", review_id: r.id } });
+        } catch (e) {
+          errors.capture("server", e, { at: "review start", session: s.id });
+          return json({ review: save({ ...r, state: "failed", error: (e as Error).message, ended: Date.now() }), skipped: false }, 201);
+        }
+        return json({ review: r, skipped: false }, 201);
+      }),
+    },
+    "/api/sessions/:id/reviews/:rid": {
+      // Stop a running review.
+      DELETE: async (req: any) => {
+        const r = get(req.params.rid);
+        if (!r || r.session_id !== req.params.id) return bad("no such review", 404);
+        if (r.state !== "running") return bad("the review is not running", 409);
+        if (r.child_id && engine.isRunning(r.child_id)) await engine.interrupt(r.child_id);
+        const now = get(r.id)!;
+        return json({ review: now.state === "running" ? save({ ...now, state: "failed", error: "the review was stopped", ended: Date.now() }) : now });
+      },
+    },
+    "/api/sessions/:id/reviews/:rid/findings": {
+      POST: async (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const r = get(req.params.rid);
+        if (!r || r.session_id !== s.id) return bad("no such review", 404);
+        if (r.state !== "done") return bad("the review is not done", 409);
+        const b = await body(req);
+        if (!["fix", "dismiss", "reopen"].includes(b.action)) return bad("action is fix, dismiss or reopen");
+        const ids: number[] | null = Array.isArray(b.ids) ? b.ids.map(Number) : null;
+        const want = b.action === "reopen" ? (f: Review["findings"][0]) => f.state !== "open" : (f: Review["findings"][0]) => f.state === "open";
+        const chosen = r.findings.filter((f) => (!ids || ids.includes(f.id)) && want(f));
+        if (!chosen.length) return bad("no finding to act on", 409);
+        if (b.action === "fix") {
+          if (s.archived) return bad("the session is archived", 409);
+          engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
+        }
+        const state = b.action === "fix" ? "fix_requested" : b.action === "dismiss" ? "dismissed" : "open";
+        const picked = new Set(chosen.map((f) => f.id));
+        return json({ review: save({ ...r, findings: r.findings.map((f) => (picked.has(f.id) ? { ...f, state } : f)) }) });
+      },
+    },
+  };
+};

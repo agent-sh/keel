@@ -1,8 +1,10 @@
 // Permission gate routes and its beforeTool hook. app.ts wraps every handler
 // so a throw is captured as an error.
+import { deliver } from "../../automation/core.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { Gate, type SandboxProfile } from "../../safety/gate.ts";
 import { isMode, MODES } from "../../safety/policy.ts";
+import { makeJudge } from "../../safety/judge.ts";
 import { confine, sandboxStatus } from "../../safety/sandbox.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
@@ -15,6 +17,7 @@ export let gate: Gate | undefined;
 export const permissionRoutes: RouteModule = (deps: Deps) => {
   const { store } = deps;
   const g = (gate = new Gate(store, deps.bus, (_s, p) => p.sandbox !== "off" && sandboxStatus().available));
+  g.judge = makeJudge(store, deps.providers, () => g.setting("reviewer_model"), () => g.setting("reviewer_policy"));
   const sb = sandboxStatus();
   if (!sb.available && g.defaultSandbox() !== "off") deps.errors.capture("server", new Error(`sandbox unavailable: ${sb.reason}`), { at: "startup" });
   registerHooks({
@@ -25,12 +28,12 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       const p = g.perm(s.id);
       // An escalation the gate let through (asked, or full auto) runs unconfined.
       if (call.input?.sandbox_permissions === "require_escalated") return;
-      if (p.sandbox !== "off" && sb.available) return { ctx: { wrapSpawn: (argv) => confine(argv, p, s.workspace) } };
+      if (p.sandbox !== "off" && sb.available) return { ctx: { wrapSpawn: (argv) => confine(argv, p, s.workspace, call.ctx.spillDir) } };
     },
   });
 
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
-  const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), modes: MODES, sandbox: sandboxStatus() });
+  const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), reviewer_model: g.setting("reviewer_model") ?? null, reviewer_policy: g.setting("reviewer_policy") ?? "", modes: MODES, sandbox: sandboxStatus() });
 
   return {
     "/api/permissions/settings": {
@@ -40,6 +43,11 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         if (b.default_mode !== undefined) {
           if (!isMode(b.default_mode)) return bad(`unknown mode: ${b.default_mode}`);
           g.setDefaultMode(b.default_mode);
+        }
+        if (typeof b.reviewer_policy === "string") g.setSetting("reviewer_policy", b.reviewer_policy.trim().slice(0, 8000) || null);
+        if (b.reviewer_model !== undefined) {
+          if (b.reviewer_model) await deps.providers.resolve(String(b.reviewer_model));
+          g.setSetting("reviewer_model", b.reviewer_model ? String(b.reviewer_model) : null);
         }
         if (b.default_sandbox !== undefined) {
           if (!PROFILES.includes(b.default_sandbox)) return bad(`unknown sandbox profile: ${b.default_sandbox}`);
@@ -65,6 +73,21 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         if (b.sandbox !== undefined) patch.sandbox = b.sandbox;
         if (b.network !== undefined) patch.network = !!b.network;
         return json({ perm: g.setPerm(s.id, patch) });
+      },
+    },
+    // What the reviewer of reviewer mode refused, newest first; the owner can let one retry through.
+    "/api/sessions/:id/blocked": {
+      GET: (req: any) => (store.session(req.params.id) ? json({ blocked: g.blocked(req.params.id), reviewer_model: g.setting("reviewer_model") ?? null }) : bad("no such session", 404)),
+    },
+    "/api/sessions/:id/blocked/:bid": {
+      POST: (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const b = g.allowRetry(s.id, req.params.bid);
+        if (!b) return bad("no such refused call", 404);
+        const text = `[harness] The owner let one retry of a call the reviewer refused go through: ${b.tool} ${b.summary.slice(0, 300)}. The owner wants it run: run it again now, exactly as before; this one time it is not refused.`;
+        deliver(s.id, text, { kind: "harness", origin: "harness" });
+        return json({ ok: true, blocked: b });
       },
     },
     "/api/approvals": {

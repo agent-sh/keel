@@ -220,6 +220,29 @@ export class Worktrees {
     return { is_git: true, branch, base, merge_base: mb, commits, ...(await sh.diff(fromTree, tree)) };
   }
 
+  // The change a review looks at: uncommitted work (tracked and untracked) over
+  // HEAD, the branch over its merge base with `base`, or one commit.
+  async changeDiff(s: Session, scope: "uncommitted" | "branch" | "commit", ref?: string): Promise<DiffResult & { target: string }> {
+    if (!existsSync(s.workspace)) throw new GitError("the session's folder is not on disk (a parked worktree?)", 400);
+    const top = (await git(s.workspace, ["rev-parse", "--show-toplevel"], { ok: true })).trim();
+    if (!top) throw new GitError("the session's folder is not in a git repository", 400);
+    if (ref && !/^[\w./@^~-]+$/.test(ref)) throw new GitError(`not a ref name: ${ref}`, 400);
+    const gitDir = (await git(top, ["rev-parse", "--absolute-git-dir"])).trim();
+    const sh = new Shadow("", top, gitDir);
+    const head = (await git(top, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { ok: true })).trim() || "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    if (scope === "uncommitted") return { ...(await sh.diff(head, await sh.snapshot())), target: "HEAD" };
+    if (scope === "commit") {
+      const c = (await git(top, ["rev-parse", "--verify", `${ref || "HEAD"}^{commit}`])).trim();
+      const parent = (await git(top, ["rev-parse", "--verify", "--quiet", `${c}^^{tree}`], { ok: true })).trim() || "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+      return { ...(await sh.diff(parent, (await git(top, ["rev-parse", `${c}^{tree}`])).trim())), target: c.slice(0, 12) };
+    }
+    const base = ref || this.get(s.id)?.base || (await this.defaultBase(top));
+    if (!base) throw new GitError("no base branch to compare with: name one", 400);
+    const mb = (await git(top, ["merge-base", "HEAD", base], { ok: true })).trim();
+    if (!mb) throw new GitError(`no merge base with ${base}`, 400);
+    return { ...(await sh.diff((await git(top, ["rev-parse", `${mb}^{tree}`])).trim(), await sh.snapshot())), target: base };
+  }
+
   async pr(w: Worktree): Promise<{ pr: any; available: boolean; error?: string }> {
     const r = await run(w.path, ["gh", "pr", "view", w.branch, "--json", "number,url,title,state,isDraft,headRefOid,baseRefName,reviewDecision"]);
     if (r.code === 0) return { pr: JSON.parse(r.out), available: true };
