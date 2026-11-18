@@ -1,4 +1,5 @@
 import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, Layers, Pencil, Play, RotateCcw, ShieldAlert } from "lucide-react";
+import { MemoryNote } from "./MemoryNote.tsx";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage, versions } from "../../../src/core/tree.ts";
 import type { AssistantBlock, ImageBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
@@ -424,6 +425,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
                 </div>
               );
             }
+            if (e.kind === "note" && e.data.memory) return <MemoryNote key={e.id} text={e.data.text} hooks={e.data.memory.hooks ?? []} />;
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.
               const text = e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;

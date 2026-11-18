@@ -10,6 +10,7 @@ import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
 import { usageRoutes } from "./usage.ts";
 import { searchRoutes } from "./search.ts";
+import { integrationRoutes } from "./integrations.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { turnRoutes } from "./turns.ts";
@@ -29,5 +30,6 @@ export const routeModules: RouteModule[] = [
   usageRoutes,
   errorRoutes,
   automationRoutes,
+  integrationRoutes,
   telemetryRoutes, // last: its tool timing starts after every gate
 ];
