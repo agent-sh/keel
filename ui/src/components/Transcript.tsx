@@ -264,7 +264,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             }
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.
-              const text = e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
+              const text = e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
               return <p key={e.id} className="text-center text-caption text-faint" data-testid="note">{text}</p>;
             }
             if (e.kind === "turn_end") {

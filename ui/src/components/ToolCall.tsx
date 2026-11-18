@@ -45,7 +45,7 @@ function summary(kind: ToolKind, name: string, input: any, cwd?: string): string
     case "list": return shortPath(input.dir_path ?? "", cwd);
     case "web": return input.query ?? "";
     case "fetch": return input.url ?? input.prompt ?? "";
-    case "skill": return input.skill ?? input.name ?? "";
+    case "skill": return [input.skill ?? input.name, input.args ?? input.arguments].filter(Boolean).join(" ");
     case "mcp": return name === "search_tools" ? `search ${input.query ?? ""}` : input.tool ?? name;
     case "plan": return planSummary(planItems(name, input));
     default: return JSON.stringify(input).slice(0, 120);

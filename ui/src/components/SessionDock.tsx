@@ -3,6 +3,7 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { actions, reportError, useStore, type JobView } from "../lib/store.ts";
+import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { planItems, toolKind } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
 import { PlanCard } from "./ToolCall.tsx";
@@ -30,6 +31,8 @@ function useJobs(sessionId: string, working: boolean) {
 export function SessionDock({ sessionId }: { sessionId: string }) {
   const events = useStore((s) => s.events[sessionId]);
   const working = useStore((s) => s.sessions[sessionId]?.phase === "working");
+  const workspace = useStore((s) => s.sessions[sessionId]?.workspace);
+  useEffect(() => { if (workspace) loadSkillCommands(workspace); }, [workspace]);
   const plan = useMemo(() => {
     for (let i = (events?.length ?? 0) - 1; i >= 0; i--) {
       const e = events![i]!;

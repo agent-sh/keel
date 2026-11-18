@@ -169,6 +169,20 @@ export function loadSkill(name: string, args: string, ctx: ToolContext) {
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}`);
 }
 
+// The owner invoking a skill from the message box: same rendering, and skills
+// hidden from the model are allowed; ones marked not user-invocable are not.
+export function renderForOwner(name: string, args: string, cwd: string, sessionId: string): { skill: Skill; text: string } | { error: string } {
+  const skill = discoverSkills(cwd).find((s) => s.name === name);
+  if (!skill) return { error: `no skill named ${name}` };
+  if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
+  const { body } = frontmatter(readFileSync(skill.file, "utf8"));
+  const text = renderSkill(body, args, skill.arguments, {
+    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
+    CLAUDE_SESSION_ID: sessionId, KEEL_SESSION_ID: sessionId,
+  });
+  return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}` };
+}
+
 // The listing: every name, descriptions while they fit the budget.
 const LISTING_BUDGET = 8_000;
 export function skillListing(cwd: string): string {
