@@ -32,6 +32,8 @@ export type Usage = {
   output: number;
   cache_read: number;
   cache_write: number;
+  // The part of cache_write held for an hour (priced at its own rate).
+  cache_write_1h?: number;
   cost?: number;
   unpriced?: number;
 };
@@ -44,6 +46,7 @@ export function addUsage(a: Usage, b: Partial<Usage>): Usage {
     output: a.output + (b.output ?? 0),
     cache_read: a.cache_read + (b.cache_read ?? 0),
     cache_write: a.cache_write + (b.cache_write ?? 0),
+    cache_write_1h: (a.cache_write_1h ?? 0) + (b.cache_write_1h ?? 0) || undefined,
     cost: a.cost !== undefined || b.cost !== undefined ? (a.cost ?? 0) + (b.cost ?? 0) : undefined,
     unpriced: (a.unpriced ?? 0) + (b.unpriced ?? 0) || undefined,
   };

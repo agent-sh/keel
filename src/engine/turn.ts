@@ -95,12 +95,17 @@ export function instructionFiles(cwd: string): string {
 }
 
 // Frozen per session: nothing in it changes between turns (no clock), so the
-// tools + system prefix stays cached for the whole session.
-function systemPrompt(cwd: string, created: number): string {
+// tools + system prefix stays cached for the whole session. The shared part
+// (the same for every session on the machine) comes first, the per-session
+// part (folder, date, the folder's instruction files) after it.
+const CORE = [
+  "You are Keel, a coding agent working on the owner's machine through tools.",
+  "Do the task fully. Read before you edit. Keep replies short: lead with the result.",
+].join("\n");
+
+function sessionPrompt(cwd: string, created: number): string {
   const inst = instructionFiles(cwd);
   return [
-    "You are Keel, a coding agent working on the owner's machine through tools.",
-    "Do the task fully. Read before you edit. Keep replies short: lead with the result.",
     `Working directory: ${cwd}`,
     `Platform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.`,
     inst ? `\nInstructions from the owner's files:\n\n${inst}` : "",
@@ -108,7 +113,7 @@ function systemPrompt(cwd: string, created: number): string {
 }
 
 type Running = { abort: AbortController; done: Promise<void> };
-type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; effort?: string };
+type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string };
 
 const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortError" });
 
@@ -116,7 +121,7 @@ export class Engine {
   private running = new Map<string, Running>();
   private held = new Set<string>();
   private seen = new Map<string, Map<string, number>>();
-  private systems = new Map<string, string>();
+  private systems = new Map<string, { text: string; split: number }>();
 
   constructor(
     private store: Store,
@@ -284,12 +289,13 @@ export class Engine {
     let system = this.systems.get(session.id);
     if (system === undefined) {
       const extra = (await Promise.all(allHooks().map((h) => h.system?.(session) ?? ""))).filter(Boolean);
-      system = [systemPrompt(session.workspace, session.created), ...extra].join("\n\n");
+      const shared = [CORE, ...extra].join("\n\n") + "\n\n";
+      system = { text: shared + sessionPrompt(session.workspace, session.created), split: shared.length };
       this.systems.set(session.id, system);
     }
     const want = session.settings.effort;
     const effort = want && info.efforts.includes(want) ? want : info.efforts.includes("high") ? "high" : undefined;
-    return { provider, info, tools: toolsFor(info.family), system, effort };
+    return { provider, info, tools: toolsFor(info.family), system: system.text, systemSplit: system.split, effort };
   }
 
   // One provider call with retries for passing failures. The UI is told about
@@ -297,7 +303,7 @@ export class Engine {
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false): Promise<ProviderResult> {
     for (let attempt = 0; ; attempt++) {
       partial.clear();
-      let req: ProviderRequest = { model: st.info.model, system: st.system, messages: st.info.images === false ? withoutImages(messages, st.info.name ?? st.info.model) : messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
+      let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages: st.info.images === false ? withoutImages(messages, st.info.name ?? st.info.model) : messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
       for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
       try {
         const res = await st.provider.stream(req, (d) => {

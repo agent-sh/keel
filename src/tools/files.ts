@@ -21,7 +21,7 @@ const IMAGE = /^image\/(png|jpeg|gif|webp)$/;
 
 export type ReadResult = { content: string | (TextBlock | ImageBlock)[]; error?: boolean; partial?: boolean };
 
-// Lines `offset`.. of a text file, numbered from 1 (cat -n style), cut to one
+// Lines `offset`.. of a text file, numbered from 1 (`N<tab>line`), cut to one
 // page; the result says where to continue.
 export function numbered(text: string, offset = 1, limit?: number, number = true): { body: string; partial: boolean; total: number } {
   const lines = text.split("\n");
@@ -35,7 +35,7 @@ export function numbered(text: string, offset = 1, limit?: number, number = true
   for (let i = start; i <= end; i++) {
     let l = lines[i - 1]!;
     if (l.length > LINE_CAP) l = l.slice(0, LINE_CAP) + ` [line cut at ${LINE_CAP} of ${l.length} chars]`;
-    const row = number ? `${String(i).padStart(6)}\t${l}` : l;
+    const row = number ? `${i}\t${l}` : l; // compact: the padding cost ~5% of a read
     if (size + row.length > READ_CHARS && out.length) break;
     out.push(row);
     size += row.length + 1;

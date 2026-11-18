@@ -127,6 +127,7 @@ export class AnthropicProvider implements Provider {
         output: u.output_tokens ?? 0,
         cache_read: u.cache_read_input_tokens ?? 0,
         cache_write: u.cache_creation_input_tokens ?? 0,
+        cache_write_1h: u.cache_creation?.ephemeral_1h_input_tokens || undefined,
       },
     };
   }

@@ -6,6 +6,12 @@ import { project } from "../project.ts";
 import type { ProviderRequest, ProviderResult } from "../types.ts";
 import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
+// Cache lifetime of every breakpoint. An agent loop's requests come seconds
+// apart, but the owner's next prompt often comes after more than five minutes:
+// with the 5-minute lifetime that prompt re-writes the whole conversation.
+export const CACHE_TTL: "5m" | "1h" = "1h";
+const cache = { type: "ephemeral" as const, ttl: CACHE_TTL };
+
 const image = (b: { media_type: string; data: string }) => ({ type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } });
 
 // History to the wire. Cache breakpoints: tools + system are frozen (one
@@ -36,7 +42,7 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
   for (let i = out.length - 1; i >= 0; i--) {
     const m = out[i]!;
     if (m.role !== "user" || m.content.length === 0) continue;
-    m.content[m.content.length - 1].cache_control = { type: "ephemeral" };
+    m.content[m.content.length - 1].cache_control = cache;
     break;
   }
   return out;
@@ -48,9 +54,14 @@ export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?:
     description: t.description,
     input_schema: t.input_schema,
     eager_input_streaming: true,
-    ...(i === req.tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+    ...(i === req.tools.length - 1 ? { cache_control: cache } : {}),
   }));
-  const system: any[] = [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }];
+  // Breakpoints (4 at most): the tools, the system text every session shares,
+  // the session's own system text, and the rolling one on the last user message.
+  const cut = req.systemSplit ?? 0;
+  const system: any[] = [];
+  if (cut > 0 && cut < req.system.length) system.push({ type: "text", text: req.system.slice(0, cut), cache_control: cache });
+  system.push({ type: "text", text: cut > 0 && cut < req.system.length ? req.system.slice(cut) : req.system, cache_control: cache });
   if (systemPrefix) system.unshift({ type: "text", text: systemPrefix });
   const body: Record<string, any> = {
     model: req.model,
@@ -84,6 +95,7 @@ export const anthropicWire: WireCodec = {
             usage.input = u.input_tokens ?? 0;
             usage.cache_read = u.cache_read_input_tokens ?? 0;
             usage.cache_write = u.cache_creation_input_tokens ?? 0;
+            if (u.cache_creation?.ephemeral_1h_input_tokens) usage.cache_write_1h = u.cache_creation.ephemeral_1h_input_tokens;
             usage.output = u.output_tokens ?? 0;
             break;
           }

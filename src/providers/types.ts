@@ -15,6 +15,10 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ProviderRequest = {
   model: string;
   system: string;
+  // Where the per-session part of `system` starts. Before it is text every
+  // session on this machine shares (identity, skills, MCP servers), so a new
+  // session reads it from the provider's cache instead of writing it again.
+  systemSplit?: number;
   messages: Message[];
   tools: ToolSpec[];
   effort?: string;

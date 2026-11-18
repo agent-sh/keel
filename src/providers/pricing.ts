@@ -14,6 +14,9 @@ export function priceOf(u: Usage, p?: Price): number | undefined {
     if (rate === undefined) return undefined;
     read = u.cache_read * rate;
   }
-  const write = u.cache_write * (p.cache_write ?? p.input);
+  // An hour-long cache write costs twice the input rate (Anthropic's rule on
+  // every platform it serves); catalogs state only the 5-minute rate.
+  const hour = u.cache_write_1h ?? 0;
+  const write = (u.cache_write - hour) * (p.cache_write ?? p.input) + hour * 2 * p.input;
   return (u.input * p.input + u.output * p.output + read + write) / 1e6;
 }
