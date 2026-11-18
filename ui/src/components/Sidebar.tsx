@@ -1,9 +1,9 @@
-import { Archive, Bug, Folder, Moon, PanelLeftClose, Plus, Search, Settings, Sun, SunMoon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Archive, ArchiveRestore, Bug, Folder, Moon, PanelLeftClose, Plus, Search, Settings, Sun, SunMoon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { actions, useStore } from "../lib/store.ts";
+import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
-import { ago, cn } from "../lib/utils.ts";
+import { ago, cn, when } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
 
@@ -19,11 +19,13 @@ function groups(sessions: Session[]) {
 }
 
 function Row({ s, active }: { s: Session; active: boolean }) {
+  const restore = s.archived;
   return (
     <div
       role="link"
       tabIndex={0}
       data-testid="session-row"
+      data-session={s.id}
       aria-current={active ? "page" : undefined}
       onClick={() => navigate({ name: "session", id: s.id })}
       onKeyDown={(e) => e.key === "Enter" && navigate({ name: "session", id: s.id })}
@@ -40,18 +42,18 @@ function Row({ s, active }: { s: Session; active: boolean }) {
         )}
       />
       <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
-      <span className="text-micro text-faint tabular-nums group-hover:hidden group-focus-within:hidden">{ago(s.updated)}</span>
+      <span className="text-micro text-faint tabular-nums group-hover:hidden group-focus-within:hidden" title={when(s.updated)}>{ago(s.updated)}</span>
       <button
         type="button"
-        title="Archive"
-        aria-label="Archive session"
+        title={restore ? "Restore" : "Archive"}
+        aria-label={restore ? "Restore session" : "Archive session"}
         onClick={(e) => {
           e.stopPropagation();
-          actions.patch(s.id, { archived: true });
+          actions.patch(s.id, { archived: !restore }).catch(reportError);
         }}
         className="hidden size-6 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg group-hover:grid group-focus-within:grid"
       >
-        <Archive className="size-3.5" />
+        {restore ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
       </button>
     </div>
   );
@@ -86,7 +88,15 @@ export function Sidebar() {
   const route = useUI((s) => s.route);
   const theme = useUI((s) => s.theme);
   const current = route.name === "session" ? route.id : null;
-  const grouped = useMemo(() => groups(Object.values(sessions).filter((s) => !s.archived)), [sessions]);
+  const [tab, setTab] = useState<"active" | "archived">("active");
+  const [archived, setArchived] = useState<Session[]>([]);
+  useEffect(() => {
+    if (tab === "archived") api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => setArchived(r.sessions)).catch(reportError);
+  }, [tab, sessions]);
+  const grouped = useMemo(
+    () => groups(tab === "active" ? Object.values(sessions).filter((s) => !s.archived) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
+    [sessions, tab, archived],
+  );
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
 
   return (
@@ -133,9 +143,26 @@ export function Sidebar() {
         </button>
       </div>
 
+      <div role="tablist" aria-label="Session list" className="mx-2.5 mb-1 flex gap-0.5 rounded-md bg-sunken p-0.5">
+        {(["active", "archived"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            data-testid={`tab-${t}`}
+            onClick={() => setTab(t)}
+            className={cn("h-6 flex-1 rounded-sm text-caption text-muted", tab === t ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
+          >
+            {t === "active" ? "Sessions" : "Archived"}
+          </button>
+        ))}
+      </div>
       <nav className="flex-1 overflow-y-auto px-2.5 pb-3" data-testid="session-list" aria-label="Sessions">
         {grouped.length === 0 && (
-          <p className="px-2.5 pt-6 text-ui leading-relaxed text-faint">Sessions you start show up here, grouped by folder.</p>
+          <p className="px-2.5 pt-6 text-ui leading-relaxed text-faint">
+            {tab === "active" ? "Sessions you start show up here, grouped by folder." : "Archived sessions show up here. Restore one to bring it back."}
+          </p>
         )}
         {grouped.map((g) => (
           <section key={g.ws} className="mt-3 first:mt-1">

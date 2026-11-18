@@ -16,3 +16,7 @@ export function ago(ts: number): string {
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
 }
+
+// Full time for tooltips, 24-hour clock.
+export const when = (ts: number) =>
+  new Date(ts).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });

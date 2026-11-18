@@ -5,7 +5,7 @@ import { slash, type SlashItem } from "../lib/extend.ts";
 import { toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { fuzzy } from "../lib/keys.ts";
 import { reportError, useStore } from "../lib/store.ts";
-import { useUI } from "../lib/ui.ts";
+import { setUI, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 
@@ -63,6 +63,7 @@ export function Composer({
   }, [text, session?.id]);
   useEffect(() => {
     if (!seed) return;
+    setUI({ composerSeed: null }); // consumed: another message box mounted later must not take it
     setText(seed.text);
     requestAnimationFrame(() => {
       const el = ref.current;

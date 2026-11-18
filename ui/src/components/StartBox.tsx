@@ -2,7 +2,7 @@ import { MessageSquare } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
-import { ago } from "../lib/utils.ts";
+import { ago, when } from "../lib/utils.ts";
 import { Composer } from "./Composer.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
@@ -63,7 +63,7 @@ export function StartBox() {
                   >
                     <MessageSquare className="size-4 text-faint group-hover:text-accent" />
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
-                    <span className="text-caption tabular-nums text-faint">{ago(s.updated)}</span>
+                    <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{ago(s.updated)}</span>
                   </button>
                 ))}
               </div>

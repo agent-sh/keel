@@ -238,7 +238,7 @@ export function ChangesButton({ sessionId, extraTabs }: { sessionId: string; ext
         className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg"
         title="What this session changed"
       >
-        <FileDiff className="size-3.5" /> Changes
+        <FileDiff className="size-3.5" /> <span className="max-sm:hidden">Changes</span>
       </button>
       <ChangesPanel sessionId={sessionId} open={open} onOpenChange={setOpen} extraTabs={extraTabs} />
     </>

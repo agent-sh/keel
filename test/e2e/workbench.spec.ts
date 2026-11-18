@@ -112,6 +112,22 @@ test("workbench", async ({ page, request }) => {
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByTestId("confirm")).toBeHidden();
 
+  // Archive from the menu, find it under Archived, restore it.
+  const sid = page.url().split("/s/")[1]!;
+  await page.getByTestId("session-menu").click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
+  await expect(page.locator(`[data-session="${sid}"]`)).toHaveCount(0);
+  await page.getByTestId("tab-archived").click();
+  const row = page.locator(`[data-session="${sid}"]`);
+  await expect(row).toBeVisible();
+  await shoot(page, "wb-12-archived");
+  await row.hover();
+  await row.getByRole("button", { name: "Restore session" }).click();
+  await expect(row).toHaveCount(0);
+  await page.getByTestId("tab-active").click();
+  await page.locator(`[data-session="${sid}"]`).click();
+  await expect(page).toHaveURL(new RegExp(sid));
+
   // Installable: manifest and icons are served.
   const manifest = await (await request.get("/manifest.webmanifest")).json();
   expect(manifest.icons.length).toBeGreaterThan(2);
@@ -120,10 +136,10 @@ test("workbench", async ({ page, request }) => {
   // Phone width: the sidebar is a drawer.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByTestId("sidebar")).not.toBeInViewport();
-  await shoot(page, "wb-12-phone");
+  await shoot(page, "wb-13-phone");
   await page.getByTestId("show-sidebar").click();
   await expect(page.getByTestId("sidebar")).toBeInViewport();
-  await shoot(page, "wb-13-phone-drawer");
+  await shoot(page, "wb-14-phone-drawer");
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
