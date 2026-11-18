@@ -3,12 +3,12 @@ import { dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
-import type { Message, StoredEvent, ToolResultBlock, ToolUseBlock, Usage } from "../core/types.ts";
+import type { Message, Session, StoredEvent, ToolResultBlock, ToolUseBlock, Usage } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { toolsFor } from "../tools/registry.ts";
-import { allHooks } from "./hooks.ts";
+import { allHooks, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 
 // Rebuild the wire conversation from stored events. Append-only: the same
@@ -177,7 +177,7 @@ export class Engine {
         this.emitEvent(this.store.append(id, "assistant", { blocks: res.blocks, model: session.model, usage: res.usage, stop: res.stop }));
         const uses = res.blocks.filter((b): b is ToolUseBlock => b.type === "tool_use");
         if (res.stop !== "tool_use" || !uses.length) { reason = res.stop; break; }
-        const results = await Promise.all(uses.map((u) => this.runTool(tools, u, ctx)));
+        const results = await Promise.all(uses.map((u) => this.runTool(session, tools, u, ctx)));
 
         this.emitEvent(this.store.append(id, "tool_result", { results }));
         if (signal.aborted) { reason = "interrupted"; break; }
@@ -191,15 +191,26 @@ export class Engine {
     }
   }
 
-  private async runTool(tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
+  private async runTool(session: Session, tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
     const tool = tools.find((t) => t.name === u.name);
     if (!tool) return { type: "tool_result", tool_use_id: u.id, content: `No tool named ${u.name}.`, is_error: true };
+    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx };
+    let result: ToolResultBlock;
     try {
-      const out = await tool.run(u.input ?? {}, ctx);
-      return { type: "tool_result", tool_use_id: u.id, content: out.content, is_error: out.is_error || undefined };
+      for (const h of allHooks()) {
+        const g = await h.beforeTool?.(session, call);
+        if (!g) continue;
+        if ("deny" in g) return { type: "tool_result", tool_use_id: u.id, content: g.deny, is_error: true };
+        if (g.input !== undefined) call.input = g.input;
+        if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
+      }
+      const out = await tool.run(call.input, call.ctx);
+      result = { type: "tool_result", tool_use_id: u.id, content: out.content, is_error: out.is_error || undefined };
     } catch (e) {
       this.errors.capture("tool", e, { tool: u.name, session: ctx.sessionId });
       return { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
     }
+    for (const h of allHooks()) await Promise.resolve(h.afterTool?.(session, call, result)).catch((e) => this.errors.capture("server", e, { hook: "afterTool" }));
+    return result;
   }
 }

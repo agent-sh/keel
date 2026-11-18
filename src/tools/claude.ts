@@ -27,7 +27,8 @@ const Bash: Tool = {
   },
   async run(input, ctx) {
     const timeout = Math.min(Number(input.timeout) || 120_000, 600_000);
-    const proc = Bun.spawn(["bash", "-c", input.command], {
+    const argv = ["bash", "-c", input.command];
+    const proc = Bun.spawn(ctx.wrapSpawn ? ctx.wrapSpawn(argv) : argv, {
       cwd: ctx.cwd,
       stdout: "pipe",
       stderr: "pipe",

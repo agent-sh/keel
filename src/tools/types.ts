@@ -9,6 +9,9 @@ export type ToolContext = {
   // Files the model has read this session, with their mtime then: Edit/Write
   // refuse to overwrite a file the model never saw or that changed since.
   seen: Map<string, number>;
+  // Set by a beforeTool hook: turns a command's argv into the argv that runs
+  // it confined (bubblewrap, a systemd scope). Every tool that spawns uses it.
+  wrapSpawn?: (argv: string[]) => string[];
 };
 
 export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_error?: boolean };
