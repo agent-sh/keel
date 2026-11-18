@@ -55,6 +55,13 @@ test("providers and a cross-family session", async ({ page, request }) => {
   expect(await page.getByTestId("tool-call").count()).toBeGreaterThanOrEqual(turns);
   await shoot(page, "providers-02-switched");
 
+  // The usage report prices the Bedrock calls and counts the plan calls as included.
+  const sid = page.url().match(/\/s\/([\w-]+)/)![1];
+  const usage = await (await request.get(`/api/usage?group=provider&session_id=${sid}`)).json();
+  const bedrock = usage.buckets.find((b: any) => b.key === "bedrock");
+  expect(bedrock.priced_cost_usd).toBeGreaterThan(0);
+  expect(usage.total.calls).toBeGreaterThanOrEqual(turns * 2);
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

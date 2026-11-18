@@ -13,6 +13,7 @@ export class ProviderError extends Error {
   ) {
     super(message);
   }
+  // Read by the engine's retry policy. A quota that is spent does not pass by waiting.
   get retryable() {
     return this.kind === "rate" || this.kind === "overloaded" || this.kind === "network" || this.kind === "server";
   }
@@ -75,19 +76,13 @@ export type StreamOpts = {
   onAuthFailure?: () => Promise<Record<string, string> | null>;
 };
 
-const sleep = (ms: number, signal: AbortSignal) =>
-  new Promise<void>((res, rej) => {
-    const t = setTimeout(res, ms);
-    signal.addEventListener("abort", () => { clearTimeout(t); rej(new ProviderError("cancelled", "cancelled")); }, { once: true });
-  });
-
-// Opens the stream, retrying what failed before any byte of the answer
-// (network, 429 within a minute, 5xx). Returns the events as they arrive.
+// Opens the stream: one attempt. Retries belong to the engine, which reads
+// `kind`, `retryable`, `status` and `retryAfterMs` off the thrown error. The
+// only resend here is the one after a 401 that renewed a sign-in.
 export async function* streamEvents(o: StreamOpts): AsyncGenerator<SseEvent> {
   let headers = o.headers;
-  let refreshed = false;
-  let res: Response | undefined;
-  for (let attempt = 0; ; attempt++) {
+  let res: Response;
+  for (let renewed = false; ; renewed = true) {
     try {
       res = await fetch(o.url, {
         method: "POST",
@@ -97,20 +92,15 @@ export async function* streamEvents(o: StreamOpts): AsyncGenerator<SseEvent> {
       });
     } catch (e) {
       if (o.signal.aborted) throw new ProviderError("cancelled", "cancelled");
-      const err = new ProviderError("network", `${o.label}: ${scrub((e as Error).message, o.secrets)}`);
-      if (attempt < 2) { await sleep(2000 * 2 ** attempt, o.signal); continue; }
-      throw err;
+      throw new ProviderError("network", `${o.label}: ${scrub((e as Error).message, o.secrets)}`);
     }
     if (res.ok) break;
     const text = await res.text().catch(() => "");
     const err = classify(o.label, res.status, res.headers, scrub(text, o.secrets));
-    if (err.kind === "auth" && o.onAuthFailure && !refreshed) {
-      refreshed = true;
+    if (err.kind === "auth" && o.onAuthFailure && !renewed) {
       const h = await o.onAuthFailure();
-      if (h) { headers = h; attempt--; continue; }
+      if (h) { headers = h; continue; }
     }
-    const wait = err.retryAfterMs ?? 2000 * 2 ** attempt;
-    if (err.retryable && attempt < 2 && wait <= 60_000) { await sleep(wait, o.signal); continue; }
     throw err;
   }
   const dec = o.format === "json_array" ? new JsonArrayDecoder() : new SseDecoder();

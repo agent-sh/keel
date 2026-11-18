@@ -5,6 +5,7 @@ import { permissionRoutes } from "./permissions.ts";
 import { providersRoutes } from "./providers.ts";
 import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
+import { usageRoutes } from "./usage.ts";
 import { searchRoutes } from "./search.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
@@ -22,4 +23,5 @@ export const routeModules: RouteModule[] = [
   providersRoutes,
   worktreeRoutes,
   turnRoutes,
+  usageRoutes,
 ];

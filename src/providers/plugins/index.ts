@@ -105,7 +105,13 @@ export class Plugins {
   error?: string;
   onChange?: () => void;
 
-  constructor(private stateDir: string, private capture: (e: unknown, ctx?: unknown) => void, private version = "0.1.0") {}
+  constructor(private stateDir: string, private capture: (e: unknown, ctx?: unknown) => void, private version = "0.1.0") {
+    // A hot reload builds a new registry in the same process: the previous
+    // one's plugins stop, so no process is left behind.
+    const g = globalThis as { __keelPlugins?: Plugins };
+    g.__keelPlugins?.stopAll();
+    g.__keelPlugins = this;
+  }
 
   // Reads plugins.toml: a changed entry restarts its plugin, a removed one stops.
   load() {
