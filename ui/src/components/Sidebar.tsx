@@ -6,6 +6,7 @@ import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
+import { NeedsYou } from "./ApprovalCard.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -42,6 +43,7 @@ function Row({ s, active }: { s: Session; active: boolean }) {
         )}
       />
       <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
+      <NeedsYou sessionId={s.id} />
       <span className="text-micro text-faint tabular-nums group-hover:hidden group-focus-within:hidden" title={when(s.updated)}>{ago(s.updated)}</span>
       <button
         type="button"

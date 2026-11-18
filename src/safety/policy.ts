@@ -18,7 +18,8 @@ export type Suggest = { kind: RuleKind; pattern: string };
 
 export type CallClass =
   | { kind: "read" }
-  | { kind: "shell"; command: string }
+  | { kind: "shell"; command: string; escalate?: boolean }
+  | { kind: "control" } // input to, or the stop of, a process an allowed call started
   | { kind: "edit"; paths: string[] }
   | { kind: "other" };
 
@@ -32,7 +33,10 @@ export type Decision =
 export function classify(tool: { name: string; readOnly: boolean }, input: any, cwd: string): CallClass {
   if (tool.readOnly) return { kind: "read" };
   const cmd = shellText(input);
-  if (cmd !== null) return { kind: "shell", command: cmd };
+  // Codex's exec_command can ask to run outside the sandbox.
+  if (cmd !== null) return { kind: "shell", command: cmd, escalate: input?.sandbox_permissions === "require_escalated" || undefined };
+  const keys = Object.keys(input ?? {});
+  if (keys.some((k) => /^(session_id|task_id|shell_id|bash_id)$/.test(k)) && !keys.some((k) => /path|command|cmd|patch|url/.test(k))) return { kind: "control" };
   const paths: string[] = [];
   for (const k of ["file_path", "path", "notebook_path"]) if (typeof input?.[k] === "string") paths.push(input[k]);
   const patch = typeof input?.patch === "string" ? input.patch : typeof input?.input === "string" ? input.input : "";
@@ -60,8 +64,17 @@ export const inside = (p: string, dir: string) => {
 export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string };
 
 export function decide(c: CallClass, f: Facts): Decision {
-  if (c.kind === "read") return { allow: true };
-  if (c.kind === "shell") return decideShell(c.command, f);
+  if (c.kind === "read" || c.kind === "control") return { allow: true };
+  if (c.kind === "shell") {
+    // Leaving the owner's sandbox is the owner's call in every mode, one call at a time.
+    if (c.escalate && f.sandboxed) {
+      if (f.mode === "read-only") return { deny: "This session is read-only: commands cannot leave the sandbox." };
+      const inner = decideShell(c.command, f);
+      const why = ["the command asks to run outside the sandbox", "ask" in inner ? inner.ask.why : undefined].filter(Boolean).join("; and ");
+      return { ask: { risk: "high", why, suggest: [] } };
+    }
+    return decideShell(c.command, f);
+  }
   if (c.kind === "edit") {
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };

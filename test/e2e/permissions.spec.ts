@@ -26,6 +26,8 @@ test("permission gate", async ({ page, request }) => {
   const card = page.getByTestId("approval");
   await expect(card).toBeVisible({ timeout: 60_000 });
   await expect(card.getByTestId("approval-summary")).toContainText("touch alpha.txt");
+  const row = page.locator(`[data-session="${session.id}"]`);
+  await expect(row.getByTestId("needs-you")).toBeVisible(); // the session list marks who waits on the owner
   await shoot(page, "perm-01-card");
 
   // 2. Always allow, with the suggested rule.
@@ -34,6 +36,7 @@ test("permission gate", async ({ page, request }) => {
   await shoot(page, "perm-02-always");
   await page.getByTestId("grant-always").click();
   await expect(card).toHaveCount(0);
+  await expect(row.getByTestId("needs-you")).toHaveCount(0);
   await expect(turns()).toHaveCount(1, { timeout: 120_000 });
   expect(existsSync(join(ws, "alpha.txt"))).toBe(true);
 

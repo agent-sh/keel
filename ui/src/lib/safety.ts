@@ -38,6 +38,13 @@ export const safety = {
     ]);
     set({ approvals: { ...state.approvals, [id]: a.approvals }, perms: { ...state.perms, [id]: p.perm } });
   },
+  // Open cards of every session (the sidebar marks the sessions that wait on the owner).
+  async loadPending() {
+    const r = await api<{ approvals: Approval[] }>("/api/approvals");
+    const by: Record<string, Approval[]> = {};
+    for (const a of r.approvals) (by[a.session_id] ??= []).push(a);
+    set({ approvals: { ...Object.fromEntries(Object.keys(state.approvals).map((k) => [k, []])), ...by } });
+  },
   async loadSettings() {
     const r = await api<{ modes: ModeInfo[]; sandbox?: SandboxInfo }>("/api/permissions/settings");
     set({ modes: r.modes, sandbox: r.sandbox ?? null });
@@ -72,6 +79,7 @@ onFeature({
     }
   },
   reconnect() {
+    safety.loadPending().catch(reportError);
     for (const id of loaded) safety.loadSession(id).catch(reportError);
   },
 });

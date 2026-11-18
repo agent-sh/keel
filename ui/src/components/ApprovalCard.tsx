@@ -188,3 +188,14 @@ function AlwaysButton({ a, busy, onGrant }: { a: Approval; busy: boolean; onGran
     </Popover.Root>
   );
 }
+
+// A session that waits on the owner's answer, in the session list.
+export function NeedsYou({ sessionId }: { sessionId: string }) {
+  const n = useSafety((s) => s.approvals[sessionId]?.length ?? 0);
+  if (!n) return null;
+  return (
+    <span data-testid="needs-you" title={`${n} approval${n === 1 ? "" : "s"} waiting`} className="shrink-0 rounded-full bg-accent-soft px-1.5 text-micro font-medium text-accent-ink">
+      needs you
+    </span>
+  );
+}

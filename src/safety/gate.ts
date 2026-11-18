@@ -17,7 +17,7 @@ export type Approval = {
   session_id: string;
   call_id: string;
   tool: string;
-  kind: CallClass["kind"];
+  kind: Exclude<CallClass["kind"], "control">;
   summary: string;      // the command, or the paths, or the tool's input in short
   input: any;
   risk: "high" | "low";
@@ -158,6 +158,7 @@ export class Gate {
     const d = this.evaluate(session, name, cls);
     if ("allow" in d) return;
     if ("deny" in d) return { deny: d.deny };
+    if (cls.kind === "control") return;
     const a: Approval = {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind,
       summary: cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : JSON.stringify(target ? target.input : call.input).slice(0, 400),

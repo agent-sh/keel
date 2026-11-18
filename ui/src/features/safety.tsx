@@ -4,7 +4,8 @@ import { FileDiff, GitPullRequestArrow } from "lucide-react";
 import { lazy } from "react";
 import { panels } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
-import { getState } from "../lib/store.ts";
+import { safety } from "../lib/safety.ts";
+import { getState, reportError } from "../lib/store.ts";
 import { getUI, savePref } from "../lib/ui.ts";
 
 panels.add(
@@ -34,3 +35,5 @@ registerCommand(
   { id: "panel-changes", label: "Changes panel: diffs, rewind and revert", group: "View", keys: "mod+shift+d", inInput: true, words: "checkpoint undo rewind revert diff", when: inSession, run: () => toggle("changes") },
   { id: "panel-review", label: "Review the branch", group: "View", words: "pull request comment worktree", when: inSession, run: () => toggle("review") },
 );
+
+safety.loadPending().catch(reportError);

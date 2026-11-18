@@ -23,6 +23,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       const refused = await g.check(s, call);
       if (refused) return refused;
       const p = g.perm(s.id);
+      // An escalation the gate let through (asked, or full auto) runs unconfined.
+      if (call.input?.sandbox_permissions === "require_escalated") return;
       if (p.sandbox !== "off" && sb.available) return { ctx: { wrapSpawn: (argv) => confine(argv, p, s.workspace) } };
     },
   });
