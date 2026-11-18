@@ -91,11 +91,24 @@ test("workbench", async ({ page, request }) => {
   expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/print/);
   await shoot(page, "wb-09-reply");
 
+  // Files panel: find a file, read it highlighted, mention it.
+  await page.keyboard.press("Control+Shift+E");
+  await expect(page.getByTestId("side-panel")).toBeVisible();
+  await page.getByTestId("files-search").fill("styles.css");
+  await page.getByText("ui/src/styles.css").click();
+  await expect(page.getByTestId("file-view").locator("[class^=th-]").first()).toBeVisible();
+  await shoot(page, "wb-10-files-panel");
+  await page.getByRole("button", { name: "Mention" }).click();
+  await expect(page.getByTestId("composer")).toHaveValue(/@ui\/src\/styles\.css /);
+  await page.getByTestId("composer").fill("");
+  await page.keyboard.press("Control+\\");
+  await expect(page.getByTestId("side-panel")).toBeHidden();
+
   // Session menu: delete asks first.
   await page.getByTestId("session-menu").click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await expect(page.getByTestId("confirm")).toBeVisible();
-  await shoot(page, "wb-10-confirm-delete");
+  await shoot(page, "wb-11-confirm-delete");
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByTestId("confirm")).toBeHidden();
 
@@ -107,10 +120,10 @@ test("workbench", async ({ page, request }) => {
   // Phone width: the sidebar is a drawer.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByTestId("sidebar")).not.toBeInViewport();
-  await shoot(page, "wb-11-phone");
+  await shoot(page, "wb-12-phone");
   await page.getByTestId("show-sidebar").click();
   await expect(page.getByTestId("sidebar")).toBeInViewport();
-  await shoot(page, "wb-12-phone-drawer");
+  await shoot(page, "wb-13-phone-drawer");
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

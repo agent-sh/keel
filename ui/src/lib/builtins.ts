@@ -1,6 +1,8 @@
 // The workbench's own commands and slash commands. Feature lanes register
 // theirs the same way from their own modules; an id registered again wins.
-import { slash } from "./extend.ts";
+import { FolderTree } from "lucide-react";
+import { createElement, lazy } from "react";
+import { panels, slash } from "./extend.ts";
 import { fuzzy, registerCommand } from "./keys.ts";
 import { actions, getState, reportError } from "./store.ts";
 import { getUI, navigate, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
@@ -26,7 +28,18 @@ const lastReply = (id: string) => {
   return ev?.data.blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n\n") ?? "";
 };
 
+panels.add({
+  id: "files",
+  label: "Files",
+  icon: createElement(FolderTree, { className: "size-4" }),
+  order: 10,
+  component: lazy(() => import("../components/FilesPanel.tsx").then((m) => ({ default: m.FilesPanel }))),
+});
+const togglePanel = (id: string) => savePref("panel", getUI().panel === id ? null : id);
+
 registerCommand(
+  { id: "panel-files", label: "Files panel", group: "View", keys: "mod+shift+e", inInput: true, words: "browse tree read", when: () => !!current(), run: () => togglePanel("files") },
+  { id: "panel-close", label: "Close the side panel", group: "View", keys: "mod+\\", inInput: true, when: () => !!getUI().panel, run: () => savePref("panel", null) },
   { id: "palette", label: "Search sessions and commands", group: "General", keys: "mod+k", inInput: true, run: () => setUI({ palette: !getUI().palette }) },
   { id: "shortcuts", label: "Keyboard shortcuts", group: "General", keys: "mod+/", inInput: true, run: () => setUI({ shortcuts: !getUI().shortcuts }) },
   { id: "new-session", label: "New session", group: "Sessions", keys: "mod+shift+o", inInput: true, words: "start create", run: () => newIn() },

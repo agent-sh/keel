@@ -9,6 +9,7 @@ import { cn, fmtTokens } from "../lib/utils.ts";
 import { ChangesButton } from "./ChangesPanel.tsx";
 import { confirmAction } from "./Confirm.tsx";
 import { PermissionMenu } from "./PermissionMenu.tsx";
+import { PanelToggles } from "./SidePanel.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
 
 export function SidebarButton() {
@@ -84,6 +85,7 @@ export function SessionHeader({ session }: { session: Session }) {
         {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}
       </span>}
       <ChangesButton sessionId={session.id} />
+      <PanelToggles session={session} />
       <PermissionMenu sessionId={session.id} />
       {headerActions.all().filter((a) => !a.when || a.when(session)).map((a) => (
         <button key={a.id} type="button" title={a.label} aria-label={a.label} onClick={() => a.run(session)} className={iconButton}>{a.icon}</button>

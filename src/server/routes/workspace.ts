@@ -102,6 +102,25 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
       },
     },
 
+    // One text file for the Files panel: inside the folder it was asked from, at most 512 KB.
+    "/api/fs/file": {
+      GET: async (req: Request) => {
+        const u = new URL(req.url);
+        const root = allowed(u.searchParams.get("root"));
+        if (!root) return bad("outside the home directory", 403);
+        let p: string;
+        try { p = realpathSync(resolve(root, u.searchParams.get("path") ?? "")); } catch { return bad("no such file", 404); }
+        if (!inside(root, p)) return bad("outside the folder", 403);
+        const st = statSync(p);
+        if (!st.isFile()) return bad("not a file", 400);
+        const f = Bun.file(p);
+        const head = new Uint8Array(await f.slice(0, 8000).arrayBuffer());
+        if (head.includes(0)) return json({ path: relative(root, p), size: st.size, binary: true });
+        const LIMIT = 512 * 1024;
+        return json({ path: relative(root, p), size: st.size, truncated: st.size > LIMIT, text: await f.slice(0, LIMIT).text() });
+      },
+    },
+
     "/api/fs/files": {
       GET: async (req: Request) => {
         const u = new URL(req.url);

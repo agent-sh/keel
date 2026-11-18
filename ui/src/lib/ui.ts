@@ -21,6 +21,7 @@ type UIState = {
   newWorkspace: string; // the folder the start box creates a session in ("" = daemon default)
   newModel: string;
   composerSeed: { text: string; n: number } | null; // text pushed into the composer (edit, a slash command)
+  panel: string | null; // the open tab of the side panel
 };
 
 function parse(): Route {
@@ -58,6 +59,7 @@ let state: UIState = {
   newWorkspace: pref("keel.newWorkspace", ""),
   newModel: "",
   composerSeed: null,
+  panel: pref("keel.panel", null),
 };
 const subs = new Set<() => void>();
 export function setUI(patch: Partial<UIState>) {
@@ -77,7 +79,7 @@ export function navigate(r: Route, replace = false) {
 addEventListener("popstate", () => setUI({ route: parse() }));
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 
-export function savePref(k: "enterSends" | "newWorkspace" | "sidebar", v: unknown) {
+export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel", v: unknown) {
   if (!(k === "sidebar" && isPhone())) localStorage.setItem(`keel.${k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);
 }

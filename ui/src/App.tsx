@@ -3,6 +3,7 @@ import { Approvals } from "./components/ApprovalCard.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { SessionHeader, SidebarButton } from "./components/SessionHeader.tsx";
+import { SidePanel } from "./components/SidePanel.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { StartBox } from "./components/StartBox.tsx";
 import { Transcript } from "./components/Transcript.tsx";
@@ -59,21 +60,26 @@ function SessionView({ id }: { id: string }) {
   return (
     <>
       <SessionHeader session={session} />
-      <Boundary><Transcript sessionId={session.id} /></Boundary>
-      <div className="pr-[var(--sbw,0px)]">
-      <div className="mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
-        <Approvals sessionId={session.id} />
-        <Composer
-          session={session}
-          working={session.phase === "working"}
-          model={session.model}
-          workspace={session.workspace}
-          onModel={(m) => actions.patch(session.id, { model: m }).catch(reportError)}
-          onSend={(t, images) => actions.send(session.id, t, images)}
-          onStop={() => actions.interrupt(session.id).catch(reportError)}
-          autoFocus={matchMedia("(min-width: 768px)").matches}
-        />
-      </div>
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Boundary><Transcript sessionId={session.id} /></Boundary>
+          <div className="pr-[var(--sbw,0px)]">
+            <div className="mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
+              <Approvals sessionId={session.id} />
+              <Composer
+                session={session}
+                working={session.phase === "working"}
+                model={session.model}
+                workspace={session.workspace}
+                onModel={(m) => actions.patch(session.id, { model: m }).catch(reportError)}
+                onSend={(t, images) => actions.send(session.id, t, images)}
+                onStop={() => actions.interrupt(session.id).catch(reportError)}
+                autoFocus={matchMedia("(min-width: 768px)").matches}
+              />
+            </div>
+          </div>
+        </div>
+        <Boundary><SidePanel session={session} /></Boundary>
       </div>
     </>
   );

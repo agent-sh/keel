@@ -49,3 +49,8 @@ export const rowActions = registry<RowAction>();
 // Buttons in the session header, left of the menu.
 export type HeaderAction = { id: string; label: string; icon: ReactNode; when?: (s: Session) => boolean; run: (s: Session) => void };
 export const headerActions = registry<HeaderAction>();
+
+// Tabs of the side panel next to the conversation. The header shows a toggle
+// for each; `component` gets the open session.
+export type Panel = { id: string; label: string; icon: ReactNode; keys?: string; order?: number; when?: (s: Session) => boolean; component: ComponentType<{ session: Session }> };
+export const panels = registry<Panel>();
