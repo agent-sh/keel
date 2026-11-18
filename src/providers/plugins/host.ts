@@ -5,7 +5,7 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { classify, ProviderError, scrub } from "../http.ts";
+import { classify, ProviderError, scrub, streamIdleMs } from "../http.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "../sse.ts";
 import type { PluginEntry } from "./config.ts";
 
@@ -39,7 +39,7 @@ const WIRES = new Set(["anthropic_messages", "gemini_generate_content", "openai_
 const CRED_HEADER = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-goog-api-key)$|-(key|token|secret|credential|credentials|auth|authorization)$/;
 const PASS_ENV = /^(HOME|PATH|USER|LOGNAME|SHELL|LANG|LANGUAGE|TERM|TMPDIR|TZ|DBUS_SESSION_BUS_ADDRESS|SSL_CERT_FILE|SSL_CERT_DIR|(HTTP|HTTPS|NO|ALL)_PROXY|(http|https|no|all)_proxy|LC_.*|XDG_.*)$/;
 const ACK_MS = 20_000;
-const IDLE_MS = 300_000;
+const IDLE_MS = streamIdleMs();
 
 // An async queue of a request's events.
 class Channel<T> {
@@ -398,6 +398,10 @@ export class PluginProcess {
       }
       yield* dec.finish();
       ended = true;
+    } catch (e) {
+      // A stall or a bad answer: the plugin stops sending this request.
+      if (!ended && !o.signal.aborted && this.caps.cancel) this.notify("request/cancel", { request_id: requestId });
+      throw e;
     } finally {
       ended = true;
       o.signal.removeEventListener("abort", cancel);

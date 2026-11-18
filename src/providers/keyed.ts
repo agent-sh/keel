@@ -177,7 +177,7 @@ export class CompatProvider extends KeyedProvider {
     });
     const ctx = ctxFor(this.id, req, req.efforts ?? []);
     return runEvents(codec, req, ctx, onDelta, httpEvents({
-      label: this.label, url: `${this.base}/chat/completions`, headers: this.headers(k, req.sessionKey), secrets: [k],
+      label: this.label, url: `${this.base}/chat/completions`, headers: this.headers(k, req.sessionKey), secrets: [k], idleMs: this.cfg.stream_idle_timeout_ms,
       onAuthFailure: async () => { forget(this.src); return null; },
     }, req.signal));
   }

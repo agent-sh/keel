@@ -3,6 +3,7 @@ import { AnthropicBedrock } from "@anthropic-ai/bedrock-sdk";
 import type { AssistantBlock } from "../core/types.ts";
 import { emptyUsage } from "../core/types.ts";
 import { anthropicBody } from "./wires/anthropic.ts";
+import { idleGuard, streamIdleMs } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 
 type AnyClient = Anthropic | AnthropicBedrock;
@@ -81,9 +82,21 @@ export class AnthropicProvider implements Provider {
     if (!this.client) throw new Error(`${this.id}: no credentials`);
     const ctx = { origin: `${this.id}:${req.model}`, sessionKey: req.sessionKey ?? "", efforts: [], legacyIsMine: true };
     const params: any = anthropicBody(req, ctx);
-    const stream = (this.client as Anthropic).messages.stream(params, { signal: req.signal });
+    const guard = idleGuard(req.signal, streamIdleMs(), this.label);
+    try {
+      return await this.read(params, ctx, req, guard, onDelta);
+    } catch (e) {
+      throw guard.stalled() ?? e;
+    } finally {
+      guard.done();
+    }
+  }
+
+  private async read(params: any, ctx: { origin: string }, req: ProviderRequest, guard: ReturnType<typeof idleGuard>, onDelta: (d: Delta) => void): Promise<ProviderResult> {
+    const stream = (this.client as Anthropic).messages.stream(params, { signal: guard.signal });
     const toolNames = new Map<number, string>();
     for await (const ev of stream) {
+      guard.touch();
       if (ev.type === "content_block_start" && ev.content_block.type === "tool_use") {
         toolNames.set(ev.index, ev.content_block.name);
         onDelta({ kind: "tool_input", index: ev.index, text: "", name: ev.content_block.name });

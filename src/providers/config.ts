@@ -17,6 +17,7 @@
 //   catalog = "openrouter"               # models.dev section for prices
 //   listing = false                      # no /models: offer the catalog section's models
 //   enabled = false                      # turn a preset off
+//   stream_idle_timeout_ms = 900000      # cut a silent stream after this (default 300000)
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +44,7 @@ export type EndpointConfig = {
   catalog?: string;   // the models.dev section with this endpoint's prices
   listing?: boolean;  // false: the endpoint has no /models; its catalog section names the models
   enabled?: boolean;
+  stream_idle_timeout_ms?: number;
 };
 
 // Endpoints every install knows: where they are and which key they read. The
