@@ -6,6 +6,13 @@ type Listener = (f: Frame) => void;
 // is one owner's sessions, so a single channel keeps it simple.
 export class Bus {
   private listeners = new Set<Listener>();
+  private filters: ((f: Frame) => Frame)[] = [];
+
+  // Every frame passes the filters before any listener sees it (secrets are
+  // kept out of what the UI is sent).
+  use(filter: (f: Frame) => Frame) {
+    this.filters.push(filter);
+  }
 
   on(l: Listener): () => void {
     this.listeners.add(l);
@@ -13,6 +20,9 @@ export class Bus {
   }
 
   emit(f: Frame) {
+    for (const g of this.filters) {
+      try { f = g(f); } catch {}
+    }
     for (const l of this.listeners) {
       try {
         l(f);

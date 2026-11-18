@@ -138,7 +138,11 @@ export class Gate {
     return r ? JSON.parse(r.data) : undefined;
   }
 
+  // What is stored and shown of a card (secrets are kept out of it).
+  redact: (a: Approval) => Approval = (a) => a;
+
   private save(a: Approval) {
+    a = this.redact(a);
     this.store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, data = excluded.data")
       .run(a.id, a.session_id, a.state, JSON.stringify(a), a.created);
     this.bus.emit({ t: "feature", name: "approval", session_id: a.session_id, data: a });

@@ -45,9 +45,14 @@ let counter = 0;
 // Provider credentials never reach a tool shell: a command the model writes
 // could print or send them.
 const SECRET_ENV = /^(ANTHROPIC_|OPENAI_|AWS_BEARER_TOKEN|AWS_SECRET|AWS_SESSION_TOKEN|CLAUDE_CODE_|GEMINI_API|GOOGLE_API_KEY|OPENROUTER_|XAI_|GROQ_|MISTRAL_|DEEPSEEK_|FIREWORKS_|KIMI_|MOONSHOT_|ZAI_|GLM_)/;
+// Variables a feature adds to a session's commands (the secrets it was given).
+const envProviders: ((sessionId: string) => Record<string, string>)[] = [];
+export const registerEnv = (f: (sessionId: string) => Record<string, string>) => void envProviders.push(f);
+
 export function toolEnv(sessionId: string, extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !SECRET_ENV.test(k)) env[k] = v;
+  for (const f of envProviders) Object.assign(env, f(sessionId));
   return { ...env, KEEL_SESSION: sessionId, ...extra };
 }
 

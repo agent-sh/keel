@@ -121,6 +121,10 @@ export class Store {
 
   // A feature module's tables: run once per start, statements must be idempotent
   // (CREATE ... IF NOT EXISTS; ALTER guarded by columnExists).
+  // What is written may be rewritten first (secrets are kept out of history).
+  // `kind` is the event kind, or "title", "queue", "error". Identity by default.
+  redact: (sessionId: string | null, kind: string, value: any) => any = (_s, _k, v) => v;
+
   migrate(sql: string) {
     this.db.exec(sql);
   }
@@ -134,7 +138,7 @@ export class Store {
     const id = Bun.randomUUIDv7();
     this.db
       .query("INSERT INTO sessions (id, title, model, workspace, created, updated, settings) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(id, s.title ?? "", s.model, s.workspace, now, now, JSON.stringify(s.settings ?? {}));
+      .run(id, this.redact(null, "title", s.title ?? ""), s.model, s.workspace, now, now, JSON.stringify(s.settings ?? {}));
     return this.session(id)!;
   }
 
@@ -156,6 +160,7 @@ export class Store {
     for (const [k, v] of Object.entries(patch)) {
       if (v === undefined) continue;
       sets.push(`${k} = ?`);
+      if (k === "title") { vals.push(this.redact(id, "title", v)); continue; }
       vals.push(k === "usage" || k === "settings" ? JSON.stringify(v) : k === "archived" ? (v ? 1 : 0) : (v as string));
     }
     sets.push("updated = ?");
@@ -171,6 +176,7 @@ export class Store {
   // A new event at the head of the session's branch (or after `parent`, which
   // starts a new branch there: an edited prompt). It becomes the head.
   append(session_id: string, kind: EventKind, data: unknown, parent?: string | null): StoredEvent {
+    data = this.redact(session_id, kind, data);
     const id = Bun.randomUUIDv7();
     const ts = Date.now();
     const tx = this.db.transaction(() => {
@@ -212,7 +218,7 @@ export class Store {
         const id = Bun.randomUUIDv7();
         this.db
           .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(e.data), e.ts);
+          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(this.redact(session_id, e.kind, e.data)), e.ts);
         prev = id;
       }
       this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, session_id);
@@ -230,6 +236,7 @@ export class Store {
   }
 
   enqueue(session_id: string, text: string, steer: boolean, images?: ImageBlock[]): QueueItem {
+    text = this.redact(session_id, "queue", text);
     const id = Bun.randomUUIDv7();
     const { p } = this.db.query<{ p: number }, [string]>("SELECT COALESCE(MAX(pos), 0) + 1 AS p FROM queue WHERE session_id = ?").get(session_id)!;
     this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created, images) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now(), images?.length ? JSON.stringify(images) : null);
@@ -242,7 +249,7 @@ export class Store {
   }
 
   updateQueueItem(id: string, patch: { text?: string; steer?: boolean; pos?: number }) {
-    if (patch.text !== undefined) this.db.query("UPDATE queue SET text = ? WHERE id = ?").run(patch.text, id);
+    if (patch.text !== undefined) this.db.query("UPDATE queue SET text = ? WHERE id = ?").run(this.redact(this.queueItem(id)?.session_id ?? null, "queue", patch.text), id);
     if (patch.steer !== undefined) this.db.query("UPDATE queue SET steer = ? WHERE id = ?").run(patch.steer ? 1 : 0, id);
     if (patch.pos !== undefined) this.db.query("UPDATE queue SET pos = ? WHERE id = ?").run(patch.pos, id);
   }

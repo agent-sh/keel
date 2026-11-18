@@ -10,6 +10,7 @@ import { resourceRoutes } from "./resources.ts";
 import { mcpRoutes } from "./mcp.ts";
 import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
+import { secretRoutes } from "./secrets.ts";
 import { providersRoutes } from "./providers.ts";
 import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
@@ -24,6 +25,7 @@ import { switchRoutes } from "./switch.ts";
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
   permissionRoutes, // first: its beforeTool gate decides before the others run
+  secretRoutes, // after the gate: a call it allowed runs with its secrets put back
   checkpointRoutes,
   workspaceRoutes,
   pwaRoutes,
