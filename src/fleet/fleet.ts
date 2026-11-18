@@ -9,6 +9,7 @@ import type { Frame, Session } from "../core/types.ts";
 import { type Facts, type MachineRow, meta, migrate } from "./db.ts";
 import { freeCores, localFacts, VERSION } from "./facts.ts";
 import { CONNECT_MS, freePort, LinkError, linkFetch, linkJson, listenerUids, loopbackUrl, newKey, type Peer } from "./link.ts";
+import { place, type Place, type Rule, type Want } from "./placement.ts";
 import { plainAlias, SSH_BASE, SSH_ONE_SHOT, sshHosts, sshProgram, sshReach } from "./sshconfig.ts";
 
 export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
@@ -29,6 +30,7 @@ export class Fleet {
   private queues = new Map<string, Queue>();
   private links = new Map<string, DaemonLink>();
   private localFactsCache?: Facts;
+  private localFactsAt?: number;
 
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker) {
     migrate(store);
@@ -81,6 +83,7 @@ export class Fleet {
 
   remove(id: string) {
     this.unlink(id);
+    this.setRules(this.rules().filter((r) => r.machine !== id)); // a rule for a machine that is gone sends nothing
     this.store.db.query("DELETE FROM fleet_machines WHERE id = ?").run(id);
   }
 
@@ -356,6 +359,26 @@ export class Fleet {
 
   emitMachines() {
     this.bus.emit({ t: "feature", name: "fleet_machines", data: {} });
+  }
+
+  // ---- placement rules (kept in order, as the owner wrote them)
+
+  rules(): Rule[] {
+    const r = this.store.db.query<{ value: string }, [string]>("SELECT value FROM fleet_meta WHERE key = ?").get("placement");
+    return r ? JSON.parse(r.value) : [];
+  }
+  setRules(rules: Rule[]) {
+    this.store.db.query("INSERT OR REPLACE INTO fleet_meta (key, value) VALUES ('placement', ?)").run(JSON.stringify(rules));
+  }
+  async placeWork(want: Want): Promise<Place | string> {
+    const lf = this.localFactsCache && Date.now() - (this.localFactsAt ?? 0) < FACTS_FRESH_MS ? this.localFactsCache : await localFacts();
+    this.localFactsCache = lf;
+    this.localFactsAt = Date.now();
+    return place(want, this.rules(), {
+      local: { id: "local", name: this.name, state: "ready" },
+      localBusy: lf.load1 >= lf.cpus,
+      machine: (id) => { const m = this.row(id) ?? this.byName(id); return m ? { id: m.id, name: m.name, state: m.state } : undefined; },
+    });
   }
 
   // ---- which machine ran a call (the transcript labels the tool row)

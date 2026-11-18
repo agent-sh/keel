@@ -39,7 +39,7 @@ export function StartBox() {
           <p className="mb-6 text-base text-muted">Keel works in the folder below{machine ? ", on the machine you picked" : ""}. Paste screenshots, mention files with @, and steer while it runs.</p>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <MachinePicker />
-            {!machine && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
+            {(!machine || machine === "auto") && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
             {!machine && <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>}
           </div>
           <div data-testid="new-composer">
@@ -50,7 +50,7 @@ export function StartBox() {
               autoFocus
               onSend={async (t, images) => {
                 const s = machine
-                  ? await fleet.createOn(machine, t, model || undefined, images)
+                  ? await fleet.createOn(machine, t, model || undefined, images, workspace || undefined)
                   : inWorktree && (await isGitFolder(workspace))
                   ? await createInWorktree(t, model || undefined, workspace || undefined, images)
                   : await actions.create(t, model || undefined, workspace || undefined, images);

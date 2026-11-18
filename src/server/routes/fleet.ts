@@ -11,6 +11,7 @@ import { Fleet } from "../../fleet/fleet.ts";
 import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proven } from "../../fleet/link.ts";
 import { remoteRun } from "../../fleet/remote.ts";
+import { validate as validatePlacement } from "../../fleet/placement.ts";
 import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
@@ -256,6 +257,22 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     "/api/fleet/sessions": {
       POST: async (req: Request) => {
         const b = await body(req);
+        let placed: any;
+        if (b.machine === "auto") {
+          placed = await f.placeWork({ kind: "session", heavy: !!b.heavy, needs_gpu: !!b.needs_gpu });
+          if (typeof placed === "string") return bad(placed);
+          if (placed.machine_id === "local") {
+            const model = b.model || (await deps.providers.defaultModel());
+            if (!model) return bad("no model is available: no provider has credentials", 409);
+            const ws = resolve(b.local_workspace || deps.workspace);
+            const s = store.createSession({ model, workspace: ws, title: b.title });
+            store.append(s.id, "note", { text: `Kept on ${f.name}: ${placed.reason}.` });
+            bus.emit({ t: "session", session: store.session(s.id)! });
+            if (b.text) engine.send(s.id, String(b.text), { images: b.images ?? [] });
+            return json({ session: store.session(s.id), placed }, 201);
+          }
+          b.machine = placed.machine_id;
+        }
         const m = f.row(String(b.machine ?? ""));
         if (!m) return bad("no such machine", 400);
         if (!m.workspace_root) return bad(`${m.name} has no granted directory: set one before starting sessions there`);
@@ -278,8 +295,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(m.id, s.id);
         const next = store.session(s.id)!;
         bus.emit({ t: "session", session: next });
-        if (b.text) engine.send(s.id, String(b.text), b.images ?? []);
-        return json({ session: store.session(s.id) }, 201);
+        if (placed) store.append(s.id, "note", { text: `Placed on ${m.name} by ${placed.reason}.` });
+        if (b.text) engine.send(s.id, String(b.text), { images: b.images ?? [] });
+        return json({ session: store.session(s.id), placed }, 201);
       },
     },
 
@@ -329,6 +347,30 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (!String(b.daemon_id ?? "")) return proven(bad("daemon_id cannot be empty"), c, f.id);
         if (!c || c.daemonId !== b.daemon_id) return proven(json({ messages: [] }), c, f.id);
         return proven(json({ messages: msgs.takeOutbound(c.daemonId) }), c, f.id);
+      },
+    },
+
+    "/api/fleet/placement": {
+      GET: () => json({ rules: f.rules() }),
+      POST: async (req: Request) => {
+        const b = await body(req);
+        const known = (m: string) => {
+          if (m === "local") return { id: "local", name: f.name, state: "ready" };
+          const r = f.row(m) ?? f.byName(m);
+          return r ? { id: r.id, name: r.name, state: r.state } : undefined;
+        };
+        const rules = validatePlacement(b.rules, known);
+        if (typeof rules === "string") return bad(rules);
+        f.setRules(rules);
+        f.emitMachines();
+        return json({ rules });
+      },
+    },
+
+    "/api/fleet/place": {
+      POST: async (req: Request) => {
+        const r = await f.placeWork(await body(req));
+        return typeof r === "string" ? bad(r) : json(r);
       },
     },
 

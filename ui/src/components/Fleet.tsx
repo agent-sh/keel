@@ -1,7 +1,7 @@
 // Small fleet pieces used across the workbench: the machine a session's tools
 // run on (header chip, tool row badge), and the machine a new session starts on.
 import { Popover } from "@base-ui/react/popover";
-import { Check, ChevronDown, Cpu, Server } from "lucide-react";
+import { Check, ChevronDown, Cpu, Server, Wand2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -61,10 +61,11 @@ export function MachineBadge({ sessionId, callId }: { sessionId?: string; callId
 export function MachinePicker() {
   const machines = useFleet((s) => s.machines);
   const chosen = useFleet((s) => s.newMachine);
+  const rules = useFleet((s) => s.rules);
   const [open, setOpen] = useState(false);
   const usable = machines.filter((m) => m.source !== "local" && m.enabled && m.workspace_root);
-  if (!usable.length) return null;
-  const cur = usable.find((m) => m.id === chosen);
+  if (!usable.length && !rules.length) return null;
+  const cur = chosen === "auto" && rules.length ? { id: "auto", name: "Auto", workspace_root: "placement rules" } : usable.find((m) => m.id === chosen);
   const local = machines.find((m) => m.source === "local");
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -81,7 +82,11 @@ export function MachinePicker() {
         <Popover.Positioner sideOffset={6} align="start" className="z-50">
           <Popover.Popup className={cn(popupClass, "w-80")} data-testid="machine-popup">
             <div className="px-2.5 pb-1 pt-2 text-micro font-medium text-faint">Where its tools run</div>
-            {[{ id: "", name: local?.name ?? "This machine", sub: "this machine", state: "ready" }, ...usable.map((m) => ({ id: m.id, name: m.name, sub: m.workspace_root!, state: m.state }))].map((o) => (
+            {[
+              { id: "", name: local?.name ?? "This machine", sub: "this machine", state: "ready" },
+              ...usable.map((m) => ({ id: m.id, name: m.name, sub: m.workspace_root!, state: m.state })),
+              ...(rules.length ? [{ id: "auto", name: "Auto", sub: `by your ${rules.length} placement rule${rules.length > 1 ? "s" : ""}`, state: "ready" }] : []),
+            ].map((o) => (
               <button
                 key={o.id || "local"}
                 type="button"
@@ -91,7 +96,7 @@ export function MachinePicker() {
                 onClick={() => { setNewMachine(o.id); setOpen(false); }}
                 className="flex h-11 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover disabled:opacity-50"
               >
-                {o.id ? <Server className="size-4 shrink-0 text-faint" /> : <Cpu className="size-4 shrink-0 text-faint" />}
+                {o.id === "auto" ? <Wand2 className="size-4 shrink-0 text-faint" /> : o.id ? <Server className="size-4 shrink-0 text-faint" /> : <Cpu className="size-4 shrink-0 text-faint" />}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-ui font-medium">{o.name}</span>
                   <span className="block truncate font-mono text-micro text-faint">{o.state === "offline" ? "offline" : o.sub}</span>
@@ -110,5 +115,7 @@ export function MachinePicker() {
 export function useNewMachine(): string {
   const machines = useFleet((s) => s.machines);
   const chosen = useFleet((s) => s.newMachine);
+  const rules = useFleet((s) => s.rules.length);
+  if (chosen === "auto") return rules ? "auto" : "";
   return machines.some((m) => m.id === chosen && m.workspace_root && m.state !== "offline") ? chosen : "";
 }

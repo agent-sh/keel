@@ -35,3 +35,15 @@ test("the proof binds the nonce and the answering daemon", () => {
   expect(proof("k", "n1", "d1")).not.toEqual(proof("k", "n1", "d2"));
   expect(proof("k", "n1", "d1")).toMatch(/^[0-9a-f]{64}$/);
 });
+
+test("placement: explicit wins, first matching rule, never an offline machine, else here", async () => {
+  const { place } = await import("./placement.ts");
+  const local = { id: "local", name: "laptop", state: "ready" };
+  const ms: Record<string, { id: string; name: string; state: string }> = { m1: { id: "m1", name: "gpu", state: "offline" }, m2: { id: "m2", name: "server", state: "ready" } };
+  const ctx = { local, localBusy: true, machine: (id: string) => ms[id] };
+  const rules = [{ when: { needs_gpu: true }, machine: "m1" }, { when: { local_busy: true, kind: "run" as const }, machine: "m2", note: "laptop busy" }];
+  expect(place({ kind: "run", machine: "m1" }, rules, ctx)).toMatchObject({ machine_id: "m1", explicit: true });
+  expect(place({ kind: "run", needs_gpu: true }, rules, ctx)).toMatchObject({ machine_id: "m2", rule: 1, reason: "rule 2 (laptop busy)" });
+  expect(place({ kind: "session" }, rules, ctx)).toMatchObject({ machine_id: "local", explicit: false });
+  expect(place({ kind: "run" }, rules, { ...ctx, localBusy: false })).toMatchObject({ machine_id: "local" });
+});

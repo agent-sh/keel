@@ -20,10 +20,12 @@ type State = {
   view: FleetMachineView[];
   pairs: { daemon_id: string; name: string | null; created: number }[];
   steps: Record<string, Record<string, { machine: string; name: string }>>;
-  newMachine: string; // "" = this machine
+  newMachine: string; // "" = this machine, "auto" = the placement rules
+  rules: Rule[];
 };
+export type Rule = { when: { kind?: "session" | "subagent" | "run"; local_busy?: boolean; needs_gpu?: boolean; heavy?: boolean }; machine: string; note?: string };
 
-let state: State = { machines: [], view: [], pairs: [], steps: {}, newMachine: localStorage.getItem("keel.newMachine") ?? "" };
+let state: State = { machines: [], view: [], pairs: [], steps: {}, newMachine: localStorage.getItem("keel.newMachine") ?? "", rules: [] };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => { state = { ...state, ...p }; subs.forEach((f) => f()); };
 export const useFleet = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => sel(state));
@@ -40,8 +42,12 @@ export function setNewMachine(id: string) {
 export const fleet = {
   loadedSteps: {} as Record<string, boolean>,
   async loadMachines() {
-    const [m, p] = await Promise.all([api<{ machines: Machine[] }>("/api/fleet/machines"), api<{ pairs: State["pairs"] }>("/api/fleet/pairs")]);
-    set({ machines: m.machines, pairs: p.pairs });
+    const [m, p, r] = await Promise.all([
+      api<{ machines: Machine[] }>("/api/fleet/machines"),
+      api<{ pairs: State["pairs"] }>("/api/fleet/pairs"),
+      api<{ rules: Rule[] }>("/api/fleet/placement"),
+    ]);
+    set({ machines: m.machines, pairs: p.pairs, rules: r.rules });
   },
   // One view across machines: the other daemons' sessions join the main store.
   async loadView() {
@@ -74,8 +80,9 @@ export const fleet = {
     return r;
   },
   unpair: (daemonId: string) => api(`/api/fleet/pairs/${encodeURIComponent(daemonId)}`, { method: "DELETE" }).then(() => fleet.loadMachines()),
-  createOn: (machine: string, text: string, model?: string, images?: unknown[]) =>
-    api<{ session: Session }>("/api/fleet/sessions", { method: "POST", body: JSON.stringify({ machine, text, model, images }) }).then((r) => (apply({ t: "session", session: r.session }), r.session)),
+  createOn: (machine: string, text: string, model?: string, images?: unknown[], localWorkspace?: string) =>
+    api<{ session: Session }>("/api/fleet/sessions", { method: "POST", body: JSON.stringify({ machine, text, model, images, local_workspace: localWorkspace }) }).then((r) => (apply({ t: "session", session: r.session }), r.session)),
+  saveRules: (rules: Rule[]) => api<{ rules: Rule[] }>("/api/fleet/placement", { method: "POST", body: JSON.stringify({ rules }) }).then((r) => set({ rules: r.rules })),
 };
 
 let viewTimer: Timer | undefined;

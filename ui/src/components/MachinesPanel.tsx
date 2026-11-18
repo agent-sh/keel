@@ -2,9 +2,9 @@
 // linked to (what they have, the directory granted there, the queue), adding
 // one by its daemon URL or ssh host, the ssh hosts offered, and the daemons
 // that linked to this one.
-import { Cpu, Link2, Plus, RefreshCw, Server, Terminal, Trash2, Unlink } from "lucide-react";
+import { ArrowUp, Cpu, Link2, Plus, RefreshCw, Server, Terminal, Trash2, Unlink, Wand2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { fleet, useFleet, type Machine } from "../lib/fleet.ts";
+import { fleet, useFleet, type Machine, type Rule } from "../lib/fleet.ts";
 import { reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
@@ -209,6 +209,76 @@ function SshHost({ m, onEnable }: { m: Machine; onEnable: () => void }) {
   );
 }
 
+const COND: { key: "local_busy" | "needs_gpu" | "heavy"; label: string }[] = [
+  { key: "local_busy", label: "this machine is busy" },
+  { key: "needs_gpu", label: "it needs a GPU" },
+  { key: "heavy", label: "it is heavy" },
+];
+
+function ruleText(r: Rule) {
+  const parts = [r.when.kind ? `a ${r.when.kind}` : "any work", ...COND.filter((c) => r.when[c.key] !== undefined).map((c) => (r.when[c.key] ? c.label : `not: ${c.label}`))];
+  return parts.join(", ");
+}
+
+// The owner's placement rules: read in order, the first that holds names the machine.
+function Placement({ machines }: { machines: Machine[] }) {
+  const rules = useFleet((s) => s.rules);
+  const [kind, setKind] = useState("");
+  const [cond, setCond] = useState<Record<string, boolean>>({});
+  const [target, setTarget] = useState("");
+  const [note, setNote] = useState("");
+  const [err, setErr] = useState("");
+  const targets = [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine" }, ...machines.filter((m) => m.source !== "local" && m.enabled)];
+  const name = (id: string) => targets.find((t) => t.id === id)?.name ?? id;
+  const save = (next: Rule[]) => fleet.saveRules(next).then(() => setErr("")).catch((e) => setErr((e as Error).message));
+  return (
+    <Card>
+      <div className="py-1" data-testid="placement">
+        {rules.length === 0 && <p className="py-3.5 text-caption text-faint">No rules: new work stays on this machine unless you pick one.</p>}
+        {rules.map((r, i) => (
+          <div key={i} className="flex items-center gap-3 border-b border-line py-2.5" data-testid="placement-rule">
+            <span className="grid size-5 shrink-0 place-items-center rounded-full bg-sunken text-micro tabular-nums text-muted">{i + 1}</span>
+            <span className="min-w-0 flex-1 truncate text-ui">
+              <span className="text-muted">When {ruleText(r)}, run it on </span><span className="font-medium">{name(r.machine)}</span>
+              {r.note && <span className="text-faint"> · {r.note}</span>}
+            </span>
+            <button type="button" className={ghost} disabled={i === 0} aria-label="Move up" onClick={() => { const n = [...rules]; [n[i - 1], n[i]] = [n[i]!, n[i - 1]!]; save(n); }}><ArrowUp /></button>
+            <button type="button" className={cn(ghost, "hover:text-danger")} aria-label="Remove rule" onClick={() => save(rules.filter((_, k) => k !== i))}><X /></button>
+          </div>
+        ))}
+        <form
+          className="flex flex-wrap items-center gap-2 py-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!target) return setErr("pick the machine the rule sends work to");
+            const when: Rule["when"] = { ...(kind ? { kind: kind as Rule["when"]["kind"] } : {}), ...Object.fromEntries(Object.entries(cond).filter(([, v]) => v).map(([k]) => [k, true])) };
+            save([...rules, { when, machine: target, note: note.trim() || undefined }]).then(() => { setCond({}); setNote(""); setKind(""); });
+          }}
+        >
+          <Wand2 className="size-3.5 text-faint" />
+          <span className="text-caption text-muted">When</span>
+          <select className={cn(field, "w-auto")} value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind of work">
+            <option value="">any work</option><option value="session">a session</option><option value="subagent">a subagent</option><option value="run">a command</option>
+          </select>
+          {COND.map((c) => (
+            <label key={c.key} className={cn("inline-flex h-8 cursor-default items-center gap-1.5 rounded-md border px-2 text-caption", cond[c.key] ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:text-fg")}>
+              <input type="checkbox" className="sr-only" checked={!!cond[c.key]} onChange={(e) => setCond({ ...cond, [c.key]: e.target.checked })} />{c.label}
+            </label>
+          ))}
+          <span className="text-caption text-muted">run it on</span>
+          <select className={cn(field, "w-auto")} value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Machine" data-testid="placement-machine">
+            <option value="">machine</option>
+            {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <input className={cn(field, "w-44")} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} aria-label="Note" />
+          <button type="submit" className={btn} data-testid="placement-add"><Plus /> Add rule</button>
+        </form>
+        {err && <div className="pb-3 text-caption text-danger">{err}</div>}
+      </div>
+    </Card>
+  );
+}
+
 const HOSTS_SHOWN = 4;
 
 export function MachinesSettings() {
@@ -237,6 +307,8 @@ export function MachinesSettings() {
           )}
         </div>
       </Card>
+      {heading("Placement", <span className="normal-case tracking-normal">· where new work goes when you pick Auto; the first rule that holds wins</span>)}
+      <Placement machines={machines} />
       {offered.length > 0 && heading("ssh hosts, not enabled", <span className="normal-case tracking-normal">· from your ssh configuration</span>)}
       {offered.length > 0 && (
         <Card>

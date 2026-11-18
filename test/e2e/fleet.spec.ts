@@ -17,6 +17,8 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
   for (const s of (await (await request.get("/api/sessions")).json()).sessions) if (old.includes(s.machine)) await request.delete(`/api/sessions/${s.id}`);
   for (const id of old) await request.delete(`/api/fleet/machines/${id}`);
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
+  const prevRules = (await (await request.get("/api/fleet/placement")).json()).rules;
+  await request.post("/api/fleet/placement", { data: { rules: [] } });
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
 
   // The other machine has its own session and a file only it has.
@@ -38,6 +40,12 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(row.getByTestId("machine-link")).toContainText("linked", { timeout: 15_000 });
     await expect(row.getByTestId("machine-state")).toContainText(/ready|busy/);
     await expect(row).toContainText(ROOT);
+    // A placement rule: sessions go to the other machine when Auto is picked.
+    await page.getByLabel("Kind of work").selectOption("session");
+    await page.getByTestId("placement-machine").selectOption({ label: "devbox" });
+    await page.getByLabel("Note").fill("work lives there");
+    await page.getByTestId("placement-add").click();
+    await expect(page.getByTestId("placement-rule")).toContainText("When a session, run it on devbox");
     await shoot(page, "fleet-01-machines");
 
     // One session list: the other daemon's session, under its machine.
@@ -54,12 +62,12 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(page.locator("main")).toContainText(/pong/i);
     await shoot(page, "fleet-02-remote-session");
 
-    // A new session placed on the other machine: its tools run there.
+    // A new session placed by the rule on the other machine: its tools run there.
     await page.getByTestId("new-session").click();
     await page.getByTestId("machine-picker").click();
-    await page.locator('[data-testid="machine-option"]').filter({ hasText: "devbox" }).click();
-    await expect(page.getByTestId("machine-picker")).toContainText("devbox");
-    await expect(page.getByTestId("workspace-picker")).toHaveCount(0);
+    await expect(page.locator('[data-testid="machine-option"]').filter({ hasText: "devbox" })).toBeVisible();
+    await page.locator('[data-testid="machine-option"][data-machine="auto"]').click();
+    await expect(page.getByTestId("machine-picker")).toContainText("Auto");
     await page.getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill("haiku 5.5");
     await page.getByRole("option").first().click();
@@ -68,6 +76,7 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
     const tool = page.locator('[data-tool="Bash"]').first();
     await expect(tool.getByTestId("tool-machine")).toHaveText("devbox");
+    await expect(page.locator("main")).toContainText("Placed on devbox by rule 1 (work lives there)");
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await tool.click();
     await expect(tool).toContainText(token);
@@ -78,6 +87,7 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     expect(errors.slice(0, errors.length - errorsBefore).filter((e: any) => e.source !== "provider")).toEqual([]);
   } finally {
     await request.put("/api/permissions/settings", { data: { default_mode: prev } });
+    await request.post("/api/fleet/placement", { data: { rules: prevRules } });
     await request.delete(`${PEER}/api/sessions/${made.session.id}`);
   }
 });
