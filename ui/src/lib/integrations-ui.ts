@@ -1,8 +1,8 @@
 // The integrations lane's place in the workbench: a settings section, the
 // /memory command, and how a memory note reads in the transcript.
-import { Brain } from "lucide-react";
-import { createElement, lazy } from "react";
-import { settingsSections, slash } from "./extend.ts";
+import { Brain, Share } from "lucide-react";
+import { createElement, Fragment, lazy } from "react";
+import { headerActions, settingsSections, slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
 import { reportError } from "./store.ts";
 import { navigate } from "./ui.ts";
@@ -31,3 +31,21 @@ slash.add({
     if (!r.ok) reportError(new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`));
   },
 });
+
+// Import and export of sessions. The sheets load on first use, in a root of
+// their own beside the shell (the shell is not edited for them).
+let host: Promise<{ setImportOpen(o: boolean): void; openExport(s: any): void }> | null = null;
+function sheets() {
+  return (host ??= Promise.all([import("../components/ImportSheet.tsx"), import("../components/ExportDialog.tsx"), import("react-dom/client")]).then(([imp, exp, dom]) => {
+    const el = document.body.appendChild(document.createElement("div"));
+    el.dataset.host = "import-export";
+    dom.createRoot(el).render(createElement(Fragment, null, createElement(imp.ImportOverlay), createElement(exp.ExportOverlay)));
+    return { setImportOpen: imp.setImportOpen, openExport: exp.openExport };
+  }));
+}
+export const openImport = () => sheets().then((m) => m.setImportOpen(true)).catch(reportError);
+const openExport = (s: any) => sheets().then((m) => m.openExport(s)).catch(reportError);
+
+registerCommand({ id: "import-sessions", label: "Import sessions", group: "General", words: "claude code codex rust keel history import resume", run: openImport });
+slash.add({ id: "import", label: "Import sessions from Claude Code, Codex or the Rust Keel", run: () => void openImport() });
+headerActions.add({ id: "export", label: "Export or continue elsewhere", icon: createElement(Share, { className: "size-4" }), run: (s) => void openExport(s) });

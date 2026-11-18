@@ -18,6 +18,7 @@ import { toolRoutes } from "./tools.ts";
 import { usageRoutes } from "./usage.ts";
 import { searchRoutes } from "./search.ts";
 import { integrationRoutes } from "./integrations.ts";
+import { importRoutes } from "./imports.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { turnRoutes } from "./turns.ts";
@@ -47,5 +48,6 @@ export const routeModules: RouteModule[] = [
   mobileRoutes, // after automation: it registers the phone as an alert channel
   draftRoutes,
   boardRoutes,
+  importRoutes,
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

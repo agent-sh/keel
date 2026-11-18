@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowUp, CircleAlert, Cpu, RefreshCw, TerminalSquare } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, ArrowUp, CircleAlert, Cpu, RefreshCw, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReadPrompt, Row } from "../../../src/drive/drive.ts";
 import type { Turn } from "../../../src/drive/transcript.ts";
@@ -219,6 +219,22 @@ function Detail({ id, back }: { id: string; back: () => void }) {
             </div>
           </div>
         ) : <span className="text-ui text-faint">{id}</span>}
+        {s && s.transcript && !s.host && (s.kind === "claude" || s.kind === "codex") && (
+          <button
+            data-testid="elsewhere-import"
+            title="Import into Keel: a copy that goes on here; the original keeps running"
+            aria-label="Import into Keel"
+            onClick={() => {
+              const go = (mode?: string) => api<{ session: { id: string } }>("/api/import", { method: "POST", body: JSON.stringify({ outside: s.id, mode }) });
+              // Imported before: bring that copy up to date instead of making another.
+              go().catch((e: Error) => (/imported before/.test(e.message) ? go("update") : Promise.reject(e)))
+                .then((r) => navigate({ name: "session", id: r.session.id }), reportError);
+            }}
+            className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
+          >
+            <ArrowDownToLine className="size-4" />
+          </button>
+        )}
         {s?.drive.model && (
           <button onClick={() => setModel(model === null ? "" : null)} title="Switch its model" aria-label="Switch its model" className={cn("grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg", model !== null && "bg-hover text-fg")}>
             <Cpu className="size-4" />

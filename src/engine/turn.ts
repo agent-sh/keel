@@ -501,6 +501,7 @@ export class Engine {
     if (!messages.length || (events.at(-1)?.kind === "compaction")) throw Object.assign(new Error("nothing to compact"), { status: 409 });
     const st = opts.step ?? (await this.step(session, session.model));
     const before = contextTokens(events).used;
+    for (const h of allHooks()) await Promise.resolve(h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact" }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;

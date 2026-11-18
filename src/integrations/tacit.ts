@@ -16,6 +16,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
+import { lineage } from "../core/tree.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
 
 export function findBin(envVar: string, name: string, env = process.env): string | null {
@@ -137,7 +138,7 @@ export class Tacit {
     const dir = join(this.store.stateDir, "transcripts");
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(path, toJsonl(toClaudeRecords(s, this.store.events(s.id))), { mode: 0o600 });
+      writeFileSync(path, toJsonl(toClaudeRecords(s, this.lineage(s.id))), { mode: 0o600 });
     } catch (e) {
       this.errors.capture("server", e, { at: "tacit transcript", session: s.id });
     }
@@ -182,6 +183,10 @@ export class Tacit {
     await this.hook(["pre-compact"], { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) }, 4000);
   }
 
+  lineage(id: string) {
+    return lineage(this.store.events(id), this.store.session(id)?.head ?? null);
+  }
+
   forget(id: string) {
     this.start.delete(id);
   }
@@ -191,7 +196,7 @@ export class Tacit {
     registerHooks({
       async beforeRequest(s, req) {
         if (!t.bin || !t.flags(s.id).use_memory) return req;
-        const events = t.store.events(s.id);
+        const events = t.lineage(s.id);
         // The prompt this request answers: the newest user message, with no reply after it yet.
         let i = events.length - 1;
         while (i >= 0 && (events[i]!.kind === "turn_start" || (events[i]!.kind === "note" && !events[i]!.data.model))) i--;
@@ -204,8 +209,9 @@ export class Tacit {
         if (!parts.length) return req;
         const ev = t.store.append(s.id, "note", { text: parts.join("\n\n"), model: true, memory: { source: "tacit", hooks: [start && "session-start", prompt && "prompt"].filter(Boolean) } });
         t.bus.emit({ t: "event", event: ev });
-        return { ...req, messages: toMessages(t.store.events(s.id)) };
+        return { ...req, messages: toMessages(t.lineage(s.id)) };
       },
+      beforeCompact: (s) => t.preCompact(s),
       beforeTool(s, call) {
         if (!t.bin || !t.flags(s.id).use_memory) return;
         // Runs beside the tool; its answer joins the result.

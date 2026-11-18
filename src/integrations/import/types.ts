@@ -1,0 +1,93 @@
+// What every reader of another harness's store gives: sessions it finds
+// (cheap: a file's head and tail), and one session read whole as keel-bun
+// events. Readers only read: they never write beside the files they read.
+import type { EventKind } from "../../core/types.ts";
+
+export type Harness = "claude" | "codex" | "keel";
+export type Kind = "interactive" | "subagent" | "headless";
+
+export type Found = {
+  harness: Harness;
+  id: string;
+  path: string;          // the file (or the database) it is read from
+  cwd?: string;
+  title: string;
+  first_prompt?: string;
+  last_prompt?: string;
+  updated_ms: number;
+  size_bytes: number;
+  model?: string;
+  kind: Kind;
+  parent_id?: string;
+};
+
+export type ImportedEvent = { kind: EventKind; data: any; ts: number };
+
+export type Counts = { prompts: number; assistant_messages: number; tool_calls: number; thoughts_dropped: number; skipped: number; media: number };
+
+export type Read = {
+  found: Found;
+  events: ImportedEvent[];
+  counts: Counts;
+  notes: string[];
+};
+
+export const emptyCounts = (): Counts => ({ prompts: 0, assistant_messages: 0, tool_calls: 0, thoughts_dropped: 0, skipped: 0, media: 0 });
+
+export const clip = (s: string, n = 200) => {
+  const l = s.replace(/\s+/g, " ").trim();
+  return l.length > n ? l.slice(0, n - 1) + "…" : l;
+};
+
+// Grouping helper: assistant blocks of one reply become one event, results of
+// one round one event, so the history reads as keel-bun writes its own.
+export class Builder {
+  events: ImportedEvent[] = [];
+  counts = emptyCounts();
+  private last(kind: EventKind) {
+    const e = this.events[this.events.length - 1];
+    return e && e.kind === kind ? e : undefined;
+  }
+  user(text: string, ts: number, images: any[] = []) {
+    if (!text.trim() && !images.length) return;
+    this.counts.prompts++;
+    this.counts.media += images.length;
+    this.events.push({ kind: "user", data: { text, images: images.length ? images : undefined }, ts });
+  }
+  assistant(blocks: any[], ts: number, model?: string, newMessage = false) {
+    if (!blocks.length) return;
+    const prev = newMessage ? undefined : this.last("assistant");
+    for (const b of blocks) if (b.type === "tool_use") this.counts.tool_calls++;
+    if (prev) prev.data.blocks.push(...blocks);
+    else {
+      this.counts.assistant_messages++;
+      this.events.push({ kind: "assistant", data: { blocks: [...blocks], model, stop: blocks.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn", imported: true }, ts });
+    }
+    const e = this.last("assistant")!;
+    e.data.stop = e.data.blocks.some((b: any) => b.type === "tool_use") ? "tool_use" : "end_turn";
+  }
+  result(r: { tool_use_id: string; content: any; is_error?: boolean }, ts: number) {
+    const prev = this.last("tool_result");
+    const block = { type: "tool_result", tool_use_id: r.tool_use_id, content: r.content, is_error: r.is_error || undefined };
+    if (prev) prev.data.results.push(block);
+    else this.events.push({ kind: "tool_result", data: { results: [block] }, ts });
+  }
+  note(text: string, ts: number, model = false) {
+    this.events.push({ kind: "note", data: { text, model: model || undefined, imported: true }, ts });
+  }
+}
+
+// Text of a tool result in any of the shapes harnesses write.
+export function resultText(c: any): string | any[] {
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) {
+    const out: any[] = [];
+    for (const p of c) {
+      if (typeof p === "string") out.push({ type: "text", text: p });
+      else if (p?.type === "text" || p?.type === "input_text" || p?.type === "output_text") out.push({ type: "text", text: p.text ?? "" });
+      else if (p?.type === "image" && p.source) out.push(p);
+    }
+    return out.length === 1 && out[0].type === "text" ? out[0].text : out;
+  }
+  return c == null ? "" : JSON.stringify(c);
+}

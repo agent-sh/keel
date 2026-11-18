@@ -37,6 +37,11 @@ export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: st
           uuid: crypto.randomUUID(),
         });
       }
+    } else if (e.kind === "compaction" && e.data.summary) {
+      // Claude Code's shape: a boundary, then the summary as the chain's first message.
+      parent = null;
+      push({ ...base(e.ts), type: "system", subtype: "compact_boundary", content: "Conversation compacted", level: "info", uuid: crypto.randomUUID() });
+      push({ ...base(e.ts), type: "user", isCompactSummary: true, message: { role: "user", content: e.data.summary }, uuid: crypto.randomUUID() });
     } else if (e.kind === "tool_result") {
       for (const r of e.data.results ?? []) {
         push({ ...base(e.ts), type: "user", message: { role: "user", content: [r] }, uuid: crypto.randomUUID() });
