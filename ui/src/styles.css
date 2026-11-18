@@ -249,3 +249,4 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 
 /* Long transcripts: rows off screen skip layout and paint. */
 .row-cv { content-visibility: auto; contain-intrinsic-size: auto 120px; }
+

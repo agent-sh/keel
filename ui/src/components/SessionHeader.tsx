@@ -1,5 +1,5 @@
 import { Menu } from "@base-ui/react/menu";
-import { Archive, Copy, Ellipsis, Folder, FolderPlus, Link2, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
@@ -97,14 +97,28 @@ export function SessionHeader({ session }: { session: Session }) {
         <Menu.Portal>
           <Menu.Positioner sideOffset={6} align="end" className="z-50 outline-none">
             <Menu.Popup className={cn(popupClass, "min-w-52")}>
-              <Menu.Item className={itemClass} onClick={() => setEditing(true)}><Pencil /> Rename</Menu.Item>
+              <Menu.Item className={itemClass} data-testid="menu-rename" onClick={() => setEditing(true)}><Pencil /> Rename</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => navigator.clipboard.writeText(location.href)}><Link2 /> Copy link</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => navigator.clipboard.writeText(session.workspace)}><Copy /> Copy folder path</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); }}><FolderPlus /> New session here</Menu.Item>
               <Menu.Separator className="mx-1 my-1 h-px bg-line" />
-              <Menu.Item className={itemClass} onClick={() => { actions.patch(session.id, { archived: true }).catch(reportError); navigate({ name: "new" }); }}><Archive /> Archive</Menu.Item>
+              <Menu.Item
+                className={itemClass}
+                data-testid="menu-fork"
+                disabled={!session.head}
+                onClick={() => session.head && actions.fork(session.id, session.head).then((f) => navigate({ name: "session", id: f.id }), reportError)}
+              >
+                <GitBranch /> Fork
+              </Menu.Item>
+              <Menu.Separator className="mx-1 my-1 h-px bg-line" />
+              {session.archived ? (
+                <Menu.Item className={itemClass} data-testid="menu-restore" onClick={() => actions.patch(session.id, { archived: false }).catch(reportError)}><ArchiveRestore /> Restore</Menu.Item>
+              ) : (
+                <Menu.Item className={itemClass} data-testid="menu-archive" onClick={() => actions.patch(session.id, { archived: true }).catch(reportError)}><Archive /> Archive</Menu.Item>
+              )}
               <Menu.Item
                 className={cn(itemClass, "text-danger [&>svg]:text-danger")}
+                data-testid="menu-delete"
                 onClick={async () => {
                   const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
                   if (ok) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); }

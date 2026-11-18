@@ -2,6 +2,7 @@ import "./lib/fonts.ts";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import "./features/safety.tsx";
+import "./lib/turns.ts";
 
 // Install metadata. Added here, not in index.html, because the bundler tries
 // to resolve every link in the page as a file to bundle.

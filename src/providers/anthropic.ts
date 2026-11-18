@@ -25,11 +25,11 @@ export class AnthropicProvider implements Provider {
         baseURL: e.ANTHROPIC_BEDROCK_BASE_URL,
         skipAuth: e.CLAUDE_CODE_SKIP_BEDROCK_AUTH === "1",
         awsRegion: e.AWS_REGION ?? "us-east-1",
-        maxRetries: 3,
+        maxRetries: 0,
       });
     }
     if (!e.ANTHROPIC_API_KEY && !e.ANTHROPIC_AUTH_TOKEN) return null;
-    return new Anthropic({ maxRetries: 3 });
+    return new Anthropic({ maxRetries: 0 });
   }
 
   available() {
@@ -107,6 +107,7 @@ export class AnthropicProvider implements Provider {
       blocks,
       model: req.model,
       stop: msg.stop_reason ?? "end_turn",
+      stop_details: (msg as any).stop_details ?? undefined,
       usage: {
         ...emptyUsage(),
         input: u.input_tokens ?? 0,

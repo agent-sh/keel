@@ -74,7 +74,7 @@ export function Palette() {
       out.push({
         key: `h:${h.event_id}`, group: "In conversations", detail: h.session_title || "New session",
         label: <Snippet text={h.snippet} />, icon: <TextSearch className="size-4" />, score: 50 - i,
-        run: () => { setUI({ focusEvent: h.event_id! }); navigate({ name: "session", id: h.session_id }); },
+        run: () => { actions.setHead(h.session_id, h.event_id!, true).catch(reportError).finally(() => { setUI({ focusEvent: h.event_id! }); navigate({ name: "session", id: h.session_id }); }); },
       });
     }
     const order = ["Sessions", "Actions", "In conversations", "Models"];

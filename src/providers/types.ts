@@ -35,6 +35,8 @@ export type ProviderResult = {
   blocks: AssistantBlock[];
   usage: Usage;
   stop: string; // end_turn | tool_use | max_tokens | refusal | pause_turn | ...
+  // Set with stop "refusal": the provider's category and explanation.
+  stop_details?: { category?: string | null; explanation?: string | null } | null;
   model: string;
 };
 

@@ -49,20 +49,26 @@ export function addUsage(a: Usage, b: Partial<Usage>): Usage {
   };
 }
 
-// What is stored, one row per event, in order. `seq` is per session.
+// What is stored, one row per event, in order. `seq` is per session. Events form
+// a tree: `parent` is the event before it on its branch, the session's `head` is
+// the newest event of the branch shown. Nothing is ever rewritten: an edited
+// prompt is a new sibling, a compaction is a checkpoint event.
+export type UserOrigin = "owner" | "steer" | "queued" | "harness";
 export type EventKind =
-  | "user"          // the owner's message: { text, images? }
-  | "assistant"     // one model response: { blocks, model, usage, stop }
+  | "user"          // a prompt: { text, images?, origin? } (origin absent = owner)
+  | "assistant"     // one model response: { blocks, model, usage, stop, stop_details? }
   | "tool_result"   // results of one round of tool calls: { results: ToolResultBlock[] }
   | "turn_start"    // { model }
   | "turn_end"      // { reason, usage, ms }
   | "error"         // { message, where }
-  | "note";         // system note shown in the transcript: { text }
+  | "note"          // system note shown in the transcript: { text, kind? }
+  | "compaction";   // context checkpoint: { mode: "summary" | "clear", summary?, owner_messages?, focus?, auto?, tokens_before? }
 
 export type StoredEvent = {
   id: string;
   session_id: string;
   seq: number;
+  parent: string | null;
   kind: EventKind;
   data: any;
   ts: number;
@@ -78,7 +84,19 @@ export type Session = {
   phase: "idle" | "working" | "error";
   archived: boolean;
   usage: Usage;
+  head: string | null;
+  settings: SessionSettings;
 };
+
+// Per-session turn settings. Values come from the model's listing (efforts) or
+// the owner; nothing here has a built-in model name.
+export type SessionSettings = {
+  effort?: string;     // one of the model's listed efforts; absent = the model's default
+  fallback?: string;   // model id to continue on when the session's model declines
+  compact_at?: number; // owner ceiling in tokens; absent = a share of the model's window
+};
+
+export type QueueItem = { id: string; session_id: string; text: string; steer: boolean; pos: number; created: number };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);
 // `delta` frames are live streaming text and are not stored.
@@ -86,6 +104,8 @@ export type Frame =
   | { t: "event"; event: StoredEvent }
   | { t: "delta"; session_id: string; index: number; kind: "text" | "thinking" | "tool_input"; text: string; name?: string }
   | { t: "session"; session: Session }
+  | { t: "queue"; session_id: string; queue: QueueItem[]; held: boolean }
+  | { t: "status"; session_id: string; status: TurnStatus }
   | { t: "error"; error: ErrorRecord }
   // A feature module's live update (approvals, checkpoints, worktrees): the UI
   // routes it by `name` to the module's own client state.
@@ -99,3 +119,9 @@ export type ErrorRecord = {
   stack?: string;
   context?: any;
 };
+
+// Live, not stored: what the turn is doing besides streaming.
+export type TurnStatus =
+  | { kind: "idle" }
+  | { kind: "retry"; attempt: number; max: number; at: number; message: string }
+  | { kind: "compacting"; auto: boolean };

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { ErrorRecord, EventKind, Session, StoredEvent, Usage } from "./types.ts";
+import type { ErrorRecord, EventKind, QueueItem, Session, StoredEvent, Usage } from "./types.ts";
 import { addUsage, emptyUsage } from "./types.ts";
 
 const SCHEMA = `
@@ -37,12 +37,29 @@ CREATE TABLE IF NOT EXISTS errors (
   context TEXT
 );
 CREATE INDEX IF NOT EXISTS errors_ts ON errors(ts DESC);
+CREATE TABLE IF NOT EXISTS queue (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  steer INTEGER NOT NULL DEFAULT 0,
+  pos REAL NOT NULL,
+  created INTEGER NOT NULL
+);
 `;
 
-type SessionRow = Omit<Session, "archived" | "usage"> & { archived: number; usage: string };
+type EventRow = Omit<StoredEvent, "data"> & { data: string };
+const rowToEvent = (r: EventRow): StoredEvent => ({ ...r, parent: r.parent ?? null, kind: r.kind as EventKind, data: JSON.parse(r.data) });
+
+type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
 function rowToSession(r: SessionRow): Session {
-  return { ...r, archived: !!r.archived, usage: { ...emptyUsage(), ...JSON.parse(r.usage || "{}") } };
+  return {
+    ...r,
+    head: r.head ?? null,
+    archived: !!r.archived,
+    usage: { ...emptyUsage(), ...JSON.parse(r.usage || "{}") },
+    settings: JSON.parse(r.settings || "{}"),
+  };
 }
 
 export class Store {
@@ -52,6 +69,15 @@ export class Store {
     mkdirSync(stateDir, { recursive: true });
     this.db = new Database(join(stateDir, "keel.db"), { create: true, strict: true });
     this.db.exec(SCHEMA);
+    // The event tree (edit, fork, branches) and per-session settings.
+    if (!this.columnExists("events", "parent")) this.db.exec("ALTER TABLE events ADD COLUMN parent TEXT");
+    if (!this.columnExists("sessions", "head")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN head TEXT");
+      // A session from before the tree is one line: each event follows the one before.
+      this.db.exec(`UPDATE events SET parent = (SELECT e2.id FROM events e2 WHERE e2.session_id = events.session_id AND e2.seq < events.seq ORDER BY e2.seq DESC LIMIT 1)`);
+      this.db.exec(`UPDATE sessions SET head = (SELECT id FROM events WHERE session_id = sessions.id ORDER BY seq DESC LIMIT 1)`);
+    }
+    if (!this.columnExists("sessions", "settings")) this.db.exec("ALTER TABLE sessions ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
     // Sessions left "working" by a crash or restart are idle now: no turn runs.
     this.db.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
   }
@@ -66,12 +92,12 @@ export class Store {
     return this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
   }
 
-  createSession(s: { title?: string; model: string; workspace: string }): Session {
+  createSession(s: { title?: string; model: string; workspace: string; settings?: Session["settings"] }): Session {
     const now = Date.now();
     const id = Bun.randomUUIDv7();
     this.db
-      .query("INSERT INTO sessions (id, title, model, workspace, created, updated) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(id, s.title ?? "", s.model, s.workspace, now, now);
+      .query("INSERT INTO sessions (id, title, model, workspace, created, updated, settings) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(id, s.title ?? "", s.model, s.workspace, now, now, JSON.stringify(s.settings ?? {}));
     return this.session(id)!;
   }
 
@@ -87,13 +113,13 @@ export class Store {
       .map(rowToSession);
   }
 
-  updateSession(id: string, patch: Partial<Pick<Session, "title" | "model" | "phase" | "archived" | "usage" | "workspace">>): Session {
+  updateSession(id: string, patch: Partial<Pick<Session, "title" | "model" | "phase" | "archived" | "usage" | "workspace" | "head" | "settings">>): Session {
     const sets: string[] = [];
     const vals: (string | number)[] = [];
     for (const [k, v] of Object.entries(patch)) {
       if (v === undefined) continue;
       sets.push(`${k} = ?`);
-      vals.push(k === "usage" ? JSON.stringify(v) : k === "archived" ? (v ? 1 : 0) : (v as string));
+      vals.push(k === "usage" || k === "settings" ? JSON.stringify(v) : k === "archived" ? (v ? 1 : 0) : (v as string));
     }
     sets.push("updated = ?");
     vals.push(Date.now());
@@ -105,29 +131,87 @@ export class Store {
     this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
   }
 
-  append(session_id: string, kind: EventKind, data: unknown): StoredEvent {
+  // A new event at the head of the session's branch (or after `parent`, which
+  // starts a new branch there: an edited prompt). It becomes the head.
+  append(session_id: string, kind: EventKind, data: unknown, parent?: string | null): StoredEvent {
     const id = Bun.randomUUIDv7();
     const ts = Date.now();
     const tx = this.db.transaction(() => {
       const { n } = this.db
         .query<{ n: number }, [string]>("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM events WHERE session_id = ?")
         .get(session_id)!;
+      const p = parent !== undefined
+        ? parent
+        : (this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null);
       this.db
-        .query("INSERT INTO events (id, session_id, seq, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(id, session_id, n, kind, JSON.stringify(data), ts);
-      this.db.query("UPDATE sessions SET updated = ? WHERE id = ?").run(ts, session_id);
-      return n;
+        .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(id, session_id, n, p, kind, JSON.stringify(data), ts);
+      this.db.query("UPDATE sessions SET updated = ?, head = ? WHERE id = ?").run(ts, id, session_id);
+      return { n, p };
     });
-    return { id, session_id, seq: tx(), kind, data, ts };
+    const { n, p } = tx();
+    return { id, session_id, seq: n, parent: p, kind, data, ts };
   }
 
+  // Every event of the session, all branches, in seq order.
   events(session_id: string, afterSeq = 0): StoredEvent[] {
     return this.db
-      .query<Omit<StoredEvent, "data"> & { data: string }, [string, number]>(
-        "SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq",
-      )
+      .query<EventRow, [string, number]>("SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq")
       .all(session_id, afterSeq)
-      .map((r) => ({ ...r, kind: r.kind as EventKind, data: JSON.parse(r.data) }));
+      .map(rowToEvent);
+  }
+
+  event(id: string): StoredEvent | undefined {
+    const r = this.db.query<EventRow, [string]>("SELECT * FROM events WHERE id = ?").get(id);
+    return r ? rowToEvent(r) : undefined;
+  }
+
+  // Copy a lineage into another session under new ids (fork). Returns the new head.
+  copyEvents(session_id: string, events: StoredEvent[]): string | null {
+    let prev: string | null = null;
+    const tx = this.db.transaction(() => {
+      let seq = 0;
+      for (const e of events) {
+        const id = Bun.randomUUIDv7();
+        this.db
+          .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(e.data), e.ts);
+        prev = id;
+      }
+      this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, session_id);
+    });
+    tx();
+    return prev;
+  }
+
+  // Queue: prompts waiting for the running turn (steer) or for the next one.
+  queue(session_id: string): QueueItem[] {
+    return this.db
+      .query<any, [string]>("SELECT * FROM queue WHERE session_id = ? ORDER BY steer DESC, pos")
+      .all(session_id)
+      .map((r) => ({ ...r, steer: !!r.steer }));
+  }
+
+  enqueue(session_id: string, text: string, steer: boolean): QueueItem {
+    const id = Bun.randomUUIDv7();
+    const { p } = this.db.query<{ p: number }, [string]>("SELECT COALESCE(MAX(pos), 0) + 1 AS p FROM queue WHERE session_id = ?").get(session_id)!;
+    this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created) VALUES (?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now());
+    return this.queue(session_id).find((q) => q.id === id)!;
+  }
+
+  queueItem(id: string): QueueItem | undefined {
+    const r = this.db.query<any, [string]>("SELECT * FROM queue WHERE id = ?").get(id);
+    return r ? { ...r, steer: !!r.steer } : undefined;
+  }
+
+  updateQueueItem(id: string, patch: { text?: string; steer?: boolean; pos?: number }) {
+    if (patch.text !== undefined) this.db.query("UPDATE queue SET text = ? WHERE id = ?").run(patch.text, id);
+    if (patch.steer !== undefined) this.db.query("UPDATE queue SET steer = ? WHERE id = ?").run(patch.steer ? 1 : 0, id);
+    if (patch.pos !== undefined) this.db.query("UPDATE queue SET pos = ? WHERE id = ?").run(patch.pos, id);
+  }
+
+  dequeue(id: string) {
+    this.db.query("DELETE FROM queue WHERE id = ?").run(id);
   }
 
   recordError(e: Omit<ErrorRecord, "id" | "ts">): ErrorRecord {

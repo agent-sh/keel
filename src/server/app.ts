@@ -31,6 +31,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       try {
         return await h(req);
       } catch (e) {
+        const st = (e as any)?.status;
+        if (typeof st === "number" && st >= 400 && st < 500) return json({ error: (e as Error).message }, st);
         const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
         return json({ error: rec.message, error_id: rec.id }, 500);
       }
@@ -64,7 +66,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           await providers.resolve(model);
           const s = store.createSession({ model, workspace, title: body.title });
           bus.emit({ t: "session", session: s });
-          if (body.text) engine.send(s.id, body.text, body.images ?? []);
+          if (body.text) engine.send(s.id, body.text, { images: body.images ?? [] });
           return json({ session: store.session(s.id) }, 201);
         }),
       },
@@ -72,21 +74,42 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       "/api/sessions/:id": {
         GET: wrap((req) => {
           const s = session(req.params.id);
-          return s ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id) }) : bad("no such session", 404);
+          return s
+            ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id), queue: store.queue(s.id), held: engine.isHeld(s.id) })
+            : bad("no such session", 404);
         }),
         PATCH: wrap(async (req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           const body = (await req.json()) as any;
-          if (body.model) await providers.resolve(body.model);
-          const next = store.updateSession(s.id, { title: body.title, model: body.model, archived: body.archived });
+          if (body.title !== undefined && !String(body.title).trim()) return bad("the title cannot be empty");
+          if (body.model && body.model !== s.model) {
+            const { info } = await providers.resolve(body.model);
+            const from = (await providers.models()).find((m) => m.id === s.model)?.name ?? s.model;
+            bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "model", text: `Model changed from ${from} to ${info.name}.` }) });
+          }
+          let settings = s.settings;
+          if (body.settings) {
+            settings = { ...s.settings };
+            for (const [k, v] of Object.entries(body.settings)) {
+              if (v === null || v === "") delete (settings as any)[k];
+              else (settings as any)[k] = v;
+            }
+            const info = (await providers.models()).find((m) => m.id === (body.model ?? s.model));
+            if (settings.effort && info && !info.efforts.includes(settings.effort)) return bad(`${info.name} does not take effort ${settings.effort}`);
+            if (settings.fallback) await providers.resolve(settings.fallback);
+            if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");
+          }
+          // Archiving stops the session: the turn is cut and its queue held.
+          if (body.archived === true) await engine.interrupt(s.id);
+          const next = store.updateSession(s.id, { title: body.title?.trim(), model: body.model, archived: body.archived, settings });
           bus.emit({ t: "session", session: next });
           return json({ session: next });
         }),
-        DELETE: wrap((req) => {
+        DELETE: wrap(async (req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
-          engine.interrupt(s.id);
+          await engine.interrupt(s.id);
           store.deleteSession(s.id);
           bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle", title: s.title } });
           return json({ ok: true });
@@ -108,14 +131,15 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const body = (await req.json()) as any;
           const text = String(body.text ?? "").trim();
           if (!text) return bad("text cannot be empty");
-          const ev = engine.send(s.id, text, body.images ?? []);
-          return json({ event: ev }, 201);
+          if (body.mode && !["send", "steer", "queue"].includes(body.mode)) return bad(`unknown mode ${body.mode}`);
+          if (body.edit_of) return json(await engine.edit(s.id, String(body.edit_of), text), 201);
+          return json(engine.send(s.id, text, { mode: body.mode, images: body.images ?? [] }), 201);
         }),
       },
 
       "/api/sessions/:id/interrupt": {
-        POST: wrap((req) => {
-          engine.interrupt(req.params.id);
+        POST: wrap(async (req) => {
+          await engine.interrupt(req.params.id);
           return json({ ok: true });
         }),
       },

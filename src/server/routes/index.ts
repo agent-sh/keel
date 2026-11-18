@@ -8,6 +8,7 @@ import { toolRoutes } from "./tools.ts";
 import { searchRoutes } from "./search.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
+import { turnRoutes } from "./turns.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -20,4 +21,5 @@ export const routeModules: RouteModule[] = [
   searchRoutes,
   providersRoutes,
   worktreeRoutes,
+  turnRoutes,
 ];

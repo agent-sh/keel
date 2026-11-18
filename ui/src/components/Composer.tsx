@@ -1,4 +1,4 @@
-import { ArrowUp, File as FileIcon, Folder, ImagePlus, Slash, Square, X } from "lucide-react";
+import { ArrowUp, File as FileIcon, Folder, ImagePlus, ListPlus, Slash, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ImageBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
@@ -8,6 +8,7 @@ import { reportError, useStore } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
 
 type Menu =
   | { kind: "slash"; query: string; start: number }
@@ -24,10 +25,13 @@ function useSlashItems() {
 }
 
 export function Composer({
-  session, onSend, onStop, working, model, onModel, workspace, autoFocus,
+  session, onSend, onQueue, onStop, working, model, onModel, workspace, autoFocus,
 }: {
   session?: Session;
   onSend: (text: string, images: ImageBlock[]) => Promise<unknown> | void;
+  // While a turn runs, Enter steers (the text joins the turn at its next model
+  // call) and Tab or the queue button queues it for after the turn.
+  onQueue?: (text: string) => Promise<unknown> | void;
   onStop?: () => void;
   working?: boolean;
   model: string;
@@ -37,7 +41,6 @@ export function Composer({
 }) {
   const [text, setText] = useState(() => localStorage.getItem(draftKey(session?.id)) ?? "");
   const [images, setImages] = useState<Attachment[]>([]);
-  const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [sel, setSel] = useState(0);
   const [files, setFiles] = useState<{ path: string; dir: boolean }[]>([]);
@@ -180,32 +183,38 @@ export function Composer({
 
   useEffect(() => setSel(0), [menu?.kind, menu?.query]);
 
-  const submit = async () => {
+  const submit = async (queue = false) => {
     const t = text.trim();
-    if ((!t && !images.length) || busy) return;
+    if (!t && !images.length) return;
     const cmd = t.match(/^\/([\w-]+)(?:\s+([\s\S]*))?$/);
     if (cmd && !images.length) {
       const item = slashItems.find((i) => i.id === cmd[1]);
       if (item) return runSlash(item, (cmd[2] ?? "").trim());
     }
-    setBusy(true);
+    // The box clears at once (the next prompt can be typed while this one is on
+    // its way); a failed send puts the text back if the box is still empty.
+    const sent = images;
+    setText("");
+    setImages([]);
+    setMenu(null);
     try {
-      await onSend(t || "(image)", images.map(toBlock));
-      setText("");
-      setImages([]);
-      setMenu(null);
+      if (queue && onQueue && t) await onQueue(t);
+      else await onSend(t || "(image)", sent.map(toBlock));
     } catch (e) {
+      setText((cur) => cur || t);
       setNotice(String((e as Error).message));
     } finally {
-      setBusy(false);
       ref.current?.focus();
     }
   };
 
   const open = menu && options.length > 0;
-  const canSend = (!!text.trim() || images.length > 0) && !busy;
+  const canSend = !!text.trim() || images.length > 0;
+  const sid = session?.id;
 
   return (
+    <>
+    {sid && <QueuePanel sessionId={sid} />}
     <div
       className={cn(
         "relative rounded-xl border bg-raised shadow-2 transition-[border-color,box-shadow] duration-150",
@@ -277,7 +286,7 @@ export function Composer({
         rows={1}
         value={text}
         aria-label="Message"
-        placeholder={working ? "Steer the turn, or queue a message" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
+        placeholder={working ? "Enter steers the running turn, Tab queues for after it" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
@@ -298,6 +307,7 @@ export function Composer({
             e.preventDefault();
             submit();
           }
+          if (e.key === "Tab" && !e.shiftKey && working && onQueue && text.trim()) { e.preventDefault(); submit(true); }
           if (e.key === "Escape" && working) { e.preventDefault(); onStop?.(); }
         }}
         className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
@@ -315,9 +325,24 @@ export function Composer({
         </button>
         <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
         <ModelPicker value={model} onChange={onModel} openSignal={modelSignal} />
+        {sid && <EffortPicker sessionId={sid} />}
         {notice && <span className="ml-1 min-w-0 truncate text-caption text-warn animate-in" role="status" data-testid="composer-notice">{notice}</span>}
         {!connected && !notice && <span className="ml-1 truncate text-caption text-faint">Reconnecting</span>}
         <div className="ml-auto flex items-center gap-1.5">
+          {sid && <ContextMeter sessionId={sid} />}
+          {working && onQueue && (
+            <button
+              type="button"
+              data-testid="queue-button"
+              onClick={() => submit(true)}
+              disabled={!text.trim()}
+              title="Queue for after this turn (Tab)"
+              aria-label="Queue for after this turn"
+              className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg disabled:opacity-40"
+            >
+              <ListPlus className="size-4" />
+            </button>
+          )}
           {working && (
             <button
               type="button"
@@ -333,9 +358,9 @@ export function Composer({
           <button
             type="button"
             data-testid="send"
-            onClick={submit}
+            onClick={() => submit()}
             disabled={!canSend}
-            title={enterSends ? "Send (Enter)" : "Send (Ctrl Enter)"}
+            title={working ? "Steer into the running turn" : enterSends ? "Send (Enter)" : "Send (Ctrl Enter)"}
             aria-label="Send"
             className={cn(
               "grid size-8 place-items-center rounded-full bg-accent text-accent-fg transition-[background-color,opacity,transform] duration-150",
@@ -347,5 +372,6 @@ export function Composer({
         </div>
       </div>
     </div>
+    </>
   );
 }

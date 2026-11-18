@@ -20,3 +20,15 @@ export function ago(ts: number): string {
 // Full time for tooltips, 24-hour clock.
 export const when = (ts: number) =>
   new Date(ts).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+export function fmtCost(usd?: number): string {
+  if (usd === undefined) return "";
+  if (usd < 0.0001) return usd ? "<$0.0001" : "$0";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 10) return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(0)}`;
+}
+
+export function fmtWait(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}

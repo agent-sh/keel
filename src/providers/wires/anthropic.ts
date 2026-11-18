@@ -3,7 +3,7 @@
 import type { AssistantBlock, Message } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { project } from "../project.ts";
-import type { ProviderRequest } from "../types.ts";
+import type { ProviderRequest, ProviderResult } from "../types.ts";
 import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
 const image = (b: { media_type: string; data: string }) => ({ type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } });
@@ -71,6 +71,7 @@ export const anthropicWire: WireCodec = {
     const json = new Map<number, string>();
     const usage = emptyUsage();
     let stop = "end_turn";
+    let stopDetails: ProviderResult["stop_details"];
     let finished = false;
     return {
       get finished() { return finished; },
@@ -104,6 +105,7 @@ export const anthropicWire: WireCodec = {
           }
           case "message_delta":
             if (ev.delta?.stop_reason) stop = ev.delta.stop_reason;
+            if (ev.delta?.stop_details) stopDetails = ev.delta.stop_details;
             if (ev.usage?.output_tokens !== undefined) usage.output = ev.usage.output_tokens;
             break;
           case "message_stop":
@@ -122,7 +124,7 @@ export const anthropicWire: WireCodec = {
           else if (b.type === "redacted_thinking") out.push({ type: "redacted_thinking", data: b.data });
           else if (b.type === "tool_use") out.push({ type: "tool_use", id: b.id, name: b.name, input: parseArgs(json.get(i) ?? "") });
         });
-        return { blocks: out, usage, stop, model: req.model };
+        return { blocks: out, usage, stop, stop_details: stopDetails, model: req.model };
       },
     };
   },
