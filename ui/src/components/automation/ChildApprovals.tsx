@@ -1,9 +1,9 @@
 import { Bot } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { lazy, Suspense, useEffect, useMemo } from "react";
 import { isLive, openSession, useAuto } from "../../lib/automation.ts";
 import { safety, useSafety } from "../../lib/safety.ts";
 import { reportError } from "../../lib/store.ts";
-import { Approvals } from "../ApprovalCard.tsx";
+const Approvals = lazy(() => import("../ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
 
 // The cards the session's agents wait on, answered here: the owner never has
 // to go looking through child sessions for them.
@@ -28,7 +28,7 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
           >
             <Bot className="size-3.5 text-accent" /> Agent {k.title} asks
           </button>
-          <Approvals sessionId={k.session_id} />
+          <Suspense fallback={null}><Approvals sessionId={k.session_id} /></Suspense>
         </div>
       ))}
     </div>

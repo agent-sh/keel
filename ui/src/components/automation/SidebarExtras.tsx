@@ -1,11 +1,13 @@
 import { Bell, ChevronRight, Repeat } from "lucide-react";
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { auto, isLive, openSession, useAuto } from "../../lib/automation.ts";
 import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentStatus, IconButton, StopIcon } from "./bits.tsx";
-import { InboxPanel } from "./InboxPanel.tsx";
-import { LoopsPanel } from "./LoopsPanel.tsx";
+
+// The panels load the first time they open.
+const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
+const LoopsPanel = lazy(() => import("./LoopsPanel.tsx").then((m) => ({ default: m.LoopsPanel })));
 
 // Under a session row: the agents it started, live, with stop. Children never
 // appear in the top-level list and never count as unread on their own.
@@ -74,11 +76,15 @@ export function SessionBadges({ sessionId }: { sessionId: string }) {
 export function AutomationFooter() {
   const [inbox, setInbox] = useState(false);
   const [loops, setLoops] = useState(false);
+  const [seen, setSeen] = useState({ inbox: false, loops: false });
+  if ((inbox && !seen.inbox) || (loops && !seen.loops)) setSeen({ inbox: seen.inbox || inbox, loops: seen.loops || loops });
   return (
     <>
       <FooterButtons onInbox={() => setInbox(true)} onLoops={() => setLoops(true)} />
-      <InboxPanel open={inbox} onOpenChange={setInbox} />
-      <LoopsPanel open={loops} onOpenChange={setLoops} />
+      <Suspense fallback={null}>
+        {seen.inbox && <InboxPanel open={inbox} onOpenChange={setInbox} />}
+        {seen.loops && <LoopsPanel open={loops} onOpenChange={setLoops} />}
+      </Suspense>
     </>
   );
 }

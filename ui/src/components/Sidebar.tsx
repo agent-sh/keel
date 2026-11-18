@@ -8,7 +8,6 @@ import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
-import { NeedsYou } from "./ApprovalCard.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
@@ -93,6 +92,17 @@ function Group({ list, current }: { list: Session[]; current: string | null }) {
         </button>
       )}
     </div>
+  );
+}
+
+// A session waiting on an approval.
+export function NeedsYou({ sessionId }: { sessionId: string }) {
+  const n = useSafety((s) => s.approvals[sessionId]?.length ?? 0);
+  if (!n) return null;
+  return (
+    <span data-testid="needs-you" title={`${n} approval${n === 1 ? "" : "s"} waiting`} className="shrink-0 rounded-full bg-accent-soft px-1.5 text-micro font-medium text-accent-ink">
+      needs you
+    </span>
   );
 }
 
