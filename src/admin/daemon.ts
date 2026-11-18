@@ -90,6 +90,13 @@ export class Daemon {
     this.deps.bus.emit({ t: "feature", name: "daemon", data: this.status() });
   }
 
+  // New work is turned away from now on (the process is stopping).
+  refuseWork() {
+    if (this.draining) return;
+    this.draining = { since_ms: Date.now(), restart: false, deadline_ms: Date.now() + Number(process.env.KEEL_DRAIN_MS ?? 10_000) };
+    this.emit();
+  }
+
   // Stops taking work, lets running turns finish until the deadline, and the
   // engine parks the rest (their end reason is "restart": the next daemon
   // continues them once). Then it exits, and starts again for a restart.

@@ -60,10 +60,15 @@ export const adminRoutes: RouteModule = (deps) => {
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));
   const daily = setInterval(policy, 86_400_000);
   (daily as any).unref?.();
-  G.__keelAdmin = { awake, daily };
+  G.__keelAdmin = { awake, daily, daemon };
 
   // Once per process start: the archive policy. (SIGINT and SIGTERM drain in main.ts.)
   if (!prev) queueMicrotask(policy);
+  // A stop by signal drains in main.ts; new work is turned away meanwhile.
+  if (!G.__keelAdminSignals) {
+    G.__keelAdminSignals = true;
+    for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => G.__keelAdmin?.daemon.refuseWork());
+  }
   bus.on((f) => {
     if (f.t === "feature" && f.name === "daemon") awake.draining = !!f.data.draining;
   });
