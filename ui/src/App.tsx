@@ -2,12 +2,15 @@ import { Component, lazy, Suspense, useEffect, useRef, type ReactNode } from "re
 import { Approvals } from "./components/ApprovalCard.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { ConfirmHost } from "./components/Confirm.tsx";
+import { McpOverlay } from "./components/McpPanel.tsx";
+import { SessionDock } from "./components/SessionDock.tsx";
 import { SessionHeader, SidebarButton } from "./components/SessionHeader.tsx";
 import { SidePanel } from "./components/SidePanel.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { StartBox } from "./components/StartBox.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import "./lib/builtins.ts";
+import "./lib/tools-ui.ts";
 import { installKeymap } from "./lib/keys.ts";
 import { actions, connect, reportError, useStore } from "./lib/store.ts";
 import { savePref, setUI, useUI } from "./lib/ui.ts";
@@ -65,6 +68,7 @@ function SessionView({ id }: { id: string }) {
           <Boundary><Transcript sessionId={session.id} /></Boundary>
           <div className="pr-[var(--sbw,0px)]">
             <div className="mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
+              <SessionDock sessionId={session.id} />
               <Approvals sessionId={session.id} />
               <Composer
                 session={session}
@@ -138,6 +142,7 @@ function Overlays() {
     <>
       <OnFirstOpen open={palette}><Palette /></OnFirstOpen>
       <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
+      <McpOverlay />
       <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
     </>
   );

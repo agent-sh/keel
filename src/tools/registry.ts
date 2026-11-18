@@ -1,10 +1,13 @@
 import type { ModelInfo } from "../providers/types.ts";
 import { claudeTools } from "./claude.ts";
+import { geminiTools } from "./gemini.ts";
+import { gptTools } from "./gpt.ts";
+import "./web.ts";
 import type { Tool } from "./types.ts";
 
 // Tools by model family: each family gets the names and shapes it was trained
 // on. Shared tools (MCP search, web, agents) register for every family.
-const byFamily = new Map<ModelInfo["family"], Tool[]>([["claude", claudeTools]]);
+const byFamily = new Map<ModelInfo["family"], Tool[]>([["claude", claudeTools], ["gpt", gptTools], ["gemini", geminiTools]]);
 const shared: Tool[] = [];
 
 export function registerFamily(family: ModelInfo["family"], tools: Tool[]) {

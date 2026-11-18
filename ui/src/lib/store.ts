@@ -5,6 +5,11 @@ import { useSyncExternalStore } from "react";
 import type { ErrorRecord, Frame, ImageBlock, Session, StoredEvent } from "../../../src/core/types.ts";
 import type { ModelInfo } from "../../../src/providers/types.ts";
 
+export type JobView = {
+  id: string; num: number; command: string; description?: string; cwd: string; pty: boolean; log: string;
+  started: number; ended?: number; exit_code?: number | null; signal?: string | null; background: boolean; bytes: number; running: boolean;
+};
+
 export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: string; name?: string };
 
 type State = {
@@ -59,6 +64,10 @@ export const actions = {
     return r.session;
   },
   send: (id: string, text: string, images?: ImageBlock[]) => api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images }) }),
+  answer: (id: string, callId: string, answers: Record<string, { picked: string[]; other?: string }>) =>
+    api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ answers }) }),
+  jobs: (id: string) => api<{ jobs: JobView[] }>(`/api/sessions/${id}/jobs`),
+  stopJob: (id: string, job: string) => api(`/api/sessions/${id}/jobs/${job}/stop`, { method: "POST" }),
   interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST" }),
   patch: (id: string, body: Partial<Session>) => api(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   remove: async (id: string) => {

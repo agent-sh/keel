@@ -12,6 +12,8 @@ export type ToolContext = {
   // Set by a beforeTool hook: turns a command's argv into the argv that runs
   // it confined (bubblewrap, a systemd scope). Every tool that spawns uses it.
   wrapSpawn?: (argv: string[]) => string[];
+  // The tool_use id of the call being run (set per call by the engine).
+  callId?: string;
 };
 
 export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_error?: boolean };

@@ -23,6 +23,10 @@ export function toMessages(events: StoredEvent[]): Message[] {
       if (e.data.blocks.length) out.push({ role: "assistant", content: e.data.blocks });
     } else if (e.kind === "tool_result") {
       out.push({ role: "user", content: e.data.results });
+    } else if (e.kind === "note" && e.data.model) {
+      // A note meant for the model (a background job ended): stored, so the
+      // same bytes come back on every later request.
+      out.push({ role: "user", content: [{ type: "text", text: e.data.text }] });
     }
   }
   // Consecutive same-role messages merge (an interrupted turn can leave two users).
@@ -194,7 +198,7 @@ export class Engine {
   private async runTool(session: Session, tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
     const tool = tools.find((t) => t.name === u.name);
     if (!tool) return { type: "tool_result", tool_use_id: u.id, content: `No tool named ${u.name}.`, is_error: true };
-    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx };
+    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id } };
     let result: ToolResultBlock;
     try {
       for (const h of allHooks()) {

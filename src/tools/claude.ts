@@ -1,53 +1,88 @@
-// The tool profile Claude models were trained on (Claude Code's names and
-// shapes): Bash, Read, Write, Edit, Glob, Grep.
+// The tool profile Claude models are trained on: Claude Code's current names,
+// argument shapes and result wording (code.claude.com/docs/en/tools-reference).
 import { statSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
-import { mkdir } from "node:fs/promises";
-import { fail, ok, type Tool, type ToolContext } from "./types.ts";
-import { spill } from "./spill.ts";
+import { abs, editFile, globFiles, guardOverwrite, mtime, readFile, ripgrep, writeFile } from "./files.ts";
+import { answerText, ask, type Question } from "./interact.ts";
+import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
+import { headTail, runShell } from "./shell.ts";
+import { skillTool } from "./skills.ts";
+import { fail, ok, type Tool } from "./types.ts";
+import { webFetch, webSearch } from "./web.ts";
 
-const abs = (p: string, ctx: ToolContext) => (isAbsolute(p) ? p : resolve(ctx.cwd, p));
-const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return -1; } };
+const INLINE_OK = 30_000;
+const INLINE_FAIL = 10_000;
+const PREVIEW = 2_000;
+// Exit 1 means "nothing found" or "differs" for these, not a failure.
+const BENIGN_1 = /^\s*(grep|rg|egrep|fgrep|find|diff|test|\[|git\s+(diff|grep))\b/;
+
+const obj = (properties: Record<string, unknown>, required: string[]) =>
+  ({ type: "object", properties, required, additionalProperties: false });
 
 const Bash: Tool = {
   name: "Bash",
   readOnly: false,
   description:
-    "Run a bash command in the session's working directory and return stdout and stderr. " +
-    "Use for builds, tests, git and any shell work. Long output is cut and saved to a file whose path is given.",
-  input_schema: {
-    type: "object",
-    properties: {
-      command: { type: "string", description: "The command to run" },
-      timeout: { type: "number", description: "Timeout in milliseconds (default 120000, max 600000)" },
-      description: { type: "string", description: "What the command does, in 5-10 words" },
-    },
-    required: ["command"],
-    additionalProperties: false,
-  },
+    "Run a bash command and return its output (stdout and stderr together). The working directory carries over " +
+    "between calls when you cd inside the project; environment variables do not. Default timeout 120000 ms, " +
+    "max 600000; a command still running at its timeout moves to the background instead of being killed. " +
+    "Set run_in_background for servers, watchers and long jobs: you get a task ID and a log file to Read, " +
+    "and a notice when it ends. Stop one with TaskStop. Quote paths with spaces. Prefer the Read, Edit and Write " +
+    "tools for files.",
+  input_schema: obj({
+    command: { type: "string", description: "The command to execute" },
+    timeout: { type: "number", description: "Optional timeout in milliseconds (max 600000)" },
+    description: { type: "string", description: "What the command does, in 5-10 words" },
+    run_in_background: { type: "boolean", description: "Run in the background; read its output file later" },
+  }, ["command"]),
   async run(input, ctx) {
-    const timeout = Math.min(Number(input.timeout) || 120_000, 600_000);
-    const argv = ["bash", "-c", input.command];
-    const proc = Bun.spawn(ctx.wrapSpawn ? ctx.wrapSpawn(argv) : argv, {
-      cwd: ctx.cwd,
-      stdout: "pipe",
-      stderr: "pipe",
-      stdin: "ignore",
-      env: { ...process.env, KEEL_SESSION: ctx.sessionId },
-      timeout,
-      killSignal: "SIGKILL",
-      signal: ctx.signal,
+    const command = String(input.command ?? "");
+    if (!command.trim()) return fail("command is empty.");
+    const timeout = Math.min(Math.max(Number(input.timeout) || 120_000, 1000), 600_000);
+    const r = await runShell(ctx, {
+      command, description: input.description, timeoutMs: timeout, background: !!input.run_in_background, onTimeout: "background",
     });
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    let text = out + (err ? (out ? "\n" : "") + err : "");
-    if (proc.signalCode) text += `\n[killed: ${proc.signalCode}${proc.signalCode === "SIGKILL" ? `, timeout ${timeout} ms` : ""}]`;
-    text = (await spill(text, ctx.spillDir, "bash")).trimEnd();
-    const body = `${text || "(no output)"}\n[exit ${code}]`;
-    return code === 0 ? ok(body) : fail(body);
+    if (r.state === "running") {
+      const moved = !input.run_in_background;
+      const head = moved
+        ? `Command did not complete within its ${Math.round(timeout / 1000)}s timeout and was moved to the background with ID: ${r.job.id}.`
+        : `Command running in background with ID: ${r.job.id}.`;
+      const cwd = moved && /\b(cd|pushd|popd|chdir)\b/.test(command)
+        ? `\nSession cwd remains ${ctx.cwd}; directory changes made by the backgrounded command do not apply to subsequent commands.` : "";
+      const sofar = r.output.trim() ? `\nOutput so far:\n${headTail(r.output.trimEnd(), PREVIEW)}` : "";
+      return ok(`${head} Output is being written to: ${r.job.log}${cwd}${sofar}`);
+    }
+    const out = r.output.trimEnd();
+    const failed = r.signal ? true : r.exitCode !== 0 && !(r.exitCode === 1 && BENIGN_1.test(command));
+    const note = r.cwdNote ? `\n${r.cwdNote}` : "";
+    if (failed) {
+      const why = r.job.stopReason ? `Command ${r.job.stopReason}` : r.signal ? `Killed by ${r.signal}` : `Exit code ${r.exitCode}`;
+      return fail(`${why}\n${headTail(out, INLINE_FAIL)}${note}`.trimEnd());
+    }
+    if (out.length > INLINE_OK) {
+      return ok(`Output too large (${(out.length / 1024).toFixed(1)}KB). Full output saved to: ${r.job.log}\n\nPreview (first ${PREVIEW / 1000}KB):\n${out.slice(0, PREVIEW)}\n...${note}`);
+    }
+    return ok((out || "(no output)") + note);
+  },
+};
+
+const TaskStop: Tool = {
+  name: "TaskStop",
+  readOnly: false,
+  description: "Stop a running background task by its ID (from Bash run_in_background or a command moved to the background).",
+  input_schema: obj({
+    task_id: { type: "string", description: "The ID of the background task to stop" },
+    shell_id: { type: "string", description: "Deprecated: use task_id instead" },
+  }, []),
+  async run(input, ctx) {
+    const id = String(input.task_id ?? input.shell_id ?? "");
+    const j = findJob(ctx.sessionId, id);
+    if (!j) {
+      const live = jobsOf(ctx.sessionId).filter(running).map((x) => `${x.id} (${x.description ?? x.command.slice(0, 60)})`);
+      return fail(`No background task ${id}. Running: ${live.join(", ") || "none"}.`);
+    }
+    if (!running(j)) return ok(`Task ${j.id} already ended (exit ${j.exitCode}).`);
+    await stopJob(j, "was stopped");
+    return ok(`Stopped task ${j.id}. Its output is in ${j.log}.`);
   },
 };
 
@@ -55,69 +90,43 @@ const Read: Tool = {
   name: "Read",
   readOnly: true,
   description:
-    "Read a file. Returns lines numbered from 1 (cat -n style). Use offset and limit for large files. Images are returned as images.",
-  input_schema: {
-    type: "object",
-    properties: {
-      file_path: { type: "string", description: "Absolute path" },
-      offset: { type: "number", description: "Line to start from (1-based)" },
-      limit: { type: "number", description: "Number of lines (default 2000)" },
-    },
-    required: ["file_path"],
-    additionalProperties: false,
-  },
+    "Read a file by absolute path. Text comes back with line numbers (cat -n style); by default up to 2000 lines " +
+    "from the start, use offset and limit for other parts of long files. Images (PNG, JPEG, GIF, WebP) come back " +
+    "as images. PDFs: short ones whole as text; for longer ones pass pages, e.g. \"1-5\" (max 20), to see them " +
+    "as page images. Jupyter notebooks come back as cells with outputs. Read files, not directories (use ls).",
+  input_schema: obj({
+    file_path: { type: "string", description: "The absolute path to the file to read" },
+    offset: { type: "integer", description: "The line number to start reading from" },
+    limit: { type: "integer", description: "The number of lines to read" },
+    pages: { type: "string", description: "Page range for PDF files, e.g. \"1-5\"" },
+  }, ["file_path"]),
   async run(input, ctx) {
-    const p = abs(input.file_path, ctx);
-    const f = Bun.file(p);
-    if (!(await f.exists())) return fail(`File does not exist: ${p}`);
-    if (/^image\/(png|jpeg|gif|webp)$/.test(f.type)) {
-      const data = Buffer.from(await f.arrayBuffer()).toString("base64");
-      ctx.seen.set(p, mtime(p));
-      return { content: [{ type: "image", media_type: f.type, data }] };
-    }
-    const text = await f.text();
-    ctx.seen.set(p, mtime(p));
-    if (!text) return ok("(empty file)");
-    const lines = text.split("\n");
-    const start = Math.max(1, Number(input.offset) || 1);
-    const limit = Number(input.limit) || 2000;
-    const slice = lines.slice(start - 1, start - 1 + limit);
-    const body = slice.map((l, i) => `${String(start + i).padStart(6)}\t${l.length > 2000 ? l.slice(0, 2000) + "…" : l}`).join("\n");
-    const more = start - 1 + limit < lines.length ? `\n[${lines.length - (start - 1 + limit)} more lines; use offset]` : "";
-    return ok(body + more);
+    const r = await readFile(abs(String(input.file_path ?? ""), ctx), ctx, {
+      offset: Number(input.offset) || undefined, limit: Number(input.limit) || (input.offset ? undefined : 2000), pages: input.pages,
+    });
+    return { content: r.content, is_error: r.error };
   },
 };
-
-function guardWrite(p: string, ctx: ToolContext): string | null {
-  const m = mtime(p);
-  if (m === -1) return null; // new file
-  const seen = ctx.seen.get(p);
-  if (seen === undefined) return `Read ${p} before changing it.`;
-  if (seen !== m) return `${p} changed since it was read; Read it again.`;
-  return null;
-}
 
 const Write: Tool = {
   name: "Write",
   readOnly: false,
-  description: "Write a file, creating parent directories. An existing file must be Read first.",
-  input_schema: {
-    type: "object",
-    properties: {
-      file_path: { type: "string", description: "Absolute path" },
-      content: { type: "string" },
-    },
-    required: ["file_path", "content"],
-    additionalProperties: false,
-  },
+  description:
+    "Create a file or overwrite one with the full content given, creating parent directories. Overwriting an " +
+    "existing file needs a Read of it first. For partial changes use Edit.",
+  input_schema: obj({
+    file_path: { type: "string", description: "The absolute path to the file to write" },
+    content: { type: "string", description: "The content to write to the file" },
+  }, ["file_path", "content"]),
   async run(input, ctx) {
-    const p = abs(input.file_path, ctx);
-    const g = guardWrite(p, ctx);
+    const p = abs(String(input.file_path ?? ""), ctx);
+    const content = String(input.content ?? "");
+    const existed = mtime(p) !== -1;
+    const g = guardOverwrite(p, ctx);
     if (g) return fail(g);
-    await mkdir(dirname(p), { recursive: true });
-    await Bun.write(p, input.content);
-    ctx.seen.set(p, mtime(p));
-    return ok(`Wrote ${p} (${input.content.split("\n").length} lines)`);
+    if (existed && content.includes("�")) return fail("The content holds U+FFFD, the mark of bytes that did not decode; write the real characters.");
+    await writeFile(p, content, ctx);
+    return ok(existed ? `The file ${p} has been updated successfully.` : `File created successfully at: ${p}`);
   },
 };
 
@@ -125,57 +134,79 @@ const Edit: Tool = {
   name: "Edit",
   readOnly: false,
   description:
-    "Replace an exact string in a file. old_string must match exactly once unless replace_all is set. Read the file first.",
-  input_schema: {
-    type: "object",
-    properties: {
-      file_path: { type: "string" },
-      old_string: { type: "string" },
-      new_string: { type: "string" },
-      replace_all: { type: "boolean" },
-    },
-    required: ["file_path", "old_string", "new_string"],
-    additionalProperties: false,
-  },
+    "Replace an exact string in a file. old_string must match the file exactly (whitespace and indentation " +
+    "included) and appear once, unless replace_all is set; add surrounding lines to make it unique. Read the " +
+    "file first and copy the text after the line-number prefix.",
+  input_schema: obj({
+    file_path: { type: "string", description: "The absolute path to the file to modify" },
+    old_string: { type: "string", description: "The text to replace" },
+    new_string: { type: "string", description: "The text to replace it with (must be different from old_string)" },
+    replace_all: { type: "boolean", description: "Replace all occurrences of old_string (default false)" },
+  }, ["file_path", "old_string", "new_string"]),
   async run(input, ctx) {
-    const p = abs(input.file_path, ctx);
-    const g = guardWrite(p, ctx);
-    if (g) return fail(g);
-    const text = await Bun.file(p).text();
-    if (input.old_string === input.new_string) return fail("old_string and new_string are the same.");
-    const n = text.split(input.old_string).length - 1;
-    if (n === 0) return fail("old_string not found in the file.");
-    if (n > 1 && !input.replace_all) return fail(`old_string matches ${n} times; add context or set replace_all.`);
-    const next = input.replace_all
-      ? text.split(input.old_string).join(input.new_string)
-      : text.replace(input.old_string, () => input.new_string);
-    await Bun.write(p, next);
-    ctx.seen.set(p, mtime(p));
-    return ok(`Edited ${p} (${n} replacement${n > 1 ? "s" : ""})`);
+    const p = abs(String(input.file_path ?? ""), ctx);
+    const r = await editFile(p, String(input.old_string ?? ""), String(input.new_string ?? ""), !!input.replace_all, ctx);
+    if ("error" in r) return fail(r.error);
+    return ok(`The file ${p} has been updated successfully.${r.ok}`);
+  },
+};
+
+const NotebookEdit: Tool = {
+  name: "NotebookEdit",
+  readOnly: false,
+  description:
+    "Replace, insert or delete one cell of a Jupyter notebook. cell_id is the id shown by Read. insert adds after " +
+    "cell_id (or at the start without one) and needs cell_type. Replacing a code cell clears its outputs.",
+  input_schema: obj({
+    notebook_path: { type: "string", description: "The absolute path to the notebook" },
+    cell_id: { type: "string", description: "The ID of the cell to edit" },
+    new_source: { type: "string", description: "The new source for the cell" },
+    cell_type: { type: "string", enum: ["code", "markdown"] },
+    edit_mode: { type: "string", enum: ["replace", "insert", "delete"] },
+  }, ["notebook_path", "new_source"]),
+  async run(input, ctx) {
+    const p = abs(String(input.notebook_path ?? ""), ctx);
+    if (!ctx.seen.has(p)) return fail(`Read ${p} before editing it.`);
+    let nb: any;
+    try { nb = JSON.parse(await Bun.file(p).text()); } catch (e) { return fail(`Cannot parse the notebook: ${(e as Error).message}`); }
+    const cells: any[] = nb.cells ?? [];
+    const mode = input.edit_mode ?? "replace";
+    const idx = input.cell_id === undefined ? -1 : cells.findIndex((c, i) => (c.id ?? `cell-${i}`) === input.cell_id);
+    if (mode !== "insert" && idx === -1) return fail(`No cell ${input.cell_id}. Read the notebook for the ids.`);
+    const source = String(input.new_source ?? "").split(/(?<=\n)/);
+    if (mode === "delete") cells.splice(idx, 1);
+    else if (mode === "insert") {
+      if (!input.cell_type) return fail("cell_type is required to insert a cell.");
+      const cell: any = { cell_type: input.cell_type, id: Math.random().toString(36).slice(2, 10), metadata: {}, source };
+      if (input.cell_type === "code") Object.assign(cell, { execution_count: null, outputs: [] });
+      cells.splice(idx + 1, 0, cell);
+    } else {
+      const c = cells[idx];
+      c.source = source;
+      if (input.cell_type) c.cell_type = input.cell_type;
+      if (c.cell_type === "code") Object.assign(c, { execution_count: null, outputs: [] });
+      else { delete c.outputs; delete c.execution_count; }
+    }
+    nb.cells = cells;
+    await writeFile(p, JSON.stringify(nb, null, 1) + "\n", ctx);
+    return ok(`Updated cell ${input.cell_id ?? "(start)"} of ${p} (${mode}).`);
   },
 };
 
 const Glob: Tool = {
   name: "Glob",
   readOnly: true,
-  description: "Find files by glob pattern (e.g. src/**/*.ts), newest first.",
-  input_schema: {
-    type: "object",
-    properties: { pattern: { type: "string" }, path: { type: "string" } },
-    required: ["pattern"],
-    additionalProperties: false,
-  },
+  description: "Find files by glob pattern (\"**/*.ts\", \"src/**/*.{js,jsx}\"), newest first, at most 100.",
+  input_schema: obj({
+    pattern: { type: "string", description: "The glob pattern to match files against" },
+    path: { type: "string", description: "The directory to search in (default: the working directory)" },
+  }, ["pattern"]),
   async run(input, ctx) {
     const root = input.path ? abs(input.path, ctx) : ctx.cwd;
-    const files: { p: string; m: number }[] = [];
-    for await (const f of new Bun.Glob(input.pattern).scan({ cwd: root, absolute: true, onlyFiles: true })) {
-      if (f.includes("/node_modules/") || f.includes("/.git/")) continue;
-      files.push({ p: f, m: mtime(f) });
-      if (files.length >= 5000) break;
-    }
-    files.sort((a, b) => b.m - a.m);
-    if (!files.length) return ok("No files found.");
-    return ok(files.slice(0, 200).map((f) => f.p).join("\n") + (files.length > 200 ? `\n[${files.length - 200} more]` : ""));
+    try { if (!statSync(root).isDirectory()) return fail(`${root} is not a directory.`); } catch { return fail(`Directory does not exist: ${root}`); }
+    const r = await globFiles(String(input.pattern ?? ""), root);
+    if (!r.files.length) return ok("No files found");
+    return ok(r.files.join("\n") + (r.truncated ? "\n(Results are truncated. Consider using a more specific path or pattern.)" : ""));
   },
 };
 
@@ -183,41 +214,124 @@ const Grep: Tool = {
   name: "Grep",
   readOnly: true,
   description:
-    "Search file contents with ripgrep. output_mode: files_with_matches (default), content (matching lines), count.",
-  input_schema: {
-    type: "object",
-    properties: {
-      pattern: { type: "string" },
-      path: { type: "string" },
-      glob: { type: "string" },
-      output_mode: { type: "string", enum: ["content", "files_with_matches", "count"] },
-      "-i": { type: "boolean" },
-      "-n": { type: "boolean" },
-      "-C": { type: "number" },
-      head_limit: { type: "number" },
-    },
-    required: ["pattern"],
-    additionalProperties: false,
-  },
+    "Search file contents with ripgrep (regex syntax: escape { } ( ) etc.). output_mode: files_with_matches " +
+    "(default), content (matching lines; -A/-B/-C context, -n line numbers), count. Filter with glob or type " +
+    "(js, py, rust...). multiline lets . and patterns span lines. Respects .gitignore.",
+  input_schema: obj({
+    pattern: { type: "string", description: "The regular expression pattern to search for" },
+    path: { type: "string", description: "File or directory to search in (default: the working directory)" },
+    glob: { type: "string", description: "Glob to filter files, e.g. \"*.js\" or \"*.{ts,tsx}\"" },
+    output_mode: { type: "string", enum: ["content", "files_with_matches", "count"] },
+    "-B": { type: "number", description: "Lines before each match (content mode)" },
+    "-A": { type: "number", description: "Lines after each match (content mode)" },
+    "-C": { type: "number", description: "Lines before and after each match (content mode)" },
+    "-n": { type: "boolean", description: "Show line numbers (content mode, default true)" },
+    "-i": { type: "boolean", description: "Case insensitive search" },
+    type: { type: "string", description: "File type to search (rg --type)" },
+    head_limit: { type: "number", description: "Limit output to the first N entries (default 250)" },
+    offset: { type: "number", description: "Skip the first N entries" },
+    multiline: { type: "boolean", description: "Match across lines" },
+  }, ["pattern"]),
   async run(input, ctx) {
-    const args = ["rg", "--color=never", "--max-columns=500"];
-    const mode = input.output_mode ?? "files_with_matches";
-    if (mode === "files_with_matches") args.push("-l");
-    else if (mode === "count") args.push("-c");
-    else { args.push(input["-n"] === false ? "-N" : "-n"); if (input["-C"]) args.push("-C", String(input["-C"])); }
-    if (input["-i"]) args.push("-i");
-    if (input.glob) args.push("--glob", input.glob);
-    args.push("--", input.pattern, input.path ? abs(input.path, ctx) : ctx.cwd);
-    const proc = Bun.spawn(args, { cwd: ctx.cwd, stdout: "pipe", stderr: "pipe", signal: ctx.signal });
-    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    if (code === 1) return ok("No matches.");
-    if (code !== 0) return fail(err || `rg exit ${code}`);
-    let lines = out.trimEnd().split("\n");
-    const limit = Number(input.head_limit) || 250;
-    const extra = lines.length > limit ? `\n[${lines.length - limit} more]` : "";
-    lines = lines.slice(0, limit);
-    return ok(await spill(lines.join("\n") + extra, ctx.spillDir, "grep"));
+    const r = await ripgrep({
+      pattern: String(input.pattern ?? ""), path: input.path, glob: input.glob, type: input.type, mode: input.output_mode,
+      ignoreCase: input["-i"], lineNumbers: input["-n"], before: input["-B"], after: input["-A"], context: input["-C"],
+      multiline: input.multiline, headLimit: input.head_limit, offset: input.offset,
+    }, ctx);
+    return { content: r.text, is_error: r.error };
   },
 };
 
-export const claudeTools: Tool[] = [Bash, Read, Write, Edit, Glob, Grep];
+const WebFetch: Tool = {
+  name: "WebFetch",
+  readOnly: true,
+  description:
+    "Fetch a URL (http is upgraded to https) and return the page as markdown; PDFs as text. Long pages are cut " +
+    "and saved to a file you can Read. prompt says what you are looking for. Local and private addresses are " +
+    "refused: use curl in Bash for those. A redirect to another host is reported, not followed.",
+  input_schema: obj({
+    url: { type: "string", description: "The URL to fetch content from" },
+    prompt: { type: "string", description: "What to look for on the page" },
+  }, ["url"]),
+  async run(input, ctx) {
+    const r = await webFetch(String(input.url ?? ""), { spillDir: ctx.spillDir }, ctx.signal);
+    return { content: r.text, is_error: r.error };
+  },
+};
+
+const WebSearch: Tool = {
+  name: "WebSearch",
+  readOnly: true,
+  description:
+    "Search the web for current information and return result titles, URLs and snippets. Read a result with " +
+    "WebFetch. Scope with allowed_domains or blocked_domains (not both).",
+  input_schema: obj({
+    query: { type: "string", description: "The search query to use" },
+    allowed_domains: { type: "array", items: { type: "string" }, description: "Only include results from these domains" },
+    blocked_domains: { type: "array", items: { type: "string" }, description: "Never include results from these domains" },
+  }, ["query"]),
+  async run(input, ctx) {
+    if (input.allowed_domains?.length && input.blocked_domains?.length) return fail("Use allowed_domains or blocked_domains, not both.");
+    const r = await webSearch(String(input.query ?? ""), { allowed_domains: input.allowed_domains, blocked_domains: input.blocked_domains }, ctx.signal);
+    return { content: r.text, is_error: r.error };
+  },
+};
+
+const TodoWrite: Tool = {
+  name: "TodoWrite",
+  readOnly: true,
+  description:
+    "Keep the session's task checklist, shown to the owner. Send the whole list each time. Use it for work of " +
+    "three or more steps; exactly one task in_progress while you work; mark a task completed as soon as it is done.",
+  input_schema: obj({
+    todos: {
+      type: "array",
+      items: obj({
+        content: { type: "string", minLength: 1 },
+        status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+        activeForm: { type: "string", minLength: 1, description: "Present-continuous form shown while in progress" },
+      }, ["content", "status", "activeForm"]),
+    },
+  }, ["todos"]),
+  async run(input) {
+    if (!Array.isArray(input.todos)) return fail("todos must be a list.");
+    return ok("Todos have been modified successfully. Keep using the list to track progress, and continue with the current task.");
+  },
+};
+
+const AskUserQuestion: Tool = {
+  name: "AskUserQuestion",
+  readOnly: true,
+  description:
+    "Ask the owner 1-4 multiple-choice questions when you need a decision or clarification, and wait for the " +
+    "answer. Each question has a short header (max 12 chars) and 2-4 options; the owner can also type their own " +
+    "answer. Put a recommended option first and add \"(Recommended)\" to its label.",
+  input_schema: obj({
+    questions: {
+      type: "array", minItems: 1, maxItems: 4,
+      items: obj({
+        question: { type: "string", description: "The complete question, ending with a question mark" },
+        header: { type: "string", description: "Very short label (max 12 chars)" },
+        options: {
+          type: "array", minItems: 2, maxItems: 4,
+          items: obj({ label: { type: "string" }, description: { type: "string" } }, ["label", "description"]),
+        },
+        multiSelect: { type: "boolean", description: "Allow more than one option" },
+      }, ["question", "header", "options", "multiSelect"]),
+    },
+  }, ["questions"]),
+  async run(input, ctx) {
+    const qs: Question[] = (input.questions ?? []).map((q: any, i: number) => ({ id: String(i), ...q }));
+    if (!qs.length) return fail("questions is empty.");
+    const a = await ask(ctx);
+    if (!a) return fail("The owner did not answer; the turn was interrupted.");
+    const pairs = qs.map((q) => `"${q.question}"="${answerText(a[q.id] ?? { picked: [] })}"`).join(", ");
+    return ok(`User has answered your questions: ${pairs}. You can now continue with the user's answers in mind.`);
+  },
+};
+
+export const claudeTools: Tool[] = [
+  Bash, Read, Edit, Write, NotebookEdit, Glob, Grep, TaskStop, TodoWrite, AskUserQuestion, WebFetch, WebSearch,
+  skillTool("Skill", "skill", "args", "Run a skill listed in the system prompt by name, with optional args. Its instructions come back as the result; follow them."),
+];
+

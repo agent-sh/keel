@@ -3,6 +3,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyn
 import type { AssistantBlock, ImageBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
+import { toolKind } from "../lib/tools.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -97,13 +98,13 @@ function UserMessage({ e, s }: { e: StoredEvent; s: Session }) {
   );
 }
 
-function AssistantBlocks({ blocks, results }: { blocks: AssistantBlock[]; results: Map<string, ToolResultBlock> }) {
+function AssistantBlocks({ blocks, results, s }: { blocks: AssistantBlock[]; results: Map<string, ToolResultBlock>; s: Session }) {
   return (
     <>
       {blocks.map((b, i) => {
         if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} /></div> : null;
         if (b.type === "thinking") return <Thinking key={i} text={b.thinking} />;
-        if (b.type === "tool_use") return <ToolCall key={i} use={b} result={results.get(b.id)} />;
+        if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results.get(b.id)} sessionId={s.id} cwd={s.workspace} waiting={s.phase === "working"} />;
         return null;
       })}
     </>
@@ -206,6 +207,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   if (!events) return <div className="flex-1" />;
   const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
   const lastStart = [...events].reverse().find((e) => e.kind === "turn_start");
+  // A question card waiting on the owner says so itself; no "Working" under it.
+  const asking = session.phase === "working" && events.some((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use" && toolKind(b.name) === "ask" && !results.has(b.id)));
 
   // Per turn: the prompt that started it and the text of its replies, for the footer's actions.
   let prompt: StoredEvent | undefined;
@@ -234,7 +237,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             }
             if (e.kind === "assistant") {
               for (const b of e.data.blocks) if (b.type === "text" && b.text.trim()) reply.push(b.text);
-              return <div key={e.id} className="row-cv flex flex-col gap-3"><AssistantBlocks blocks={e.data.blocks} results={results} /></div>;
+              return <div key={e.id} className="row-cv flex flex-col gap-3"><AssistantBlocks blocks={e.data.blocks} results={results} s={session} /></div>;
             }
             if (e.kind === "error") {
               return (
@@ -244,7 +247,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
                 </div>
               );
             }
-            if (e.kind === "note") return <p key={e.id} className="text-center text-caption text-faint">{e.data.text}</p>;
+            if (e.kind === "note") {
+              // A note for the model (a background job ended) reads short here: no tags, no log path.
+              const text = e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
+              return <p key={e.id} className="text-center text-caption text-faint" data-testid="note">{text}</p>;
+            }
             if (e.kind === "turn_end") {
               const r = reply.join("\n\n");
               return <Fragment key={e.id}><TurnFooter e={e} reply={r} prompt={prompt} s={session} last={e.id === lastEnd} /></Fragment>;
@@ -252,7 +259,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             return null;
           })}
           {hasDraft && <div className="flex flex-col gap-3"><Draft draft={draft} /></div>}
-          {session.phase === "working" && !hasDraft && <Working since={lastStart?.ts} />}
+          {session.phase === "working" && !hasDraft && !asking && <Working since={lastStart?.ts} />}
         </div>
       </div>
       {away && (

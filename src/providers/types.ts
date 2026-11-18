@@ -4,6 +4,10 @@ export type ToolSpec = {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  // A freeform tool (OpenAI custom tool with a grammar, e.g. apply_patch):
+  // drivers that support it send the grammar and pass the raw text as
+  // `{ input }`; others send input_schema.
+  freeform?: { syntax: "lark" | "regex"; definition: string };
 };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";

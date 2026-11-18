@@ -1,0 +1,62 @@
+import { expect, test } from "@playwright/test";
+import { HAIKU, shoot } from "./shots.ts";
+
+const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
+
+// Feature: MCP servers. Add a stdio server from the panel, see it ready with
+// its tools, turn it off and on, reconnect it, then a model finds its tool
+// with search_tools and runs it with mcp_call.
+test("mcp servers", async ({ page, request }) => {
+  await request.delete("/api/mcp/servers/echo").catch(() => {});
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  // This feature is the tools, not the approval cards: run them without asking.
+  const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+
+  await page.goto("/");
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("MCP servers");
+  await page.keyboard.press("Enter");
+  const panel = page.getByTestId("mcp-panel");
+  await expect(panel).toBeVisible();
+  await shoot(page, "mcp-01-panel");
+
+  await panel.getByTestId("mcp-add-name").fill("echo");
+  await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE}`);
+  await panel.getByTestId("mcp-add-submit").click();
+  const row = panel.locator('[data-testid="mcp-server"][data-name="echo"]');
+  await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+  await expect(row.getByTestId("mcp-tool-count")).toHaveText("2 tools");
+  await shoot(page, "mcp-02-ready");
+
+  await row.getByTestId("mcp-toggle").click();
+  await expect(row).toHaveAttribute("data-state", "disabled");
+  await shoot(page, "mcp-03-off");
+  await row.getByTestId("mcp-toggle").click();
+  await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+  await row.getByTestId("mcp-reconnect").click();
+  await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+
+  await page.getByTestId("model-picker").click();
+  await page.getByPlaceholder("Search models").fill("haiku 5.5");
+  await page.getByRole("option").first().click();
+  await page.getByTestId("composer").fill(
+    "Use search_tools to find the echo tool, then run it with mcp_call with the text pelican. Then reply with the tool's output only.",
+  );
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
+  const calls = page.getByTestId("tool-call");
+  await expect(calls.filter({ hasText: "search_tools" }).first()).toBeVisible();
+  await expect(calls.filter({ hasText: "mcp_call" }).first()).toBeVisible();
+  await expect(page.getByTestId("assistant-text").last()).toContainText("echo: pelican");
+  await calls.filter({ hasText: "mcp_call" }).first().click();
+  await shoot(page, "mcp-04-chat");
+
+  await request.put("/api/permissions/settings", { data: { default_mode: prev } });
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
+  await request.delete("/api/mcp/servers/echo");
+});
