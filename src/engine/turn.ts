@@ -148,6 +148,12 @@ export class Engine {
     return this.held.has(id);
   }
 
+  // The session's frozen system prompt is made again at its next turn (it moved
+  // to another directory or machine; the cache prefix is rebuilt once).
+  forgetSystem(id: string) {
+    this.systems.delete(id);
+  }
+
   lineage(id: string): StoredEvent[] {
     return lineage(this.store.events(id), this.store.session(id)?.head ?? null);
   }

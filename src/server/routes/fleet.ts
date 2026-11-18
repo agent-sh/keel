@@ -2,8 +2,8 @@
 // view of every session across linked daemons, the forwarder to another
 // daemon's API, sessions placed on a machine, and the paired-only endpoints
 // another daemon calls (facts, live stream, hands).
-import { existsSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { existsSync, mkdirSync, statSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { instructionFiles } from "../../engine/turn.ts";
 import { localFacts } from "../../fleet/facts.ts";
@@ -11,6 +11,7 @@ import { Fleet } from "../../fleet/fleet.ts";
 import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proven } from "../../fleet/link.ts";
 import { remoteRun } from "../../fleet/remote.ts";
+import { Handoffs, MoveError } from "../../fleet/handoff.ts";
 import { validate as validatePlacement } from "../../fleet/placement.ts";
 import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
@@ -35,6 +36,11 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
   });
   bindFleetTools(f, msgs, (id) => store.session(id));
+  const moves = new Handoffs(store, bus, engine, f);
+  // A deleted session takes what its moves left with it.
+  bus.on((fr) => {
+    if (fr.t === "session" && fr.session.archived && !store.session(fr.session.id)) moves.cleanup(fr.session.id).catch((e) => errors.capture("server", e, { at: "handoff cleanup" }));
+  });
   // A linked daemon's outbox: messages its sessions wrote for this daemon's.
   f.onOutbox = (machineId) => {
     (async () => {
@@ -71,6 +77,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       ].join("\n");
     },
     beforeTool(s, call) {
+      if (WORKSPACE_TOOLS.has(call.tool.name) && moves.isMoving(s.id)) return { deny: "The session is moving to another place; its tools run again when the move ends." };
       if (!s.machine || !WORKSPACE_TOOLS.has(call.tool.name)) return;
       const m = f.row(s.machine);
       if (!m) return { deny: "This session's machine was removed from the fleet: its tools have nowhere to run." };
@@ -374,6 +381,20 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       },
     },
 
+    "/api/sessions/:id/handoff": {
+      GET: (req: any) => (store.session(req.params.id) ? json({ handoff: moves.latest(req.params.id) }) : bad("no such session", 404)),
+      POST: async (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        try {
+          return json({ handoff: moves.start(s, await body(req)) });
+        } catch (e) {
+          if (e instanceof MoveError) return bad(e.message, e.status);
+          throw e;
+        }
+      },
+    },
+
     "/api/sessions/:id/fleet": {
       GET: (req: any) => {
         const s = store.session(req.params.id);
@@ -461,6 +482,27 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         } catch {
           return json({ exists: false, dir: false });
         }
+      }),
+    },
+
+    // A file into or out of the granted directory (a handoff's git bundle).
+    "/api/fleet/hands/put": {
+      POST: linked(async (req) => {
+        const u = new URL(req.url).searchParams;
+        const p = resolve(u.get("path") ?? "");
+        if (!u.get("root") || !inside(p, resolve(u.get("root")!))) return bad("outside the granted directory");
+        mkdirSync(dirname(p), { recursive: true });
+        await Bun.write(p, await req.arrayBuffer());
+        return json({ ok: true });
+      }),
+    },
+    "/api/fleet/hands/get": {
+      GET: linked(async (req) => {
+        const u = new URL(req.url).searchParams;
+        const p = resolve(u.get("path") ?? "");
+        if (!u.get("root") || !inside(p, resolve(u.get("root")!))) return bad("outside the granted directory");
+        const file = Bun.file(p);
+        return (await file.exists()) ? new Response(file, { headers: { "content-type": "application/octet-stream" } }) : bad("no such file", 404);
       }),
     },
 
