@@ -1,43 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AnthropicBedrock } from "@anthropic-ai/bedrock-sdk";
-import type { AssistantBlock, Message } from "../core/types.ts";
+import type { AssistantBlock } from "../core/types.ts";
 import { emptyUsage } from "../core/types.ts";
+import { anthropicBody } from "./wires/anthropic.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 
 type AnyClient = Anthropic | AnthropicBedrock;
-
-// Message history to the wire. Cache breakpoints: tools + system are frozen
-// (one breakpoint on the system), and a rolling breakpoint on the last user
-// message so each request reads the whole previous prefix from cache.
-export function toWire(messages: Message[]): Anthropic.MessageParam[] {
-  const out: Anthropic.MessageParam[] = messages.map((m) => ({
-    role: m.role,
-    content: m.content.map((b): any => {
-      if (b.type === "image") return { type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } };
-      if (b.type === "tool_result") {
-        return {
-          type: "tool_result",
-          tool_use_id: b.tool_use_id,
-          is_error: b.is_error || undefined,
-          content: typeof b.content === "string"
-            ? b.content
-            : b.content.map((c) => c.type === "image"
-              ? { type: "image", source: { type: "base64", media_type: c.media_type, data: c.data } }
-              : c),
-        };
-      }
-      return b;
-    }),
-  }));
-  for (let i = out.length - 1; i >= 0; i--) {
-    const m = out[i]!;
-    if (m.role !== "user" || !Array.isArray(m.content) || m.content.length === 0) continue;
-    const last = m.content[m.content.length - 1] as any;
-    last.cache_control = { type: "ephemeral" };
-    break;
-  }
-  return out;
-}
 
 export class AnthropicProvider implements Provider {
   private client: AnyClient | null;
@@ -69,6 +37,8 @@ export class AnthropicProvider implements Provider {
   }
 
   readonly family = "claude" as const;
+  readonly wire = "anthropic_messages" as const;
+  get label() { return this.id === "bedrock" ? "Amazon Bedrock" : "Anthropic API"; }
 
   // What the account can use, from the provider's own listing.
   async list(): Promise<ListedModel[]> {
@@ -109,22 +79,8 @@ export class AnthropicProvider implements Provider {
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     if (!this.client) throw new Error(`${this.id}: no credentials`);
-    const tools = req.tools.map((t, i) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.input_schema,
-      eager_input_streaming: true,
-      ...(i === req.tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
-    }));
-    const params: any = {
-      model: req.model,
-      max_tokens: req.maxTokens ?? 64_000,
-      system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
-      messages: toWire(req.messages),
-      tools,
-      thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: req.effort ?? "high" },
-    };
+    const ctx = { origin: `${this.id}:${req.model}`, sessionKey: req.sessionKey ?? "", efforts: [], legacyIsMine: true };
+    const params: any = anthropicBody(req, ctx);
     const stream = (this.client as Anthropic).messages.stream(params, { signal: req.signal });
     const toolNames = new Map<number, string>();
     for await (const ev of stream) {
@@ -142,7 +98,7 @@ export class AnthropicProvider implements Provider {
     const blocks: AssistantBlock[] = [];
     for (const b of msg.content as any[]) {
       if (b.type === "text") blocks.push({ type: "text", text: b.text });
-      else if (b.type === "thinking") blocks.push({ type: "thinking", thinking: b.thinking, signature: b.signature });
+      else if (b.type === "thinking") blocks.push({ type: "thinking", thinking: b.thinking, signature: b.signature, origin: ctx.origin });
       else if (b.type === "redacted_thinking") blocks.push({ type: "redacted_thinking", data: b.data });
       else if (b.type === "tool_use") blocks.push({ type: "tool_use", id: b.id, name: b.name, input: b.input });
     }

@@ -82,7 +82,7 @@ export function SessionHeader({ session }: { session: Session }) {
         title={`Input ${input_.toLocaleString()} tokens (${u.cache_read.toLocaleString()} read from cache), output ${u.output.toLocaleString()}`}
         data-testid="session-usage"
       >
-        {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}
+        {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">${u.cost.toFixed(u.cost < 1 ? 4 : 2)}</span> : null}
       </span>}
       <ChangesButton sessionId={session.id} />
       <PanelToggles session={session} />

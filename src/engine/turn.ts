@@ -172,7 +172,7 @@ export class Engine {
     try {
       for (;;) {
         const messages = toMessages(this.store.events(id));
-        let req: ProviderRequest = { model: info.model, system, messages, tools, effort, maxTokens: info.output, signal };
+        let req: ProviderRequest = { model: info.model, system, messages, tools, effort, maxTokens: info.output, signal, sessionKey: id };
         for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
         const res = await provider.stream(req, (d) => this.bus.emit({ t: "delta", session_id: id, ...d }));
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);

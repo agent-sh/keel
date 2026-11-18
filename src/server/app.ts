@@ -49,7 +49,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       "/api/models": {
         GET: wrap(async (req) => {
           const force = new URL(req.url).searchParams.has("refresh");
-          return json({ models: await providers.models(force), default: await providers.defaultModel() });
+          return json({ models: providers.visible(await providers.models(force)), default: await providers.defaultModel() });
         }),
       },
 

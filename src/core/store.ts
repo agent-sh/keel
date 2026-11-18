@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ErrorRecord, EventKind, Session, StoredEvent, Usage } from "./types.ts";
-import { emptyUsage } from "./types.ts";
+import { addUsage, emptyUsage } from "./types.ts";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -148,13 +148,6 @@ export class Store {
   addUsage(id: string, u: Usage) {
     const s = this.session(id);
     if (!s) return;
-    this.updateSession(id, {
-      usage: {
-        input: s.usage.input + u.input,
-        output: s.usage.output + u.output,
-        cache_read: s.usage.cache_read + u.cache_read,
-        cache_write: s.usage.cache_write + u.cache_write,
-      },
-    });
+    this.updateSession(id, { usage: addUsage(s.usage, u) });
   }
 }

@@ -1,0 +1,649 @@
+{
+  "fixtures": {
+    "anthropic_messages.turn.sse": {
+      "wire": "anthropic_messages",
+      "stream": true,
+      "framing": "sse",
+      "text": "Listing the files: שלום 😀",
+      "thought": "The owner wants the file list.",
+      "tool_calls": [
+        {
+          "id": "toolu_check_01",
+          "name": "Bash",
+          "arguments": {
+            "command": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "thinking",
+          "thinking": "The owner wants the file list.",
+          "signature": "c2lnbmF0dXJlLWZpeHR1cmUtYW50aHJvcGljLTAx"
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10252,
+        "output_tokens": 42,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 2048,
+        "reasoning_tokens": 0
+      }
+    },
+    "anthropic_messages.turn.malformed.sse": {
+      "wire": "anthropic_messages",
+      "stream": true,
+      "framing": "sse",
+      "text": "Listing the files: שלום 😀",
+      "thought": "The owner wants the file list.",
+      "tool_calls": [
+        {
+          "id": "toolu_check_01",
+          "name": "Bash",
+          "arguments": {
+            "command": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "thinking",
+          "thinking": "The owner wants the file list.",
+          "signature": "c2lnbmF0dXJlLWZpeHR1cmUtYW50aHJvcGljLTAx"
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10252,
+        "output_tokens": 42,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 2048,
+        "reasoning_tokens": 0
+      },
+      "same_as": "anthropic_messages.turn.sse"
+    },
+    "anthropic_messages.message.json": {
+      "wire": "anthropic_messages",
+      "stream": false,
+      "framing": "json",
+      "text": "Listing the files: שלום 😀",
+      "thought": "The owner wants the file list.",
+      "tool_calls": [
+        {
+          "id": "toolu_check_01",
+          "name": "Bash",
+          "arguments": {
+            "command": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "thinking",
+          "thinking": "The owner wants the file list.",
+          "signature": "c2lnbmF0dXJlLWZpeHR1cmUtYW50aHJvcGljLTAx"
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10252,
+        "output_tokens": 42,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 2048,
+        "reasoning_tokens": 0
+      }
+    },
+    "gemini_generate_content.turn.sse": {
+      "wire": "gemini_generate_content",
+      "stream": true,
+      "framing": "sse",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      }
+    },
+    "gemini_generate_content.turn.malformed.sse": {
+      "wire": "gemini_generate_content",
+      "stream": true,
+      "framing": "sse",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "same_as": "gemini_generate_content.turn.sse"
+    },
+    "gemini_generate_content.turn.envelope.sse": {
+      "wire": "gemini_generate_content",
+      "stream": true,
+      "framing": "sse",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "response_envelope": {
+        "kind": "json_field",
+        "field": "response"
+      },
+      "same_as": "gemini_generate_content.turn.sse"
+    },
+    "gemini_generate_content.turn.envelope.malformed.sse": {
+      "wire": "gemini_generate_content",
+      "stream": true,
+      "framing": "sse",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "response_envelope": {
+        "kind": "json_field",
+        "field": "response"
+      },
+      "same_as": "gemini_generate_content.turn.sse"
+    },
+    "gemini_generate_content.turn.json-array": {
+      "wire": "gemini_generate_content",
+      "stream": true,
+      "framing": "json_array",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "same_as": "gemini_generate_content.turn.sse"
+    },
+    "gemini_generate_content.turn.envelope.json-array": {
+      "wire": "gemini_generate_content",
+      "stream": true,
+      "framing": "json_array",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "response_envelope": {
+        "kind": "json_field",
+        "field": "response"
+      },
+      "same_as": "gemini_generate_content.turn.sse"
+    },
+    "gemini_generate_content.response.json": {
+      "wire": "gemini_generate_content",
+      "stream": false,
+      "framing": "json",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      }
+    },
+    "gemini_generate_content.response.envelope.json": {
+      "wire": "gemini_generate_content",
+      "stream": false,
+      "framing": "json",
+      "text": "Reading two files: שלום 😀",
+      "thought": "Looking at the request.",
+      "tool_calls": [
+        {
+          "id": "fc_check_01",
+          "name": "read_file",
+          "arguments": {
+            "absolute_path": "/work/README.md"
+          },
+          "thought_signature": "Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"
+        },
+        {
+          "id": "fc_check_02",
+          "name": "list_directory",
+          "arguments": {
+            "dir_path": "/work"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "gemini_part",
+          "part": {
+            "text": "Looking at the request.",
+            "thought": true,
+            "thoughtSignature": "Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 58,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "response_envelope": {
+        "kind": "json_field",
+        "field": "response"
+      }
+    },
+    "openai_responses.turn.sse": {
+      "wire": "openai_responses",
+      "stream": true,
+      "framing": "sse",
+      "text": "Running ls: שלום 😀",
+      "thought": "Checking the directory.",
+      "tool_calls": [
+        {
+          "id": "call_check_01",
+          "name": "exec_command",
+          "arguments": {
+            "cmd": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "reasoning",
+          "item": {
+            "type": "reasoning",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Checking the directory."
+              }
+            ],
+            "encrypted_content": "ZW5jcnlwdGVkLXJlYXNvbmluZy1maXh0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 64,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      }
+    },
+    "openai_responses.turn.malformed.sse": {
+      "wire": "openai_responses",
+      "stream": true,
+      "framing": "sse",
+      "text": "Running ls: שלום 😀",
+      "thought": "Checking the directory.",
+      "tool_calls": [
+        {
+          "id": "call_check_01",
+          "name": "exec_command",
+          "arguments": {
+            "cmd": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "reasoning",
+          "item": {
+            "type": "reasoning",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Checking the directory."
+              }
+            ],
+            "encrypted_content": "ZW5jcnlwdGVkLXJlYXNvbmluZy1maXh0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 64,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "same_as": "openai_responses.turn.sse"
+    },
+    "openai_responses.response.json": {
+      "wire": "openai_responses",
+      "stream": false,
+      "framing": "json",
+      "text": "Running ls: שלום 😀",
+      "thought": "Checking the directory.",
+      "tool_calls": [
+        {
+          "id": "call_check_01",
+          "name": "exec_command",
+          "arguments": {
+            "cmd": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [
+        {
+          "kind": "reasoning",
+          "item": {
+            "type": "reasoning",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Checking the directory."
+              }
+            ],
+            "encrypted_content": "ZW5jcnlwdGVkLXJlYXNvbmluZy1maXh0dXJlLTAx"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 64,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      }
+    },
+    "chat_completions.turn.sse": {
+      "wire": "chat_completions",
+      "stream": true,
+      "framing": "sse",
+      "text": "Running ls: שלום 😀",
+      "thought": "Checking the directory.",
+      "tool_calls": [
+        {
+          "id": "call_check_01",
+          "name": "bash",
+          "arguments": {
+            "command": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 64,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      }
+    },
+    "chat_completions.turn.malformed.sse": {
+      "wire": "chat_completions",
+      "stream": true,
+      "framing": "sse",
+      "text": "Running ls: שלום 😀",
+      "thought": "Checking the directory.",
+      "tool_calls": [
+        {
+          "id": "call_check_01",
+          "name": "bash",
+          "arguments": {
+            "command": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 64,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      },
+      "same_as": "chat_completions.turn.sse"
+    },
+    "chat_completions.completion.json": {
+      "wire": "chat_completions",
+      "stream": false,
+      "framing": "json",
+      "text": "Running ls: שלום 😀",
+      "thought": "Checking the directory.",
+      "tool_calls": [
+        {
+          "id": "call_check_01",
+          "name": "bash",
+          "arguments": {
+            "command": "ls -la"
+          }
+        }
+      ],
+      "reasoning": [],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 64,
+        "cache_read_tokens": 8192,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 21
+      }
+    }
+  }
+}

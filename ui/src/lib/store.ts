@@ -3,7 +3,14 @@
 // with useStore(selector).
 import { useSyncExternalStore } from "react";
 import type { ErrorRecord, Frame, ImageBlock, Session, StoredEvent } from "../../../src/core/types.ts";
-import type { ModelInfo } from "../../../src/providers/types.ts";
+import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
+
+export type ProvidersReport = {
+  providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number } })[];
+  plugins: { id: string; state: string; name?: string; version?: string; reason?: string; stderr_tail?: string; violations: { count: number; last: string } }[];
+  plugins_file?: string | null;
+  choices: { default?: string; hidden: Record<string, string[]> };
+};
 
 export type JobView = {
   id: string; num: number; command: string; description?: string; cwd: string; pty: boolean; log: string;
@@ -20,9 +27,10 @@ type State = {
   defaultModel: string;
   errors: ErrorRecord[];
   connected: boolean;
+  providers: ProvidersReport | null;
 };
 
-let state: State = { sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", errors: [], connected: false };
+let state: State = { sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", errors: [], connected: false, providers: null };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => {
   state = { ...state, ...patch };
@@ -50,6 +58,17 @@ export const actions = {
     const r = await api<{ models: ModelInfo[]; default: string }>(`/api/models${refresh ? "?refresh" : ""}`);
     set({ models: r.models, defaultModel: r.default });
   },
+  async loadProviders(refresh = false) {
+    const r = await api<ProvidersReport>(refresh ? "/api/providers/refresh" : "/api/providers", refresh ? { method: "POST", body: "{}" } : undefined);
+    set({ providers: r });
+    if (refresh) await actions.loadModels();
+  },
+  async setDefaultModel(id: string) {
+    const r = await api<ProvidersReport>("/api/providers/choices", { method: "POST", body: JSON.stringify({ default: id }) });
+    set({ providers: r, defaultModel: id });
+  },
+  grokSignIn: () => api<any>("/api/providers/grok/sign-in", { method: "POST" }),
+  grokSignInState: () => api<any>("/api/providers/grok/sign-in"),
   async loadSession(id: string) {
     const r = await api<{ session: Session; events: StoredEvent[] }>(`/api/sessions/${id}`);
     set({ sessions: { ...state.sessions, [id]: r.session }, events: { ...state.events, [id]: r.events } });

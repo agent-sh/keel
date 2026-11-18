@@ -20,6 +20,10 @@ export type ProviderRequest = {
   effort?: string;
   maxTokens?: number;
   signal: AbortSignal;
+  // Stable per session: prompt cache affinity, conversation headers.
+  sessionKey?: string;
+  // Filled by the registry from the listing: the levels the model takes.
+  efforts?: string[];
 };
 
 export type Delta =
@@ -34,25 +38,69 @@ export type ProviderResult = {
   model: string;
 };
 
-// A model id the provider's own listing returned, plus catalog metadata.
-export type ListedModel = { model: string; name?: string; context?: number; output?: number; efforts?: string[] };
+// The tool profile and projection rules a model gets. A family is per model:
+// an aggregator lists Claude, GPT and Gemini models side by side.
+export type Family = "claude" | "gpt" | "gemini" | "other";
+
+// The wire a provider speaks (the plugin protocol's names).
+export type Wire = "anthropic_messages" | "openai_responses" | "chat_completions" | "gemini_generate_content";
+
+export type Price = {
+  input: number; // USD per million tokens
+  output: number;
+  cache_read?: number;
+  cache_write?: number;
+  estimated?: boolean;
+};
+
+export type Billing = { kind: "per_token" } | { kind: "subscription"; plan?: string } | { kind: "unknown" };
+
+// A model id the provider's own listing returned, plus whatever the listing says.
+export type ListedModel = {
+  model: string;
+  name?: string;
+  context?: number;
+  output?: number;
+  efforts?: string[];
+  family?: Family;
+  price?: Price;
+  billing?: Billing;
+  images?: boolean;
+};
 
 export type ModelInfo = {
   id: string;          // "<provider>:<model as the provider names it>"
   provider: string;
   model: string;
   name: string;
-  family: "claude" | "gpt" | "gemini" | "other";
+  family: Family;
   context: number;
   output: number;
   efforts: string[];
   release?: string;
+  price?: Price;       // absent: unknown, never free
+  billing: Billing["kind"];
+  images?: boolean;
+};
+
+export type ProviderStatus = {
+  id: string;
+  label: string;
+  wire: Wire;
+  kind: "builtin" | "endpoint" | "plugin";
+  available: boolean;
+  detail?: string;     // why not available, or where the credential comes from
+  account?: string;
+  sign_in?: { command?: string; route?: string; note?: string };
 };
 
 export interface Provider {
   readonly id: string;
-  readonly family: ModelInfo["family"];
+  readonly label?: string;
+  readonly wire?: Wire;
+  readonly family: Family; // the default for models whose id says nothing
   available(): boolean;
+  status?(): ProviderStatus;
   list(): Promise<ListedModel[]>;
   stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult>;
 }

@@ -1,0 +1,2 @@
+# Vendor stream fixtures: their exact bytes (CRLF included) are what the tests read.
+test/fixtures/** -text

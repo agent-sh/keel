@@ -11,6 +11,7 @@ import { StartBox } from "./components/StartBox.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import "./lib/builtins.ts";
 import "./lib/tools-ui.ts";
+import "./lib/providers-ui.ts";
 import { installKeymap } from "./lib/keys.ts";
 import { actions, connect, reportError, useStore } from "./lib/store.ts";
 import { savePref, setUI, useUI } from "./lib/ui.ts";

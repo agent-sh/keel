@@ -2,11 +2,14 @@
 // model because it is the richest of the wire formats; every other driver projects
 // to and from it.
 
-export type TextBlock = { type: "text"; text: string };
-export type ThinkingBlock = { type: "thinking"; thinking: string; signature?: string };
+// `origin` is the "<provider>:<model>" that wrote a block carrying opaque
+// provider state (a signature, an encrypted reasoning item). That state is
+// replayed only to the same origin; every other wire gets the plain text.
+export type TextBlock = { type: "text"; text: string; signature?: string; origin?: string };
+export type ThinkingBlock = { type: "thinking"; thinking: string; signature?: string; origin?: string; opaque?: unknown };
 export type RedactedThinkingBlock = { type: "redacted_thinking"; data: string };
 export type ImageBlock = { type: "image"; media_type: string; data: string };
-export type ToolUseBlock = { type: "tool_use"; id: string; name: string; input: unknown };
+export type ToolUseBlock = { type: "tool_use"; id: string; name: string; input: unknown; signature?: string; origin?: string };
 export type ToolResultBlock = {
   type: "tool_result";
   tool_use_id: string;
@@ -21,11 +24,16 @@ export type Message =
   | { role: "user"; content: UserBlock[] }
   | { role: "assistant"; content: AssistantBlock[] };
 
+// `input` excludes the cached parts on every wire (Anthropic's convention).
+// `cost` is USD from the catalog's price; `unpriced` counts calls with no
+// known price, so an unknown cost is never shown as free.
 export type Usage = {
   input: number;
   output: number;
   cache_read: number;
   cache_write: number;
+  cost?: number;
+  unpriced?: number;
 };
 
 export const emptyUsage = (): Usage => ({ input: 0, output: 0, cache_read: 0, cache_write: 0 });
@@ -36,6 +44,8 @@ export function addUsage(a: Usage, b: Partial<Usage>): Usage {
     output: a.output + (b.output ?? 0),
     cache_read: a.cache_read + (b.cache_read ?? 0),
     cache_write: a.cache_write + (b.cache_write ?? 0),
+    cost: a.cost !== undefined || b.cost !== undefined ? (a.cost ?? 0) + (b.cost ?? 0) : undefined,
+    unpriced: (a.unpriced ?? 0) + (b.unpriced ?? 0) || undefined,
   };
 }
 

@@ -1,0 +1,186 @@
+// OpenAI Responses wire: the OpenAI API, the ChatGPT (Codex) backend, xAI.
+// Stateless (`store: false`): the whole history goes every time, reasoning
+// travels as the encrypted items the model returned, and one
+// `prompt_cache_key` per session keeps the steps on one cache shard.
+import type { AssistantBlock } from "../../core/types.ts";
+import { emptyUsage } from "../../core/types.ts";
+import { ProviderError } from "../http.ts";
+import { project } from "../project.ts";
+import type { ProviderRequest } from "../types.ts";
+import { effortFor, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
+
+export type ResponsesDialect = "openai" | "codex" | "xai";
+
+// xAI reserves these function names for its own server tools.
+const XAI_RESERVED = new Set(["web_search", "tool_search", "x_search", "code_execution"]);
+const wireName = (d: ResponsesDialect, n: string) => (d === "xai" && XAI_RESERVED.has(n) ? `keel_${n}` : n);
+const localName = (d: ResponsesDialect, n: string) => (d === "xai" && n.startsWith("keel_") && XAI_RESERVED.has(n.slice(5)) ? n.slice(5) : n);
+
+// xAI's schema check refuses `pattern`, `format` and enum values with a slash.
+function xaiSchema(s: any): any {
+  if (Array.isArray(s)) return s.map(xaiSchema);
+  if (!s || typeof s !== "object") return s;
+  const out: any = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (k === "pattern" || k === "format") continue;
+    if (k === "enum" && Array.isArray(v)) { const kept = v.filter((x) => !(typeof x === "string" && x.includes("/"))); if (kept.length) out.enum = kept; continue; }
+    out[k] = xaiSchema(v);
+  }
+  return out;
+}
+
+const dataUrl = (b: { media_type: string; data: string }) => `data:${b.media_type};base64,${b.data}`;
+
+export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: ResponsesDialect, systemPrefix?: string) {
+  const input: any[] = [];
+  for (const m of project(req.messages, ctx)) {
+    let texts: any[] = [];
+    const flush = () => {
+      if (texts.length) input.push({ type: "message", role: m.role, content: texts });
+      texts = [];
+    };
+    for (const b of m.content) {
+      if (b.type === "text") texts.push({ type: m.role === "user" ? "input_text" : "output_text", text: b.text });
+      else if (b.type === "image") texts.push({ type: "input_image", image_url: dataUrl(b) });
+      else if (b.type === "thinking") {
+        flush();
+        if (b.opaque) input.push(b.opaque);
+      } else if (b.type === "tool_use") {
+        flush();
+        input.push({ type: "function_call", call_id: b.id, name: wireName(dialect, b.name), arguments: JSON.stringify(b.input ?? {}) });
+      } else if (b.type === "tool_result") {
+        flush();
+        const output = typeof b.content === "string"
+          ? b.content
+          : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.text }));
+        input.push({ type: "function_call_output", call_id: b.tool_use_id, output });
+      }
+    }
+    flush();
+  }
+  const tools = req.tools.map((t) => ({
+    type: "function",
+    name: wireName(dialect, t.name),
+    description: t.description,
+    parameters: dialect === "xai" ? xaiSchema(t.input_schema) : t.input_schema,
+    strict: false,
+  }));
+  const body: Record<string, any> = {
+    model: req.model,
+    instructions: systemPrefix ? `${systemPrefix}\n\n${req.system}` : req.system,
+    input,
+    tool_choice: "auto",
+    parallel_tool_calls: true,
+    store: false,
+    stream: true,
+    include: ["reasoning.encrypted_content"],
+    prompt_cache_key: ctx.sessionKey || undefined,
+  };
+  if (tools.length) body.tools = tools;
+  else delete body.tool_choice;
+  const effort = effortFor(req, ctx);
+  if (effort) body.reasoning = dialect === "xai" ? { effort } : { effort, summary: "auto" };
+  return body;
+}
+
+export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string): WireCodec {
+  return {
+    body: (req, ctx) => responsesBody(req, ctx, dialect, systemPrefix),
+    parser(req, ctx, onDelta): WireParser {
+      const items: any[] = [];
+      const names = new Map<number, string>();
+      const usage = emptyUsage();
+      let stop = "end_turn";
+      let finished = false;
+      const fail = (code: string, message: string) => {
+        const kind = /context_length|context_window/.test(code) ? "context"
+          : /rate_limit/.test(code) ? "rate"
+          : /quota|usage_limit|insufficient/.test(code) ? "quota"
+          : /server_error|overloaded/.test(code) ? "server" : "invalid";
+        throw new ProviderError(kind, `${code}: ${message}`);
+      };
+      return {
+        get finished() { return finished; },
+        event(e) {
+          if (e.data === "[DONE]") { finished = true; return; }
+          const ev = parseJson(e.data);
+          if (!ev) return;
+          const i = ev.output_index ?? 0;
+          switch (ev.type) {
+            case "response.output_item.added":
+              if (ev.item?.type === "function_call") {
+                names.set(i, localName(dialect, ev.item.name));
+                onDelta({ kind: "tool_input", index: i, text: "", name: names.get(i) });
+              }
+              break;
+            case "response.output_text.delta":
+              onDelta({ kind: "text", index: i, text: ev.delta ?? "" });
+              break;
+            case "response.reasoning_summary_text.delta":
+            case "response.reasoning_text.delta":
+              onDelta({ kind: "thinking", index: i, text: ev.delta ?? "" });
+              break;
+            case "response.reasoning_summary_part.added":
+              if (ev.summary_index > 0) onDelta({ kind: "thinking", index: i, text: "\n\n" });
+              break;
+            case "response.function_call_arguments.delta":
+              onDelta({ kind: "tool_input", index: i, text: ev.delta ?? "", name: names.get(i) });
+              break;
+            case "response.output_item.done":
+              items[i] = ev.item;
+              break;
+            case "response.completed":
+            case "response.incomplete": {
+              const u = ev.response?.usage ?? {};
+              const cached = u.input_tokens_details?.cached_tokens ?? 0;
+              const written = u.input_tokens_details?.cache_write_tokens ?? 0;
+              usage.input = Math.max(0, (u.input_tokens ?? 0) - cached - written);
+              usage.cache_read = cached;
+              usage.cache_write = written;
+              usage.output = u.output_tokens ?? 0;
+              // Items the done events did not carry (some servers send them only here).
+              (ev.response?.output ?? []).forEach((it: any, k: number) => { if (!items[k]) items[k] = it; });
+              if (ev.type === "response.incomplete") {
+                const r = ev.response?.incomplete_details?.reason ?? "incomplete";
+                stop = r === "max_output_tokens" ? "max_tokens" : r === "content_filter" ? "refusal" : r;
+              }
+              finished = true;
+              break;
+            }
+            case "response.failed": {
+              const err = ev.response?.error ?? {};
+              fail(err.code ?? "failed", err.message ?? "the response failed");
+              break;
+            }
+            case "error": {
+              if (typeof ev.error === "string") fail(ev.code ?? "error", ev.error);
+              const err = ev.error ?? ev;
+              fail(err.code ?? err.type ?? "error", err.message ?? e.data);
+            }
+          }
+        },
+        result() {
+          const blocks: AssistantBlock[] = [];
+          for (const it of items) {
+            if (!it) continue;
+            if (it.type === "message") {
+              const text = (it.content ?? []).filter((c: any) => c.type === "output_text").map((c: any) => c.text).join("");
+              if (text) blocks.push({ type: "text", text });
+            } else if (it.type === "reasoning") {
+              const thinking = (it.summary ?? []).map((s: any) => s.text).join("\n\n");
+              // The item id is not replayed: with `store: false` the server keeps no record of it.
+              const opaque = typeof it.encrypted_content === "string"
+                ? dialect === "xai" ? it : { type: "reasoning", summary: it.summary ?? [], encrypted_content: it.encrypted_content }
+                : undefined;
+              if (thinking || opaque) blocks.push({ type: "thinking", thinking, opaque, origin: ctx.origin });
+            } else if (it.type === "function_call") {
+              blocks.push({ type: "tool_use", id: it.call_id ?? it.id, name: localName(dialect, it.name), input: parseArgs(it.arguments ?? ""), origin: ctx.origin });
+            }
+          }
+          if (stop === "end_turn" && blocks.some((b) => b.type === "tool_use")) stop = "tool_use";
+          return { blocks, usage, stop, model: req.model };
+        },
+      };
+    },
+  };
+}

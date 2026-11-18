@@ -33,7 +33,10 @@ const store = new Store(stateDir);
 const bus = new Bus();
 const errors = new ErrorTracker(store, bus);
 errors.installGlobal();
-const providers = new Providers(stateDir);
+const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
+providers.start();
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { providers.shutdown(); setTimeout(() => process.exit(0), 300); });
+process.on("exit", () => providers.plugins.killAll());
 const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
 const server = serve(
   { store, bus, engine, providers, errors, workspace: resolve(values.workspace ?? process.cwd()) },

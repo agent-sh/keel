@@ -1,0 +1,21 @@
+data: {"id":"chatcmpl-check-01","object":"chat.completion.chunk","model":"open-sample","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Checking the directory."},"finish_reason":null}]}
+
+data: {not json
+
+: ��
+
+
+data: {"id":"chatcmpl-check-01","object":"chat.completion.chunk","model":"open-sample","choices":[{"index":0,"delta":{"content":"Running ls: "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-check-01","object":"chat.completion.chunk","model":"open-sample","choices":[{"index":0,"delta":{"content":"שלום 😀"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-check-01","object":"chat.completion.chunk","model":"open-sample","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_check_01","type":"function","function":{"name":"bash","arguments":"{\"command\": \"ls"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-check-01","object":"chat.completion.chunk","model":"open-sample","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" -la\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-check-01","object":"chat.completion.chunk","model":"open-sample","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"chatcmpl-check-01","object":"chat.completion.chunk","model":"open-sample","choices":[],"usage":{"prompt_tokens":10300,"completion_tokens":64,"total_tokens":10364,"prompt_tokens_details":{"cached_tokens":8192},"completion_tokens_details":{"reasoning_tokens":21}}}
+
+data: [DONE]
+

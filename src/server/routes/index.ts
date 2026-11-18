@@ -2,6 +2,7 @@ import type { RouteModule } from "../app.ts";
 import { checkpointRoutes } from "./checkpoints.ts";
 import { mcpRoutes } from "./mcp.ts";
 import { permissionRoutes } from "./permissions.ts";
+import { providersRoutes } from "./providers.ts";
 import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
 import { searchRoutes } from "./search.ts";
@@ -16,4 +17,5 @@ export const routeModules: RouteModule[] = [
   mcpRoutes,
   toolRoutes,
   searchRoutes,
+  providersRoutes,
 ];

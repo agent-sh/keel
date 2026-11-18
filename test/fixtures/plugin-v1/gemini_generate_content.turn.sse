@@ -1,0 +1,6 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Looking at the request.","thought":true,"thoughtSignature":"Z2VtaW5pLXRob3VnaHQtc2lnbmF0dXJlLTAx"}]},"index":0}],"modelVersion":"gemini-sample-pro"}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Reading two files: שלום 😀"}]},"index":0}],"modelVersion":"gemini-sample-pro"}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"fc_check_01","name":"read_file","args":{"absolute_path":"/work/README.md"}},"thoughtSignature":"Z2VtaW5pLWNhbGwtc2lnbmF0dXJlLTAx"},{"functionCall":{"id":"fc_check_02","name":"list_directory","args":{"dir_path":"/work"}}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":10300,"candidatesTokenCount":37,"cachedContentTokenCount":8192,"thoughtsTokenCount":21,"totalTokenCount":10358},"modelVersion":"gemini-sample-pro"}
+

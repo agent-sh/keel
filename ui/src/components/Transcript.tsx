@@ -103,7 +103,8 @@ function AssistantBlocks({ blocks, results, s }: { blocks: AssistantBlock[]; res
     <>
       {blocks.map((b, i) => {
         if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} /></div> : null;
-        if (b.type === "thinking") return <Thinking key={i} text={b.thinking} />;
+        // A thought may carry only opaque state for replay (an encrypted item): nothing to show.
+        if (b.type === "thinking") return b.thinking.trim() ? <Thinking key={i} text={b.thinking} /> : null;
         if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results.get(b.id)} sessionId={s.id} cwd={s.workspace} waiting={s.phase === "working"} />;
         return null;
       })}
@@ -159,6 +160,7 @@ function TurnFooter({ e, reply, prompt, s, last }: { e: StoredEvent; reply: stri
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
         {u && <span>{fmtTokens(u.output)} out</span>}
+        {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
       </span>
     </div>
   );
