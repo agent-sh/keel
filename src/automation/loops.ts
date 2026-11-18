@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { D, alertHook, capture, deliver, emit, familyOf, inert } from "./core.ts";
 import { nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
+import * as activity from "./activity.ts";
 
 // Loops: a prompt that runs again in its session on an interval, a calendar
 // schedule, its own pace (the model names the next delay), or a webhook. The
@@ -297,6 +298,7 @@ export function rotateKey(id: string): { hook_key: string; hook_secret?: string 
 function skip(l: LoopRecord, due: number, reason: string) {
   db().query("INSERT INTO loop_runs (id, loop_id, session_id, due_ms, ended_ms, skip_reason) VALUES (?, ?, ?, ?, ?, ?)")
     .run(Bun.randomUUIDv7(), l.id, l.session_id, due, Date.now(), reason);
+  activity.record("loop", "skip", l.session_id, `Loop "${l.name}" did not run: ${reason}`, { loop_id: l.id });
 }
 
 function runText(l: LoopRecord, extra?: string): string {
@@ -328,6 +330,7 @@ export function start(l: LoopRecord, due: number, opts: { note?: string; body?: 
       patchRun(runId, { started_ms: Date.now(), first_seq: ev.seq - 1 });
       const cur = get(l.id);
       patch(l.id, { runs: (cur?.runs ?? 0) + 1, last_ms: Date.now(), last_status: "running" });
+      activity.record("loop", "run", l.session_id, `Loop "${l.name}" started a run${note ? ` (${note})` : ""}`, { loop_id: l.id, run_id: runId });
     },
   });
   return toRun(db().query<RunRow, [string]>("SELECT * FROM loop_runs WHERE id = ?").get(runId)!);
@@ -395,6 +398,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
   }
   if (fails >= FAIL_PAUSE) Object.assign(out, { enabled: false, disabled_reason: `paused after ${fails} failed runs in a row` });
   const next = patch(l.id, out)!;
+  activity.record("loop", ok ? "ok" : "failed", sessionId, `Loop "${l.name}" run ${ok ? "ended" : `failed: ${err || reason}`}`, { loop_id: l.id, run_id: r.id });
   if (!ok) alertHook.raise?.("loop_failed", sessionId, `Loop failed: ${l.name}`, `${err || reason}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
   if (l.max_runs && next.runs >= l.max_runs && next.enabled) patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` });
   // A webhook request that waited for this run goes now.

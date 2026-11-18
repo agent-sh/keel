@@ -8,6 +8,7 @@ import { navigate, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { BackgroundButton } from "./automation/BackgroundPopover.tsx";
+import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { PanelToggles } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
@@ -90,6 +91,7 @@ export function SessionHeader({ session }: { session: Session }) {
       </span>}
       <MachineChip session={session} />
       <BackgroundButton sessionId={session.id} />
+      {!session.parent_id && <SessionSnoozeButton sessionId={session.id} />}
       <Suspense fallback={null}><WorktreeChip session={session} /></Suspense>
       <PanelToggles session={session} />
       <Suspense fallback={null}><PermissionMenu sessionId={session.id} /></Suspense>

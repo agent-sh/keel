@@ -5,10 +5,12 @@ import type { AgentRecord } from "../../../src/automation/agents.ts";
 import type { Alert, AlertSettings } from "../../../src/automation/alerts.ts";
 import type { LoopRecord, RunRecord } from "../../../src/automation/loops.ts";
 import type { WaitRecord } from "../../../src/automation/waits.ts";
+import type { Activity } from "../../../src/automation/activity.ts";
+import type { Snooze } from "../../../src/automation/snooze.ts";
 import { onFeature, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 
-export type { AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, WaitRecord };
+export type { Activity, AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, Snooze, WaitRecord };
 export type Channel = { id: string; label: string; available: boolean };
 
 type State = {
@@ -19,9 +21,11 @@ type State = {
   unread: { total: number; sessions: Record<string, number> };
   settings: AlertSettings | null;
   channels: Channel[];
+  snoozes: Record<string, Snooze>; // "*" is the global snooze
+  activityTick: number; // bumped by each new activity row
 };
 
-let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: { total: 0, sessions: {} }, settings: null, channels: [] };
+let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: { total: 0, sessions: {} }, settings: null, channels: [], snoozes: {}, activityTick: 0 };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => {
   state = { ...state, ...p };
@@ -43,7 +47,10 @@ const byId = <T extends { id: string }>(xs: T[]) => Object.fromEntries(xs.map((x
 export const auto = {
   async load() {
     const r = await api<any>("/api/automation");
-    set({ agents: byId(r.agents), waits: byId(r.waits), loops: byId(r.loops), alerts: r.alerts, unread: r.unread, settings: r.settings, channels: r.channels });
+    set({
+      agents: byId(r.agents), waits: byId(r.waits), loops: byId(r.loops), alerts: r.alerts, unread: r.unread, settings: r.settings, channels: r.channels,
+      snoozes: Object.fromEntries((r.snoozes as Snooze[]).map((x) => [x.session_id, x])),
+    });
   },
   async loadAlerts() {
     const r = await api<{ alerts: Alert[]; unread: State["unread"] }>("/api/alerts?limit=100");
@@ -76,6 +83,19 @@ export const auto = {
     const r = await api<{ settings: AlertSettings; channels: Channel[] }>("/api/alerts/settings", { method: "PUT", body: JSON.stringify(p) });
     set({ settings: r.settings, channels: r.channels });
   },
+  snooze: (sessionId: string, body: { until_ms?: number; until_needed?: boolean }) =>
+    api(`/api/sessions/${sessionId}/snooze`, { method: "PUT", body: JSON.stringify(body) }),
+  unsnooze: (sessionId: string) => api(`/api/sessions/${sessionId}/snooze`, { method: "DELETE" }),
+  snoozeAll: (until_ms: number) => api("/api/snooze", { method: "PUT", body: JSON.stringify({ until_ms }) }),
+  unsnoozeAll: () => api("/api/snooze", { method: "DELETE" }),
+  activity: (q: { before?: number; kind?: string[]; session_id?: string; q?: string }) => {
+    const p = new URLSearchParams({ limit: "50" });
+    if (q.before) p.set("before", String(q.before));
+    if (q.kind?.length) p.set("kind", q.kind.join(","));
+    if (q.session_id) p.set("session_id", q.session_id);
+    if (q.q) p.set("q", q.q);
+    return api<{ items: Activity[]; has_more: boolean; kinds: string[] }>(`/api/activity?${p}`);
+  },
   test: () => api("/api/alerts/test", { method: "POST", body: JSON.stringify({ kind: "agent" }) }),
   presence: (session_id: string | null, focused: boolean) =>
     fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id, focused }) }).catch(() => {}),
@@ -102,6 +122,10 @@ onFeature({
       set({ alerts: [d, ...state.alerts.filter((a) => a.id !== d.id)].slice(0, 200) });
       refreshAlerts();
     } else if (kind === "alerts_read") refreshAlerts();
+    else if (kind === "snooze") {
+      const { [d.session_id]: _, ...rest } = state.snoozes;
+      set({ snoozes: d.snooze ? { ...rest, [d.session_id]: d.snooze } : rest });
+    } else if (kind === "activity") set({ activityTick: state.activityTick + 1 });
   },
   reconnect: () => void auto.load().catch(reportError),
 });
@@ -143,4 +167,10 @@ export function inMs(ts: number): string {
   if (s < 3600) return `in ${Math.round(s / 60)}m`;
   if (s < 86400) return `in ${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
   return `in ${Math.round(s / 86400)}d`;
+}
+
+export function snoozeText(s: Snooze): string {
+  const t = s.until_ms ? new Date(s.until_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+  if (s.suspended) return "Snooze paused: it needs you";
+  return [t ? `until ${t}` : "", s.until_needed ? "until it needs you" : ""].filter(Boolean).join(" or ");
 }

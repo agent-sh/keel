@@ -26,7 +26,7 @@ slash.add({
 settingsSections.add({
   id: "alerts",
   label: "Alerts",
-  words: "notifications desktop command notify inbox routes push",
+  words: "notifications desktop command notify inbox routes push snooze",
   icon: <BellRing className="size-4" />,
   order: 40,
   component: lazy(() => import("./AlertSettings.tsx")),

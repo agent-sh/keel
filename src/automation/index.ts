@@ -1,8 +1,10 @@
 import { registerHooks } from "../engine/hooks.ts";
 import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
+import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
+import * as snooze from "./snooze.ts";
 import { afterTurn, capture, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
@@ -24,6 +26,7 @@ const attempt = async (f: () => Promise<Response> | Response) => {
 };
 
 const g = globalThis as any;
+const TURN_WORDS: Record<string, string> = { end_turn: "finished", error: "failed", interrupted: "stopped", max_tokens: "cut off at the output limit" };
 const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_user"]);
 
 function init(deps: Deps) {
@@ -32,6 +35,8 @@ function init(deps: Deps) {
   waits.migrate();
   loops.migrate();
   alerts.migrate();
+  activity.migrate();
+  snooze.migrate();
   registerShared(...automationTools);
   extendTaskStop();
 
@@ -47,12 +52,18 @@ function init(deps: Deps) {
       if (QUESTION_TOOLS.has(call.tool.name)) {
         const q = (call.input?.questions ?? [])[0];
         const text = String(q?.question ?? call.input?.question ?? call.input?.prompt ?? "The agent asks a question.");
+        alerts.openQuestions.add(s.id);
         alerts.raise("question", s.id, `Question: ${deps.store.session(s.id)?.title || "a session"}`, text, { call_id: call.id, open_session: s.id });
       }
       return undefined;
     },
-    afterTool: (_s, call) => {
-      if (QUESTION_TOOLS.has(call.tool.name)) alerts.readWhere("call_id", call.id);
+    afterTool: (s, call) => {
+      if (QUESTION_TOOLS.has(call.tool.name)) {
+        alerts.openQuestions.delete(s.id);
+        alerts.readWhere("call_id", call.id);
+        // The answer to a question is the owner's word: it ends a snooze.
+        snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");
+      }
     },
     turnEnd: (s, reason) => {
       afterTurn(s.id, () => {
@@ -60,7 +71,9 @@ function init(deps: Deps) {
         loops.onTurnEnd(s.id, reason);
         agents.onTurnEnd(s.id, reason);
         const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || agents.list(s.id).some((a) => !agents.isEnded(a));
-        alerts.onTurnEnd(s.id, reason, { subagent: !!deps.store.session(s.id)?.parent_id, loopRun, more });
+        const child = !!deps.store.session(s.id)?.parent_id;
+        if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`);
+        alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more });
       });
     },
   });
@@ -68,12 +81,20 @@ function init(deps: Deps) {
   // Approval cards become alerts (a child's under its parent); an answered
   // card's alert is read.
   deps.bus.on((f) => {
+    // A message the owner typed ends a snooze.
+    if (f.t === "event" && f.event.kind === "user" && !f.event.data.kind && f.event.data.origin !== "queued") {
+      const s = deps.store.session(f.event.session_id);
+      if (s && !s.parent_id) snooze.end(s.id, "the owner wrote to it");
+    }
     if (f.t !== "feature" || f.name !== "approval") return;
     const a = f.data as { id: string; session_id: string; tool: string; summary: string; risk: string; state: string };
     if (a.state === "pending") {
       const s = deps.store.session(a.session_id);
       alerts.raise("approval", a.session_id, `Approval: ${s?.title || "a session"}`, `${a.tool}: ${a.summary}`.slice(0, 500), { approval_id: a.id, open_session: a.session_id, risk: a.risk });
-    } else alerts.readWhere("approval_id", a.id);
+    } else {
+      alerts.readWhere("approval_id", a.id);
+      activity.record("approval", a.state, a.session_id, `${a.tool}: ${a.summary}`.slice(0, 300) + ` (${a.state})`, { approval_id: a.id });
+    }
   });
 
   if (!g.__keelAutomationRecovered) {
@@ -94,6 +115,7 @@ function init(deps: Deps) {
     try {
       loops.tick();
       agents.tick();
+      alerts.tickSnoozes();
       sweepArchived(deps);
     } catch (e) {
       capture(e, { at: "tick" });
@@ -140,6 +162,7 @@ export const automationRoutes: RouteModule = (deps) => {
           alerts: alerts.list({ limit: 50 }),
           settings: alerts.settings(),
           channels: alerts.channelList(),
+          snoozes: snooze.all(),
         });
       },
     },
@@ -285,6 +308,38 @@ export const automationRoutes: RouteModule = (deps) => {
         const b = await body(req);
         const a = alerts.raise((b.kind as alerts.AlertKind) ?? "agent", b.session_id ?? null, "Test alert", "This is how Keel reaches you.");
         return json({ alert: a });
+      },
+    },
+    // --- snooze and activity
+    "/api/sessions/:id/snooze": {
+      PUT: (req: any) => attempt(async () => {
+        const b = await body(req);
+        const sn = snooze.set(req.params.id, { until_ms: b.until_ms, until_needed: !!b.until_needed }, alerts.hasOpenCard(req.params.id));
+        alerts.markRead({ session_id: req.params.id });
+        return json({ snooze: sn });
+      }),
+      DELETE: (req: any) => (session(req.params.id) ? json({ ok: true, ended: snooze.end(req.params.id, "the owner ended it") }) : bad("no such session", 404)),
+    },
+    "/api/snooze": {
+      GET: () => json({ snooze: snooze.global() ?? null, sessions: snooze.all().filter((x) => x.session_id !== snooze.GLOBAL_ID) }),
+      PUT: (req: Request) => attempt(async () => json({ snooze: snooze.setGlobal(Number((await body(req)).until_ms)) })),
+      DELETE: () => {
+        const g0 = snooze.global();
+        const ended = snooze.end(snooze.GLOBAL_ID, "the owner ended it");
+        if (g0?.muted) alerts.raise("snooze_over", null, "Alerts are back", `${g0.muted} alert${g0.muted > 1 ? "s" : ""} came while alerts were snoozed.`);
+        return json({ ok: true, ended });
+      },
+    },
+    "/api/activity": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const before = q.get("before") ? Number(q.get("before")) : undefined;
+        const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
+        if ((before !== undefined && !Number.isFinite(before)) || (limit !== undefined && !Number.isFinite(limit))) return bad("before and limit are numbers");
+        const kinds = (q.get("kind") ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+        const unknown = kinds.find((k) => !activity.ACTIVITY_KINDS.includes(k as activity.ActivityKind));
+        if (unknown) return bad(`unknown kind ${unknown}; kinds: ${activity.ACTIVITY_KINDS.join(", ")}`);
+        return json({ ...activity.list({ before, limit, kinds, session_id: q.get("session_id") ?? undefined, q: q.get("q") ?? undefined }), kinds: activity.ACTIVITY_KINDS });
       },
     },
     "/api/presence": {

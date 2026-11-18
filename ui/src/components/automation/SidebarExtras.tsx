@@ -1,6 +1,6 @@
-import { Bell, ChevronRight, Repeat } from "lucide-react";
+import { Bell, BellOff, ChevronRight, Moon, Repeat } from "lucide-react";
 import { lazy, Suspense, useMemo, useState } from "react";
-import { auto, isLive, openSession, useAuto } from "../../lib/automation.ts";
+import { auto, isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
 import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentStatus, IconButton, StopIcon } from "./bits.tsx";
@@ -64,8 +64,10 @@ export function SessionBadges({ sessionId }: { sessionId: string }) {
   const unread = useAuto((s) => s.unread.sessions[sessionId] ?? 0);
   const loops = useAuto((s) => Object.values(s.loops).some((l) => l.session_id === sessionId && l.enabled));
   const waits = useAuto((s) => Object.values(s.waits).some((w) => w.session_id === sessionId && w.status === "active"));
+  const snoozed = useAuto((s) => s.snoozes[sessionId]);
   return (
     <>
+      {snoozed && !snoozed.suspended && <Moon data-testid="snoozed-mark" className="size-3 shrink-0 text-faint" aria-label={`Snoozed ${snoozeText(snoozed)}`} />}
       {(loops || waits) && <Repeat className="size-3 shrink-0 text-faint" aria-label="Scheduled work" />}
       {unread > 0 && <span data-testid="unread-dot" title={`${unread} unread`} className="size-2 shrink-0 rounded-full bg-accent" />}
     </>
@@ -92,16 +94,17 @@ export function AutomationFooter() {
 function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () => void }) {
   const unread = useAuto((s) => s.unread.total);
   const loops = useAuto((s) => Object.values(s.loops).filter((l) => l.enabled).length);
+  const held = useAuto((s) => !!s.snoozes["*"]);
   return (
     <>
       <button
         type="button"
         data-testid="inbox-button"
         onClick={onInbox}
-        title="Inbox"
+        title={held ? "Inbox: alerts are snoozed" : "Inbox"}
         className={cn("relative flex items-center gap-1.5 rounded-md px-2 py-1 text-caption hover:bg-raised", unread ? "text-fg" : "text-faint")}
       >
-        <Bell className="size-3.5" />
+        {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
         {unread > 0 && <span data-testid="inbox-count" className="rounded-full bg-accent px-1.5 text-micro font-semibold leading-4 text-accent-fg tabular-nums">{unread}</span>}
       </button>
       <button

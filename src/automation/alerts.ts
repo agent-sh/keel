@@ -1,10 +1,13 @@
+import * as activity from "./activity.ts";
 import { D, alertHook, capture, emit } from "./core.ts";
+import * as snooze from "./snooze.ts";
+import * as perm from "../server/routes/permissions.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
 // kind. A channel is anything with deliver(); phone push registers one later.
 
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent"] as const;
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over"] as const;
 export type AlertKind = (typeof KINDS)[number];
 export type Alert = {
   id: string;
@@ -128,15 +131,21 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     // One alert per decision: a newer one for the same session and kind replaces the unread one.
     if (sid && kind !== "approval") store.db.query("UPDATE alerts SET read = 1 WHERE session_id = ? AND kind = ? AND read = 0").run(sid, kind);
     const routed = (st.routes[kind] ?? []).filter((c) => channels.get(c)?.available());
+    // A snoozed session's routine alert is put away read; a global snooze keeps
+    // everything off the channels.
+    const f = snooze.filter(kind, sid);
     // Watching the session: the page shows it, nothing leaves the machine for it.
-    const sendTo = watching(sid) ? [] : routed;
+    const sendTo = watching(sid) || !f.deliver || f.quiet ? [] : routed;
+    const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}) };
+    const stored = Object.keys(flags).length ? { ...(data as object), ...flags } : data;
     const a: Alert = {
-      id: Bun.randomUUIDv7(), ts: Date.now(), kind, session_id: sid, read: watching(sid),
-      title: scrub(title).slice(0, 200), body: scrub(body).slice(0, 500), data, channels: sendTo,
+      id: Bun.randomUUIDv7(), ts: Date.now(), kind, session_id: sid, read: watching(sid) || !f.deliver,
+      title: scrub(title).slice(0, 200), body: scrub(body).slice(0, 500), data: stored, channels: sendTo,
     };
     store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, channels) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(a.id, a.ts, kind, sid, a.title, a.body, a.read ? 1 : 0, data ? JSON.stringify(data) : null, JSON.stringify(sendTo));
+      .run(a.id, a.ts, kind, sid, a.title, a.body, a.read ? 1 : 0, stored ? JSON.stringify(stored) : null, JSON.stringify(sendTo));
     emit("alert", a);
+    activity.record("alert", kind, sid, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags });
     for (const c of sendTo) {
       Promise.resolve(channels.get(c)!.deliver(a)).catch((e) => capture(e, { at: "alert channel", channel: c }));
     }
@@ -147,6 +156,30 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
   }
 }
 alertHook.raise = (kind, sessionId, title, body, data) => void raise(kind as AlertKind, sessionId, title, body, data);
+
+// The snoozes whose time came: each session wakes with one alert, and the end
+// of a global snooze says how many alerts it held.
+export function tickSnoozes() {
+  for (const s of snooze.due()) {
+    if (s.session_id === snooze.GLOBAL_ID) {
+      snooze.end(s.session_id, "its time came");
+      if (s.muted) raise("snooze_over", null, "Alerts are back", `${s.muted} alert${s.muted > 1 ? "s" : ""} came while alerts were snoozed.`);
+      continue;
+    }
+    const sess = D().store.session(s.session_id);
+    snooze.end(s.session_id, "its time came");
+    if (sess) raise("snooze_over", s.session_id, `Snooze over: ${sess.title || "a session"}`, s.muted ? `${s.muted} alert${s.muted > 1 ? "s" : ""} were put away while it was snoozed.` : "Back from snooze.", { open_session: s.session_id });
+  }
+}
+
+// Whether the session (or one of its agents) has a card only the owner can
+// answer: a pending approval, or a question not yet answered.
+export function hasOpenCard(sessionId: string): boolean {
+  const kids = D().store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE parent_id = ?").all(sessionId).map((r) => r.id);
+  if ([sessionId, ...kids].some((id) => (perm.gate?.approvals({ session: id, pending: true }).length ?? 0) > 0)) return true;
+  return openQuestions.has(sessionId) || kids.some((k) => openQuestions.has(k));
+}
+export const openQuestions = new Set<string>();
 
 export function markRead(opts: { ids?: string[]; session_id?: string; all?: boolean }): number {
   const db = D().store.db;
@@ -162,6 +195,8 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
 
 // Reads the unread alerts whose data names this value (an answered approval).
 export function readWhere(key: string, value: string) {
+  const sessions = D().store.db.query<{ session_id: string | null }, [string, string]>("SELECT DISTINCT session_id FROM alerts WHERE json_extract(data, ?) = ?").all(`$.${key}`, value);
+  for (const r of sessions) if (r.session_id && key === "approval_id") snooze.resume(r.session_id);
   const n = D().store.db.query("UPDATE alerts SET read = 1 WHERE read = 0 AND json_extract(data, ?) = ?").run(`$.${key}`, value).changes;
   if (n) emit("alerts_read", { [key]: value, changed: n });
 }

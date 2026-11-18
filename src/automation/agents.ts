@@ -5,6 +5,7 @@ import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, hasPending, inert } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
+import * as activity from "./activity.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. One level deep. The child gets
@@ -301,6 +302,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   store.db.query(
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def));
+  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model})`, { agent_id: id, child_session: child.id });
   const task = [PREAMBLE, def.body, input.fork ? "The conversation above is your parent's, up to the moment it started you." : "", `Task:\n${input.prompt}`]
     .filter(Boolean).join("\n\n");
   const ev = engine.send(child.id, task, { meta: { kind: "task", agent_id: id } }).event!;
@@ -375,6 +377,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
   const status: AgentStatus = stopping.delete(a.id) || reason === "interrupted" ? "stopped" : reason === "error" ? "failed" : "completed";
   const blocked = !a.background && (waiters.get(a.id)?.length ?? 0) > 0;
   const rec = update(a.id, { status, ended: Date.now(), result: collectResult(a), handback: !blocked })!;
+  activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${status === "completed" ? "reported" : status}`, { agent_id: a.id, child_session: a.session_id });
   wake(a.id);
   if (!blocked) handback(rec);
   slotWaiters.splice(0).forEach((f) => f());

@@ -1,11 +1,16 @@
 import { Dialog } from "@base-ui/react/dialog";
+import { Tabs } from "@base-ui/react/tabs";
 import { CheckCheck, Dot, Settings2, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { auto, openSession, useAuto } from "../../lib/automation.ts";
 import { navigate } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
+import { ActivityList } from "./ActivityList.tsx";
 import { ALERT_LABEL, AlertIcon, Empty } from "./bits.tsx";
+import { GlobalSnoozeButton } from "./Snooze.tsx";
+
+const tabCls = "h-7 rounded-md px-2.5 text-caption text-muted outline-none hover:text-fg data-[active]:bg-raised data-[active]:text-fg data-[active]:shadow-2 focus-visible:ring-2 focus-visible:ring-accent/30";
 
 
 function Inbox({ onClose }: { onClose: () => void }) {
@@ -54,6 +59,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
               </div>
               <div className="flex items-center gap-1 text-caption text-faint">
                 <span>{ALERT_LABEL[a.kind]}</span>
+                {a.data?.snoozed ? <><Dot className="size-3" /><span>snoozed</span></> : null}
+                {a.data?.held ? <><Dot className="size-3" /><span>held by the snooze</span></> : null}
                 {a.channels?.length ? <><Dot className="size-3" /><span>sent to {a.channels.join(", ")}</span></> : null}
               </div>
               <p className={cn("mt-0.5 line-clamp-2 text-caption leading-snug", a.read ? "text-faint" : "text-muted")}>{a.body}</p>
@@ -76,6 +83,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
 }
 
 export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const [tab, setTab] = useState("inbox");
   useEffect(() => {
     if (open) auto.loadAlerts().catch(reportError);
   }, [open]);
@@ -90,13 +98,20 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
             "transition-[transform,opacity] duration-200 data-starting-style:-translate-x-3 data-starting-style:opacity-0 data-ending-style:-translate-x-3 data-ending-style:opacity-0",
           )}
         >
+          <Tabs.Root value={tab} onValueChange={(v) => setTab(String(v))} className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center gap-1 border-b border-line px-3 py-2.5">
-            <Dialog.Title className="pl-1 font-semibold">Inbox</Dialog.Title>
+            <Dialog.Title className="sr-only">Inbox</Dialog.Title>
+            <Tabs.List className="flex gap-0.5 rounded-lg bg-panel p-0.5">
+              <Tabs.Tab value="inbox" className={tabCls} data-testid="tab-inbox">Inbox</Tabs.Tab>
+              <Tabs.Tab value="activity" className={tabCls} data-testid="tab-activity">Activity</Tabs.Tab>
+            </Tabs.List>
+            <span className="ml-auto" />
+            <GlobalSnoozeButton />
             <button
               type="button"
               data-testid="alert-routes-link"
               onClick={() => { onOpenChange(false); navigate({ name: "settings", section: "alerts" }); }}
-              className="ml-auto flex h-7 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg"
+              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg"
             >
               <Settings2 className="size-3.5" /> Routes
             </button>
@@ -104,7 +119,9 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
               <X className="size-4" />
             </Dialog.Close>
           </div>
-          <Inbox onClose={() => onOpenChange(false)} />
+          <Tabs.Panel value="inbox" className="flex min-h-0 flex-1 flex-col"><Inbox onClose={() => onOpenChange(false)} /></Tabs.Panel>
+          <Tabs.Panel value="activity" className="flex min-h-0 flex-1 flex-col"><ActivityList onClose={() => onOpenChange(false)} /></Tabs.Panel>
+          </Tabs.Root>
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

@@ -1,4 +1,4 @@
-import { Bell, Bot, CircleAlert, CircleCheck, CircleSlash, Clock, Gauge, Hand, MessageCircleQuestion, Repeat, Square } from "lucide-react";
+import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, CircleSlash, Clock, Gauge, Hand, MessageCircleQuestion, Repeat, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentRecord, Alert } from "../../lib/automation.ts";
 import { cn } from "../../lib/utils.ts";
@@ -17,10 +17,10 @@ export const STATUS_LABEL: Record<AgentRecord["status"], string> = {
 };
 
 const ALERT_ICON: Record<Alert["kind"], typeof Bell> = {
-  approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot,
+  approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock,
 };
 export const ALERT_LABEL: Record<Alert["kind"], string> = {
-  approval: "Approval", question: "Question", finished: "Finished", failed: "Failed", limit: "Usage limit", loop_failed: "Loop failed", agent: "From the agent",
+  approval: "Approval", question: "Question", finished: "Finished", failed: "Failed", limit: "Usage limit", loop_failed: "Loop failed", agent: "From the agent", snooze_over: "Snooze over",
 };
 
 export function AlertIcon({ kind }: { kind: Alert["kind"] }) {

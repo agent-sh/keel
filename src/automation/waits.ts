@@ -1,6 +1,7 @@
 import { existsSync, openSync, readSync, closeSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert } from "./core.ts";
+import * as activity from "./activity.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -194,6 +195,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ? WHERE id = ?").run(status, outcome.slice(0, 4000), Date.now(), id);
   const rec = get(id)!;
   emit("wait", rec);
+  activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id });
   if (wake) {
     const body = `${w.note ? w.note + "\n" : ""}${outcome}`;
     deliver(w.session_id, `<wait_fired id="${w.id}" kind="${w.kind}" outcome="${status}">\n${inert(body, "wait_fired")}\n</wait_fired>`, { kind: "wait", wait_id: w.id, outcome: status });
