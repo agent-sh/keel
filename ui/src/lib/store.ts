@@ -42,6 +42,7 @@ type State = {
   limits: Limits | null;
   errors: ErrorRecord[];
   connected: boolean;
+  loaded: { sessions: boolean; models: boolean }; // the first listing of each arrived (first-run screens wait for it)
   providers: ProvidersReport | null;
   queues: Record<string, { queue: QueueItem[]; held: boolean }>;
   status: Record<string, TurnStatus>;
@@ -49,7 +50,7 @@ type State = {
   composer: Record<string, string>;
 };
 
-let state: State = {
+let state: State = { loaded: { sessions: false, models: false },
   sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
 };
 const subs = new Set<() => void>();
@@ -75,11 +76,11 @@ export const actions = {
     const { sessions } = await api<{ sessions: Session[] }>("/api/sessions");
     // Sessions of other machines (the fleet module keeps them) stay.
     const remote = Object.entries(state.sessions).filter(([id]) => splitId(id));
-    set({ sessions: Object.fromEntries([...remote, ...sessions.map((s) => [s.id, s] as const)]) });
+    set({ sessions: Object.fromEntries([...remote, ...sessions.map((s) => [s.id, s] as const)]), loaded: { ...state.loaded, sessions: true } });
   },
   async loadModels(refresh = false) {
     const r = await api<{ models: ListedModel[]; default: string; pinned: string[]; providers: { id: string; label: string }[] }>(`/api/models${refresh ? "?refresh" : ""}`);
-    set({ models: r.models, defaultModel: r.default, pinned: r.pinned ?? [], providerLabels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) });
+    set({ loaded: { ...state.loaded, models: true }, models: r.models, defaultModel: r.default, pinned: r.pinned ?? [], providerLabels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) });
   },
   async loadLimits(refresh = false) {
     set({ limits: await api<Limits>(`/api/limits${refresh ? "?refresh" : ""}`) });

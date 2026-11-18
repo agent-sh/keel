@@ -4,6 +4,7 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
 import { Composer } from "./Composer.tsx";
+import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
@@ -25,6 +26,9 @@ export function StartBox() {
   const model = newModel || defaultModel;
   const inWorktree = useStartInWorktree();
   const machine = useNewMachine();
+  const loaded = useStore((s) => s.loaded);
+  const noModels = useStore((s) => s.loaded.models && s.models.length === 0);
+  const firstRun = loaded.sessions && !Object.values(sessions).some((s) => !s.archived);
   const recent = useMemo(
     () => Object.values(sessions).filter((s) => !s.archived && s.workspace === workspace).sort((a, b) => b.updated - a.updated).slice(0, 4),
     [sessions, workspace],
@@ -42,6 +46,7 @@ export function StartBox() {
             {(!machine || machine === "auto") && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
             {!machine && <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>}
           </div>
+          {noModels && <SetupProviders />}
           <div data-testid="new-composer">
             <Composer
               model={model}
@@ -63,6 +68,7 @@ export function StartBox() {
             <span className="flex items-center gap-1.5"><Kbd keys="alt+m" /> model</span>
             <span className="flex items-center gap-1.5"><Kbd keys="mod+/" /> all shortcuts</span>
           </div>
+          {firstRun && <FirstSteps />}
           {recent.length > 0 && (
             <section className="mt-10">
               <h2 className="mb-2 text-caption font-medium text-faint">Recent in {workspace.split("/").pop()}</h2>

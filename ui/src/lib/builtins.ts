@@ -123,7 +123,7 @@ for (const p of [
 ]) if (!slash.all().some((i) => i.id === p.id)) slash.add(p);
 
 // What /review asks: Codex's working-tree review, as a prompt in the session.
-function reviewPrompt(arg: string) {
+export function reviewPrompt(arg: string) {
   const target = /^[\w./-]+$/.test(arg) && !arg.includes(" ")
     ? `the changes on this branch against ${arg} (git diff ${arg}...HEAD, plus uncommitted and untracked files)`
     : "the uncommitted changes in this folder (git diff HEAD and the untracked files)";
@@ -131,7 +131,7 @@ function reviewPrompt(arg: string) {
   return `Review ${target}. Do not edit anything. Report what is wrong: bugs, missed cases, broken contracts, risky changes and missing tests, most serious first, each with the file and line and why it matters. Say plainly when you find nothing worth changing.${focus}`;
 }
 
-const INIT_PROMPT =
+export const INIT_PROMPT =
   "Write an AGENTS.md at the root of this folder for agents that will work here. Read the project first (README, build and test files, the layout, recent git history). Cover: what the project is, how to build, test and run it, the layout of the code, and the conventions a change must follow. Keep it short and specific to this project; no generic advice. If an AGENTS.md exists, improve it instead of starting over.";
 
 // An error in what was typed after a command: shown, not recorded as a failure.
