@@ -7,6 +7,7 @@ import "./lib/turns.ts";
 import "./components/automation/register.tsx";
 import "./features/fleet.tsx";
 import "./features/mobile.tsx";
+import "./lib/tokens-ui.ts";
 
 // Install metadata. Added here, not in index.html, because the bundler tries
 // to resolve every link in the page as a file to bundle.
