@@ -11,6 +11,7 @@ import { cn } from "../lib/utils.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
 import { SpeedPicker } from "./SpeedPicker.tsx";
+import { LimitChip } from "./Limits.tsx";
 
 type Menu =
   | { kind: "slash"; query: string; start: number }
@@ -388,6 +389,7 @@ export function Composer({
         <ModelPicker value={model} onChange={onModel} openSignal={modelSignal} />
         {sid && <EffortPicker sessionId={sid} />}
         {sid && <SpeedPicker sessionId={sid} />}
+        {model && <LimitChip model={model} />}
         {notice && <span className="ml-1 min-w-0 truncate text-caption text-warn animate-in" role="status" data-testid="composer-notice">{notice}</span>}
         {!connected && !notice && <span className="ml-1 truncate text-caption text-faint">Reconnecting</span>}
         <div className="ml-auto flex items-center gap-1.5">

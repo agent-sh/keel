@@ -2,6 +2,7 @@
 // Grok plan sign-in.
 import { registerHooks } from "../../engine/hooks.ts";
 import type { RouteModule } from "../app.ts";
+import { CLOSE_PERCENT, isClose } from "../../providers/limits.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -21,18 +22,28 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
     return {
       providers: providers.statuses().map((s) => {
         const l = providers.listing(s.id);
-        return { ...s, listing: { state: l.state, fetched_ms: l.fetched, error: l.error, models: count.get(s.id) ?? 0 } };
+        return { ...s, listing: { state: l.state, fetched_ms: l.fetched, error: l.error, models: count.get(s.id) ?? 0 }, problem: providers.problem(s.id) };
       }),
       plugins: providers.plugins.summary(),
       plugins_file: providers.plugins.file,
       plugins_error: providers.plugins.error,
       choices: providers.choices(),
-      windows: [await providers.xai.window()].filter(Boolean).map((w) => ({ provider: "grok", ...w })),
+      windows: await providers.windows(),
     };
   };
 
   return {
     "/api/providers": { GET: async () => json(await report()) },
+
+    // The windows alone, for the picker: every provider's, with the close ones
+    // named, and the account problems that stop turns.
+    "/api/limits": {
+      GET: async (req: Request) => {
+        const windows = await providers.windows(new URL(req.url).searchParams.has("refresh"));
+        const problems = Object.fromEntries(providers.statuses().map((s) => [s.id, providers.problem(s.id)]).filter(([, p]) => p));
+        return json({ windows, close: windows.filter(isClose).map((w) => `${w.provider}:${w.id}`), problems, close_percent: CLOSE_PERCENT });
+      },
+    },
 
     "/api/providers/refresh": {
       POST: async (req: Request) => {

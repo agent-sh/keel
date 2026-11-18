@@ -31,7 +31,7 @@ export type PluginModel = {
   billing?: { kind: string; plan?: string; currency?: string; input_per_mtok?: number; output_per_mtok?: number; cache_read_per_mtok?: number; cache_write_per_mtok?: number; estimated?: boolean };
 };
 
-export type ProviderState = { state: string; account?: string; detail?: string; sign_in?: { command: string; note?: string }; reset_at_ms?: number };
+export type ProviderState = { state: string; account?: string; detail?: string; sign_in?: { command: string; note?: string }; reset_at_ms?: number; usage_windows?: { id?: string; label?: string; used_percent?: number; resets_at_ms?: number }[] };
 
 export type PluginState = "starting" | "ready" | "restarting" | "not_responding" | "stopped";
 

@@ -100,6 +100,7 @@ export type StreamOpts = {
   format?: "sse" | "json_array";
   secrets?: string[];
   idleMs?: number;
+  onHeaders?: (h: Headers) => void;
   // Called on a 401 once: a driver with a refreshable sign-in renews and
   // returns fresh headers for one resend.
   onAuthFailure?: () => Promise<Record<string, string> | null>;
@@ -134,6 +135,7 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
       if (o.signal.aborted) throw new ProviderError("cancelled", "cancelled");
       throw new ProviderError("network", `${o.label}: ${scrub((e as Error).message, o.secrets)}`);
     }
+    try { o.onHeaders?.(res.headers); } catch {}
     if (res.ok) break;
     const text = await res.text().catch(() => "");
     const err = classify(o.label, res.status, res.headers, scrub(text, o.secrets));

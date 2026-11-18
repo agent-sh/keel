@@ -316,6 +316,11 @@ export class XaiProvider implements Provider {
     }
   }
 
+  async usage() {
+    const w = await this.window();
+    return w ? [{ id: "weekly", label: "Plan window", ...w }] : [];
+  }
+
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {
     let g = await this.fresh();
     const ctx = ctxFor(this.id, req, req.efforts ?? []);

@@ -14,6 +14,7 @@ import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson, ProviderError, scrub } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
+import { fromChatgptUsage, type WindowReading } from "./limits.ts";
 
 const REFRESH_MARGIN = 5 * 60_000;
 // The Codex CLI's public client id, used only when the file names none.
@@ -156,6 +157,13 @@ export class CodexProvider implements Provider {
           }))
           : undefined,
       }));
+  }
+
+  // The plan's windows as Codex's /status reads them.
+  async usage(): Promise<WindowReading[]> {
+    const a = await this.auth();
+    const d = await getJson(this.label, `${this.base.replace(/\/codex$/, "")}/wham/usage`, this.headers(a), [a.tokens!.access_token!]);
+    return fromChatgptUsage(d);
   }
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {

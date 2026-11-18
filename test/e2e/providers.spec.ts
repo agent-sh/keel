@@ -8,7 +8,10 @@ import { shoot } from "./shots.ts";
 const pick = async (page: Page, search: string, provider: string) => {
   await page.getByTestId("model-picker").last().click();
   await page.getByPlaceholder("Search models").fill(search);
-  await page.getByRole("option").filter({ hasText: provider }).first().click();
+  await page.locator(`[data-testid="model-option"][data-model^="${provider}:"]`).first().click();
+  // A switch while the prompt cache is warm asks first.
+  const ask = page.getByRole("alertdialog");
+  if (await ask.isVisible({ timeout: 1500 }).catch(() => false)) await ask.getByRole("button", { name: "Switch" }).click();
 };
 
 test("providers and a cross-family session", async ({ page, request }) => {

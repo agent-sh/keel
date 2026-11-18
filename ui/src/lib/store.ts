@@ -7,14 +7,21 @@ import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts"
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
 
 export type ProvidersReport = {
-  providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number } })[];
+  providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem })[];
   plugins: { id: string; state: string; name?: string; version?: string; reason?: string; stderr_tail?: string; violations: { count: number; last: string } }[];
   plugins_file?: string | null;
   choices: { default?: string; hidden: Record<string, string[]>; hidden_providers?: string[]; pinned?: string[] };
+  windows?: LimitWindow[];
 };
 
 // A listed model as the picker gets it: `hidden` when the owner hid it or its provider.
 export type ListedModel = ModelInfo & { hidden?: true };
+export type LimitWindow = {
+  provider: string; id: string; label: string; used_percent?: number; remaining?: number; limit?: number;
+  unit?: "requests" | "tokens" | "usd"; resets_at_ms?: number; spent_usd?: number; overage_enabled?: boolean; note?: string; observed_ms: number;
+};
+export type ProviderProblem = { kind: "auth" | "billing"; message: string; at: number; source: string; link?: string };
+export type Limits = { windows: LimitWindow[]; close: string[]; problems: Record<string, ProviderProblem>; close_percent: number };
 export type ChoiceChange = { pin?: string[]; unpin?: string[]; provider?: string; hide?: string[]; show?: string[]; hide_provider?: string; show_provider?: string };
 
 export type JobView = {
@@ -32,6 +39,7 @@ type State = {
   defaultModel: string;
   pinned: string[];
   providerLabels: Record<string, string>;
+  limits: Limits | null;
   errors: ErrorRecord[];
   connected: boolean;
   providers: ProvidersReport | null;
@@ -42,7 +50,7 @@ type State = {
 };
 
 let state: State = {
-  sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
+  sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
 };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => {
@@ -72,6 +80,9 @@ export const actions = {
   async loadModels(refresh = false) {
     const r = await api<{ models: ListedModel[]; default: string; pinned: string[]; providers: { id: string; label: string }[] }>(`/api/models${refresh ? "?refresh" : ""}`);
     set({ models: r.models, defaultModel: r.default, pinned: r.pinned ?? [], providerLabels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) });
+  },
+  async loadLimits(refresh = false) {
+    set({ limits: await api<Limits>(`/api/limits${refresh ? "?refresh" : ""}`) });
   },
   // Favorites and hidden models: applied here at once, then saved.
   async choose(change: ChoiceChange) {
@@ -200,6 +211,8 @@ export function apply(f: Frame) {
     set({ sessions: { ...state.sessions, [s.id]: s } });
   } else if (f.t === "event") {
     const e = f.event;
+    // A finished turn may have moved a window (its answers' headers, a plan's use).
+    if (e.kind === "turn_end") limitsSoon();
     const list = state.events[e.session_id];
     if (!list) return; // not loaded; loading it later reads it from the store
     if (list.length && list[list.length - 1]!.seq >= e.seq) return;
@@ -224,6 +237,12 @@ export function apply(f: Frame) {
   } else if (f.t === "feature") {
     for (const l of features) l.frame?.(f);
   }
+}
+
+let limitsTimer: ReturnType<typeof setTimeout> | undefined;
+function limitsSoon() {
+  clearTimeout(limitsTimer);
+  limitsTimer = setTimeout(() => actions.loadLimits().catch(() => {}), 1500);
 }
 
 let retry = 500;

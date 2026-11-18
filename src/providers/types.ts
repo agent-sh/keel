@@ -33,6 +33,8 @@ export type ProviderRequest = {
   speed?: string;
   extraBody?: Record<string, unknown>;
   extraHeaders?: Record<string, string>;
+  // Set by the registry: every answer's headers, for its rate-limit windows.
+  onHeaders?: (h: Headers) => void;
 };
 
 export type Delta =
@@ -133,4 +135,6 @@ export interface Provider {
   status?(): ProviderStatus;
   list(): Promise<ListedModel[]>;
   stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult>;
+  // The account's usage windows, from an endpoint that states them.
+  usage?(): Promise<import("./limits.ts").WindowReading[]>;
 }

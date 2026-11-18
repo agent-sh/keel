@@ -12,6 +12,8 @@ import { familyOf } from "./family.ts";
 import { CompatProvider, GeminiProvider, OpenAIProvider } from "./keyed.ts";
 import { Plugins } from "./plugins/index.ts";
 import { priceOf } from "./pricing.ts";
+import { ProviderError } from "./http.ts";
+import { fromHeaders, Limits, type Window } from "./limits.ts";
 import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
 import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
@@ -28,6 +30,13 @@ export type Listing = { state: "ok" | "failed" | "saved" | "never"; fetched?: nu
 // hidden from the picker, and favorites (full ids, in the owner's order).
 export type Choices = { default?: string; hidden: Record<string, string[]>; hidden_providers?: string[]; pinned?: string[] };
 
+// An account state the owner has to act on: a refused credential, or turns
+// refused over billing. Kept (also across restarts) until a call succeeds, so
+// Settings says it once instead of every turn failing anew.
+export type Problem = { kind: "auth" | "billing"; message: string; at: number; source: "listing" | "turn"; link?: string };
+
+const USAGE_MAX_AGE = 60_000;
+
 type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown) => void; providers?: Provider[] };
 
 export class Providers {
@@ -39,6 +48,9 @@ export class Providers {
   private refreshedAt = 0;
   private pending: Promise<void> | null = null;
   private fixed: Provider[] | null;
+  readonly limits = new Limits();
+  private usageAt = new Map<string, number>();
+  private problems = new Map<string, Problem>();
 
   constructor(private stateDir: string, private opts: Opts = {}) {
     this.catalog = new Catalog(stateDir);
@@ -56,6 +68,55 @@ export class Providers {
     this.plugins = new Plugins(stateDir, (e, ctx) => this.capture(e, ctx));
     this.xai.onSignedIn = () => void this.refresh("grok");
     this.loadSaved();
+    try { for (const [k, v] of Object.entries<Problem>(JSON.parse(readFileSync(this.problemsFile, "utf8")))) this.problems.set(k, v); } catch {}
+  }
+
+  // ---- account problems and limits ----
+
+  private get problemsFile() { return join(this.stateDir, "provider-problems.json"); }
+
+  problem(id: string): Problem | undefined {
+    return this.problems.get(id);
+  }
+
+  // A refused credential or billing, from a listing or a turn; anything else is not an account state.
+  private note(id: string, e: unknown, source: Problem["source"]) {
+    if (!(e instanceof ProviderError)) return;
+    const billing = e.kind === "quota" && e.status !== 429;
+    if (e.kind !== "auth" && !billing) return;
+    const link = /https:\/\/[^\s"'<>)]+/.exec(e.message)?.[0]?.replace(/[.,]$/, "");
+    const p: Problem = { kind: billing ? "billing" : "auth", message: e.message, at: Date.now(), source, link };
+    const prev = this.problems.get(id);
+    if (prev?.message === p.message && prev.source === p.source) return;
+    this.problems.set(id, p);
+    this.saveProblems();
+  }
+
+  private cleared(id: string, source?: Problem["source"]) {
+    const p = this.problems.get(id);
+    if (!p || (source && p.source !== source)) return;
+    this.problems.delete(id);
+    this.saveProblems();
+  }
+
+  private saveProblems() {
+    try { writeFileSync(this.problemsFile, JSON.stringify(Object.fromEntries(this.problems))); } catch (e) { this.capture(e, { at: "saving provider-problems.json" }); }
+  }
+
+  // Every provider's windows: header readings from its answers, and the usage
+  // endpoints asked again when their reading is older than a minute.
+  async windows(force = false): Promise<Window[]> {
+    const now = Date.now();
+    await Promise.all(this.all().filter((p) => p.usage && p.available()).map(async (p) => {
+      if (!force && now - (this.usageAt.get(p.id) ?? 0) < USAGE_MAX_AGE) return;
+      this.usageAt.set(p.id, now);
+      try {
+        this.limits.record(p.id, await p.usage!());
+      } catch (e) {
+        this.note(p.id, e, "listing");
+      }
+    }));
+    return this.limits.list();
   }
 
   private capture(e: unknown, ctx?: unknown) {
@@ -112,11 +173,13 @@ export class Providers {
       try {
         const models = p instanceof CompatProvider && p.cfg.listing === false ? this.fromSection(p) : await p.list();
         this.listings.set(p.id, { state: "ok", fetched: Date.now(), models });
+        this.cleared(p.id, "listing");
       } catch (e) {
         const error = (e as Error).message;
         this.listings.set(p.id, { state: "failed", fetched: prev?.fetched, error, models: prev?.models ?? [] });
         // Recorded once: the same failure on every refresh is one error.
         if (prev?.error !== error) this.capture(e, { provider: p.id, at: "listing" });
+        this.note(p.id, e, "listing");
       }
     }));
     if (!only) this.refreshedAt = Date.now();
@@ -249,11 +312,23 @@ export class Providers {
       list: () => p.list(),
       stream: async (req: ProviderRequest, onDelta) => {
         const offer = speedOffer(info, req.speed);
-        const res = await p.stream({
-          ...req, efforts: info.efforts, maxTokens: info.output || undefined,
-          extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
-          extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
-        }, onDelta);
+        const onHeaders = (h: Headers) => {
+          const r = fromHeaders(h);
+          if (r.length) this.limits.record(p.id, r);
+        };
+        let res: Awaited<ReturnType<Provider["stream"]>>;
+        try {
+          res = await p.stream({
+            onHeaders,
+            ...req, efforts: info.efforts, maxTokens: info.output || undefined,
+            extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
+            extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
+          }, onDelta);
+        } catch (e) {
+          this.note(p.id, e, "turn");
+          throw e;
+        }
+        this.cleared(p.id);
         const origin = `${p.id}:${req.model}`;
         for (const b of res.blocks) if ((b.type === "thinking" || b.type === "tool_use" || b.type === "text") && !b.origin && (b.type === "thinking" || b.signature)) b.origin = origin;
         // Billed at the speed that served: a request the provider moved back

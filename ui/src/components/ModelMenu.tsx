@@ -34,6 +34,8 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
   const pinned = useStore((s) => s.pinned);
   const labels = useStore((s) => s.providerLabels);
   const hiddenProviders = useStore((s) => s.providers?.choices.hidden_providers);
+  const problems = useStore((s) => s.limits?.problems);
+  useEffect(() => { if (open) actions.loadLimits().catch(() => {}); }, [open]);
 
   // Built once per listing change; a keystroke only filters these.
   const { all, byId, order } = useMemo(() => {
@@ -159,6 +161,11 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                     <span className="truncate">{group.label}</span>
                     {group.provider && <span className="font-normal tabular-nums">{group.total}</span>}
                     {group.plan && <span className="rounded-xs bg-sunken px-1 font-normal text-muted">plan</span>}
+                    {group.provider && problems?.[group.provider] && (
+                      <span className={cn("font-normal", problems[group.provider]!.kind === "billing" ? "text-warn" : "text-danger")} title={problems[group.provider]!.message} data-testid="group-problem">
+                        {problems[group.provider]!.kind === "billing" ? "billing" : "key refused"}
+                      </span>
+                    )}
                     {group.provider && group.provider !== selected?.provider && !def.startsWith(`${group.provider}:`) && (
                       <button
                         type="button"

@@ -94,6 +94,8 @@ export class AnthropicProvider implements Provider {
 
   private async read(params: any, ctx: { origin: string }, req: ProviderRequest, guard: ReturnType<typeof idleGuard>, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     const stream = (this.client as Anthropic).messages.stream(params, { signal: guard.signal, headers: req.extraHeaders });
+    // The answer's rate-limit headers (the Anthropic API states them; Bedrock does not).
+    if (req.onHeaders) stream.withResponse().then((r) => req.onHeaders!(r.response.headers as any), () => {});
     const toolNames = new Map<number, string>();
     for await (const ev of stream) {
       guard.touch();

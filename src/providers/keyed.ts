@@ -5,6 +5,7 @@ import { configured, forget, key, shown, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { familyOf, notChat } from "./family.ts";
 import { getJson, ProviderError } from "./http.ts";
+import { fromOpenRouterKey, type WindowReading } from "./limits.ts";
 import type { Delta, Family, ListedModel, Provider, ProviderRequest, ProviderResult, ProviderStatus, Wire } from "./types.ts";
 import { chatWire } from "./wires/chat.ts";
 import { geminiWire } from "./wires/gemini.ts";
@@ -127,6 +128,13 @@ export class CompatProvider extends KeyedProvider {
     const h: Record<string, string> = { authorization: `Bearer ${k}`, ...this.cfg.headers };
     if (sessionKey && this.cfg.session_header) h[this.cfg.session_header] = sessionKey;
     return h;
+  }
+
+  // OpenRouter states a key's limit and spend at /key.
+  async usage(): Promise<WindowReading[]> {
+    if (!/(^|\.)openrouter\.ai$/.test(new URL(this.base).hostname)) return [];
+    const k = await this.key();
+    return fromOpenRouterKey(await getJson(this.label, `${this.base}/key`, this.headers(k), [k]));
   }
 
   async list(): Promise<ListedModel[]> {

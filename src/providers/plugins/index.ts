@@ -9,6 +9,7 @@ import { geminiWire } from "../wires/gemini.ts";
 import { responsesWire } from "../wires/responses.ts";
 import { readPlugins } from "./config.ts";
 import { PluginProcess, type PluginModel, type PluginProviderDecl } from "./host.ts";
+import type { WindowReading } from "../limits.ts";
 
 const FAMILIES = new Set(["claude", "gpt", "gemini"]);
 
@@ -53,6 +54,16 @@ export class PluginProvider implements Provider {
       id: this.id, label: this.label, wire: this.wire, kind: "plugin", available: this.available(), detail, account: s?.account,
       sign_in: s?.sign_in ? { command: s.sign_in.command, note: s.sign_in.note } : undefined,
     };
+  }
+
+  // The plan windows the plugin's status states, and a `limited` state's reset.
+  async usage(): Promise<WindowReading[]> {
+    const s = this.proc.status.get(this.decl.id);
+    const out: WindowReading[] = (s?.usage_windows ?? [])
+      .filter((w) => typeof w.used_percent === "number")
+      .map((w, i) => ({ id: w.id ?? `window-${i}`, label: w.label ?? w.id ?? "Plan window", used_percent: w.used_percent, resets_at_ms: w.resets_at_ms }));
+    if (s?.state === "limited") out.push({ id: "limited", label: "Limited", used_percent: 100, resets_at_ms: s.reset_at_ms, note: s.detail });
+    return out;
   }
 
   private model(id: string): PluginModel | undefined {

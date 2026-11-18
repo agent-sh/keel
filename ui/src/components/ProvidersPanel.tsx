@@ -1,11 +1,12 @@
 // Settings > Providers: every provider with its listing state, the plugins,
 // the default model and the Grok plan sign-in.
 import { ExternalLink, LogIn, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { actions, reportError, useStore, type ProvidersReport } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
+import { ProblemNote, WindowMeter } from "./Limits.tsx";
 
 type Row = ProvidersReport["providers"][number];
 
@@ -22,6 +23,7 @@ function Dot({ tone }: { tone: "ok" | "warn" | "danger" | "off" }) {
 
 function tone(p: Row): "ok" | "warn" | "danger" | "off" {
   if (!p.available) return p.sign_in ? "warn" : "off";
+  if (p.problem) return p.problem.kind === "billing" ? "warn" : "danger";
   if (p.listing.state === "failed") return p.listing.models ? "warn" : "danger";
   return p.listing.models ? "ok" : "warn";
 }
@@ -69,6 +71,10 @@ function GrokSignIn() {
 
 function ProviderRow({ p }: { p: Row }) {
   const l = p.listing;
+  const all = useStore((s) => s.providers?.windows);
+  const windows = useMemo(() => all?.filter((w) => w.provider === p.id) ?? [], [all, p.id]);
+  // A refused credential found by the listing is said once, as the problem.
+  const listingSaid = p.problem?.source === "listing";
   return (
     <div className="flex gap-3 border-b border-line py-3 last:border-0" data-testid="provider-row" data-provider={p.id}>
       <Dot tone={tone(p)} />
@@ -82,13 +88,15 @@ function ProviderRow({ p }: { p: Row }) {
           </span>
         </div>
         {p.detail && <div className="truncate text-caption text-faint" title={p.detail}>{p.detail}{p.account ? ` · ${p.account}` : ""}</div>}
-        {p.available && l.state === "failed" && (
+        {p.available && l.fetched_ms && l.state !== "failed" && <div className="text-micro text-faint">listed {ago(l.fetched_ms)}</div>}
+        {p.available && p.problem && <ProblemNote p={p.problem} label={p.label} detail={p.problem.kind === "auth" ? p.detail : undefined} />}
+        {p.available && l.state === "failed" && !listingSaid && (
           <div className="mt-0.5 text-caption text-danger" data-testid="listing-error">
             {l.models ? "The listing failed; the last good list is kept: " : "The listing failed: "}
             <span className="break-words">{l.error}</span>
           </div>
         )}
-        {p.available && l.fetched_ms && l.state !== "failed" && <div className="text-micro text-faint">listed {ago(l.fetched_ms)}</div>}
+        {p.available && windows.length > 0 && <div className="mt-1.5" data-testid="provider-windows">{windows.map((w) => <WindowMeter key={w.id} w={w} />)}</div>}
         {p.sign_in?.command && !p.available && <div className="mt-1 text-caption text-muted">Run <code className="rounded-xs bg-code px-1 font-mono">{p.sign_in.command}</code> in a terminal, then refresh.</div>}
         {p.id === "grok" && !p.available && <GrokSignIn />}
       </div>
