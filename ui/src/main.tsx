@@ -6,6 +6,7 @@ import "./features/drive.tsx";
 import "./features/voice.tsx";
 import "./lib/turns.ts";
 import "./lib/side.ts";
+import "./lib/tree.ts";
 import "./components/automation/register.tsx";
 import "./features/fleet.tsx";
 import "./features/mobile.tsx";

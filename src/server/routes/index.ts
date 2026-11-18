@@ -26,6 +26,7 @@ import { reviewRoutes } from "./reviews.ts";
 import { turnRoutes } from "./turns.ts";
 import { switchRoutes } from "./switch.ts";
 import { sideRoutes } from "./side.ts";
+import { treeRoutes } from "./tree.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -44,6 +45,7 @@ export const routeModules: RouteModule[] = [
   turnRoutes,
   switchRoutes,
   sideRoutes,
+  treeRoutes,
   usageRoutes,
   errorRoutes,
   resourceRoutes,
