@@ -75,9 +75,14 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("base\nowner edit\n");
   await shoot(page, "ckpt-04-rewound");
 
-  // Undo the rewind.
+  // The owner edits a.txt by hand after the rewind; undoing the rewind brings
+  // b.txt back and keeps the hand edit (it is outside work since the rewind).
+  writeFileSync(join(ws, "a.txt"), "hand\n");
   await panel.getByTestId("rewind-undo").click();
-  await expect.poll(() => readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\n");
+  await expect.poll(() => existsSync(join(ws, "b.txt"))).toBe(true);
+  await expect(panel.getByTestId("rewind-done")).toContainText("kept 1 changed outside");
+  expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("hand\n");
+  expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("base\nowner edit\n");
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

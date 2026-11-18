@@ -240,11 +240,16 @@ export class Checkpoints {
     let target: string;
     let scopePaths: string[] | null;
     let outsideFrom: number | null = null;
+    // Undo of a rewind: only the files that rewind changed go back, and one
+    // edited since it (the owner's hand edit) is outside work, kept by default.
+    let undoOf: { after: Checkpoint; touched: Set<string> } | null = null;
     if (opts.checkpoint) {
       const cp = this.get(opts.checkpoint);
       if (!cp || cp.session_id !== s.id) throw new Bad("no such checkpoint", 404);
       target = cp.tree;
       scopePaths = cp.paths;
+      const after = cp.at === "undo" ? this.list(s.id).find((c) => c.at === "after" && c.created >= cp.created) : undefined;
+      if (after) undoOf = { after, touched: new Set(await sh.changed(cp.tree, after.tree, scopePaths ?? undefined)) };
     } else {
       if (opts.turn === undefined) throw new Bad("give a turn or a checkpoint");
       ({ target, paths: scopePaths } = await this.targetAt(s, opts.turn));
@@ -256,7 +261,9 @@ export class Checkpoints {
       const want = new Set(rel(s.workspace, opts.paths.map((p) => (isAbsolute(p) ? p : join(s.workspace, p)))));
       files = files.filter((f) => want.has(f));
     }
-    const outsideSet = outsideFrom !== null ? await this.outside(s, outsideFrom, now.tree) : new Set<string>();
+    if (undoOf) files = files.filter((f) => undoOf!.touched.has(f));
+    const outsideSet = outsideFrom !== null ? await this.outside(s, outsideFrom, now.tree)
+      : undoOf ? new Set(await sh.changed(undoOf.after.tree, now.tree, files.length ? files : undefined)) : new Set<string>();
     const outside = files.filter((f) => outsideSet.has(f));
     const restore = opts.includeOutside ? files : files.filter((f) => !outsideSet.has(f));
     const skipped = opts.includeOutside ? [] : outside;
