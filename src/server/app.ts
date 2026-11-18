@@ -43,6 +43,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     routes: {
       "/": index,
       "/s/:id": index,
+      "/settings": index,
+      "/settings/:section": index,
 
       "/api/models": {
         GET: wrap(async (req) => {

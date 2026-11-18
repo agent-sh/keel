@@ -2,7 +2,7 @@
 // errors, fed by REST on load and by the WebSocket after. Components read it
 // with useStore(selector).
 import { useSyncExternalStore } from "react";
-import type { ErrorRecord, Frame, Session, StoredEvent } from "../../../src/core/types.ts";
+import type { ErrorRecord, Frame, ImageBlock, Session, StoredEvent } from "../../../src/core/types.ts";
 import type { ModelInfo } from "../../../src/providers/types.ts";
 
 export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: string; name?: string };
@@ -53,12 +53,12 @@ export const actions = {
     const r = await api<{ errors: ErrorRecord[] }>("/api/errors");
     set({ errors: r.errors });
   },
-  async create(text: string, model?: string, workspace?: string): Promise<Session> {
-    const r = await api<{ session: Session }>("/api/sessions", { method: "POST", body: JSON.stringify({ text, model, workspace }) });
+  async create(text: string, model?: string, workspace?: string, images?: ImageBlock[]): Promise<Session> {
+    const r = await api<{ session: Session }>("/api/sessions", { method: "POST", body: JSON.stringify({ text, model, workspace, images }) });
     set({ sessions: { ...state.sessions, [r.session.id]: r.session } });
     return r.session;
   },
-  send: (id: string, text: string) => api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  send: (id: string, text: string, images?: ImageBlock[]) => api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images }) }),
   interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST" }),
   patch: (id: string, body: Partial<Session>) => api(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   remove: async (id: string) => {

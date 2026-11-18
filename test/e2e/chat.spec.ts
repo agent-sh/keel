@@ -6,7 +6,7 @@ import { HAIKU, shoot } from "./shots.ts";
 test("chat with tools", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   await page.goto("/");
-  await expect(page.getByText("What are we building?")).toBeVisible();
+  await expect(page.getByText("What should we work on?")).toBeVisible();
   await shoot(page, "01-home");
 
   await page.getByTestId("model-picker").click();

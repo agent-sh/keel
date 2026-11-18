@@ -1,0 +1,14 @@
+import { keyLabel } from "../lib/keys.ts";
+import { cn } from "../lib/utils.ts";
+
+export function Kbd({ keys, className }: { keys: string; className?: string }) {
+  return (
+    <span className={cn("inline-flex items-center gap-0.5", className)}>
+      {keyLabel(keys).map((k, i) => (
+        <kbd key={i} className="inline-grid h-[18px] min-w-[18px] place-items-center rounded-xs border border-line bg-raised px-1 text-micro font-medium text-faint shadow-1">
+          {k}
+        </kbd>
+      ))}
+    </span>
+  );
+}

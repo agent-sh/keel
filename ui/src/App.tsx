@@ -1,12 +1,28 @@
-import { Component, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { Approvals } from "./components/ApprovalCard.tsx";
 import { Composer } from "./components/Composer.tsx";
-import { ErrorsPanel } from "./components/ErrorsPanel.tsx";
-import { PermissionMenu } from "./components/PermissionMenu.tsx";
+import { SessionHeader, SidebarButton } from "./components/SessionHeader.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
+import { StartBox } from "./components/StartBox.tsx";
 import { Transcript } from "./components/Transcript.tsx";
+import "./lib/builtins.ts";
+import { installKeymap } from "./lib/keys.ts";
 import { actions, connect, reportError, useStore } from "./lib/store.ts";
-import { fmtTokens } from "./lib/utils.ts";
+import { savePref, setUI, useUI } from "./lib/ui.ts";
+import { cn } from "./lib/utils.ts";
+
+// Overlays and Settings load on first use; the first page carries the shell only.
+const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
+const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
+const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
+const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
+
+// Mounts its child the first time `open` is true, then keeps it (for close animations).
+function OnFirstOpen({ open, children }: { open: boolean; children: ReactNode }) {
+  const seen = useRef(false);
+  if (open) seen.current = true;
+  return seen.current ? <Suspense fallback={null}>{children}</Suspense> : null;
+}
 
 class Boundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   override state = { error: null as Error | null };
@@ -18,110 +34,103 @@ class Boundary extends Component<{ children: ReactNode }, { error: Error | null 
     if (!this.state.error) return this.props.children;
     return (
       <div className="m-auto max-w-md p-8 text-center">
-        <p className="font-semibold">Something broke in the page.</p>
-        <p className="mt-1 text-[13px] text-muted">{this.state.error.message}</p>
-        <button className="mt-4 rounded-lg bg-accent px-3 py-1.5 text-accent-fg" onClick={() => this.setState({ error: null })}>Try again</button>
+        <p className="font-semibold">This view failed to render.</p>
+        <p className="mt-1 text-ui text-muted">{this.state.error.message}</p>
+        <p className="mt-1 text-caption text-faint">It is recorded in Errors.</p>
+        <button className="mt-4 h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover" onClick={() => this.setState({ error: null })}>Render again</button>
       </div>
     );
   }
 }
 
-const routeId = () => location.pathname.match(/^\/s\/([\w-]+)/)?.[1] ?? null;
-
-function useTheme() {
-  const [theme, setTheme] = useState<"light" | "dark">(() => (document.documentElement.classList.contains("dark") ? "dark" : "light"));
-  const toggle = useCallback(() => {
-    setTheme((t) => {
-      const next = t === "dark" ? "light" : "dark";
-      const root = document.documentElement;
-      root.classList.add("theme-switch");
-      root.classList.toggle("dark", next === "dark");
-      requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("theme-switch")));
-      localStorage.setItem("keel.theme", next);
-      return next;
-    });
-  }, []);
-  return [theme, toggle] as const;
+function SessionView({ id }: { id: string }) {
+  const session = useStore((s) => s.sessions[id]);
+  useEffect(() => { actions.loadSession(id).catch(reportError); }, [id]);
+  useEffect(() => { document.title = session?.title ? `${session.title} - Keel` : "Keel"; }, [session?.title]);
+  if (!session) {
+    return (
+      <div className="flex flex-1 flex-col">
+        <div className="flex h-12 items-center px-2 md:px-4"><SidebarButton /></div>
+        <div className="m-auto text-ui text-faint">Opening the session</div>
+      </div>
+    );
+  }
+  return (
+    <>
+      <SessionHeader session={session} />
+      <Boundary><Transcript sessionId={session.id} /></Boundary>
+      <div className="pr-[var(--sbw,0px)]">
+      <div className="mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
+        <Approvals sessionId={session.id} />
+        <Composer
+          session={session}
+          working={session.phase === "working"}
+          model={session.model}
+          workspace={session.workspace}
+          onModel={(m) => actions.patch(session.id, { model: m }).catch(reportError)}
+          onSend={(t, images) => actions.send(session.id, t, images)}
+          onStop={() => actions.interrupt(session.id).catch(reportError)}
+          autoFocus={matchMedia("(min-width: 768px)").matches}
+        />
+      </div>
+      </div>
+    </>
+  );
 }
 
 export function App() {
-  const [current, setCurrent] = useState<string | null>(routeId);
-  const [errorsOpen, setErrorsOpen] = useState(false);
-  const [theme, toggleTheme] = useTheme();
-  const defaultModel = useStore((s) => s.defaultModel);
-  const [newModel, setNewModel] = useState("");
-  const session = useStore((s) => (current ? s.sessions[current] : undefined));
+  const route = useUI((s) => s.route);
+  const sidebar = useUI((s) => s.sidebar);
 
   useEffect(() => {
     connect();
     actions.loadSessions().catch(reportError);
     actions.loadModels().catch(reportError);
     actions.loadErrors().catch(reportError);
-    const onPop = () => setCurrent(routeId());
-    addEventListener("popstate", onPop);
-    return () => removeEventListener("popstate", onPop);
+    return installKeymap();
   }, []);
-
-  useEffect(() => {
-    if (current) actions.loadSession(current).catch(reportError);
-    document.title = session?.title ? `${session.title} · Keel` : "Keel";
-  }, [current, session?.title]);
-
-  const go = (id: string | null) => {
-    history.pushState(null, "", id ? `/s/${id}` : "/");
-    setCurrent(id);
-  };
-
-  const model = newModel || defaultModel;
+  useEffect(() => { if (route.name !== "session") document.title = route.name === "settings" ? "Settings - Keel" : "Keel"; }, [route]);
 
   return (
     <Boundary>
-      <div className="flex h-full">
-        <Sidebar current={current} onPick={go} onNew={() => go(null)} onErrors={() => setErrorsOpen(true)} theme={theme} onTheme={toggleTheme} />
-        <main className="flex min-w-0 flex-1 flex-col">
-          {session ? (
-            <>
-              <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-5">
-                <h1 className="min-w-0 truncate text-[14px] font-medium" data-testid="session-title">{session.title || "New session"}</h1>
-                <span className="truncate text-[12px] text-faint font-mono">{session.workspace}</span>
-                <span className="ml-auto" />
-                <PermissionMenu sessionId={session.id} />
-                <span className="text-[12px] text-faint tabular-nums" title="Tokens this session: input (incl. cached) / output">
-                  {fmtTokens(session.usage.input + session.usage.cache_read + session.usage.cache_write)} / {fmtTokens(session.usage.output)}
-                </span>
-              </header>
-              <Transcript sessionId={session.id} />
-              <div className="mx-auto w-full max-w-3xl px-5 pb-5">
-                <Approvals sessionId={session.id} />
-                <Composer
-                  working={session.phase === "working"}
-                  model={session.model}
-                  onModel={(m) => actions.patch(session.id, { model: m })}
-                  onSend={(t) => actions.send(session.id, t)}
-                  onStop={() => actions.interrupt(session.id)}
-                  autoFocus
-                />
-              </div>
-            </>
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center px-5 pb-[12vh]">
-              <h1 className="mb-6 text-[26px] font-semibold tracking-tight">What are we building?</h1>
-              <div className="w-full max-w-2xl" data-testid="new-composer">
-                <Composer
-                  model={model}
-                  onModel={setNewModel}
-                  autoFocus
-                  onSend={async (t) => {
-                    const s = await actions.create(t, model || undefined);
-                    go(s.id);
-                  }}
-                />
-              </div>
-            </div>
+      <div
+        className="flex h-full overflow-hidden"
+        onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()}
+        onDrop={(e) => {
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          dispatchEvent(new CustomEvent("keel:files", { detail: [...e.dataTransfer.files] }));
+        }}
+      >
+        {/* Desktop: the sidebar is part of the layout. Phone: a drawer over it. */}
+        <div
+          className={cn(
+            "z-40 h-full shrink-0 transition-[margin,transform] duration-200 ease-[var(--ease-out)]",
+            "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-3",
+            sidebar ? "md:ml-0" : "md:-ml-[272px] max-md:-translate-x-full",
           )}
+        >
+          <Sidebar />
+        </div>
+        {sidebar && <div className="fixed inset-0 z-30 bg-overlay md:hidden" onClick={() => savePref("sidebar", false)} aria-hidden="true" />}
+        <main className="flex min-w-0 flex-1 flex-col">
+          {route.name === "session" ? <SessionView key={route.id} id={route.id} /> : route.name === "settings" ? <Suspense fallback={null}><Settings section={route.section} /></Suspense> : <StartBox />}
         </main>
       </div>
-      <ErrorsPanel open={errorsOpen} onOpenChange={setErrorsOpen} />
+      <Overlays />
     </Boundary>
+  );
+}
+
+function Overlays() {
+  const palette = useUI((s) => s.palette);
+  const shortcuts = useUI((s) => s.shortcuts);
+  const errors = useUI((s) => s.errors);
+  return (
+    <>
+      <OnFirstOpen open={palette}><Palette /></OnFirstOpen>
+      <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
+      <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
+    </>
   );
 }
