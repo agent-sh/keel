@@ -39,7 +39,7 @@ export function ToolCall({ use, result, live }: { use: ToolUseBlock; result?: To
           <Icon className="size-3.5" />
         </span>
         <span className="font-medium shrink-0">{use.name}</span>
-        <span className="min-w-0 truncate font-mono text-caption text-muted">{summary(use.name, input)}</span>
+        <span className={cn("min-w-0 truncate text-muted", use.name === "Bash" && input.description ? "text-ui" : "font-mono text-caption")}>{summary(use.name, input)}</span>
         <span className="ml-auto flex items-center gap-2 shrink-0">
           {state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
           {state === "error" && <span className="text-caption text-danger">failed</span>}

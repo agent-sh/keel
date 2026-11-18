@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { Approvals } from "./components/ApprovalCard.tsx";
 import { Composer } from "./components/Composer.tsx";
+import { ConfirmHost } from "./components/Confirm.tsx";
 import { SessionHeader, SidebarButton } from "./components/SessionHeader.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { StartBox } from "./components/StartBox.tsx";
@@ -118,6 +119,7 @@ export function App() {
         </main>
       </div>
       <Overlays />
+      <ConfirmHost />
     </Boundary>
   );
 }

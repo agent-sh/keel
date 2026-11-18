@@ -92,7 +92,7 @@ function applyTheme() {
   if (root.classList.contains("dark") === dark) return;
   root.classList.add("theme-switch");
   root.classList.toggle("dark", dark);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", getComputedStyle(root).getPropertyValue("--bg").trim() || (dark ? "#141a20" : "#f7faf9"));
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#141b22" : "#f7faf9");
   requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("theme-switch")));
 }
 media.addEventListener("change", applyTheme);

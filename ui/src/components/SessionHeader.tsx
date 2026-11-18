@@ -7,6 +7,7 @@ import { actions, reportError } from "../lib/store.ts";
 import { navigate, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { ChangesButton } from "./ChangesPanel.tsx";
+import { confirmAction } from "./Confirm.tsx";
 import { PermissionMenu } from "./PermissionMenu.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
 
@@ -75,13 +76,13 @@ export function SessionHeader({ session }: { session: Session }) {
           </button>
         )}
       </div>
-      <span
+      {input_ + u.output > 0 && <span
         className="hidden shrink-0 px-2 text-caption tabular-nums text-faint md:inline"
         title={`Input ${input_.toLocaleString()} tokens (${u.cache_read.toLocaleString()} read from cache), output ${u.output.toLocaleString()}`}
         data-testid="session-usage"
       >
         {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}
-      </span>
+      </span>}
       <ChangesButton sessionId={session.id} />
       <PermissionMenu sessionId={session.id} />
       {headerActions.all().filter((a) => !a.when || a.when(session)).map((a) => (
@@ -102,7 +103,10 @@ export function SessionHeader({ session }: { session: Session }) {
               <Menu.Item className={itemClass} onClick={() => { actions.patch(session.id, { archived: true }).catch(reportError); navigate({ name: "new" }); }}><Archive /> Archive</Menu.Item>
               <Menu.Item
                 className={cn(itemClass, "text-danger [&>svg]:text-danger")}
-                onClick={() => { if (confirm(`Delete "${session.title || "this session"}" and its history?`)) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); } }}
+                onClick={async () => {
+                  const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
+                  if (ok) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); }
+                }}
               >
                 <Trash2 /> Delete
               </Menu.Item>
@@ -111,7 +115,7 @@ export function SessionHeader({ session }: { session: Session }) {
         </Menu.Portal>
       </Menu.Root>
       {session.phase === "working" && (
-        <div className="pointer-events-none absolute inset-x-0 -bottom-px h-px overflow-hidden" aria-hidden="true">
+        <div className="pointer-events-none absolute inset-x-0 -bottom-px h-[2px] overflow-hidden" aria-hidden="true">
           <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-brass to-transparent animate-wake" />
         </div>
       )}

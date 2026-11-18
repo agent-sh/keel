@@ -91,13 +91,26 @@ test("workbench", async ({ page, request }) => {
   expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/print/);
   await shoot(page, "wb-09-reply");
 
+  // Session menu: delete asks first.
+  await page.getByTestId("session-menu").click();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  await expect(page.getByTestId("confirm")).toBeVisible();
+  await shoot(page, "wb-10-confirm-delete");
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByTestId("confirm")).toBeHidden();
+
+  // Installable: manifest and icons are served.
+  const manifest = await (await request.get("/manifest.webmanifest")).json();
+  expect(manifest.icons.length).toBeGreaterThan(2);
+  for (const i of manifest.icons) expect((await request.get(i.src)).ok()).toBe(true);
+
   // Phone width: the sidebar is a drawer.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByTestId("sidebar")).not.toBeInViewport();
-  await shoot(page, "wb-10-phone");
+  await shoot(page, "wb-11-phone");
   await page.getByTestId("show-sidebar").click();
   await expect(page.getByTestId("sidebar")).toBeInViewport();
-  await shoot(page, "wb-11-phone-drawer");
+  await shoot(page, "wb-12-phone-drawer");
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

@@ -49,8 +49,8 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Positioner align="end" sideOffset={6} className="z-50">
-            <Popover.Popup className="w-[22rem] origin-[var(--transform-origin)] rounded-xl border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
-              <Popover.Title className="px-2 pt-1 pb-1.5 text-micro font-medium uppercase tracking-wide text-faint">Permissions</Popover.Title>
+            <Popover.Popup className="w-[22rem] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+              <Popover.Title className="px-2 pt-1 pb-1.5 text-micro font-medium text-faint">Permissions</Popover.Title>
               <RadioGroup value={perm.mode} onValueChange={(v) => set({ mode: v as SessionPerm["mode"] })} className="flex flex-col">
                 {modes.map((m) => (
                   <label key={m.id} className="flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 hover:bg-hover has-[[data-checked]]:bg-accent-soft/60">
