@@ -60,7 +60,7 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
       data-testid="approval"
       data-risk={a.risk}
       className={cn(
-        "animate-in overflow-hidden rounded-2xl border bg-raised shadow-soft",
+        "animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
         a.risk === "high" ? "border-danger/50" : "border-accent/40",
       )}
       onKeyDown={(e) => {
@@ -72,15 +72,15 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
         <span className={cn("grid size-6 place-items-center rounded-md", a.risk === "high" ? "bg-danger-soft text-danger" : "bg-accent-soft text-accent")}>
           <Icon className="size-3.5" />
         </span>
-        <span className="text-[13.5px] font-medium">{TITLE[a.kind]}</span>
-        <span className="font-mono text-[12px] text-faint">{a.tool}</span>
+        <span className="text-ui font-medium">{TITLE[a.kind]}</span>
+        <span className="font-mono text-caption text-faint">{a.tool}</span>
         {a.risk === "high" && (
-          <span className="ml-auto rounded-full bg-danger-soft px-2 py-0.5 text-[11.5px] font-medium text-danger" data-testid="approval-risk">
+          <span className="ml-auto rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger" data-testid="approval-risk">
             {a.why ? `High risk: ${a.why}` : "High risk"}
           </span>
         )}
       </div>
-      <pre className="mx-4 mt-2.5 max-h-48 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap break-all" data-testid="approval-summary">
+      <pre className="mx-4 mt-2.5 max-h-48 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-caption leading-relaxed whitespace-pre-wrap break-all" data-testid="approval-summary">
         {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
         {a.summary}
       </pre>
@@ -96,12 +96,12 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
             onChange={(e) => setReason(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setDenying(false); } }}
             placeholder="Tell the model why, or what to do instead (optional)"
-            className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-[13px] outline-none placeholder:text-faint focus:border-line-strong"
+            className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong"
           />
-          <button type="submit" disabled={busy} data-testid="deny-send" className="h-8 rounded-lg bg-danger px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
+          <button type="submit" disabled={busy} data-testid="deny-send" className="h-8 rounded-lg bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
             Deny
           </button>
-          <button type="button" onClick={() => setDenying(false)} className="grid size-8 place-items-center rounded-lg text-faint hover:bg-panel hover:text-fg" title="Back">
+          <button type="button" onClick={() => setDenying(false)} className="grid size-8 place-items-center rounded-lg text-faint hover:bg-hover hover:text-fg" title="Back">
             <X className="size-4" />
           </button>
         </form>
@@ -112,7 +112,7 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
             disabled={busy}
             data-testid="allow-once"
             onClick={() => answer({ choice: "once" })}
-            className="h-8 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised"
+            className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised"
           >
             Allow once
           </button>
@@ -121,11 +121,11 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
             disabled={busy}
             data-testid="deny"
             onClick={() => setDenying(true)}
-            className="h-8 rounded-lg px-3 text-[13px] text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+            className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
           >
             Deny
           </button>
-          <span className="ml-auto text-[11.5px] text-faint">{err ? <span className="text-danger">{err}</span> : "Enter allows once, Esc denies"}</span>
+          <span className="ml-auto text-micro text-faint">{err ? <span className="text-danger">{err}</span> : "Enter allows once, Esc denies"}</span>
         </div>
       )}
     </div>
@@ -142,26 +142,26 @@ function AlwaysButton({ a, busy, onGrant }: { a: Approval; busy: boolean; onGran
       <Popover.Trigger
         disabled={busy}
         data-testid="allow-always"
-        className="inline-flex h-8 items-center gap-1 rounded-lg border border-line px-3 text-[13px] hover:bg-panel data-popup-open:bg-panel disabled:opacity-50"
+        className="inline-flex h-8 items-center gap-1 rounded-lg border border-line px-3 text-ui hover:bg-hover data-popup-open:bg-hover disabled:opacity-50"
       >
         Always allow <ChevronDown className="size-3.5 text-faint" />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="start" sideOffset={8} className="z-50">
-          <Popover.Popup className="w-[26rem] origin-[var(--transform-origin)] rounded-xl border border-line bg-raised p-3 shadow-soft transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
-            <Popover.Title className="text-[13px] font-medium">Grant</Popover.Title>
-            <Popover.Description className="mt-0.5 text-[12px] text-muted">
+          <Popover.Popup className="w-[26rem] origin-[var(--transform-origin)] rounded-xl border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+            <Popover.Title className="text-ui font-medium">Grant</Popover.Title>
+            <Popover.Description className="mt-0.5 text-caption text-muted">
               {a.kind === "shell" ? "A trailing * covers any arguments. Edit the rule to narrow it." : "Calls this rule covers run without asking."}
             </Popover.Description>
             <div className="mt-2.5 flex flex-col gap-1.5">
               {rules.map((r, i) => (
                 <label key={i} className="flex items-center gap-2">
-                  <span className="w-20 shrink-0 text-[12px] text-faint">{KIND_LABEL[r.kind]}</span>
+                  <span className="w-20 shrink-0 text-caption text-faint">{KIND_LABEL[r.kind]}</span>
                   <input
                     data-testid="grant-pattern"
                     value={r.pattern}
                     onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, pattern: e.target.value } : x)))}
-                    className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2.5 font-mono text-[12.5px] outline-none focus:border-line-strong"
+                    className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2.5 font-mono text-caption outline-none focus:border-line-strong"
                   />
                 </label>
               ))}
@@ -170,14 +170,14 @@ function AlwaysButton({ a, busy, onGrant }: { a: Approval; busy: boolean; onGran
               <button
                 data-testid="grant-always"
                 onClick={() => { setOpen(false); onGrant(rules, false); }}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90"
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90"
               >
                 <Check className="size-3.5" /> In this workspace
               </button>
               <button
                 data-testid="grant-session"
                 onClick={() => { setOpen(false); onGrant(rules, true); }}
-                className="h-8 rounded-lg border border-line px-3 text-[13px] hover:bg-panel"
+                className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover"
               >
                 This session only
               </button>

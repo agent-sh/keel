@@ -38,28 +38,28 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
         <Popover.Trigger
           data-testid="permission-menu"
           className={cn(
-            "inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12.5px] text-muted hover:bg-panel hover:text-fg data-popup-open:bg-panel",
+            "inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg data-popup-open:bg-hover",
             perm.mode === "full-auto" && "text-warn",
           )}
         >
           <Icon className="size-3.5" />
           <span data-testid="permission-mode">{mode?.name ?? perm.mode}</span>
-          {perm.sandbox !== "off" && <span className="rounded bg-accent-soft px-1 text-[11px] text-accent">sandbox</span>}
+          {perm.sandbox !== "off" && <span className="rounded bg-accent-soft px-1 text-micro text-accent">sandbox</span>}
           <ChevronDown className="size-3 opacity-60" />
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Positioner align="end" sideOffset={6} className="z-50">
-            <Popover.Popup className="w-[22rem] origin-[var(--transform-origin)] rounded-xl border border-line bg-raised p-1.5 shadow-soft transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
-              <Popover.Title className="px-2 pt-1 pb-1.5 text-[11.5px] font-medium uppercase tracking-wide text-faint">Permissions</Popover.Title>
+            <Popover.Popup className="w-[22rem] origin-[var(--transform-origin)] rounded-xl border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+              <Popover.Title className="px-2 pt-1 pb-1.5 text-micro font-medium uppercase tracking-wide text-faint">Permissions</Popover.Title>
               <RadioGroup value={perm.mode} onValueChange={(v) => set({ mode: v as SessionPerm["mode"] })} className="flex flex-col">
                 {modes.map((m) => (
-                  <label key={m.id} className="flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 hover:bg-panel has-[[data-checked]]:bg-accent-soft/60">
+                  <label key={m.id} className="flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 hover:bg-hover has-[[data-checked]]:bg-accent-soft/60">
                     <Radio.Root value={m.id} data-testid={`mode-${m.id}`} className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong outline-none focus-visible:ring-2 focus-visible:ring-accent/40 data-checked:border-accent">
                       <Radio.Indicator className="size-2 rounded-full bg-accent" />
                     </Radio.Root>
                     <span className="min-w-0">
-                      <span className="block text-[13px] font-medium">{m.name}</span>
-                      <span className="block text-[12px] leading-snug text-muted">{m.description}</span>
+                      <span className="block text-ui font-medium">{m.name}</span>
+                      <span className="block text-caption leading-snug text-muted">{m.description}</span>
                     </span>
                   </label>
                 ))}
@@ -67,8 +67,8 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
               <div className="mx-2 my-1.5 h-px bg-line" />
               <div className="px-2 py-1">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-[13px] font-medium">Sandbox for commands</span>
-                  {sandbox && !sandbox.available && <span className="text-[11.5px] text-warn" title={sandbox.reason}>unavailable</span>}
+                  <span className="text-ui font-medium">Sandbox for commands</span>
+                  {sandbox && !sandbox.available && <span className="text-micro text-warn" title={sandbox.reason}>unavailable</span>}
                 </div>
                 <div className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg bg-panel p-0.5" role="radiogroup" aria-label="Sandbox">
                   {PROFILES.map((p) => (
@@ -81,19 +81,19 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                       disabled={p.id !== "off" && sandbox?.available === false}
                       onClick={() => set({ sandbox: p.id })}
                       className={cn(
-                        "h-7 rounded-md text-[12.5px] text-muted disabled:opacity-40",
-                        perm.sandbox === p.id ? "bg-raised text-fg shadow-soft" : "hover:text-fg",
+                        "h-7 rounded-md text-caption text-muted disabled:opacity-40",
+                        perm.sandbox === p.id ? "bg-raised text-fg shadow-2" : "hover:text-fg",
                       )}
                     >
                       {p.name}
                     </button>
                   ))}
                 </div>
-                <p className="mt-1.5 text-[12px] leading-snug text-muted">
+                <p className="mt-1.5 text-caption leading-snug text-muted">
                   {sandbox && !sandbox.available ? sandbox.reason : PROFILES.find((p) => p.id === perm.sandbox)!.hint + (perm.sandbox === "off" ? "." : ", in bubblewrap.")}
                 </p>
                 <label className={cn("mt-2 flex items-center justify-between", perm.sandbox === "off" && "opacity-40")}>
-                  <span className="text-[13px]">Network in the sandbox</span>
+                  <span className="text-ui">Network in the sandbox</span>
                   <Switch.Root
                     checked={perm.network}
                     disabled={perm.sandbox === "off"}
@@ -101,7 +101,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                     data-testid="sandbox-network"
                     className="relative h-5 w-9 rounded-full bg-line-strong transition-colors data-checked:bg-accent"
                   >
-                    <Switch.Thumb className="block size-4 translate-x-0.5 rounded-full bg-raised shadow-soft transition-transform data-checked:translate-x-[18px]" />
+                    <Switch.Thumb className="block size-4 translate-x-0.5 rounded-full bg-raised shadow-2 transition-transform data-checked:translate-x-[18px]" />
                   </Switch.Root>
                 </label>
               </div>
@@ -109,7 +109,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
               <button
                 data-testid="open-grants"
                 onClick={() => { safety.loadGrants().catch(reportError); setGrantsOpen(true); }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-panel"
+                className="w-full rounded-lg px-2 py-1.5 text-left text-ui hover:bg-hover"
               >
                 Grants…
               </button>
@@ -135,25 +135,25 @@ export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[2px] transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="grants-panel"
-          className="fixed right-4 top-4 bottom-4 z-50 flex w-[min(36rem,calc(100vw-2rem))] flex-col rounded-2xl border border-line bg-raised shadow-soft transition-[transform,opacity] duration-200 data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0"
+          className="fixed right-4 top-4 bottom-4 z-50 flex w-[min(36rem,calc(100vw-2rem))] flex-col rounded-2xl border border-line bg-raised shadow-2 transition-[transform,opacity] duration-200 data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0"
         >
           <div className="flex items-center border-b border-line px-4 py-3">
             <Dialog.Title className="font-semibold">Grants</Dialog.Title>
-            <span className="ml-2 text-[12.5px] text-faint">what runs without asking</span>
-            <Dialog.Close className="ml-auto grid size-7 place-items-center rounded-md text-faint hover:bg-panel hover:text-fg">
+            <span className="ml-2 text-caption text-faint">what runs without asking</span>
+            <Dialog.Close className="ml-auto grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
               <X className="size-4" />
             </Dialog.Close>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {grants.length === 0 && <p className="px-3 py-8 text-center text-[13px] text-faint">No grants yet. "Always allow" on an approval adds one.</p>}
+            {grants.length === 0 && <p className="px-3 py-8 text-center text-ui text-faint">No grants yet. "Always allow" on an approval adds one.</p>}
             {byScope.map(([scope, list]) => (
               <section key={scope} className="mb-2">
-                <h3 className="truncate px-3 pt-2 pb-1 font-mono text-[11.5px] text-faint" title={scope}>{scope}</h3>
+                <h3 className="truncate px-3 pt-2 pb-1 font-mono text-micro text-faint" title={scope}>{scope}</h3>
                 {list.map((g) => (
-                  <div key={g.id} data-testid="grant" className="group flex items-center gap-2.5 rounded-lg px-3 py-1.5 hover:bg-panel">
-                    <span className="w-16 shrink-0 text-[12px] text-muted">{KIND[g.kind]}</span>
-                    <code className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{g.pattern}</code>
-                    <span className="text-[11.5px] tabular-nums text-faint">{ago(g.created)}</span>
+                  <div key={g.id} data-testid="grant" className="group flex items-center gap-2.5 rounded-lg px-3 py-1.5 hover:bg-hover">
+                    <span className="w-16 shrink-0 text-caption text-muted">{KIND[g.kind]}</span>
+                    <code className="min-w-0 flex-1 truncate font-mono text-caption">{g.pattern}</code>
+                    <span className="text-micro tabular-nums text-faint">{ago(g.created)}</span>
                     <button
                       data-testid="revoke-grant"
                       title="Revoke"
