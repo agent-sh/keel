@@ -95,6 +95,8 @@ const queueRow = (r: any): QueueItem => {
 
 export class Store {
   readonly db: Database;
+  // Sessions whose turn was open when the last daemon stopped.
+  bootWorking: string[] = [];
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
@@ -116,6 +118,8 @@ export class Store {
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS errors_fp ON errors(fingerprint)");
     // Sessions left "working" by a crash or restart are idle now: no turn runs.
+    // The engine closes and resumes their cut turns (Engine.recover).
+    this.bootWorking = this.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE phase = 'working'").all().map((r) => r.id);
     this.db.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
   }
 

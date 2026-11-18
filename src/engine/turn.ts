@@ -15,6 +15,9 @@ import { COMPACT_SHARE, contextTokens, ownerWords, summaryMessage, summaryPrompt
 import { withoutImages } from "./images.ts";
 import { RETRY, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
+// What the model is told about a tool call a daemon restart cut.
+export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
+
 // A reply cut by the output limit is continued this many times in a row, then
 // the turn ends and says so.
 export const MAX_CONTINUATIONS = 3;
@@ -120,6 +123,9 @@ const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortE
 export class Engine {
   private running = new Map<string, Running>();
   private held = new Set<string>();
+  // Turns being parked for a daemon stop: their end reason is "restart".
+  private parking = new Set<string>();
+  private draining = false;
   private seen = new Map<string, Map<string, number>>();
   private systems = new Map<string, { text: string; split: number }>();
 
@@ -256,7 +262,7 @@ export class Engine {
 
   // After a turn: the next queued prompt starts, unless the queue is held.
   private next(id: string) {
-    if (this.held.has(id) || this.running.has(id)) return;
+    if (this.held.has(id) || this.running.has(id) || this.draining) return;
     const s = this.store.session(id);
     if (!s || s.archived) return;
     const q = this.store.queue(id)[0];
@@ -408,7 +414,7 @@ export class Engine {
         if (uses.length) {
           const results = await Promise.all(uses.map((u) => this.runTool(session, st.tools, u, ctx)));
           this.append(id, "tool_result", { results });
-          if (signal.aborted) { reason = "interrupted"; break; }
+          if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
         }
         if (res.stop === "max_tokens") {
           if (++cuts > MAX_CONTINUATIONS) { reason = "max_tokens"; break; }
@@ -424,7 +430,7 @@ export class Engine {
         break;
       }
     } catch (e) {
-      reason = signal.aborted ? "interrupted" : "error";
+      reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
       if (!signal.aborted) throw e;
     } finally {
       this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0 });
@@ -433,8 +439,12 @@ export class Engine {
   }
 
   private async runTool(session: Session, tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
-    const interrupted: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: "Interrupted by the user while this tool ran.", is_error: true };
-    if (ctx.signal.aborted) return interrupted;
+    // Built when the stop comes: a stop for a daemon restart says so.
+    const interrupted = (): ToolResultBlock => ({
+      type: "tool_result", tool_use_id: u.id, is_error: true,
+      content: this.parking.has(ctx.sessionId) ? RESTART_CUT : "Interrupted by the user while this tool ran.",
+    });
+    if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
     if (!tool) return { type: "tool_result", tool_use_id: u.id, content: `No tool named ${u.name}.`, is_error: true };
     const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id } };
@@ -447,7 +457,7 @@ export class Engine {
         const gate = Promise.resolve(h.beforeTool(session, call));
         gate.catch(() => {});
         const g = await Promise.race([gate, stopped]);
-        if (ctx.signal.aborted) return interrupted;
+        if (ctx.signal.aborted) return interrupted();
         if (!g) continue;
         if ("deny" in g) return { type: "tool_result", tool_use_id: u.id, content: g.deny, is_error: true };
         if (g.input !== undefined) call.input = g.input;
@@ -458,10 +468,10 @@ export class Engine {
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);
-      if (!out) return interrupted;
+      if (!out) return interrupted();
       result = { type: "tool_result", tool_use_id: u.id, content: out.content, is_error: out.is_error || undefined };
     } catch (e) {
-      if (ctx.signal.aborted) return interrupted;
+      if (ctx.signal.aborted) return interrupted();
       this.errors.capture("tool", e, { tool: u.name, session: ctx.sessionId });
       return { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
     }
@@ -498,6 +508,80 @@ export class Engine {
     } finally {
       this.status(id, { kind: "idle" });
     }
+  }
+
+  // Before the daemon stops: no new turn starts; running turns get `ms` to end
+  // by themselves, then are parked (cut, with "restart" as their end reason) so
+  // the next daemon resumes them.
+  async drain(ms: number) {
+    this.draining = true;
+    const all = [...this.running.values()].map((r) => r.done);
+    if (all.length) await Promise.race([Promise.all(all), Bun.sleep(ms)]);
+    await Promise.all([...this.running.entries()].map(async ([id, r]) => {
+      this.parking.add(id);
+      r.abort.abort();
+      await r.done;
+    }));
+  }
+
+  // At startup: a turn the last daemon left open (a crash, a kill) is closed
+  // the way a stop would close it, and a turn cut by a restart continues by
+  // itself, once: a turn that was itself such a continuation and was cut
+  // again waits for the owner's Continue.
+  async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
+    for (const id of openAtBoot) {
+      const line = this.lineage(id);
+      const lastStart = line.findLastIndex((e) => e.kind === "turn_start");
+      if (lastStart < 0 || line.slice(lastStart).some((e) => e.kind === "turn_end")) continue;
+      const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
+      const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id)) : []));
+      if (cut.length) this.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: RESTART_CUT, is_error: true })) });
+      this.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true });
+    }
+    for (const s of this.store.sessions()) {
+      const line = this.lineage(s.id);
+      const end = line.at(-1);
+      if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") continue;
+      // The prompt that started the cut turn.
+      const prompt = line.slice(0, line.findLastIndex((e) => e.kind === "turn_start")).findLast((e) => e.kind === "user");
+      if (prompt?.data.origin === "restart") {
+        this.append(s.id, "note", { kind: "restart", text: "The daemon restarted again during the continued turn. Continue when you want it to go on." });
+        continue;
+      }
+      const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => r.content === RESTART_CUT) : [])).length;
+      try {
+        await waitModel(s.model);
+      } catch (e) {
+        const rec = this.errors.capture("provider", e, { session: s.id, at: "resume after restart" });
+        this.append(s.id, "note", { kind: "restart", text: `The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.` });
+        continue;
+      }
+      if (this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) continue; // the owner moved on meanwhile
+      this.append(s.id, "user", {
+        origin: "restart",
+        text: `[harness] The daemon restarted during your previous turn${cutTools ? `; ${cutTools} tool call${cutTools > 1 ? "s" : ""} it cut ${cutTools > 1 ? "are" : "is"} marked as interrupted` : ""}. Continue where it left off.`,
+      });
+      this.start(s.id);
+      this.emitQueue(s.id);
+    }
+  }
+
+  // One answer outside the history (a side question): the session's own model,
+  // tools and system on its stored branch plus `extra`, so the prefix is read
+  // from cache. Nothing is appended; the cost counts for the session.
+  async ask(id: string, extra: Message[], signal: AbortSignal): Promise<ProviderResult & { model_id: string }> {
+    const session = this.store.session(id)!;
+    const st = await this.step(session, session.model);
+    const messages = toMessages(this.lineage(id));
+    const last = messages.at(-1);
+    for (const m of extra) {
+      if (last?.role === "user" && m === extra[0] && m.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, ...m.content] };
+      else messages.push(m);
+    }
+    const res = await this.call(id, st, messages, signal, new Map(), session, true);
+    this.store.addUsage(id, res.usage);
+    this.emitSession(id);
+    return { ...res, model_id: st.info.id };
   }
 
   // /clear: a fresh context in the same session (no summary). Undo = head back.

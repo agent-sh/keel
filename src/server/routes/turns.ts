@@ -74,7 +74,7 @@ export const turnRoutes: RouteModule = (deps) => {
         if (!s) return bad("no such session", 404);
         if (s.archived || engine.isRunning(s.id)) return bad(s.archived ? "the session is archived" : "a turn is running", 409);
         const last = [...engine.lineage(s.id)].reverse().find((e) => e.kind === "turn_end");
-        if (!last || !["interrupted", "error", "max_tokens", "refusal"].includes(last.data.reason)) return bad("the last turn finished", 409);
+        if (!last || !["interrupted", "error", "max_tokens", "refusal", "restart"].includes(last.data.reason)) return bad("the last turn finished", 409);
         engine.resume(s.id);
         return json({ ok: true });
       },

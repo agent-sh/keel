@@ -1,7 +1,8 @@
 // A scripted stand-in provider for the e2e of the paths a real model cannot be
 // made to take on demand: a 429 with retry-after, a 529, a stream that breaks,
 // a reply cut at the output limit inside a tool call, pause_turn, a refusal and
-// a request too long for the window. Test-only: it is listed only when the
+// a request too long for the window, and a tool long enough
+// for a daemon restart to cut. Test-only: it is listed only when the
 // daemon starts with KEEL_SCRIPTED_PROVIDER=1.
 //
 // The owner's prompt picks the scenario with a word `script:<name>`. What a
@@ -60,14 +61,18 @@ export class ScriptedProvider implements Provider {
       return { blocks: [{ type: "text", text }, ...extra], usage, stop, model: req.model };
     };
 
-    if (lastText.startsWith("[harness] The context is being compacted")) {
+    if (lastText.includes("[harness] The context is being compacted")) {
       return reply("Goal: the owner is checking how the harness handles provider failures. State: the scripted scenario ran; next, answer the newest prompt.");
     }
     if (req.model === "stand-in-backup") return reply("The backup model took the request.");
 
-    // The owner's newest prompt (in a summary: the last of the owner's words it kept).
-    const newest = [...msgs].reverse().find((m) => m.role === "user" && !textOf(m).startsWith("[harness] Your last reply"));
-    const owner = [...textOf(newest).matchAll(/<message>\n([\s\S]*?)\n<\/message>/g)].at(-1)?.[1] ?? textOf(newest);
+    // The owner's newest prompt: the newest user text that is neither a harness
+    // note nor a tagged context block (in a summary: the last owner words it kept).
+    const own = (m: Message) => (m.content as any[]).filter((b) => b.type === "text").map((b) => {
+      const kept = [...String(b.text).matchAll(/<message>\n([\s\S]*?)\n<\/message>/g)].at(-1)?.[1];
+      return kept ?? (/^(\[harness\]|<)/.test(b.text) ? "" : b.text);
+    }).filter(Boolean).at(-1);
+    const owner = [...msgs].reverse().filter((m) => m.role === "user").map(own).find((t) => t !== undefined) ?? "";
     const scenario = owner.match(/script:([a-z-]+)/)?.[1] ?? "";
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
@@ -88,7 +93,7 @@ export class ScriptedProvider implements Provider {
         }
         return reply("The whole reply, after the dropped stream.");
       case "cut":
-        if (lastText.startsWith("[harness] Your last reply was cut off")) return reply("Part two, continued after the cut.");
+        if (lastText.includes("[harness] Your last reply was cut off")) return reply("Part two, continued after the cut.");
         return reply("Part one of a long answer.", "max_tokens", [{ type: "tool_use", id: `cut-${msgs.length}`, name: "Bash", input: { command: "echo half" } }]);
       case "pause":
         if (last?.role === "assistant") return reply("Resumed after the pause.");
@@ -100,6 +105,11 @@ export class ScriptedProvider implements Provider {
       case "overflow":
         if (!compacted) throw new ProviderError("context", "Scripted: prompt is too long: 9000 tokens > 8000 maximum", 400);
         return reply("Answered after compacting to fit.");
+      case "long-tool":
+        // A tool that runs long enough for a restart to cut it.
+        if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");
+        if (last?.role === "user" && (last.content as any[]).some((b) => b.type === "tool_result")) return reply("Finished after the tool.");
+        return reply("Running a long command.", "tool_use", [{ type: "tool_use", id: `long-${msgs.length}`, name: "Bash", input: { command: "sleep 30; echo slept" } }]);
       case "fill":
         return reply(`Filling the context. ${"lorem ipsum dolor sit amet ".repeat(1_100)}`.trim());
       default:

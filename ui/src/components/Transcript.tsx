@@ -1,4 +1,4 @@
-import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, Layers, Pencil, Play, RotateCcw, ShieldAlert } from "lucide-react";
+import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { MemoryNote } from "./MemoryNote.tsx";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage, versions } from "../../../src/core/tree.ts";
@@ -290,7 +290,7 @@ function Working({ since }: { since?: number }) {
   );
 }
 
-const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "Cut at the output limit", refusal: "Declined", error: "Failed" };
+const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "Cut at the output limit", refusal: "Declined", error: "Failed", restart: "Cut by a daemon restart" };
 
 function TurnFooter({ e, reply, prompt, s, last }: { e: StoredEvent; reply: string; prompt?: StoredEvent; s: Session; last: boolean }) {
   const u = e.data.usage;
@@ -404,6 +404,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           {events.length === 0 && session.phase !== "working" && <p className="py-10 text-center text-ui text-faint">No messages yet.</p>}
           {events.map((e) => {
             if (e.kind === "user") {
+              if (e.data.origin === "restart") {
+                return <Divider key={e.id} testid="restart-note"><span className="flex items-center gap-1.5"><RotateCw className="size-3.5" /> Continued by itself after a daemon restart{session.phase === "working" ? ". Stop ends it." : ""}</span></Divider>;
+              }
               if (e.data.origin === "harness") {
                 return <p key={e.id} className="text-center text-caption text-faint" data-testid="harness-note">{String(e.data.text).replace(/^\[harness\]\s*/, "")}</p>;
               }
