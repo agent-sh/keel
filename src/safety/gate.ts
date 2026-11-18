@@ -40,7 +40,7 @@ CREATE INDEX IF NOT EXISTS approvals_session ON approvals(session_id, created);
 CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
-type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session };
+type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string };
 
 export class Gate {
   private waiting = new Map<string, Waiter>();
@@ -144,26 +144,29 @@ export class Gate {
     this.bus.emit({ t: "feature", name: "approval", session_id: a.session_id, data: a });
   }
 
-  private evaluate(session: Session, call: ToolCall, cls: CallClass): Decision {
+  private evaluate(session: Session, name: string, cls: CallClass): Decision {
     const p = this.perm(session.id);
-    return decide(cls, { mode: p.mode, workspace: session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: call.tool.name });
+    return decide(cls, { mode: p.mode, workspace: session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name });
   }
 
-  // The beforeTool hook.
+  // The beforeTool hook. A dispatcher (mcp_call) is judged as the tool it runs:
+  // its own read flag, and grants for that tool alone.
   async check(session: Session, call: ToolCall): Promise<{ deny: string } | void> {
-    const cls = classify(call.tool, call.input, call.ctx.cwd);
-    const d = this.evaluate(session, call, cls);
+    const target = call.tool.target ? await call.tool.target(call.input) : null;
+    const name = target?.name ?? call.tool.name;
+    const cls: CallClass = target ? (target.readOnly ? { kind: "read" } : { kind: "other" }) : classify(call.tool, call.input, call.ctx.cwd);
+    const d = this.evaluate(session, name, cls);
     if ("allow" in d) return;
     if ("deny" in d) return { deny: d.deny };
     const a: Approval = {
-      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: call.tool.name, kind: cls.kind,
-      summary: cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : JSON.stringify(call.input).slice(0, 400),
+      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind,
+      summary: cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : JSON.stringify(target ? target.input : call.input).slice(0, 400),
       input: clip(call.input), risk: d.ask.risk, why: d.ask.why, suggest: d.ask.suggest, state: "pending", created: Date.now(),
     };
     this.save(a);
     const signal = call.ctx.signal;
     const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
-      this.waiting.set(a.id, { resolve, call, cls, session });
+      this.waiting.set(a.id, { resolve, call, cls, session, name });
       const onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
         this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
@@ -209,7 +212,7 @@ export class Gate {
   private recheck(which: (w: Waiter) => boolean) {
     for (const [id, w] of [...this.waiting]) {
       if (!which(w)) continue;
-      const d = this.evaluate(w.session, w.call, w.cls);
+      const d = this.evaluate(w.session, w.name, w.cls);
       const a = this.approval(id);
       if (!a) continue;
       if ("allow" in d) {

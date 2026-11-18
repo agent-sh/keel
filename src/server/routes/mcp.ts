@@ -1,6 +1,7 @@
 import type { RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
+import { installChromeBridge } from "../../integrations/chrome.ts";
 import { readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
@@ -25,7 +26,11 @@ export const mcpRoutes: RouteModule = (deps) => {
   const m = new McpManager(deps.errors, deps.store.stateDir, deps.workspace);
   g.__keelMcp = m;
   installMcpTools(m);
+  installChromeBridge(m);
   m.start();
+  // A deleted or archived session lets go of what a bundled server held for it (tabs).
+  (g as any).__keelMcpOff?.();
+  (g as any).__keelMcpOff = deps.bus.on((f) => { if (f.t === "session" && f.session.archived) m.releaseSession(f.session.id); });
 
   const servers = () => json({ servers: m.list() });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
@@ -49,7 +54,8 @@ export const mcpRoutes: RouteModule = (deps) => {
       },
     },
     "/api/mcp/servers/:name": {
-      DELETE: (req: any) => known(req.params.name) ?? (m.remove(req.params.name), servers()),
+      DELETE: (req: any) =>
+        known(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), servers())),
     },
     "/api/mcp/servers/:name/toggle": {
       POST: async (req: any) => known(req.params.name) ?? (m.toggle(req.params.name, (await body(req)).enabled !== false), servers()),

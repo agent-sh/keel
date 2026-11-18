@@ -20,6 +20,9 @@ export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_erro
 
 export type Tool = ToolSpec & {
   readOnly: boolean;
+  // A dispatcher (mcp_call) names the tool it will run, so the permission gate
+  // judges and grants that tool, not the dispatcher.
+  target?(input: any): Promise<{ name: string; readOnly: boolean; input: any } | null>;
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;
 };
 

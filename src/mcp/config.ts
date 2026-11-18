@@ -24,7 +24,8 @@ export type McpServerConfig = {
 
 export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: string]: unknown };
 
-export const RESERVED = new Set(["web", "mcp"]);
+// Built-in groups and the servers Keel brings itself (bundled).
+export const RESERVED = new Set(["web", "mcp", "chrome"]);
 
 export const configPath = () => process.env.KEEL_MCP_CONFIG ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "keel-bun", "mcp.json");
 
@@ -110,7 +111,9 @@ export function importable(cwd: string, configured: Record<string, McpServerConf
       if (!c || typeof c !== "object") continue;
       const config = conv(c);
       if (!config.command && !config.url) continue;
-      out.push({ source, label, name, config, configured: name in configured });
+      // The Chrome bridge is built in: another agent's entry for it is already here.
+      const bundled = /agent-chrome-bridge|chrome-bridge/.test([config.command, ...(config.args ?? [])].join(" "));
+      out.push({ source, label, name, config, configured: name in configured || bundled });
     }
   };
   const home = homedir();
