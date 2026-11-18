@@ -99,7 +99,7 @@ export type SessionSettings = {
   compact_at?: number; // owner ceiling in tokens; absent = a share of the model's window
 };
 
-export type QueueItem = { id: string; session_id: string; text: string; steer: boolean; pos: number; created: number };
+export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);
 // `delta` frames are live streaming text and are not stored.

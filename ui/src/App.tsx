@@ -88,7 +88,7 @@ function SessionView({ id }: { id: string }) {
                 workspace={session.workspace}
                 onModel={(m) => switchSession(session.id, { model: m }).catch(reportError)}
                 onSend={(t, images) => actions.send(session.id, t, { images })}
-                onQueue={(t) => actions.send(session.id, t, { mode: "queue" })}
+                onQueue={(t, images) => actions.send(session.id, t, { mode: "queue", images })}
                 onStop={() => actions.interrupt(session.id).catch(reportError)}
                 autoFocus={matchMedia("(min-width: 768px)").matches}
               />

@@ -196,7 +196,7 @@ export class Engine {
   send(id: string, text: string, opts: { mode?: "send" | "steer" | "queue"; images?: any[]; meta?: Record<string, unknown> } = {}) {
     const mode = opts.mode ?? "send";
     if (this.running.has(id) || (mode === "queue" && this.store.queue(id).length)) {
-      const q = this.store.enqueue(id, text, mode !== "queue");
+      const q = this.store.enqueue(id, text, mode !== "queue", opts.images);
       this.emitQueue(id);
       return { queued: q, steer: q.steer };
     }
@@ -229,7 +229,7 @@ export class Engine {
     await this.interrupt(id);
     this.store.dequeue(qid);
     this.held.delete(id);
-    this.append(id, "user", { text: q.text, origin: "queued" });
+    this.append(id, "user", { text: q.text, images: q.images, origin: "queued" });
     this.start(id);
     this.emitQueue(id);
   }
@@ -257,7 +257,7 @@ export class Engine {
     const q = this.store.queue(id)[0];
     if (!q) return;
     this.store.dequeue(q.id);
-    this.append(id, "user", { text: q.text, origin: q.steer ? "steer" : "queued" });
+    this.append(id, "user", { text: q.text, images: q.images, origin: q.steer ? "steer" : "queued" });
     this.start(id);
     this.emitQueue(id);
   }
@@ -340,7 +340,7 @@ export class Engine {
         // Steers sent while the last step ran join here, after its tool results.
         for (const q of this.store.queue(id).filter((q) => q.steer)) {
           this.store.dequeue(q.id);
-          this.append(id, "user", { text: q.text, origin: "steer" });
+          this.append(id, "user", { text: q.text, images: q.images, origin: "steer" });
           this.emitQueue(id);
         }
         session = this.store.session(id)!;

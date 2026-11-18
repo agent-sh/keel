@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { ErrorRecord, EventKind, QueueItem, Session, StoredEvent, Usage } from "./types.ts";
+import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEvent, Usage } from "./types.ts";
 import { addUsage, emptyUsage } from "./types.ts";
 
 const SCHEMA = `
@@ -88,6 +88,11 @@ function errorRow(r: any): ErrorRecord {
   };
 }
 
+const queueRow = (r: any): QueueItem => {
+  const { images, ...rest } = r;
+  return { ...rest, steer: !!r.steer, ...(images ? { images: JSON.parse(images) } : {}) };
+};
+
 export class Store {
   readonly db: Database;
 
@@ -103,6 +108,8 @@ export class Store {
       this.db.exec(`UPDATE events SET parent = (SELECT e2.id FROM events e2 WHERE e2.session_id = events.session_id AND e2.seq < events.seq ORDER BY e2.seq DESC LIMIT 1)`);
       this.db.exec(`UPDATE sessions SET head = (SELECT id FROM events WHERE session_id = sessions.id ORDER BY seq DESC LIMIT 1)`);
     }
+    // Images of a queued or steered prompt (JSON), so a queued screenshot is not lost.
+    if (!this.columnExists("queue", "images")) this.db.exec("ALTER TABLE queue ADD COLUMN images TEXT");
     if (!this.columnExists("sessions", "settings")) this.db.exec("ALTER TABLE sessions ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
     for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
@@ -219,19 +226,19 @@ export class Store {
     return this.db
       .query<any, [string]>("SELECT * FROM queue WHERE session_id = ? ORDER BY steer DESC, pos")
       .all(session_id)
-      .map((r) => ({ ...r, steer: !!r.steer }));
+      .map(queueRow);
   }
 
-  enqueue(session_id: string, text: string, steer: boolean): QueueItem {
+  enqueue(session_id: string, text: string, steer: boolean, images?: ImageBlock[]): QueueItem {
     const id = Bun.randomUUIDv7();
     const { p } = this.db.query<{ p: number }, [string]>("SELECT COALESCE(MAX(pos), 0) + 1 AS p FROM queue WHERE session_id = ?").get(session_id)!;
-    this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created) VALUES (?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now());
+    this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created, images) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now(), images?.length ? JSON.stringify(images) : null);
     return this.queue(session_id).find((q) => q.id === id)!;
   }
 
   queueItem(id: string): QueueItem | undefined {
     const r = this.db.query<any, [string]>("SELECT * FROM queue WHERE id = ?").get(id);
-    return r ? { ...r, steer: !!r.steer } : undefined;
+    return r ? queueRow(r) : undefined;
   }
 
   updateQueueItem(id: string, patch: { text?: string; steer?: boolean; pos?: number }) {

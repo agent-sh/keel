@@ -1,6 +1,7 @@
 import { automationRoutes } from "../../automation/index.ts";
 import type { RouteModule } from "../app.ts";
 import { checkpointRoutes } from "./checkpoints.ts";
+import { draftRoutes } from "./drafts.ts";
 import { errorRoutes } from "./errors.ts";
 import { telemetryRoutes } from "./telemetry.ts";
 import { driveRoutes } from "./drive.ts";
@@ -41,5 +42,6 @@ export const routeModules: RouteModule[] = [
   driveRoutes,
   fleetRoutes, // after the gates: sends a placed session's workspace calls to their machine
   mobileRoutes, // after automation: it registers the phone as an alert channel
+  draftRoutes,
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

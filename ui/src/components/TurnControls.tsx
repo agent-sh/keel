@@ -38,6 +38,7 @@ function QueueRow({ q, sessionId, first }: { q: QueueItem; sessionId: string; fi
       ) : (
         <span className="min-w-0 flex-1 truncate text-ui" title={q.text}>{q.text}</span>
       )}
+      {!editing && !!q.images?.length && <span className="shrink-0 text-caption text-faint" data-testid="queue-images">{q.images.length === 1 ? "1 image" : `${q.images.length} images`}</span>}
       <span className="flex shrink-0 items-center opacity-60 group-hover/q:opacity-100">
         {!q.steer && !first && (
           <button type="button" className={chipBtn} title="Move up" aria-label="Move up" onClick={() => actions.queueEdit(sessionId, q.id, { position: 0 }).catch(reportError)}>

@@ -4,7 +4,8 @@ import type { ImageBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { fuzzy } from "../lib/keys.ts";
-import { reportError, useStore } from "../lib/store.ts";
+import { dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
+import { onFeature, reportError, useStore } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -31,7 +32,7 @@ export function Composer({
   onSend: (text: string, images: ImageBlock[]) => Promise<unknown> | void;
   // While a turn runs, Enter steers (the text joins the turn at its next model
   // call) and Tab or the queue button queues it for after the turn.
-  onQueue?: (text: string) => Promise<unknown> | void;
+  onQueue?: (text: string, images: ImageBlock[]) => Promise<unknown> | void;
   onStop?: () => void;
   working?: boolean;
   model: string;
@@ -60,7 +61,48 @@ export function Composer({
     setImages([]);
     setMenu(null);
   }, [session?.id]);
+  // The session's server draft: images kept until sent, and whatever was put
+  // in from outside (text is added to the box once, then emptied there).
+  const have = useRef(new Set<string>()); // draft files already in the box
+  const pendingKeep = useRef(new Set<string>()); // added here, not yet stored
+  const sidRef = useRef(session?.id);
+  sidRef.current = session?.id;
   useEffect(() => {
+    const sid = session?.id;
+    if (!sid) return;
+    let live = true;
+    const take = async (d: Draft) => {
+      if (!live || sidRef.current !== sid) return;
+      if (d.text) {
+        const add = d.text;
+        setText((cur) => (cur.trim() ? `${cur}${cur.endsWith("\n") ? "" : "\n"}${add}` : add));
+        textTaken(sid);
+        setNotice(d.origin && d.origin !== "page" ? `Text added from ${d.origin}.` : "Text added from outside the page.");
+      }
+      const ids = new Set(d.attachments.map((f) => f.id));
+      setImages((cur) => cur.filter((a) => ids.has(a.id) || pendingKeep.current.has(a.id)));
+      for (const f of d.attachments) {
+        if (have.current.has(f.id)) continue;
+        have.current.add(f.id);
+        try {
+          const a = await fromServer(sid, f);
+          if (live && sidRef.current === sid) setImages((cur) => (cur.some((x) => x.id === a.id) ? cur : [...cur, a]));
+        } catch (e) {
+          have.current.delete(f.id);
+          reportError(e, { at: "draft image" });
+        }
+      }
+    };
+    getDraft(sid).then(take).catch(reportError);
+    const off = onFeature({
+      frame: (f) => { if (f.name === "draft" && f.session_id === sid) take(f.data as Draft); },
+      reconnect: () => { getDraft(sid).then(take).catch(reportError); },
+    });
+    return () => { live = false; off(); have.current.clear(); };
+  }, [session?.id]);
+
+  useEffect(() => {
+    if (text && session?.id) typing(session.id);
     if (text) localStorage.setItem(draftKey(session?.id), text);
     else localStorage.removeItem(draftKey(session?.id));
   }, [text, session?.id]);
@@ -94,7 +136,14 @@ export function Composer({
     for (const f of pics) {
       try {
         const a = await toAttachment(f);
-        setImages((cur) => (cur.length >= 20 ? cur : [...cur, a]));
+        let added = false;
+        setImages((cur) => (cur.length >= 20 ? cur : ((added = true), [...cur, a])));
+        const sid = sidRef.current;
+        if (added && sid) {
+          have.current.add(a.id);
+          pendingKeep.current.add(a.id);
+          keepImage(sid, a).finally(() => pendingKeep.current.delete(a.id));
+        }
       } catch (e) {
         setNotice(String((e as Error).message));
         reportError(e, { kind: "attach" });
@@ -194,14 +243,18 @@ export function Composer({
     // The box clears at once (the next prompt can be typed while this one is on
     // its way); a failed send puts the text back if the box is still empty.
     const sent = images;
+    const sid = session?.id;
     setText("");
     setImages([]);
     setMenu(null);
     try {
-      if (queue && onQueue && t) await onQueue(t);
+      if (queue && onQueue) await onQueue(t || "(image)", sent.map(toBlock));
       else await onSend(t || "(image)", sent.map(toBlock));
+      if (sid) for (const a of sent) dropImage(sid, a.id); // only what was sent: an image added meanwhile stays
     } catch (e) {
+      // Nothing was sent: the text and images come back, unless something new was typed.
       setText((cur) => cur || t);
+      setImages((cur) => (cur.length ? cur : sent));
       setNotice(String((e as Error).message));
     } finally {
       ref.current?.focus();
@@ -269,7 +322,10 @@ export function Composer({
               <button
                 type="button"
                 aria-label={`Remove ${a.name}`}
-                onClick={() => setImages((cur) => cur.filter((x) => x.id !== a.id))}
+                onClick={() => {
+                  setImages((cur) => cur.filter((x) => x.id !== a.id));
+                  if (session?.id) dropImage(session.id, a.id);
+                }}
                 className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-fg/75 text-bg opacity-0 transition-opacity group-hover/att:opacity-100 focus-visible:opacity-100 max-sm:opacity-100"
               >
                 <X className="size-3" strokeWidth={2.5} />
