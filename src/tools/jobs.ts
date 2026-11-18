@@ -96,7 +96,20 @@ export function startJob(o: StartOpts): Job {
     });
   } else {
     job.proc = Bun.spawn(argv, { cwd: o.cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
-    const pump = async (s: ReadableStream<Uint8Array>) => { for await (const c of s) take(c); };
+    // An explicit reader: Bun can release a pipe's reader when the process
+    // ends, and the async iterator then rejects outside any handler.
+    const pump = async (s: ReadableStream<Uint8Array>) => {
+      const r = s.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await r.read();
+          if (done) break;
+          take(value);
+        }
+      } catch {
+        // the pipe closed with the process; what it wrote is already taken
+      }
+    };
     void Promise.all([pump(job.proc.stdout as ReadableStream<Uint8Array>), pump(job.proc.stderr as ReadableStream<Uint8Array>)]).catch(() => {});
   }
   job.exited = job.proc.exited.then((code) => {
