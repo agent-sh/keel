@@ -11,7 +11,7 @@ import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../pr
 import { toolsFor } from "../tools/registry.ts";
 import { allHooks, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
-import { COMPACT_SHARE, contextTokens, ownerWords, summaryMessage, summaryPrompt } from "./compact.ts";
+import { checkpointAt, COMPACT_SHARE, contextTokens, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
 import { withoutImages } from "./images.ts";
 import { RETRY, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
@@ -26,13 +26,13 @@ export const MAX_CONTINUATIONS = 3;
 // first). Pure: the same events always give the same bytes, so the provider's
 // prefix cache holds across turns.
 export function toMessages(events: StoredEvent[]): Message[] {
-  let start = 0;
-  for (let i = events.length - 1; i >= 0; i--) if (events[i]!.kind === "compaction") { start = i; break; }
+  const cp = checkpointAt(events);
   const out: Message[] = [];
-  for (let i = start; i < events.length; i++) {
+  if (cp.at >= 0 && events[cp.at]!.data.mode === "summary") out.push(summaryMessage(events[cp.at]!.data));
+  for (let i = cp.keepFrom; i < events.length; i++) {
     const e = events[i]!;
     if (e.kind === "compaction") {
-      if (e.data.mode === "summary") out.push(summaryMessage(e.data));
+      continue; // the checkpoint's summary leads (an older one in the tail is covered)
     } else if (e.kind === "user") {
       const content: any[] = [...(e.data.images ?? []), { type: "text", text: e.data.text }];
       out.push({ role: "user", content });
@@ -135,7 +135,10 @@ export class Engine {
     private providers: Providers,
     private errors: ErrorTracker,
     private spillRoot: string,
-  ) {}
+  ) {
+    // A summary prepared ahead survives a restart.
+    store.migrate("CREATE TABLE IF NOT EXISTS prepared_summaries (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, covered TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL)");
+  }
 
   isRunning(id: string) {
     return this.running.has(id);
@@ -369,9 +372,13 @@ export class Engine {
         session = this.store.session(id)!;
         let events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
-        if (events.some((e) => e.kind === "assistant") && contextTokens(events).used >= limit) {
-          await this.compactNow(id, { auto: true, signal, step: st });
+        const used = contextTokens(events).used;
+        if (events.some((e) => e.kind === "assistant") && used >= limit) {
+          // A summary prepared ahead swaps in at once; else the turn waits for one.
+          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, signal, step: st });
           events = this.lineage(id);
+        } else if (used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
+          this.prepare(id, st);
         }
         const messages = toMessages(events);
         let res: ProviderResult;
@@ -447,6 +454,12 @@ export class Engine {
       if (!signal.aborted) throw e;
     } finally {
       this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0 });
+      // Between turns, a context past the preparing share gets its summary ready.
+      if (!signal.aborted) {
+        const events = this.lineage(id);
+        const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+        if (contextTokens(events).used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
+      }
       for (const h of allHooks()) await Promise.resolve(h.turnEnd?.(session, reason)).catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
   }
@@ -490,6 +503,48 @@ export class Engine {
     }
     for (const h of allHooks()) await Promise.resolve(h.afterTool?.(session, call, result)).catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
     return result;
+  }
+
+  private preparing = new Set<string>();
+
+  // Write a summary of the context as it stands now, in the background (the
+  // turn goes on). It is stored with the event it covers up to, and swapped in
+  // when the context reaches the compaction limit.
+  private prepare(id: string, st: Step) {
+    if (this.preparing.has(id)) return;
+    const events = this.lineage(id);
+    const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
+    if (!covered || covered.kind === "compaction") return;
+    const have = this.store.db.query<{ covered: string }, [string]>("SELECT covered FROM prepared_summaries WHERE session_id = ?").get(id);
+    if (have && events.some((e) => e.id === have.covered) && events.findIndex((e) => e.id === have.covered) > checkpointAt(events).at) return;
+    this.preparing.add(id);
+    const session = this.store.session(id)!;
+    const ask: Message[] = [...toMessages(events), { role: "user", content: [{ type: "text", text: summaryPrompt() }] }];
+    const before = contextTokens(events).used;
+    this.call(id, st, ask, new AbortController().signal, new Map(), session, true)
+      .then((res) => {
+        this.store.addUsage(id, res.usage);
+        this.emitSession(id);
+        const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+        if (res.stop === "refusal" || !summary) return;
+        const data = { mode: "summary", summary, owner_messages: ownerWords(events), auto: true, ahead: true, covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now() };
+        this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
+      })
+      .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
+      .finally(() => this.preparing.delete(id));
+  }
+
+  // The prepared summary as a checkpoint, when it covers part of this branch
+  // after its last checkpoint. The events since stay verbatim after it.
+  private applyPrepared(id: string, events: StoredEvent[]): boolean {
+    const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
+    if (!row) return false;
+    this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
+    const at = events.findIndex((e) => e.id === row.covered);
+    if (at < 0 || at <= checkpointAt(events).at) return false;
+    this.append(id, "compaction", JSON.parse(row.data));
+    this.emitSession(id);
+    return true;
   }
 
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a

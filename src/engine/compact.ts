@@ -12,6 +12,23 @@ export const COMPACT_SHARE = 0.85;
 // about 20k tokens of user messages; at ~2.5 bytes per token that is 50 KB).
 export const OWNER_WORDS_BYTES = 50_000;
 
+// A summary prepared ahead covers the history up to an earlier event; the
+// events between that one and the checkpoint stay verbatim after the summary.
+// Where the context starts: the last checkpoint, and the first event it keeps.
+export function checkpointAt(lineage: StoredEvent[]): { at: number; keepFrom: number } {
+  for (let i = lineage.length - 1; i >= 0; i--) {
+    const e = lineage[i]!;
+    if (e.kind !== "compaction") continue;
+    const covered = e.data.covered ? lineage.findIndex((x) => x.id === e.data.covered) : -1;
+    return { at: i, keepFrom: covered >= 0 && covered < i ? covered + 1 : i + 1 };
+  }
+  return { at: -1, keepFrom: 0 };
+}
+
+// Share of the window at which a summary is prepared in the background, so the
+// turn that reaches COMPACT_SHARE swaps it in without waiting for a model call.
+export const PREPARE_SHARE = 0.7;
+
 export function summaryPrompt(focus?: string): string {
   return [
     "[harness] The context is being compacted. Write a summary of the conversation so far that lets you continue the work without it: everything before this point will be replaced by your summary.",
@@ -29,15 +46,21 @@ export function summaryPrompt(focus?: string): string {
 // The owner's own messages since the last checkpoint (and those the last
 // summary kept), newest kept first within the byte budget, oldest first.
 export function ownerWords(lineage: StoredEvent[]): string[] {
-  const all: string[] = [];
-  for (const e of lineage) {
+  let all: string[] = [];
+  const at: number[] = []; // the index of each word's event
+  lineage.forEach((e, i) => {
     if (e.kind === "compaction") {
-      all.length = 0;
-      if (e.data.mode === "summary") all.push(...(e.data.owner_messages ?? []));
+      // Words of the verbatim tail of a summary prepared ahead stay.
+      const covered = e.data.covered ? lineage.findIndex((x) => x.id === e.data.covered) : -1;
+      const tail = covered >= 0 ? all.filter((_, k) => at[k]! > covered) : [];
+      all = [...(e.data.mode === "summary" ? e.data.owner_messages ?? [] : []), ...tail];
+      at.length = 0;
+      at.push(...all.map(() => i));
     } else if (e.kind === "user" && (!e.data.origin || e.data.origin === "steer" || e.data.origin === "queued")) {
       all.push(e.data.text);
+      at.push(i);
     }
-  }
+  });
   const kept: string[] = [];
   let bytes = 0;
   for (let i = all.length - 1; i >= 0; i--) {
@@ -62,12 +85,12 @@ export function summaryMessage(data: { summary: string; owner_messages?: string[
 // Tokens the next request will carry: what the provider counted on the last
 // response of this context, plus the bytes appended since at ~4 bytes a token.
 export function contextTokens(lineage: StoredEvent[]): { used: number; measured: number; estimated: number; last?: Usage } {
-  let start = 0;
-  for (let i = lineage.length - 1; i >= 0; i--) if (lineage[i]!.kind === "compaction") { start = i + 1; break; }
+  const cp = checkpointAt(lineage);
   let measured = 0;
   let last: Usage | undefined;
-  let after = start;
-  for (let i = lineage.length - 1; i >= start; i--) {
+  // A reply measured before the checkpoint counted the history it replaced.
+  let after = Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at);
+  for (let i = lineage.length - 1; i > cp.at; i--) {
     const e = lineage[i]!;
     if (e.kind === "assistant" && e.data.usage && e.data.stop !== "refusal") {
       last = e.data.usage;

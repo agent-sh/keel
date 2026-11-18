@@ -103,6 +103,20 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await expect(texts.last()).toHaveText("Scripted reply, after a compaction.");
   await shoot(page, "failures-05-auto-compacted");
 
+  // A context that grows turn by turn: past 70% of the window a summary is
+  // written in the background; at the limit it swaps in without a wait, and
+  // the steps after the point it covers stay verbatim.
+  const { session: s3 } = await (await request.post("/api/sessions", { data: { model: STAND_IN } })).json();
+  await page.goto(`/s/${s3.id}`);
+  for (let n = 1; n <= 8; n++) await send(page, `script:grow ${n}`, n);
+  await expect(page.getByTestId("compacted")).toContainText("summary prepared ahead");
+  await expect(page.getByTestId("compacting")).toHaveCount(0);
+  const cp = (await (await request.get(`/api/sessions/${s3.id}`)).json()).events.find((e: any) => e.kind === "compaction");
+  expect(cp.data.ahead).toBe(true);
+  expect(cp.data.covered).toBeTruthy();
+  await page.getByTestId("compacted").scrollIntoViewIfNeeded();
+  await shoot(page, "failures-06-prepared-ahead");
+
   // The passing failures are recorded as provider errors of the first session
   // (a kind of failure is one row with a count); the second failed nothing.
   const errors = (await (await request.get("/api/errors")).json()).errors;

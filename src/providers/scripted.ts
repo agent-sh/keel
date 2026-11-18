@@ -113,6 +113,9 @@ export class ScriptedProvider implements Provider {
         if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");
         if (last?.role === "user" && (last.content as any[]).some((b) => b.type === "tool_result")) return reply("Finished after the tool.");
         return reply("Running a long command.", "tool_use", [{ type: "tool_use", id: `long-${msgs.length}`, name: "Bash", input: { command: "sleep 30; echo slept" } }]);
+      case "grow":
+        // About a thousand tokens a turn: the context crosses the preparing share, then the limit.
+        return reply(`Growing. ${"dolor sit amet ".repeat(280)}`.trim());
       case "fill":
         return reply(`Filling the context. ${"lorem ipsum dolor sit amet ".repeat(1_100)}`.trim());
       default:
