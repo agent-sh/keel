@@ -12,6 +12,7 @@ import { familyOf } from "./family.ts";
 import { CompatProvider, GeminiProvider, OpenAIProvider } from "./keyed.ts";
 import { Plugins } from "./plugins/index.ts";
 import { priceOf } from "./pricing.ts";
+import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
 import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
 
@@ -47,6 +48,8 @@ export class Providers {
       new CodexProvider(),
       new GeminiProvider(),
       this.xai,
+      // Test-only, never listed unless the daemon starts with KEEL_SCRIPTED_PROVIDER=1.
+      ...(scriptedEnabled() ? [new ScriptedProvider()] : []),
     ];
     this.plugins = new Plugins(stateDir, (e, ctx) => this.capture(e, ctx));
     this.xai.onSignedIn = () => void this.refresh("grok");
