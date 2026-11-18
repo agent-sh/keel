@@ -4,6 +4,7 @@ import { boardRoutes } from "./board.ts";
 import { checkpointRoutes } from "./checkpoints.ts";
 import { draftRoutes } from "./drafts.ts";
 import { errorRoutes } from "./errors.ts";
+import { adminRoutes } from "./admin.ts";
 import { telemetryRoutes } from "./telemetry.ts";
 import { driveRoutes } from "./drive.ts";
 import { fleetRoutes } from "./fleet.ts";
@@ -49,6 +50,7 @@ export const routeModules: RouteModule[] = [
   usageRoutes,
   errorRoutes,
   resourceRoutes,
+  adminRoutes,
   automationRoutes,
   integrationRoutes,
   driveRoutes,

@@ -6,6 +6,7 @@ import type { Store } from "../core/store.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, running, stopJob } from "../tools/jobs.ts";
+import { admit } from "./admission.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
 
@@ -30,6 +31,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   const wrap = (h: (req: Request & { params: any }, srv: Bun.Server<unknown>) => Promise<Response> | Response) =>
     async (req: any, srv: any) => {
       try {
+        const refused = admit(req);
+        if (refused) return refused;
         return await h(req, srv);
       } catch (e) {
         const st = (e as any)?.status;
