@@ -170,6 +170,13 @@ test("pair a phone, approve from it, push, revoke", async ({ page, request }) =>
     expect(after.messages.some((m: any) => m.role === "agent" && m.chat_id === session.id)).toBe(true);
     expect(after.approvals.some((a: any) => a.id === approval.id)).toBe(false);
 
+    // The session's Loops are the phone's cron jobs; it can pause one.
+    const loop = await (await request.post("/api/loops", { data: { session_id: session.id, name: "phone loop", prompt: "say ok", schedule: "daily" } })).json();
+    const jobs = (await (await phone.call("GET", "/v1/cron")).json()).jobs;
+    expect(jobs.find((j: any) => j.id === loop.id)).toMatchObject({ name: "phone loop", enabled: true });
+    expect((await (await phone.call("POST", `/v1/cron/${loop.id}/pause`)).json()).job.enabled).toBe(false);
+    await request.delete(`/api/loops/${loop.id}`);
+
     // 7. A test push from the device row reaches the push service; the phone confirms it.
     await page.goto("/settings/phone");
     await row.getByTestId("phone-test").click();

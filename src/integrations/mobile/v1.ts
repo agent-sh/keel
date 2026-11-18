@@ -7,6 +7,7 @@ import type { Session, StoredEvent } from "../../core/types.ts";
 import type { Approval, Gate } from "../../safety/gate.ts";
 import type { Deps } from "../../server/app.ts";
 import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts";
+import * as loops from "../../automation/loops.ts";
 import * as push from "./push.ts";
 import {
   approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage,
@@ -355,6 +356,29 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     "/v1/approvals/:aid": { POST: signed(withBody(approve)) },
+    // Loops, as the app's cron jobs.
+    "/v1/cron": {
+      GET: signed(() => json({
+        jobs: loops.list().map((l) => ({
+          id: l.id, name: l.name, schedule: l.schedule_text, enabled: l.enabled, prompt: l.prompt, chat_id: l.session_id,
+          last_status: l.last_status ?? null, paused_reason: l.disabled_reason ?? null, next: l.next_ms ? secs(l.next_ms) : null,
+          runs: loops.runs(l.id, 5).map((r) => ({ id: r.id, ts: secs(r.started_ms ?? r.due_ms), ok: r.ok ?? null, detail: r.detail ?? r.skip_reason ?? null })),
+        })),
+        now: secs(Date.now()),
+      })),
+    },
+    "/v1/cron/:jid/:action": {
+      POST: signed((req) => {
+        const id = req.params.jid!, action = req.params.action;
+        if (!loops.get(id)) return err("unknown job", 404);
+        const job =
+          action === "pause" ? loops.update(id, { enabled: false })
+          : action === "resume" ? loops.update(id, { enabled: true })
+          : action === "run" ? loops.runNow(id)
+          : null;
+        return job ? json({ job }) : err("the action is pause, resume or run", 400);
+      }),
+    },
     "/v1/pulse": {
       GET: signed(() => {
         const day = activity(Date.now() - 86_400_000), week = activity(Date.now() - 7 * 86_400_000);
