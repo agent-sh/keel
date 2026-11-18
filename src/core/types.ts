@@ -86,6 +86,7 @@ export type Session = {
   usage: Usage;
   head: string | null;
   settings: SessionSettings;
+  parent_id?: string | null; // a subagent's session names the session that spawned it
 };
 
 // Per-session turn settings. Values come from the model's listing (efforts) or

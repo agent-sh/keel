@@ -184,9 +184,16 @@ export class Engine {
     if (s && !s.title) this.bus.emit({ t: "session", session: this.store.updateSession(id, { title: text.slice(0, 80).split("\n")[0] }) });
   }
 
+  // Resolves when the session's running turn (if any) has fully ended.
+  idle(id: string): Promise<void> {
+    return this.running.get(id)?.done ?? Promise.resolve();
+  }
+
   // The owner's prompt. While a turn runs: `steer` (the default) joins it at its
   // next model call, `queue` waits for the turn to end. Otherwise it starts a turn.
-  send(id: string, text: string, opts: { mode?: "send" | "steer" | "queue"; images?: any[] } = {}) {
+  // `meta` marks input that is not the owner's typing (a subagent report, a
+  // wake, a loop run): { kind, ... } is stored with the event for the page.
+  send(id: string, text: string, opts: { mode?: "send" | "steer" | "queue"; images?: any[]; meta?: Record<string, unknown> } = {}) {
     const mode = opts.mode ?? "send";
     if (this.running.has(id) || (mode === "queue" && this.store.queue(id).length)) {
       const q = this.store.enqueue(id, text, mode !== "queue");
@@ -194,7 +201,7 @@ export class Engine {
       return { queued: q, steer: q.steer };
     }
     this.held.delete(id);
-    const ev = this.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined });
+    const ev = this.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
     this.titleFrom(id, text);
     this.start(id);
     this.emitQueue(id);

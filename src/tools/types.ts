@@ -23,6 +23,8 @@ export type Tool = ToolSpec & {
   // A dispatcher (mcp_call) names the tool it will run, so the permission gate
   // judges and grants that tool, not the dispatcher.
   target?(input: any): Promise<{ name: string; readOnly: boolean; input: any } | null>;
+  // A shared tool offered only to these families (default: every family).
+  families?: string[];
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;
 };
 

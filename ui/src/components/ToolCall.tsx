@@ -12,6 +12,7 @@ import {
   type PlanItem, type ToolKind,
 } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
+import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 
 const ICONS: Record<ToolKind, typeof Wrench> = {
   shell: SquareTerminal, stdin: SquareTerminal, stop: Square, read: FileText, edit: FilePen, write: FilePlus2, patch: FilePen,
@@ -48,7 +49,7 @@ function summary(kind: ToolKind, name: string, input: any, cwd?: string): string
     case "skill": return [input.skill ?? input.name, input.args ?? input.arguments].filter(Boolean).join(" ");
     case "mcp": return name === "search_tools" ? `search ${input.query ?? ""}` : input.tool ?? name;
     case "plan": return planSummary(planItems(name, input));
-    default: return JSON.stringify(input).slice(0, 120);
+    default: return toolSummary(name, input) ?? JSON.stringify(input).slice(0, 120);
   }
 }
 
@@ -61,6 +62,7 @@ function planSummary(items: PlanItem[]): string {
 }
 
 export function ToolCall({ use, result, live, sessionId, cwd, waiting }: Props) {
+  if (AGENT_TOOLS.has(use.name)) return <AgentCall use={use} result={result} live={live} />;
   const kind = toolKind(use.name);
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return <QuestionCard use={use} result={result} sessionId={sessionId} waiting={waiting} />;

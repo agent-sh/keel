@@ -1,5 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { Approvals } from "./components/ApprovalCard.tsx";
+import { ChildApprovals } from "./components/automation/ChildApprovals.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { McpOverlay } from "./components/McpPanel.tsx";
@@ -71,6 +72,7 @@ function SessionView({ id }: { id: string }) {
             <div className="mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
               <SessionDock sessionId={session.id} />
               <Approvals sessionId={session.id} />
+              <ChildApprovals parentId={session.id} />
               <Composer
                 session={session}
                 working={session.phase === "working"}

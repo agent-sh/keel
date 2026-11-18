@@ -22,5 +22,6 @@ export function registerShared(...tools: Tool[]) {
 // of the request never changes between turns and stays cached.
 export function toolsFor(family: ModelInfo["family"]): Tool[] {
   const base = byFamily.get(family) ?? byFamily.get("claude")!;
-  return [...base, ...[...shared].sort((a, b) => a.name.localeCompare(b.name))];
+  const extra = shared.filter((t) => !t.families || t.families.includes(family));
+  return [...base, ...extra.sort((a, b) => a.name.localeCompare(b.name))];
 }

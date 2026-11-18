@@ -7,6 +7,7 @@ import { actions, reportError } from "../lib/store.ts";
 import { navigate, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
+import { BackgroundButton } from "./automation/BackgroundPopover.tsx";
 import { PermissionMenu } from "./PermissionMenu.tsx";
 import { PanelToggles } from "./SidePanel.tsx";
 import { WorktreeChip } from "./WorktreeChip.tsx";
@@ -84,6 +85,7 @@ export function SessionHeader({ session }: { session: Session }) {
       >
         {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">${u.cost.toFixed(u.cost < 1 ? 4 : 2)}</span> : null}
       </span>}
+      <BackgroundButton sessionId={session.id} />
       <WorktreeChip session={session} />
       <PanelToggles session={session} />
       <PermissionMenu sessionId={session.id} />

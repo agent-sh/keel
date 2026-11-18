@@ -1,3 +1,4 @@
+import { automationRoutes } from "../../automation/index.ts";
 import type { RouteModule } from "../app.ts";
 import { checkpointRoutes } from "./checkpoints.ts";
 import { errorRoutes } from "./errors.ts";
@@ -26,4 +27,5 @@ export const routeModules: RouteModule[] = [
   turnRoutes,
   usageRoutes,
   errorRoutes,
+  automationRoutes,
 ];

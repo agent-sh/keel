@@ -7,6 +7,7 @@ import { ago, cn, when } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
 import { NeedsYou } from "./ApprovalCard.tsx";
+import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -44,6 +45,7 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       />
       <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
       <NeedsYou sessionId={s.id} />
+      <SessionBadges sessionId={s.id} />
       <span className="text-micro text-faint tabular-nums group-hover:hidden group-focus-within:hidden" title={when(s.updated)}>{ago(s.updated)}</span>
       <button
         type="button"
@@ -68,7 +70,12 @@ function Group({ list, current }: { list: Session[]; current: string | null }) {
   const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === current);
   return (
     <div className="flex flex-col gap-px">
-      {shown.map((s) => <Row key={s.id} s={s} active={current === s.id} />)}
+      {shown.map((s) => (
+        <div key={s.id}>
+          <Row s={s} active={current === s.id} />
+          <SessionChildren parentId={s.id} current={current} />
+        </div>
+      ))}
       {list.length > shown.length && (
         <button type="button" onClick={() => setAll(true)} className="h-7 rounded-md pl-6 text-left text-caption text-faint hover:bg-hover hover:text-muted">
           {list.length - shown.length} more
@@ -96,7 +103,7 @@ export function Sidebar() {
     if (tab === "archived") api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => setArchived(r.sessions)).catch(reportError);
   }, [tab, sessions]);
   const grouped = useMemo(
-    () => groups(tab === "active" ? Object.values(sessions).filter((s) => !s.archived) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
+    () => groups(tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
     [sessions, tab, archived],
   );
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
@@ -198,6 +205,7 @@ export function Sidebar() {
         >
           <Bug className="size-4" /> {errors ? errors : ""}
         </button>
+        <AutomationFooter />
         <button
           type="button"
           data-testid="theme-toggle"

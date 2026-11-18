@@ -1,0 +1,300 @@
+import { registerHooks } from "../engine/hooks.ts";
+import type { Deps, RouteModule } from "../server/app.ts";
+import { registerShared } from "../tools/registry.ts";
+import * as agents from "./agents.ts";
+import * as alerts from "./alerts.ts";
+import { afterTurn, capture, hasPending, setDeps } from "./core.ts";
+import * as loops from "./loops.ts";
+import { parseLoopCommand } from "./schedule.ts";
+import { automationTools, extendTaskStop } from "./tools.ts";
+import * as waits from "./waits.ts";
+
+// Subagents, waits, loops and alerts: tables, tools, turn hooks, the scheduler
+// and the HTTP routes, joined to the daemon from this one module.
+
+const json = (data: unknown, status = 200) => Response.json(data, { status });
+const bad = (message: string, status = 400) => json({ error: message }, status);
+const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
+const attempt = async (f: () => Promise<Response> | Response) => {
+  try {
+    return await f();
+  } catch (e: any) {
+    return bad(e.message, e.status ?? 400);
+  }
+};
+
+const g = globalThis as any;
+const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_user"]);
+
+function init(deps: Deps) {
+  setDeps(deps);
+  agents.migrate();
+  waits.migrate();
+  loops.migrate();
+  alerts.migrate();
+  registerShared(...automationTools);
+  extendTaskStop();
+
+  registerHooks({
+    system: (s) => {
+      const custom = agents.definitions(s.workspace).filter((d) => d.source !== "built-in");
+      return custom.length ? `Agent types you can start besides the built-ins:\n${custom.map((d) => `- ${d.name}: ${d.description}`).join("\n")}` : "";
+    },
+    beforeTool: (s, call) => {
+      const why = agents.gate(s.id, call.tool.name);
+      if (why) return { deny: why };
+      // A question the model asks the owner is an alert until it is answered.
+      if (QUESTION_TOOLS.has(call.tool.name)) {
+        const q = (call.input?.questions ?? [])[0];
+        const text = String(q?.question ?? call.input?.question ?? call.input?.prompt ?? "The agent asks a question.");
+        alerts.raise("question", s.id, `Question: ${deps.store.session(s.id)?.title || "a session"}`, text, { call_id: call.id, open_session: s.id });
+      }
+      return undefined;
+    },
+    afterTool: (_s, call) => {
+      if (QUESTION_TOOLS.has(call.tool.name)) alerts.readWhere("call_id", call.id);
+    },
+    turnEnd: (s, reason) => {
+      afterTurn(s.id, () => {
+        const loopRun = loops.runOpenIn(s.id);
+        loops.onTurnEnd(s.id, reason);
+        agents.onTurnEnd(s.id, reason);
+        const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || agents.list(s.id).some((a) => !agents.isEnded(a));
+        alerts.onTurnEnd(s.id, reason, { subagent: !!deps.store.session(s.id)?.parent_id, loopRun, more });
+      });
+    },
+  });
+
+  // Approval cards become alerts (a child's under its parent); an answered
+  // card's alert is read.
+  deps.bus.on((f) => {
+    if (f.t !== "feature" || f.name !== "approval") return;
+    const a = f.data as { id: string; session_id: string; tool: string; summary: string; risk: string; state: string };
+    if (a.state === "pending") {
+      const s = deps.store.session(a.session_id);
+      alerts.raise("approval", a.session_id, `Approval: ${s?.title || "a session"}`, `${a.tool}: ${a.summary}`.slice(0, 500), { approval_id: a.id, open_session: a.session_id, risk: a.risk });
+    } else alerts.readWhere("approval_id", a.id);
+  });
+
+  if (!g.__keelAutomationRecovered) {
+    g.__keelAutomationRecovered = true;
+    try {
+      waits.recover();
+      loops.recover();
+      agents.recover();
+    } catch (e) {
+      capture(e, { at: "recover" });
+    }
+    process.on("exit", () => waits.stopAll());
+  }
+
+  clearInterval(g.__keelAutomationTick);
+  g.__keelAutomationTick = setInterval(() => {
+    waits.tick().catch((e) => capture(e, { at: "waits tick" }));
+    try {
+      loops.tick();
+      agents.tick();
+      sweepArchived(deps);
+    } catch (e) {
+      capture(e, { at: "tick" });
+    }
+  }, 1000);
+}
+
+// An archived session runs neither its agents nor its waits.
+function sweepArchived(deps: Deps) {
+  const rows = deps.store.db.query<{ id: string }, []>(`
+    SELECT DISTINCT s.id FROM sessions s WHERE s.archived = 1 AND (
+      EXISTS (SELECT 1 FROM waits w WHERE w.session_id = s.id AND w.status = 'active') OR
+      EXISTS (SELECT 1 FROM agents a WHERE a.parent_id = s.id AND a.status IN ('running', 'waiting')))`).all();
+  for (const r of rows) {
+    waits.cancelForSession(r.id);
+    agents.stopChildrenOf(r.id);
+  }
+}
+
+function background(sessionId: string) {
+  return {
+    agents: agents.list(sessionId),
+    waits: waits.list(sessionId, 20),
+    loops: loops.list(sessionId),
+  };
+}
+
+export const automationRoutes: RouteModule = (deps) => {
+  init(deps);
+  const { store, providers } = deps;
+  const session = (id: string) => store.session(id);
+
+  return {
+    "/api/automation": {
+      GET: () => {
+        const db = store.db;
+        const recent = Date.now() - 86400_000;
+        const agentRows = db.query<{ id: string }, [number]>("SELECT id FROM agents WHERE status IN ('running','waiting') OR created > ? ORDER BY created").all(recent);
+        return json({
+          agents: agentRows.map((r) => agents.get(r.id)),
+          waits: waits.list(undefined, 30),
+          loops: loops.list(),
+          unread: alerts.unreadCounts(),
+          alerts: alerts.list({ limit: 50 }),
+          settings: alerts.settings(),
+          channels: alerts.channelList(),
+        });
+      },
+    },
+
+    // --- subagents
+    "/api/agents": {
+      GET: (req: Request) => json({ agents: agents.definitions(new URL(req.url).searchParams.get("cwd") || deps.workspace) }),
+    },
+    "/api/sessions/:id/agents": {
+      GET: (req: any) => (session(req.params.id) ? json({ agents: agents.list(req.params.id), limit: agents.MAX_LIVE }) : bad("no such session", 404)),
+    },
+    "/api/sessions/:id/agents/:agent_id/stop": {
+      POST: (req: any) => {
+        if (!session(req.params.id)) return bad("no such session", 404);
+        const a = agents.get(req.params.agent_id);
+        if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent");
+        const was = a.status;
+        agents.stop(a.id, "stopped by the owner");
+        return json({ ok: true, stopped: was === "running" || was === "waiting" });
+      },
+    },
+    "/api/sessions/:id/agents/:agent_id/message": {
+      POST: (req: any) => attempt(async () => {
+        const a = agents.get(req.params.agent_id);
+        if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent", 404);
+        const b = await body(req);
+        if (!String(b.message ?? "").trim()) return bad("message cannot be empty");
+        return json({ agent: agents.send(a.id, String(b.message), !!b.interrupt) });
+      }),
+    },
+    "/api/sessions/:id/background": {
+      GET: (req: any) => (session(req.params.id) ? json(background(req.params.id)) : bad("no such session", 404)),
+    },
+
+    // --- composer commands: /loop
+    "/api/sessions/:id/command": {
+      POST: (req: any) => attempt(async () => {
+        const s = session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const b = await body(req);
+        const cmd = parseLoopCommand(String(b.text ?? ""));
+        if (!cmd) return json({ handled: false });
+        const { loop } = loops.create({ session_id: s.id, schedule: cmd.schedule, prompt: cmd.prompt, created_by: "owner" });
+        // An interval or self-paced loop runs its first iteration now, as /loop does.
+        if (loop.kind !== "cron") loops.start(loop, Date.now(), { note: "First run, started with the loop." });
+        return json({ handled: true, loop: loops.get(loop.id) });
+      }),
+    },
+
+    // --- waits
+    "/api/waits": {
+      GET: () => json({ waits: waits.list(undefined, 100) }),
+      POST: (req: Request) => attempt(async () => {
+        const b = await body(req);
+        const s = session(String(b.session_id ?? ""));
+        if (!s) return bad("no such session", 404);
+        if (s.archived) return bad("the session is archived", 409);
+        const spec = waits.normalize(b.spec ?? b, s.workspace);
+        if (spec.kind === "monitor") return bad("a monitor is started by the agent, not here");
+        return json(waits.create(s.id, spec, { timeout_seconds: b.timeout_seconds, note: b.note }), 201);
+      }),
+    },
+    "/api/waits/:id": {
+      DELETE: (req: any) => (waits.cancel(req.params.id) ? json({ ok: true }) : bad("no such wait", 404)),
+    },
+
+    // --- loops
+    "/api/loops": {
+      GET: () => json({ loops: loops.list() }),
+      POST: (req: Request) => attempt(async () => {
+        const b = await body(req);
+        let sid = b.session_id ? String(b.session_id) : "";
+        if (sid && !session(sid)) return bad("no such session", 404);
+        if (!sid) {
+          // A loop of its own: its runs go to a session made for it.
+          const model = b.model || (await providers.defaultModel());
+          if (!model) return bad("no model is available", 409);
+          await providers.resolve(model);
+          const s = store.createSession({ model, workspace: b.cwd || deps.workspace, title: `Loop: ${String(b.name || b.prompt || "").slice(0, 60)}` });
+          deps.bus.emit({ t: "session", session: s });
+          sid = s.id;
+        }
+        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, created_by: "owner" });
+        return json({ ...r.loop, hook_key: r.hook_key }, 201);
+      }),
+    },
+    "/api/loops/:id": {
+      PATCH: (req: any) => attempt(async () => (loops.get(req.params.id) ? json(loops.update(req.params.id, await body(req))) : bad("no such loop", 404))),
+      DELETE: (req: any) => (loops.remove(req.params.id) ? json({ ok: true }) : bad("no such loop", 404)),
+    },
+    "/api/loops/:id/run": {
+      POST: (req: any) => attempt(() => (loops.get(req.params.id) ? json(loops.runNow(req.params.id)) : bad("no such loop", 404))),
+    },
+    "/api/loops/:id/runs": {
+      GET: (req: any) => {
+        const l = loops.get(req.params.id);
+        return l ? json({ loop: l, runs: loops.runs(l.id) }) : bad("no such loop", 404);
+      },
+    },
+    "/api/loops/:id/expiry": {
+      POST: (req: any) => attempt(async () => (loops.get(req.params.id) ? json(loops.update(req.params.id, { until_ms: (await body(req)).until_ms ?? null })) : bad("no such loop", 404))),
+    },
+    "/api/loops/:id/hook-key": {
+      POST: (req: any) => attempt(() => (loops.get(req.params.id) ? json({ hook_key: loops.rotateKey(req.params.id) }) : bad("no such loop", 404))),
+    },
+    "/api/webhooks/:key": {
+      POST: async (req: any) => {
+        const text = await req.text();
+        const r = loops.webhook(req.params.key, text);
+        return r.status === 200 ? json({ ok: true }) : bad(r.error ?? "refused", r.status);
+      },
+    },
+
+    // --- alerts
+    "/api/alerts": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const before = q.get("before") ? Number(q.get("before")) : undefined;
+        const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
+        if ((before !== undefined && !Number.isFinite(before)) || (limit !== undefined && !Number.isFinite(limit))) return bad("before and limit are numbers");
+        return json({ alerts: alerts.list({ before, limit, unread: q.has("unread") }), unread: alerts.unreadCounts() });
+      },
+    },
+    "/api/alerts/read": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        const changed = alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id });
+        return json({ ok: true, changed, unread: alerts.unreadCounts() });
+      },
+    },
+    "/api/alerts/:id/unread": {
+      POST: (req: any) => {
+        alerts.markUnread(req.params.id);
+        return json({ ok: true, unread: alerts.unreadCounts() });
+      },
+    },
+    "/api/alerts/settings": {
+      GET: () => json({ settings: alerts.settings(), channels: alerts.channelList(), kinds: alerts.KINDS }),
+      PUT: (req: Request) => attempt(async () => json({ settings: alerts.saveSettings(await body(req)), channels: alerts.channelList() })),
+    },
+    "/api/alerts/test": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        const a = alerts.raise((b.kind as alerts.AlertKind) ?? "agent", b.session_id ?? null, "Test alert", "This is how Keel reaches you.");
+        return json({ alert: a });
+      },
+    },
+    "/api/presence": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        alerts.setPresence(b.session_id ?? null, !!b.focused);
+        return json({ ok: true });
+      },
+    },
+  };
+};
+
+export { alerts };
