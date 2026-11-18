@@ -1,5 +1,5 @@
 import { Popover } from "@base-ui/react/popover";
-import { Check, ChevronDown, FilePen, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
+import { Check, ChevronDown, FilePen, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { reportError } from "../lib/store.ts";
@@ -10,8 +10,10 @@ const TITLE: Record<Approval["kind"], string> = {
   edit: "Change these files?",
   other: "Use this tool?",
   read: "Read this?",
+  drive: "Drive a session?",
+  refused: "Refused",
 };
-const ICON = { shell: SquareTerminal, edit: FilePen, other: Wrench, read: Wrench };
+const ICON = { shell: SquareTerminal, edit: FilePen, other: Wrench, read: Wrench, drive: MessageSquareShare, refused: X };
 const EMPTY: Approval[] = [];
 
 // The open approval cards of a session, docked above the composer. The turn

@@ -2,6 +2,7 @@ import "./lib/fonts.ts";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import "./features/safety.tsx";
+import "./features/drive.tsx";
 import "./lib/turns.ts";
 import "./components/automation/register.tsx";
 

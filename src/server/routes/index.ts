@@ -3,6 +3,7 @@ import type { RouteModule } from "../app.ts";
 import { checkpointRoutes } from "./checkpoints.ts";
 import { errorRoutes } from "./errors.ts";
 import { telemetryRoutes } from "./telemetry.ts";
+import { driveRoutes } from "./drive.ts";
 import { mcpRoutes } from "./mcp.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { providersRoutes } from "./providers.ts";
@@ -33,5 +34,6 @@ export const routeModules: RouteModule[] = [
   errorRoutes,
   automationRoutes,
   integrationRoutes,
+  driveRoutes,
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

@@ -154,14 +154,14 @@ export class Gate {
   async check(session: Session, call: ToolCall): Promise<{ deny: string } | void> {
     const target = call.tool.target ? await call.tool.target(call.input) : null;
     const name = target?.name ?? call.tool.name;
-    const cls: CallClass = target ? (target.readOnly ? { kind: "read" } : { kind: "other" }) : classify(call.tool, call.input, call.ctx.cwd);
+    const cls: CallClass = target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classify(call.tool, call.input, call.ctx.cwd);
     const d = this.evaluate(session, name, cls);
     if ("allow" in d) return;
     if ("deny" in d) return { deny: d.deny };
     if (cls.kind === "control") return;
     const a: Approval = {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind,
-      summary: cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : JSON.stringify(target ? target.input : call.input).slice(0, 400),
+      summary: cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(target ? target.input : call.input).slice(0, 400),
       input: clip(call.input), risk: d.ask.risk, why: d.ask.why, suggest: d.ask.suggest, state: "pending", created: Date.now(),
     };
     this.save(a);

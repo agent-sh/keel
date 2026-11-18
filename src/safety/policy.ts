@@ -21,7 +21,13 @@ export type CallClass =
   | { kind: "shell"; command: string; escalate?: boolean }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
   | { kind: "edit"; paths: string[] }
-  | { kind: "other" };
+  | { kind: "other" }
+  // A message, answer or model command into another session. `resource` names
+  // the tool and the target (keel__session_send:claude:abc); `owner` says why
+  // only the owner may allow it.
+  | { kind: "drive"; target: string; resource: string; shown: string; owner?: string }
+  // A call its tool refused before it was judged (the reason is the result).
+  | { kind: "refused"; why: string };
 
 export type Decision =
   | { allow: true; why?: string }
@@ -75,6 +81,8 @@ export function decide(c: CallClass, f: Facts): Decision {
     }
     return decideShell(c.command, f);
   }
+  if (c.kind === "refused") return { deny: c.why };
+  if (c.kind === "drive") return decideDrive(c, f);
   if (c.kind === "edit") {
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };
@@ -112,4 +120,22 @@ function decideShell(command: string, f: Facts): Decision {
   if (f.mode === "read-only") return { deny: `This session is read-only: only read-only commands run, and \`${open[0]!.text}\` is not one.` };
   if (f.mode === "auto-edits" && f.sandboxed) return { allow: true, why: "sandboxed" };
   return { ask: { risk: "low", suggest: [...new Set(open.map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern })) } };
+}
+
+// Driving another session. An allow rule for a tool does not cover another
+// session: only a standing answer for driving does (drive:<id>, drive:*). A
+// text its harness would act on, a text for an ended session and an allow on
+// another session's prompt are the owner's: no mode covers them, only a rule
+// naming the tool and the target (keel__session_send:<id>, or :*).
+function decideDrive(c: Extract<CallClass, { kind: "drive" }>, f: Facts): Decision {
+  if (f.mode === "read-only") return { deny: "This session is read-only: it does not drive other sessions." };
+  const tools = f.rules.filter((r) => r.kind === "tool").map((r) => r.pattern);
+  if (c.owner) {
+    const tool = c.resource.slice(0, c.resource.indexOf(":"));
+    if (tools.includes(c.resource) || tools.includes(`${tool}:*`)) return { allow: true };
+    return { ask: { risk: "high", why: `only the owner sends this: ${c.owner}`, suggest: [] } };
+  }
+  if (f.mode === "full-auto") return { allow: true };
+  if (tools.includes(`drive:${c.target}`) || tools.includes("drive:*")) return { allow: true };
+  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: `drive:${c.target}` }] } };
 }

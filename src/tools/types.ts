@@ -1,5 +1,6 @@
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import type { ToolSpec } from "../providers/types.ts";
+import type { CallClass } from "../safety/policy.ts";
 
 export type ToolContext = {
   sessionId: string;
@@ -22,7 +23,8 @@ export type Tool = ToolSpec & {
   readOnly: boolean;
   // A dispatcher (mcp_call) names the tool it will run, so the permission gate
   // judges and grants that tool, not the dispatcher.
-  target?(input: any): Promise<{ name: string; readOnly: boolean; input: any } | null>;
+  // `cls`, when given, is what the call does (a drive tool judges its target).
+  target?(input: any): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass } | null>;
   // A shared tool offered only to these families (default: every family).
   families?: string[];
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;

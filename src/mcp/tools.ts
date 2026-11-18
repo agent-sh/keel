@@ -100,7 +100,8 @@ const McpCall: Tool = {
     const all = await catalogTools();
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
     // A name that matches nothing runs nothing: the call only says so.
-    return t ? { name: t.qualified, readOnly: !!t.readOnly, input: input?.arguments ?? {} } : { name, readOnly: true, input: {} };
+    const args = input?.arguments ?? {};
+    return t ? { name: t.qualified, readOnly: !!t.readOnly, input: args, cls: t.judge ? await t.judge(args) : undefined } : { name, readOnly: true, input: {} };
   },
   description: "Run a tool found with search_tools, by its full name (server__tool), with its arguments as an object.",
   input_schema: {

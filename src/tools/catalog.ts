@@ -2,6 +2,7 @@
 // request. The model finds them with search_tools and runs them with mcp_call,
 // so the eager tool list (and the cached request prefix) never changes when an
 // MCP server connects, reloads or goes away.
+import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "./types.ts";
 
 export type CatalogTool = {
@@ -11,6 +12,8 @@ export type CatalogTool = {
   description: string;
   input_schema: Record<string, unknown>;
   readOnly?: boolean;
+  // What a call does, for the permission gate, when the read flag alone does not say.
+  judge?(input: any): Promise<CallClass>;
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;
 };
 
