@@ -46,7 +46,7 @@ function init(deps: Deps) {
       return custom.length ? `Agent types you can start besides the built-ins:\n${custom.map((d) => `- ${d.name}: ${d.description}`).join("\n")}` : "";
     },
     beforeTool: (s, call) => {
-      const why = agents.gate(s.id, call.tool.name);
+      const why = agents.gate(s.id, call.tool.name, call.input);
       if (why) return { deny: why };
       // A question the model asks the owner is an alert until it is answered.
       if (QUESTION_TOOLS.has(call.tool.name)) {
@@ -190,7 +190,7 @@ export const automationRoutes: RouteModule = (deps) => {
         if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent", 404);
         const b = await body(req);
         if (!String(b.message ?? "").trim()) return bad("message cannot be empty");
-        return json({ agent: agents.send(a.id, String(b.message), !!b.interrupt) });
+        return json({ agent: await agents.send(a.id, String(b.message), !!b.interrupt) });
       }),
     },
     "/api/sessions/:id/background": {

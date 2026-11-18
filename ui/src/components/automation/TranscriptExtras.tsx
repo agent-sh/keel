@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { Bot, ChevronRight, CornerDownRight, ExternalLink, Radio, Repeat, Timer, Zap } from "lucide-react";
+import { Bot, ChevronRight, CornerDownRight, ExternalLink, GitBranch, Radio, Repeat, Timer, Zap } from "lucide-react";
 import { useMemo } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -160,6 +160,12 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         <span className="font-medium shrink-0">Agent</span>
         <span className="shrink-0 rounded bg-panel px-1.5 py-px text-micro text-muted">{type}</span>
         <span className="min-w-0 truncate text-muted">{agent?.title ?? title}</span>
+        {agent?.branch && (
+          <span data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`} className="flex shrink-0 items-center gap-1 rounded bg-panel px-1.5 py-px font-mono text-micro text-muted">
+            <GitBranch className="size-3" />{agent.branch}
+          </span>
+        )}
+        {agent?.structured && <span data-testid="agent-call-structured" className="shrink-0 rounded bg-panel px-1.5 py-px font-mono text-micro text-muted">json</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {agent ? (
             <>
@@ -182,7 +188,12 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         {(report || out) && (
           <>
             <div className="px-3 pt-3 text-micro font-medium uppercase tracking-[0.06em] text-faint">Report</div>
-            <div className="px-3 pt-1 pb-3 text-ui"><Markdown text={report ?? out} /></div>
+            <div className="px-3 pt-1 pb-3 text-ui">
+              {agent?.structured && report && agent.status === "completed"
+                ? <pre data-testid="agent-call-json" className="overflow-x-auto rounded-md bg-code px-3 py-2 font-mono text-caption">{report.split("\n\n")[0]}</pre>
+                : <Markdown text={report ?? out} />}
+              {agent?.structured && report && agent.status === "completed" && report.includes("\n\n") && <p className="pt-2 text-caption text-muted">{report.slice(report.indexOf("\n\n") + 2)}</p>}
+            </div>
           </>
         )}
         {!report && !out && <div className="h-2.5" />}

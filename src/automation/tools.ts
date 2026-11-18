@@ -47,7 +47,9 @@ const Agent: Tool = {
     "Launch a subagent: a separate session with its own context that works on one task and returns a report. " +
     "Use it for independent work that can run beside yours, or a broad search whose file dumps you do not need. Send several Agent calls in one message to run them in parallel. " +
     "The agent sees none of this conversation: the prompt must say everything it needs. By default the call blocks until the agent reports; with run_in_background the call returns at once and the report arrives later as a message (do not poll it). " +
-    "Types: general-purpose (all tools, default), Explore (read-only search); more may be listed in the system prompt. A subagent cannot start agents.",
+    "Types: general-purpose (all tools, default), Explore (read-only search); more may be listed in the system prompt. A subagent cannot start agents. " +
+    "In a git repository an agent that can edit works in its own worktree on its own branch and commits there; its report names the branch to merge. isolation: \"none\" makes it edit your checkout instead. " +
+    "output_schema (a JSON schema) makes its report one JSON value that matches it.",
   input_schema: {
     type: "object",
     properties: {
@@ -56,11 +58,13 @@ const Agent: Tool = {
       subagent_type: { type: "string", description: "The type of agent to use" },
       model: { type: "string", description: "Optional model override: a listed model id or a short name such as haiku or sonnet. Omit to use this session's model." },
       run_in_background: { type: "boolean", description: "Return at once; the report arrives later as a message" },
+      isolation: { type: "string", enum: ["worktree", "none"], description: "worktree (the default for agents that edit, in a git repository): its own checkout and branch; none: it edits your checkout" },
+      output_schema: { type: "object", description: "A JSON schema the report must match; the report is then that JSON value" },
     },
     required: ["description", "prompt"],
   },
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: input.subagent_type, model: input.model, background: !!input.run_in_background }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: input.subagent_type, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema }, ctx.signal);
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report arrives as a message when it finishes; do other work or end your turn.`);
     if (a.status === "waiting") return ok(`Agent ${a.id} is waiting on a scheduled wait and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
     return a.status === "completed" ? ok(agents.reportBlock(a)) : fail(agents.reportBlock(a));
@@ -81,8 +85,8 @@ const SendMessage: Tool = {
     },
     required: ["to", "message"],
   },
-  run: (input, ctx) => guard(() => {
-    const a = agents.send(agents.resolveTarget(ctx.sessionId, String(input.to ?? input.agent_id)).id, String(input.message));
+  run: (input, ctx) => guard(async () => {
+    const a = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.to ?? input.agent_id)).id, String(input.message));
     return ok(`Sent to ${a.id}. Its report arrives as a message.`);
   }),
 };
@@ -113,7 +117,7 @@ const spawn_agent: Tool = {
   description:
     "Spawn a sub-agent for a well-scoped task. Returns the spawned agent id. The agent works in the background in its own session; its final answer arrives as a message when it finishes, or call wait_agent when you are blocked on it. " +
     "Spawn several in one round for independent subtasks with disjoint write scopes. Spawned agents use your current model unless model names another. A sub-agent cannot spawn agents. " +
-    "Agent types: general-purpose (default), Explore (read-only).",
+    "Agent types: general-purpose (default), Explore (read-only). In a git repository an agent that can edit gets its own worktree and branch (isolation: \"none\" shares your checkout); its result names the branch to merge. output_schema makes its final answer one JSON value matching that schema.",
   input_schema: {
     type: "object",
     properties: {
@@ -121,11 +125,13 @@ const spawn_agent: Tool = {
       agent_type: { type: "string", description: "Agent type for the new agent. Omit for general-purpose." },
       fork_context: { type: "boolean", description: "True starts the agent with a copy of this conversation; false or omitted starts it with only the task." },
       model: { type: "string", description: "Model override for the new agent. Omit unless an explicit override is needed." },
+      isolation: { type: "string", enum: ["worktree", "none"], description: "worktree (default for agents that edit, in a git repository) or none (edit this checkout)." },
+      output_schema: { type: "object", description: "JSON schema the agent's final answer must match." },
     },
     required: ["message"],
   },
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema }, ctx.signal);
     return ok(JSON.stringify({ agent_id: a.id, nickname: a.title }));
   }),
 };
@@ -144,8 +150,8 @@ const send_input: Tool = {
     },
     required: ["target", "message"],
   },
-  run: (input, ctx) => guard(() => {
-    const a = agents.send(agents.resolveTarget(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt);
+  run: (input, ctx) => guard(async () => {
+    const a = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt);
     return ok(JSON.stringify({ submission_id: `${a.id}-${Date.now()}` }));
   }),
 };

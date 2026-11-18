@@ -1,11 +1,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, hasPending, inert } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
+import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
+import { Worktrees } from "../worktree/manager.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. One level deep. The child gets
@@ -28,6 +30,9 @@ export type AgentRecord = {
   handback: boolean;
   first_seq: number;
   restarts: number;
+  worktree?: string | null; // the folder of its own git worktree, when it has one
+  branch?: string | null;
+  structured?: boolean; // its result is one JSON value matching the schema it was given
 };
 
 export type AgentDef = {
@@ -39,6 +44,7 @@ export type AgentDef = {
   model?: string;
   timeoutMins?: number;
   permissionMode?: string;
+  isolation?: "worktree" | "none";
   body?: string;
   source: string;
 };
@@ -81,13 +87,21 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS agents_parent ON agents(parent_id);
 CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"]] as const) {
+    if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
+  }
 }
 
-type Row = Omit<AgentRecord, "background" | "handback"> & { background: number; handback: number; def: string | null };
+// Work agents' worktrees: the same records the worktree sessions use, so a
+// child's branch shows in its session header like any worktree session's.
+let wtsCache: Worktrees | undefined;
+const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir, "worktrees")));
+
+type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number };
 const toRec = (r: Row): AgentRecord => {
-  const { def, ...rest } = r;
-  void def;
-  return { ...rest, background: !!r.background, handback: !!r.handback };
+  const { def, output_schema, schema_tries, ...rest } = r;
+  void def; void schema_tries;
+  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema };
 };
 
 export const get = (id: string) => {
@@ -170,6 +184,7 @@ function readDir(dir: string, source: string): AgentDef[] {
         model: fm.meta.model && fm.meta.model !== "inherit" ? String(fm.meta.model) : undefined,
         timeoutMins: fm.meta.timeout_mins ? Number(fm.meta.timeout_mins) : undefined,
         permissionMode: modeName(fm.meta.permission_mode ?? fm.meta.permissionMode),
+        isolation: fm.meta.isolation === "worktree" ? "worktree" : fm.meta.isolation === "none" ? "none" : undefined,
       });
     } catch (e) {
       capture(e, { at: "agent definition", path: p });
@@ -264,7 +279,57 @@ function wake(id: string) {
 
 export type SpawnInput = {
   title?: string; prompt: string; type?: string; model?: string; background?: boolean; fork?: boolean;
+  isolation?: "worktree" | "none"; output_schema?: unknown;
 };
+
+// Several agents started together on a model whose prompt cache the parent has
+// not warmed (another model, or the parent's last call is past the cache's
+// five minutes) would each write the same system prompt and tools to the cache.
+// The first goes; the others start once its first answer is in, and read it.
+const STAGGER_WAIT = 30_000;
+const CACHE_TTL = 4.5 * 60_000;
+const leaders = new Map<string, { started: number; ready: Promise<void>; done: () => void }>();
+
+function warm(parentId: string, model: string): boolean {
+  const evs = D().store.events(parentId);
+  for (let i = evs.length - 1; i >= 0; i--) {
+    const e = evs[i]!;
+    if (e.kind === "assistant") return D().store.session(parentId)?.model === model && Date.now() - e.ts < CACHE_TTL;
+  }
+  return false;
+}
+
+async function stagger(parentId: string, model: string, childId: string, signal?: AbortSignal): Promise<number> {
+  if (warm(parentId, model)) return 0;
+  const key = `${parentId}:${model}`;
+  const lead = leaders.get(key);
+  if (lead && Date.now() - lead.started < STAGGER_WAIT) {
+    const t0 = Date.now();
+    await Promise.race([lead.ready, new Promise((r) => setTimeout(r, STAGGER_WAIT - (Date.now() - lead.started))), new Promise((r) => signal?.addEventListener("abort", r, { once: true }))]);
+    return Date.now() - t0;
+  }
+  let done!: () => void;
+  const ready = new Promise<void>((r) => (done = r));
+  leaders.set(key, { started: Date.now(), ready, done });
+  // The leader's first answer, or its end, lets the others go.
+  const off = D().bus.on((f) => {
+    if (f.t === "event" && f.event.session_id === childId && (f.event.kind === "assistant" || f.event.kind === "error" || f.event.kind === "turn_end")) {
+      off();
+      done();
+      if (leaders.get(key)?.ready === ready) leaders.delete(key);
+    }
+  });
+  return 0;
+}
+
+// The repository a work agent gets its own worktree of, or null to share the
+// parent's folder (a read-only agent, isolation "none", or no repository).
+async function isolate(parent: Session, def: AgentDef, input: SpawnInput, title: string, key: string) {
+  const want = input.isolation ?? def.isolation ?? (def.readOnly ? "none" : "worktree");
+  if (want !== "worktree" || def.readOnly) return null;
+  if (!(await wts().repoOf(parent.workspace))) return null;
+  return wts().create(key, parent.workspace, title);
+}
 
 export async function spawn(parentId: string, input: SpawnInput, signal?: AbortSignal): Promise<AgentRecord> {
   const { store, bus, engine } = D();
@@ -280,11 +345,18 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     await new Promise<void>((r) => slotWaiters.push(r));
     if (signal?.aborted) throw new Error("cancelled");
   }
+  if (input.output_schema !== undefined) {
+    const bad = validSchema(input.output_schema);
+    if (bad) throw new Error(bad);
+  }
   const model = input.fork ? parent.model : await pickModel(parent, input.model ?? def.model);
   await D().providers.resolve(model);
   const title = (input.title || input.prompt.split("\n")[0]!).slice(0, 80);
-  const child = store.createSession({ model, workspace: parent.workspace, title });
+  const id = Bun.randomUUIDv7().slice(-12);
+  const iso = await isolate(parent, def, input, title, id);
+  const child = store.createSession({ model, workspace: iso?.cwd ?? parent.workspace, title });
   store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parentId, child.id);
+  if (iso) wts().adopt(child.id, iso.wt);
   inheritPermissions(parentId, child.id, def);
   bus.emit({ t: "session", session: store.session(child.id)! });
 
@@ -297,14 +369,22 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     for (const e of evs.slice(0, cut)) if (e.kind === "user" || e.kind === "assistant" || e.kind === "tool_result") store.append(child.id, e.kind, e.data);
   }
 
-  const id = Bun.randomUUIDv7().slice(-12);
   const now = Date.now();
+  const schema = input.output_schema === undefined ? null : JSON.stringify(input.output_schema);
   store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
-  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def));
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, output_schema) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
+  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? null, iso?.wt.branch ?? null, schema);
   activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model})`, { agent_id: id, child_session: child.id });
-  const task = [PREAMBLE, def.body, input.fork ? "The conversation above is your parent's, up to the moment it started you." : "", `Task:\n${input.prompt}`]
-    .filter(Boolean).join("\n\n");
+  const task = [
+    PREAMBLE, def.body,
+    input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
+    iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Edit only there and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
+    schema ? `Your final message must be only one JSON value that matches this JSON schema, with no other text:\n${schema}` : "",
+    `Task:\n${input.prompt}`,
+  ].filter(Boolean).join("\n\n");
+  const waited = await stagger(parentId, model, child.id, signal);
+  if (waited) activity.record("agent", "staggered", parentId, `Agent "${title}" started ${Math.round(waited / 100) / 10} s after the first one on ${model}, to read its prompt cache`, { agent_id: id });
+  if (settling.has(id) || get(id)?.status !== "running") return get(id)!; // stopped while it waited
   const ev = engine.send(child.id, task, { meta: { kind: "task", agent_id: id } }).event!;
   const rec = update(id, { first_seq: ev.seq - 1 })!;
   if (input.background === false) {
@@ -375,12 +455,64 @@ export function onTurnEnd(sessionId: string, reason: string) {
     return;
   }
   const status: AgentStatus = stopping.delete(a.id) || reason === "interrupted" ? "stopped" : reason === "error" ? "failed" : "completed";
+  settling.add(a.id);
+  finish(a, status).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id));
+}
+
+const settling = new Set<string>();
+const SCHEMA_TRIES = 2;
+
+// The last round's final message: what a structured report is read from.
+function lastRound(a: AgentRecord): string {
+  const evs = D().store.events(a.session_id, a.first_seq);
+  for (let i = evs.length - 1; i >= 0; i--) {
+    const e = evs[i]!;
+    if (e.kind !== "assistant") continue;
+    const t = (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    if (t) return t;
+  }
+  return "";
+}
+
+async function finish(a: AgentRecord, status: AgentStatus) {
+  let result = collectResult(a);
+  const row = D().store.db.query<{ output_schema: string | null; schema_tries: number }, [string]>("SELECT output_schema, schema_tries FROM agents WHERE id = ?").get(a.id)!;
+  if (row.output_schema && status === "completed") {
+    const text = lastRound(a);
+    const got = extractJson(text);
+    const why = "error" in got ? got.error : checkSchema(JSON.parse(row.output_schema), got.value);
+    if (!why) result = JSON.stringify((got as { value: unknown }).value, null, 2);
+    else if (row.schema_tries < SCHEMA_TRIES) {
+      // One more round to fix the shape; the agent stays live.
+      D().store.db.query("UPDATE agents SET schema_tries = schema_tries + 1 WHERE id = ?").run(a.id);
+      deliver(a.session_id, `[harness] Your report does not match the schema you were given: ${why}. Reply with only the JSON value, nothing else.`, { kind: "harness", agent_id: a.id });
+      return;
+    } else {
+      status = "failed";
+      result = `The report never matched its schema (${why}). Its last answer:\n${text}`;
+    }
+  }
+  if (a.worktree) result += await worktreeNote(a);
   const blocked = !a.background && (waiters.get(a.id)?.length ?? 0) > 0;
-  const rec = update(a.id, { status, ended: Date.now(), result: collectResult(a), handback: !blocked })!;
+  const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked })!;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${status === "completed" ? "reported" : status}`, { agent_id: a.id, child_session: a.session_id });
   wake(a.id);
   if (!blocked) handback(rec);
   slotWaiters.splice(0).forEach((f) => f());
+}
+
+// A worktree with nothing in it goes (its branch too); one with work stays,
+// and the report says where the work is.
+async function worktreeNote(a: AgentRecord): Promise<string> {
+  const w = wts().get(a.session_id);
+  if (!w || w.state !== "active") return "";
+  const st = await wts().status(w);
+  if (st.unknown) return `\n\nWorktree ${w.path} (branch ${w.branch}): git could not read it: ${st.unknown}`;
+  if (!st.dirty && !st.commits_ahead) {
+    await wts().remove(w, false);
+    return "\n\n(The agent changed no files; its worktree was removed.)";
+  }
+  return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${st.commits_ahead} commit${st.commits_ahead === 1 ? "" : "s"} over ${w.base}, ${st.dirty} uncommitted file${st.dirty === 1 ? "" : "s"}. Review and merge it from there (git merge ${w.branch}).`;
 }
 
 export function stop(id: string, why = "stopped by its parent"): AgentRecord | undefined {
@@ -399,11 +531,15 @@ export function stop(id: string, why = "stopped by its parent"): AgentRecord | u
 
 // A message to an agent: steers a running one (after its current turn, or at
 // once with interrupt), or continues a finished one with its context.
-export function send(id: string, message: string, interrupt = false): AgentRecord {
+export async function send(id: string, message: string, interrupt = false): Promise<AgentRecord> {
   const a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
   const { engine, store } = D();
   if (!store.session(a.session_id)) throw new Error("the agent's session is gone");
+  // A finished work agent whose empty worktree went gets a fresh one at the same place.
+  const w = a.worktree ? wts().get(a.session_id) : undefined;
+  const parent = store.session(a.parent_id);
+  if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title)).wt);
   const text = `Message from the session that started you:\n${message}`;
   if (a.status === "running" || a.status === "waiting") {
     if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id);
@@ -439,13 +575,39 @@ export function resolveTarget(parentId: string, target: string): AgentRecord {
 // the cached prefix is shared.
 // The permission gate's read-only mode holds a read-only agent (it knows which
 // commands change nothing); this adds the definition's own tool lists.
-export function gate(sessionId: string, toolName: string): string | undefined {
+export function gate(sessionId: string, toolName: string, input?: any): string | undefined {
   const a = byChild(sessionId);
   if (!a) return undefined;
+  if (a.worktree) {
+    const why = outsideWorktree(a, sessionId, input);
+    if (why) return why;
+  }
   const def = defOf(a.id);
   if (!def) return undefined;
   if (def.tools && !def.tools.some((t) => t.toLowerCase() === toolName.toLowerCase())) return `${toolName} is not in this agent's tools (${def.tools.join(", ")}).`;
   if (def.disallowed?.some((t) => t.toLowerCase() === toolName.toLowerCase())) return `${toolName} is not allowed for this agent.`;
+  return undefined;
+}
+
+// A work agent edits only its own worktree: a file path a tool names inside
+// its parent's checkout is refused (the shell is held by the sandbox, if any).
+function outsideWorktree(a: AgentRecord, sessionId: string, input: any): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const paths: string[] = [];
+  for (const k of ["file_path", "path", "notebook_path", "filePath"]) if (typeof input[k] === "string") paths.push(input[k]);
+  const patch = typeof input.patch === "string" ? input.patch : typeof input.input === "string" ? input.input : "";
+  for (const m of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) paths.push(m[1]!.trim());
+  if (!paths.length) return undefined;
+  const w = wts().get(sessionId);
+  const parent = D().store.session(a.parent_id);
+  const cwd = D().store.session(sessionId)?.workspace ?? a.worktree!;
+  const inside = (p: string, dir: string) => { const r = relative(dir, p); return r === "" || (!r.startsWith("..") && !isAbsolute(r)); };
+  for (const raw of paths) {
+    const p = resolve(cwd, raw);
+    if (inside(p, a.worktree!)) continue;
+    if ((w && inside(p, w.repo_root)) || (parent && inside(p, parent.workspace)))
+      return `This agent works in its own worktree at ${a.worktree}; ${raw} is in the parent's checkout. Edit the same file under ${a.worktree} instead.`;
+  }
   return undefined;
 }
 
