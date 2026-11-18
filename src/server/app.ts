@@ -1,4 +1,3 @@
-import type { ServerWebSocket } from "bun";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
@@ -20,10 +19,10 @@ const bad = (message: string, status = 400) => json({ error: message }, status);
 
 export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }, modules: RouteModule[] = []) {
   const { store, bus, engine, providers, errors } = deps;
-  const sockets = new Set<ServerWebSocket<unknown>>();
+  // Every tab subscribes to one topic; Bun's publish writes a frame to all of
+  // them natively, serialized once.
   bus.on((f) => {
-    const msg = JSON.stringify(f);
-    for (const ws of sockets) ws.send(msg);
+    server.publish("all", JSON.stringify(f));
   });
 
   const session = (id: string) => store.session(id);
@@ -175,8 +174,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     },
 
     websocket: {
-      open(ws) { sockets.add(ws); },
-      close(ws) { sockets.delete(ws); },
+      open(ws) { ws.subscribe("all"); },
       message() {},
     },
   });
