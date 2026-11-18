@@ -203,7 +203,8 @@ export class Worktrees {
   }
 
   // Everything the branch carries over its merge base, uncommitted and untracked work included.
-  async branchDiff(s: Session): Promise<DiffResult & { is_git: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number }> {
+  async branchDiff(s: Session): Promise<DiffResult & { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number }> {
+    if (!existsSync(s.workspace)) return { is_git: true, missing: true, branch: this.get(s.id)?.branch ?? null, base: null, merge_base: null, commits: 0, files: [], diff: "", truncated: false };
     const top = (await git(s.workspace, ["rev-parse", "--show-toplevel"], { ok: true })).trim();
     if (!top) return { is_git: false, branch: null, base: null, merge_base: null, commits: 0, files: [], diff: "", truncated: false };
     const w = this.get(s.id);

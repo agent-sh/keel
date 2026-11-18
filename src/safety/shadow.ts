@@ -41,7 +41,9 @@ export class Shadow {
     delete env.GIT_INDEX_FILE;
     if (opts.index) env.GIT_INDEX_FILE = opts.index;
     const p = Bun.spawn(["git", "-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "core.fsmonitor=false", ...args], {
-      cwd: this.workspace, env, stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : "ignore",
+      // Reads still work while a parked worktree's folder is off disk.
+      cwd: existsSync(this.workspace) ? this.workspace : this.dir, env,
+      stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : "ignore",
       stdout: "pipe", stderr: "pipe", timeout: opts.timeout ?? 60_000, killSignal: "SIGKILL",
     });
     const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);

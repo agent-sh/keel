@@ -1,11 +1,10 @@
 import { AlertDialog } from "@base-ui/react/alert-dialog";
-import { Dialog } from "@base-ui/react/dialog";
 import { Tabs } from "@base-ui/react/tabs";
 import { FileDiff, History, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
+import type { Session } from "../../../src/core/types.ts";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
-import { BranchReview } from "./BranchReview.tsx";
 import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
 
 type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written" };
@@ -13,18 +12,13 @@ type Diff = { files: FileChange[]; diff: string; truncated: boolean; scope: "tre
 type RewindResult = { files: string[]; skipped: string[]; outside: string[]; undo: string | null; scope: string };
 type Pending = { title: string; body: { turn?: number; paths?: string[] }; preview: RewindResult };
 
-// What the session changed: the whole session's diff with a revert per file,
-// and each turn's diff with "rewind to before this turn". Extra tabs (the
-// worktree's branch review) plug in through `extraTabs`.
-export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
-  sessionId: string;
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  extraTabs?: { id: string; label: string; panel: ReactNode }[];
-}) {
+// What the session changed, in the side panel: the whole session's diff with
+// a revert per file, and each turn's diff with "rewind to before this turn".
+export function ChangesPanel({ session }: { session: Session }) {
+  const sessionId = session.id;
   const [turns, setTurns] = useState<Turn[]>([]);
   const [scope, setScope] = useState<{ scope: string; reason: string | null }>({ scope: "tree", reason: null });
-  const [session, setSession] = useState<Diff | null>(null);
+  const [all, setAll] = useState<Diff | null>(null);
   const [turnDiff, setTurnDiff] = useState<Record<number, Diff>>({});
   const [pending, setPending] = useState<Pending | null>(null);
   const [includeOutside, setIncludeOutside] = useState(false);
@@ -39,7 +33,7 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
       setScope({ scope: r.scope, reason: r.reason });
       setTurnDiff({});
       const first = r.turns[0]?.turn;
-      setSession(first === undefined ? { files: [], diff: "", truncated: false, scope: "tree" } : await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?from=${first}`));
+      setAll(first === undefined ? { files: [], diff: "", truncated: false, scope: "tree" } : await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?from=${first}`));
     } catch (e) {
       setErr((e as Error).message);
       reportError(e, { at: "changes load" });
@@ -47,10 +41,11 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
   }, [sessionId]);
 
   useEffect(() => {
-    if (!open) return;
     load();
     return onFeature({ frame: (f) => { if (f.name === "checkpoints" && f.session_id === sessionId) load(); }, reconnect: load });
-  }, [open, load]);
+  }, [load]);
+  // A turn that ends may have changed files.
+  useEffect(() => { if (session.phase === "idle") load(); }, [session.phase]);
 
   const openTurn = async (t: number) => {
     if (turnDiff[t]) return;
@@ -86,27 +81,16 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
   const tabCls = "h-8 rounded-md px-3 text-ui text-muted outline-none hover:text-fg data-[active]:bg-raised data-[active]:text-fg data-[active]:shadow-2 focus-visible:ring-2 focus-visible:ring-accent/30";
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[2px] transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
-        <Dialog.Popup
-          data-testid="changes-panel"
-          className="fixed right-4 top-4 bottom-4 z-50 flex w-[min(68rem,calc(100vw-2rem))] flex-col rounded-2xl border border-line bg-bg shadow-2 transition-[transform,opacity] duration-200 data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0"
-        >
+    <div data-testid="changes-panel" className="flex h-full min-h-0 flex-col">
           <Tabs.Root value={tab} onValueChange={(v) => setTab(String(v))} className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center gap-3 border-b border-line px-4 py-2.5">
-              <Dialog.Title className="font-semibold">Changes</Dialog.Title>
+            <div className="flex items-center gap-3 border-b border-line px-3 py-2">
               <Tabs.List className="flex gap-0.5 rounded-lg bg-panel p-0.5">
                 <Tabs.Tab value="session" className={tabCls} data-testid="tab-session">Session</Tabs.Tab>
                 <Tabs.Tab value="turns" className={tabCls} data-testid="tab-turns">By turn</Tabs.Tab>
-                {extraTabs?.map((t) => <Tabs.Tab key={t.id} value={t.id} className={tabCls} data-testid={`tab-${t.id}`}>{t.label}</Tabs.Tab>)}
               </Tabs.List>
               {scope.scope === "written" && (
                 <span className="truncate text-caption text-warn" title={scope.reason ?? ""}>Only files the tools wrote are tracked: {scope.reason}</span>
               )}
-              <Dialog.Close className="ml-auto grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
-                <X className="size-4" />
-              </Dialog.Close>
             </div>
             {(done || err) && (
               <div className={cn("flex items-center gap-3 border-b border-line px-4 py-2 text-ui", err ? "bg-danger-soft text-danger" : "bg-accent-soft/50")} data-testid="rewind-done">
@@ -124,10 +108,10 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
               </div>
             )}
             <Tabs.Panel value="session" className="min-h-0 flex-1 overflow-y-auto p-4">
-              {session && session.files.length > 0 && firstTurn !== undefined && (
+              {all && all.files.length > 0 && firstTurn !== undefined && (
                 <div className="mb-3 flex items-center gap-2">
                   <span className="text-ui text-muted">
-                    {session.files.length} file{session.files.length === 1 ? "" : "s"} changed since the session's first change
+                    {all.files.length} file{all.files.length === 1 ? "" : "s"} changed since the session's first change
                   </span>
                   <button
                     data-testid="revert-all"
@@ -138,10 +122,10 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
                   </button>
                 </div>
               )}
-              {session && (
+              {all && (
                 <DiffView
-                  files={session.files}
-                  patch={session.diff}
+                  files={all.files}
+                  patch={all.diff}
                   empty="The session has not changed any files yet."
                   actions={(f) => firstTurn !== undefined && <RevertButton onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />}
                 />
@@ -176,9 +160,6 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
                 ))}
               </ol>
             </Tabs.Panel>
-            {extraTabs?.map((t) => (
-              <Tabs.Panel key={t.id} value={t.id} className="min-h-0 flex-1 overflow-y-auto p-4">{t.panel}</Tabs.Panel>
-            ))}
           </Tabs.Root>
           <AlertDialog.Root open={!!pending} onOpenChange={(o) => !o && setPending(null)}>
             <AlertDialog.Portal>
@@ -222,31 +203,6 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
               </AlertDialog.Popup>
             </AlertDialog.Portal>
           </AlertDialog.Root>
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
-
-// The header button that opens the panel; it carries the branch review tab.
-export function ChangesButton({ sessionId }: { sessionId: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button
-        data-testid="open-changes"
-        onClick={() => setOpen(true)}
-        className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg"
-        title="What this session changed"
-      >
-        <FileDiff className="size-3.5" /> <span className="max-sm:hidden">Changes</span>
-      </button>
-      <ChangesPanel
-        sessionId={sessionId}
-        open={open}
-        onOpenChange={setOpen}
-        extraTabs={[{ id: "branch", label: "Branch review", panel: <BranchReview sessionId={sessionId} onSent={() => setOpen(false)} /> }]}
-      />
-    </>
+    </div>
   );
 }

@@ -58,8 +58,7 @@ test("worktree session and branch review", async ({ page, request }) => {
   await page.keyboard.press("Escape");
 
   // Branch review: comment on the new line and send it to the model.
-  await page.getByTestId("open-changes").click();
-  await page.getByTestId("tab-branch").click();
+  await page.getByTestId("panel-toggle-review").click();
   const file = page.getByTestId("branch-review").getByTestId("diff-file").filter({ hasText: "notes.md" });
   await expect(file).toBeVisible();
   const added = file.locator("tr").filter({ hasText: "second line" });
@@ -70,7 +69,7 @@ test("worktree session and branch review", async ({ page, request }) => {
   await expect(page.getByTestId("line-comment")).toHaveText("Say this line in Hebrew instead.");
   await shoot(page, "wt-03-review");
   await page.getByTestId("review-send").click();
-  await expect(page.getByTestId("changes-panel")).toHaveCount(0);
+  await expect(page.getByTestId("line-comment")).toHaveCount(0);
   await expect(page.getByTestId("user-message").last()).toContainText("notes.md:4: Say this line in Hebrew instead.");
   await page.getByTestId("stop").click().catch(() => {});
   await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).running, { timeout: 60_000 }).toBe(false);

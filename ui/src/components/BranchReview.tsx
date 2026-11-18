@@ -1,14 +1,16 @@
 import { GitBranch, MessageSquare, Send, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import type { Session } from "../../../src/core/types.ts";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { DiffView, type Comment, type FileChange } from "./DiffView.tsx";
 
-type Branch = { is_git: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number; files: FileChange[]; diff: string; truncated: boolean };
+type Branch = { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number; files: FileChange[]; diff: string; truncated: boolean };
 
 // Review the session's branch: its diff over the merge base (uncommitted
 // work included), comments on lines, and one message that sends them all
 // to the model.
-export function BranchReview({ sessionId, onSent }: { sessionId: string; onSent?: () => void }) {
+export function BranchReview({ session }: { session: Session }) {
+  const sessionId = session.id;
   const [b, setB] = useState<Branch | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [note, setNote] = useState("");
@@ -16,13 +18,15 @@ export function BranchReview({ sessionId, onSent }: { sessionId: string; onSent?
   const [err, setErr] = useState("");
 
   const load = useCallback(() => api<Branch>(`/api/sessions/${sessionId}/changes/branch`).then(setB).catch((e) => { setErr(e.message); reportError(e); }), [sessionId]);
+  useEffect(() => { if (session.phase === "idle") load(); }, [session.phase]);
   useEffect(() => {
     load();
     return onFeature({ frame: (f) => { if ((f.name === "checkpoints" || f.name === "worktree") && f.session_id === sessionId) load(); } });
   }, [load]);
 
-  if (!b) return <p className="py-10 text-center text-ui text-faint">{err || "Loading…"}</p>;
-  if (!b.is_git) return <p className="py-10 text-center text-ui text-faint">The session's folder is not in a git repository.</p>;
+  if (!b) return <p className="px-3 py-10 text-center text-ui text-faint">{err || "Loading…"}</p>;
+  if (b.missing) return <p className="px-3 py-10 text-center text-ui text-faint">The worktree is parked: its folder is off disk. Restore it from the branch menu in the header.</p>;
+  if (!b.is_git) return <p className="px-3 py-10 text-center text-ui text-faint">The session's folder is not in a git repository.</p>;
 
   const send = async () => {
     setBusy(true);
@@ -31,7 +35,6 @@ export function BranchReview({ sessionId, onSent }: { sessionId: string; onSent?
       await api(`/api/sessions/${sessionId}/review`, { method: "POST", body: JSON.stringify({ comments, note }) });
       setComments([]);
       setNote("");
-      onSent?.();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -40,14 +43,18 @@ export function BranchReview({ sessionId, onSent }: { sessionId: string; onSent?
   };
 
   return (
-    <div className="flex flex-col gap-3" data-testid="branch-review">
-      <div className="flex items-center gap-2 text-ui text-muted">
-        <GitBranch className="size-4 text-faint" />
-        <span className="font-mono text-fg">{b.branch ?? "detached"}</span>
-        {b.base && <span>over <span className="font-mono">{b.base}</span></span>}
-        <span>· {b.commits} commit{b.commits === 1 ? "" : "s"}, {b.files.length} file{b.files.length === 1 ? "" : "s"}</span>
-        {b.truncated && <span className="text-warn">· diff cut at 400 KB</span>}
-        <span className="ml-auto text-caption text-faint">Hover a line number to comment</span>
+    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="branch-review">
+      <div className="flex flex-col gap-0.5 px-1">
+        <div className="flex min-w-0 items-center gap-2 text-ui">
+          <GitBranch className="size-4 shrink-0 text-faint" />
+          <span className="truncate font-mono">{b.branch ?? "detached"}</span>
+        </div>
+        <p className="text-caption text-muted">
+          {b.base && <>over <span className="font-mono">{b.base}</span> · </>}
+          {b.commits} commit{b.commits === 1 ? "" : "s"}, {b.files.length} file{b.files.length === 1 ? "" : "s"}
+          {b.truncated && <span className="text-warn"> · diff cut at 400 KB</span>}
+          <span className="text-faint"> · hover a line number to comment</span>
+        </p>
       </div>
       <DiffView
         files={b.files}

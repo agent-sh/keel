@@ -33,7 +33,7 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\nthree\n");
 
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("open-changes").click();
+  await page.getByTestId("panel-toggle-changes").click();
   const panel = page.getByTestId("changes-panel");
   await expect(panel.getByTestId("diff-file")).toHaveCount(3);
   await expect(panel.locator('[data-path="keep.txt"]')).toContainText("outside");
