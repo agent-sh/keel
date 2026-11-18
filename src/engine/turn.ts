@@ -414,7 +414,7 @@ export class Engine {
       if (!signal.aborted) throw e;
     } finally {
       this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0 });
-      for (const h of allHooks()) await Promise.resolve(h.turnEnd?.(session, reason)).catch((e) => this.errors.capture("server", e, { hook: "turnEnd" }));
+      for (const h of allHooks()) await Promise.resolve(h.turnEnd?.(session, reason)).catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
   }
 
@@ -450,7 +450,7 @@ export class Engine {
       this.errors.capture("tool", e, { tool: u.name, session: ctx.sessionId });
       return { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
     }
-    for (const h of allHooks()) await Promise.resolve(h.afterTool?.(session, call, result)).catch((e) => this.errors.capture("server", e, { hook: "afterTool" }));
+    for (const h of allHooks()) await Promise.resolve(h.afterTool?.(session, call, result)).catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
     return result;
   }
 

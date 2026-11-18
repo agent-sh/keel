@@ -111,9 +111,17 @@ export type Frame =
   // routes it by `name` to the module's own client state.
   | { t: "feature"; name: string; session_id?: string; data: any };
 
+// One kind of failure: `ts` is its last time, `count` how often it happened
+// since `first_ts`; `session_id` and `turn_event` (the turn_start event) are
+// where it last happened; `resolved_ts` is set when the owner marked it fixed.
 export type ErrorRecord = {
   id: string;
   ts: number;
+  first_ts?: number;
+  count?: number;
+  session_id?: string;
+  turn_event?: string;
+  resolved_ts?: number;
   source: "server" | "client" | "provider" | "tool";
   message: string;
   stack?: string;

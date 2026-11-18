@@ -91,6 +91,8 @@ export const actions = {
     const r = await api<{ errors: ErrorRecord[] }>("/api/errors");
     set({ errors: r.errors });
   },
+  resolveError: (id: string, resolved: boolean) => api(`/api/errors/${id}`, { method: "PATCH", body: JSON.stringify({ resolved }) }),
+  resolveAllErrors: () => api("/api/errors/resolve-all", { method: "POST" }),
   async create(text: string, model?: string, workspace?: string, images?: ImageBlock[]): Promise<Session> {
     const r = await api<{ session: Session }>("/api/sessions", { method: "POST", body: JSON.stringify({ text, model, workspace, images }) });
     set({ sessions: { ...state.sessions, [r.session.id]: r.session } });
@@ -189,7 +191,8 @@ function apply(f: Frame) {
     const drafts = f.status.kind === "retry" ? { ...state.drafts, [f.session_id]: {} } : state.drafts;
     set({ status: { ...state.status, [f.session_id]: f.status }, drafts });
   } else if (f.t === "error") {
-    set({ errors: [f.error, ...state.errors].slice(0, 200) });
+    // A repeat or a resolve updates the kind's row; the latest goes on top.
+    set({ errors: [f.error, ...state.errors.filter((e) => e.id !== f.error.id)].slice(0, 200) });
   } else if (f.t === "feature") {
     for (const l of features) l.frame?.(f);
   }

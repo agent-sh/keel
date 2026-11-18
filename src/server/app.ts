@@ -144,16 +144,6 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         }),
       },
 
-      "/api/errors": {
-        GET: wrap(() => json({ errors: store.errors() })),
-        POST: wrap(async (req) => {
-          const b = (await req.json()) as any;
-          const err = Object.assign(new Error(String(b.message ?? "client error").slice(0, 2000)), { stack: b.stack });
-          errors.capture("client", err, b.context);
-          return json({ ok: true }, 201);
-        }),
-      },
-
       "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
       ...Object.fromEntries(
         modules.flatMap((m) => Object.entries(m(deps))).map(([path, methods]) => [

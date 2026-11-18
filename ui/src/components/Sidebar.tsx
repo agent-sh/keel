@@ -83,7 +83,7 @@ function Group({ list, current }: { list: Session[]; current: string | null }) {
 
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
-  const errors = useStore((s) => s.errors.length);
+  const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts).length);
   const connected = useStore((s) => s.connected);
   const route = useUI((s) => s.route);
   const theme = useUI((s) => s.theme);
@@ -191,7 +191,7 @@ export function Sidebar() {
           type="button"
           data-testid="errors-button"
           onClick={() => setUI({ errors: true })}
-          title={errors ? `${errors} recorded failures` : "No failures recorded"}
+          title={errors ? `${errors} open failures` : "No failures recorded"}
           className={cn("flex h-8 items-center gap-1.5 rounded-md px-2 text-ui hover:bg-hover", errors ? "text-danger" : "text-faint hover:text-fg")}
         >
           <Bug className="size-4" /> {errors ? errors : ""}

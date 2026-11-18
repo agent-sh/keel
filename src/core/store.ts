@@ -62,6 +62,32 @@ function rowToSession(r: SessionRow): Session {
   };
 }
 
+// Numbers, hex ids and quoted paths vary between repeats of one failure.
+export function fingerprint(message: string): string {
+  return message
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<id>")
+    .replace(/\b[0-9a-f]{12,}\b/gi, "<hex>")
+    .replace(/\d+(\.\d+)?/g, "<n>")
+    .slice(0, 300);
+}
+
+// The session an error belongs to, from what its catcher put in the context.
+function sessionOf(ctx: any): string | undefined {
+  if (!ctx || typeof ctx !== "object") return undefined;
+  const v = ctx.session ?? ctx.session_id ?? ctx.sessionId;
+  if (typeof v === "string") return v;
+  const m = typeof ctx.url === "string" ? /^\/s\/([^/?#]+)/.exec(ctx.url) : null;
+  return m?.[1];
+}
+
+function errorRow(r: any): ErrorRecord {
+  return {
+    id: r.id, ts: r.ts, first_ts: r.first_ts ?? r.ts, count: r.count ?? 1, source: r.source, message: r.message,
+    stack: r.stack ?? undefined, context: r.context ? JSON.parse(r.context) : undefined,
+    session_id: r.session_id ?? undefined, turn_event: r.turn_event ?? undefined, resolved_ts: r.resolved_ts ?? undefined,
+  };
+}
+
 export class Store {
   readonly db: Database;
 
@@ -78,6 +104,10 @@ export class Store {
       this.db.exec(`UPDATE sessions SET head = (SELECT id FROM events WHERE session_id = sessions.id ORDER BY seq DESC LIMIT 1)`);
     }
     if (!this.columnExists("sessions", "settings")) this.db.exec("ALTER TABLE sessions ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
+    for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"]] as const) {
+      if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS errors_fp ON errors(fingerprint)");
     // Sessions left "working" by a crash or restart are idle now: no turn runs.
     this.db.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
   }
@@ -214,19 +244,46 @@ export class Store {
     this.db.query("DELETE FROM queue WHERE id = ?").run(id);
   }
 
+  // One row per kind of failure: the same source and message (numbers and ids
+  // folded) bumps the row's count and time instead of adding one. A resolved
+  // row that happens again opens again.
   recordError(e: Omit<ErrorRecord, "id" | "ts">): ErrorRecord {
-    const rec: ErrorRecord = { id: Bun.randomUUIDv7(), ts: Date.now(), ...e };
+    const ts = Date.now();
+    const fp = `${e.source}\u0000${fingerprint(e.message)}`;
+    const session_id = e.session_id ?? sessionOf(e.context);
+    const live = session_id ? this.session(session_id) : undefined;
+    const turn = live
+      ? this.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(live.id)
+      : null;
+    const sid = live ? live.id : null;
+    const ctx = e.context ? JSON.stringify(e.context) : null;
+    const row = this.db.query<{ id: string }, [string]>("SELECT id FROM errors WHERE fingerprint = ?").get(fp);
+    if (row) {
+      this.db
+        .query("UPDATE errors SET ts = ?, count = count + 1, message = ?, stack = ?, context = ?, session_id = COALESCE(?, session_id), turn_event = CASE WHEN ? IS NULL THEN turn_event ELSE ? END, resolved_ts = NULL WHERE id = ?")
+        .run(ts, e.message, e.stack ?? null, ctx, sid, sid, turn?.id ?? null, row.id);
+      return this.error(row.id)!;
+    }
+    const id = Bun.randomUUIDv7();
     this.db
-      .query("INSERT INTO errors (id, ts, source, message, stack, context) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(rec.id, rec.ts, rec.source, rec.message, rec.stack ?? null, rec.context ? JSON.stringify(rec.context) : null);
-    return rec;
+      .query("INSERT INTO errors (id, ts, first_ts, source, message, stack, context, fingerprint, session_id, turn_event) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, ts, ts, e.source, e.message, e.stack ?? null, ctx, fp, sid, turn?.id ?? null);
+    return this.error(id)!;
   }
 
-  errors(limit = 200): ErrorRecord[] {
-    return this.db
-      .query<any, [number]>("SELECT * FROM errors ORDER BY ts DESC LIMIT ?")
-      .all(limit)
-      .map((r) => ({ ...r, stack: r.stack ?? undefined, context: r.context ? JSON.parse(r.context) : undefined }));
+  error(id: string): ErrorRecord | undefined {
+    const r = this.db.query<any, [string]>("SELECT * FROM errors WHERE id = ?").get(id);
+    return r ? errorRow(r) : undefined;
+  }
+
+  errors(limit = 200, opts: { resolved?: boolean } = {}): ErrorRecord[] {
+    const where = opts.resolved === undefined ? "" : opts.resolved ? "WHERE resolved_ts IS NOT NULL" : "WHERE resolved_ts IS NULL";
+    return this.db.query<any, [number]>(`SELECT * FROM errors ${where} ORDER BY ts DESC LIMIT ?`).all(limit).map(errorRow);
+  }
+
+  resolveError(id: string, resolved: boolean): ErrorRecord | undefined {
+    this.db.query("UPDATE errors SET resolved_ts = ? WHERE id = ?").run(resolved ? Date.now() : null, id);
+    return this.error(id);
   }
 
   addUsage(id: string, u: Usage) {
