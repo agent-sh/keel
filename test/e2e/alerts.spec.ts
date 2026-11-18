@@ -11,7 +11,10 @@ const NOTIFY_LOG = process.env.KEEL_NOTIFY_LOG ?? `${process.env.HOME}/.cache/ke
 test("alerts: inbox, unread, command hook, routes", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   await request.post("/api/alerts/read", { data: {} });
-  const logBefore = existsSync(NOTIFY_LOG) ? readFileSync(NOTIFY_LOG, "utf8").split("\n").length : 0;
+  const lineCount = () => (existsSync(NOTIFY_LOG) ? readFileSync(NOTIFY_LOG, "utf8").trim().split("\n").filter(Boolean).length : 0);
+  const logBefore = lineCount();
+  // The command hook is checked only on a daemon started with KEEL_NOTIFY_COMMAND.
+  const hooked = (await (await request.get("/api/alerts/settings")).json()).channels.some((c: any) => c.id === "command" && c.available);
 
   await page.goto("/");
   await expect(page.getByTestId("new-composer")).toBeVisible();
@@ -22,9 +25,9 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await expect(row.getByTestId("unread-dot")).toBeVisible();
   await shoot(page, "alerts-01-unread");
 
-  if (existsSync(NOTIFY_LOG)) {
+  if (hooked && existsSync(NOTIFY_LOG)) {
+    await expect.poll(lineCount).toBeGreaterThan(logBefore);
     const lines = readFileSync(NOTIFY_LOG, "utf8").trim().split("\n");
-    expect(lines.length).toBeGreaterThanOrEqual(logBefore);
     const last = JSON.parse(lines.at(-1)!);
     expect(last).toMatchObject({ kind: "finished", session_id: session.id });
   }
