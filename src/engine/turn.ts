@@ -74,7 +74,7 @@ export function toMessages(events: StoredEvent[]): Message[] {
   return merged;
 }
 
-function instructionFiles(cwd: string): string {
+export function instructionFiles(cwd: string): string {
   const parts: string[] = [];
   let dir = cwd;
   const seen = new Set<string>();
@@ -447,7 +447,8 @@ export class Engine {
         if (g.input !== undefined) call.input = g.input;
         if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
       }
-      const run = tool.run(call.input, call.ctx);
+      // A dispatch set by a hook runs the call elsewhere (another machine's hands).
+      const run = call.ctx.dispatch ? call.ctx.dispatch(tool, call.input, call.ctx) : tool.run(call.input, call.ctx);
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);

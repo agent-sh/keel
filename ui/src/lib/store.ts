@@ -4,6 +4,7 @@
 import { useSyncExternalStore } from "react";
 import type { ErrorRecord, Frame, ImageBlock, QueueItem, Session, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
+import { apiPath, localize, splitId } from "./fleet-ids.ts";
 
 export type ProvidersReport = {
   providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number } })[];
@@ -55,7 +56,7 @@ export function useStore<T>(sel: (s: State) => T): T {
 export const getState = () => state;
 
 export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
+  const r = await fetch(apiPath(path), { ...init, headers: { "content-type": "application/json", ...init?.headers } });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
   return body as T;
@@ -64,7 +65,9 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
 export const actions = {
   async loadSessions() {
     const { sessions } = await api<{ sessions: Session[] }>("/api/sessions");
-    set({ sessions: Object.fromEntries(sessions.map((s) => [s.id, s])) });
+    // Sessions of other machines (the fleet module keeps them) stay.
+    const remote = Object.entries(state.sessions).filter(([id]) => splitId(id));
+    set({ sessions: Object.fromEntries([...remote, ...sessions.map((s) => [s.id, s] as const)]) });
   },
   async loadModels(refresh = false) {
     const r = await api<{ models: ListedModel[]; default: string; pinned: string[]; providers: { id: string; label: string }[] }>(`/api/models${refresh ? "?refresh" : ""}`);
@@ -100,9 +103,10 @@ export const actions = {
   grokSignInState: () => api<any>("/api/providers/grok/sign-in"),
   async loadSession(id: string) {
     const r = await api<{ session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean }>(`/api/sessions/${id}`);
+    const loc = localize(id, r.session, r.events);
     set({
-      sessions: { ...state.sessions, [id]: r.session },
-      events: { ...state.events, [id]: r.events },
+      sessions: { ...state.sessions, [id]: loc.session },
+      events: { ...state.events, [id]: loc.events! },
       queues: { ...state.queues, [id]: { queue: r.queue, held: r.held } },
     });
   },
@@ -188,7 +192,7 @@ export type ContextInfo = {
 };
 
 
-function apply(f: Frame) {
+export function apply(f: Frame) {
   if (f.t === "session") {
     const s = f.session;
     if (!state.sessions[s.id] && s.archived) return;

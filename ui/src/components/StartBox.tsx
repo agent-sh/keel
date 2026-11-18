@@ -7,6 +7,8 @@ import { Composer } from "./Composer.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { MachinePicker, useNewMachine } from "./Fleet.tsx";
+import { fleet } from "../lib/fleet.ts";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
 
 const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
@@ -22,6 +24,7 @@ export function StartBox() {
   const workspace = chosen || fallback;
   const model = newModel || defaultModel;
   const inWorktree = useStartInWorktree();
+  const machine = useNewMachine();
   const recent = useMemo(
     () => Object.values(sessions).filter((s) => !s.archived && s.workspace === workspace).sort((a, b) => b.updated - a.updated).slice(0, 4),
     [sessions, workspace],
@@ -33,10 +36,11 @@ export function StartBox() {
       <div className="flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
         <div className="mt-auto w-full max-w-[46rem] pb-[8vh] pt-6 md:mb-auto md:mt-[18vh] md:pb-0 md:pt-0">
           <h1 className="mb-1.5 text-display font-semibold tracking-[-0.025em] text-fg">What should we work on?</h1>
-          <p className="mb-6 text-base text-muted">Keel works in the folder below. Paste screenshots, mention files with @, and steer while it runs.</p>
+          <p className="mb-6 text-base text-muted">Keel works in the folder below{machine ? ", on the machine you picked" : ""}. Paste screenshots, mention files with @, and steer while it runs.</p>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
-            <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />
-            <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>
+            <MachinePicker />
+            {!machine && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
+            {!machine && <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>}
           </div>
           <div data-testid="new-composer">
             <Composer
@@ -45,7 +49,9 @@ export function StartBox() {
               workspace={workspace}
               autoFocus
               onSend={async (t, images) => {
-                const s = inWorktree && (await isGitFolder(workspace))
+                const s = machine
+                  ? await fleet.createOn(machine, t, model || undefined, images)
+                  : inWorktree && (await isGitFolder(workspace))
                   ? await createInWorktree(t, model || undefined, workspace || undefined, images)
                   : await actions.create(t, model || undefined, workspace || undefined, images);
                 navigate({ name: "session", id: s.id });

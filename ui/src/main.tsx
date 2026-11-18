@@ -5,6 +5,7 @@ import "./features/safety.tsx";
 import "./features/drive.tsx";
 import "./lib/turns.ts";
 import "./components/automation/register.tsx";
+import "./features/fleet.tsx";
 
 // Install metadata. Added here, not in index.html, because the bundler tries
 // to resolve every link in the page as a file to bundle.

@@ -87,6 +87,8 @@ export type Session = {
   head: string | null;
   settings: SessionSettings;
   parent_id?: string | null; // a subagent's session names the session that spawned it
+  // The fleet machine its tools run on (absent: this daemon's machine).
+  machine?: string | null;
 };
 
 // Per-session turn settings. Values come from the model's listing (efforts) or

@@ -15,6 +15,9 @@ export type ToolContext = {
   wrapSpawn?: (argv: string[]) => string[];
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
+  // Set by a beforeTool hook: runs the call somewhere else (the session's
+  // machine) instead of tool.run here.
+  dispatch?: (tool: Tool, input: any, ctx: ToolContext) => Promise<ToolOutput>;
 };
 
 export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_error?: boolean };

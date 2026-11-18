@@ -1,6 +1,7 @@
-import { Archive, ArchiveRestore, Bug, Folder, Moon, PanelLeftClose, Plus, Search, Settings, Sun, SunMoon } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Folder, Server, Moon, PanelLeftClose, Plus, Search, Settings, Sun, SunMoon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
+import { machineColour, machineName, useFleet } from "../lib/fleet.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
@@ -11,12 +12,16 @@ import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/S
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
-// Sessions grouped by folder, the folder with the newest work first.
+// Sessions grouped by folder (and machine, for another machine's), the folder
+// with the newest work first.
 function groups(sessions: Session[]) {
   const by = new Map<string, Session[]>();
-  for (const s of sessions) (by.get(s.workspace) ?? by.set(s.workspace, []).get(s.workspace)!).push(s);
+  for (const s of sessions) {
+    const k = `${s.machine ?? ""}\u0000${s.workspace}`;
+    (by.get(k) ?? by.set(k, []).get(k)!).push(s);
+  }
   return [...by.entries()]
-    .map(([ws, list]) => ({ ws, list: list.sort((a, b) => b.updated - a.updated) }))
+    .map(([k, list]) => ({ key: k, ws: list[0]!.workspace, machine: list[0]!.machine ?? undefined, list: list.sort((a, b) => b.updated - a.updated) }))
     .sort((a, b) => b.list[0]!.updated - a.list[0]!.updated);
 }
 
@@ -94,6 +99,7 @@ export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
   const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts).length);
   const connected = useStore((s) => s.connected);
+  useFleet((s) => s.machines.length); // machine names in the group heads
   const route = useUI((s) => s.route);
   const theme = useUI((s) => s.theme);
   const current = route.name === "session" ? route.id : null;
@@ -174,10 +180,11 @@ export function Sidebar() {
           </p>
         )}
         {grouped.map((g) => (
-          <section key={g.ws} className="mt-3 first:mt-1">
-            <h2 className="flex h-7 items-center gap-1.5 px-2.5 text-caption font-medium text-faint" title={g.ws}>
-              <Folder className="size-3.5" />
+          <section key={g.key} className="mt-3 first:mt-1" data-machine={g.machine}>
+            <h2 className="flex h-7 items-center gap-1.5 px-2.5 text-caption font-medium text-faint" title={g.machine ? `${g.ws} on ${machineName(g.machine)}` : g.ws}>
+              {g.machine ? <Server className="size-3.5" style={machineColour(g.machine) ? { color: machineColour(g.machine) } : undefined} /> : <Folder className="size-3.5" />}
               <span className="truncate">{base(g.ws)}</span>
+              {g.machine && <span className="ml-auto shrink-0 rounded-full bg-sunken px-1.5 py-px text-micro font-normal text-muted" data-testid="group-machine">{machineName(g.machine)}</span>}
             </h2>
             <Group list={g.list} current={current} />
           </section>

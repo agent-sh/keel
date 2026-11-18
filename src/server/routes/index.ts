@@ -4,6 +4,7 @@ import { checkpointRoutes } from "./checkpoints.ts";
 import { errorRoutes } from "./errors.ts";
 import { telemetryRoutes } from "./telemetry.ts";
 import { driveRoutes } from "./drive.ts";
+import { fleetRoutes } from "./fleet.ts";
 import { mcpRoutes } from "./mcp.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { providersRoutes } from "./providers.ts";
@@ -35,5 +36,6 @@ export const routeModules: RouteModule[] = [
   automationRoutes,
   integrationRoutes,
   driveRoutes,
+  fleetRoutes, // after the gates: sends a placed session's workspace calls to their machine
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

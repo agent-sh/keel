@@ -11,6 +11,7 @@ import {
   patchFiles, planItems, questions, resultImages, resultText, shellBody, shellStatus, shortPath, stripAnsi, toolKind,
   type PlanItem, type ToolKind,
 } from "../lib/tools.ts";
+import { MachineBadge } from "./Fleet.tsx";
 import { cn } from "../lib/utils.ts";
 import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 
@@ -67,10 +68,10 @@ export function ToolCall({ use, result, live, sessionId, cwd, waiting }: Props) 
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return <QuestionCard use={use} result={result} sessionId={sessionId} waiting={waiting} />;
   if (kind === "plan" && !live) return <PlanCard items={planItems(use.name, input)} explanation={input.explanation} />;
-  return <GenericCall use={use} result={result} live={live} cwd={cwd} kind={kind} input={input} />;
+  return <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} />;
 }
 
-function GenericCall({ use, result, live, cwd, kind, input }: Props & { kind: ToolKind; input: any }) {
+function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props & { kind: ToolKind; input: any }) {
   const Icon = ICONS[kind];
   const out = resultText(result);
   const images = resultImages(result);
@@ -88,6 +89,7 @@ function GenericCall({ use, result, live, cwd, kind, input }: Props & { kind: To
         <span className="shrink-0 font-medium">{LABEL[kind] ?? use.name}</span>
         <span className={cn("min-w-0 truncate text-muted", kind === "shell" && input.description ? "text-ui" : "font-mono text-caption")}>{summary(kind, use.name, input, cwd)}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-micro tabular-nums">
+          <MachineBadge sessionId={sessionId} callId={use.id} />
           {diff && (diff.added > 0 || diff.removed > 0) && (
             <span className="font-mono"><span className="text-ok">+{diff.added}</span> <span className="text-danger">-{diff.removed}</span></span>
           )}

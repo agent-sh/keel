@@ -9,6 +9,7 @@ import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { BackgroundButton } from "./automation/BackgroundPopover.tsx";
 import { PanelToggles } from "./SidePanel.tsx";
+import { MachineChip } from "./Fleet.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
 
 // Popovers of the header load after the page (their Base UI parts are large).
@@ -87,6 +88,7 @@ export function SessionHeader({ session }: { session: Session }) {
       >
         {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">${u.cost.toFixed(u.cost < 1 ? 4 : 2)}</span> : null}
       </span>}
+      <MachineChip session={session} />
       <BackgroundButton sessionId={session.id} />
       <Suspense fallback={null}><WorktreeChip session={session} /></Suspense>
       <PanelToggles session={session} />
