@@ -28,10 +28,11 @@ const fullTime = (t: number) =>
   new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 export function TimeChart({
-  data, series, bucket, since, until, kind = "line", format, max, height = 180, label,
+  data, series, bucket, since, until, kind = "line", format, max, height = 180, label, unit = 1,
 }: {
   data: Point[]; series: Series[]; bucket: number; since: number; until: number;
   kind?: "line" | "bars"; format: (v: number) => string; max?: number; height?: number; label: string;
+  unit?: number; // ticks step in round multiples of this (1024 * 1024 for MB)
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
@@ -51,7 +52,7 @@ export function TimeChart({
   const x = (t: number) => PAD.left + ((t - t0) / (t1 - t0)) * iw;
   const slot = (bucket / (t1 - t0)) * iw;
   const top = (p: Point) => (kind === "bars" ? p.values.reduce<number>((n, v) => n + (v ?? 0), 0) : Math.max(0, ...p.values.map((v) => v ?? 0)));
-  const step = max ? max / 4 : niceStep(Math.max(0, ...data.map(top)));
+  const step = max ? max / 4 : niceStep(Math.max(0, ...data.map(top)) / unit) * unit;
   const yMax = max ?? Math.max(step, Math.ceil(Math.max(0, ...data.map(top)) / step) * step);
   const y = (v: number) => PAD.top + ih - (v / yMax) * ih;
   const ticks = Array.from({ length: Math.round(yMax / step) + 1 }, (_, i) => i * step);

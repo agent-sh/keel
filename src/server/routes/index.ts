@@ -5,6 +5,7 @@ import { errorRoutes } from "./errors.ts";
 import { telemetryRoutes } from "./telemetry.ts";
 import { driveRoutes } from "./drive.ts";
 import { fleetRoutes } from "./fleet.ts";
+import { resourceRoutes } from "./resources.ts";
 import { mcpRoutes } from "./mcp.ts";
 import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
@@ -34,6 +35,7 @@ export const routeModules: RouteModule[] = [
   switchRoutes,
   usageRoutes,
   errorRoutes,
+  resourceRoutes,
   automationRoutes,
   integrationRoutes,
   driveRoutes,

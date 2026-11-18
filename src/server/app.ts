@@ -1,11 +1,12 @@
 import type { ServerWebSocket } from "bun";
-import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, rmSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
+import { jobsOf, running, stopJob } from "../tools/jobs.ts";
 import index from "../../ui/index.html";
 
 // A feature module adds its routes here instead of editing this file.
@@ -113,6 +114,9 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           await engine.interrupt(s.id);
+          // Its commands and the files its tools spilled go with it.
+          await Promise.all(jobsOf(s.id).filter(running).map((j) => stopJob(j, "was stopped: its session was deleted")));
+          rmSync(join(store.stateDir, "spill", s.id), { recursive: true, force: true });
           store.deleteSession(s.id);
           bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle", title: s.title } });
           return json({ ok: true });
