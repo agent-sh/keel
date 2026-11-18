@@ -1,0 +1,68 @@
+// OS confinement for shell commands: bubblewrap with a workspace-write or a
+// read-only profile, the network on or off, inside a systemd user scope that
+// runs at a lower CPU and IO weight (and a memory cap when one is set). When
+// bwrap is missing or cannot start, sandboxing is unavailable and says why;
+// a session never believes it is confined when it is not.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import type { SessionPerm } from "./gate.ts";
+
+export type SandboxStatus = { available: boolean; reason?: string; bwrap?: string; scope: boolean; scopeReason?: string };
+
+let status: SandboxStatus | undefined;
+
+export function sandboxStatus(): SandboxStatus {
+  if (status) return status;
+  const bwrap = Bun.which("bwrap");
+  let available = false;
+  let reason: string | undefined;
+  if (!bwrap) reason = "bubblewrap (bwrap) is not installed; install it from the distribution's package to sandbox commands";
+  else {
+    const r = Bun.spawnSync([bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "true"], { stdout: "ignore", stderr: "pipe" });
+    available = r.success;
+    if (!available) reason = `bwrap cannot start a sandbox here: ${r.stderr.toString().trim().slice(0, 300) || `exit ${r.exitCode}`} (on Ubuntu, load the bwrap-userns-restrict AppArmor profile)`;
+  }
+  const sr = Bun.which("systemd-run");
+  let scope = false;
+  let scopeReason: string | undefined;
+  if (!sr) scopeReason = "systemd-run is not installed";
+  else {
+    const r = Bun.spawnSync([sr, "--user", "--scope", "--quiet", "--collect", "true"], { stdout: "ignore", stderr: "pipe" });
+    scope = r.success;
+    if (!scope) scopeReason = `no systemd user manager: ${r.stderr.toString().trim().slice(0, 200)}`;
+  }
+  status = { available, reason, bwrap: bwrap ?? undefined, scope, scopeReason };
+  return status;
+}
+
+// Resource limits of the scope. The lower weights let the desktop and the
+// daemon win under contention without slowing an idle machine; a memory cap
+// only when the owner sets one.
+function scopeProps(): string[] {
+  const p = ["-p", `CPUWeight=${process.env.KEEL_SANDBOX_CPU_WEIGHT ?? "50"}`, "-p", `IOWeight=${process.env.KEEL_SANDBOX_IO_WEIGHT ?? "50"}`];
+  if (process.env.KEEL_SANDBOX_MEMORY_MAX) p.push("-p", `MemoryMax=${process.env.KEEL_SANDBOX_MEMORY_MAX}`);
+  if (process.env.KEEL_SANDBOX_TASKS_MAX) p.push("-p", `TasksMax=${process.env.KEEL_SANDBOX_TASKS_MAX}`);
+  return p;
+}
+
+// The argv that runs `argv` confined by the session's profile.
+export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string): string[] {
+  const st = sandboxStatus();
+  if (perm.sandbox === "off" || !st.available) return argv;
+  const b = [st.bwrap!, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc",
+    "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
+  if (!perm.network) b.push("--unshare-net");
+  if (perm.sandbox === "workspace-write") {
+    b.push("--bind", workspace, workspace);
+    const tmp = process.env.TMPDIR;
+    if (tmp && existsSync(tmp) && !tmp.startsWith("/tmp")) b.push("--bind", tmp, tmp);
+    // The repository's hooks and config run code outside the sandbox later
+    // (core.hooksPath, core.fsmonitor): they stay read-only. Commits still work.
+    for (const p of [".git/hooks", ".git/config"]) {
+      const full = join(workspace, p);
+      if (existsSync(full)) b.push("--ro-bind", full, full);
+    }
+  }
+  b.push("--", ...argv);
+  return st.scope ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", ...scopeProps(), "--", ...b] : b;
+}

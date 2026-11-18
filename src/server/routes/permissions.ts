@@ -3,6 +3,7 @@
 import { registerHooks } from "../../engine/hooks.ts";
 import { Gate, type SandboxProfile } from "../../safety/gate.ts";
 import { isMode, MODES } from "../../safety/policy.ts";
+import { confine, sandboxStatus } from "../../safety/sandbox.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -13,11 +14,21 @@ export let gate: Gate | undefined;
 
 export const permissionRoutes: RouteModule = (deps: Deps) => {
   const { store } = deps;
-  const g = (gate = new Gate(store, deps.bus));
-  registerHooks({ beforeTool: (s, call) => g.check(s, call) });
+  const g = (gate = new Gate(store, deps.bus, (_s, p) => p.sandbox !== "off" && sandboxStatus().available));
+  const sb = sandboxStatus();
+  if (!sb.available && g.defaultSandbox() !== "off") deps.errors.capture("server", new Error(`sandbox unavailable: ${sb.reason}`), { at: "startup" });
+  registerHooks({
+    // The gate first; a call it lets through runs confined when the session's sandbox is on.
+    async beforeTool(s, call) {
+      const refused = await g.check(s, call);
+      if (refused) return refused;
+      const p = g.perm(s.id);
+      if (p.sandbox !== "off" && sb.available) return { ctx: { wrapSpawn: (argv) => confine(argv, p, s.workspace) } };
+    },
+  });
 
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
-  const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), modes: MODES });
+  const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), modes: MODES, sandbox: sandboxStatus() });
 
   return {
     "/api/permissions/settings": {
@@ -46,6 +57,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         const b = await body(req);
         if (b.mode !== undefined && !isMode(b.mode)) return bad(`unknown mode: ${b.mode}`);
         if (b.sandbox !== undefined && !PROFILES.includes(b.sandbox)) return bad(`unknown sandbox profile: ${b.sandbox}`);
+        if (b.sandbox && b.sandbox !== "off" && !sandboxStatus().available) return bad(`the sandbox is unavailable: ${sandboxStatus().reason}`, 409);
         const patch: any = {};
         if (b.mode !== undefined) patch.mode = b.mode;
         if (b.sandbox !== undefined) patch.sandbox = b.sandbox;
