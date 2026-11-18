@@ -53,3 +53,10 @@ export async function createInWorktree(text: string, model?: string, workspace?:
   changed();
   return r.session;
 }
+
+// Move a session between its main checkout and a worktree (its uncommitted work goes with it).
+export async function handoff(id: string, to: "worktree" | "main") {
+  const r = await api<{ moved: number; branch?: string }>(`/api/sessions/${id}/handoff`, { method: "POST", body: JSON.stringify({ to }) });
+  await loadWorktree(id);
+  return r;
+}

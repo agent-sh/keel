@@ -28,6 +28,10 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
     return { s, w };
   };
   const emit = (id: string) => bus.emit({ t: "feature", name: "worktree", session_id: id, data: { changed: true } });
+  const keep = () => { const n = Number(store.db.query<{ value: string }, []>("SELECT value FROM perm_settings WHERE key = 'worktree_keep'").get()?.value ?? process.env.KEEL_WORKTREE_KEEP ?? 15); return Number.isFinite(n) && n >= 0 ? n : 15; };
+  // Retention runs at start and after each new worktree; failures are captured, never fatal.
+  const sweep = () => wts.prune(keep(), (id) => engine.isRunning(id)).then((r) => { for (const id of r.removed) emit(id); return r; });
+  sweep().catch((e) => deps.errors.capture("server", e, { at: "worktree prune" }));
 
   return {
     "/api/worktrees": {
@@ -45,6 +49,7 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         try {
           const { wt, cwd } = await wts.create(s.id, workspace, title, b.base);
           wts.adopt(s.id, wt);
+          sweep().catch((e) => deps.errors.capture("server", e, { at: "worktree prune" }));
           const next = store.updateSession(s.id, { workspace: cwd });
           bus.emit({ t: "session", session: next });
           if (b.text) engine.send(s.id, b.text, b.images ?? []);
@@ -60,6 +65,53 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         const dir = new URL(req.url).searchParams.get("workspace") || deps.workspace;
         const repo = existsSync(dir) ? await wts.repoOf(dir) : null;
         return json({ git: !!repo, root: repo?.root ?? null });
+      }),
+    },
+    "/api/worktrees/prune": {
+      POST: (req: any) => guard(async () => {
+        const b = await body(req);
+        const n = b.keep === undefined ? keep() : Math.floor(Number(b.keep));
+        if (!(n >= 0)) return bad("keep is a number of worktrees, 0 or more");
+        return json(await wts.prune(n, (id) => engine.isRunning(id)));
+      }),
+    },
+    "/api/worktrees/settings": {
+      GET: () => json({ keep: keep() }),
+      PUT: async (req: any) => {
+        const b = await body(req);
+        const n = Math.floor(Number(b.keep));
+        if (!(n >= 0 && n <= 1000)) return bad("keep is a number from 0 to 1000");
+        store.db.query("INSERT INTO perm_settings (key, value) VALUES ('worktree_keep', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(n));
+        return json({ keep: keep() });
+      },
+    },
+    // Move the session between its main checkout and a worktree, with its uncommitted work.
+    "/api/sessions/:id/handoff": {
+      POST: (req: any) => guard(async () => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (engine.isRunning(s.id)) return bad("a turn is running; stop it first", 409);
+        const b = await body(req);
+        const w = wts.get(s.id);
+        if (b.to === "worktree") {
+          const r = await wts.toWorktree(s);
+          wts.adopt(s.id, r.wt);
+          const next = store.updateSession(s.id, { workspace: r.cwd });
+          bus.emit({ t: "session", session: next });
+          bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "handoff", text: `Moved to a worktree on branch ${r.wt.branch}${r.moved ? `, with ${r.moved} changed file${r.moved === 1 ? "" : "s"}` : ""}. The main checkout is back at its last commit.` }) });
+          emit(s.id);
+          return json({ session: next, worktree: await wts.status(wts.get(s.id)!), moved: r.moved });
+        }
+        if (b.to === "main") {
+          if (!w || w.state !== "active") return bad("the session has no active worktree");
+          const r = await wts.toMain(w, s);
+          const next = store.updateSession(s.id, { workspace: r.cwd });
+          bus.emit({ t: "session", session: next });
+          bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "handoff", text: `Moved to the main checkout, now on branch ${r.branch}${r.previous ? ` (it was on ${r.previous})` : ""}${r.moved ? `, with ${r.moved} changed file${r.moved === 1 ? "" : "s"}` : ""}.` }) });
+          emit(s.id);
+          return json({ session: next, branch: r.branch, previous: r.previous, moved: r.moved });
+        }
+        return bad('to is "worktree" or "main"');
       }),
     },
     "/api/sessions/:id/worktree": {

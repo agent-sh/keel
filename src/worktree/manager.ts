@@ -66,7 +66,7 @@ export class Worktrees {
   private put(w: Worktree) {
     w.updated = Date.now();
     this.store.db.query(`INSERT INTO worktrees (session_id, repo_root, path, branch, base, base_commit, state, snapshot_ref, created, updated)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET path = excluded.path, state = excluded.state, snapshot_ref = excluded.snapshot_ref, updated = excluded.updated`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET repo_root = excluded.repo_root, path = excluded.path, branch = excluded.branch, base = excluded.base, base_commit = excluded.base_commit, state = excluded.state, snapshot_ref = excluded.snapshot_ref, updated = excluded.updated`)
       .run(w.session_id, w.repo_root, w.path, w.branch, w.base, w.base_commit, w.state, w.snapshot_ref, w.created, w.updated);
   }
 
@@ -128,20 +128,104 @@ export class Worktrees {
   // Save the working state (uncommitted and untracked files) as a commit on a
   // private ref, so nothing is lost when the directory goes.
   private async snapshot(w: Worktree): Promise<string> {
-    const gitDir = (await git(w.path, ["rev-parse", "--absolute-git-dir"])).trim();
+    return this.saveState(w.path, `refs/keel/parked/${w.session_id}`, `keel: parked working state of ${w.branch}`);
+  }
+
+  private async saveState(dir: string, ref: string, message: string): Promise<string> {
+    const gitDir = (await git(dir, ["rev-parse", "--absolute-git-dir"])).trim();
     const index = join(gitDir, `keel-park-${crypto.randomUUID()}`);
     try {
       const env = { GIT_INDEX_FILE: index };
-      await git(w.path, ["read-tree", "HEAD"], { env });
-      await git(w.path, ["add", "-A"], { env });
-      const tree = (await git(w.path, ["write-tree"], { env })).trim();
-      const commit = (await git(w.path, ["commit-tree", tree, "-p", "HEAD", "-m", `keel: parked working state of ${w.branch}`])).trim();
-      const ref = `refs/keel/parked/${w.session_id}`;
-      await git(w.path, ["update-ref", ref, commit]);
+      await git(dir, ["read-tree", "HEAD"], { env });
+      await git(dir, ["add", "-A"], { env });
+      const tree = (await git(dir, ["write-tree"], { env })).trim();
+      const commit = (await git(dir, ["commit-tree", tree, "-p", "HEAD", "-m", message])).trim();
+      await git(dir, ["update-ref", ref, commit]);
       return ref;
     } finally {
       rmSync(index, { force: true });
     }
+  }
+
+  // Put a saved working state back into `dir` as uncommitted work.
+  private async applyState(dir: string, ref: string) {
+    const snap = (await git(dir, ["rev-parse", ref])).trim();
+    const gone = (await git(dir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", snap])).split("\0").filter(Boolean);
+    await git(dir, ["checkout", snap, "--", "."]);
+    for (const f of gone) rmSync(join(dir, f), { force: true });
+    await git(dir, ["reset", "-q"]);
+  }
+
+  // Take the working state out of `dir`: tracked files back to HEAD, new files removed.
+  private async clearState(dir: string) {
+    const added = (await git(dir, ["diff", "--cached", "--name-only", "-z", "--diff-filter=A", "HEAD"])).split("\0").filter(Boolean);
+    if (added.length) await git(dir, ["rm", "-q", "--cached", "--", ...added]);
+    await git(dir, ["checkout", "HEAD", "--", "."], { ok: true });
+    await git(dir, ["reset", "-q"]);
+    const untracked = (await git(dir, ["ls-files", "-z", "--others", "--exclude-standard"])).split("\0").filter(Boolean);
+    for (const f of [...untracked, ...added]) rmSync(join(dir, f), { force: true });
+  }
+
+  private async dirty(dir: string): Promise<number> {
+    return (await git(dir, ["status", "--porcelain", "-z"])).split("\0").filter(Boolean).length;
+  }
+
+  // Handoff: a session in the main checkout moves to a new worktree on its own
+  // branch, its uncommitted work with it (the main checkout is left at HEAD;
+  // the work is also kept on refs/keel/handoff/<session>).
+  async toWorktree(s: Session): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string; moved: number }> {
+    const cur = this.get(s.id);
+    if (cur && cur.state === "active") throw new GitError("the session already works in a worktree");
+    const repo = await this.repoOf(s.workspace);
+    if (!repo) throw new GitError(`not a git repository: ${s.workspace}`, 400);
+    if (repo.top !== repo.root) throw new GitError("the session's folder is a worktree Keel does not manage; open a session in the main checkout to move it", 400);
+    const moved = await this.dirty(repo.top);
+    const ref = `refs/keel/handoff/${s.id}`;
+    if (moved) await this.saveState(repo.top, ref, `keel: work moved to a worktree from ${s.workspace}`);
+    // A fresh key: an earlier handoff's branch may still exist.
+    const made = await this.create(cur ? `${s.id}${Date.now().toString(36)}` : s.id, s.workspace, s.title);
+    if (moved) {
+      await this.applyState(made.wt.path, ref);
+      await this.clearState(repo.top);
+    }
+    return { ...made, moved };
+  }
+
+  // Handoff back: the main checkout switches to the worktree's branch and gets
+  // its uncommitted work; the worktree folder goes (the branch can be checked
+  // out in one place only). Refused while the main checkout has work of its own.
+  async toMain(w: Worktree, s: Session): Promise<{ cwd: string; branch: string; previous: string | null; moved: number }> {
+    if (w.state !== "active" || !existsSync(w.path)) throw new GitError(`the worktree is ${w.state === "active" ? "not on disk" : w.state}; restore it first`);
+    const mainDirty = await this.dirty(w.repo_root);
+    if (mainDirty) throw new GitError(`the main checkout has ${mainDirty} changed file${mainDirty === 1 ? "" : "s"} of its own: commit or stash them first`);
+    const moved = await this.dirty(w.path);
+    const ref = `refs/keel/handoff/${s.id}`;
+    if (moved) await this.saveState(w.path, ref, `keel: work moved to the main checkout from ${w.branch}`);
+    const previous = (await git(w.repo_root, ["symbolic-ref", "--quiet", "--short", "HEAD"], { ok: true })).trim() || null;
+    await git(w.repo_root, ["worktree", "remove", "--force", w.path]);
+    await git(w.repo_root, ["checkout", "-q", w.branch]);
+    if (moved) await this.applyState(w.repo_root, ref);
+    this.put({ ...w, state: "removed", snapshot_ref: null });
+    return { cwd: join(w.repo_root, relative(w.path, s.workspace)), branch: w.branch, previous, moved };
+  }
+
+  // Retention: past the newest `keep` worktrees, those of sessions that are
+  // archived or gone are removed, each with a snapshot of its working state
+  // so it can be restored. Running and live sessions keep theirs.
+  async prune(keep: number, busy: (sessionId: string) => boolean): Promise<{ removed: string[]; kept: number }> {
+    const live = this.all().filter((w) => w.state !== "removed");
+    const removed: string[] = [];
+    for (const w of live.slice(keep)) {
+      const s = this.store.session(w.session_id);
+      if (s && !s.archived) continue;
+      if (busy(w.session_id)) continue;
+      const st = await this.status(w);
+      if (st.unknown) continue; // git cannot read it: never removed
+      if (w.state === "parked") { this.put({ ...w, state: "removed" }); removed.push(w.session_id); continue; }
+      const r = await this.remove(w, true);
+      if (r.removed) removed.push(w.session_id);
+    }
+    return { removed, kept: live.length - removed.length };
   }
 
   async park(w: Worktree): Promise<Worktree> {
@@ -159,11 +243,7 @@ export class Worktrees {
     await git(w.repo_root, ["worktree", "prune"], { ok: true });
     await git(w.repo_root, ["worktree", "add", "-q", w.path, w.branch]);
     if (w.snapshot_ref) {
-      const snap = (await git(w.repo_root, ["rev-parse", w.snapshot_ref])).trim();
-      const gone = (await git(w.path, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", snap])).split("\0").filter(Boolean);
-      await git(w.path, ["checkout", snap, "--", "."]);
-      for (const f of gone) rmSync(join(w.path, f), { force: true });
-      await git(w.path, ["reset", "-q"]); // the saved work comes back uncommitted, as it was
+      await this.applyState(w.path, w.snapshot_ref); // the saved work comes back uncommitted, as it was
       await git(w.repo_root, ["update-ref", "-d", w.snapshot_ref], { ok: true });
     }
     const next = { ...w, state: "active" as const, snapshot_ref: null };

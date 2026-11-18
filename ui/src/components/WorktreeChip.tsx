@@ -1,5 +1,5 @@
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitPullRequest, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitPullRequest, MoveLeft, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError } from "../lib/store.ts";
@@ -28,7 +28,7 @@ export function WorktreeChip({ session }: { session: Session }) {
     api(`/api/sessions/${session.id}/pr`).then(setPr).catch(reportError);
   }, [open, wt?.state, wt?.commits_ahead]);
 
-  if (!wt) return null;
+  if (!wt || (wt.state === "removed" && !wt.snapshot_ref)) return null;
   const act = async (f: () => Promise<any>, ok?: (r: any) => { text: string; url?: string }) => {
     setBusy(true);
     setMsg(null);
@@ -118,6 +118,10 @@ export function WorktreeChip({ session }: { session: Session }) {
                       <GitPullRequest /> Open pull request
                     </button>
                   )}
+                  <button className={btn} disabled={busy} data-testid="handoff-main" title="The main checkout switches to this branch and gets the uncommitted work; this folder goes"
+                    onClick={() => act(() => post("/handoff", { to: "main" }), (r) => ({ text: `Moved to the main checkout on ${r.branch}.` }))}>
+                    <MoveLeft /> Move to main checkout
+                  </button>
                   <button className={btn} disabled={busy} data-testid="worktree-park" onClick={() => act(() => post("/worktree/park"), () => ({ text: "Parked. The working state is saved on a ref." }))}>
                     <Archive /> Park
                   </button>
