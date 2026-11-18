@@ -9,6 +9,11 @@ import { Engine } from "./engine/turn.ts";
 import { Providers } from "./providers/registry.ts";
 import { serve } from "./server/app.ts";
 import { routeModules } from "./server/routes/index.ts";
+import { commands } from "./cli/index.ts";
+
+// Client commands (keel pair, keel notify, ...) parse their own options.
+const sub = Bun.argv[2];
+if (sub && commands[sub]) process.exit(await commands[sub](Bun.argv.slice(3)));
 
 const { values, positionals } = parseArgs({
   args: Bun.argv.slice(2),
@@ -23,7 +28,7 @@ const { values, positionals } = parseArgs({
 
 const cmd = positionals[0] ?? "serve";
 if (cmd !== "serve") {
-  console.error(`unknown command: ${cmd}\nusage: keel serve [--bind host:port] [--state-dir DIR] [--workspace DIR] [--dev]`);
+  console.error(`unknown command: ${cmd}\nusage: keel serve [--bind host:port] [--state-dir DIR] [--workspace DIR] [--dev]\n       keel ${Object.keys(commands).join("|")} --help`);
   process.exit(2);
 }
 

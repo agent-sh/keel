@@ -6,6 +6,7 @@ import { telemetryRoutes } from "./telemetry.ts";
 import { driveRoutes } from "./drive.ts";
 import { fleetRoutes } from "./fleet.ts";
 import { mcpRoutes } from "./mcp.ts";
+import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { providersRoutes } from "./providers.ts";
 import { pwaRoutes } from "./pwa.ts";
@@ -37,5 +38,6 @@ export const routeModules: RouteModule[] = [
   integrationRoutes,
   driveRoutes,
   fleetRoutes, // after the gates: sends a placed session's workspace calls to their machine
+  mobileRoutes, // after automation: it registers the phone as an alert channel
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

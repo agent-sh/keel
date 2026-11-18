@@ -26,10 +26,10 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
 
   const session = (id: string) => store.session(id);
 
-  const wrap = (h: (req: Request & { params: any }) => Promise<Response> | Response) =>
-    async (req: any) => {
+  const wrap = (h: (req: Request & { params: any }, srv: Bun.Server<unknown>) => Promise<Response> | Response) =>
+    async (req: any, srv: any) => {
       try {
-        return await h(req);
+        return await h(req, srv);
       } catch (e) {
         const st = (e as any)?.status;
         if (typeof st === "number" && st >= 400 && st < 500) return json({ error: (e as Error).message }, st);
