@@ -1,5 +1,6 @@
 // One HTTP path for every fetch-based driver: the request, the classification
 // of a failed answer, and the retry of a step that has shown nothing yet.
+import { EventStreamDecoder } from "./aws.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 
 export type ErrorKind = "auth" | "rate" | "quota" | "overloaded" | "network" | "invalid" | "context" | "server" | "cancelled";
@@ -104,6 +105,8 @@ export type StreamOpts = {
   // Called on a 401 once: a driver with a refreshable sign-in renews and
   // returns fresh headers for one resend.
   onAuthFailure?: () => Promise<Record<string, string> | null>;
+  // Headers that depend on the exact body bytes and the time (AWS SigV4), made per attempt.
+  sign?: (body: string) => Record<string, string>;
 };
 
 // Opens the stream: one attempt. Retries belong to the engine, which reads
@@ -123,10 +126,11 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   let res: Response;
   for (let renewed = false; ; renewed = true) {
     try {
+      const body = JSON.stringify(o.body);
       res = await fetch(o.url, {
         method: "POST",
-        headers: { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers },
-        body: JSON.stringify(o.body),
+        headers: { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) },
+        body,
         signal: guard.signal,
       });
     } catch (e) {
@@ -145,7 +149,8 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
     }
     throw err;
   }
-  const dec = o.format === "json_array" ? new JsonArrayDecoder() : new SseDecoder();
+  const dec = o.format === "json_array" ? new JsonArrayDecoder()
+    : res.headers.get("content-type")?.includes("application/vnd.amazon.eventstream") ? new EventStreamDecoder() : new SseDecoder();
   try {
     for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
       guard.touch();

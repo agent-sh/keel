@@ -1,71 +1,100 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { AnthropicBedrock } from "@anthropic-ai/bedrock-sdk";
-import type { AssistantBlock } from "../core/types.ts";
-import { emptyUsage } from "../core/types.ts";
-import { anthropicBody } from "./wires/anthropic.ts";
-import { idleGuard, streamIdleMs } from "./http.ts";
+// Claude on the Anthropic API and on Amazon Bedrock, over plain fetch with the
+// shared Messages wire codec. Bedrock takes the same body (model in the path,
+// the API version in the body) and streams it in AWS event-stream frames.
+import { sigv4, type AwsCreds } from "./aws.ts";
+import { ctxFor, httpEvents, runEvents } from "./drive.ts";
+import { getJson } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
+import { anthropicWire } from "./wires/anthropic.ts";
 
-type AnyClient = Anthropic | AnthropicBedrock;
+// The Messages API version the official TypeScript SDK sends.
+const API_VERSION = "2026-10-21";
+
+type Auth =
+  | { kind: "none" }
+  | { kind: "bearer"; token: string }
+  | { kind: "api-key"; key: string }
+  | { kind: "sigv4"; creds: AwsCreds };
 
 export class AnthropicProvider implements Provider {
-  private client: AnyClient | null;
+  private auth: Auth | null;
 
   constructor(
     readonly id: "anthropic" | "bedrock",
     private env: Record<string, string | undefined> = process.env,
   ) {
-    this.client = this.makeClient();
+    this.auth = this.makeAuth();
   }
 
-  private makeClient(): AnyClient | null {
+  private makeAuth(): Auth | null {
     const e = this.env;
     if (this.id === "bedrock") {
       if (!e.ANTHROPIC_BEDROCK_BASE_URL && !e.AWS_BEARER_TOKEN_BEDROCK && !e.AWS_ACCESS_KEY_ID) return null;
-      return new AnthropicBedrock({
-        baseURL: e.ANTHROPIC_BEDROCK_BASE_URL,
-        skipAuth: e.CLAUDE_CODE_SKIP_BEDROCK_AUTH === "1",
-        awsRegion: e.AWS_REGION ?? "us-east-1",
-        maxRetries: 0,
-      });
+      // A proxy that signs for us (the local broker) gets no auth at all.
+      if (e.CLAUDE_CODE_SKIP_BEDROCK_AUTH === "1") return { kind: "none" };
+      if (e.AWS_BEARER_TOKEN_BEDROCK) return { kind: "bearer", token: e.AWS_BEARER_TOKEN_BEDROCK };
+      if (e.AWS_ACCESS_KEY_ID && e.AWS_SECRET_ACCESS_KEY) {
+        return { kind: "sigv4", creds: { accessKeyId: e.AWS_ACCESS_KEY_ID, secretAccessKey: e.AWS_SECRET_ACCESS_KEY, sessionToken: e.AWS_SESSION_TOKEN } };
+      }
+      return { kind: "none" };
     }
-    if (!e.ANTHROPIC_API_KEY && !e.ANTHROPIC_AUTH_TOKEN) return null;
-    return new Anthropic({ maxRetries: 0 });
+    if (e.ANTHROPIC_API_KEY) return { kind: "api-key", key: e.ANTHROPIC_API_KEY };
+    if (e.ANTHROPIC_AUTH_TOKEN) return { kind: "bearer", token: e.ANTHROPIC_AUTH_TOKEN };
+    return null;
   }
 
   available() {
-    return this.client !== null;
+    return this.auth !== null;
   }
 
   readonly family = "claude" as const;
   readonly wire = "anthropic_messages" as const;
   get label() { return this.id === "bedrock" ? "Amazon Bedrock" : "Anthropic API"; }
 
+  private get region() { return this.env.AWS_REGION ?? "us-east-1"; }
+  private get secrets() {
+    const a = this.auth;
+    return a?.kind === "bearer" ? [a.token] : a?.kind === "api-key" ? [a.key] : a?.kind === "sigv4" ? [a.creds.secretAccessKey, a.creds.sessionToken ?? ""] : [];
+  }
+
+  // Static auth headers; SigV4 is made per request from the body.
+  private headers(): Record<string, string> {
+    const a = this.auth;
+    if (a?.kind === "bearer") return { authorization: `Bearer ${a.token}` };
+    if (a?.kind === "api-key") return { "x-api-key": a.key };
+    return {};
+  }
+
+  private signer(url: string, method = "POST") {
+    const a = this.auth;
+    if (a?.kind !== "sigv4") return undefined;
+    return (body: string) => sigv4({ method, url, body, region: this.region, service: "bedrock", creds: a.creds });
+  }
+
   // What the account can use, from the provider's own listing.
   async list(): Promise<ListedModel[]> {
-    if (!this.client) return [];
+    if (!this.auth) return [];
     if (this.id === "anthropic") {
+      const base = (this.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
       const out: ListedModel[] = [];
-      for await (const m of (this.client as Anthropic).models.list({ limit: 1000 })) {
-        const a = m as any;
-        out.push({ model: m.id, name: m.display_name, context: a.max_input_tokens, output: a.max_tokens });
+      let after = "";
+      for (let page = 0; page < 20; page++) {
+        const d = await getJson(this.label, `${base}/v1/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ""}`, { ...this.headers(), "anthropic-version": API_VERSION }, this.secrets);
+        for (const m of d.data ?? []) out.push({ model: m.id, name: m.display_name, context: m.max_input_tokens, output: m.max_tokens });
+        if (!d.has_more || !d.last_id) break;
+        after = d.last_id;
       }
       return out;
     }
     // Bedrock: the inference profiles on the control plane. A local broker
     // serves the same path on its own address.
     const e = this.env;
-    const base = e.ANTHROPIC_BEDROCK_BASE_URL ?? `https://bedrock.${e.AWS_REGION ?? "us-east-1"}.amazonaws.com`;
-    const headers: Record<string, string> = {};
-    if (e.AWS_BEARER_TOKEN_BEDROCK && e.CLAUDE_CODE_SKIP_BEDROCK_AUTH !== "1") headers.authorization = `Bearer ${e.AWS_BEARER_TOKEN_BEDROCK}`;
+    const base = e.ANTHROPIC_BEDROCK_BASE_URL ?? `https://bedrock.${this.region}.amazonaws.com`;
     const ids: string[] = [];
     let next = "";
     for (let page = 0; page < 20; page++) {
-      const r = await fetch(`${base}/inference-profiles?maxResults=1000${next ? `&nextToken=${encodeURIComponent(next)}` : ""}`, {
-        headers, signal: AbortSignal.timeout(20_000),
-      });
-      if (!r.ok) throw new Error(`bedrock listing: HTTP ${r.status}`);
-      const d: any = await r.json();
+      const url = `${base}/inference-profiles?maxResults=1000${next ? `&nextToken=${encodeURIComponent(next)}` : ""}`;
+      const d = await getJson(this.label, url, { ...this.headers(), ...this.signer(url, "GET")?.("") }, this.secrets);
       for (const p of d.inferenceProfileSummaries ?? []) {
         if (p.status === "ACTIVE" && /\.anthropic\.claude-/.test(p.inferenceProfileId)) ids.push(p.inferenceProfileId);
       }
@@ -79,59 +108,32 @@ export class AnthropicProvider implements Provider {
   }
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
-    if (!this.client) throw new Error(`${this.id}: no credentials`);
-    const ctx = { origin: `${this.id}:${req.model}`, sessionKey: req.sessionKey ?? "", efforts: [], legacyIsMine: true };
-    const params: any = { ...anthropicBody(req, ctx), ...req.extraBody };
-    const guard = idleGuard(req.signal, streamIdleMs(), this.label);
-    try {
-      return await this.read(params, ctx, req, guard, onDelta);
-    } catch (e) {
-      throw guard.stalled() ?? e;
-    } finally {
-      guard.done();
+    if (!this.auth) throw new Error(`${this.id}: no credentials`);
+    const ctx = { ...ctxFor(this.id, req, []), legacyIsMine: true };
+    if (this.id === "anthropic") {
+      const base = (this.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
+      return runEvents(anthropicWire, req, ctx, onDelta, httpEvents({
+        label: this.label, url: `${base}/v1/messages`, secrets: this.secrets,
+        headers: { ...this.headers(), "anthropic-version": API_VERSION },
+      }, req));
     }
-  }
-
-  private async read(params: any, ctx: { origin: string }, req: ProviderRequest, guard: ReturnType<typeof idleGuard>, onDelta: (d: Delta) => void): Promise<ProviderResult> {
-    const stream = (this.client as Anthropic).messages.stream(params, { signal: guard.signal, headers: req.extraHeaders });
-    // The answer's rate-limit headers (the Anthropic API states them; Bedrock does not).
-    if (req.onHeaders) stream.withResponse().then((r) => req.onHeaders!(r.response.headers as any), () => {});
-    const toolNames = new Map<number, string>();
-    for await (const ev of stream) {
-      guard.touch();
-      if (ev.type === "content_block_start" && ev.content_block.type === "tool_use") {
-        toolNames.set(ev.index, ev.content_block.name);
-        onDelta({ kind: "tool_input", index: ev.index, text: "", name: ev.content_block.name });
-      } else if (ev.type === "content_block_delta") {
-        const d = ev.delta as any;
-        if (d.type === "text_delta") onDelta({ kind: "text", index: ev.index, text: d.text });
-        else if (d.type === "thinking_delta") onDelta({ kind: "thinking", index: ev.index, text: d.thinking });
-        else if (d.type === "input_json_delta") onDelta({ kind: "tool_input", index: ev.index, text: d.partial_json, name: toolNames.get(ev.index) });
-      }
-    }
-    const msg = await stream.finalMessage();
-    const blocks: AssistantBlock[] = [];
-    for (const b of msg.content as any[]) {
-      if (b.type === "text") blocks.push({ type: "text", text: b.text });
-      else if (b.type === "thinking") blocks.push({ type: "thinking", thinking: b.thinking, signature: b.signature, origin: ctx.origin });
-      else if (b.type === "redacted_thinking") blocks.push({ type: "redacted_thinking", data: b.data });
-      else if (b.type === "tool_use") blocks.push({ type: "tool_use", id: b.id, name: b.name, input: b.input });
-    }
-    const u = msg.usage as any;
-    return {
-      blocks,
-      model: req.model,
-      stop: msg.stop_reason ?? "end_turn",
-      stop_details: (msg as any).stop_details ?? undefined,
-      served: u.speed ?? undefined,
-      usage: {
-        ...emptyUsage(),
-        input: u.input_tokens ?? 0,
-        output: u.output_tokens ?? 0,
-        cache_read: u.cache_read_input_tokens ?? 0,
-        cache_write: u.cache_creation_input_tokens ?? 0,
-        cache_write_1h: u.cache_creation?.ephemeral_1h_input_tokens || undefined,
+    const base = (this.env.ANTHROPIC_BEDROCK_BASE_URL ?? `https://bedrock-runtime.${this.region}.amazonaws.com`).replace(/\/$/, "");
+    const url = `${base}/model/${encodeURIComponent(req.model)}/invoke-with-response-stream`;
+    const codec = {
+      ...anthropicWire,
+      // Bedrock: the model is the path, streaming is the endpoint, the version is in the body.
+      body: (r: ProviderRequest, c: typeof ctx) => {
+        const { model: _m, stream: _s, ...rest } = anthropicWire.body(r, c);
+        return { anthropic_version: API_VERSION, ...(betas.length ? { anthropic_beta: betas } : {}), ...rest };
       },
     };
+    // Bedrock takes betas in the body, not as a header (as the official SDK sends them).
+    const { "anthropic-beta": beta, ...headers } = req.extraHeaders ?? {};
+    const betas = beta ? beta.split(",").map((b) => b.trim()).filter(Boolean) : [];
+    req = { ...req, extraHeaders: req.extraHeaders ? headers : undefined };
+    return runEvents(codec, req, ctx, onDelta, httpEvents({
+      label: this.label, url, secrets: this.secrets,
+      headers: { ...this.headers(), accept: "application/vnd.amazon.eventstream" }, sign: this.signer(url),
+    }, req));
   }
 }

@@ -1,5 +1,5 @@
-// Anthropic Messages wire: the body (shared by the SDK drivers and the plugin
-// route) and an SSE reader for streams that do not come through the SDK.
+// Anthropic Messages wire: the body (shared by the Anthropic and Bedrock drivers and the plugin
+// route) and the reader of its SSE events.
 import type { AssistantBlock, Message } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { project } from "../project.ts";
