@@ -1,10 +1,18 @@
 // Providers: what is set up, each listing's state, plugins, choices, and the
 // Grok plan sign-in.
+import { registerHooks } from "../../engine/hooks.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
-export const providersRoutes: RouteModule = ({ providers }) => {
+export const providersRoutes: RouteModule = ({ providers, store }) => {
+  // The session's speed, read before each request so a change applies from
+  // the next one, also in the middle of a turn. The registry turns it into the
+  // offer's fields; a model without that offer runs at standard.
+  registerHooks({
+    beforeRequest: (s, req) => ({ ...req, speed: store.session(s.id)?.settings.speed }),
+  });
+
   const report = async () => {
     await providers.plugins.freshen();
     const models = providers.current();

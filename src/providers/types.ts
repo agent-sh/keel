@@ -28,6 +28,11 @@ export type ProviderRequest = {
   sessionKey?: string;
   // Filled by the registry from the listing: the levels the model takes.
   efforts?: string[];
+  // The session's speed choice (a SpeedOffer id); the registry turns it into
+  // the body fields and headers of that offer.
+  speed?: string;
+  extraBody?: Record<string, unknown>;
+  extraHeaders?: Record<string, string>;
 };
 
 export type Delta =
@@ -42,6 +47,8 @@ export type ProviderResult = {
   // Set with stop "refusal": the provider's category and explanation.
   stop_details?: { category?: string | null; explanation?: string | null } | null;
   model: string;
+  // The tier the provider says served the call (`service_tier`, `usage.speed`).
+  served?: string;
 };
 
 // The tool profile and projection rules a model gets. A family is per model:
@@ -57,6 +64,21 @@ export type Price = {
   cache_read?: number;
   cache_write?: number;
   estimated?: boolean;
+  // Rates for a request whose prompt is above `above` tokens (models.dev
+  // `cost.tiers` of type context): the whole request is billed at that tier.
+  tiers?: { above: number; input: number; output: number; cache_read?: number; cache_write?: number }[];
+};
+
+// A speed the provider sells for a model besides its standard one: what the
+// listing (ChatGPT's `service_tiers`) or the catalog (models.dev `modes`)
+// says, the fields and headers that ask for it, and its price when per token.
+export type SpeedOffer = {
+  id: string;           // the offer's own name: "fast", "priority", "ultrafast", "flex"
+  label: string;
+  note?: string;        // the provider's description ("2x speed, increased usage")
+  price?: Price;        // per-token price at this speed; absent on a plan
+  body: Record<string, unknown>;
+  headers?: Record<string, string>;
 };
 
 export type Billing = { kind: "per_token" } | { kind: "subscription"; plan?: string } | { kind: "unknown" };
@@ -72,6 +94,7 @@ export type ListedModel = {
   price?: Price;
   billing?: Billing;
   images?: boolean;
+  speeds?: SpeedOffer[];
 };
 
 export type ModelInfo = {
@@ -87,6 +110,7 @@ export type ModelInfo = {
   price?: Price;       // absent: unknown, never free
   billing: Billing["kind"];
   images?: boolean;
+  speeds?: SpeedOffer[];
 };
 
 export type ProviderStatus = {

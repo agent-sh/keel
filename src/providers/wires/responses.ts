@@ -92,6 +92,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
       const usage = emptyUsage();
       let stop = "end_turn";
       let finished = false;
+      let served: string | undefined;
       const fail = (code: string, message: string) => {
         const kind = /context_length|context_window/.test(code) ? "context"
           : /rate_limit/.test(code) ? "rate"
@@ -138,6 +139,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
               usage.cache_read = cached;
               usage.cache_write = written;
               usage.output = u.output_tokens ?? 0;
+              if (typeof ev.response?.service_tier === "string") served = ev.response.service_tier;
               // Items the done events did not carry (some servers send them only here).
               (ev.response?.output ?? []).forEach((it: any, k: number) => { if (!items[k]) items[k] = it; });
               if (ev.type === "response.incomplete") {
@@ -178,7 +180,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
             }
           }
           if (stop === "end_turn" && blocks.some((b) => b.type === "tool_use")) stop = "tool_use";
-          return { blocks, usage, stop, model: req.model };
+          return { blocks, usage, stop, model: req.model, served };
         },
       };
     },

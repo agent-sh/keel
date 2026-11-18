@@ -145,18 +145,33 @@ export class CodexProvider implements Provider {
         family: "gpt",
         billing: { kind: "subscription", plan: "ChatGPT" },
         images: Array.isArray(m.input_modalities) ? m.input_modalities.includes("image") : undefined,
+        // The tiers the backend sells for this model (Fast is `priority`,
+        // Ultrafast `ultrafast`), sent as Codex sends them: `service_tier` plus
+        // its routing hint. A plan has no per-token price; the note says what
+        // it costs in plan usage.
+        speeds: Array.isArray(m.service_tiers) && m.service_tiers.length
+          ? m.service_tiers.filter((t: any) => typeof t?.id === "string").map((t: any) => ({
+            id: t.id, label: t.name ?? t.id, note: t.description, body: { service_tier: t.id },
+            headers: { "x-codex-routing-hint": `model=${m.slug};tier=${t.id}` },
+          }))
+          : undefined,
       }));
   }
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {
     let a = await this.auth();
     const ctx = ctxFor(this.id, req, req.efforts ?? []);
-    return runEvents(responsesWire("codex"), req, ctx, onDelta, httpEvents({
+    const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, httpEvents({
       label: this.label, url: `${this.base}/responses`, headers: this.headers(a, req.sessionKey), secrets: [a.tokens!.access_token!],
       onAuthFailure: async () => {
         a = await this.auth(true);
         return this.headers(a, req.sessionKey);
       },
-    }, req.signal));
+    }, req));
+    // The backend answers `service_tier: "default"` whatever served the call
+    // (measured: a Fast or Ultrafast request still comes back faster), so its
+    // echo says nothing; the tier asked for is what is recorded.
+    delete res.served;
+    return res;
   }
 }

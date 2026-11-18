@@ -8,6 +8,7 @@ import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, running, stopJob } from "../tools/jobs.ts";
 import index from "../../ui/index.html";
+import { speedOffer } from "../providers/registry.ts";
 
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
@@ -102,6 +103,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             const info = (await providers.models()).find((m) => m.id === (body.model ?? s.model));
             if (settings.effort && info && !info.efforts.includes(settings.effort)) return bad(`${info.name} does not take effort ${settings.effort}`);
             if (settings.fallback) await providers.resolve(settings.fallback);
+            if (body.settings.speed && info && !speedOffer(info, settings.speed)) return bad(`${info.name} has no ${settings.speed} speed on ${info.provider}`);
             if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");
           }
           // Archiving stops the session: the turn is cut and its queue held.

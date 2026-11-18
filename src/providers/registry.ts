@@ -147,6 +147,8 @@ export class Providers {
       price: billing === "per_token" ? m.price ?? c?.price : undefined,
       billing,
       images: m.images ?? c?.images,
+      // The listing's own offers win; else the route's catalog section's.
+      speeds: m.speeds ?? this.catalog.own(m.model, section)?.speeds,
     };
   }
 
@@ -246,10 +248,19 @@ export class Providers {
       available: () => p.available(),
       list: () => p.list(),
       stream: async (req: ProviderRequest, onDelta) => {
-        const res = await p.stream({ ...req, efforts: info.efforts, maxTokens: info.output || undefined }, onDelta);
+        const offer = speedOffer(info, req.speed);
+        const res = await p.stream({
+          ...req, efforts: info.efforts, maxTokens: info.output || undefined,
+          extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
+          extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
+        }, onDelta);
         const origin = `${p.id}:${req.model}`;
         for (const b of res.blocks) if ((b.type === "thinking" || b.type === "tool_use" || b.type === "text") && !b.origin && (b.type === "thinking" || b.signature)) b.origin = origin;
-        res.usage = priced(res.usage, info);
+        // Billed at the speed that served: a request the provider moved back
+        // to standard (it says so in `service_tier` or `usage.speed`) costs standard.
+        const servedStandard = res.served !== undefined && /^(default|standard|auto)$/.test(res.served);
+        res.usage = priced(res.usage, offer && !servedStandard && offer.price ? { ...info, price: offer.price } : info);
+        if (offer) res.usage.speed = res.served ?? offer.id;
         return res;
       },
     };
@@ -258,6 +269,15 @@ export class Providers {
   shutdown() {
     this.plugins.stopAll();
   }
+}
+
+// The model's offer for a session's speed choice: by id, else one of the same
+// label (a session moved from a model whose "Fast" is `priority` to one whose
+// is `fast`); none means standard.
+export function speedOffer(info: ModelInfo, want?: string) {
+  if (!want) return undefined;
+  const all = info.speeds ?? [];
+  return all.find((o) => o.id === want) ?? all.find((o) => o.label.toLowerCase() === want.toLowerCase());
 }
 
 function priced(u: Usage, info: ModelInfo): Usage {

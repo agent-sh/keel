@@ -10,6 +10,7 @@ import { setUI, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
+import { SpeedPicker } from "./SpeedPicker.tsx";
 
 type Menu =
   | { kind: "slash"; query: string; start: number }
@@ -382,6 +383,7 @@ export function Composer({
         <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
         <ModelPicker value={model} onChange={onModel} openSignal={modelSignal} />
         {sid && <EffortPicker sessionId={sid} />}
+        {sid && <SpeedPicker sessionId={sid} />}
         {notice && <span className="ml-1 min-w-0 truncate text-caption text-warn animate-in" role="status" data-testid="composer-notice">{notice}</span>}
         {!connected && !notice && <span className="ml-1 truncate text-caption text-faint">Reconnecting</span>}
         <div className="ml-auto flex items-center gap-1.5">

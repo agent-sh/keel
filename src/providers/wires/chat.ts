@@ -76,6 +76,7 @@ export function chatWire(o: ChatOpts = {}, systemPrefix?: string): WireCodec {
       let thinking = "";
       const calls: { id: string; name: string; args: string }[] = [];
       const usage = emptyUsage();
+      let served: string | undefined;
       let stop = "end_turn";
       let finished = false;
       let sawFinish = false;
@@ -86,6 +87,7 @@ export function chatWire(o: ChatOpts = {}, systemPrefix?: string): WireCodec {
           const ev = parseJson(e.data);
           if (!ev) return;
           if (ev.error) throw new Error(`${ev.error.code ?? "error"}: ${ev.error.message ?? JSON.stringify(ev.error)}`);
+          if (typeof ev.service_tier === "string") served = ev.service_tier;
           const u = ev.usage;
           if (u) {
             const cached = u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? u.cached_tokens ?? 0;
@@ -121,7 +123,7 @@ export function chatWire(o: ChatOpts = {}, systemPrefix?: string): WireCodec {
             if (c?.name) blocks.push({ type: "tool_use", id: c.id || `call_${Date.now().toString(36)}_${k}`, name: c.name, input: parseArgs(c.args) });
           });
           if (blocks.some((b) => b.type === "tool_use") && stop === "end_turn") stop = "tool_use";
-          return { blocks, usage, stop, model: req.model };
+          return { blocks, usage, stop, model: req.model, served };
         },
       };
     },

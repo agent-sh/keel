@@ -4,7 +4,7 @@
 // price. It never adds a model the listing did not return, except for an
 // endpoint that has no listing at all and names its catalog section.
 import { join } from "node:path";
-import type { Price } from "./types.ts";
+import type { Price, SpeedOffer } from "./types.ts";
 
 export type CatalogEntry = {
   id: string;
@@ -18,7 +18,38 @@ export type CatalogEntry = {
   tools?: boolean;
   images?: boolean;
   price?: Price;
+  speeds?: SpeedOffer[];
 };
+
+const num = (x: any) => typeof x === "number";
+
+// models.dev `cost`, with its context tiers (`tiers`, or the older
+// `context_over_200k`).
+function priceOf(c: any): Price | undefined {
+  if (!c || !num(c.input) || !num(c.output)) return undefined;
+  const p: Price = { input: c.input, output: c.output, cache_read: c.cache_read, cache_write: c.cache_write };
+  const raw: any[] = Array.isArray(c.tiers) ? c.tiers : c.context_over_200k ? [{ ...c.context_over_200k, tier: { type: "context", size: 200_000 } }] : [];
+  const tiers = raw
+    .filter((t) => t?.tier?.type === "context" && num(t.tier.size) && num(t.input) && num(t.output))
+    .map((t) => ({ above: t.tier.size, input: t.input, output: t.output, cache_read: t.cache_read, cache_write: t.cache_write }))
+    .sort((a, b) => a.above - b.above);
+  if (tiers.length) p.tiers = tiers;
+  return p;
+}
+
+// models.dev `experimental.modes` that only change the speed tier (a body with
+// `service_tier` or `speed`); other modes (a reasoning "pro") are not speeds.
+function speedsOf(m: any): SpeedOffer[] | undefined {
+  const modes = m.experimental?.modes;
+  if (!modes || typeof modes !== "object") return undefined;
+  const out: SpeedOffer[] = [];
+  for (const [id, mode] of Object.entries<any>(modes)) {
+    const body = mode?.provider?.body;
+    if (!body || typeof body !== "object" || !Object.keys(body).length || !Object.keys(body).every((k) => k === "service_tier" || k === "speed")) continue;
+    out.push({ id, label: id[0]!.toUpperCase() + id.slice(1), price: priceOf(mode.cost), body, headers: mode.provider.headers });
+  }
+  return out.length ? out : undefined;
+}
 
 const URL_ = process.env.KEEL_MODELS_DEV_URL ?? "https://models.dev/api.json";
 const MAX_AGE = 24 * 3600_000;
@@ -36,9 +67,8 @@ function entry(id: string, m: any): CatalogEntry {
     reasoning: m.reasoning,
     tools: m.tool_call,
     images: m.modalities?.input?.includes("image"),
-    price: c && typeof c.input === "number" && typeof c.output === "number"
-      ? { input: c.input, output: c.output, cache_read: c.cache_read, cache_write: c.cache_write }
-      : undefined,
+    price: priceOf(c),
+    speeds: speedsOf(m),
   };
 }
 
@@ -87,6 +117,11 @@ export class Catalog {
   // `anthropic/claude-x`, `accounts/fireworks/models/x`, dated suffixes. Try
   // the provider's own section first (its price is the one paid), then the id
   // as given, then the bare model name.
+  // Only the route's own section: its speed offers are the ones that route sells.
+  own(id: string, section?: string): CatalogEntry | undefined {
+    return section ? this.byProvider.get(section)?.get(id) : undefined;
+  }
+
   lookup(id: string, section?: string): CatalogEntry | undefined {
     const own = section ? this.byProvider.get(section)?.get(id) : undefined;
     if (own) return own;

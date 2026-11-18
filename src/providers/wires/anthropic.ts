@@ -81,6 +81,7 @@ export const anthropicWire: WireCodec = {
     const blocks: any[] = [];
     const json = new Map<number, string>();
     const usage = emptyUsage();
+    let served: string | undefined;
     let stop = "end_turn";
     let stopDetails: ProviderResult["stop_details"];
     let finished = false;
@@ -97,6 +98,7 @@ export const anthropicWire: WireCodec = {
             usage.cache_write = u.cache_creation_input_tokens ?? 0;
             if (u.cache_creation?.ephemeral_1h_input_tokens) usage.cache_write_1h = u.cache_creation.ephemeral_1h_input_tokens;
             usage.output = u.output_tokens ?? 0;
+            if (typeof u.speed === "string") served = u.speed;
             break;
           }
           case "content_block_start": {
@@ -136,7 +138,7 @@ export const anthropicWire: WireCodec = {
           else if (b.type === "redacted_thinking") out.push({ type: "redacted_thinking", data: b.data });
           else if (b.type === "tool_use") out.push({ type: "tool_use", id: b.id, name: b.name, input: parseArgs(json.get(i) ?? "") });
         });
-        return { blocks: out, usage, stop, stop_details: stopDetails, model: req.model };
+        return { blocks: out, usage, stop, stop_details: stopDetails, model: req.model, served };
       },
     };
   },

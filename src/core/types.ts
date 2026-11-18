@@ -36,6 +36,7 @@ export type Usage = {
   cache_write_1h?: number;
   cost?: number;
   unpriced?: number;
+  speed?: string; // one call's tier when a speed was asked for: what served it, else the offer asked
 };
 
 export const emptyUsage = (): Usage => ({ input: 0, output: 0, cache_read: 0, cache_write: 0 });
@@ -100,6 +101,7 @@ export type SessionSettings = {
   effort?: string;     // one of the model's listed efforts; absent = the model's default
   fallback?: string;   // model id to continue on when the session's model declines
   compact_at?: number; // owner ceiling in tokens; absent = a share of the model's window
+  speed?: string;      // a speed offer id of the model's listing; absent = standard
 };
 
 export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number };

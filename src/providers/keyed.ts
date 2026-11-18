@@ -59,7 +59,7 @@ export class OpenAIProvider extends KeyedProvider {
     return runEvents(codec, req, ctx, onDelta, httpEvents({
       label: this.label, url: `${this.base}/responses`, headers: { authorization: `Bearer ${k}` }, secrets: [k],
       onAuthFailure: async () => { forget(this.src); return null; },
-    }, req.signal));
+    }, req));
   }
 }
 
@@ -98,7 +98,7 @@ export class GeminiProvider extends KeyedProvider {
       label: this.label,
       url: `${this.base}/v1beta/models/${encodeURIComponent(req.model)}:streamGenerateContent?alt=sse`,
       headers: { "x-goog-api-key": k }, secrets: [k],
-    }, req.signal));
+    }, req));
   }
 }
 
@@ -179,6 +179,6 @@ export class CompatProvider extends KeyedProvider {
     return runEvents(codec, req, ctx, onDelta, httpEvents({
       label: this.label, url: `${this.base}/chat/completions`, headers: this.headers(k, req.sessionKey), secrets: [k], idleMs: this.cfg.stream_idle_timeout_ms,
       onAuthFailure: async () => { forget(this.src); return null; },
-    }, req.signal));
+    }, req));
   }
 }

@@ -13,7 +13,7 @@ export async function runEvents(
   onDelta: (d: Delta) => void,
   events: (body: Record<string, any>) => AsyncIterable<SseEvent>,
 ): Promise<ProviderResult> {
-  const body = codec.body(req, ctx);
+  const body = req.extraBody ? { ...codec.body(req, ctx), ...req.extraBody } : codec.body(req, ctx);
   let shown = false;
   const parser = codec.parser(req, ctx, (d) => { shown = true; onDelta(d); });
   for await (const ev of events(body)) {
@@ -28,8 +28,8 @@ export async function runEvents(
   return res;
 }
 
-export const httpEvents = (o: Omit<StreamOpts, "body" | "signal">, signal: AbortSignal) => (body: Record<string, any>) =>
-  streamEvents({ ...o, body, signal });
+export const httpEvents = (o: Omit<StreamOpts, "body" | "signal">, req: ProviderRequest) => (body: Record<string, any>) =>
+  streamEvents({ ...o, headers: req.extraHeaders ? { ...o.headers, ...req.extraHeaders } : o.headers, body, signal: req.signal });
 
 export const ctxFor = (providerId: string, req: ProviderRequest, efforts: string[], legacyIsMine = false): WireCtx => ({
   origin: `${providerId}:${req.model}`,

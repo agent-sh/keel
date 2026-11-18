@@ -325,7 +325,7 @@ export class XaiProvider implements Provider {
         g = await this.fresh(true);
         return this.headers(g, req.model, req.sessionKey);
       },
-    }, req.signal));
+    }, req));
     try {
       return await run(g);
     } catch (e) {

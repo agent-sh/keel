@@ -81,7 +81,7 @@ export class AnthropicProvider implements Provider {
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     if (!this.client) throw new Error(`${this.id}: no credentials`);
     const ctx = { origin: `${this.id}:${req.model}`, sessionKey: req.sessionKey ?? "", efforts: [], legacyIsMine: true };
-    const params: any = anthropicBody(req, ctx);
+    const params: any = { ...anthropicBody(req, ctx), ...req.extraBody };
     const guard = idleGuard(req.signal, streamIdleMs(), this.label);
     try {
       return await this.read(params, ctx, req, guard, onDelta);
@@ -93,7 +93,7 @@ export class AnthropicProvider implements Provider {
   }
 
   private async read(params: any, ctx: { origin: string }, req: ProviderRequest, guard: ReturnType<typeof idleGuard>, onDelta: (d: Delta) => void): Promise<ProviderResult> {
-    const stream = (this.client as Anthropic).messages.stream(params, { signal: guard.signal });
+    const stream = (this.client as Anthropic).messages.stream(params, { signal: guard.signal, headers: req.extraHeaders });
     const toolNames = new Map<number, string>();
     for await (const ev of stream) {
       guard.touch();
@@ -121,6 +121,7 @@ export class AnthropicProvider implements Provider {
       model: req.model,
       stop: msg.stop_reason ?? "end_turn",
       stop_details: (msg as any).stop_details ?? undefined,
+      served: u.speed ?? undefined,
       usage: {
         ...emptyUsage(),
         input: u.input_tokens ?? 0,
