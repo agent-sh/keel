@@ -14,6 +14,7 @@ import { integrationRoutes } from "./integrations.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { turnRoutes } from "./turns.ts";
+import { switchRoutes } from "./switch.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -27,6 +28,7 @@ export const routeModules: RouteModule[] = [
   providersRoutes,
   worktreeRoutes,
   turnRoutes,
+  switchRoutes,
   usageRoutes,
   errorRoutes,
   automationRoutes,

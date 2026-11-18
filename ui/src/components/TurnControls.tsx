@@ -8,6 +8,7 @@ import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { actions, reportError, useStore, type ContextInfo } from "../lib/store.ts";
+import { switchSession } from "../lib/switch.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 
@@ -227,7 +228,7 @@ export function EffortPicker({ sessionId }: { sessionId: string }) {
             {efforts.map((e) => (
               <Menu.Item
                 key={e}
-                onClick={() => actions.patch(sessionId, { settings: { effort: e } }).catch(reportError)}
+                onClick={() => { if (e !== cur) switchSession(sessionId, { effort: e }).catch(reportError); }}
                 className={itemClass}
               >
                 <span className="w-3.5">{e === cur && <Check className="size-3.5 text-accent" />}</span>

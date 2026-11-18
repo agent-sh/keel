@@ -3,6 +3,7 @@ import { Bot, CornerDownLeft, MessageSquare, Search, TextSearch, Zap } from "luc
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { allCommands, commandsVersion, fuzzy, onCommands } from "../lib/keys.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
+import { switchSession } from "../lib/switch.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
@@ -66,7 +67,7 @@ export function Palette() {
         if (score > 0) out.push({
           key: `m:${m.id}`, group: "Models", label: current ? `Switch to ${m.name}` : `Start with ${m.name}`, detail: m.provider,
           icon: <Bot className="size-4" />, score: score - 1,
-          run: () => (current ? actions.patch(current.id, { model: m.id }).catch(reportError) : setUI({ newModel: m.id })),
+          run: () => (current ? switchSession(current.id, { model: m.id }).catch(reportError) : setUI({ newModel: m.id })),
         });
       }
     }

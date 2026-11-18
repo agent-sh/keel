@@ -6,6 +6,7 @@ import { SessionHeader, SidebarButton } from "./components/SessionHeader.tsx";
 import { SidePanel } from "./components/SidePanel.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { StartBox } from "./components/StartBox.tsx";
+import { switchSession } from "./lib/switch.ts";
 import "./lib/builtins.ts";
 import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
@@ -85,7 +86,7 @@ function SessionView({ id }: { id: string }) {
                 working={session.phase === "working"}
                 model={session.model}
                 workspace={session.workspace}
-                onModel={(m) => actions.patch(session.id, { model: m }).catch(reportError)}
+                onModel={(m) => switchSession(session.id, { model: m }).catch(reportError)}
                 onSend={(t, images) => actions.send(session.id, t, { images })}
                 onQueue={(t) => actions.send(session.id, t, { mode: "queue" })}
                 onStop={() => actions.interrupt(session.id).catch(reportError)}
