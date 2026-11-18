@@ -48,6 +48,13 @@
   --syn-tag: oklch(0.5 0.12 160);
   --syn-deleted: oklch(0.55 0.17 25);
   --syn-inserted: oklch(0.52 0.12 150);
+
+  /* Chart series, in fixed order (validated for color vision deficiency on
+     both surfaces). Slot 3 is under 3:1 on light: charts using it carry a
+     legend, a tooltip and a table. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
 }
 .dark {
   --bg: oklch(0.185 0.014 235);
@@ -88,6 +95,9 @@
   --syn-tag: oklch(0.8 0.11 155);
   --syn-deleted: oklch(0.72 0.15 25);
   --syn-inserted: oklch(0.78 0.12 150);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
 }
 
 @theme inline {
@@ -115,6 +125,9 @@
   --color-code: var(--code-bg);
   --color-ring: var(--ring);
   --color-overlay: var(--overlay);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
   --font-sans: "IBM Plex Sans Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
   --shadow-1: var(--shadow-1);
