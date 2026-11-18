@@ -24,7 +24,9 @@ const SECTION: Record<string, string> = {
 };
 
 export type Listing = { state: "ok" | "failed" | "saved" | "never"; fetched?: number; error?: string; models: ListedModel[] };
-export type Choices = { default?: string; hidden: Record<string, string[]> };
+// The owner's picks: the default, models hidden per provider, whole providers
+// hidden from the picker, and favorites (full ids, in the owner's order).
+export type Choices = { default?: string; hidden: Record<string, string[]>; hidden_providers?: string[]; pinned?: string[] };
 
 type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown) => void; providers?: Provider[] };
 
@@ -182,10 +184,12 @@ export class Providers {
     }
   }
 
-  // The models the picker shows: what the owner did not hide.
-  visible(models: ModelInfo[]): ModelInfo[] {
-    const h = this.choices().hidden;
-    return models.filter((m) => !h[m.provider]?.includes(m.model));
+  // Every listed model, the ones the owner hid marked (the picker finds
+  // them by search, so they can be shown again).
+  marked(models: ModelInfo[]): (ModelInfo & { hidden?: true })[] {
+    const c = this.choices();
+    const off = new Set(c.hidden_providers ?? []);
+    return models.map((m) => (off.has(m.provider) || c.hidden[m.provider]?.includes(m.model) ? { ...m, hidden: true } : m));
   }
 
   setChoices(c: Choices) {

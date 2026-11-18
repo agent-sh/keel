@@ -34,7 +34,7 @@ export const providersRoutes: RouteModule = ({ providers }) => {
       },
     },
 
-    // { default?: id | null, provider?, hide?: ids, show?: ids }
+    // { default?: id | null, provider?, hide?: ids, show?: ids, pin?: ids, unpin?: ids, hide_provider?, show_provider? }
     "/api/providers/choices": {
       POST: async (req: Request) => {
         const b = (await req.json().catch(() => null)) as any;
@@ -55,6 +55,25 @@ export const providersRoutes: RouteModule = ({ providers }) => {
           }
           for (const id of b.show ?? []) hidden.delete(id);
           c.hidden[b.provider] = [...hidden];
+        }
+        // Favorites: full ids; a pin goes to the end, an unpin leaves the order.
+        if (Array.isArray(b.pin) || Array.isArray(b.unpin)) {
+          const pinned = (c.pinned ?? []).filter((id) => !(b.unpin ?? []).includes(id));
+          for (const id of b.pin ?? []) {
+            if (!models.some((m) => m.id === id)) return json({ error: `no provider lists ${id}` }, 400);
+            if (!pinned.includes(id)) pinned.push(id);
+          }
+          c.pinned = pinned;
+        }
+        // A whole provider out of the picker (its models stay findable by search).
+        if (typeof b.hide_provider === "string" || typeof b.show_provider === "string") {
+          const off = new Set(c.hidden_providers ?? []);
+          if (b.hide_provider) {
+            if (c.default?.startsWith(`${b.hide_provider}:`)) return json({ error: "the default model's provider cannot be hidden" }, 400);
+            off.add(b.hide_provider);
+          }
+          if (b.show_provider) off.delete(b.show_provider);
+          c.hidden_providers = [...off];
         }
         providers.setChoices(c);
         return json(await report());

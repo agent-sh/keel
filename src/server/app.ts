@@ -51,7 +51,10 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       "/api/models": {
         GET: wrap(async (req) => {
           const force = new URL(req.url).searchParams.has("refresh");
-          return json({ models: providers.visible(await providers.models(force)), default: await providers.defaultModel() });
+          const models = providers.marked(await providers.models(force));
+          const c = providers.choices();
+          const groups = providers.statuses().filter((p) => p.available).map((p) => ({ id: p.id, label: p.label }));
+          return json({ models, default: await providers.defaultModel(), pinned: (c.pinned ?? []).filter((id) => models.some((m) => m.id === id)), providers: groups });
         }),
       },
 

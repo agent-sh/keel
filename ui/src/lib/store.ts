@@ -9,8 +9,12 @@ export type ProvidersReport = {
   providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number } })[];
   plugins: { id: string; state: string; name?: string; version?: string; reason?: string; stderr_tail?: string; violations: { count: number; last: string } }[];
   plugins_file?: string | null;
-  choices: { default?: string; hidden: Record<string, string[]> };
+  choices: { default?: string; hidden: Record<string, string[]>; hidden_providers?: string[]; pinned?: string[] };
 };
+
+// A listed model as the picker gets it: `hidden` when the owner hid it or its provider.
+export type ListedModel = ModelInfo & { hidden?: true };
+export type ChoiceChange = { pin?: string[]; unpin?: string[]; provider?: string; hide?: string[]; show?: string[]; hide_provider?: string; show_provider?: string };
 
 export type JobView = {
   id: string; num: number; command: string; description?: string; cwd: string; pty: boolean; log: string;
@@ -23,8 +27,10 @@ type State = {
   sessions: Record<string, Session>;
   events: Record<string, StoredEvent[]>;
   drafts: Record<string, Record<number, DraftBlock>>;
-  models: ModelInfo[];
+  models: ListedModel[];
   defaultModel: string;
+  pinned: string[];
+  providerLabels: Record<string, string>;
   errors: ErrorRecord[];
   connected: boolean;
   providers: ProvidersReport | null;
@@ -35,7 +41,7 @@ type State = {
 };
 
 let state: State = {
-  sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
+  sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
 };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => {
@@ -61,8 +67,25 @@ export const actions = {
     set({ sessions: Object.fromEntries(sessions.map((s) => [s.id, s])) });
   },
   async loadModels(refresh = false) {
-    const r = await api<{ models: ModelInfo[]; default: string }>(`/api/models${refresh ? "?refresh" : ""}`);
-    set({ models: r.models, defaultModel: r.default });
+    const r = await api<{ models: ListedModel[]; default: string; pinned: string[]; providers: { id: string; label: string }[] }>(`/api/models${refresh ? "?refresh" : ""}`);
+    set({ models: r.models, defaultModel: r.default, pinned: r.pinned ?? [], providerLabels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) });
+  },
+  // Favorites and hidden models: applied here at once, then saved.
+  async choose(change: ChoiceChange) {
+    const pinned = state.pinned.filter((id) => !change.unpin?.includes(id)).concat((change.pin ?? []).filter((id) => !state.pinned.includes(id)));
+    const off = (m: ListedModel) =>
+      change.hide_provider === m.provider || (change.provider === m.provider && change.hide?.includes(m.model))
+        ? true
+        : change.show_provider === m.provider || (change.provider === m.provider && change.show?.includes(m.model))
+          ? false
+          : !!m.hidden;
+    set({ pinned, models: state.models.map((m) => { const h = off(m); return h === !!m.hidden ? m : h ? { ...m, hidden: true } : (({ hidden: _, ...rest }) => rest)(m); }) });
+    try {
+      const r = await api<ProvidersReport>("/api/providers/choices", { method: "POST", body: JSON.stringify(change) });
+      set({ providers: r });
+    } finally {
+      await actions.loadModels();
+    }
   },
   async loadProviders(refresh = false) {
     const r = await api<ProvidersReport>(refresh ? "/api/providers/refresh" : "/api/providers", refresh ? { method: "POST", body: "{}" } : undefined);
