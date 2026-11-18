@@ -19,13 +19,17 @@ type State = {
 
 let state: State = { approvals: {}, perms: {}, grants: [], modes: [], sandbox: null };
 const subs = new Set<() => void>();
+const subscribe = (f: () => void) => {
+  subs.add(f);
+  return () => void subs.delete(f);
+};
 const set = (patch: Partial<State>) => {
   state = { ...state, ...patch };
   subs.forEach((f) => f());
 };
 export const getSafetyModes = () => state.modes;
 export function useSafety<T>(sel: (s: State) => T): T {
-  return useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => sel(state));
+  return useSyncExternalStore(subscribe, () => sel(state));
 }
 
 const loaded = new Set<string>();

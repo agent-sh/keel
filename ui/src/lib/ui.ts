@@ -70,13 +70,17 @@ let state: UIState = {
   focusEvent: new URLSearchParams(location.search).get("e"),
 };
 const subs = new Set<() => void>();
+const subscribe = (f: () => void) => {
+  subs.add(f);
+  return () => void subs.delete(f);
+};
 export function setUI(patch: Partial<UIState>) {
   state = { ...state, ...patch };
   subs.forEach((f) => f());
 }
 export const getUI = () => state;
 export function useUI<T>(sel: (s: UIState) => T): T {
-  return useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => sel(state));
+  return useSyncExternalStore(subscribe, () => sel(state));
 }
 
 export function navigate(r: Route, replace = false) {

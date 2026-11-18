@@ -59,8 +59,14 @@ const set = (patch: Partial<State>) => {
   subs.forEach((f) => f());
 };
 
+// One subscribe function for every reader: a new one per render would make
+// React unsubscribe and subscribe again on each render.
+const subscribe = (f: () => void) => {
+  subs.add(f);
+  return () => void subs.delete(f);
+};
 export function useStore<T>(sel: (s: State) => T): T {
-  return useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => sel(state));
+  return useSyncExternalStore(subscribe, () => sel(state));
 }
 export const getState = () => state;
 

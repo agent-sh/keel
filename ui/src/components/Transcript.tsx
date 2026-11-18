@@ -1,7 +1,7 @@
 import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { MemoryNote } from "./MemoryNote.tsx";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { lineage, versions } from "../../../src/core/tree.ts";
+import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, ImageBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
@@ -80,12 +80,11 @@ function Images({ images }: { images: ImageBlock[] }) {
 
 // Edit-and-resend makes a new version of the prompt (a sibling in the event
 // tree); the arrows move between versions, each its own branch.
-function UserMessage({ e, s, all }: { e: StoredEvent; s: Session; all: StoredEvent[] }) {
+function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent[] }) {
   const text: string = e.data.text ?? "";
   const long = text.length > 1400 || text.split("\n").length > 18;
   const [full, setFull] = useState(false);
   const [editing, setEditing] = useState(false);
-  const vs = useMemo(() => versions(all, e), [all, e]);
   const at = vs.findIndex((v) => v.id === e.id);
   const working = s.phase === "working";
   const origin: string | undefined = e.data.origin;
@@ -329,15 +328,35 @@ function TurnFooter({ e, reply, prompt, s, last }: { e: StoredEvent; reply: stri
   );
 }
 
+// The streaming reply and the working line. Deltas re-render only this, not
+// the whole transcript above it.
+function Live({ sessionId, working, asking, since }: { sessionId: string; working: boolean; asking: boolean; since?: number }) {
+  const draft = useStore((s) => s.drafts[sessionId]);
+  const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
+  return (
+    <>
+      {hasDraft && <div className="flex flex-col gap-3"><Draft draft={draft} /></div>}
+      <Status sessionId={sessionId} />
+      {working && !hasDraft && !asking && <Working since={since} sessionId={sessionId} />}
+    </>
+  );
+}
+
 export function Transcript({ sessionId }: { sessionId: string }) {
   const all = useStore((s) => s.events[sessionId]);
-  const draft = useStore((s) => s.drafts[sessionId]);
   const session = useStore((s) => s.sessions[sessionId])!;
   const events = useMemo(() => (all ? lineage(all, session.head) : undefined), [all, session.head]);
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [away, setAway] = useState(false);
+
+  // The versions of each prompt (see versions() in tree.ts), grouped once per change of the list.
+  const siblings = useMemo(() => {
+    const m = new Map<string | null, StoredEvent[]>();
+    for (const e of all ?? []) if (e.kind === "user" && !e.data.origin) (m.get(e.parent) ?? m.set(e.parent, []).get(e.parent)!).push(e);
+    return m;
+  }, [all]);
 
   const results = useMemo(() => {
     const m = new Map<string, ToolResultBlock>();
@@ -354,7 +373,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   };
 
   // Follow the end while it grows (streaming, a tool row opening), unless the reader scrolled up.
-  useLayoutEffect(() => { if (stick.current) toEnd(); }, [events, draft]);
+  // The streaming draft grows inside `content`, so the ResizeObserver below follows it.
+  useLayoutEffect(() => { if (stick.current) toEnd(); }, [events]);
   useEffect(() => {
     const c = content.current;
     if (!c) return;
@@ -386,7 +406,6 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   }, [focus, events]);
 
   if (!events) return <div className="flex-1" />;
-  const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
   const lastStart = [...events].reverse().find((e) => e.kind === "turn_start");
   // A question card waiting on the owner says so itself; no "Working" under it.
   const asking = session.phase === "working" && events.some((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use" && toolKind(b.name) === "ask" && !results.has(b.id)));
@@ -420,7 +439,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               }
               prompt = e;
               reply = [];
-              return SYSTEM_INPUT.has(e.data.kind) ? <InputNotice key={e.id} e={e} /> : isPeerMessage(e) ? <PeerMessage key={e.id} e={e} /> : <UserMessage key={e.id} e={e} s={session} all={all!} />;
+              return SYSTEM_INPUT.has(e.data.kind) ? <InputNotice key={e.id} e={e} /> : isPeerMessage(e) ? <PeerMessage key={e.id} e={e} /> : <UserMessage key={e.id} e={e} s={session} vs={siblings.get(e.parent) ?? []} />;
             }
             if (e.kind === "compaction") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "assistant" && e.data.stop === "refusal") return <Refusal key={e.id} e={e} s={session} />;
@@ -448,9 +467,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             }
             return null;
           })}
-          {hasDraft && <div className="flex flex-col gap-3"><Draft draft={draft} /></div>}
-          <Status sessionId={sessionId} />
-          {session.phase === "working" && !hasDraft && !asking && <Working since={lastStart?.ts} sessionId={sessionId} />}
+          <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} />
         </div>
       </div>
       {away && (
