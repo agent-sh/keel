@@ -5,7 +5,8 @@ import { useSyncExternalStore } from "react";
 export type Route =
   | { name: "new" }
   | { name: "session"; id: string }
-  | { name: "settings"; section: string };
+  | { name: "settings"; section: string }
+  | { name: "board" };
 
 export type ThemePref = "light" | "dark" | "system";
 
@@ -35,6 +36,7 @@ function parse(): Route {
   if (p === "/" && h) return { name: "session", id: h[1]! };
   const st = p.match(/^\/settings(?:\/([\w-]+))?/);
   if (st) return { name: "settings", section: st[1] ?? "general" };
+  if (p === "/board") return { name: "board" };
   return { name: "new" };
 }
 
@@ -76,7 +78,7 @@ export function useUI<T>(sel: (s: UIState) => T): T {
 }
 
 export function navigate(r: Route, replace = false) {
-  const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : "/";
+  const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : r.name === "board" ? "/board" : "/";
   if (url !== location.pathname || location.hash) (replace ? history.replaceState : history.pushState).call(history, null, "", url);
   setUI({ route: r, ...(isPhone() ? { sidebar: false } : {}) });
 }

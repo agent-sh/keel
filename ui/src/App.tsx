@@ -19,6 +19,7 @@ const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ def
 const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
 const McpPanel = lazy(() => import("./components/McpPanel.tsx").then((m) => ({ default: m.McpPanel })));
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
+const Board = lazy(() => import("./components/Board.tsx").then((m) => ({ default: m.Board })));
 const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
 // Each direction's shell is its own chunk: only the chosen one loads.
 const Bridge = lazy(() => import("./components/shells/Bridge.tsx").then((m) => ({ default: m.Bridge })));
@@ -67,9 +68,10 @@ export function App() {
     actions.loadErrors().catch(reportError);
     return installKeymap();
   }, []);
-  useEffect(() => { if (route.name !== "session") document.title = route.name === "settings" ? "Settings - Keel" : "Keel"; }, [route]);
+  useEffect(() => { if (route.name !== "session") document.title = route.name === "settings" ? "Settings - Keel" : route.name === "board" ? "Board - Keel" : "Keel"; }, [route]);
 
-  const settings = route.name === "settings";
+  // Settings and the board are pages of their own in every direction.
+  const page = route.name === "settings" || route.name === "board";
   return (
     <Boundary>
       <div
@@ -81,11 +83,11 @@ export function App() {
           dispatchEvent(new CustomEvent("keel:files", { detail: [...e.dataTransfer.files] }));
         }}
       >
-        {direction === "classic" || settings ? (
-          settings ? (
+        {direction === "classic" || page ? (
+          page ? (
             <>
               {direction === "classic" && <ClassicSidebarOnly />}
-              <main className="flex min-w-0 flex-1 flex-col"><Suspense fallback={null}><Settings section={route.section} /></Suspense></main>
+              <main className="flex min-w-0 flex-1 flex-col"><Suspense fallback={null}>{route.name === "settings" ? <Settings section={route.section} /> : <Board />}</Suspense></main>
             </>
           ) : <Classic />
         ) : (
