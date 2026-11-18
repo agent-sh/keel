@@ -3,6 +3,7 @@
 // opencode and Hermes read) only adds name, window, output limit, efforts and
 // price. It never adds a model the listing did not return, except for an
 // endpoint that has no listing at all and names its catalog section.
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Price, SpeedOffer } from "./types.ts";
 
@@ -72,6 +73,24 @@ function entry(id: string, m: any): CatalogEntry {
   };
 }
 
+// The full document to its sections, first-party providers first so their
+// entry wins over resellers' (section order is kept in the saved copy).
+type Sections = Record<string, Record<string, CatalogEntry>>;
+const SHAPE = String(Bun.hash(entry.toString() + priceOf.toString() + speedsOf.toString()));
+
+function compact(doc: Record<string, { models?: Record<string, any> }>): Sections {
+  const out: Sections = {};
+  for (const pid of new Set(["anthropic", "openai", "google", "xai", ...Object.keys(doc)])) {
+    const models: Record<string, CatalogEntry> = {};
+    for (const [id, m] of Object.entries(doc[pid]?.models ?? {})) {
+      const { id: _id, ...rest } = entry(id, m);
+      models[id] = rest as CatalogEntry;
+    }
+    out[pid] = models;
+  }
+  return out;
+}
+
 export class Catalog {
   private byId = new Map<string, CatalogEntry>();
   private byProvider = new Map<string, Map<string, CatalogEntry>>();
@@ -79,34 +98,46 @@ export class Catalog {
 
   constructor(private cacheDir: string) {}
 
+  // The catalog is saved compact: only the fields above, per section. Parsing
+  // the full models.dev document (several MB) costs tens of MB of resident
+  // memory that the allocator keeps; a start reads the small copy instead and
+  // the full document is parsed only when the copy is a day old.
   async load(): Promise<void> {
     if (Date.now() - this.loaded < MAX_AGE && this.byId.size) return;
-    const file = Bun.file(join(this.cacheDir, "models-dev.json"));
-    let text: string | null = null;
-    try {
-      const r = await fetch(URL_, { signal: AbortSignal.timeout(15_000) });
-      if (r.ok) {
-        text = await r.text();
-        await Bun.write(file, text);
+    const file = Bun.file(join(this.cacheDir, "models-dev.compact.json"));
+    const full = join(this.cacheDir, "models-dev.json"); // the earlier full copy, read once if nothing else is there
+    let saved: { shape?: string; sections?: Sections } | null = null;
+    if (await file.exists()) try { saved = JSON.parse(await file.text()); } catch {}
+    // A copy made by another version of entry() lacks its fields: fetch again.
+    const fresh = saved?.shape === SHAPE && Date.now() - file.lastModified < MAX_AGE;
+    let sections: Sections | null = fresh ? saved!.sections ?? null : null;
+    if (!sections) {
+      try {
+        const r = await fetch(URL_, { signal: AbortSignal.timeout(15_000) });
+        if (r.ok) sections = compact(JSON.parse(await r.text()));
+      } catch {}
+      if (!sections && !saved && existsSync(full)) {
+        try { sections = compact(JSON.parse(readFileSync(full, "utf8"))); } catch {}
       }
-    } catch {}
-    if (!text && (await file.exists())) text = await file.text();
-    if (!text) return;
-    const doc = JSON.parse(text) as Record<string, { models?: Record<string, any> }>;
+      if (sections) {
+        await Bun.write(file, JSON.stringify({ shape: SHAPE, sections }));
+        rmSync(full, { force: true });
+      }
+    }
+    sections ??= saved?.sections ?? null;
+    if (!sections) return;
     this.byId.clear();
     this.byProvider.clear();
-    // First-party providers first so their entry wins over resellers'.
-    const order = ["anthropic", "openai", "google", "xai", ...Object.keys(doc)];
-    for (const pid of new Set(order)) {
+    for (const [pid, models] of Object.entries(sections)) {
       const section = new Map<string, CatalogEntry>();
-      for (const [id, m] of Object.entries(doc[pid]?.models ?? {})) {
-        const e = entry(id, m);
-        section.set(id, e);
-        if (!this.byId.has(id)) this.byId.set(id, e);
+      for (const [id, e] of Object.entries(models)) {
+        const en = { ...e, id };
+        section.set(id, en);
+        if (!this.byId.has(id)) this.byId.set(id, en);
       }
       this.byProvider.set(pid, section);
     }
-    this.loaded = Date.now();
+    this.loaded = fresh ? file.lastModified : Date.now();
   }
 
   section(pid: string): CatalogEntry[] {
