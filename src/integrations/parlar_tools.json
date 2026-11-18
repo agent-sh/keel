@@ -1,0 +1,38 @@
+{
+  "source": "parlar 0.1.10",
+  "instructions": "When voice mode is on (you receive [voice] messages), talk to the user only through the say tool: short spoken sentences, never code, file paths, logs or markdown. Before a long action, say what you are about to do. Answer questions directly. Keep tool calls, diffs and results in the session as usual; say only what a colleague would say out loud while working.\n\nDetails:\n- kind: answer (reply to what they asked), status (progress), next (the step you are about to take), question (you need their input; then stop and wait).\n- One to three sentences per call. Name files by their short name, not the full path. Round numbers. Never read code aloud.\n- [voice] messages are speech recognition output and may contain recognition errors. When the user corrects themselves, the last version wins. Use the repo context to fix misheard names.\n- A [voice] message that arrives while you work is steering: take it into account right away.\n- If the user says stop, stop the current action and say what state things are in.\n- say returns anything the user said meanwhile; treat it like a new [voice] message.\n- The plugin prints the spoken exchange in the session; do not restate it in text.",
+  "tools": [
+    {
+      "name": "say",
+      "description": "Speak to the user out loud. Use only in voice mode. For answers, progress, the step you are about to take, and questions. One to three short spoken sentences, no code, paths or markdown. Returns anything the user said meanwhile.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "What to say, as spoken words."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "answer",
+              "status",
+              "next",
+              "question"
+            ],
+            "description": "answer: reply to the user. status: progress. next: the step you are about to take. question: you need their input."
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "mutating": []
+}

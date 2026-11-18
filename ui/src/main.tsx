@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import "./features/safety.tsx";
 import "./features/drive.tsx";
+import "./features/voice.tsx";
 import "./lib/turns.ts";
 import "./lib/side.ts";
 import "./components/automation/register.tsx";

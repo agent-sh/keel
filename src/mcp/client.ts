@@ -350,8 +350,8 @@ export class McpClient {
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
   readResource(uri: string, signal?: AbortSignal) { return this.rpc("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rpc("prompts/get", { name, arguments: args }, { signal }); }
-  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number): Promise<McpCallResult> {
-    return this.rpc("tools/call", { name, arguments: args ?? {} }, { signal, timeoutMs });
+  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>): Promise<McpCallResult> {
+    return this.rpc("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs });
   }
 
   close() {

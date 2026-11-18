@@ -26,7 +26,8 @@ export type BundledServer = {
   tools: McpTool[];
   instructions?: string;
   reads: (tool: string) => boolean;
-  call?: (tool: string, input: any, ctx: ToolContext, run: (tool: string, input: any) => Promise<ToolOutput>) => Promise<ToolOutput>;
+  // `meta` goes with the call as MCP `_meta` (a server serving every session from one process tells them apart by it).
+  call?: (tool: string, input: any, ctx: ToolContext, run: (tool: string, input: any, meta?: Record<string, unknown>) => Promise<ToolOutput>) => Promise<ToolOutput>;
   released?: (session: string) => void;
 };
 
@@ -253,11 +254,11 @@ export class McpManager {
 
   call(name: string, tool: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     const b = this.entries.get(name)?.bundled;
-    if (b?.call) return b.call(tool, input, ctx, (t, i) => this.callRaw(name, t, i, ctx));
+    if (b?.call) return b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m));
     return this.callRaw(name, tool, input, ctx);
   }
 
-  private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>): Promise<ToolOutput> {
     const e = this.entries.get(name);
     let client: McpClient;
     try {
@@ -268,7 +269,7 @@ export class McpManager {
     }
     let r: McpCallResult;
     try {
-      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000);
+      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta);
     } catch (err) {
       if (err instanceof AuthRequired && e) {
         e.state = "needs_auth";
