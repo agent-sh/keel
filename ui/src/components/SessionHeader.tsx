@@ -10,6 +10,7 @@ import { ChangesButton } from "./ChangesPanel.tsx";
 import { confirmAction } from "./Confirm.tsx";
 import { PermissionMenu } from "./PermissionMenu.tsx";
 import { PanelToggles } from "./SidePanel.tsx";
+import { WorktreeChip } from "./WorktreeChip.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
 
 export function SidebarButton() {
@@ -84,6 +85,7 @@ export function SessionHeader({ session }: { session: Session }) {
       >
         {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">${u.cost.toFixed(u.cost < 1 ? 4 : 2)}</span> : null}
       </span>}
+      <WorktreeChip session={session} />
       <ChangesButton sessionId={session.id} />
       <PanelToggles session={session} />
       <PermissionMenu sessionId={session.id} />

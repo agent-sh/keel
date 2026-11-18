@@ -7,6 +7,8 @@ import { Composer } from "./Composer.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { WorktreeToggle } from "./WorktreeChip.tsx";
+import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
 
 // The start box: the folder, the model and the first message of a new session.
 export function StartBox() {
@@ -18,6 +20,7 @@ export function StartBox() {
   useEffect(() => { api("/api/workspaces").then((r) => setFallback(r.recent[0]?.path ?? r.default)).catch(reportError); }, []);
   const workspace = chosen || fallback;
   const model = newModel || defaultModel;
+  const inWorktree = useStartInWorktree();
   const recent = useMemo(
     () => Object.values(sessions).filter((s) => !s.archived && s.workspace === workspace).sort((a, b) => b.updated - a.updated).slice(0, 4),
     [sessions, workspace],
@@ -32,6 +35,7 @@ export function StartBox() {
           <p className="mb-6 text-base text-muted">Keel works in the folder below. Paste screenshots, mention files with @, and steer while it runs.</p>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />
+            <WorktreeToggle workspace={workspace} />
           </div>
           <div data-testid="new-composer">
             <Composer
@@ -40,7 +44,9 @@ export function StartBox() {
               workspace={workspace}
               autoFocus
               onSend={async (t, images) => {
-                const s = await actions.create(t, model || undefined, workspace || undefined, images);
+                const s = inWorktree && (await isGitFolder(workspace))
+                  ? await createInWorktree(t, model || undefined, workspace || undefined, images)
+                  : await actions.create(t, model || undefined, workspace || undefined, images);
                 navigate({ name: "session", id: s.id });
               }}
             />

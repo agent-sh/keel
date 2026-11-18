@@ -3,7 +3,7 @@
 // own repository (its index, refs and objects stay as they were). Every
 // operation on one shadow runs one at a time.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -21,8 +21,10 @@ export class Shadow {
   mode: "tree" | "written";
   reason?: string;
 
-  constructor(root: string, readonly workspace: string) {
-    this.dir = join(root, createHash("sha256").update(workspace).digest("hex").slice(0, 16) + ".git");
+  // `gitDir` given: snapshot a real repository's working tree (a branch diff
+  // that includes uncommitted and untracked files) through a private index.
+  constructor(root: string, readonly workspace: string, private gitDir?: string) {
+    this.dir = gitDir ?? join(root, createHash("sha256").update(workspace).digest("hex").slice(0, 16) + ".git");
     const huge = workspace === homedir() || workspace === "/" || dirname(workspace) === workspace;
     this.mode = huge ? "written" : "tree";
     if (huge) this.reason = "the workspace is the home or root directory, too large to snapshot whole";
@@ -48,6 +50,7 @@ export class Shadow {
   }
 
   private async init() {
+    if (this.gitDir) return;
     if (existsSync(join(this.dir, "HEAD"))) return;
     mkdirSync(dirname(this.dir), { recursive: true });
     const r = Bun.spawnSync(["git", "init", "--bare", "-q", this.dir], { stdout: "ignore", stderr: "pipe" });
@@ -61,6 +64,7 @@ export class Shadow {
     return this.lock(async () => {
       await this.init();
       if (this.mode === "tree") {
+        if (this.gitDir) return this.realTree();
         const index = join(this.dir, "keel-index");
         try {
           await this.git(["add", "-A", "--ignore-errors", "--", "."], { index, timeout: 30_000, ok: [1] });
@@ -74,6 +78,19 @@ export class Shadow {
       }
       return this.writtenTree(paths ?? []);
     });
+  }
+
+  // A real repository's working tree as a tree, through a copy of its own
+  // index (its stat cache spares hashing unchanged files); its index is not touched.
+  private async realTree(): Promise<string> {
+    const index = join(this.dir, `keel-snap-${crypto.randomUUID()}`);
+    try {
+      if (existsSync(join(this.dir, "index"))) copyFileSync(join(this.dir, "index"), index);
+      await this.git(["add", "-A", "--ignore-errors", "--", "."], { index, ok: [1] });
+      return (await this.git(["write-tree"], { index })).trim();
+    } finally {
+      rmSync(index, { force: true });
+    }
   }
 
   private async writtenTree(paths: string[]): Promise<string> {

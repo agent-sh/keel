@@ -5,6 +5,7 @@ import { FileDiff, History, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
+import { BranchReview } from "./BranchReview.tsx";
 import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
 
 type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written" };
@@ -227,8 +228,8 @@ export function ChangesPanel({ sessionId, open, onOpenChange, extraTabs }: {
   );
 }
 
-// The header button that opens the panel.
-export function ChangesButton({ sessionId, extraTabs }: { sessionId: string; extraTabs?: { id: string; label: string; panel: ReactNode }[] }) {
+// The header button that opens the panel; it carries the branch review tab.
+export function ChangesButton({ sessionId }: { sessionId: string }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -240,7 +241,12 @@ export function ChangesButton({ sessionId, extraTabs }: { sessionId: string; ext
       >
         <FileDiff className="size-3.5" /> <span className="max-sm:hidden">Changes</span>
       </button>
-      <ChangesPanel sessionId={sessionId} open={open} onOpenChange={setOpen} extraTabs={extraTabs} />
+      <ChangesPanel
+        sessionId={sessionId}
+        open={open}
+        onOpenChange={setOpen}
+        extraTabs={[{ id: "branch", label: "Branch review", panel: <BranchReview sessionId={sessionId} onSent={() => setOpen(false)} /> }]}
+      />
     </>
   );
 }
