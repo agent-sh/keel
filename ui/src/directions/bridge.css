@@ -1,0 +1,192 @@
+/* Bridge. A wheelhouse of stations: every live session open side by side.
+   Color means state and nothing else: the interface itself is steel and ink,
+   buttons are ink; amber is work, violet is you, red is a failure.
+   Type: Martian Mono, narrowed, for the station's words and numbers (an
+   instrument face); IBM Plex Sans for what the agent writes. */
+:root[data-direction="bridge"] {
+  --bg: oklch(0.948 0.005 250);
+  --panel: oklch(0.915 0.008 250);
+  --raised: oklch(0.985 0.002 250);
+  --sunken: oklch(0.925 0.007 250);
+  --hover: oklch(0.88 0.01 250 / 0.6);
+  --fg: oklch(0.2 0.02 260);
+  --muted: oklch(0.42 0.02 258);
+  --faint: oklch(0.52 0.018 255);
+  --line: oklch(0.86 0.01 252);
+  --line-strong: oklch(0.76 0.014 252);
+  --accent: oklch(0.2 0.02 260);
+  --accent-hover: oklch(0.32 0.03 260);
+  --accent-fg: oklch(0.97 0.004 250);
+  --accent-soft: oklch(0.89 0.012 252);
+  --accent-ink: oklch(0.3 0.03 262);
+  --brass: oklch(0.64 0.15 62);
+  --brass-soft: oklch(0.93 0.05 75);
+  --code-bg: oklch(0.935 0.006 250);
+  --ring: oklch(0.55 0.2 295 / 0.6);
+  --st-need: oklch(0.52 0.22 295);
+  --st-work: oklch(0.64 0.15 62);
+  --st-fail: oklch(0.55 0.2 27);
+  --st-done: oklch(0.52 0.09 168);
+  --font-sans: "IBM Plex Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-inst: "Martian Mono Variable", "JetBrains Mono Variable", ui-monospace, monospace;
+}
+:root.dark[data-direction="bridge"] {
+  --bg: oklch(0.205 0.016 255);
+  --panel: oklch(0.175 0.015 255);
+  --raised: oklch(0.235 0.018 255);
+  --sunken: oklch(0.185 0.015 255);
+  --hover: oklch(0.3 0.02 255 / 0.55);
+  --fg: oklch(0.93 0.008 250);
+  --muted: oklch(0.74 0.014 252);
+  --faint: oklch(0.6 0.014 252);
+  --line: oklch(0.29 0.015 255);
+  --line-strong: oklch(0.38 0.018 255);
+  --accent: oklch(0.93 0.008 250);
+  --accent-hover: oklch(0.99 0.004 250);
+  --accent-fg: oklch(0.2 0.016 255);
+  --accent-soft: oklch(0.3 0.02 255);
+  --accent-ink: oklch(0.88 0.03 280);
+  --brass: oklch(0.8 0.15 72);
+  --brass-soft: oklch(0.32 0.05 70);
+  --code-bg: oklch(0.18 0.015 255);
+  --ring: oklch(0.74 0.17 295 / 0.65);
+  --st-need: oklch(0.74 0.17 295);
+  --st-work: oklch(0.8 0.15 72);
+  --st-fail: oklch(0.7 0.18 27);
+  --st-done: oklch(0.74 0.09 168);
+}
+
+[data-direction="bridge"] .k-bridge { display: flex; height: 100%; width: 100%; background: var(--bg); }
+
+/* The spine: the ship's keel, every session a mark along it. */
+[data-direction="bridge"] .k-spine {
+  display: flex; flex-direction: column; align-items: center;
+  width: 60px; flex-shrink: 0; padding: 10px 0;
+  background: var(--panel); border-right: 1px solid var(--line);
+}
+[data-direction="bridge"] .k-spine-top, [data-direction="bridge"] .k-spine-bottom { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+[data-direction="bridge"] .k-spine-logo { display: grid; place-items: center; height: 40px; color: var(--fg); }
+[data-direction="bridge"] .k-spine-logo:not([data-live]) { opacity: 0.45; }
+[data-direction="bridge"] .k-spine-btn {
+  position: relative; display: grid; place-items: center; width: 40px; height: 36px;
+  border-radius: 6px; color: var(--muted);
+}
+[data-direction="bridge"] .k-spine-btn:hover { background: var(--hover); color: var(--fg); }
+[data-direction="bridge"] .k-spine-btn[aria-current] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
+[data-direction="bridge"] .k-spine-btn[data-alert] { color: var(--st-fail); }
+[data-direction="bridge"] .k-spine-count { position: absolute; right: 2px; top: 1px; font: 600 10px/1 var(--font-inst); font-stretch: 75%; }
+[data-direction="bridge"] .k-spine-list {
+  flex: 1; min-height: 0; overflow-y: auto; width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  margin: 12px 0; padding: 10px 0; border-block: 1px solid var(--line);
+  scrollbar-width: none;
+}
+[data-direction="bridge"] .k-tick {
+  position: relative; display: grid; place-items: center; width: 40px; height: 26px; border-radius: 5px;
+}
+[data-direction="bridge"] .k-tick:hover { background: var(--hover); }
+/* A station on screen: a bracket on the spine's edge. */
+[data-direction="bridge"] .k-tick[data-shown]::before {
+  content: ""; position: absolute; left: -10px; top: 4px; bottom: 4px; width: 3px; border-radius: 0 2px 2px 0; background: var(--line-strong);
+}
+[data-direction="bridge"] .k-tick[aria-current]::before { background: var(--fg); }
+[data-direction="bridge"] .k-tick[aria-current] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+/* Stations. */
+[data-direction="bridge"] .k-stations {
+  flex: 1; min-width: 0; display: flex; overflow-x: auto; scroll-snap-type: x proximity;
+}
+[data-direction="bridge"] .k-station {
+  position: relative; flex: 1 1 0; min-width: 540px; display: flex; flex-direction: column;
+  border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start;
+}
+[data-direction="bridge"] .k-station[data-helm] { flex-grow: 1.45; background: var(--raised); }
+[data-direction="bridge"] .k-stations[data-count="1"] .k-station { flex-grow: 1; }
+[data-direction="bridge"] .k-station:last-child { border-right: 0; }
+
+/* The band: the station's state in one bar across its top. */
+[data-direction="bridge"] .k-band { height: 4px; flex-shrink: 0; background: var(--line-strong); position: relative; overflow: hidden; }
+[data-direction="bridge"] .k-station[data-watch="need"] .k-band { background: var(--st-need); height: 6px; }
+[data-direction="bridge"] .k-station[data-watch="fail"] .k-band { background: var(--st-fail); }
+[data-direction="bridge"] .k-station[data-watch="done"] .k-band { background: color-mix(in oklch, var(--st-done) 55%, var(--line)); }
+[data-direction="bridge"] .k-station[data-watch="work"] .k-band { background: color-mix(in oklch, var(--st-work) 30%, var(--line)); }
+[data-direction="bridge"] .k-station[data-watch="work"] .k-band::after {
+  content: ""; position: absolute; inset: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, var(--st-work), transparent);
+  animation: wake 2.2s ease-in-out infinite;
+}
+[data-direction="bridge"] .k-station[data-watch="need"] { box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-need) 45%, transparent); }
+
+[data-direction="bridge"] .k-station-head { padding: 14px 22px 12px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+[data-direction="bridge"] .k-station-word {
+  font-family: var(--font-inst); font-stretch: 75%; font-weight: 700; font-size: 13px; letter-spacing: 0.01em;
+  color: var(--st-done);
+}
+[data-direction="bridge"] .k-station[data-watch="need"] .k-station-word { color: var(--st-need); }
+[data-direction="bridge"] .k-station[data-watch="work"] .k-station-word { color: var(--st-work); }
+[data-direction="bridge"] .k-station[data-watch="fail"] .k-station-word { color: var(--st-fail); }
+[data-direction="bridge"] .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
+[data-direction="bridge"] .k-station-clock { font-family: var(--font-inst); font-stretch: 75%; font-size: 13px; color: var(--fg); }
+[data-direction="bridge"] .k-station-meta { font-family: var(--font-inst); font-stretch: 75%; font-size: 11.5px; color: var(--faint); white-space: pre; }
+[data-direction="bridge"] .k-station-title {
+  margin-top: 4px; font-family: var(--font-inst); font-stretch: 87.5%; font-weight: 600; font-size: 19px;
+  letter-spacing: -0.02em; line-height: 1.25; color: var(--fg);
+}
+[data-direction="bridge"] .k-station[data-helm] .k-station-title { font-size: 22px; }
+[data-direction="bridge"] .k-station-line { margin-top: 3px; font-size: 13px; color: var(--muted); }
+
+/* The helm's full header: the tools row only (its title is in the head above). */
+[data-direction="bridge"] .k-station [data-testid="session-header"] { height: 40px; background: transparent; backdrop-filter: none; border-bottom-color: var(--line); }
+[data-direction="bridge"] .k-station [data-testid="session-header"] [data-testid="session-title"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+[data-direction="bridge"] .k-station [data-testid="session-header"] > .absolute { display: none; }
+[data-direction="bridge"] .k-station [data-testid="show-sidebar"], [data-direction="bridge"] .k-station-new [data-testid="show-sidebar"] { display: none; }
+
+/* Inside a station: the transcript fills it, a little tighter than reading width. */
+[data-direction="bridge"] .k-station [data-testid="transcript"] { max-width: 46rem; padding-top: 22px; gap: 14px; }
+[data-direction="bridge"] .k-station .k-compose-in { max-width: 46rem; }
+[data-direction="bridge"] .prose-keel { font-size: 15px; line-height: 1.65; }
+
+/* The owner's words: ink rule on the left, no bubble. */
+[data-direction="bridge"] [data-testid="user-message"] { align-items: stretch; }
+[data-direction="bridge"] [data-testid="user-message"] > .rounded-xl {
+  max-width: none; border-radius: 3px; background: var(--sunken);
+  border-left: 3px solid var(--fg); padding: 10px 14px; font-size: 15px;
+}
+
+/* Tool calls: instrument rows. A running one carries the work color on its edge. */
+[data-direction="bridge"] [data-testid="tool-call"] { border-radius: 4px; box-shadow: none; border-color: var(--line); border-left-width: 3px; }
+[data-direction="bridge"] [data-testid="tool-call"] > button { height: 36px; border-radius: 0; }
+[data-direction="bridge"] [data-testid="tool-call"][data-state="running"], [data-direction="bridge"] [data-testid="tool-call"][data-state="live"] { border-left-color: var(--st-work); }
+[data-direction="bridge"] [data-testid="tool-call"][data-state="error"] { border-left-color: var(--st-fail); }
+[data-direction="bridge"] [data-testid="tool-call"][data-state="ok"] { border-left-color: var(--line-strong); }
+[data-direction="bridge"] [data-testid="tool-call"] > button > .font-medium { font-family: var(--font-inst); font-stretch: 75%; font-weight: 600; font-size: 12.5px; }
+[data-direction="bridge"] [data-testid="terminal"], [data-direction="bridge"] [data-testid="diff"] > div { border-radius: 3px; }
+[data-direction="bridge"] [data-testid="turn-end"] { font-family: var(--font-inst); font-stretch: 75%; font-size: 11px; }
+
+/* Composer: a flat console field. */
+[data-direction="bridge"] [data-testid="composer-box"] { border-radius: 5px; box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
+[data-direction="bridge"] .k-station:not([data-helm]) [data-testid="composer-box"] { background: transparent; }
+[data-direction="bridge"] [data-testid="composer-box"]:focus-within { box-shadow: 0 0 0 2px var(--ring); }
+[data-direction="bridge"] [data-testid="send"] { border-radius: 4px; }
+
+/* Approvals: the one thing in violet. */
+[data-direction="bridge"] [data-testid="approval"] { border-radius: 5px; border-color: var(--st-need); border-width: 1.5px; box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 14%, transparent); }
+[data-direction="bridge"] [data-testid="question"][data-state="open"] { border-color: var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 14%, transparent); }
+
+/* The new-session station. */
+[data-direction="bridge"] .k-station-new h1 { font-family: var(--font-inst); font-stretch: 87.5%; font-weight: 600; font-size: 30px; letter-spacing: -0.03em; }
+[data-direction="bridge"] .k-station-new .md\:mt-\[18vh\] { margin-top: 14vh; }
+
+/* Phone: one station, the spine runs along the bottom. */
+@media (max-width: 767px) {
+  [data-direction="bridge"] .k-bridge { flex-direction: column-reverse; }
+  [data-direction="bridge"] .k-spine { flex-direction: row; width: 100%; height: calc(52px + env(safe-area-inset-bottom)); padding: 0 6px env(safe-area-inset-bottom); border-right: 0; border-top: 1px solid var(--line); }
+  [data-direction="bridge"] .k-spine-top, [data-direction="bridge"] .k-spine-bottom { flex-direction: row; }
+  [data-direction="bridge"] .k-spine-top .k-spine-logo, [data-direction="bridge"] .k-spine-bottom [data-testid="theme-toggle"], [data-direction="bridge"] .k-spine-bottom [data-testid="errors-button"] { display: none; }
+  [data-direction="bridge"] .k-spine-list { flex-direction: row; margin: 0 6px; padding: 0 6px; border-block: 0; border-inline: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; height: 100%; }
+  [data-direction="bridge"] .k-tick { width: 30px; height: 40px; }
+  [data-direction="bridge"] .k-tick[data-shown]::before { left: 4px; right: 4px; top: auto; bottom: -5px; width: auto; height: 3px; }
+  [data-direction="bridge"] .k-station { min-width: 100%; }
+  [data-direction="bridge"] .k-station-head { padding: 10px 14px 8px; }
+  [data-direction="bridge"] .k-station-title { font-size: 17px; }
+}

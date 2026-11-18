@@ -2,6 +2,13 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Directions: each restyles the shell and its components under
+   :root[data-direction=...]. Unlayered, so they win over utilities. */
+@import "./directions/shared.css";
+@import "./directions/bridge.css";
+@import "./directions/wake.css";
+@import "./directions/watch.css";
+
 /* Design tokens. Every color, size and motion in the UI comes from here;
    components never pick raw values.
 

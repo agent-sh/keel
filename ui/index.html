@@ -12,7 +12,9 @@
     <script>
       (function () {
         var t = localStorage.getItem("keel.theme") || "system";
-        var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        var d = new URLSearchParams(location.search).get("direction") || localStorage.getItem("keel.direction") || "classic";
+        document.documentElement.dataset.direction = d;
+        var dark = d === "watch" || t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.classList.toggle("dark", dark);
         document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#141b22" : "#f7faf9");
       })();

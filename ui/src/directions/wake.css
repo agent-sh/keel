@@ -1,0 +1,199 @@
+/* Wake. A nautical chart of the work: water-pale paper, navy ink, and
+   chart magenta (the color charts print courses and hazards in) for what
+   needs the owner. The open session is a logbook: Newsreader for the
+   prose, JetBrains Mono for the work, set beside the text in the margin. */
+:root[data-direction="wake"] {
+  --bg: oklch(0.982 0.006 230);
+  --panel: oklch(0.955 0.014 228);
+  --raised: oklch(0.995 0.002 230);
+  --sunken: oklch(0.948 0.012 228);
+  --hover: oklch(0.92 0.02 228 / 0.6);
+  --fg: oklch(0.25 0.05 258);
+  --muted: oklch(0.44 0.045 255);
+  --faint: oklch(0.54 0.035 252);
+  --line: oklch(0.885 0.02 232);
+  --line-strong: oklch(0.79 0.03 236);
+  --accent: oklch(0.3 0.07 258);
+  --accent-hover: oklch(0.38 0.08 258);
+  --accent-fg: oklch(0.98 0.005 230);
+  --accent-soft: oklch(0.92 0.025 240);
+  --accent-ink: oklch(0.36 0.09 258);
+  --brass: oklch(0.5 0.13 248);
+  --brass-soft: oklch(0.92 0.03 245);
+  --code-bg: oklch(0.962 0.01 228);
+  --ring: oklch(0.55 0.22 350 / 0.55);
+  --st-need: oklch(0.55 0.23 350);
+  --st-work: oklch(0.5 0.14 250);
+  --st-fail: oklch(0.55 0.2 27);
+  --st-done: oklch(0.45 0.04 255);
+  --water: oklch(0.935 0.025 225);
+  --contour: oklch(0.88 0.03 225);
+  --font-sans: "IBM Plex Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-log: "Newsreader Variable", Georgia, serif;
+}
+:root.dark[data-direction="wake"] {
+  --bg: oklch(0.215 0.03 250);
+  --panel: oklch(0.245 0.038 245);
+  --raised: oklch(0.235 0.032 250);
+  --sunken: oklch(0.195 0.028 250);
+  --hover: oklch(0.31 0.04 245 / 0.55);
+  --fg: oklch(0.93 0.015 230);
+  --muted: oklch(0.77 0.03 235);
+  --faint: oklch(0.64 0.03 240);
+  --line: oklch(0.31 0.035 245);
+  --line-strong: oklch(0.4 0.04 242);
+  --accent: oklch(0.9 0.03 230);
+  --accent-hover: oklch(0.97 0.015 230);
+  --accent-fg: oklch(0.22 0.03 250);
+  --accent-soft: oklch(0.32 0.045 245);
+  --accent-ink: oklch(0.85 0.06 235);
+  --brass: oklch(0.78 0.11 230);
+  --brass-soft: oklch(0.32 0.05 240);
+  --code-bg: oklch(0.195 0.028 250);
+  --ring: oklch(0.74 0.18 350 / 0.6);
+  --st-need: oklch(0.74 0.19 350);
+  --st-work: oklch(0.8 0.11 225);
+  --st-fail: oklch(0.72 0.17 27);
+  --st-done: oklch(0.72 0.03 240);
+  --water: oklch(0.255 0.04 245);
+  --contour: oklch(0.3 0.04 245);
+}
+
+[data-direction="wake"] .k-wake { display: flex; flex-direction: column; width: 100%; height: 100%; background: var(--bg); }
+
+/* The chart. */
+[data-direction="wake"] .k-chart {
+  --label-w: 300px; --line-w: 34rem;
+  flex-shrink: 0; background: var(--water); border-bottom: 1px solid var(--line-strong);
+  display: flex; flex-direction: column; max-height: 44vh;
+}
+@media (max-width: 1700px) { [data-direction="wake"] .k-chart { --line-w: 22rem; } }
+@media (max-width: 1100px) { [data-direction="wake"] .k-chart { --line-w: 0px; --label-w: 220px; } [data-direction="wake"] .k-lane-line { display: none; } }
+[data-direction="wake"] .k-chart-bar { display: flex; align-items: center; gap: 28px; height: 52px; padding: 0 20px; flex-shrink: 0; }
+[data-direction="wake"] .k-brand { display: flex; align-items: center; gap: 8px; font-family: var(--font-log); font-style: italic; font-size: 22px; font-weight: 500; letter-spacing: -0.01em; color: var(--fg); }
+[data-direction="wake"] .k-chart-sum { display: flex; gap: 22px; font-family: var(--font-log); font-size: 16px; color: var(--muted); }
+[data-direction="wake"] .k-chart-sum [data-watch="need"] { color: var(--st-need); font-weight: 600; }
+[data-direction="wake"] .k-chart-sum [data-watch="work"] { color: var(--st-work); }
+[data-direction="wake"] .k-chart-sum [data-watch="fail"] { color: var(--st-fail); }
+[data-direction="wake"] .k-chart-tools { margin-left: auto; display: flex; gap: 2px; }
+[data-direction="wake"] .k-chart-tools button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 9px; border-radius: 4px; color: var(--muted); font-size: 13px; }
+[data-direction="wake"] .k-chart-tools button:hover { background: var(--hover); color: var(--fg); }
+[data-direction="wake"] .k-chart-tools button[aria-current] { color: var(--fg); box-shadow: inset 0 -2px 0 var(--fg); border-radius: 0; }
+[data-direction="wake"] .k-chart-tools [data-testid="new-session"] { color: var(--fg); font-weight: 500; }
+[data-direction="wake"] .k-chart-tools [data-alert] { color: var(--st-fail); }
+
+[data-direction="wake"] .k-chart-body { min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+[data-direction="wake"] .k-axis {
+  position: relative; height: 22px; margin: 0 var(--line-w) 0 var(--label-w);
+  font: 11px/22px var(--font-mono); color: var(--faint); border-bottom: 1px solid var(--contour);
+}
+[data-direction="wake"] .k-axis > span { position: absolute; left: calc(var(--x) * 100%); transform: translateX(-50%); }
+[data-direction="wake"] .k-axis > .k-now-label { left: calc(var(--nowf) * 100%); color: var(--fg); font-weight: 600; }
+
+[data-direction="wake"] .k-lanes { position: relative; }
+/* The now line, through every lane. */
+[data-direction="wake"] .k-lanes::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 1.5px; pointer-events: none;
+  left: calc(var(--label-w) + (100% - var(--label-w) - var(--line-w)) * var(--nowf));
+  background: var(--fg); opacity: 0.55;
+}
+[data-direction="wake"] .k-lane {
+  display: grid; grid-template-columns: var(--label-w) 1fr var(--line-w); align-items: center; height: 32px;
+  border-bottom: 1px dashed var(--contour);
+}
+[data-direction="wake"] .k-lane[aria-current] { background: color-mix(in oklch, var(--raised) 70%, transparent); }
+[data-direction="wake"] .k-lane-label { display: flex; align-items: center; gap: 10px; height: 100%; padding: 0 14px 0 20px; text-align: left; min-width: 0; }
+[data-direction="wake"] .k-lane-label:hover .k-lane-title { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
+[data-direction="wake"] .k-lane-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-log); font-size: 15.5px; color: var(--fg); }
+[data-direction="wake"] .k-lane[aria-current] .k-lane-title { font-weight: 600; }
+[data-direction="wake"] .k-lane-sub { flex-shrink: 0; font-size: 11.5px; color: var(--faint); }
+[data-direction="wake"] .k-lane[data-watch="need"] .k-lane-sub { color: var(--st-need); font-weight: 600; }
+[data-direction="wake"] .k-lane[data-watch="work"] .k-lane-sub { color: var(--st-work); }
+[data-direction="wake"] .k-lane[data-watch="fail"] .k-lane-sub { color: var(--st-fail); }
+[data-direction="wake"] .k-lane-track { position: relative; height: 100%; }
+[data-direction="wake"] .k-lane-line { padding: 0 20px 0 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-log); font-style: italic; font-size: 14px; color: var(--muted); }
+
+/* A turn: a bar of ink. A live one is the work color and grows at now. */
+[data-direction="wake"] .k-span { position: absolute; top: 11px; height: 10px; border-radius: 1px; background: var(--st-done); opacity: 0.8; min-width: 3px; }
+[data-direction="wake"] .k-span[data-reason="error"] { background: var(--st-fail); opacity: 1; }
+[data-direction="wake"] .k-span[data-live] { background: var(--st-work); opacity: 1; }
+[data-direction="wake"] .k-span[data-live]::after {
+  content: ""; position: absolute; right: -3px; top: -3px; width: 6px; height: 16px; border-radius: 2px;
+  background: var(--st-work); animation: k-breathe 1.6s ease-in-out infinite;
+}
+@keyframes k-breathe { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+/* Tool calls: edits stand tall, commands half, reads are short. */
+[data-direction="wake"] .k-tickmark { position: absolute; top: 6px; width: 1.5px; height: 6px; background: var(--fg); opacity: 0.5; }
+[data-direction="wake"] .k-tickmark[data-kind="edit"], [data-direction="wake"] .k-tickmark[data-kind="write"], [data-direction="wake"] .k-tickmark[data-kind="patch"] { top: 3px; height: 26px; opacity: 0.9; width: 2px; }
+[data-direction="wake"] .k-tickmark[data-kind="shell"] { top: 4px; height: 12px; opacity: 0.75; }
+[data-direction="wake"] .k-tickmark[data-error] { background: var(--st-fail); opacity: 1; }
+[data-direction="wake"] .k-notch { position: absolute; bottom: 2px; width: 0; height: 0; transform: translateX(-5px); border: 5px solid transparent; border-bottom: 8px solid var(--st-fail); border-top: 0; }
+/* Waiting on the owner: a pennant on the now line. */
+[data-direction="wake"] .k-flag {
+  position: absolute; top: 5px; left: calc(var(--nowf) * 100%); width: 18px; height: 14px; margin-left: 1px;
+  background: var(--st-need); clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+[data-direction="wake"] .k-lane-empty { padding: 18px 20px; font-family: var(--font-log); font-style: italic; color: var(--muted); }
+
+/* The logbook. */
+[data-direction="wake"] .k-log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+[data-direction="wake"] [data-testid="session-header"] { background: var(--bg); backdrop-filter: none; height: 52px; padding-inline: 20px; }
+[data-direction="wake"] [data-testid="session-header"] > .absolute { display: none; }
+[data-direction="wake"] [data-testid="session-title"] { font-family: var(--font-log); font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+[data-direction="wake"] .k-log [data-testid="show-sidebar"] { display: none; }
+[data-direction="wake"] .prose-keel { font-family: var(--font-log); font-size: 17.5px; line-height: 1.62; }
+[data-direction="wake"] .prose-keel code, [data-direction="wake"] .prose-keel pre { font-family: var(--font-mono); }
+
+/* Prompts: a logbook entry, ruled and set in italic. */
+[data-direction="wake"] [data-testid="user-message"] { align-items: flex-start; border-top: 1px solid var(--line-strong); padding-top: 14px; margin-top: 10px; }
+[data-direction="wake"] [data-testid="user-message"] > .rounded-xl {
+  max-width: 40rem; background: none; padding: 0; border-radius: 0;
+  font-family: var(--font-log); font-style: italic; font-size: 20px; line-height: 1.45; color: var(--fg);
+}
+[data-direction="wake"] [data-testid="tool-call"] { border-radius: 2px; box-shadow: none; background: var(--raised); border-color: var(--line); }
+[data-direction="wake"] [data-testid="tool-call"][data-state="running"], [data-direction="wake"] [data-testid="tool-call"][data-state="live"] { border-color: var(--st-work); }
+[data-direction="wake"] [data-testid="tool-call"][data-state="error"] { border-color: color-mix(in oklch, var(--st-fail) 60%, var(--line)); }
+[data-direction="wake"] [data-testid="tool-call"] > button { height: 34px; font-family: var(--font-mono); font-size: 12px; }
+[data-direction="wake"] [data-testid="tool-call"] > button > .font-medium { font-weight: 600; }
+[data-direction="wake"] [data-testid="turn-end"] { font-family: var(--font-mono); font-size: 11px; }
+[data-direction="wake"] [data-testid="composer-box"] { border-radius: 2px; box-shadow: none; border-width: 0 0 0 0; border-top: 1.5px solid var(--fg); background: transparent; }
+[data-direction="wake"] [data-testid="composer-box"] textarea { font-family: var(--font-log); font-size: 18px; }
+[data-direction="wake"] [data-testid="composer-box"]:focus-within { box-shadow: none; border-top-color: var(--st-need); }
+[data-direction="wake"] [data-testid="approval"] { border-radius: 2px; border: 1.5px solid var(--st-need); box-shadow: 6px 6px 0 color-mix(in oklch, var(--st-need) 18%, transparent); }
+[data-direction="wake"] [data-testid="question"][data-state="open"] { border-color: var(--st-need); }
+[data-direction="wake"] .k-log h1 { font-family: var(--font-log); font-weight: 500; font-size: 40px; letter-spacing: -0.02em; }
+[data-direction="wake"] .k-log .md\:mt-\[18vh\] { margin-top: 7vh; }
+
+/* Wide screens: the work goes in the margin beside the words that asked for it. */
+@media (min-width: 1500px) {
+  [data-direction="wake"] [data-testid="transcript"] {
+    max-width: none; margin: 0; display: grid; align-items: start;
+    grid-template-columns: minmax(0, 44rem) minmax(0, 1fr); column-gap: 56px; row-gap: 14px;
+    padding: 28px 56px 40px;
+  }
+  [data-direction="wake"] [data-testid="transcript"] > div[data-event-id] { display: contents; }
+  [data-direction="wake"] [data-testid="transcript"] > *,
+  [data-direction="wake"] [data-testid="transcript"] > div[data-event-id] > * { grid-column: 1; }
+  [data-direction="wake"] [data-testid="transcript"] > div[data-event-id] > [data-testid="tool-call"],
+  [data-direction="wake"] [data-testid="transcript"] > div[data-event-id] > [data-testid="plan"],
+  [data-direction="wake"] [data-testid="transcript"] > div > [data-testid="tool-call"] { grid-column: 2; max-width: 60rem; }
+  [data-direction="wake"] [data-testid="transcript"] > [data-testid="user-message"],
+  [data-direction="wake"] [data-testid="transcript"] > [data-testid="note"],
+  [data-direction="wake"] [data-testid="transcript"] > [data-testid="compacted"],
+  [data-direction="wake"] [data-testid="transcript"] > [data-testid="cleared"] { grid-column: 1 / -1; }
+  [data-direction="wake"] [data-testid="user-message"] > .rounded-xl { max-width: 44rem; }
+  [data-direction="wake"] .k-compose { padding-left: 56px; }
+  [data-direction="wake"] .k-compose-in { margin: 0; max-width: 44rem; padding-inline: 0; }
+}
+
+@media (max-width: 767px) {
+  [data-direction="wake"] .k-chart { --label-w: 46%; --line-w: 0px; max-height: 38vh; }
+  [data-direction="wake"] .k-chart-bar { gap: 12px; padding: 0 10px; }
+  [data-direction="wake"] .k-chart-sum { font-size: 14px; gap: 10px; }
+  [data-direction="wake"] .k-chart-tools [data-testid="show-sidebar"], [data-direction="wake"] .k-chart-tools [data-testid="theme-toggle"], [data-direction="wake"] .k-chart-tools [data-testid="errors-button"] { display: none; }
+  [data-direction="wake"] .k-chart-tools [data-testid="new-session"] { font-size: 0; gap: 0; }
+  [data-direction="wake"] .k-lane-label { padding-left: 10px; }
+  [data-direction="wake"] .k-lane-sub { display: none; }
+  [data-direction="wake"] .k-brand { font-size: 19px; }
+  [data-direction="wake"] .prose-keel { font-size: 17px; }
+}

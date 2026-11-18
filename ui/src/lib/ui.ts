@@ -93,7 +93,7 @@ matchMedia("(max-width: 767px)").addEventListener("change", (e) => setUI({ sideb
 
 const media = matchMedia("(prefers-color-scheme: dark)");
 function applyTheme() {
-  const dark = state.theme === "dark" || (state.theme === "system" && media.matches);
+  const dark = document.documentElement.dataset.direction === "watch" || state.theme === "dark" || (state.theme === "system" && media.matches);
   const root = document.documentElement;
   if (root.classList.contains("dark") === dark) return;
   root.classList.add("theme-switch");
@@ -107,6 +107,7 @@ export function setTheme(t: ThemePref) {
   setUI({ theme: t });
   applyTheme();
 }
+export const reapplyTheme = applyTheme;
 export const isDark = () => document.documentElement.classList.contains("dark");
 export const phone = isPhone;
 export const seedComposer = (text: string) => setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1 } });

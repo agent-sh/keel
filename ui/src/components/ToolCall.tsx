@@ -81,7 +81,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
   // Diffs are what the owner wants to see: small ones start open.
   const [open, setOpen] = useState(() => !!diff && diff.lines.length <= 40 && !live);
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-tool={use.name}>
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-tool={use.name} data-state={live ? "live" : state} data-kind={kind}>
       <Collapsible.Trigger className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui hover:bg-hover">
         <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" ? "bg-danger-soft text-danger" : state === "running" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
           <Icon className="size-3.5" />
