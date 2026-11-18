@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { D, alertHook, capture, deliver, emit, familyOf, inert } from "./core.ts";
 import { nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
 
@@ -29,6 +29,8 @@ export type LoopRecord = {
   max_delay: number;
   disabled_reason?: string | null;
   next_runs?: number[];
+  signed?: boolean;
+  min_interval?: number | null;
 };
 
 export type RunRecord = {
@@ -54,6 +56,8 @@ const MODEL_EXPIRY = 7 * 86400_000; // a Loop a model creates ends within seven 
 const AUTO_DEFAULT = 1200; // a self-paced run that names no delay
 const FAIL_PAUSE = 3;
 const WEBHOOK_MIN_INTERVAL = 10_000;
+const SIGNATURE_TOLERANCE = 300_000; // Standard Webhooks: a timestamp more than five minutes off is refused
+const SEEN_KEEP = 7 * 86400_000; // delivery ids remembered this long (GitHub's carry no timestamp)
 const BODY_CAP = 16 * 1024;
 
 export const DEFAULT_PROMPT =
@@ -106,14 +110,24 @@ CREATE TABLE IF NOT EXISTS loop_runs (
   stop INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS loop_runs_loop ON loop_runs(loop_id, due_ms DESC);
-CREATE INDEX IF NOT EXISTS loop_runs_open ON loop_runs(session_id, ended_ms);`);
+CREATE INDEX IF NOT EXISTS loop_runs_open ON loop_runs(session_id, ended_ms);
+CREATE TABLE IF NOT EXISTS webhook_seen (loop_id TEXT NOT NULL, msg_id TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (loop_id, msg_id));`);
+  const { store } = D();
+  // A signed webhook loop keeps its signing secret (a hash cannot check an HMAC);
+  // it leaves the store only in the answer that made it.
+  if (!store.columnExists("loops", "hook_secret")) store.migrate("ALTER TABLE loops ADD COLUMN hook_secret TEXT");
+  if (!store.columnExists("loops", "min_interval")) store.migrate("ALTER TABLE loops ADD COLUMN min_interval INTEGER");
+  db().query("DELETE FROM webhook_seen WHERE ts < ?").run(Date.now() - SEEN_KEEP);
 }
 
-type Row = Omit<LoopRecord, "enabled" | "next_runs"> & { enabled: number; hook_hash: string | null; fallback_used: number; webhook_pending: string | null; last_hook_ms: number | null };
+type Row = Omit<LoopRecord, "enabled" | "next_runs" | "signed"> & {
+  enabled: number; hook_hash: string | null; hook_secret: string | null; fallback_used: number; webhook_pending: string | null; last_hook_ms: number | null;
+};
 function toRec(r: Row): LoopRecord {
-  const { hook_hash, fallback_used, webhook_pending, last_hook_ms, ...rest } = r;
+  const { hook_hash, hook_secret, fallback_used, webhook_pending, last_hook_ms, ...rest } = r;
   void hook_hash; void fallback_used; void webhook_pending; void last_hook_ms;
   const rec: LoopRecord = { ...rest, enabled: !!r.enabled };
+  if (r.kind === "webhook") rec.signed = !!hook_secret;
   if (r.kind === "cron") rec.next_runs = nextRuns(r.schedule, Date.now(), 3);
   return rec;
 }
@@ -176,9 +190,13 @@ function nextDue(l: Pick<LoopRecord, "kind" | "schedule">, from: number): number
 export type CreateInput = {
   session_id: string; name?: string; prompt?: string; schedule: string; max_runs?: number | null; until_ms?: number | null;
   created_by?: "owner" | "model"; min_delay_seconds?: number; max_delay_seconds?: number; first_delay_seconds?: number;
+  signed?: boolean; min_interval_seconds?: number;
 };
 
-export function create(input: CreateInput): { loop: LoopRecord; hook_key?: string } {
+const newSecret = () => `whsec_${randomBytes(32).toString("base64")}`;
+const sha = (k: string) => createHash("sha256").update(k).digest("hex");
+
+export function create(input: CreateInput): { loop: LoopRecord; hook_key?: string; hook_secret?: string } {
   const s = D().store.session(input.session_id);
   if (!s) throw new Error("no such session");
   if (s.archived) throw new Error("the session is archived");
@@ -186,6 +204,13 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
   const sch = parseSchedule(input.schedule);
   const by = input.created_by ?? "owner";
   if (sch.kind === "webhook" && by === "model") throw new Error("a webhook loop is the owner's to create: its key is the owner's");
+  if (sch.kind !== "webhook" && (input.signed || input.min_interval_seconds !== undefined)) throw new Error("signed and min_interval_seconds are for a webhook loop");
+  let minInterval: number | null = null;
+  if (input.min_interval_seconds !== undefined && input.min_interval_seconds !== null) {
+    const m = Number(input.min_interval_seconds);
+    if (!Number.isFinite(m) || m < 10 || m > YEAR) throw new Error("min_interval_seconds is 10 to a year");
+    minInterval = Math.round(m);
+  }
   const prompt = (input.prompt ?? "").trim() || DEFAULT_PROMPT;
   if (prompt.length > 8000) throw new Error("the prompt is at most 8,000 characters");
   const now = Date.now();
@@ -201,17 +226,19 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
   const first = sch.kind === "auto" ? now + Math.max(0, input.first_delay_seconds ?? 0) * 1000 : sch.kind === "webhook" ? null : nextDue({ kind: sch.kind, schedule }, now);
   let hookKey: string | undefined;
   let hash: string | null = null;
+  let secret: string | null = null;
   if (sch.kind === "webhook") {
     hookKey = randomBytes(32).toString("base64url");
-    hash = createHash("sha256").update(hookKey).digest("hex");
+    hash = sha(hookKey);
+    if (input.signed) secret = newSecret();
   }
   const name = (input.name ?? prompt.split("\n")[0]!).slice(0, 80);
-  db().query(`INSERT INTO loops (id, session_id, name, prompt, schedule, kind, schedule_text, created, created_by, max_runs, until_ms, next_ms, min_delay, max_delay, hook_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, input.session_id, name, prompt, schedule, sch.kind, sch.text, now, by, maxRuns, Number.isFinite(until as number) ? until : null, first, minD, maxD, hash);
+  db().query(`INSERT INTO loops (id, session_id, name, prompt, schedule, kind, schedule_text, created, created_by, max_runs, until_ms, next_ms, min_delay, max_delay, hook_hash, hook_secret, min_interval)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, input.session_id, name, prompt, schedule, sch.kind, sch.text, now, by, maxRuns, Number.isFinite(until as number) ? until : null, first, minD, maxD, hash, secret, minInterval);
   const loop = get(id)!;
   emit("loop", loop);
-  return { loop, hook_key: hookKey };
+  return { loop, hook_key: hookKey, hook_secret: secret ?? undefined };
 }
 
 export type UpdateInput = Partial<{ enabled: boolean; name: string; prompt: string; schedule: string; max_runs: number | null; until_ms: number | null }>;
@@ -253,13 +280,18 @@ export function remove(id: string): boolean {
   return true;
 }
 
-export function rotateKey(id: string): string {
-  const l = get(id);
-  if (!l) throw new Error("no such loop");
-  if (l.kind !== "webhook") throw new Error("only a webhook loop has a key");
+// A new key (and, for a signed loop, a new signing secret); the old ones stop
+// working at once. Both are in this answer only.
+export function rotateKey(id: string): { hook_key: string; hook_secret?: string } {
+  const r = row(id);
+  if (!r) throw new Error("no such loop");
+  if (r.kind !== "webhook") throw new Error("only a webhook loop has a key");
   const key = randomBytes(32).toString("base64url");
-  db().query("UPDATE loops SET hook_hash = ? WHERE id = ?").run(createHash("sha256").update(key).digest("hex"), id);
-  return key;
+  const secret = r.hook_secret ? newSecret() : null;
+  db().query("UPDATE loops SET hook_hash = ?, hook_secret = ? WHERE id = ?").run(sha(key), secret, id);
+  db().query("DELETE FROM webhook_seen WHERE loop_id = ?").run(id);
+  emit("loop", get(id));
+  return { hook_key: key, hook_secret: secret ?? undefined };
 }
 
 function skip(l: LoopRecord, due: number, reason: string) {
@@ -382,9 +414,13 @@ export function tick() {
         if (l.max_runs && l.runs >= l.max_runs) { patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` }); continue; }
         const late = now - l.next_ms! > 60_000;
         const note = late ? `Catch-up for ${new Date(l.next_ms!).toLocaleString()}: the daemon was down or the machine asleep; times missed meanwhile were not run.` : undefined;
-        // Next slot from now: a run longer than the interval skips the slots it covered.
-        patch(l.id, { next_ms: l.kind === "auto" ? null : nextDue(l, l.kind === "interval" ? Math.max(now, l.next_ms!) : now) });
-        start(l, l.next_ms!, { note });
+        // Next slot from now: a run longer than the interval skips the slots it
+        // covered. The new next time and the slot's run row commit together, so a
+        // crash between them cannot lose a slot without a trace.
+        db().transaction(() => {
+          patch(l.id, { next_ms: l.kind === "auto" ? null : nextDue(l, l.kind === "interval" ? Math.max(now, l.next_ms!) : now) });
+          start(l, l.next_ms!, { note });
+        })();
       } catch (e) {
         capture(e, { at: "loop tick", loop: l.id });
       }
@@ -402,22 +438,68 @@ export function runNow(id: string): LoopRecord {
   return get(id)!;
 }
 
+// Requests with a key no loop holds: past this many in a minute they get 429.
+// A request with the right key is never limited.
+const WRONG_KEY_LIMIT = 30;
+let wrongKeys: number[] = [];
+
+// Checks a signed loop's request: Standard Webhooks (webhook-id,
+// webhook-timestamp, webhook-signature: "v1,<base64 HMAC-SHA256 of
+// id.timestamp.body>", the key being the base64 after whsec_, a timestamp
+// within five minutes) or GitHub (X-Hub-Signature-256: "sha256=<hex HMAC of the
+// body>" keyed by the secret's text, deduplicated by X-GitHub-Delivery). A
+// delivery id is taken once. Returns the reason it fails, or the id.
+export function verifySignature(secret: string, body: string, h: Headers, now = Date.now()): { error: string } | { id: string } {
+  const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  const std = h.get("webhook-signature");
+  if (std !== null) {
+    const id = h.get("webhook-id") ?? "";
+    const ts = h.get("webhook-timestamp") ?? "";
+    if (!id || id.includes(".") || id.length > 200) return { error: "webhook-id is missing or not an id" };
+    if (!/^\d{1,12}$/.test(ts)) return { error: "webhook-timestamp is not a unix time in seconds" };
+    if (Math.abs(now - Number(ts) * 1000) > SIGNATURE_TOLERANCE) return { error: "webhook-timestamp is more than five minutes off" };
+    const key = Buffer.from(secret.replace(/^whsec_/, ""), "base64");
+    const want = createHmac("sha256", key).update(`${id}.${ts}.${body}`).digest("base64");
+    const ok = std.split(" ").some((part) => part.startsWith("v1,") && same(part.slice(3), want));
+    return ok ? { id: `std:${id}` } : { error: "the signature does not match" };
+  }
+  const gh = h.get("x-hub-signature-256");
+  if (gh !== null) {
+    const id = h.get("x-github-delivery") ?? "";
+    if (!id || id.length > 200) return { error: "X-GitHub-Delivery is missing" };
+    const want = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    return same(gh, want) ? { id: `gh:${id}` } : { error: "the signature does not match" };
+  }
+  return { error: "the request is not signed (webhook-signature or X-Hub-Signature-256)" };
+}
+
 // POST /api/webhooks/:key. The answer never says whether the key exists.
-export function webhook(key: string, body: string): { status: number; error?: string } {
+export function webhook(key: string, body: string, headers: Headers = new Headers()): { status: number; error?: string } {
   if (body.length > BODY_CAP) return { status: 413, error: "the body is over 16 KB" };
-  const hash = createHash("sha256").update(key).digest("hex");
-  const r = db().query<Row, [string]>("SELECT * FROM loops WHERE hook_hash = ?").get(hash);
-  if (!r) return { status: 200 };
-  const l = toRec(r);
+  const r = db().query<Row, [string]>("SELECT * FROM loops WHERE hook_hash = ?").get(sha(key));
   const now = Date.now();
+  if (!r) {
+    wrongKeys = wrongKeys.filter((t) => now - t < 60_000);
+    if (wrongKeys.length >= WRONG_KEY_LIMIT) return { status: 429, error: "too many requests" };
+    wrongKeys.push(now);
+    return { status: 200 };
+  }
+  const l = toRec(r);
+  if (r.hook_secret) {
+    const v = verifySignature(r.hook_secret, body, headers, now);
+    if ("error" in v) { skip(l, now, `its signature was refused: ${v.error}`); return { status: 401, error: v.error }; }
+    const fresh = db().query("INSERT OR IGNORE INTO webhook_seen (loop_id, msg_id, ts) VALUES (?, ?, ?)").run(l.id, v.id, now).changes;
+    if (!fresh) { skip(l, now, "a delivery it had already taken was sent again"); return { status: 200 }; }
+  }
   if (!l.enabled) { skip(l, now, "the loop was off when its webhook was called"); return { status: 200 }; }
   if (l.until_ms && now >= l.until_ms) { skip(l, now, "the loop had expired"); return { status: 200 }; }
   if (l.max_runs && l.runs >= l.max_runs) { skip(l, now, "the loop had run its runs"); return { status: 200 }; }
-  const busy = openRun(l.session_id)?.loop_id === l.id || (r.last_hook_ms && now - r.last_hook_ms < WEBHOOK_MIN_INTERVAL);
+  const gap = (r.min_interval ?? 0) * 1000 || WEBHOOK_MIN_INTERVAL;
+  const busy = openRun(l.session_id)?.loop_id === l.id || (r.last_hook_ms && now - r.last_hook_ms < gap);
   if (busy) {
-    if (r.webhook_pending) skip(l, now, "a newer request replaced it");
+    if (r.webhook_pending) skip(l, JSON.parse(r.webhook_pending).at, "a newer request replaced it");
     db().query("UPDATE loops SET webhook_pending = ? WHERE id = ?").run(JSON.stringify({ body, at: now }), l.id);
-    if (!openRun(l.session_id)) setTimeout(() => drainWebhook(l.id), WEBHOOK_MIN_INTERVAL - (now - (r.last_hook_ms ?? 0)) + 50);
+    if (!openRun(l.session_id)) setTimeout(() => drainWebhook(l.id), gap - (now - (r.last_hook_ms ?? 0)) + 50);
     return { status: 200 };
   }
   db().query("UPDATE loops SET last_hook_ms = ? WHERE id = ?").run(now, l.id);

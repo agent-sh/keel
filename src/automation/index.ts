@@ -222,8 +222,8 @@ export const automationRoutes: RouteModule = (deps) => {
           deps.bus.emit({ t: "session", session: s });
           sid = s.id;
         }
-        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, created_by: "owner" });
-        return json({ ...r.loop, hook_key: r.hook_key }, 201);
+        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, created_by: "owner", signed: b.signed === undefined ? undefined : !!b.signed, min_interval_seconds: b.min_interval_seconds });
+        return json({ ...r.loop, hook_key: r.hook_key, hook_secret: r.hook_secret }, 201);
       }),
     },
     "/api/loops/:id": {
@@ -243,12 +243,12 @@ export const automationRoutes: RouteModule = (deps) => {
       POST: (req: any) => attempt(async () => (loops.get(req.params.id) ? json(loops.update(req.params.id, { until_ms: (await body(req)).until_ms ?? null })) : bad("no such loop", 404))),
     },
     "/api/loops/:id/hook-key": {
-      POST: (req: any) => attempt(() => (loops.get(req.params.id) ? json({ hook_key: loops.rotateKey(req.params.id) }) : bad("no such loop", 404))),
+      POST: (req: any) => attempt(() => (loops.get(req.params.id) ? json(loops.rotateKey(req.params.id)) : bad("no such loop", 404))),
     },
     "/api/webhooks/:key": {
       POST: async (req: any) => {
         const text = await req.text();
-        const r = loops.webhook(req.params.key, text);
+        const r = loops.webhook(req.params.key, text, req.headers);
         return r.status === 200 ? json({ ok: true }) : bad(r.error ?? "refused", r.status);
       },
     },
