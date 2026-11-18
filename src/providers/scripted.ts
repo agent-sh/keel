@@ -105,6 +105,9 @@ export class ScriptedProvider implements Provider {
       case "overflow":
         if (!compacted) throw new ProviderError("context", "Scripted: prompt is too long: 9000 tokens > 8000 maximum", 400);
         return reply("Answered after compacting to fit.");
+      case "slow":
+        await Bun.sleep(3_000); // no bytes for a while
+        return reply("Answered after a slow start.");
       case "long-tool":
         // A tool that runs long enough for a restart to cut it.
         if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");

@@ -140,4 +140,7 @@ export type ErrorRecord = {
 export type TurnStatus =
   | { kind: "idle" }
   | { kind: "retry"; attempt: number; max: number; at: number; message: string }
-  | { kind: "compacting"; auto: boolean };
+  | { kind: "compacting"; auto: boolean }
+  // Waiting on the model's first bytes of this request, or on tools to finish.
+  | { kind: "model"; since: number; model: string }
+  | { kind: "tool"; since: number; names: string[] };

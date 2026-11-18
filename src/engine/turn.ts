@@ -181,8 +181,16 @@ export class Engine {
     this.bus.emit({ t: "queue", session_id: id, queue: this.store.queue(id), held: this.held.has(id) });
   }
 
+  private statuses = new Map<string, TurnStatus>();
   private status(id: string, status: TurnStatus) {
+    if (status.kind === "idle") this.statuses.delete(id);
+    else this.statuses.set(id, status);
     this.bus.emit({ t: "status", session_id: id, status });
+  }
+
+  // What the running turn waits on now (for a page that opens mid-turn).
+  statusOf(id: string): TurnStatus {
+    return this.statuses.get(id) ?? { kind: "idle" };
   }
 
   private setPhase(id: string, phase: Session["phase"]) {
@@ -311,14 +319,17 @@ export class Engine {
       partial.clear();
       let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages: st.info.images === false ? withoutImages(messages, st.info.name ?? st.info.model) : messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
       for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+      if (!quiet) this.status(id, { kind: "model", since: Date.now(), model: st.info.name });
+      let first = true;
       try {
         const res = await st.provider.stream(req, (d) => {
+          if (first && !quiet) { first = false; this.status(id, { kind: "idle" }); }
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;
           partial.set(d.index, p);
           if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
         });
-        if (attempt) this.status(id, { kind: "idle" });
+        if (!quiet || attempt) this.status(id, { kind: "idle" });
         return res;
       } catch (e) {
         if (signal.aborted) throw abortError();
@@ -412,7 +423,9 @@ export class Engine {
         }
         const uses = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use");
         if (uses.length) {
+          this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const results = await Promise.all(uses.map((u) => this.runTool(session, st.tools, u, ctx)));
+          this.status(id, { kind: "idle" });
           this.append(id, "tool_result", { results });
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
         }

@@ -45,7 +45,8 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await page.getByTestId("composer").fill("script:long-tool");
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("tool-call")).toHaveCount(1, { timeout: 15_000 });
-    await page.waitForTimeout(1_000); // the command runs
+    await expect(page.getByTestId("working")).toContainText("Running Bash"); // the command runs
+    await page.waitForTimeout(1_000);
     d.proc.kill("SIGKILL");
     await exited(d.proc);
     d = await daemon(state);

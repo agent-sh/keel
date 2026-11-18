@@ -102,12 +102,13 @@ export const actions = {
   grokSignIn: () => api<any>("/api/providers/grok/sign-in", { method: "POST" }),
   grokSignInState: () => api<any>("/api/providers/grok/sign-in"),
   async loadSession(id: string) {
-    const r = await api<{ session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean }>(`/api/sessions/${id}`);
+    const r = await api<{ session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus }>(`/api/sessions/${id}`);
     const loc = localize(id, r.session, r.events);
     set({
       sessions: { ...state.sessions, [id]: loc.session },
       events: { ...state.events, [id]: loc.events! },
       queues: { ...state.queues, [id]: { queue: r.queue, held: r.held } },
+      status: r.status ? { ...state.status, [id]: r.status } : state.status,
     });
   },
   async loadArchived() {

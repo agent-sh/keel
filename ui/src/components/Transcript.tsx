@@ -5,6 +5,7 @@ import { lineage, versions } from "../../../src/core/tree.ts";
 import type { AssistantBlock, ImageBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
+import { useSafety } from "../lib/safety.ts";
 import { toolKind } from "../lib/tools.ts";
 import { getUI, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens, fmtWait } from "../lib/utils.ts";
@@ -234,7 +235,7 @@ function Status({ sessionId }: { sessionId: string }) {
     const t = setInterval(() => tick((n) => n + 1), 500);
     return () => clearInterval(t);
   }, [st]);
-  if (!st || st.kind === "idle") return null;
+  if (!st || st.kind === "idle" || st.kind === "model" || st.kind === "tool") return null;
   if (st.kind === "compacting") {
     return <div className="flex items-center gap-2 text-ui text-muted animate-pulse-dot" data-testid="compacting"><Layers className="size-3.5" /> Compacting the context</div>;
   }
@@ -277,16 +278,22 @@ function Draft({ draft }: { draft: Record<number, DraftBlock> }) {
   );
 }
 
-function Working({ since }: { since?: number }) {
+// What the turn waits on: the model's first bytes, a tool, or just working.
+function Working({ since, sessionId }: { since?: number; sessionId: string }) {
+  const st = useStore((x) => x.status[sessionId]);
+  const approving = useSafety((x) => (x.approvals[sessionId]?.length ?? 0) > 0);
   const [, tick] = useState(0);
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
-  const s = since ? Math.max(0, Math.round((Date.now() - since) / 1000)) : 0;
+  const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
+  const s = from ? Math.max(0, Math.round((Date.now() - from) / 1000)) : 0;
+  const what = approving ? "Waiting for your approval" : st?.kind === "model" ? `Waiting on ${st.model}` : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
   return (
     <div className="flex items-center gap-2.5 py-1 text-ui text-muted" aria-live="polite" data-testid="working">
       <span className="flex gap-1">
         {[0, 1, 2].map((i) => <span key={i} className="size-1.5 rounded-full bg-brass animate-pulse-dot" style={{ animationDelay: `${i * 160}ms` }} />)}
       </span>
-      Working{s >= 2 ? <span className="tabular-nums text-faint">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null}
+      <span data-testid="working-what">{what}</span>
+      {s >= 2 ? <span className="tabular-nums text-faint">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null}
     </div>
   );
 }
@@ -443,7 +450,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           })}
           {hasDraft && <div className="flex flex-col gap-3"><Draft draft={draft} /></div>}
           <Status sessionId={sessionId} />
-          {session.phase === "working" && !hasDraft && !asking && <Working since={lastStart?.ts} />}
+          {session.phase === "working" && !hasDraft && !asking && <Working since={lastStart?.ts} sessionId={sessionId} />}
         </div>
       </div>
       {away && (

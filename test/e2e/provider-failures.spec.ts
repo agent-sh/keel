@@ -43,6 +43,12 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await expect(retrying).toContainText(/attempt 2 of 9/, { timeout: 5_000 });
   await expect(texts.last()).toHaveText("Answered after the overload passed.", { timeout: 15_000 });
 
+  // A model slow to start: the working line says what the turn waits on.
+  await composer.fill("script:slow");
+  await composer.press("Enter");
+  await expect(page.getByTestId("working")).toContainText(/Waiting on Scripted stand-in\s*2s/);
+  await expect(texts.last()).toHaveText("Answered after a slow start.", { timeout: 15_000 });
+
   // A dropped stream: the half reply is shown while it streams, then dropped.
   await composer.fill("script:drop");
   await composer.press("Enter");
@@ -52,19 +58,19 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
 
   // Cut at the output limit inside a tool call: the cut call is dropped and the
   // turn goes on after a harness note, in the same turn.
-  await send(page, "script:cut", 4);
+  await send(page, "script:cut", 5);
   await expect(page.getByTestId("harness-note").last()).toContainText("cut off at the output limit");
   await expect(texts.last()).toHaveText("Part two, continued after the cut.");
   await expect(page.getByTestId("tool-call")).toHaveCount(0);
 
   // pause_turn: the same request goes on, one turn, two replies.
-  await send(page, "script:pause", 5);
+  await send(page, "script:pause", 6);
   await expect(texts.nth(-2)).toHaveText("Paused at a server tool.");
   await expect(texts.last()).toHaveText("Resumed after the pause.");
   await shoot(page, "failures-02-continued");
 
   // A refusal: the card with the category and explanation, then a retry on another listed model.
-  await send(page, "script:refuse", 6);
+  await send(page, "script:refuse", 7);
   const card = page.getByTestId("refusal");
   await expect(card).toContainText("The model declined this request");
   await expect(card).toContainText("cyber");
@@ -76,7 +82,7 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await page.getByRole("option", { name: /Scripted backup/ }).first().click();
   await card.getByRole("button", { name: "Retry on it" }).click();
   await expect(texts.last()).toHaveText("The backup model took the request.", { timeout: 15_000 });
-  await expect(page.getByTestId("turn-end")).toHaveCount(7);
+  await expect(page.getByTestId("turn-end")).toHaveCount(8);
 
   // A new session for the window: a request too long compacts and goes on.
   const { session: s2 } = await (await request.post("/api/sessions", { data: { model: STAND_IN } })).json();
