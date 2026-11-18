@@ -2,6 +2,7 @@
 // shapes (packages/core/src/tools/definitions/model-family-sets/gemini-3.ts).
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { notFound } from "./missing.ts";
 import { abs, editFile, globFiles, guardOverwrite, mtime, numbered, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { headTail, runShell } from "./shell.ts";
@@ -54,7 +55,7 @@ const read_file: Tool = {
     const s = Number(input.start_line) || undefined;
     const e = Number(input.end_line) || undefined;
     if (s || e) {
-      if (mtime(p) === -1) return fail(`File not found: ${p}`);
+      if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
       const text = await Bun.file(p).text();
       ctx.seen.set(p, mtime(p));
       const r = numbered(text, s ?? 1, e ? e - (s ?? 1) + 1 : undefined, false);

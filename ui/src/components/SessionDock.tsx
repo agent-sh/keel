@@ -8,6 +8,11 @@ import { planItems, toolKind } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
 import { PlanCard } from "./ToolCall.tsx";
 
+const since = (t: number) => {
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+};
+
 function useJobs(sessionId: string, working: boolean) {
   const [jobs, setJobs] = useState<JobView[]>([]);
   const events = useStore((s) => s.events[sessionId]);
@@ -71,9 +76,10 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
         <div key={j.id} className="flex items-center gap-2 rounded-lg border border-line bg-raised shadow-1 px-3 py-1.5 text-caption" data-testid="dock-job">
           <SquareTerminal className={cn("size-3.5", j.running ? "text-accent" : "text-faint")} />
           <span className="font-mono text-micro text-faint">{j.id}</span>
-          <span className="min-w-0 truncate">{j.description ?? j.command}</span>
-          <span className="ml-auto shrink-0 text-micro tabular-nums text-faint">
-            {j.running ? `${Math.round((Date.now() - j.started) / 1000)}s` : `exit ${j.exit_code ?? j.signal}`}
+          <span className="min-w-0 max-w-[40%] shrink-0 truncate">{j.description ?? j.command}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-micro text-muted" title={j.last} data-testid="dock-job-last">{j.last}</span>
+          <span className="shrink-0 text-micro tabular-nums text-faint">
+            {j.running ? since(j.started) : `exit ${j.exit_code ?? j.signal}`}
           </span>
           {j.running && (
             <button

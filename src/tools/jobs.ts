@@ -4,7 +4,7 @@
 // real PTY. Every job writes its whole output to a log file the model can Read;
 // its unread tail is kept in memory for write_stdin polls.
 import type { Subprocess } from "bun";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type Job = {
@@ -188,8 +188,23 @@ export function drainNotices(sessionId: string): string[] {
 export const jobView = (j: Job) => ({
   id: j.id, num: j.num, command: j.command, description: j.description, cwd: j.cwd, pty: j.pty, log: j.log,
   started: j.started, ended: j.ended, exit_code: j.exitCode, signal: j.signal, background: j.background, bytes: j.bytes,
-  running: running(j),
+  running: running(j), last: lastLine(j.log),
 });
+
+// The last line a job printed (a progress line, an ETA), for the owner's view
+// of what a background run is doing without opening its log.
+export function lastLine(log: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(log, "r");
+    const size = fstatSync(fd).size;
+    const n = Math.min(size, 4096);
+    const buf = Buffer.alloc(n);
+    readSync(fd, buf, 0, n, size - n);
+    const line = cleanTerm(buf.toString("utf8")).split("\n").map((l) => l.trim()).filter(Boolean).pop();
+    return line?.slice(0, 300);
+  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+}
 
 process.on("exit", () => {
   for (const j of jobs.values()) if (running(j)) try { process.kill(-j.proc.pid, "SIGKILL"); } catch {}

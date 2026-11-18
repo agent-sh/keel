@@ -12,6 +12,7 @@ import { toolsFor } from "../tools/registry.ts";
 import { allHooks, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { COMPACT_SHARE, contextTokens, ownerWords, summaryMessage, summaryPrompt } from "./compact.ts";
+import { withoutImages } from "./images.ts";
 import { RETRY, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
 // A reply cut by the output limit is continued this many times in a row, then
@@ -289,7 +290,7 @@ export class Engine {
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false): Promise<ProviderResult> {
     for (let attempt = 0; ; attempt++) {
       partial.clear();
-      let req: ProviderRequest = { model: st.info.model, system: st.system, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
+      let req: ProviderRequest = { model: st.info.model, system: st.system, messages: st.info.images === false ? withoutImages(messages, st.info.name ?? st.info.model) : messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
       for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
       try {
         const res = await st.provider.stream(req, (d) => {

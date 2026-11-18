@@ -5,6 +5,7 @@ import { chmodSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
+import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
 
 export const abs = (p: string, ctx: ToolContext) => (isAbsolute(p) ? p : resolve(ctx.cwd, p));
@@ -48,7 +49,7 @@ export function numbered(text: string, offset = 1, limit?: number, number = true
 
 export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string } = {}): Promise<ReadResult> {
   let st;
-  try { st = statSync(p); } catch { return { content: `File does not exist: ${p}`, error: true }; }
+  try { st = statSync(p); } catch { return { content: notFound(p, ctx.cwd), error: true }; }
   if (st.isDirectory()) return { content: `${p} is a directory. List it with the shell (ls).`, error: true };
   const f = Bun.file(p);
   const ext = extname(p).toLowerCase();
@@ -221,23 +222,84 @@ export function applyEdit(text: string, oldS: string, newS: string, all = false)
       note = "matched with the file's curly quotes";
     }
   }
-  if (!hits.length) return { error: "old_string was not found in the file. Read the file again and copy the text exactly, including indentation." };
+  if (!hits.length) {
+    // Codex's patch matcher tolerates trailing whitespace on each line; a
+    // single such match is safe to take.
+    const loose = looseMatch(text, o);
+    if (loose) return splice(text, [loose.at], loose.len, () => n, "matched ignoring trailing whitespace");
+    return { error: `old_string was not found in the file.${nearMiss(text, o)}` };
+  }
   if (hits.length > 1 && !all) {
     const lines = hits.slice(0, 5).map((at) => text.slice(0, at).split("\n").length);
     return { error: `old_string matches ${hits.length} places (lines ${lines.join(", ")}${hits.length > 5 ? ", ..." : ""}). Add surrounding lines to pick one, or set replace_all.` };
   }
+  return splice(text, hits, o.length, repl, note);
+}
+
+function splice(text: string, hits: number[], len: number, repl: (at: number) => string, note?: string): EditResult {
   let out = "";
   let last = 0;
   for (const at of hits) {
     out += text.slice(last, at) + repl(at);
-    last = at + o.length;
+    last = at + len;
   }
   return { text: out + text.slice(last), count: hits.length, note };
 }
 
+const lineStarts = (text: string) => {
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  return starts;
+};
+
+// The one place where old matches line by line once trailing whitespace is
+// ignored, as a character range of the file; null when none or several.
+function looseMatch(text: string, old: string): { at: number; len: number } | null {
+  const want = old.split("\n").map((l) => l.trimEnd());
+  if (want.length && want[want.length - 1] === "" && old.endsWith("\n")) want.pop();
+  if (!want.some((l) => l.trim())) return null;
+  const lines = text.split("\n").map((l) => l.trimEnd());
+  const starts = lineStarts(text);
+  let found = -1;
+  for (let i = 0; i + want.length <= lines.length; i++) {
+    let k = 0;
+    while (k < want.length && lines[i + k] === want[k]) k++;
+    if (k < want.length) continue;
+    if (found !== -1) return null;
+    found = i;
+  }
+  if (found === -1) return null;
+  const end = found + want.length;
+  const stop = end < starts.length ? starts[end]! - (old.endsWith("\n") ? 0 : 1) : text.length;
+  return { at: starts[found]!, len: stop - starts[found]! };
+}
+
+// Where old_string almost matches: the window of the file that shares the
+// most lines with it and the first line that differs, so the model can fix
+// its text without reading the file again.
+export function nearMiss(text: string, old: string): string {
+  const want = old.split("\n");
+  const lines = text.split("\n");
+  const at = new Map<string, number[]>();
+  lines.forEach((l, i) => { const k = l.trim(); if (k) (at.get(k) ?? at.set(k, []).get(k)!).push(i); });
+  const votes = new Map<number, number>();
+  want.forEach((l, k) => { for (const i of at.get(l.trim()) ?? []) votes.set(i - k, (votes.get(i - k) ?? 0) + 1); });
+  let best = -1, score = 0;
+  for (const [s, v] of votes) if (v > score || (v === score && s < best)) { best = s; score = v; }
+  if (best < 0 || score < Math.max(1, Math.ceil(want.length / 2))) {
+    return " No part of the file is close to it. Read the file again and copy the text exactly, including indentation.";
+  }
+  let differ = 0, first = -1;
+  for (let k = 0; k < want.length; k++) if (lines[best + k] !== want[k]) { differ++; if (first < 0) first = k; }
+  const show = (s: string | undefined) => JSON.stringify((s ?? "<end of file>").slice(0, 200));
+  const why = first >= 0 && lines[best + first]?.trim() === want[first]!.trim() ? " (only whitespace differs)" : "";
+  return ` The closest text is lines ${best + 1}-${best + want.length} of the file, where ${differ} of ${want.length} lines differ. ` +
+    `First difference, file line ${best + first + 1}${why}:\n  file:       ${show(lines[best + first])}\n  old_string: ${show(want[first])}`;
+}
+
 export async function editFile(p: string, oldS: string, newS: string, all: boolean, ctx: ToolContext): Promise<{ ok: string; before: string; after: string } | { error: string }> {
   const m = mtime(p);
-  if (m === -1) return { error: `File does not exist: ${p}` };
+  if (m === -1) return { error: notFound(p, ctx.cwd) };
   const bytes = new Uint8Array(await Bun.file(p).arrayBuffer());
   if (!isUtf8(bytes)) return { error: `${p} is not valid UTF-8; change it with a shell command that keeps its encoding.` };
   const before = new TextDecoder().decode(bytes);

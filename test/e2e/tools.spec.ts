@@ -21,7 +21,7 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
     `1) TodoWrite a 3-item plan: "write file", "edit file", "start job" (first in_progress). ` +
     `2) Write ${name} in the working directory with the two lines "alpha" and "beta". ` +
     `3) Edit ${name}: replace "beta" with "gamma". ` +
-    `4) Bash with run_in_background true: sleep 4; echo job-finished. ` +
+    `4) Bash with run_in_background true: echo step-1-of-3; sleep 4; echo job-finished. ` +
     `5) TodoWrite the same plan with all three completed. Then reply "ok".`,
   );
   await page.keyboard.press("Enter");
@@ -31,6 +31,8 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   await expect(page.locator('[data-tool="Edit"]')).toContainText("+1");
   await expect(page.locator('[data-tool="Bash"]').getByTestId("tool-background")).toBeVisible();
   await expect(page.getByTestId("dock-job").first()).toBeVisible();
+  // The dock shows the job's last printed line, so progress needs no question.
+  await expect(page.getByTestId("dock-job-last").first()).toHaveText(/step-1-of-3|job-finished/);
   await shoot(page, "tools-01-plan-diff-job");
 
   await page.locator('[data-tool="Write"]').click();
