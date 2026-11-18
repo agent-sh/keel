@@ -40,6 +40,8 @@ async function listFiles(root: string): Promise<string[]> {
     };
     walk(root, 0);
   }
+  // Lists past their few seconds are dropped, not kept for every folder ever asked.
+  for (const [k, v] of cache) if (Date.now() - v.at >= 10_000) cache.delete(k);
   cache.set(root, { at: Date.now(), files });
   return files;
 }

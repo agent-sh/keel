@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
+import { SessionMap } from "../core/session-map.ts";
 import { lineage } from "../core/tree.ts";
 import type { AssistantBlock, Message, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
@@ -126,8 +127,11 @@ export class Engine {
   // Turns being parked for a daemon stop: their end reason is "restart".
   private parking = new Set<string>();
   private draining = false;
-  private seen = new Map<string, Map<string, number>>();
-  private systems = new Map<string, { text: string; split: number }>();
+  // Bounded: a session that dropped out rebuilds its system prompt (its cache
+  // prefix went cold long before 64 other sessions ran) and asks to read a file
+  // again before editing it.
+  private seen = new SessionMap<Map<string, number>>(64);
+  private systems = new SessionMap<{ text: string; split: number }>(64);
 
   constructor(
     private store: Store,

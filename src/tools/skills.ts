@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { registerHooks } from "../engine/hooks.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
+import { SessionMap } from "../core/session-map.ts";
 
 export type Skill = {
   name: string;
@@ -148,7 +149,8 @@ export function renderSkill(body: string, args: string, names: string[], vars: R
   return out;
 }
 
-const loaded = new Map<string, Set<string>>(); // session -> rendered texts already sent
+// session -> rendered texts already sent; a session that dropped out gets a skill's text once more.
+const loaded = new SessionMap<Set<string>>(64);
 
 export function loadSkill(name: string, args: string, ctx: ToolContext) {
   const skill = discoverSkills(ctx.cwd).find((s) => s.name === name || s.name === name.replace(/^\//, ""));

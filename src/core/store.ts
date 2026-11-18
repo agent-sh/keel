@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEvent, Usage } from "./types.ts";
 import { addUsage, emptyUsage } from "./types.ts";
+import { forgetSession, SessionMap } from "./session-map.ts";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -49,6 +50,16 @@ CREATE TABLE IF NOT EXISTS queue (
 
 type EventRow = Omit<StoredEvent, "data"> & { data: string };
 const rowToEvent = (r: EventRow): StoredEvent => ({ ...r, parent: r.parent ?? null, kind: r.kind as EventKind, data: JSON.parse(r.data) });
+
+// Cached events are shared by every reader: frozen, so a reader that changes
+// one fails loudly instead of changing what the next reader sees.
+function deepFreeze<T>(v: T): T {
+  if (v && typeof v === "object" && !Object.isFrozen(v)) {
+    Object.freeze(v);
+    for (const k of Object.keys(v)) deepFreeze((v as any)[k]);
+  }
+  return v;
+}
 
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
@@ -97,6 +108,11 @@ export class Store {
   readonly db: Database;
   // Sessions whose turn was open when the last daemon stopped.
   bootWorking: string[] = [];
+  // The parsed events of the sessions read last. A turn reads its whole session
+  // before each model call and the page and routes read it too; events never
+  // change once written, so each is parsed once. A 2,000-event session is about
+  // 2 MB parsed, so only a few sessions are kept.
+  private parsed = new SessionMap<StoredEvent[]>(4);
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
@@ -175,6 +191,7 @@ export class Store {
 
   deleteSession(id: string) {
     this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
+    forgetSession(id);
   }
 
   // A new event at the head of the session's branch (or after `parent`, which
@@ -182,6 +199,7 @@ export class Store {
   append(session_id: string, kind: EventKind, data: unknown, parent?: string | null): StoredEvent {
     data = this.redact(session_id, kind, data);
     const id = Bun.randomUUIDv7();
+    const text = JSON.stringify(data);
     const ts = Date.now();
     const tx = this.db.transaction(() => {
       const { n } = this.db
@@ -192,20 +210,28 @@ export class Store {
         : (this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null);
       this.db
         .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(id, session_id, n, p, kind, JSON.stringify(data), ts);
+        .run(id, session_id, n, p, kind, text, ts);
       this.db.query("UPDATE sessions SET updated = ?, head = ? WHERE id = ?").run(ts, id, session_id);
       return { n, p };
     });
     const { n, p } = tx();
-    return { id, session_id, seq: n, parent: p, kind, data, ts };
+    const ev: StoredEvent = { id, session_id, seq: n, parent: p, kind, data, ts };
+    // The cached copy is what a read from the table would give (a JSON round trip).
+    this.parsed.get(session_id)?.push(deepFreeze({ ...ev, data: JSON.parse(text) }));
+    return ev;
   }
 
   // Every event of the session, all branches, in seq order.
   events(session_id: string, afterSeq = 0): StoredEvent[] {
-    return this.db
-      .query<EventRow, [string, number]>("SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq")
-      .all(session_id, afterSeq)
-      .map(rowToEvent);
+    let all = this.parsed.get(session_id);
+    if (!all) {
+      all = this.db
+        .query<EventRow, [string]>("SELECT * FROM events WHERE session_id = ? ORDER BY seq")
+        .all(session_id)
+        .map((r) => deepFreeze(rowToEvent(r)));
+      this.parsed.set(session_id, all);
+    }
+    return afterSeq ? all.filter((e) => e.seq > afterSeq) : all.slice();
   }
 
   event(id: string): StoredEvent | undefined {
@@ -228,6 +254,7 @@ export class Store {
       this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, session_id);
     });
     tx();
+    this.parsed.delete(session_id);
     return prev;
   }
 

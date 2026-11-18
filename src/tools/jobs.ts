@@ -39,6 +39,7 @@ const size = (p: string) => { try { return statSync(p).size; } catch { return 0;
 const metaPath = (log: string) => log.replace(/\.log$/, ".json");
 const exitPath = (log: string) => `${log}.exit`;
 const jobs = new Map<string, Job>();
+const MAX_ENDED = 200;
 const notices = new Map<string, string[]>();
 let counter = 0;
 
@@ -119,6 +120,11 @@ export function startJob(o: StartOpts): Job {
     finish(job, code, proc.signalCode == null ? null : String(proc.signalCode));
   });
   jobs.set(id, job);
+  // Ended jobs are kept for their output and status, the newest MAX_ENDED of
+  // them: a long-running daemon does not hold every command it ever ran (the
+  // logs stay on disk).
+  let ended = 0;
+  for (const j of [...jobs.values()].reverse()) if (!running(j) && ++ended > MAX_ENDED) jobs.delete(j.id);
   return job;
 }
 

@@ -6,8 +6,9 @@ import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
 import { startJob, stopJob, takeUnread, waitJob, type Job } from "./jobs.ts";
 import type { ToolContext } from "./types.ts";
+import { SessionMap } from "../core/session-map.ts";
 
-const cwds = new Map<string, string>();
+const cwds = new SessionMap<string>(1024);
 
 const inside = (root: string, p: string) => {
   const r = relative(root, p);
