@@ -76,7 +76,10 @@ export type Frame =
   | { t: "event"; event: StoredEvent }
   | { t: "delta"; session_id: string; index: number; kind: "text" | "thinking" | "tool_input"; text: string; name?: string }
   | { t: "session"; session: Session }
-  | { t: "error"; error: ErrorRecord };
+  | { t: "error"; error: ErrorRecord }
+  // A feature module's live update (approvals, checkpoints, worktrees): the UI
+  // routes it by `name` to the module's own client state.
+  | { t: "feature"; name: string; session_id?: string; data: any };
 
 export type ErrorRecord = {
   id: string;

@@ -29,7 +29,7 @@ export function useStore<T>(sel: (s: State) => T): T {
 }
 export const getState = () => state;
 
-async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
+export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
@@ -68,6 +68,16 @@ export const actions = {
   },
 };
 
+// Feature modules (approvals, checkpoints, worktrees) keep their own client
+// state: they get their frames, and a call after each reconnect to catch up.
+type FeatureFrame = Extract<Frame, { t: "feature" }>;
+type FeatureListener = { frame?: (f: FeatureFrame) => void; reconnect?: () => void };
+const features = new Set<FeatureListener>();
+export function onFeature(l: FeatureListener) {
+  features.add(l);
+  return () => void features.delete(l);
+}
+
 function apply(f: Frame) {
   if (f.t === "session") {
     const s = f.session;
@@ -86,6 +96,8 @@ function apply(f: Frame) {
     set({ drafts: { ...state.drafts, [f.session_id]: { ...cur, [f.index]: { ...b, text: b.text + f.text, name: b.name ?? f.name } } } });
   } else if (f.t === "error") {
     set({ errors: [f.error, ...state.errors].slice(0, 200) });
+  } else if (f.t === "feature") {
+    for (const l of features) l.frame?.(f);
   }
 }
 
@@ -98,6 +110,7 @@ export function connect() {
     // Catch up on whatever happened while disconnected.
     actions.loadSessions();
     for (const id of Object.keys(state.events)) actions.loadSession(id);
+    for (const l of features) l.reconnect?.();
   };
   ws.onmessage = (m) => apply(JSON.parse(m.data));
   ws.onclose = () => {

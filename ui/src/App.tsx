@@ -1,6 +1,8 @@
 import { Component, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Approvals } from "./components/ApprovalCard.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { ErrorsPanel } from "./components/ErrorsPanel.tsx";
+import { PermissionMenu } from "./components/PermissionMenu.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import { actions, connect, reportError, useStore } from "./lib/store.ts";
@@ -82,12 +84,15 @@ export function App() {
               <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-5">
                 <h1 className="min-w-0 truncate text-[14px] font-medium" data-testid="session-title">{session.title || "New session"}</h1>
                 <span className="truncate text-[12px] text-faint font-mono">{session.workspace}</span>
-                <span className="ml-auto text-[12px] text-faint tabular-nums" title="Tokens this session: input (incl. cached) / output">
+                <span className="ml-auto" />
+                <PermissionMenu sessionId={session.id} />
+                <span className="text-[12px] text-faint tabular-nums" title="Tokens this session: input (incl. cached) / output">
                   {fmtTokens(session.usage.input + session.usage.cache_read + session.usage.cache_write)} / {fmtTokens(session.usage.output)}
                 </span>
               </header>
               <Transcript sessionId={session.id} />
               <div className="mx-auto w-full max-w-3xl px-5 pb-5">
+                <Approvals sessionId={session.id} />
                 <Composer
                   working={session.phase === "working"}
                   model={session.model}
