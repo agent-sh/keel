@@ -4,7 +4,7 @@
 import { resolve } from "node:path";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, type Question } from "./interact.ts";
-import { cleanTerm, findJob, running, startJob, takeUnread, toolEnv, waitJob, writeJob, type Job } from "./jobs.ts";
+import { cleanTerm, findJob, hasUnread, running, startJob, takeUnread, toolEnv, waitJob, writeJob, type Job } from "./jobs.ts";
 import { logDir, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
@@ -91,7 +91,7 @@ const write_stdin: Tool = {
   }, ["session_id"]),
   async run(input, ctx) {
     const job = findJob(ctx.sessionId, Number(input.session_id));
-    if (!job || (!running(job) && !job.unread)) return fail(`write_stdin failed: Unknown process id ${input.session_id}`);
+    if (!job || (!running(job) && !hasUnread(job))) return fail(`write_stdin failed: Unknown process id ${input.session_id}`);
     const chars = String(input.chars ?? "");
     if (chars && !writeJob(job, chars)) {
       if (!job.pty) return fail("write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open");

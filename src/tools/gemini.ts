@@ -31,7 +31,7 @@ const run_shell_command: Tool = {
       timeoutMs: 300_000, background: !!input.is_background, onTimeout: "background",
     });
     if (r.state === "running") {
-      return ok(`Command moved to the background.\nBackground PIDs: ${r.job.proc.pid}\nOutput file: ${r.job.log}${r.output.trim() ? `\nOutput so far: ${headTail(r.output, 2000)}` : ""}`);
+      return ok(`Command moved to the background.\nBackground PIDs: ${r.job.pid}\nOutput file: ${r.job.log}${r.output.trim() ? `\nOutput so far: ${headTail(r.output, 2000)}` : ""}`);
     }
     const out = headTail(r.output.trimEnd(), 30_000) || "(empty)";
     const lines = [`Command: ${input.command}`, `Directory: ${r.job.cwd}`, `Output: ${out}`, `Exit Code: ${r.exitCode ?? "(none)"}`];

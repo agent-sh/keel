@@ -2,9 +2,10 @@
 // see and stop background jobs, list skills. Also joins the turn loop: a
 // background job that ended reaches the model as a stored note on its next
 // request, so the bytes stay the same on every later request.
+import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts";
-import { drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
+import { adoptJobs, drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { discoverSkills, renderForOwner } from "../../tools/skills.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -20,6 +21,8 @@ const lines = () => {
 };
 
 export const toolRoutes: RouteModule = (deps) => {
+  // Background commands a previous daemon started run on; take them back.
+  try { adoptJobs(join(deps.store.stateDir, "spill")); } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
   registerHooks({
     beforeRequest(s, req) {
       const n = drainNotices(s.id);
