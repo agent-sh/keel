@@ -6,7 +6,9 @@ import type { Store } from "../core/store.ts";
 import type { Message, StoredEvent, ToolResultBlock, ToolUseBlock, Usage } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
-import { claudeTools } from "../tools/claude.ts";
+import type { ProviderRequest } from "../providers/types.ts";
+import { toolsFor } from "../tools/registry.ts";
+import { allHooks } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 
 // Rebuild the wire conversation from stored events. Append-only: the same
@@ -146,9 +148,13 @@ export class Engine {
   private async loop(id: string, signal: AbortSignal) {
     const session = this.store.session(id)!;
     const { provider, info } = await this.providers.resolve(session.model);
-    const tools: Tool[] = claudeTools; // per-family profiles: gpt/gemini lanes add theirs
-    const system = this.systems.get(id) ?? systemPrompt(session.workspace, session.created);
-    this.systems.set(id, system);
+    const tools: Tool[] = toolsFor(info.family);
+    let system = this.systems.get(id);
+    if (system === undefined) {
+      const extra = (await Promise.all(allHooks().map((h) => h.system?.(session) ?? ""))).filter(Boolean);
+      system = [systemPrompt(session.workspace, session.created), ...extra].join("\n\n");
+      this.systems.set(id, system);
+    }
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);
     const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id) };
@@ -162,16 +168,17 @@ export class Engine {
     try {
       for (;;) {
         const messages = toMessages(this.store.events(id));
-        const res = await provider.stream(
-          { model: info.model, system, messages, tools, effort, maxTokens: info.output, signal },
-          (d) => this.bus.emit({ t: "delta", session_id: id, ...d }),
-        );
+        let req: ProviderRequest = { model: info.model, system, messages, tools, effort, maxTokens: info.output, signal };
+        for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+        const res = await provider.stream(req, (d) => this.bus.emit({ t: "delta", session_id: id, ...d }));
+        for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
         usage = addUsage(usage, res.usage);
         this.store.addUsage(id, res.usage);
         this.emitEvent(this.store.append(id, "assistant", { blocks: res.blocks, model: session.model, usage: res.usage, stop: res.stop }));
         const uses = res.blocks.filter((b): b is ToolUseBlock => b.type === "tool_use");
         if (res.stop !== "tool_use" || !uses.length) { reason = res.stop; break; }
         const results = await Promise.all(uses.map((u) => this.runTool(tools, u, ctx)));
+
         this.emitEvent(this.store.append(id, "tool_result", { results }));
         if (signal.aborted) { reason = "interrupted"; break; }
       }
@@ -180,6 +187,7 @@ export class Engine {
       if (!signal.aborted) throw e;
     } finally {
       this.emitEvent(this.store.append(id, "turn_end", { reason, usage, ms: Date.now() - t0 }));
+      for (const h of allHooks()) await Promise.resolve(h.turnEnd?.(session, reason)).catch((e) => this.errors.capture("server", e, { hook: "turnEnd" }));
     }
   }
 

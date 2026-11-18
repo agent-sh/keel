@@ -8,12 +8,15 @@ import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import index from "../../ui/index.html";
 
+// A feature module adds its routes here instead of editing this file.
+export type RouteModule = (deps: Deps) => Record<string, any>;
+
 export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string };
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
 
-export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }) {
+export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }, modules: RouteModule[] = []) {
   const { store, bus, engine, providers, errors } = deps;
   const sockets = new Set<ServerWebSocket<unknown>>();
   bus.on((f) => {
@@ -126,6 +129,14 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       },
 
       "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
+      ...Object.fromEntries(
+        modules.flatMap((m) => Object.entries(m(deps))).map(([path, methods]) => [
+          path,
+          typeof methods === "function"
+            ? wrap(methods)
+            : Object.fromEntries(Object.entries(methods as Record<string, any>).map(([k, h]) => [k, wrap(h)])),
+        ]),
+      ),
     },
 
     fetch(req, srv) {

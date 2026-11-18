@@ -8,6 +8,7 @@ import { Store } from "./core/store.ts";
 import { Engine } from "./engine/turn.ts";
 import { Providers } from "./providers/registry.ts";
 import { serve } from "./server/app.ts";
+import { routeModules } from "./server/routes/index.ts";
 
 const { values, positionals } = parseArgs({
   args: Bun.argv.slice(2),
@@ -37,6 +38,7 @@ const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill")
 const server = serve(
   { store, bus, engine, providers, errors, workspace: resolve(values.workspace ?? process.cwd()) },
   { hostname: hostname!, port: Number(portStr), development: values.dev },
+  routeModules,
 );
 providers.models().catch((e) => errors.capture("provider", e, { at: "startup listing" }));
 console.log(`keel listening on ${server.url} (state ${stateDir})`);

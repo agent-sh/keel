@@ -56,6 +56,16 @@ export class Store {
     this.db.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
   }
 
+  // A feature module's tables: run once per start, statements must be idempotent
+  // (CREATE ... IF NOT EXISTS; ALTER guarded by columnExists).
+  migrate(sql: string) {
+    this.db.exec(sql);
+  }
+
+  columnExists(table: string, column: string): boolean {
+    return this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  }
+
   createSession(s: { title?: string; model: string; workspace: string }): Session {
     const now = Date.now();
     const id = Bun.randomUUIDv7();
