@@ -294,7 +294,8 @@ export class Fleet {
       relay.live = true;
       relay.retry = 0;
       relay.retryAt = undefined;
-      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
       let buf = "";
       let watchdog = setTimeout(() => relay.abort.abort(), RELAY_SILENCE_MS);
       for (;;) {
@@ -302,7 +303,7 @@ export class Fleet {
         if (done) break;
         clearTimeout(watchdog);
         watchdog = setTimeout(() => relay.abort.abort(), RELAY_SILENCE_MS);
-        buf += value;
+        buf += dec.decode(value, { stream: true });
         let i: number;
         while ((i = buf.indexOf("\n\n")) >= 0) {
           const chunk = buf.slice(0, i);

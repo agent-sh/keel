@@ -74,8 +74,9 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     "/api/workspaces": {
       GET: () => {
         const seen = new Map<string, number>();
-        for (const s of store.sessions({ archived: true })) if (!seen.has(s.workspace) || seen.get(s.workspace)! < s.updated) seen.set(s.workspace, s.updated);
-        for (const s of store.sessions()) if (!seen.has(s.workspace) || seen.get(s.workspace)! < s.updated) seen.set(s.workspace, s.updated);
+        // A session placed on another machine names a folder there, not here.
+        for (const s of store.sessions({ archived: true })) if (!s.machine && (!seen.has(s.workspace) || seen.get(s.workspace)! < s.updated)) seen.set(s.workspace, s.updated);
+        for (const s of store.sessions()) if (!s.machine && (!seen.has(s.workspace) || seen.get(s.workspace)! < s.updated)) seen.set(s.workspace, s.updated);
         const recent = [...seen.entries()]
           .filter(([p]) => existsSync(p))
           .sort((a, b) => b[1] - a[1])
