@@ -184,9 +184,11 @@ export class Imports {
 
   // A new keel-bun session from a source, or the events the source gained
   // since an earlier import appended to that session.
-  async import(f: Found, o: { mode?: "new" | "update" | "open"; model: string; workspace: string; title?: string }): Promise<{ action: "created" | "updated" | "opened"; session: Session; imported_events: number; read: Read }> {
-    const r = await this.read(f);
-    const st = sourceStat(f) ?? { size: f.size_bytes, mtime: f.updated_ms };
+  // `from`: a transcript another machine read (its daemon sent what it read);
+  // the link names that machine, and the session's tools run there.
+  async import(f: Found, o: { mode?: "new" | "update" | "open"; model: string; workspace: string; title?: string; from?: { machine: string; read: Read } }): Promise<{ action: "created" | "updated" | "opened"; session: Session; imported_events: number; read: Read }> {
+    const r = o.from?.read ?? (await this.read(f));
+    const st = (o.from ? undefined : sourceStat(f)) ?? { size: f.size_bytes, mtime: f.updated_ms };
     const prior = this.links(f.harness, f.id)[0];
     if (prior && (o.mode === "open" || o.mode === "update")) {
       const s = this.store.session(prior.session_id)!;
@@ -198,14 +200,15 @@ export class Imports {
     }
     const label = HARNESSES.find((h) => h.harness === f.harness)!.label;
     const s = this.store.createSession({ title: o.title ?? f.title, model: o.model, workspace: o.workspace });
+    if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
     for (const e of r.events) this.store.append(s.id, e.kind, e.data);
     const counts = r.counts;
-    const summary = `Imported from ${label} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
+    const summary = `Imported from ${label}${o.from ? " on another machine" : ""} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
     this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });
     const now = Date.now();
     this.store.db
       .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, source_size, source_mtime, imported_ms, synced_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(s.id, f.harness, f.id, f.path, r.events.length, st.size, st.mtime, now, now);
+      .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, st.size, st.mtime, now, now);
     return { action: "created", session: this.store.session(s.id)!, imported_events: r.events.length, read: r };
   }
 }

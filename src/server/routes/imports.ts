@@ -7,13 +7,18 @@ import { lineage } from "../../core/tree.ts";
 import { Drive } from "../../drive/drive.ts";
 import { exportTo, parseKeelJsonl, redact, redactDeep, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
 import { HARNESSES, Imports } from "../../integrations/import/service.ts";
-import type { Found, Harness } from "../../integrations/import/types.ts";
+import type { Found, Harness, Read } from "../../integrations/import/types.ts";
+import { callerOf, LinkError, linkJson, proven } from "../../fleet/link.ts";
+import { inside } from "../../safety/policy.ts";
+import { fleet } from "./fleet.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 const isHarness = (h: unknown): h is Harness => HARNESSES.some((x) => x.harness === h);
 // A model id without its provider and region prefixes: bedrock:global.anthropic.claude-x-5 -> claude-x-5.
 const bare = (id: string) => id.replace(/^[\w-]+:/, "").replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|openai|google|meta|mistral)\./, "");
+// Transcripts another machine never offers: any under a folder or with a name of credentials.
+const CREDENTIAL = /(^|\/)(\.ssh|\.gnupg|\.aws|\.docker|\.kube|\.password-store|[^/]*(credential|secret|token|passw|\.pem$|\.key$)[^/]*)(\/|$)/i;
 const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
 
 // The newest messages of a read, for a preview.
@@ -66,7 +71,126 @@ export const importRoutes: RouteModule = (deps) => {
     return imports.find(b.harness, b.id) ?? bad(`${b.harness} has no session ${b.id}`, 404);
   };
 
+  // ---- transcripts on another machine of the fleet (its daemon reads them)
+
+  // What a paired daemon may ask: this machine's transcripts, read only,
+  // never one under a credentials folder or name, titles scrubbed.
+  const paired = (h: (req: Request) => Promise<Response>) => async (req: Request) => {
+    const c = fleet ? callerOf(req, fleet.keyOf) : null;
+    if (!c) return proven(bad("not a paired daemon", 403), null, fleet?.id ?? "");
+    return proven(await h(req), c, fleet!.id);
+  };
+  const offered = (f: Found) => !CREDENTIAL.test(f.path) && !CREDENTIAL.test(f.cwd ?? "");
+  const scrub = (f: Found) => ({ ...f, title: redact(f.title), first_prompt: f.first_prompt && redact(f.first_prompt), last_prompt: f.last_prompt && redact(f.last_prompt) });
+
+  // The machine a request names, with its granted directory; or the answer.
+  const machineOf = (id: string): any => {
+    if (!fleet) return bad("the fleet is not running", 409);
+    if (id === "local") return bad("this machine's transcripts are in the import list");
+    if (id.startsWith("ssh:")) return bad("enable that ssh host as a machine first");
+    const m = fleet.row(id);
+    if (!m) return bad("no such machine", 404);
+    if (!m.workspace_root) return bad(`${m.name} has no granted directory: an imported session would have nowhere to run`);
+    return m;
+  };
+  const ask = async <T,>(mid: string, path: string): Promise<T | Response> => {
+    try {
+      return await linkJson<T>(await fleet!.peer(mid), path, { timeout: 30_000 });
+    } catch (e) {
+      if (!(e instanceof LinkError)) throw e;
+      return bad(`${fleet!.row(mid)?.name ?? mid} did not answer: ${(e as Error).message}`, 409);
+    }
+  };
+
+  const fleetRoutes = {
+    "/api/fleet/hands/transcripts": {
+      GET: paired(async (req) => {
+        const u = new URL(req.url).searchParams;
+        const harness = u.get("harness") || undefined;
+        if (harness && !isHarness(harness)) return bad(`unknown harness ${harness}`);
+        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || !Number(u.get("cursor") ?? 0));
+        const limit = Math.min(Number(u.get("limit") ?? 50) || 50, 200);
+        const r = imports.list({ harness: harness as Harness | undefined, q: u.get("q") ?? undefined, show: u.get("show") ?? undefined, sort: (u.get("sort") as any) || undefined, limit: 500, cursor: 0 });
+        const rows = r.sessions.filter(offered);
+        const at = Number(u.get("cursor") ?? 0) || 0;
+        const tools = ["claude", "codex", "agy"].filter((t) => Bun.which(t));
+        return json({
+          sessions: rows.slice(at, at + limit).map(({ imported: _, ...f }) => scrub(f as Found)),
+          total: rows.length, next_cursor: at + limit < rows.length ? at + limit : undefined,
+          index: r.index, harnesses: imports.harnesses().map(({ store: _, ...h }) => h), tools_present: tools,
+        });
+      }),
+    },
+    "/api/fleet/hands/transcript": {
+      GET: paired(async (req) => {
+        const u = new URL(req.url).searchParams;
+        const h = u.get("harness");
+        if (!isHarness(h) || !u.get("id")) return bad("give harness and id");
+        const f = imports.find(h, u.get("id")!);
+        if (!f || !offered(f)) return bad(`${h} has no session ${u.get("id")}`, 404);
+        const r = await imports.read(f);
+        return json({ session: { ...scrub(f), cwd_exists: isDir(f.cwd) }, read: u.has("full") ? r : { counts: r.counts, notes: r.notes, events: [] }, tail: tail(r.events) });
+      }),
+    },
+
+    // This daemon's view of one machine's transcripts.
+    "/api/fleet/machines/:id/transcripts": {
+      GET: async (req: any) => {
+        const m = machineOf(req.params.id);
+        if (m instanceof Response) return m;
+        const u = new URL(req.url).searchParams;
+        if (u.has("limit") && !(Number(u.get("limit")) > 0)) return bad("limit must be a number above 0");
+        const r = await ask<any>(m.id, `/api/fleet/hands/transcripts?${u}`);
+        if (r instanceof Response) return r;
+        return json({
+          machine_id: m.id, machine: m.name, has_agent_view: false, tools_present: r.tools_present,
+          sessions: r.sessions.map((f: Found) => {
+            const l = imports.links(f.harness, f.id)[0];
+            return { ...f, imported: l ? { session_id: l.session_id, synced_ms: l.synced_ms, grew: f.size_bytes !== l.source_size || Math.round(f.updated_ms) !== l.source_mtime } : undefined };
+          }),
+          total: r.total, next_cursor: r.next_cursor, index: r.index, harnesses: r.harnesses,
+        });
+      },
+    },
+    "/api/fleet/machines/:id/transcripts/preview": {
+      GET: async (req: any) => {
+        const m = machineOf(req.params.id);
+        if (m instanceof Response) return m;
+        const u = new URL(req.url).searchParams;
+        const r = await ask<any>(m.id, `/api/fleet/hands/transcript?harness=${encodeURIComponent(u.get("harness") ?? "")}&id=${encodeURIComponent(u.get("id") ?? "")}`);
+        if (r instanceof Response) return r;
+        const f = r.session as Found;
+        return json({ session: { ...r.session, cwd_exists: r.session.cwd_exists }, counts: r.read.counts, notes: r.read.notes, tail: r.tail, links: imports.links(f.harness, f.id).map((l) => ({ session_id: l.session_id, imported_ms: l.imported_ms, synced_ms: l.synced_ms })) });
+      },
+    },
+    // A transcript of that machine goes on here, its tools running there: in
+    // its own folder when that is inside the granted directory, else in it.
+    "/api/fleet/machines/:id/transcripts/import": {
+      POST: async (req: any) => {
+        const m = machineOf(req.params.id);
+        if (m instanceof Response) return m;
+        const b = await body(req);
+        if (!isHarness(b.harness) || !b.id) return bad("give harness and id");
+        if (b.mode && !["new", "update", "open"].includes(b.mode)) return bad(`unknown mode ${b.mode}`);
+        const prior = imports.links(b.harness, String(b.id))[0];
+        if (prior && !b.mode) return json({ error: "this session was imported before: open it, update it, or make a new copy", session_id: prior.session_id }, 409);
+        if (prior && b.mode === "open") return json({ action: "opened", session: store.session(prior.session_id) });
+        const r = await ask<{ session: Found & { cwd_exists: boolean }; read: Read }>(m.id, `/api/fleet/hands/transcript?harness=${b.harness}&id=${encodeURIComponent(String(b.id))}&full=1`);
+        if (r instanceof Response) return r;
+        const f = r.session;
+        const model = b.model || (await modelFor(f));
+        if (!model) return bad("no model is available: no provider has credentials", 409);
+        const workspace = f.cwd && r.session.cwd_exists && inside(f.cwd, m.workspace_root) ? f.cwd : m.workspace_root;
+        const out = await imports.import(f, { mode: b.mode, model, workspace, title: b.title, from: { machine: m.id, read: r.read } });
+        if (workspace !== f.cwd) store.append(out.session.id, "note", { text: `Its folder ${f.cwd ?? "(none)"} is not inside the directory granted on ${m.name}; it goes on in ${workspace} there.` });
+        bus.emit({ t: "session", session: store.session(out.session.id)! });
+        return json({ action: out.action, session: store.session(out.session.id), imported_events: out.imported_events, counts: r.read.counts, notes: r.read.notes }, out.action === "created" ? 201 : 200);
+      },
+    },
+  };
+
   return {
+    ...fleetRoutes,
     "/api/import/sessions": {
       GET: async (req: Request) => {
         const u = new URL(req.url).searchParams;

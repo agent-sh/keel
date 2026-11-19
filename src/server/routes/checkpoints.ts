@@ -26,10 +26,11 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
     Promise.resolve().then(f).catch((e) => void errors.capture("server", e, { at }));
   // A store that grew past its budget (or holds sessions that are gone) is trimmed soon after start.
   setTimeout(() => quiet("checkpoint maintenance", () => c.maintain()), 60_000).unref?.();
+  // A session whose tools run on another machine has its folder there: nothing here to snapshot.
   registerHooks({
-    beforeTool: async (s, call) => void (await quiet("checkpoint before", () => c.before(s, call))),
-    afterTool: (s, call) => c.after(s, call),
-    turnEnd: async (s) => void (await quiet("checkpoint end", () => c.end(s))),
+    beforeTool: async (s, call) => void (s.machine || (await quiet("checkpoint before", () => c.before(s, call)))),
+    afterTool: (s, call) => (s.machine ? undefined : c.after(s, call)),
+    turnEnd: async (s) => void (s.machine || (await quiet("checkpoint end", () => c.end(s)))),
   });
 
   // A restore while a turn runs in this workspace (this session or another)

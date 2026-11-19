@@ -5,8 +5,9 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
 import { ArrowDownToLine, FolderOpen, History, RefreshCw, Search, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Found, Harness } from "../../../src/integrations/import/types.ts";
+import { useFleet } from "../lib/fleet.ts";
 import { reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -48,19 +49,25 @@ function Stat({ n, label }: { n: number; label: string }) {
   );
 }
 
-function PreviewPane({ row, onDone }: { row: Row; onDone: () => void }) {
+// Where the list comes from: this machine's stores, or another machine's,
+// read by its daemon (an import from there goes on here, its tools there).
+const paths = (from: string) => from
+  ? { list: `/api/fleet/machines/${from}/transcripts`, preview: `/api/fleet/machines/${from}/transcripts/preview`, import: `/api/fleet/machines/${from}/transcripts/import` }
+  : { list: "/api/import/sessions", preview: "/api/import/preview", import: "/api/import" };
+
+function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: () => void }) {
   const [p, setP] = useState<Preview | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     setP(null);
     setErr("");
-    api<Preview>(`/api/import/preview?harness=${row.harness}&id=${encodeURIComponent(row.id)}`).then(setP, (e) => setErr(e.message));
-  }, [row.harness, row.id]);
+    api<Preview>(`${paths(from).preview}?harness=${row.harness}&id=${encodeURIComponent(row.id)}`).then(setP, (e) => setErr(e.message));
+  }, [row.harness, row.id, from]);
   const go = async (mode?: "new" | "update" | "open") => {
     setBusy(true);
     try {
-      const r = await api<{ session: { id: string } }>("/api/import", { method: "POST", body: JSON.stringify({ harness: row.harness, id: row.id, mode }) });
+      const r = await api<{ session: { id: string } }>(paths(from).import, { method: "POST", body: JSON.stringify({ harness: row.harness, id: row.id, mode }) });
       onDone();
       navigate({ name: "session", id: r.session.id });
     } catch (e) {
@@ -139,6 +146,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [building, setBuilding] = useState(false);
   const seq = useRef(0);
   const [bulk, setBulk] = useState("");
+  const [from, setFrom] = useState("");
+  const machines = useFleet((s) => s.machines);
+  const linked = useMemo(() => machines.filter((m) => m.source !== "local" && m.enabled && m.daemon?.state === "linked" && m.workspace_root), [machines]);
 
   // Every session the filter shows, imported 200 at a time; ones imported before are left as they are.
   const importAll = async () => {
@@ -170,7 +180,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     if (all) u.set("show", "all");
     if (refresh) u.set("refresh", "1");
     try {
-      const r = await api<{ sessions: Row[]; total: number; next_cursor?: number; harnesses: HarnessState[]; index: { building: boolean } }>(`/api/import/sessions?${u}`);
+      const r = await api<{ sessions: Row[]; total: number; next_cursor?: number; harnesses: HarnessState[]; index: { building: boolean } }>(`${paths(from).list}?${u}`);
       if (n !== seq.current) return;
       setHarnesses(r.harnesses);
       setTotal(r.total);
@@ -180,7 +190,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     } catch (e) {
       reportError(e);
     }
-  }, [harness, q, all]);
+  }, [harness, q, all, from]);
 
   useEffect(() => {
     if (!open) return;
@@ -193,7 +203,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     const t = setTimeout(() => load(0), 1500);
     return () => clearTimeout(t);
   }, [open, building, load]);
-  useEffect(() => { setSel(null); setRows(null); }, [harness]);
+  useEffect(() => { setSel(null); setRows(null); }, [harness, from]);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -222,7 +232,16 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                 </button>
               ))}
             </div>
-            <button type="button" title="Read the stores again" onClick={() => load(0, true)} className="ml-auto grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
+            {linked.length > 0 && (
+              <label className="ml-auto flex items-center gap-1.5 text-caption text-faint">
+                On
+                <select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="h-7 rounded-md border border-line bg-raised px-1.5 text-caption text-fg outline-none focus-visible:border-accent">
+                  <option value="">this machine</option>
+                  {linked.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </label>
+            )}
+            <button type="button" title="Read the stores again" onClick={() => load(0, true)} className={cn(!linked.length && "ml-auto", "grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg")}>
               <RefreshCw className={cn("size-3.5", building && "animate-spin")} />
             </button>
             <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>
@@ -241,7 +260,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               </div>
               <div className="flex items-center gap-2 px-3 py-1.5 text-micro text-faint tabular-nums">
                 <span className="min-w-0 flex-1 truncate" data-testid="import-total">{bulk || (rows ? `${total.toLocaleString()} session${total === 1 ? "" : "s"}${building ? " · reading the store" : ""}` : "Reading")}</span>
-                {rows && total > 0 && !building && (
+                {rows && total > 0 && !building && !from && (
                   <button type="button" data-testid="import-all" disabled={bulk.startsWith("Importing")} onClick={() => importAll().catch((e) => { setBulk(""); reportError(e); })} className="shrink-0 rounded-sm px-1.5 py-0.5 text-accent hover:bg-accent-soft disabled:opacity-50" title="Import every session this list shows; ones imported before stay as they are">
                     Import all
                   </button>
@@ -276,12 +295,12 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               </div>
             </div>
             {sel ? (
-              <PreviewPane row={sel} onDone={() => onOpenChange(false)} />
+              <PreviewPane row={sel} from={from} onDone={() => onOpenChange(false)} />
             ) : (
               <div className="grid flex-1 place-items-center px-10 text-center">
                 <div>
                   <p className="text-ui font-medium">Pick a session to see what an import brings</p>
-                  <p className="mt-1 text-caption text-faint">Keel reads the other harness's store and never writes to it. The copy keeps its folder and goes on here with any model.</p>
+                  <p className="mt-1 text-caption text-faint">{from ? "That machine's daemon reads its stores and never writes to them. The copy goes on here with any model, and its tools run on that machine." : "Keel reads the other harness's store and never writes to it. The copy keeps its folder and goes on here with any model."}</p>
                 </div>
               </div>
             )}
