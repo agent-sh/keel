@@ -81,13 +81,25 @@ export const presenceHook: { sign?: (action: string) => Promise<string | null> }
 
 export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const send = (extra?: Record<string, string>) => fetch(apiPath(path), { ...init, headers: { "content-type": "application/json", ...init?.headers, ...extra } });
+  // A body cut short (the daemon restarting mid-answer) is a dropped request,
+  // as fetch reports one; an answer that is not JSON is a fault of its own.
+  // Neither becomes an empty object a caller then reads fields of.
+  const read = async (r: Response): Promise<any> => {
+    const text = await r.text().catch(() => null);
+    if (text === null) throw new TypeError(`Failed to fetch ${path}: the answer was cut short`);
+    if (!text) return {};
+    try { return JSON.parse(text); } catch {
+      if (r.ok) throw Object.assign(new Error(`${path} answered with something other than JSON`), { status: r.status });
+      return {};
+    }
+  };
   let r = await send();
-  let body = await r.json().catch(() => ({}));
+  let body = await read(r);
   if (r.status === 428 && body.presence?.action && presenceHook.sign) {
     const receipt = await presenceHook.sign(body.presence.action);
     if (!receipt) throw Object.assign(new Error("Not done: the passkey check was cancelled."), { status: 428 });
     r = await send({ "x-keel-presence": receipt });
-    body = await r.json().catch(() => ({}));
+    body = await read(r);
   }
   if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
   return body as T;
