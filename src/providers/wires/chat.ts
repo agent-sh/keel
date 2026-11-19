@@ -39,14 +39,27 @@ export function chatBody(req: ProviderRequest, ctx: WireCtx, o: ChatOpts = {}, s
       if (msg.content !== null || calls.length) messages.push(msg);
       continue;
     }
-    // Results first (they answer the step before), then the owner's words.
+    // Results first (they answer the step before), then the owner's words. A
+    // tool message carries text only, so an image a tool returned follows all
+    // the results, in one user message, each labelled with the call it came
+    // from (sent once; nothing is stored).
     const parts: any[] = [];
+    const shots: any[] = [];
     for (const b of m.content) {
-      if (b.type === "tool_result") messages.push({ role: "tool", tool_call_id: b.tool_use_id, content: resultText(b.content) || "(no output)" });
-      else if (b.type === "text") parts.push({ type: "text", text: b.text });
+      if (b.type === "tool_result") {
+        const imgs = typeof b.content === "string" ? [] : b.content.filter((c: any) => c.type === "image");
+        const text = typeof b.content === "string" ? b.content : resultText(b.content.filter((c: any) => c.type !== "image"));
+        const note = imgs.length ? `[${imgs.length === 1 ? "an image" : `${imgs.length} images`} from this call follow${imgs.length === 1 ? "s" : ""} in the next user message]` : "";
+        messages.push({ role: "tool", tool_call_id: b.tool_use_id, content: [text, note].filter(Boolean).join("\n") || "(no output)" });
+        for (const [k, c] of imgs.entries()) {
+          shots.push({ type: "text", text: `Image ${imgs.length > 1 ? `${k + 1} ` : ""}returned by tool call ${b.tool_use_id}:` });
+          shots.push({ type: "image_url", image_url: { url: dataUrl(c as any) } });
+        }
+      } else if (b.type === "text") parts.push({ type: "text", text: b.text });
       else if (b.type === "image") parts.push({ type: "image_url", image_url: { url: dataUrl(b) } });
       else if (b.type === "document") parts.push({ type: "file", file: { filename: b.name, file_data: dataUrl(b) } });
     }
+    if (shots.length) parts.unshift(...shots);
     if (parts.length) messages.push({ role: "user", content: parts.every((p) => p.type === "text") ? parts.map((p) => p.text).join("\n") : parts });
   }
   const body: Record<string, any> = {

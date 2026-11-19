@@ -126,6 +126,35 @@ test("ids that clean alike stay distinct on the Gemini wire", () => {
   }
 });
 
+// Chat Completions tool messages take text only: two parallel captures keep
+// their tool replies paired first, then one user message carries both images,
+// each once and named by its call.
+test("tool screenshots reach a Chat Completions route once each, after the paired replies", () => {
+  const img = (d: string) => ({ type: "image", media_type: "image/png", data: d }) as const;
+  const h: Message[] = [
+    { role: "user", content: [{ type: "text", text: "look" }, img("OWNER")] },
+    { role: "assistant", content: [
+      { type: "tool_use", id: "c1", name: "shot", input: {} },
+      { type: "tool_use", id: "c2", name: "shot", input: {} },
+    ] },
+    { role: "user", content: [
+      { type: "tool_result", tool_use_id: "c1", content: [{ type: "text", text: "capture complete" }, img("SHOT_A")] },
+      { type: "tool_result", tool_use_id: "c2", content: [img("SHOT_B")] },
+    ] },
+  ];
+  const body = chatWire({}).body({ ...req, messages: h }, ctx);
+  const s = JSON.stringify(body);
+  for (const d of ["OWNER", "SHOT_A", "SHOT_B"]) expect(s.split(d).length - 1).toBe(1);
+  const roles = body.messages.map((m: any) => m.role);
+  expect(roles).toEqual(["system", "user", "assistant", "tool", "tool", "user"]);
+  expect(body.messages[3].content).toContain("capture complete");
+  const last = body.messages[5].content;
+  expect(last[0].text).toContain("c1");
+  expect(last[1].image_url.url).toContain("SHOT_A");
+  expect(last[2].text).toContain("c2");
+  expect(last[3].image_url.url).toContain("SHOT_B");
+});
+
 test("a call is priced per part; an unstated cache read rate is unknown, not free", () => {
   const u = { input: 1_000_000, output: 1_000_000, cache_read: 0, cache_write: 0 };
   expect(priceOf(u, { input: 1, output: 5 })).toBe(6);
