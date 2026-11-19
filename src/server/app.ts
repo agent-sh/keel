@@ -95,7 +95,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         return await h(req, srv);
       } catch (e) {
         const st = (e as any)?.status;
-        if (typeof st === "number" && st >= 400 && st < 500) return json({ error: (e as Error).message }, st);
+        // `code`: a machine-readable reason, when the refusal has one (off_branch).
+        if (typeof st === "number" && st >= 400 && st < 500) return json({ error: (e as Error).message, ...((e as any).code ? { code: (e as any).code } : {}) }, st);
         const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
         return json({ error: rec.message, error_id: rec.id }, 500);
       } finally {

@@ -23,7 +23,8 @@ type UIState = {
   newModel: string;
   // Text pushed into a message box (a file mention, a starter): `session` names the
   // session's box, absent for the start box. Several boxes can be on screen.
-  composerSeed: { text: string; n: number; session?: string } | null;
+  // `append`: added below what the box holds instead of replacing it; `notice`: said in the box.
+  composerSeed: { text: string; n: number; session?: string; append?: boolean; notice?: string } | null;
   panel: string | null; // the open tab of the side panel
   focusEvent: string | null; // a message to scroll to once its session is shown (?e=)
   // A message opened from search on another branch: shown without moving the
@@ -119,8 +120,8 @@ export function setTheme(t: ThemePref) {
 }
 export const isDark = () => document.documentElement.classList.contains("dark");
 export const phone = isPhone;
-export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined) =>
-  setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1, session } });
+export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined, o: { append?: boolean; notice?: string } = {}) =>
+  setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1, session, ...o } });
 
 // Models the owner picked, newest first: the picker's Recent group. A pick
 // is recorded when made, so renaming or touching a session moves nothing.

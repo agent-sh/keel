@@ -104,8 +104,8 @@ function errorRow(r: any): ErrorRecord {
 }
 
 const queueRow = (r: any): QueueItem => {
-  const { images, ...rest } = r;
-  return { ...rest, steer: !!r.steer, ...(images ? { images: JSON.parse(images) } : {}) };
+  const { images, anchor, ...rest } = r;
+  return { ...rest, steer: !!r.steer, ...(images ? { images: JSON.parse(images) } : {}), ...(anchor ? { anchor } : {}) };
 };
 
 export class Store {
@@ -132,6 +132,8 @@ export class Store {
     }
     // Images of a queued or steered prompt (JSON), so a queued screenshot is not lost.
     if (!this.columnExists("queue", "images")) this.db.exec("ALTER TABLE queue ADD COLUMN images TEXT");
+    // The session's head when the prompt was queued: the branch it was written on.
+    if (!this.columnExists("queue", "anchor")) this.db.exec("ALTER TABLE queue ADD COLUMN anchor TEXT");
     if (!this.columnExists("sessions", "settings")) this.db.exec("ALTER TABLE sessions ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
     for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
@@ -309,7 +311,8 @@ export class Store {
     text = this.redact(session_id, "queue", text);
     const id = Bun.randomUUIDv7();
     const { p } = this.db.query<{ p: number }, [string]>("SELECT COALESCE(MAX(pos), 0) + 1 AS p FROM queue WHERE session_id = ?").get(session_id)!;
-    this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created, images) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now(), images?.length ? JSON.stringify(images) : null);
+    const anchor = this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null;
+    this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created, images, anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now(), images?.length ? JSON.stringify(images) : null, anchor);
     return this.queue(session_id).find((q) => q.id === id)!;
   }
 
@@ -318,14 +321,19 @@ export class Store {
     return r ? queueRow(r) : undefined;
   }
 
-  updateQueueItem(id: string, patch: { text?: string; steer?: boolean; pos?: number }) {
-    if (patch.text !== undefined) this.db.query("UPDATE queue SET text = ? WHERE id = ?").run(this.redact(this.queueItem(id)?.session_id ?? null, "queue", patch.text), id);
-    if (patch.steer !== undefined) this.db.query("UPDATE queue SET steer = ? WHERE id = ?").run(patch.steer ? 1 : 0, id);
-    if (patch.pos !== undefined) this.db.query("UPDATE queue SET pos = ? WHERE id = ?").run(patch.pos, id);
+  // True when the row was still there to change.
+  updateQueueItem(id: string, patch: { text?: string; steer?: boolean; pos?: number; anchor?: string | null }): boolean {
+    const q = this.queueItem(id);
+    if (!q) return false;
+    const text = patch.text !== undefined ? this.redact(q.session_id, "queue", patch.text) : q.text;
+    const anchor = patch.anchor !== undefined ? patch.anchor : q.anchor ?? null;
+    const r = this.db.query("UPDATE queue SET text = ?, steer = ?, pos = ?, anchor = ? WHERE id = ?").run(text, (patch.steer ?? q.steer) ? 1 : 0, patch.pos ?? q.pos, anchor, id);
+    return r.changes > 0;
   }
 
-  dequeue(id: string) {
-    this.db.query("DELETE FROM queue WHERE id = ?").run(id);
+  // True when this call removed the row (a claim: two callers never both get it).
+  dequeue(id: string): boolean {
+    return this.db.query("DELETE FROM queue WHERE id = ?").run(id).changes > 0;
   }
 
   // One row per kind of failure: the same source and message (numbers and ids

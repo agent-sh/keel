@@ -7,7 +7,7 @@ import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { lineage } from "../core/tree.ts";
-import type { AssistantBlock, Message, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage } from "../core/types.ts";
+import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
@@ -176,7 +176,11 @@ const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortE
 
 export class Engine {
   private running = new Map<string, Running>();
-  private held = new Set<string>();
+  // Sessions whose queue a stop holds: stored, so the hold (and its Resume)
+  // outlives a daemon restart; only an action that releases it clears it.
+  private held: Set<string>;
+  // Queued prompts a Send now has taken and not yet appended.
+  private sending = new Set<string>();
   // Turns being parked for a daemon stop: their end reason is "restart".
   private parking = new Set<string>();
   private draining = false;
@@ -195,6 +199,33 @@ export class Engine {
   ) {
     // A summary prepared ahead survives a restart.
     store.migrate("CREATE TABLE IF NOT EXISTS prepared_summaries (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, covered TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL)");
+    store.migrate("CREATE TABLE IF NOT EXISTS queue_holds (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
+    this.held = new Set(store.db.query<{ session_id: string }, []>("SELECT session_id FROM queue_holds").all().map((r) => r.session_id));
+  }
+
+  private hold(id: string) {
+    this.held.add(id);
+    this.store.db.run("INSERT OR IGNORE INTO queue_holds (session_id) VALUES (?)", [id]);
+  }
+
+  private release(id: string) {
+    if (this.held.delete(id)) this.store.db.run("DELETE FROM queue_holds WHERE session_id = ?", [id]);
+  }
+
+  // A queued prompt written on a branch the session no longer shows (the head
+  // moved back, or an earlier prompt was edited): it is sent only when the
+  // owner chooses where, here or back on its branch.
+  offBranch(q: QueueItem): boolean {
+    return !!q.anchor && !this.lineage(q.session_id).some((e) => e.id === q.anchor);
+  }
+
+  private offBranchError() {
+    return Object.assign(new Error("this prompt was queued on another branch: send it here, or go back to its branch"), { status: 409, code: "off_branch" });
+  }
+
+  // A queued prompt that Send now has taken: it can no longer be edited or removed.
+  isSending(qid: string) {
+    return this.sending.has(qid);
   }
 
   isRunning(id: string) {
@@ -221,7 +252,7 @@ export class Engine {
   async interrupt(id: string) {
     const r = this.running.get(id);
     if (!r) return;
-    this.held.add(id);
+    this.hold(id);
     r.abort.abort();
     await r.done;
     for (const q of this.store.queue(id)) if (q.steer) this.store.updateQueueItem(q.id, { steer: false });
@@ -285,7 +316,7 @@ export class Engine {
       this.emitQueue(id);
       return { queued: q, steer: q.steer };
     }
-    this.held.delete(id);
+    this.release(id);
     const ev = this.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
     this.titleFrom(id, text);
     this.start(id);
@@ -299,7 +330,7 @@ export class Engine {
     const old = this.store.event(eventId);
     if (!old || old.session_id !== id || old.kind !== "user") throw Object.assign(new Error("not a prompt of this session"), { status: 400 });
     await this.interrupt(id);
-    this.held.delete(id);
+    this.release(id);
     const ev = this.append(id, "user", { text, images: old.data.images }, old.parent);
     this.emitSession(id);
     this.start(id);
@@ -308,19 +339,36 @@ export class Engine {
   }
 
   // A queued prompt now: the running turn stops and this one is the next turn.
-  async sendNow(id: string, qid: string) {
+  // The row is taken before the stop is awaited, so a second Send now, an
+  // edit or a Remove in that time is told it is already sending.
+  // `here`: on the branch shown now, also when it was queued on another one.
+  async sendNow(id: string, qid: string, here = false) {
+    if (this.sending.has(qid)) throw Object.assign(new Error("this queued prompt is already sending"), { status: 409 });
     const q = this.store.queueItem(qid);
-    if (!q || q.session_id !== id) throw Object.assign(new Error("no such queued prompt"), { status: 404 });
-    await this.interrupt(id);
-    this.store.dequeue(qid);
-    this.held.delete(id);
-    this.append(id, "user", { text: q.text, images: q.images, origin: "queued" });
-    this.start(id);
-    this.emitQueue(id);
+    if (q && q.session_id === id && !here && this.offBranch(q)) throw this.offBranchError();
+    if (!q || q.session_id !== id || !this.store.dequeue(qid)) throw Object.assign(new Error("no such queued prompt"), { status: 404 });
+    this.sending.add(qid);
+    try {
+      this.emitQueue(id);
+      await this.interrupt(id);
+      this.release(id);
+      this.append(id, "user", { text: q.text, images: q.images, origin: "queued", queue_id: q.id });
+      this.start(id);
+      this.emitQueue(id);
+    } finally {
+      this.sending.delete(qid);
+    }
   }
 
-  resumeQueue(id: string) {
-    this.held.delete(id);
+  // `here`: the next prompt goes on the branch shown now even when it was
+  // queued on another one.
+  resumeQueue(id: string, here = false) {
+    const first = this.store.queue(id)[0];
+    if (first && this.offBranch(first)) {
+      if (!here) throw this.offBranchError();
+      this.store.updateQueueItem(first.id, { anchor: this.store.session(id)?.head ?? null });
+    }
+    this.release(id);
     if (!this.running.has(id)) this.next(id);
     this.emitQueue(id);
   }
@@ -328,7 +376,7 @@ export class Engine {
   // Continue a session whose last turn was stopped, failed or was cut.
   resume(id: string) {
     if (this.running.has(id)) throw Object.assign(new Error("a turn is running"), { status: 409 });
-    this.held.delete(id);
+    this.release(id);
     this.append(id, "user", { text: "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
     this.start(id);
     this.emitQueue(id);
@@ -341,8 +389,10 @@ export class Engine {
     if (!s || s.archived) return;
     const q = this.store.queue(id)[0];
     if (!q) return;
-    this.store.dequeue(q.id);
-    this.append(id, "user", { text: q.text, images: q.images, origin: q.steer ? "steer" : "queued" });
+    // Written on another branch: it waits for the owner to say where it goes.
+    if (this.offBranch(q)) { this.hold(id); this.emitQueue(id); return; }
+    if (!this.store.dequeue(q.id)) return;
+    this.append(id, "user", { text: q.text, images: q.images, origin: q.steer ? "steer" : "queued", queue_id: q.id });
     this.start(id);
     this.emitQueue(id);
   }
@@ -447,8 +497,8 @@ export class Engine {
       for (;;) {
         // Steers sent while the last step ran join here, after its tool results.
         for (const q of this.store.queue(id).filter((q) => q.steer)) {
-          this.store.dequeue(q.id);
-          this.append(id, "user", { text: q.text, images: q.images, origin: "steer" });
+          if (!this.store.dequeue(q.id)) continue;
+          this.append(id, "user", { text: q.text, images: q.images, origin: "steer", queue_id: q.id });
           this.emitQueue(id);
         }
         session = this.store.session(id)!;

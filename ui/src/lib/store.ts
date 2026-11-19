@@ -225,10 +225,11 @@ export const actions = {
   resume: (id: string) => api(`/api/sessions/${id}/resume`, { method: "POST" }),
   context: (id: string) => api<ContextInfo>(`/api/sessions/${id}/context`),
   queueResume: (id: string) => api(`/api/sessions/${id}/queue/resume`, { method: "POST" }),
+  // `here`: a prompt queued on another branch goes on the one shown now.
   queueEdit: (id: string, qid: string, body: { text?: string; steer?: boolean; position?: number }) =>
     api(`/api/sessions/${id}/queue/${qid}`, { method: "PATCH", body: JSON.stringify(body) }),
   queueRemove: (id: string, qid: string) => api(`/api/sessions/${id}/queue/${qid}`, { method: "DELETE" }),
-  queueSendNow: (id: string, qid: string) => api(`/api/sessions/${id}/queue/${qid}/send`, { method: "POST" }),
+  queueSendNow: (id: string, qid: string, here = false) => api(`/api/sessions/${id}/queue/${qid}/send`, { method: "POST", body: JSON.stringify({ here }) }),
   takeComposer(id: string): string | undefined {
     const t = state.composer[id];
     if (t !== undefined) {

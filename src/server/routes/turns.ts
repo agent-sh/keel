@@ -25,21 +25,29 @@ export const turnRoutes: RouteModule = (deps) => {
       },
     },
     "/api/sessions/:id/queue/resume": {
-      POST: (req: any) => {
+      POST: async (req: any) => {
         const s = sessionOr404(req.params.id);
         if (!s) return bad("no such session", 404);
         if (s.archived) return bad("the session is archived", 409);
-        engine.resumeQueue(s.id);
+        const b = ((await req.json().catch(() => null)) ?? {}) as any;
+        engine.resumeQueue(s.id, !!b.here);
         return json(queueBody(s.id));
       },
     },
     "/api/sessions/:id/queue/:qid": {
       PATCH: async (req: any) => {
+        // The body first: from here on nothing awaits, so the row found is the row changed.
+        const b = ((await req.json().catch(() => null)) ?? {}) as any;
         const q = store.queueItem(req.params.qid);
-        if (!q || q.session_id !== req.params.id) return bad("no such queued prompt", 404);
-        const b = (await req.json()) as any;
+        if (engine.isSending(req.params.qid)) return bad("this queued prompt is already sending", 409);
+        if (!q || q.session_id !== req.params.id) return bad("no such queued prompt (it may have been sent)", 404);
         if (b.text === undefined && b.steer === undefined && b.position === undefined) return bad("nothing to change");
-        if (b.text !== undefined && !String(b.text).trim()) return bad("text cannot be empty");
+        let text = b.text === undefined ? undefined : String(b.text).trim();
+        // A screenshot or file alone is a prompt, as the composer sends it.
+        if (text === "") {
+          if (!q.images?.length) return bad("text cannot be empty");
+          text = q.images.some((x: any) => x.type === "image") ? "(image)" : "(attached file)";
+        }
         let pos: number | undefined;
         if (b.position !== undefined) {
           const others = store.queue(q.session_id).filter((x) => x.id !== q.id && x.steer === (b.steer ?? q.steer));
@@ -48,14 +56,14 @@ export const turnRoutes: RouteModule = (deps) => {
           const after = others[i]?.pos ?? before + 2;
           pos = (before + after) / 2;
         }
-        store.updateQueueItem(q.id, { text: b.text?.trim(), steer: b.steer, pos });
+        if (!store.updateQueueItem(q.id, { text, steer: b.steer, pos })) return bad("no such queued prompt (it may have been sent)", 404);
         engine.emitQueue(q.session_id);
         return json(queueBody(q.session_id));
       },
       DELETE: (req: any) => {
+        if (engine.isSending(req.params.qid)) return bad("this queued prompt is already sending", 409);
         const q = store.queueItem(req.params.qid);
-        if (!q || q.session_id !== req.params.id) return bad("no such queued prompt", 404);
-        store.dequeue(q.id);
+        if (!q || q.session_id !== req.params.id || !store.dequeue(q.id)) return bad("no such queued prompt (it may have been sent)", 404);
         engine.emitQueue(q.session_id);
         return json(queueBody(q.session_id));
       },
@@ -65,7 +73,8 @@ export const turnRoutes: RouteModule = (deps) => {
         const s = sessionOr404(req.params.id);
         if (!s) return bad("no such session", 404);
         if (s.archived) return bad("the session is archived", 409);
-        await engine.sendNow(s.id, req.params.qid);
+        const b = ((await req.json().catch(() => null)) ?? {}) as any;
+        await engine.sendNow(s.id, req.params.qid, !!b.here);
         return json({ ok: true });
       },
     },

@@ -120,3 +120,41 @@ test("continued turns after a restart take turns", async () => {
     d.proc.kill("SIGKILL");
   }
 });
+
+// A queue held by a stop stays held across a restart: the pause and its Resume
+// are still shown, nothing runs by itself, and Resume sends the edited prompts in order.
+test("a held queue survives a restart", async ({ page }) => {
+  const state = join(ROOT, `restart-held-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in" });
+    const sid = session.id;
+    await call(`/api/sessions/${sid}/messages`, { text: "script:slow" });
+    const one = (await call(`/api/sessions/${sid}/messages`, { text: "first draft", mode: "queue" })).queued;
+    await call(`/api/sessions/${sid}/messages`, { text: "second", mode: "queue" });
+    await call(`/api/sessions/${sid}/queue/${one.id}`, { text: "first, corrected" }, "PATCH");
+    await call(`/api/sessions/${sid}/interrupt`);
+    expect((await call(`/api/sessions/${sid}/queue`, undefined, "GET")).held).toBe(true);
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    d = await daemon(state);
+    const q = await call(`/api/sessions/${sid}/queue`, undefined, "GET");
+    expect([q.held, q.queue.map((x: any) => x.text)]).toEqual([true, ["first, corrected", "second"]]);
+    await page.goto(`${d.url}/s/${sid}`);
+    await expect(page.getByTestId("queue-held")).toBeVisible();
+    await shoot(page, "restart-03-held-queue-after-restart");
+    const ends = async () => ((await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "turn_end").length;
+    expect(await ends()).toBe(1);
+    await page.getByTestId("queue-held").getByRole("button", { name: "Resume" }).click();
+    await expect.poll(ends, { timeout: 30_000 }).toBe(3);
+    const sent = ((await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "user" && e.data.origin === "queued").map((e) => e.data.text);
+    expect(sent).toEqual(["first, corrected", "second"]);
+    expect((await call(`/api/sessions/${sid}/queue`, undefined, "GET")).held).toBe(false);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});

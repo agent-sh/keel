@@ -129,7 +129,8 @@ export type SessionSettings = {
   skill_mode?: string; // a skill kept on as standing instructions
 };
 
-export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number };
+// `anchor`: the session's head when it was queued (the branch it was written on).
+export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number; anchor?: string };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);
 // `delta` frames are live streaming text and are not stored. `rev` is the bus's

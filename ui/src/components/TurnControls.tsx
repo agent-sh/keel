@@ -2,22 +2,45 @@
 // prompts), the context meter with compaction, and the effort picker.
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { ArrowUp, Check, ChevronDown, CornerDownRight, Gauge, Layers, ListPlus, Pencil, Play, RotateCcw, Send, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, CornerDownRight, Gauge, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { actions, reportError, useStore, type ContextInfo, failed } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
+import { seedComposer } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 
 const chipBtn = "grid size-6 place-items-center rounded-md text-faint hover:text-fg hover:bg-hover outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
 
-function QueueRow({ q, sessionId, first }: { q: QueueItem; sessionId: string; first: boolean }) {
+// `place`: the row's index among the queued (not steered) prompts; `off`: it
+// was queued on a branch the chat no longer shows.
+function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: string; place: number; off: boolean }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(q.text);
-  const save = () => actions.queueEdit(sessionId, q.id, { text: text.trim() }).then(() => setEditing(false), reportError);
+  const canSave = !!text.trim() || !!q.images?.length; // a screenshot alone is a prompt
+  // A correction that came too late (the prompt was sent meanwhile, the row
+  // went away while it was being edited) is not lost: it goes to the message
+  // box, unsent.
+  const kept = useRef(false);
+  const keep = (t: string) => {
+    if (kept.current) return;
+    kept.current = true;
+    if (t.trim() && t.trim() !== q.text) seedComposer(t.trim(), sessionId, { append: true, notice: "That prompt was already sent; your correction is in the box, unsent." });
+  };
+  const live = useRef({ editing, text });
+  live.current = { editing, text };
+  useEffect(() => () => { if (live.current.editing) keep(live.current.text); }, []);
+  const save = () => actions.queueEdit(sessionId, q.id, { text: text.trim() }).then(() => setEditing(false), (e) => {
+    const st = (e as { status?: number }).status;
+    if (st === 404 || st === 409) keep(text);
+    else failed(e, { at: "queue edit" });
+    setEditing(false);
+  });
+  // Moves and sends that lose a race to the turn are no failure: the row is gone.
+  const act = (p: Promise<unknown>, at: string) => p.catch((e) => { const st = (e as { status?: number }).status; if (st !== 404 && st !== 409) failed(e, { at }); });
   return (
     <li className="group/q flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-hover" data-testid="queue-item">
       <span className={cn(
@@ -31,17 +54,18 @@ function QueueRow({ q, sessionId, first }: { q: QueueItem; sessionId: string; fi
           autoFocus
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) save(); if (e.key === "Escape") setEditing(false); }}
+          onKeyDown={(e) => { if (e.key === "Enter" && canSave) save(); if (e.key === "Escape") setEditing(false); }}
           onBlur={() => setEditing(false)}
           className="min-w-0 flex-1 rounded-md border border-line bg-sunken px-2 py-0.5 text-ui outline-none"
         />
       ) : (
         <span className="min-w-0 flex-1 truncate text-ui" title={q.text}>{q.text}</span>
       )}
+      {!editing && off && <span className="shrink-0 text-caption text-warn" data-testid="queue-off-branch" title="Written while the chat showed another branch">Queued on another branch</span>}
       {!editing && !!q.images?.length && <span className="shrink-0 text-caption text-faint" data-testid="queue-images">{q.images.length === 1 ? "1 image" : `${q.images.length} images`}</span>}
       <span className="flex shrink-0 items-center opacity-60 group-hover/q:opacity-100">
-        {!q.steer && !first && (
-          <button type="button" className={chipBtn} title="Move up" aria-label="Move up" onClick={() => actions.queueEdit(sessionId, q.id, { position: 0 }).catch(reportError)}>
+        {!q.steer && place > 0 && (
+          <button type="button" className={chipBtn} data-testid="queue-move-up" title="Move up one place" aria-label="Move up one place" onClick={() => act(actions.queueEdit(sessionId, q.id, { position: place - 1 }), "queue move")}>
             <ArrowUp className="size-3.5" />
           </button>
         )}
@@ -49,14 +73,25 @@ function QueueRow({ q, sessionId, first }: { q: QueueItem; sessionId: string; fi
           <Pencil className="size-3.5" />
         </button>
         {!q.steer && (
-          <button type="button" className={chipBtn} title="Steer into the running turn instead" aria-label="Make it a steer" onClick={() => actions.queueEdit(sessionId, q.id, { steer: true }).catch(reportError)}>
+          <button type="button" className={chipBtn} title="Steer into the running turn instead" aria-label="Make it a steer" onClick={() => act(actions.queueEdit(sessionId, q.id, { steer: true }), "queue steer")}>
             <CornerDownRight className="size-3.5" />
           </button>
         )}
-        <button type="button" className={chipBtn} data-testid="queue-send-now" title="Send now (stops the running turn)" aria-label="Send now" onClick={() => actions.queueSendNow(sessionId, q.id).catch(reportError)}>
-          <Send className="size-3.5" />
-        </button>
-        <button type="button" className={cn(chipBtn, "hover:text-danger")} data-testid="queue-remove" title="Remove" aria-label="Remove" onClick={() => actions.queueRemove(sessionId, q.id).catch(reportError)}>
+        {off ? (
+          <>
+            <button type="button" className={chipBtn} data-testid="queue-back-to-branch" title="Show the branch it was queued on" aria-label="Back to its branch" onClick={() => act(actions.setHead(sessionId, q.anchor!), "queue back to branch")}>
+              <Undo2 className="size-3.5" />
+            </button>
+            <button type="button" className={chipBtn} data-testid="queue-send-here" title="Send it on this branch now" aria-label="Send here" onClick={() => act(actions.queueSendNow(sessionId, q.id, true), "queue send here")}>
+              <Send className="size-3.5" />
+            </button>
+          </>
+        ) : (
+          <button type="button" className={chipBtn} data-testid="queue-send-now" title="Send now (stops the running turn)" aria-label="Send now" onClick={() => act(actions.queueSendNow(sessionId, q.id), "queue send now")}>
+            <Send className="size-3.5" />
+          </button>
+        )}
+        <button type="button" className={cn(chipBtn, "hover:text-danger")} data-testid="queue-remove" title="Remove" aria-label="Remove" onClick={() => act(actions.queueRemove(sessionId, q.id), "queue remove")}>
           <X className="size-3.5" />
         </button>
       </span>
@@ -66,20 +101,28 @@ function QueueRow({ q, sessionId, first }: { q: QueueItem; sessionId: string; fi
 
 export function QueuePanel({ sessionId }: { sessionId: string }) {
   const q = useStore((s) => s.queues[sessionId]);
-  if (!q || (!q.queue.length && !q.held)) return null;
-  if (!q.queue.length) return null;
+  const all = useStore((s) => s.events[sessionId]);
+  const head = useStore((s) => s.sessions[sessionId]?.head ?? null);
+  const shown = useMemo(() => new Set(all ? lineage(all, head).map((e) => e.id) : []), [all, head]);
+  if (!q || !q.queue.length) return null;
+  // Only known when the events are loaded; until then nothing is marked.
+  const off = (x: QueueItem) => !!all && !!x.anchor && !shown.has(x.anchor);
+  const nextOff = off(q.queue[0]!);
   return (
     <div className="mb-2 rounded-lg border border-line bg-raised/80 px-1.5 py-1.5 shadow-2 animate-in" data-testid="queue">
       {q.held && (
         <div className="flex items-center gap-2 px-2 pb-1 text-caption text-muted" data-testid="queue-held">
-          <span className="size-1.5 rounded-full bg-warn" /> Paused after the stop. Nothing runs until you send or resume.
-          <button type="button" className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft" onClick={() => actions.queueResume(sessionId).catch(reportError)}>
-            <Play className="size-3" /> Resume
-          </button>
+          <span className="size-1.5 rounded-full bg-warn" />
+          {nextOff ? "Paused: the next prompt was queued on another branch. Send it here or go back to its branch." : "Paused after the stop. Nothing runs until you send or resume."}
+          {!nextOff && (
+            <button type="button" className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft" onClick={() => actions.queueResume(sessionId).catch((e) => failed(e, { at: "queue resume" }))}>
+              <Play className="size-3" /> Resume
+            </button>
+          )}
         </div>
       )}
       <ul className="flex flex-col">
-        {q.queue.map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} first={i === 0 || q.queue[i - 1]!.steer} />)}
+        {q.queue.map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} />)}
       </ul>
     </div>
   );

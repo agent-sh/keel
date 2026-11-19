@@ -148,10 +148,11 @@ export function Composer({
   useEffect(() => {
     if (!seed) return;
     setUI({ composerSeed: null }); // consumed: another message box mounted later must not take it
-    setText(seed.text);
+    setText((cur) => (seed.append && cur.trim() ? `${cur}${cur.endsWith("\n") ? "" : "\n"}${seed.text}` : seed.text));
+    if (seed.notice) setNotice(seed.notice);
     requestAnimationFrame(() => {
       const el = ref.current;
-      if (el) { el.focus(); el.setSelectionRange(seed.text.length, seed.text.length); }
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
     });
   }, [seed]);
 
@@ -422,7 +423,7 @@ export function Composer({
             e.preventDefault();
             submit();
           }
-          if (e.key === "Tab" && !e.shiftKey && working && onQueue && text.trim()) { e.preventDefault(); submit(true); }
+          if (e.key === "Tab" && !e.shiftKey && working && onQueue && canSend) { e.preventDefault(); submit(true); }
           if (e.key === "Escape" && working) { e.preventDefault(); onStop?.(); }
         }}
         className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
@@ -453,7 +454,7 @@ export function Composer({
               type="button"
               data-testid="queue-button"
               onClick={() => submit(true)}
-              disabled={!text.trim()}
+              disabled={!canSend}
               title="Queue for after this turn (Tab)"
               aria-label="Queue for after this turn"
               className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg disabled:opacity-40"
