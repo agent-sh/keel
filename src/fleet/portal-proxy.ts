@@ -15,7 +15,9 @@ const DROP_DOWN = ["x-frame-options", "content-security-policy", "content-length
 export function upHeaders(req: Request): Headers {
   const h = new Headers(req.headers);
   for (const k of DROP_UP) h.delete(k);
-  for (const k of [...h.keys()]) if (k.startsWith("sec-websocket") || k === "upgrade") h.delete(k);
+  // Sec-Fetch-* describe the browser's hop to this daemon; carried over a link
+  // they make the far daemon's request guard refuse the page's own assets.
+  for (const k of [...h.keys()]) if (k.startsWith("sec-websocket") || k.startsWith("sec-fetch-") || k === "upgrade") h.delete(k);
   return h;
 }
 
