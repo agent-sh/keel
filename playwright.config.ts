@@ -8,9 +8,16 @@ import { defineConfig } from "@playwright/test";
 const url = process.env.KEEL_URL;
 if (!url) throw new Error("Set KEEL_URL to the scratch dev daemon the specs drive (scripts/dev.sh <port>), e.g. KEEL_URL=http://127.0.0.1:<port>.");
 
+// Playwright empties its output folder when a run starts, traces included. Each
+// daemon gets its own folder (one run per daemon at a time, since specs change
+// its settings), and no folder sits inside another run's: a run with a shared
+// or parent folder deletes the traces of a run still writing them (ENOENT on
+// a .trace or .network file at context close).
+const outputDir = `${process.env.HOME}/.cache/keel-work/bun/e2e-out/${new URL(url).port || "80"}`;
+
 export default defineConfig({
   testDir: "test/e2e",
-  outputDir: `${process.env.HOME}/.cache/keel-work/bun/e2e-out`,
+  outputDir,
   timeout: 180_000,
   fullyParallel: false,
   workers: 1,
