@@ -209,12 +209,18 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         DELETE: wrap(async (req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
-          await engine.interrupt(s.id);
-          // Its commands and the files its tools spilled go with it.
-          await Promise.all(jobsOf(s.id).filter(running).map((j) => stopJob(j, "was stopped: its session was deleted")));
-          rmSync(join(store.stateDir, "spill", s.id), { recursive: true, force: true });
-          store.deleteSession(s.id);
-          bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle", title: s.title }, deleted: true });
+          // Its subagent sessions go with it (the rows cascade): each is
+          // stopped first, deepest first, so no turn writes to a session
+          // already gone. Their commands and spilled files go too.
+          for (const id of [...store.descendants(s.id).reverse(), s.id]) {
+            const x = store.session(id);
+            if (!x) continue;
+            await engine.interrupt(id);
+            await Promise.all(jobsOf(id).filter(running).map((j) => stopJob(j, "was stopped: its session was deleted")));
+            rmSync(join(store.stateDir, "spill", id), { recursive: true, force: true });
+            store.deleteSession(id);
+            bus.emit({ t: "session", session: { ...x, archived: true, phase: "idle" }, deleted: true });
+          }
           return json({ ok: true });
         }),
       },

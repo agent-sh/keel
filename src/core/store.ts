@@ -221,6 +221,14 @@ export class Store {
     return this.session(id);
   }
 
+  // A session's subagent sessions and theirs, nearest first.
+  descendants(id: string): string[] {
+    return this.db
+      .query<{ id: string }, [string]>("WITH RECURSIVE d(id) AS (SELECT id FROM sessions WHERE parent_id = ?1 UNION SELECT s.id FROM sessions s JOIN d ON s.parent_id = d.id) SELECT id FROM d")
+      .all(id)
+      .map((r) => r.id);
+  }
+
   deleteSession(id: string) {
     this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
     forgetSession(id);
