@@ -8,6 +8,7 @@ export const MODES = [
   { id: "auto-edits", name: "Auto edits", description: "Edits inside the workspace run. Commands ask, except read-only ones and sandboxed ones." },
   { id: "full-auto", name: "Full auto", description: "Everything runs. Only high-risk commands still ask." },
   { id: "read-only", name: "Read only", description: "Reads and read-only commands run. Everything else is refused." },
+  { id: "plan", name: "Plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
   { id: "reviewer", name: "Reviewer", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
 ] as const;
 export type Mode = (typeof MODES)[number]["id"];
@@ -74,6 +75,11 @@ export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: 
 
 export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read" || c.kind === "control") return { allow: true };
+  // Plan mode holds like read-only, and says how to go on.
+  if (f.mode === "plan") {
+    const d = decide(c, { ...f, mode: "read-only" });
+    return "deny" in d ? { deny: `${d.deny.replace("This session is read-only", "This session is in plan mode")} Present your plan with the plan tool (ExitPlanMode or present_plan); the owner approves it before anything changes.` } : d;
+  }
   if (c.kind === "shell") {
     // Leaving the owner's sandbox is the owner's call in every mode, one call at a time.
     if (c.escalate && f.sandboxed) {

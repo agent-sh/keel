@@ -17,7 +17,7 @@ export let gate: Gate | undefined;
 export let presence: Presence | undefined;
 
 // A mode that asks less than another (a remote device needs the owner's passkey to loosen one).
-const LOOSE: Record<string, number> = { "read-only": 0, ask: 1, reviewer: 2, "auto-edits": 3, "full-auto": 4 };
+const LOOSE: Record<string, number> = { "read-only": 0, plan: 0, ask: 1, reviewer: 2, "auto-edits": 3, "full-auto": 4 };
 
 export const permissionRoutes: RouteModule = (deps: Deps) => {
   const { store } = deps;

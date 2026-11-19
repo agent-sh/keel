@@ -14,6 +14,7 @@ import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { secretRoutes } from "./secrets.ts";
 import { trustRoutes } from "./trust.ts";
+import { planRoutes } from "./plan.ts";
 import { providersRoutes } from "./providers.ts";
 import { profileRoutes } from "./profile.ts";
 import { pwaRoutes } from "./pwa.ts";
@@ -35,6 +36,7 @@ import { attachmentRoutes } from "./attachments.ts";
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
   permissionRoutes, // first: its beforeTool gate decides before the others run
+  planRoutes,
   trustRoutes, // protected files are watched around calls the gate let through
   checkpointRoutes,
   workspaceRoutes,

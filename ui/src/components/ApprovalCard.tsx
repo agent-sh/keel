@@ -7,6 +7,7 @@ import { cn } from "../lib/utils.ts";
 import { BlockedCards } from "./BlockedCards.tsx";
 import { SecretCards } from "./SecretCards.tsx";
 import { TrustCards } from "./TrustCards.tsx";
+import { PlanCards } from "./PlanCard.tsx";
 
 const TITLE: Record<Approval["kind"], string> = {
   shell: "Run this command?",
@@ -28,6 +29,7 @@ export function Approvals({ sessionId }: { sessionId: string }) {
       <SecretCards sessionId={sessionId} />
       <BlockedCards sessionId={sessionId} />
       <TrustCards sessionId={sessionId} />
+      <PlanCards sessionId={sessionId} />
       {cards.length > 0 && (
         <div className="mb-2 flex flex-col gap-2" data-testid="approvals">
           {cards.map((a, i) => <Card key={a.id} a={a} first={i === 0} />)}
