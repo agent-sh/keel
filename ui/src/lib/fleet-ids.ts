@@ -27,7 +27,7 @@ export function localize(id: string, s: Session, events?: StoredEvent[]) {
 export function relayed(machine: string, f: Frame): Frame | null {
   const map = (sid?: string) => (sid ? remoteId(machine, sid) : sid);
   switch (f.t) {
-    case "session": return { t: "session", session: asRemote(machine, f.session) };
+    case "session": return { ...f, session: asRemote(machine, f.session) };
     case "event": return { t: "event", event: { ...f.event, session_id: map(f.event.session_id)! } };
     case "delta": return { ...f, session_id: map(f.session_id)! };
     case "feature": return { ...f, session_id: map(f.session_id) };

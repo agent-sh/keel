@@ -33,6 +33,7 @@ export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: strin
 
 type State = {
   sessions: Record<string, Session>;
+  gone: Record<string, true>; // deleted while this page was open
   events: Record<string, StoredEvent[]>;
   drafts: Record<string, Record<number, DraftBlock>>;
   models: ListedModel[];
@@ -51,7 +52,7 @@ type State = {
 };
 
 let state: State = { loaded: { sessions: false, models: false },
-  sessions: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
+  sessions: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
 };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => {
@@ -240,6 +241,13 @@ export type ContextInfo = {
 export function apply(f: Frame) {
   if (f.t === "session") {
     const s = f.session;
+    if (f.deleted) {
+      // Its views unmount now instead of asking the daemon for a session it no longer has.
+      const { [s.id]: _s, ...sessions } = state.sessions;
+      const { [s.id]: _e, ...events } = state.events;
+      set({ sessions, events, gone: { ...state.gone, [s.id]: true } });
+      return;
+    }
     if (!state.sessions[s.id] && s.archived) return;
     set({ sessions: { ...state.sessions, [s.id]: s } });
   } else if (f.t === "event") {

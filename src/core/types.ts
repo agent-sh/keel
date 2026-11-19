@@ -120,7 +120,7 @@ export type QueueItem = { id: string; session_id: string; text: string; images?:
 export type Frame =
   | { t: "event"; event: StoredEvent }
   | { t: "delta"; session_id: string; index: number; kind: "text" | "thinking" | "tool_input"; text: string; name?: string }
-  | { t: "session"; session: Session }
+  | { t: "session"; session: Session; deleted?: boolean } // deleted: the session is gone; pages drop it
   | { t: "queue"; session_id: string; queue: QueueItem[]; held: boolean }
   | { t: "status"; session_id: string; status: TurnStatus }
   | { t: "error"; error: ErrorRecord }

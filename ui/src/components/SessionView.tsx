@@ -27,6 +27,7 @@ export function SessionView({ id, header, panel = true, focus = true }: { id: st
   const session = useStore((s) => s.sessions[id]);
   // A link to a session that is gone (deleted, another daemon's) says so instead of loading forever.
   const [missing, setMissing] = useState<string | null>(null);
+  const gone = useStore((s) => !!s.gone[id]);
   useEffect(() => {
     setMissing(null);
     actions.loadSession(id).catch((e) => {
@@ -35,7 +36,7 @@ export function SessionView({ id, header, panel = true, focus = true }: { id: st
     });
   }, [id]);
   useEffect(() => { if (focus) document.title = session?.title ? `${session.title} - Keel` : "Keel"; }, [session?.title, focus]);
-  if (!session && missing === id) {
+  if (!session && (missing === id || gone)) {
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">
         <div className="flex h-12 items-center px-2 md:px-4"><SidebarButton /></div>

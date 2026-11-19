@@ -173,7 +173,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           await Promise.all(jobsOf(s.id).filter(running).map((j) => stopJob(j, "was stopped: its session was deleted")));
           rmSync(join(store.stateDir, "spill", s.id), { recursive: true, force: true });
           store.deleteSession(s.id);
-          bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle", title: s.title } });
+          bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle", title: s.title }, deleted: true });
           return json({ ok: true });
         }),
       },
