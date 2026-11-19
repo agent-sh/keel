@@ -150,6 +150,11 @@ export class McpManager {
         this.errors.capture("server", new Error(`mcp.json names ${name}, a server Keel brings itself; the entry is not used`), { at: "mcp config" });
         continue;
       }
+      const bad = validate(name, c);
+      if (bad) {
+        this.errors.capture("server", new Error(`mcp.json server ${name} is not used: ${bad}`), { at: "mcp config" });
+        continue;
+      }
       this.addEntry(name, c);
     }
     // Connect in the background so the panel shows real states; nothing waits on it.
@@ -198,7 +203,7 @@ export class McpManager {
       qualified: `${e.name}__${t.name}`,
       description: t.description ?? t.title ?? "",
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
-      readOnly: e.bundled ? e.bundled.reads(t.name) : t.annotations?.readOnlyHint === true,
+      readOnly: e.bundled ? e.bundled.reads(t.name) : !!e.config.read_tools?.includes(t.name),
       judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input) : undefined,
       run: (input: any, ctx: ToolContext) => this.call(e.name, t.name, input, ctx),
     };
@@ -352,6 +357,17 @@ export class McpManager {
     this.addEntry(name, config);
     if (config.enabled !== false) this.ensure(name).catch(() => {});
     return null;
+  }
+
+  // The owner marks which of a server's tools are reads (they run without asking).
+  setReads(name: string, tools: string[]) {
+    const e = this.entries.get(name)!;
+    if (e.bundled) throw new Error(`${name} is built in: its reads are its own`);
+    const c: McpServerConfig = { ...e.config, read_tools: [...new Set(tools.map(String))] };
+    if (!c.read_tools!.length) delete c.read_tools;
+    e.config = c;
+    this.cfg.servers[name] = c;
+    writeConfig(this.cfg);
   }
 
   remove(name: string) {

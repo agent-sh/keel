@@ -92,6 +92,12 @@ const SearchTools: Tool = {
   },
 };
 
+function unknownTool(name: string, all: CatalogTool[]): string {
+  const near = all.map((x) => ({ x, s: score(x, name.replace(/__/g, " ")) })).filter((h) => h.s > 0).sort((a, b) => b.s - a.s).slice(0, 3);
+  const pending = catalogSources().flatMap((s) => s.pending?.() ?? []);
+  return `No tool named ${name}.${near.length ? ` Closest: ${near.map((h) => h.x.qualified).join(", ")}.` : ""}${pending.length ? ` Still connecting: ${pending.join(", ")}; search again shortly.` : ""} Find tools with search_tools.`;
+}
+
 const McpCall: Tool = {
   name: "mcp_call",
   readOnly: false,
@@ -99,9 +105,12 @@ const McpCall: Tool = {
     const name = String(input?.tool ?? "");
     const all = await catalogTools();
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
-    // A name that matches nothing runs nothing: the call only says so.
     const args = input?.arguments ?? {};
-    return t ? { name: t.qualified, readOnly: !!t.readOnly, input: args, cls: t.judge ? await t.judge(args) : undefined } : { name, readOnly: true, input: {} };
+    if (t) return { name: t.qualified, readOnly: !!t.readOnly, input: args, cls: t.judge ? await t.judge(args) : undefined };
+    // A name not known yet (its server still starting, after the catalog
+    // waited on it) is refused, never judged as a read: by the time it would
+    // run, the server may know it.
+    return { name, readOnly: false, input: args, cls: { kind: "refused" as const, why: unknownTool(name, all) } };
   },
   description: "Run a tool found with search_tools, by its full name (server__tool), with its arguments as an object.",
   input_schema: {
@@ -117,10 +126,7 @@ const McpCall: Tool = {
     const name = String(input.tool ?? "");
     const all = await catalogTools();
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
-    if (!t) {
-      const near = all.map((x) => ({ x, s: score(x, name.replace(/__/g, " ")) })).filter((h) => h.s > 0).sort((a, b) => b.s - a.s).slice(0, 3);
-      return fail(`No tool named ${name}.${near.length ? ` Closest: ${near.map((h) => h.x.qualified).join(", ")}.` : ""} Find tools with search_tools.`);
-    }
+    if (!t) return fail(unknownTool(name, all));
     const args = input.arguments ?? {};
     if (typeof args !== "object" || Array.isArray(args)) return fail("arguments must be an object.");
     const required: string[] = (t.input_schema as any).required ?? [];

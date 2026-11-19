@@ -63,6 +63,19 @@ export const mcpRoutes: RouteModule = (deps) => {
       DELETE: (req: any) =>
         known(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), servers())),
     },
+    // The owner marks tools of a server as reads; a remote device needs the passkey.
+    "/api/mcp/servers/:name/reads": {
+      PUT: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        if (!Array.isArray(b.tools)) return bad("tools is a list of tool names");
+        try { m.setReads(req.params.name, b.tools); } catch (e) { return bad((e as Error).message, 409); }
+        return servers();
+      },
+    },
     "/api/mcp/servers/:name/toggle": {
       POST: async (req: any) => known(req.params.name) ?? (m.toggle(req.params.name, (await body(req)).enabled !== false), servers()),
     },

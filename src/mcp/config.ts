@@ -21,12 +21,15 @@ export type McpServerConfig = {
   timeout_secs?: number;               // connect
   tool_timeout_secs?: number;          // one tools/call
   oauth?: OAuthConfig;
+  // Tools of this server the owner marked as reads: they run without asking.
+  // A server's own readOnlyHint does not count; it is the server's word.
+  read_tools?: string[];
 };
 
 export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: string]: unknown };
 
-// Built-in groups and the servers Keel brings itself (bundled).
-export const RESERVED = new Set(["web", "mcp", "chrome"]);
+// Built-in groups and catalogs, and the servers Keel brings itself (bundled).
+export const RESERVED = new Set(["web", "mcp", "chrome", "keel", "keel-import", "phone", "parlar"]);
 
 export const configPath = () => process.env.KEEL_MCP_CONFIG ?? join(configDir(), "mcp.json");
 
@@ -55,7 +58,10 @@ export function writeConfig(cfg: McpConfigFile, path = configPath()) {
 
 export function validate(name: string, c: McpServerConfig): string | null {
   if (!name || !/^[\w.-]{1,64}$/.test(name)) return "a server name is letters, digits, dot, dash or underscore";
-  if (RESERVED.has(name)) return `${name} is a built-in server name`;
+  // A tool's full name is <server>__<tool>: a server name with "__" in it, or
+  // one that ends in "_", could name another server's tool.
+  if (name.includes("__") || name.endsWith("_")) return "a server name has no double underscore and does not end in one";
+  if (RESERVED.has(name.toLowerCase())) return `${name} is a built-in server name`;
   if (!!c.command === !!c.url) return "give either command or url";
   if (c.url && !/^https?:\/\//.test(c.url)) return "url must be http(s)";
   return null;
@@ -77,6 +83,7 @@ function normalize(c: any): McpServerConfig {
   if (c.timeout_secs) out.timeout_secs = Number(c.timeout_secs);
   if (c.tool_timeout_secs) out.tool_timeout_secs = Number(c.tool_timeout_secs);
   if (c.oauth && typeof c.oauth === "object") out.oauth = c.oauth;
+  if (Array.isArray(c.read_tools)) out.read_tools = c.read_tools.map(String);
   return out;
 }
 
