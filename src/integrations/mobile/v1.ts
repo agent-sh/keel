@@ -519,7 +519,7 @@ export function mobileApi(ctx: MobileCtx) {
         return json({
           device: { id: dev.id, name: dev.name, created: dev.created }, name: host(), profile: "keel", model, agent_name: "Keel", user_name: "owner",
           models, profiles: ["default"], public_url: mobile.setting("public_url") ?? "",
-          features: { radar: false, fleet: false, wake_wa: false, projects: false }, security: { signature_replay: REPLAY_VERSION },
+          features: { radar: false, fleet: false, wake_wa: false, projects: false, rooms: false }, security: { signature_replay: REPLAY_VERSION },
         });
       }),
     },

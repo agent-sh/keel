@@ -31,7 +31,7 @@ async function pair(argv: string[]): Promise<number> {
     console.error("keel pair: pass --url (or set MOBILE_PUBLIC_URL) with the address the phone reaches this daemon at");
     return 2;
   }
-  m.setSetting("public_url", url);
+  m.setPublicUrl(url);
   const ttl = Math.min(86_400, Math.max(60, Number(values.ttl) || 600));
   const link = pairLink(url, m.createPairCode(ttl));
   const svg = join(stateDirOf(values["state-dir"]), "pair-qr.svg");

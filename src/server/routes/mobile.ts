@@ -4,7 +4,7 @@ import { renderSVG } from "uqr";
 import { atDesk, registerChannel, type Alert } from "../../automation/alerts.ts";
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
-import { MobileStore } from "../../integrations/mobile/store.ts";
+import { hostOf, MobileStore } from "../../integrations/mobile/store.ts";
 import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { addAllowedHosts } from "../admission.ts";
@@ -32,12 +32,9 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
   const mobile = new MobileStore(store);
   const changed = () => bus.emit({ t: "feature", name: "mobile", data: { changed: true } });
-  // The address the owner gave for the phone (in a pair link) is this daemon's
-  // own name to the phone: requests that name it pass the Host check.
-  addAllowedHosts(() => {
-    const u = mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL;
-    try { return u ? [new URL(u).host] : []; } catch { return []; }
-  });
+  // Each address the owner gave for the phone (in a pair link) is this daemon's
+  // own name to the phones paired through it: requests that name it pass the Host check.
+  addAllowedHosts(() => [...mobile.pairHosts(), hostOf(mobile.setting("public_url")), hostOf(process.env.MOBILE_PUBLIC_URL)].filter((h): h is string => !!h));
 
   const deviceRows = () => mobile.devices().map(({ pub, apub, ...d }) => ({ ...d, push: mobile.pushStatus(d.id) }));
 
@@ -56,6 +53,8 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     return json({ pushes });
   }
 
+  // Sessions the phone holds a notification for, so a withdraw goes only there.
+  const shown = new Set<string>();
   registerChannel({
     id: "push",
     label: "Phone push",
@@ -80,10 +79,20 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         sleep: (ms) => Bun.sleep(ms),
         send: async () => {
           const recs = await push.send(mobile, mobile.globalSeq(), alertPush(a));
+          if (a.session_id && recs.some((r) => r.ok)) shown.add(a.session_id);
           for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { alert: a.id, device: r.device_id });
           if (recs.length) changed();
         },
       });
+    },
+    // Nothing in the session is unread any more (answered or read on the
+    // desktop): the phone takes down what it shows for it. Normal priority, no
+    // notification of its own; the phone needs no network to act on it.
+    async withdraw(sessionId) {
+      if (!shown.delete(sessionId) || !push.configured() || !mobile.pushTargets().length) return;
+      const recs = await push.send(mobile, mobile.globalSeq(), { kind: "withdraw", session_id: sessionId, high: false, data: {} });
+      for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { withdraw: sessionId, device: r.device_id });
+      if (recs.length) changed();
     },
   });
 
@@ -100,7 +109,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         const b = await body(req);
         const url = String(b.public_url ?? mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL ?? "").trim().replace(/\/+$/, "");
         if (!/^https?:\/\/[^\s/]+/.test(url)) return bad("give the address the phone reaches this machine at (http or https)");
-        mobile.setSetting("public_url", url);
+        mobile.setPublicUrl(url);
         const ttl = Math.min(86_400, Math.max(60, Number(b.ttl_seconds) || 600));
         const code = mobile.createPairCode(ttl);
         const pair_link = pairLink(url, code);

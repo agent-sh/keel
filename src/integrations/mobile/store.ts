@@ -32,6 +32,7 @@ export type PushRecord = {
 };
 
 const nowSecs = () => Date.now() / 1000;
+export const hostOf = (u?: string | null) => { try { return u ? new URL(u).host : null; } catch { return null; } };
 const rand = (n: number) => crypto.getRandomValues(new Uint8Array(n)).toHex();
 type DevRow = { id: string; name: string; pub: string; apub: string; nolock: number; revoked: number; created_secs: number; last_seen_secs: number; token_used: number };
 const toDevice = (r: DevRow): Device => ({
@@ -59,6 +60,18 @@ export class MobileStore implements ReplayStore {
   }
   setSetting(key: string, value: string) {
     this.db.query("INSERT INTO mobile_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+
+  // The address the phone reaches this machine at, from a pair link. Each one
+  // given is remembered: a phone paired through it keeps passing the Host check
+  // after a new link names another address.
+  setPublicUrl(url: string) {
+    this.setSetting("public_url", url);
+    const h = hostOf(url);
+    if (h && !this.pairHosts().includes(h)) this.setSetting("pair_hosts", JSON.stringify([...this.pairHosts(), h]));
+  }
+  pairHosts(): string[] {
+    try { return JSON.parse(this.setting("pair_hosts") ?? "[]"); } catch { return []; }
   }
 
   // --- pairing -------------------------------------------------------------
