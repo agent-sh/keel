@@ -244,8 +244,10 @@ export function sendFilesTool(r: () => RemoteAgents | undefined, session: (id: s
       required: ["agent_id", "paths"],
       additionalProperties: false,
     },
-    // What leaves is read here: the gate judges the call as a read of the files.
-    readOnly: true,
+    // It writes files on another machine: a remote write, judged by its name
+    // (it asks, read-only and plan refuse it, a grant names it).
+    readOnly: false,
+    kind: "remote",
     async run(input, ctx) {
       const ra = r();
       const me = session(ctx.sessionId);
