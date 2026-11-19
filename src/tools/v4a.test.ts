@@ -283,4 +283,10 @@ test("buildDiff gives unified hunks with three lines of context", () => {
   expect(d.diff).toBe("--- a/x.txt\n+++ b/x.txt\n@@ -1,5 +1,5 @@\n l1\n-l2\n+L2\n l3\n l4\n l5\n@@ -15,6 +15,5 @@\n l15\n l16\n l17\n-l18\n l19\n l20\n");
   expect(buildDiff("n.txt", "", "a\nb\n").diff).toBe("--- a/n.txt\n+++ b/n.txt\n@@ -0,0 +1,2 @@\n+a\n+b\n");
   expect(buildDiff("s.txt", "same\n", "same\n").diff).toBe("");
+  // Only the final newline changed: it shows, and an identical file stays unchanged.
+  const eol = buildDiff("e.txt", "same", "same\n");
+  expect([eol.added, eol.removed]).toEqual([1, 1]);
+  expect(eol.diff).toBe("--- a/e.txt\n+++ b/e.txt\n@@ -1,1 +1,1 @@\n-same\n\\ No newline at end of file\n+same\n");
+  expect(buildDiff("e.txt", "same", "same").diff).toBe("");
+  expect(buildDiff("e.txt", "old\nlast", "new\nlast\n").added).toBe(2);
 });

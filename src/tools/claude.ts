@@ -307,6 +307,7 @@ const TodoWrite: Tool = {
 const AskUserQuestion: Tool = {
   name: "AskUserQuestion",
   readOnly: true,
+  asksOwner: true,
   description:
     "Ask the owner 1-4 multiple-choice questions when you need a decision or clarification, and wait for the " +
     "answer. Each question has a short header (max 12 chars) and 2-4 options; the owner can also type their own " +

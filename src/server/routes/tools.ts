@@ -5,7 +5,7 @@
 import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts";
-import { adoptJobs, drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
+import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
 import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
@@ -17,10 +17,16 @@ export const toolRoutes: RouteModule = (deps) => {
   try { adoptJobs(join(deps.store.stateDir, "spill")); } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
   registerHooks({
     beforeRequest(s, req) {
-      const n = drainNotices(s.id);
-      if (!n.length) return req;
-      const text = `<system-reminder>\n${n.join("\n")}\n</system-reminder>`;
-      deps.bus.emit({ t: "event", event: deps.store.append(s.id, "note", { text, model: true }) });
+      // A job's end already stored (a restart came between storing it and
+      // marking it reported) is not said twice.
+      const said = (job: string) => !!deps.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'note' AND data LIKE ? LIMIT 1").get(s.id, `%"jobs":[%"${job}"%`);
+      const drained = drainNotices(s.id);
+      const n = drained.filter((x) => !x.job || !said(x.job));
+      if (!n.length) { ackNotices(drained); return req; }
+      const text = `<system-reminder>\n${n.map((x) => x.text).join("\n")}\n</system-reminder>`;
+      const jobs = n.flatMap((x) => (x.job ? [x.job] : []));
+      deps.bus.emit({ t: "event", event: deps.store.append(s.id, "note", { text, model: true, ...(jobs.length ? { jobs } : {}) }) });
+      ackNotices(drained);
       const messages = req.messages.slice();
       const last = messages[messages.length - 1];
       if (last?.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, { type: "text", text }] };

@@ -13,6 +13,7 @@ type Entry = {
   key: string; call_id?: string; tool?: string; by: "model" | "owner"; command: string; description?: string; cwd?: string;
   machine?: string; started: number; ended?: number; state: "running" | "background" | "ok" | "failed" | "stopped";
   exit_code?: number | null; signal?: string | null; reason?: string; job_id?: string; bytes?: number; output: string; output_from?: number; last?: string;
+  log_missing?: boolean;
 };
 type Filter = "all" | "running" | "failed";
 
@@ -59,12 +60,22 @@ function Output({ session, e }: { session: string; e: Entry }) {
     if (!follow) return;
     let stop = false;
     let t: Timer | undefined;
+    // Reads go on from where the last one ended until caught up; a burst too
+    // big to show is skipped with a marker that says how many bytes, never
+    // joined as if its two ends were one.
+    const get = (from: number) => api<{ text: string; from: number; to: number; size: number; running: boolean }>(`/api/sessions/${session}/terminal/${e.job_id}/log?from=${from}`);
     const pull = async () => {
       try {
-        const r = await api<{ text: string; from: number; size: number; running: boolean }>(`/api/sessions/${session}/terminal/${e.job_id}/log?from=${at.current}`);
-        if (stop) return;
-        if (r.size > at.current) { setOwn((m) => (m ?? "") + r.text); at.current = r.size; }
-        if (r.running) t = setTimeout(pull, 1000);
+        let r = await get(at.current);
+        for (let n = 0; !stop; n++) {
+          let add = r.text;
+          if (r.from > at.current) add = `\n[${r.from - at.current} bytes skipped: the whole output is in the log]\n${add}`;
+          if (r.to > at.current) { setOwn((m) => (m ?? "") + add); at.current = r.to; }
+          if (r.to >= r.size) break;
+          // Far behind: jump to the last read's worth and mark the gap.
+          r = await get(n >= 15 ? Math.max(r.to, r.size - 64 * 1024) : r.to);
+        }
+        if (!stop && r.running) t = setTimeout(pull, 1000);
       } catch (err) { if ((err as any)?.status !== 404) reportError(err, { at: "terminal log" }); }
     };
     t = setTimeout(pull, 500);
@@ -76,7 +87,7 @@ function Output({ session, e }: { session: string; e: Entry }) {
   return (
     <pre ref={pre} data-testid="term-output" className="max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-line bg-code-bg px-3 py-2 font-mono text-micro leading-relaxed text-fg">
       {(e.output_from ?? 0) > 0 && <span className="text-faint">[earlier output is in the log]{"\n"}</span>}
-      {text ? <Ansi text={text} /> : <span className="text-faint">{live(e) ? "No output yet." : "No output."}</span>}
+      {text ? <Ansi text={text} /> : <span className="text-faint" data-testid="term-no-output">{e.log_missing ? "Output log unavailable." : live(e) ? "No output yet." : "No output."}</span>}
     </pre>
   );
 }

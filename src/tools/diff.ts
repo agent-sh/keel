@@ -48,8 +48,17 @@ export function diffLines(a: string[], b: string[]): Op[] {
 }
 
 // A unified diff with three lines of context, named a/<path> and b/<path>.
+// A last line with no line end is its own line (git's "\ No newline at end of
+// file"), so a change of only the final newline shows.
+const NOEOL = "\u0000noeol";
+const linesOf = (s: string) => {
+  const l = splitLines(s);
+  if (l.length && !s.endsWith("\n")) l[l.length - 1] += NOEOL;
+  return l;
+};
+
 export function buildDiff(relPath: string, before: string, after: string): { diff: string; added: number; removed: number } {
-  const ops = diffLines(splitLines(before), splitLines(after));
+  const ops = diffLines(linesOf(before), linesOf(after));
   let added = 0, removed = 0;
   for (const o of ops) { if (o.t === "+") added++; else if (o.t === "-") removed++; }
   if (!added && !removed) return { diff: "", added, removed };
@@ -67,7 +76,7 @@ export function buildDiff(relPath: string, before: string, after: string): { dif
     const slice = ops.slice(from, to);
     const oldLen = slice.filter((o) => o.t !== "+").length, newLen = slice.filter((o) => o.t !== "-").length;
     out.push(`@@ -${oldLen ? oldStart : oldStart - 1},${oldLen} +${newLen ? newStart : newStart - 1},${newLen} @@`);
-    for (const o of slice) out.push(o.t + o.line);
+    for (const o of slice) out.push(o.line.endsWith(NOEOL) ? `${o.t}${o.line.slice(0, -NOEOL.length)}\n\\ No newline at end of file` : o.t + o.line);
     g = end + 1;
   }
   return { diff: out.join("\n") + "\n", added, removed };

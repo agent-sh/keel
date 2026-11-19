@@ -31,6 +31,7 @@ export type Job = {
   by?: "owner";          // the owner ran it from the terminal pane
   pid: number;
   readOff: number;       // bytes of the log already handed to the model
+  taken?: number;        // bytes the last read covered (more than it showed when it was cut)
   decoder: TextDecoder;
   proc?: Subprocess<any, any, any>;   // absent for a job adopted after a restart
   exited: Promise<void>;
@@ -42,7 +43,10 @@ const metaPath = (log: string) => log.replace(/\.log$/, ".json");
 const exitPath = (log: string) => `${log}.exit`;
 const jobs = new Map<string, Job>();
 const MAX_ENDED = 200;
-const notices = new Map<string, string[]>();
+// Notes for the model's next request; `job` marks a background job's end,
+// acknowledged (its sidecar marked reported) only once the note is stored.
+export type Notice = { text: string; job?: string; log?: string };
+const notices = new Map<string, Notice[]>();
 let counter = 0;
 
 // Provider credentials never reach a tool shell: a command the model writes
@@ -139,11 +143,18 @@ export type Meta = {
   id: string; num: number; sessionId: string; command: string; description?: string; cwd: string; started: number; background: boolean; pid: number;
   boot?: string; reported?: boolean; pty?: boolean; call_id?: string; by?: "owner";
   ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
+  read_off?: number; // bytes of the log the model was handed (a later daemon goes on from there)
 };
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
-  started: j.started, background: j.background, pid, boot: procStart(pid), call_id: j.callId, by: j.by,
+  started: j.started, background: j.background, pid, boot: procStart(pid), call_id: j.callId, by: j.by, read_off: j.readOff,
 });
+function patchMeta(log: string, patch: Partial<Meta>) {
+  try {
+    const p = metaPath(log);
+    writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, "utf8")), ...patch }));
+  } catch {}
+}
 
 // The start time of a process (Linux), so a reused pid is not taken for the job.
 function procStart(pid: number): string | undefined {
@@ -160,25 +171,30 @@ function finish(job: Job, code: number | null, signal: string | null) {
   job.ended = Date.now();
   job.exitCode = code;
   job.signal = signal;
+  // A background job's end counts as reported once its note is stored (ackNotices), not before:
+  // a restart between the two reports it again.
   try {
-    writeFileSync(metaPath(job.log), JSON.stringify({ ...meta(job, job.pid), reported: true, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason }));
+    writeFileSync(metaPath(job.log), JSON.stringify({ ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason }));
   } catch {}
   if (job.background) {
     const what = job.description ? `"${job.description}"` : `\`${job.command.slice(0, 80)}\``;
     const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? "ended while Keel restarted; its exit code is unknown" : `exited with code ${code}`);
     const list = notices.get(job.sessionId) ?? [];
-    list.push(`Background command ${what} (ID ${job.id}) ${how}. Output: ${job.log}`);
+    list.push({ text: `Background command ${what} (ID ${job.id}) ${how}. Output: ${job.log}`, job: job.id, log: job.log });
     notices.set(job.sessionId, list);
   }
 }
 
 // After a restart: take back the jobs a previous daemon started under
 // `spillRoot/<session>/jobs/`. One still running is watched until it ends; one
-// that ended meanwhile is reported now. Jobs already reported stay history.
+// that ended unreported is reported now. Ended ones come back as history, so
+// their logs open under the same IDs, and new jobs never reuse their numbers.
+// Returns how many were taken back to watch or report.
 export function adoptJobs(spillRoot: string): number {
   let n = 0;
   let sessions: string[] = [];
   try { sessions = readdirSync(spillRoot); } catch { return 0; }
+  const history: Job[] = [];
   for (const sid of sessions) {
     const dir = join(spillRoot, sid, "jobs");
     let files: string[] = [];
@@ -186,18 +202,25 @@ export function adoptJobs(spillRoot: string): number {
     for (const f of files) {
       let m: Meta;
       try { m = JSON.parse(readFileSync(join(dir, f), "utf8")); } catch { continue; }
-      if (m.reported || jobs.has(m.id)) continue;
+      counter = Math.max(counter, m.num ?? 0);
+      if (jobs.has(m.id)) continue;
       const log = join(dir, `${m.id}.log`);
+      const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
+        pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
+        callId: m.call_id, by: m.by };
+      if (m.reported || m.pty) {
+        // History: a PTY never outlives its daemon; one with no end ended with it.
+        history.push({ ...base, readOff: m.read_off ?? size(log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() });
+        continue;
+      }
       let resolve!: () => void;
-      const job: Job = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
-        pty: false, log, started: m.started, background: true, pid: m.pid, readOff: size(log), decoder: new TextDecoder(), callId: m.call_id, by: m.by,
-        exited: new Promise<void>((r) => (resolve = r)) };
-      counter = Math.max(counter, m.num);
+      const job: Job = { ...base, pty: false, background: true, exited: new Promise<void>((r) => (resolve = r)) };
       jobs.set(job.id, job);
       adopted.set(job.id, { job, meta: m, resolve });
       n++;
     }
   }
+  for (const j of history.sort((a, b) => b.started - a.started).slice(0, MAX_ENDED)) jobs.set(j.id, j);
   if (adopted.size) { watchAdopted(); watcher ??= setInterval(watchAdopted, 1000); }
   return n;
 }
@@ -244,17 +267,28 @@ export async function waitJob(j: Job, ms: number, signal?: AbortSignal): Promise
   return r;
 }
 
-// What the job printed since the last call (at most the last MiB of it).
+// What the job printed since the last call. Past UNREAD_CAP bytes it is the
+// start and the end with a marker for what lies between (the whole of it is
+// in the log); `taken` says how many bytes this read covered.
 export function takeUnread(j: Job): string {
   const end = size(j.log);
-  if (end <= j.readOff) return "";
-  const from = Math.max(j.readOff, end - UNREAD_CAP);
+  if (end <= j.readOff) { j.taken = 0; return ""; }
+  const from = j.readOff;
   const fd = openSync(j.log, "r");
+  const read = (at: number, n: number) => { const b = Buffer.alloc(n); readSync(fd, b, 0, n, at); return b; };
   try {
-    const buf = Buffer.alloc(end - from);
-    readSync(fd, buf, 0, buf.length, from);
+    let text: string;
+    if (end - from <= UNREAD_CAP) text = j.decoder.decode(read(from, end - from), { stream: true });
+    else {
+      const half = UNREAD_CAP / 2;
+      const head = new TextDecoder().decode(read(from, half));
+      const tail = j.decoder.decode(read(end - half, half), { stream: true });
+      text = `${head}\n[... ${end - from - 2 * half} bytes not shown here; the whole output is in ${j.log} ...]\n${tail}`;
+    }
     j.readOff = end;
-    return j.decoder.decode(buf, { stream: true });
+    j.taken = end - from;
+    if (!j.pty) patchMeta(j.log, { read_off: end });
+    return text;
   } finally { closeSync(fd); }
 }
 
@@ -284,14 +318,19 @@ export const findJob = (sessionId: string, id: string | number) =>
 // A note for the model's next request (the owner ran a command it should know of).
 export function addNotice(sessionId: string, text: string) {
   const list = notices.get(sessionId) ?? [];
-  list.push(text);
+  list.push({ text });
   notices.set(sessionId, list);
 }
 
-export function drainNotices(sessionId: string): string[] {
+export function drainNotices(sessionId: string): Notice[] {
   const n = notices.get(sessionId) ?? [];
   notices.delete(sessionId);
   return n;
+}
+
+// The notes are stored: their jobs' ends are reported for good.
+export function ackNotices(list: Notice[]) {
+  for (const n of list) if (n.log) patchMeta(n.log, { reported: true });
 }
 
 export const jobView = (j: Job) => ({

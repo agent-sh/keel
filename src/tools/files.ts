@@ -8,6 +8,7 @@ import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
 import { readText } from "../core/proc.ts";
+import { decodeText } from "../core/text.ts";
 
 export const abs = (p: string, ctx: ToolContext) => (isAbsolute(p) ? p : resolve(ctx.cwd, p));
 export const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return -1; } };
@@ -65,7 +66,7 @@ export async function readFile(p: string, ctx: ToolContext, o: { offset?: number
   if (!o.offset && !o.limit && st.size > WHOLE_FILE_BYTES) {
     return { content: `${p} is ${(st.size / 1024).toFixed(0)} KB, over the ${WHOLE_FILE_BYTES / 1024} KB whole-file limit. Read a part with offset and limit, or search it.`, error: true };
   }
-  const text = await f.text();
+  const { text } = decodeText(new Uint8Array(await f.arrayBuffer()));
   ctx.seen.set(p, st.mtimeMs);
   if (!text) return { content: `${p} exists but is empty.` };
   const r = numbered(text, o.offset, o.limit);
@@ -211,7 +212,8 @@ export function applyEdit(text: string, oldS: string, newS: string, all = false)
   if (oldS === "") return { error: "old_string is empty. To create or replace a whole file use the write tool." };
   const crlf = text.includes("\r\n") && !oldS.includes("\r\n");
   const o = crlf ? oldS.replace(/\n/g, "\r\n") : oldS;
-  const n = crlf ? newS.replace(/\n/g, "\r\n") : newS;
+  // The new text takes the file's line ends whichever it came with.
+  const n = crlf ? newS.replace(/\r?\n/g, "\r\n") : newS;
   let hits = count(text, o);
   let repl = (_at: number) => n;
   let note: string | undefined;
@@ -303,11 +305,13 @@ export async function editFile(p: string, oldS: string, newS: string, all: boole
   if (m === -1) return { error: notFound(p, ctx.cwd) };
   const bytes = new Uint8Array(await Bun.file(p).arrayBuffer());
   if (!isUtf8(bytes)) return { error: `${p} is not valid UTF-8; change it with a shell command that keeps its encoding.` };
+  // A UTF-8 byte-order mark stays (the decoder drops it from the text).
+  const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
   const before = new TextDecoder().decode(bytes);
   const r = applyEdit(before, oldS, newS, all);
   if ("error" in r) return r;
   const seen = ctx.seen.get(p);
-  await writeFile(p, r.text, ctx);
+  await writeFile(p, bom ? `\uFEFF${r.text}` : r.text, ctx);
   const notes = [r.note, seen === undefined ? undefined : seen !== m ? "the file had other changes since it was read; read it again before edits that depend on them" : undefined].filter(Boolean);
   return { ok: notes.length ? ` (${notes.join("; ")})` : "", before, after: r.text };
 }

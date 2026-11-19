@@ -21,7 +21,7 @@ export type TermEntry = {
   machine?: string; started: number; ended?: number;
   state: "running" | "background" | "ok" | "failed" | "stopped";
   exit_code?: number | null; signal?: string | null; reason?: string;
-  job_id?: string; pty?: boolean; bytes?: number; output: string; output_from?: number; last?: string;
+  job_id?: string; pty?: boolean; bytes?: number; output: string; output_from?: number; last?: string; log_missing?: boolean;
 };
 
 const textOf = (c: unknown): string =>
@@ -77,7 +77,7 @@ function fromJob(j: TermJob | undefined, base: Pick<TermEntry, "key" | "command"
     return {
       ...base, by, cwd: j.cwd, started: j.started, ended: j.ended, state, exit_code: j.exit_code, signal: j.signal,
       reason: j.stop_reason ?? (j.ended === undefined && !j.running ? "its daemon stopped before it ended" : undefined),
-      job_id: j.id, pty: j.pty, bytes: j.bytes, output: j.tail, output_from: j.tail_from, last: j.last,
+      job_id: j.id, pty: j.pty, bytes: j.bytes, output: j.tail, output_from: j.tail_from, last: j.last, log_missing: j.log_missing,
     };
   }
   if (!r) return { ...base, by, state: live ? "running" : "stopped", reason: live ? undefined : "it never ran, or its turn was stopped", output: "" };

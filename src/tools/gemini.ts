@@ -1,6 +1,7 @@
 // The tool profile Gemini models are trained on: Gemini CLI's names and
 // shapes (packages/core/src/tools/definitions/model-family-sets/gemini-3.ts).
 import { readdirSync, statSync } from "node:fs";
+import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
 import { abs, editFile, globFiles, guardOverwrite, mtime, numbered, readFile, ripgrep, writeFile } from "./files.ts";
@@ -57,7 +58,7 @@ const read_file: Tool = {
     const e = Number(input.end_line) || undefined;
     if (s || e) {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
-      const text = await Bun.file(p).text();
+      const { text } = decodeText(new Uint8Array(await Bun.file(p).arrayBuffer()));
       ctx.seen.set(p, mtime(p));
       const r = numbered(text, s ?? 1, e ? e - (s ?? 1) + 1 : undefined, false);
       return ok(r.body);
@@ -235,6 +236,7 @@ const web_fetch: Tool = {
 const ask_user: Tool = {
   name: "ask_user",
   readOnly: true,
+  asksOwner: true,
   description: "Ask the user one or more questions to gather preferences or clarify requirements, and wait for the answers.",
   input_schema: obj({
     questions: {

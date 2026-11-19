@@ -48,6 +48,8 @@ export type Tool = ToolSpec & {
   target?(input: any): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass } | null>;
   // A shared tool offered only to these families (default: every family).
   families?: string[];
+  // It waits on the owner's answer (a question): a restart expires it, it did nothing.
+  asksOwner?: boolean;
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;
 };
 

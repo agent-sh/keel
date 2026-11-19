@@ -82,7 +82,7 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
           <span className="min-w-0 max-w-[40%] shrink-0 truncate">{j.description ?? j.command}</span>
           <span className="min-w-0 flex-1 truncate font-mono text-micro text-muted" title={j.last} data-testid="dock-job-last">{j.last}</span>
           <span className="shrink-0 text-micro tabular-nums text-faint">
-            {j.running ? since(j.started) : `exit ${j.exit_code ?? j.signal}`}
+            {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}` : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
           </span>
           {j.running && (
             <button

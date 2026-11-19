@@ -24,6 +24,9 @@ export function unregisterShared(name: string) {
   if (i >= 0) shared.splice(i, 1);
 }
 
+// A tool of any family that only waits on the owner's answer.
+export const asksOwner = (name: string) => [...byFamily.values(), shared].some((l) => l.some((t) => t.name === name && t.asksOwner));
+
 // Stable order (family tools, then shared sorted by name) so the tools prefix
 // of the request never changes between turns and stays cached.
 export function toolsFor(family: ModelInfo["family"]): Tool[] {

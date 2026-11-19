@@ -16,17 +16,20 @@ const obj = (properties: Record<string, unknown>, required: string[]) =>
 const clamp = (v: unknown, def: number, lo: number, hi: number) => Math.min(Math.max(Number(v) || def, lo), hi);
 
 // About four bytes a token: keep the head and the tail of a long output.
-function truncate(text: string, maxTokens: number): { text: string; original?: number } {
+function truncate(text: string, maxTokens: number, log?: string): { text: string; original?: number } {
   const budget = maxTokens * 4;
   if (text.length <= budget) return { text };
   const head = text.slice(0, Math.floor(budget / 2));
   const tail = text.slice(-Math.floor(budget / 2));
-  return { text: `${head}\n…${Math.ceil((text.length - budget) / 4)} tokens truncated…\n${tail}`, original: Math.ceil(text.length / 4) };
+  return { text: `${head}\n…${Math.ceil((text.length - budget) / 4)} tokens truncated${log ? ` (the whole output is in ${log})` : ""}…\n${tail}`, original: Math.ceil(text.length / 4) };
 }
 
 function execResult(job: Job, t0: number, maxTokens: number): string {
   const raw = takeUnread(job);
-  const { text, original } = truncate(job.pty ? cleanTerm(raw) : raw, maxTokens);
+  const cut = truncate(job.pty ? cleanTerm(raw) : raw, maxTokens, job.log);
+  const text = cut.text;
+  // Counted on everything this read covered, not only the part kept in memory.
+  const original = cut.original || (job.taken ?? 0) > raw.length ? Math.max(cut.original ?? 0, Math.ceil((job.taken ?? 0) / 4)) : undefined;
   const lines = [`Chunk ID: ${Math.random().toString(16).slice(2, 8)}`, `Wall time: ${((Date.now() - t0) / 1000).toFixed(4)} seconds`];
   if (!running(job)) lines.push(`Process exited with code ${job.exitCode ?? (job.signal ? 128 : -1)}`);
   else lines.push(`Process running with session ID ${job.num}`);
@@ -93,7 +96,7 @@ const write_stdin: Tool = {
   }, ["session_id"]),
   async run(input, ctx) {
     const job = findJob(ctx.sessionId, Number(input.session_id));
-    if (!job || (!running(job) && !hasUnread(job))) return fail(`write_stdin failed: Unknown process id ${input.session_id}`);
+    if (!job || (!running(job) && !hasUnread(job))) return fail(`write_stdin failed: Unknown process id ${input.session_id}${job ? `: it has ended${job.exitCode != null ? ` (exit code ${job.exitCode})` : ""}` : ""}`);
     const chars = String(input.chars ?? "");
     if (chars && !writeJob(job, chars)) {
       if (!job.pty) return fail("write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open");
@@ -137,6 +140,7 @@ const update_plan: Tool = {
 const request_user_input: Tool = {
   name: "request_user_input",
   readOnly: true,
+  asksOwner: true,
   description: "Request user input for one to three short questions and wait for the response.",
   input_schema: obj({
     questions: {

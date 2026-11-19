@@ -85,3 +85,26 @@ test("instruction files: each source once, an unreadable one named", async () =>
     rmSync(join(root, ""), { recursive: true, force: true });
   }
 });
+
+test("a restart expires an unanswered question and warns only for a call that may have run", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine, QUESTION_CUT, RESTART_CUT } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "recover-"));
+  const store = new Store(dir);
+  const s = store.createSession({ model: "x:y", workspace: dir });
+  store.append(s.id, "user", { text: "go" });
+  store.append(s.id, "turn_start", {});
+  store.append(s.id, "assistant", { blocks: [
+    { type: "tool_use", id: "q1", name: "AskUserQuestion", input: {} },
+    { type: "tool_use", id: "q2", name: "request_user_input", input: {} },
+    { type: "tool_use", id: "q3", name: "ask_user", input: {} },
+    { type: "tool_use", id: "w1", name: "Bash", input: { command: "touch x" } },
+  ], stop: "tool_use" });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  await engine.recover([s.id], async () => { throw new Error("no model here"); });
+  const cut = store.events(s.id).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
+  expect(Object.fromEntries(cut.map((r: any) => [r.tool_use_id, r.content]))).toEqual({ q1: QUESTION_CUT, q2: QUESTION_CUT, q3: QUESTION_CUT, w1: RESTART_CUT });
+});

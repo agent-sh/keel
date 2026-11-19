@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { openPanel, shoot } from "./shots.ts";
 
 // Feature: the terminal pane. Every command the session ran, newest first,
@@ -76,12 +76,33 @@ test("terminal pane: commands, output, filters, stop, copy and re-run", async ({
     await expect(mine.first().getByTestId("term-output")).toContainText("from the owner", { timeout: 10_000 });
     await shoot(page, "terminal-02-rerun");
 
+    // A burst bigger than one read, followed live: its first line is not skipped.
+    await panel.getByTestId("term-input").fill("sleep 1.5; printf 'ERROR-AT-START\\n'; head -c 70000 /dev/zero | tr '\\0' x; printf '\\nburst-end\\n'");
+    await panel.getByTestId("term-run").click();
+    await expect(mine).toHaveCount(3);
+    const burst = mine.first().getByTestId("term-output");
+    await expect(burst).toContainText("burst-end", { timeout: 15_000 });
+    await expect(burst).toContainText("ERROR-AT-START");
+    await expect(burst).not.toContainText("bytes skipped");
+
     // The model hears of the owner's commands at its next request.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "And now?" } });
     await expect.poll(async () => {
       const d = await (await request.get(`/api/sessions/${session.id}`)).json();
       return d.events.filter((e: any) => e.kind === "note" && e.data.model && /The owner ran `echo about to fail; exit 3`/.test(e.data.text)).length;
     }, { timeout: 20_000 }).toBe(1);
+
+    // A known command whose log is gone says so, not "No output".
+    const jobs = (await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs as { command: string; log: string; id: string }[];
+    const failed = jobs.find((j) => j.command.includes("about to fail") && !j.command.startsWith("exec"))!;
+    unlinkSync(failed.log);
+    await page.reload();
+    await openPanel(page, "terminal");
+    const gone = page.getByTestId("term-entry").filter({ hasText: "about to fail" }).filter({ hasNot: page.getByTestId("term-by-owner") });
+    await gone.getByTestId("term-toggle").click();
+    await expect(gone.getByTestId("term-no-output")).toHaveText("Output log unavailable.");
+    expect((await request.get(`/api/sessions/${session.id}/terminal/${failed.id}/log`)).status()).toBe(200);
+    expect((await request.get(`/api/sessions/${session.id}/terminal/bnope/log`)).status()).toBe(404);
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
   }
