@@ -102,7 +102,7 @@
 .k-seg button { height: 24px; padding: 0 10px; border-radius: 3px; font: 600 11.5px/1 var(--font-sans); color: var(--muted); }
 .k-seg button[aria-checked="true"] { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line); }
 
-.k-switch { position: relative; display: flex; width: 34px; height: 19px; flex-shrink: 0; padding: 2px; border-radius: 10px; background: var(--line-strong); transition: background-color 150ms var(--ease-out); }
+.k-switch { position: relative; display: inline-flex; vertical-align: middle; width: 34px; height: 19px; flex-shrink: 0; padding: 2px; border-radius: 10px; background: var(--line-strong); transition: background-color 150ms var(--ease-out); }
 .k-switch[data-checked] { background: var(--fg); }
 .k-switch-thumb { width: 15px; height: 15px; border-radius: 50%; background: var(--raised); box-shadow: var(--shadow-1); transition: transform 150ms var(--ease-out); }
 .k-switch[data-checked] .k-switch-thumb { transform: translateX(15px); }

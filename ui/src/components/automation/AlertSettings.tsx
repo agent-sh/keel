@@ -1,26 +1,11 @@
-import { Switch } from "@base-ui/react/switch";
 import { useState } from "react";
 import { auto, useAuto, type AlertSettings as Settings } from "../../lib/automation.ts";
 import { reportError } from "../../lib/store.ts";
 import { Card, Segmented, SettingRow } from "../Settings.tsx";
+import { Toggle } from "../surfaces/kit.tsx";
 import { ALERT_LABEL, CHANNEL_NAME } from "./bits.tsx";
 
 const KINDS: (keyof Settings["routes"])[] = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over"];
-
-function Toggle({ checked, onChange, label, testid }: { checked: boolean; onChange: (on: boolean) => void; label: string; testid?: string }) {
-  return (
-    <Switch.Root
-      data-testid={testid}
-      checked={checked}
-      onCheckedChange={onChange}
-      aria-label={label}
-      className="relative inline-flex h-[18px] w-[30px] shrink-0 rounded-full bg-line-strong p-px outline-none transition-colors data-[checked]:bg-accent"
-    >
-      <Switch.Thumb className="size-4 rounded-full bg-raised shadow-1 transition-transform duration-150 ease-[var(--ease-out)] data-[checked]:translate-x-3 dark:bg-fg" />
-    </Switch.Root>
-  );
-}
-
 
 // Settings > Alerts: where each kind of alert goes besides the inbox.
 export default function AlertSettings() {
@@ -93,7 +78,7 @@ export default function AlertSettings() {
                   <td key={c.id} className="px-3 py-2.5 text-center">
                     <Toggle
                       testid={`route-${k}-${c.id}`}
-                      checked={settings.routes[k]?.includes(c.id) ?? false}
+                      on={settings.routes[k]?.includes(c.id) ?? false}
                       onChange={(on) => toggle(k, c.id, on)}
                       label={`${ALERT_LABEL[k]} to ${CHANNEL_NAME[c.id] ?? c.id}`}
                     />
