@@ -205,6 +205,7 @@ export class Providers {
       name: m.name ?? c?.name ?? m.model,
       family: m.family ?? familyOf(m.model, p.family),
       context: m.context ?? c?.context ?? 128_000,
+      ...(m.context ?? c?.context ? {} : { context_assumed: true as const }),
       output: m.output ?? c?.output ?? 0,
       efforts: m.efforts ?? c?.efforts ?? [],
       release: c?.release,

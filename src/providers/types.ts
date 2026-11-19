@@ -110,6 +110,7 @@ export type ModelInfo = {
   name: string;
   family: Family;
   context: number;
+  context_assumed?: true; // neither the listing nor the catalog gave a window: `context` is the fallback compaction uses
   output: number;
   efforts: string[];
   release?: string;

@@ -193,10 +193,13 @@ export class Telemetry {
   }
 
   // The last failed tool calls, newest first, with where they happened.
-  examples(q: { tool?: string; session?: string; limit?: number }) {
+  examples(q: { tool?: string; session?: string; limit?: number; since?: number; until?: number }) {
     const where = ["t.is_error = 1"];
     const args: (string | number)[] = [];
     if (q.tool) { where.push("t.tool = ?"); args.push(q.tool); }
+    // The interval of the report the examples explain, before the limit.
+    if (q.since !== undefined) { where.push("t.ts >= ?"); args.push(q.since); }
+    if (q.until !== undefined) { where.push("t.ts <= ?"); args.push(q.until); }
     if (q.session) { where.push("t.session_id = ?"); args.push(q.session); }
     args.push(Math.min(100, Math.max(1, q.limit ?? 20)));
     const sql = `SELECT t.session_id, t.ts, t.tool, t.ms, t.call_id, t.error, s.title AS session_title, s.id IS NULL AS session_gone,
@@ -364,7 +367,7 @@ export class Telemetry {
         } : null,
         duration_ms: d.duration_ms ?? null,
         input_tokens: u ? u.input + u.cache_read + u.cache_write : 0, output_tokens: u?.output ?? 0, cache_read_tokens: u?.cache_read ?? 0,
-        cost_usd: u && typeof u.cost === "number" ? u.cost : null, priced: !u || typeof u.cost === "number",
+        cost_usd: u && typeof u.cost === "number" ? u.cost : null, priced: mode === "clear" || (!!u && typeof u.cost === "number"), // a summary with no usage record has an unknown cost, not $0
         cache: { before: prev ? cacheOf(prev) : null, after: after.map(cacheOf) },
       };
     });
@@ -374,8 +377,10 @@ export class Telemetry {
       tokens_before: list.reduce((n, c) => n + (c.tokens_before ?? 0), 0),
       tokens_after: list.reduce((n, c) => n + (c.tokens_after ?? 0), 0),
       measured_after: list.filter((c) => c.tokens_after !== null).length,
+      // Before and after over the same compactions: those with both measured.
+      paired: ((p) => ({ count: p.length, tokens_before: p.reduce((n, c) => n + c.tokens_before!, 0), tokens_after: p.reduce((n, c) => n + c.tokens_after!, 0) }))(list.filter((c) => c.tokens_before !== null && c.tokens_after !== null)),
       cost_usd: list.reduce((n, c) => n + (c.cost_usd ?? 0), 0),
-      unpriced: list.filter((c) => !c.priced).length,
+      unpriced: list.filter((c) => c.mode !== "clear" && !c.priced).length,
       duration_p50_ms: pct(list.map((c) => c.duration_ms), 0.5),
       after_hit_ratio: ratio(list.flatMap((c) => c.cache.after)),
       before_hit_ratio: ratio(list.flatMap((c) => (c.cache.before ? [c.cache.before] : []))),

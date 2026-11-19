@@ -1,7 +1,8 @@
 // Turn control and the session tree: queue, resume, compaction, context, head
 // (branch switch), fork.
 import { leafOf, lineage } from "../../core/tree.ts";
-import { contextTokens, COMPACT_SHARE } from "../../engine/compact.ts";
+import { checkpointAt, contextTokens, COMPACT_SHARE, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
+import { resolveAttachments } from "../../engine/attachments.ts";
 import { toMessages } from "../../engine/turn.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -89,19 +90,31 @@ export const turnRoutes: RouteModule = (deps) => {
         const events = engine.lineage(s.id);
         const t = contextTokens(events);
         const zones: Record<string, number> = { conversation: 0, thinking: 0, tool_calls: 0, tool_results: 0, summary: 0 };
-        for (const m of toMessages(events)) {
+        // The summary is the blocks the checkpoint event produced (they lead the
+        // first message), not any text that reads like one.
+        const cp = checkpointAt(events);
+        const summary = new Map<string, number>();
+        if (cp.at >= 0 && events[cp.at]!.data.mode === "summary") {
+          for (const b of summaryMessage(events[cp.at]!.data).content) { const k = JSON.stringify(b); summary.set(k, (summary.get(k) ?? 0) + 1); }
+        }
+        // Sized as the request carries them: attached files resolved for this model, in UTF-8 bytes.
+        const messages = resolveAttachments(toMessages(events), { pdf: info?.pdf, name: info?.name ?? s.model });
+        messages.forEach((m, i) => {
           for (const b of m.content as any[]) {
-            const n = JSON.stringify(b).length;
-            if (b.type === "tool_result") zones.tool_results! += n;
+            const k = JSON.stringify(b);
+            const n = utf8Bytes(k);
+            if (i === 0 && summary.get(k)) { summary.set(k, summary.get(k)! - 1); zones.summary! += n; }
+            else if (b.type === "tool_result") zones.tool_results! += n;
             else if (b.type === "tool_use") zones.tool_calls! += n;
             else if (b.type === "thinking" || b.type === "redacted_thinking") zones.thinking! += n;
-            else if (b.type === "text" && b.text.startsWith("[harness] This conversation was compacted")) zones.summary! += n;
             else zones.conversation! += n;
           }
-        }
+        });
         const window = info?.context ?? 0;
         return json({
           context_window: window,
+          // The listing gave no window: the number is the fallback compaction uses, not the model's.
+          context_window_known: !!info && !info.context_assumed,
           context_used_tokens: t.used,
           measured_tokens: t.measured,
           estimated_tokens: t.estimated,

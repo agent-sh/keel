@@ -1,12 +1,13 @@
 // Tokens of one session, turn by turn: what each turn sent (read from the
 // provider's cache, written to it, or paid in full), what it wrote back, and
-// what it cost. A turn whose cache had expired is marked: it re-sent the
-// conversation at the write price.
+// what it cost. A turn whose first request read less than half of the prompt
+// the turn before sent is marked: that prefix was not reused (an expired cache,
+// a changed prefix); a write that only extends a fully reused prefix is not.
 import type { Session, StoredEvent, Usage } from "../../../src/core/types.ts";
 import { useStore } from "../lib/store.ts";
 import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
 
-type Turn = { n: number; prompt: string; ts: number; ms?: number; requests: Usage[]; total: Usage; cold: boolean };
+type Turn = { n: number; prompt: string; ts: number; ms?: number; requests: Usage[]; total: Usage; cold: boolean; reused?: { read: number; before: number } };
 
 const zero = (): Usage => ({ input: 0, output: 0, cache_read: 0, cache_write: 0 });
 const add = (a: Usage, b: Usage): Usage => ({
@@ -30,9 +31,14 @@ export function turnsOf(events: StoredEvent[]): Turn[] {
       cur.total = add(cur.total, e.data.usage);
     } else if (e.kind === "turn_end" && cur) {
       cur.ms = e.data.ms;
-      // Cold: a later turn whose first request wrote most of what it sent.
+      // Cold: the first request read less than half of what the last request
+      // of the turn before sent, the prefix it could have reused.
       const f = cur.requests[0];
-      cur.cold = out.length > 0 && !!f && sent(f) > 2000 && f.cache_write > 0.5 * sent(f);
+      const before = out.at(-1)?.requests.at(-1);
+      if (f && before) {
+        cur.reused = { read: f.cache_read, before: sent(before) };
+        cur.cold = sent(before) > 2000 && f.cache_read < 0.5 * sent(before);
+      }
       out.push(cur);
       cur = null;
     }
@@ -97,7 +103,7 @@ export function SessionUsage({ session }: { session: Session }) {
               <div className="flex items-baseline gap-2">
                 <span className="font-mono text-caption tabular-nums text-faint">{t.n}</span>
                 <span className="min-w-0 flex-1 truncate text-ui text-fg">{t.prompt || "(no prompt)"}</span>
-                {t.cold && <span className="rounded-sm bg-brass-soft px-1.5 py-px text-micro text-brass" data-testid="usage-cold">cache cold</span>}
+                {t.cold && t.reused && <span className="rounded-sm bg-brass-soft px-1.5 py-px text-micro text-brass" data-testid="usage-cold" title={`the first request read ${fmtTokens(t.reused.read)} from cache of the ${fmtTokens(t.reused.before)} the turn before sent`}>cache cold</span>}
               </div>
               <div className="mt-1.5"><Bar u={t.total} max={max} /></div>
               <div className={cn("mt-1 flex gap-3 font-mono text-micro tabular-nums text-muted")}>

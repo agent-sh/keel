@@ -2,7 +2,7 @@
 // on this machine. Spend and tokens come from the usage report (prices from
 // the listings; an unknown price stays unknown), timings, cache and error
 // rates from the local telemetry.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
@@ -37,12 +37,19 @@ export const CAUSE: Record<string, string> = {
 };
 
 // The last failures of one tool, each linked to its session at the call.
-export function Failures({ tool, session }: { tool?: string; session?: string }) {
+// Inside a report, `since`/`until` are its interval and `count` its failure
+// count: the examples are the ones it counted, and load again with each report.
+export function Failures({ tool, session, since, until, count }: { tool?: string; session?: string; since?: number; until?: number; count?: number }) {
   const [list, setList] = useState<Example[] | null>(null);
   useEffect(() => {
-    const q = new URLSearchParams({ limit: "8", ...(tool ? { tool } : {}), ...(session ? { session_id: session } : {}) });
-    api<{ examples: Example[] }>(`/api/telemetry/examples?${q}`).then((r) => setList(r.examples)).catch(reportError);
-  }, [tool, session]);
+    let live = true;
+    const q = new URLSearchParams({
+      limit: "8", ...(tool ? { tool } : {}), ...(session ? { session_id: session } : {}),
+      ...(since !== undefined ? { since_ms: String(since) } : {}), ...(until !== undefined ? { until_ms: String(until) } : {}),
+    });
+    api<{ examples: Example[] }>(`/api/telemetry/examples?${q}`).then((r) => live && setList(r.examples)).catch(reportError);
+    return () => { live = false; };
+  }, [tool, session, since, until, count]);
   if (!list) return null;
   if (!list.length) return <p className="py-2 text-caption text-faint">No failed calls.</p>;
   return (
@@ -164,22 +171,35 @@ function Overview({ range }: { range: Range }) {
   const [openTool, setOpenTool] = useState<string | null>(null);
   const [budget, setBudget] = useState<{ daily_usd: number | null; monthly_usd: number | null } | null>(null);
   useEffect(() => { api<{ settings: any }>("/api/settings").then((x) => setBudget(x.settings.budget)).catch(reportError); }, []);
-  const saveBudget = (p: Record<string, number | null>) => api<{ settings: any }>("/api/settings", { method: "PATCH", body: JSON.stringify({ budget: p }) }).then((x) => setBudget(x.settings.budget));
-  const [cost, setCost] = useState<Record<string, { cost_usd?: number; priced_cost_usd: number; unpriced_calls: number }>>({});
+  // Each limit takes only its own answer, and only the answer to its latest
+  // save: an older reply arriving last does not put back the other field.
+  const budgetSeq = useRef<Record<string, number>>({});
+  const saveBudget = (key: "daily_usd" | "monthly_usd", v: number | null) => {
+    const n = (budgetSeq.current[key] = (budgetSeq.current[key] ?? 0) + 1);
+    return api<{ settings: any }>("/api/settings", { method: "PATCH", body: JSON.stringify({ budget: { [key]: v } }) })
+      .then((x) => { if (budgetSeq.current[key] === n) setBudget((b) => (b ? { ...b, [key]: x.settings.budget[key] } : x.settings.budget)); });
+  };
+  const [cost, setCost] = useState<Record<string, { cost_usd?: number; priced_cost_usd: number; unpriced_calls: number }> | null>(null);
+  const [costFailed, setCostFailed] = useState<number | null>(null);
   const models = useStore((s) => s.models);
   const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
 
+  // Telemetry and prices load on their own: a failed price lookup leaves fresh
+  // measurements in place and marks only the Spend cells. Each source keeps the
+  // answer of its latest poll; an older one landing late is dropped.
   useEffect(() => {
     let live = true;
+    let sent = 0;
+    const got = { t: 0, u: 0 };
     const load = () => {
+      const n = ++sent;
       const since = Date.now() - RANGES[range];
-      Promise.all([api<Report>(`/api/telemetry?since_ms=${since}`), api<any>(`/api/usage?group=model&since_ms=${since}`)])
-        .then(([t, u]) => {
-          if (!live) return;
-          setR(t);
-          setCost(Object.fromEntries(u.buckets.map((b: any) => [b.key, b])));
-        })
+      api<Report>(`/api/telemetry?since_ms=${since}`)
+        .then((t) => { if (live && n > got.t) { got.t = n; setR(t); } })
         .catch(reportError);
+      api<any>(`/api/usage?group=model&since_ms=${since}`)
+        .then((u) => { if (live && n > got.u) { got.u = n; setCost(Object.fromEntries(u.buckets.map((b: any) => [b.key, b]))); setCostFailed(null); } })
+        .catch((e) => { if (live && n > got.u) setCostFailed(Date.now()); reportError(e); });
     };
     load();
     const iv = setInterval(load, 30_000);
@@ -250,16 +270,16 @@ function Overview({ range }: { range: Range }) {
         />
       </Panel>
 
-      <Panel title="By model" testid="usage-models">
+      <Panel title="By model" hint={costFailed && cost ? `spend as of the last price lookup; it failed ${ago(costFailed)} ago` : undefined} testid="usage-models">
         {r.by_model.length ? (
           <Table
             head={["Model", "Calls", "Cache hit", "First token", "Tokens/s", "Failed", "Spend"]}
             rows={r.by_model.map((m) => {
-              const c = cost[m.model];
+              const c = cost?.[m.model];
               return [
                 <span title={m.model}>{name(m.model)}</span>, m.calls, fmtPct(m.cache_hit_ratio), fmtMs(m.ttft_p50),
                 m.output_tokens_per_s ? Math.round(m.output_tokens_per_s) : "none", m.errors ? <span className="text-danger">{m.errors}</span> : 0,
-                c ? (c.unpriced_calls ? "unknown" : fmtUsd(c.priced_cost_usd)) : "none",
+                !cost ? (costFailed ? <span className="text-faint" title="the price lookup failed">unavailable</span> : "") : c ? (c.unpriced_calls ? (c.priced_cost_usd ? `${fmtUsd(c.priced_cost_usd)}+` : "unknown") : fmtUsd(c.priced_cost_usd)) : "none",
               ];
             })}
           />
@@ -271,7 +291,7 @@ function Overview({ range }: { range: Range }) {
           <Table
             head={["Tool", "Calls", "Failed", "Median", "95th", "Total time"]}
             onRow={(i) => r.tools[i]!.tool_errors ? setOpenTool(openTool === r.tools[i]!.tool ? null : r.tools[i]!.tool) : undefined}
-            expanded={(i) => (openTool === r.tools[i]!.tool ? <Failures tool={openTool} /> : null)}
+            expanded={(i) => (openTool === r.tools[i]!.tool ? <Failures tool={openTool} since={r.since_ms} until={r.until_ms} count={r.tools[i]!.tool_errors} /> : null)}
             rows={r.tools.map((x) => [
               <span className="font-mono text-caption">{x.tool}</span>, x.tool_calls,
               x.tool_errors ? <span className={x.tool_error_rate >= 0.15 ? "text-danger" : undefined}>{fmtPct(x.tool_error_rate)}</span> : "0%",
@@ -297,7 +317,7 @@ function Overview({ range }: { range: Range }) {
                     </div>
                   ) : null}
                 </div>
-                <MoneyField label={`${label} limit`} testid={`budget-${key}`} value={budget[key]} onSave={(v) => saveBudget({ [key]: v })} />
+                <MoneyField label={`${label} limit`} testid={`budget-${key}`} value={budget[key]} onSave={(v) => saveBudget(key, v)} />
               </div>
             ))}
           </div>

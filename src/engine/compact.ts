@@ -131,10 +131,45 @@ export function contextTokens(lineage: StoredEvent[]): { used: number; measured:
     }
   }
   let bytes = 0;
-  for (let i = after; i < lineage.length; i++) {
-    const e = lineage[i]!;
-    if (e.kind === "compaction" || e.kind === "user" || e.kind === "tool_result" || e.kind === "assistant") bytes += JSON.stringify(e.data).length;
-  }
+  for (let i = after; i < lineage.length; i++) bytes += tailBytes(lineage[i]!);
   const estimated = Math.round(bytes / 4);
   return { used: measured + estimated, measured, estimated, last };
+}
+
+// UTF-8 bytes of a string (what "bytes" means wherever it is reported).
+export const utf8Bytes = (s: string) => {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+};
+
+// Text files up to this size go into the request inline; longer ones and
+// other kinds go as a note with the saved path (src/engine/attachments.ts).
+export const TEXT_INLINE = 100_000;
+export const TEXT_MEDIA = /^text\/|json|xml|yaml|toml|javascript|typescript|x-sh|csv|markdown/;
+const PATH_NOTE_BYTES = 330;
+
+// What an event adds to the next request, in UTF-8 bytes, as the request will
+// carry it: a declined reply and a display-only note add nothing, a note for
+// the model adds its text, and an attached file adds what it resolves to (its
+// text when it goes inline, else the note with its path; a PDF read natively
+// is model-specific and counted as that note).
+function tailBytes(e: StoredEvent): number {
+  if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : utf8Bytes(JSON.stringify(e.data.blocks ?? []));
+  if (e.kind === "tool_result") return utf8Bytes(JSON.stringify(e.data.results ?? []));
+  if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
+  if (e.kind === "compaction") return utf8Bytes(JSON.stringify(e.data));
+  if (e.kind !== "user") return 0;
+  let n = utf8Bytes(String(e.data.text ?? ""));
+  for (const b of (e.data.images ?? []) as any[]) {
+    if (b.type !== "attachment") n += utf8Bytes(JSON.stringify(b));
+    else n += b.size <= TEXT_INLINE && (TEXT_MEDIA.test(b.media_type) || b.media_type === "application/octet-stream") ? b.size + PATH_NOTE_BYTES : PATH_NOTE_BYTES;
+  }
+  return n;
 }

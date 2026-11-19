@@ -27,6 +27,13 @@ test("context meter, effort, compact and clear", async ({ page, request }) => {
   await expect(page.getByTestId("context-popup")).toContainText("Conversation");
   await shoot(page, "context-01-meter");
 
+  // The breakdown follows a reply committed while the popup stays open.
+  const zone = page.getByTestId("zone-conversation");
+  const before = await zone.textContent();
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `Remember this list, reply only with ok: ${"lantern harbour ".repeat(300)}` } });
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 90_000 });
+  await expect(zone).not.toHaveText(before ?? "");
+
   await page.getByTestId("compact-focus").fill("the favourite colour");
   await page.getByTestId("compact-now").click();
   await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 90_000 });
@@ -38,7 +45,7 @@ test("context meter, effort, compact and clear", async ({ page, request }) => {
   // The model still knows what the summary kept.
   await composer.fill("What is my favourite colour? One word.");
   await composer.press("Enter");
-  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 90_000 });
+  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 90_000 });
   await expect(page.getByTestId("assistant-text").last()).toContainText(/teal/i);
 
   // Clear, then undo.

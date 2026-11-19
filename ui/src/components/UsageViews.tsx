@@ -238,7 +238,7 @@ type Compaction = {
   cache: { before: CacheRow | null; after: CacheRow[] };
 };
 type Compactions = {
-  total: { count: number; tokens_before: number; tokens_after: number; measured_after: number; cost_usd: number; unpriced: number; duration_p50_ms: number | null; after_hit_ratio: number | null; before_hit_ratio: number | null; by_trigger: Record<string, number> };
+  total: { count: number; tokens_before: number; tokens_after: number; measured_after: number; paired: { count: number; tokens_before: number; tokens_after: number }; cost_usd: number; unpriced: number; duration_p50_ms: number | null; after_hit_ratio: number | null; before_hit_ratio: number | null; by_trigger: Record<string, number> };
   after_requests: number; compactions: Compaction[];
 };
 const TRIGGER: Record<string, string> = { threshold: "the context reached the limit", overflow: "a request did not fit", owner: "asked for" };
@@ -253,7 +253,8 @@ export function CompactionsView({ range }: { range: Range }) {
     <div className="flex flex-col gap-4" data-testid="usage-compactions">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Tile testid="compactions-count" label="Compactions" value={t.count} sub={Object.entries(t.by_trigger).map(([k, n]) => `${n} ${k}`).join(", ") || "none in this range"} />
-        <Tile label="Context after" value={t.measured_after ? fmtTokens(t.tokens_after / t.measured_after) : "none"} sub={t.count ? `average, from ${fmtTokens(t.tokens_before / t.count)} before` : "no compaction"} />
+        <Tile testid="compactions-after" label="Context after" value={t.paired.count ? fmtTokens(t.paired.tokens_after / t.paired.count) : "not yet"}
+          sub={!t.count ? "no compaction" : t.paired.count ? `average, from ${fmtTokens(t.paired.tokens_before / t.paired.count)} before; ${t.paired.count} of ${t.count} measured` : `no request after any of the ${t.count} yet`} />
         <Tile label="Cost of the summaries" value={t.unpriced ? (t.cost_usd ? `${fmtUsd(t.cost_usd)}+` : "unknown") : fmtUsd(t.cost_usd)} sub={`median ${fmtMs(t.duration_p50_ms)} to write`} />
         <Tile label="Cache after" value={fmtPct(t.after_hit_ratio)} sub={`of the next ${r.after_requests} requests; ${fmtPct(t.before_hit_ratio)} before`} />
       </div>
@@ -273,7 +274,7 @@ export function CompactionsView({ range }: { range: Range }) {
               c.session_gone ? <span className="text-faint">deleted session</span> : <button type="button" className="max-w-48 truncate text-accent hover:underline" onClick={(e) => { e.stopPropagation(); openSession(c.session_id, c.event_id); }}>{c.session_title || "the session"}</button>,
               c.mode === "clear" ? "cleared" : `${TRIGGER[c.trigger] ?? c.trigger}${c.ahead ? ", prepared ahead" : ""}`,
               c.tokens_before == null ? "?" : fmtTokens(c.tokens_before), c.tokens_after == null ? "not yet" : fmtTokens(c.tokens_after),
-              fmtMs(c.duration_ms), c.mode === "clear" ? "none" : c.priced ? fmtUsd(c.cost_usd ?? 0) : "unknown", hits(c),
+              fmtMs(c.duration_ms), c.mode === "clear" ? "none" : c.priced && c.cost_usd != null ? fmtUsd(c.cost_usd) : "unknown", hits(c),
             ])}
           />
         ) : <p className="text-ui text-faint">No compaction in this range.</p>}
@@ -304,15 +305,20 @@ type Side = {
 };
 type Mode = "ranges" | "models";
 const DAY = 86_400_000;
-const PRESETS: Record<string, { label: string; a: [number, number]; b: [number, number] }> = {
-  day: { label: "Today against yesterday", a: [1, 0], b: [2, 1] },
-  week: { label: "This week against the week before", a: [7, 0], b: [14, 7] },
-  month: { label: "These 30 days against the 30 before", a: [30, 0], b: [60, 30] },
+// Today runs from local midnight (a clock change included) and yesterday is
+// the whole calendar day before; the others are rolling windows, named so.
+const midnight = (t: number, daysBack = 0) => { const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - daysBack); return d.getTime(); };
+const PRESETS: Record<string, { label: string; bounds: (now: number) => { a: [number, number]; b: [number, number] } }> = {
+  day: { label: "Today so far against yesterday", bounds: (now) => ({ a: [midnight(now), now], b: [midnight(now, 1), midnight(now)] }) },
+  week: { label: "Last 7 days against the 7 before", bounds: (now) => ({ a: [now - 7 * DAY, now], b: [now - 14 * DAY, now - 7 * DAY] }) },
+  month: { label: "Last 30 days against the 30 before", bounds: (now) => ({ a: [now - 30 * DAY, now], b: [now - 60 * DAY, now - 30 * DAY] }) },
 };
 
 export function CompareView() {
   const models = useStore((s) => s.models);
-  const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
+  const short = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
+  const labels = useStore((s) => s.providerLabels);
+  const provider = (id: string) => { const p = id.slice(0, id.indexOf(":")); return labels[p] ?? p; };
   const [mode, setMode] = useState<Mode>("ranges");
   const [preset, setPreset] = useState("week");
   const [range, setRange] = useState<Range>("week");
@@ -328,11 +334,13 @@ export function CompareView() {
     }).catch(reportError);
   }, [range]);
   const now = Date.now();
-  const p = PRESETS[preset]!;
+  const p = PRESETS[preset]!.bounds(now);
   const q = mode === "ranges"
-    ? `a_since_ms=${now - p.a[0] * DAY}&a_until_ms=${now - p.a[1] * DAY}&b_since_ms=${now - p.b[0] * DAY}&b_until_ms=${now - p.b[1] * DAY}`
+    ? `a_since_ms=${p.a[0]}&a_until_ms=${p.a[1]}&b_since_ms=${p.b[0]}&b_until_ms=${p.b[1]}`
     : ma && mb ? `a_since_ms=${now - RANGES[range]}&b_since_ms=${now - RANGES[range]}&a_model=${encodeURIComponent(ma)}&b_model=${encodeURIComponent(mb)}` : null;
   const r = useReport<{ a: Side; b: Side }>(q ? `/api/telemetry/compare?${q}` : null, [mode, preset, range, ma, mb]);
+  // A name two used models share gets its provider, in the options and the heads.
+  const name = (id: string) => (used.some((o) => o !== id && short(o) === short(id)) || (ma !== mb && short(ma) === short(mb) && (id === ma || id === mb)) ? `${short(id)} (${provider(id)})` : short(id));
   const select = (v: string, set: (v: string) => void, label: string) => (
     <select aria-label={label} data-testid={`compare-${label}`} value={v} onChange={(e) => set(e.target.value)} className="h-8 max-w-72 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
       {used.map((id) => <option key={id} value={id}>{name(id)}</option>)}
@@ -352,7 +360,6 @@ export function CompareView() {
     ["Cache breaks", (s) => s.breaks, (v) => String(v ?? 0)],
     ["Compactions", (s) => s.compactions, (v) => String(v ?? 0)],
     ["Tool failures", (s) => s.tool_error_rate, fmtPct],
-    ["Spend", (s) => s.priced_cost_usd, (v) => fmtUsd(v ?? 0)],
   ];
   const rates = new Set(["Failed requests", "Cache hit rate", "Tool failures"]);
   // Rates differ in points; counts and times by how many times; small moves in percent.
@@ -370,6 +377,12 @@ export function CompareView() {
     const text = r >= 2 ? `${r < 10 ? r.toFixed(1) : Math.round(r)}x` : r <= 0.5 ? `${r < 0.1 ? r.toFixed(2) : r.toFixed(1)}x` : `${r > 1 ? "+" : ""}${Math.round((r - 1) * 100)}%`;
     return <span className={tone(r > 1)}>{text}</span>;
   };
+  // Spend is known, a lower bound (some calls have no price) or unknown; a
+  // ratio is claimed only between two known totals.
+  const spend = (s: Side) => (s.unpriced_calls ? (s.priced_cost_usd ? `${fmtUsd(s.priced_cost_usd)}+` : "unknown") : fmtUsd(s.priced_cost_usd));
+  const spendChange = (a: Side, b: Side) => (a.unpriced_calls || b.unpriced_calls ? <span className="text-faint" title="a call without a known price is in one of them">not comparable</span> : change("Spend", a.priced_cost_usd, b.priced_cost_usd));
+  // A count of failures differs by how many more or fewer, not in points.
+  const countChange = (a: number, b: number) => (a === b ? <span className="text-faint">same</span> : <span className={a > b ? "text-danger" : "text-ok"}>{a > b ? `${a - b} more` : `${b - a} fewer`}</span>);
   return (
     <div className="flex flex-col gap-4" data-testid="usage-compare">
       <div className="flex flex-wrap items-center gap-3">
@@ -391,7 +404,8 @@ export function CompareView() {
             head={["", ...heads, "Change"]}
             rows={[
               ...rows.map(([label, get, fmt]) => [label, fmt(get(r.a)), fmt(get(r.b)), change(label, get(r.a), get(r.b))]),
-              ...[...new Set([...Object.keys(r.a.classes), ...Object.keys(r.b.classes)])].map((c) => [`${CLASS[c] ?? c}`, r.a.classes[c] ?? 0, r.b.classes[c] ?? 0, change("Failed requests", r.a.classes[c] ?? 0, r.b.classes[c] ?? 0)]),
+              ["Spend", spend(r.a), spend(r.b), spendChange(r.a, r.b)],
+              ...[...new Set([...Object.keys(r.a.classes), ...Object.keys(r.b.classes)])].map((c) => [`${CLASS[c] ?? c}`, r.a.classes[c] ?? 0, r.b.classes[c] ?? 0, countChange(r.a.classes[c] ?? 0, r.b.classes[c] ?? 0)]),
             ]}
           />
         )}

@@ -61,13 +61,16 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
         return json(t.compare(a, b));
       },
     },
-    // GET /api/telemetry/examples?tool=&session_id=&limit=  the last failed tool calls
+    // GET /api/telemetry/examples?tool=&session_id=&limit=&since_ms=&until_ms=  the last failed tool calls (in that interval)
     "/api/telemetry/examples": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
         if (limit !== undefined && !Number.isFinite(limit)) return json({ error: "limit is not a number" }, 400);
-        return json({ examples: t.examples({ tool: q.get("tool") || undefined, session: q.get("session_id") || undefined, limit }) });
+        const ms = (k: string) => (q.get(k) ? Number(q.get(k)) : undefined);
+        const since = ms("since_ms"), until = ms("until_ms");
+        if ([since, until].some((v) => v !== undefined && !Number.isFinite(v))) return json({ error: "since_ms and until_ms are milliseconds" }, 400);
+        return json({ examples: t.examples({ tool: q.get("tool") || undefined, session: q.get("session_id") || undefined, limit, since, until }) });
       },
     },
     "/api/telemetry/vocabulary": {

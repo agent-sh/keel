@@ -3,7 +3,7 @@
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { ArrowUp, Check, ChevronDown, CornerDownRight, Gauge, Layers, ListPlus, Pencil, Play, RotateCcw, Send, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
@@ -108,14 +108,26 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const models = useStore((s) => s.models);
   const [info, setInfo] = useState<ContextInfo | null>(null);
+  const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState("");
   const [busy, setBusy] = useState<"" | "compact" | "clear">("");
   const [error, setError] = useState("");
-  const window_ = models.find((m) => m.id === session?.model)?.context ?? 0;
-  const used = useMemo(() => (all && session ? contextTokens(lineage(all, session.head)).used : 0), [all, session?.head]);
-  if (!session || !window_) return null;
-  const share = Math.min(1, used / window_);
-  const limit = session.settings.compact_at ?? Math.floor(window_ * COMPACT_SHARE);
+  const model = models.find((m) => m.id === session?.model);
+  const window_ = model?.context ?? 0;
+  const est = useMemo(() => (all && session ? contextTokens(lineage(all, session.head)) : null), [all, session?.head]);
+  const used = est?.used ?? 0;
+  // The breakdown follows the conversation while the popup is open: it loads
+  // again on each committed event (not on streaming text); only the latest
+  // answer is kept.
+  const seq = useRef(0);
+  const reload = () => { const n = ++seq.current; return actions.context(sessionId).then((x) => { if (n === seq.current) setInfo(x); }); };
+  useEffect(() => { if (open) reload().catch(reportError); }, [open, session?.head]);
+  if (!session) return null;
+  // No model row (the listing lacks it): counts and actions stay, without a share.
+  const share = window_ ? Math.min(1, used / window_) : 0;
+  const limit = session.settings.compact_at ?? (window_ ? Math.floor(window_ * COMPACT_SHARE) : 0);
+  const windowText = !model ? "window unknown: the model is not in the current listing" : model.context_assumed ? `window unknown; ${fmtTokens(window_)} assumed for automatic compaction` : `${fmtTokens(window_)} window`;
+  const usedText = est?.estimated ? `${fmtTokens(used)} tokens (${fmtTokens(est.measured)} measured, ~${fmtTokens(est.estimated)} estimated since)` : `${fmtTokens(used)} tokens`;
   const working = session.phase === "working";
   const run = async (what: "compact" | "clear") => {
     setBusy(what);
@@ -124,7 +136,7 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
       if (what === "compact") await actions.compact(sessionId, focus.trim() || undefined);
       else await actions.clear(sessionId);
       setFocus("");
-      setInfo(await actions.context(sessionId));
+      await reload();
     } catch (e) {
       setError(failed(e, { at: "TurnControls" }));
     } finally {
@@ -132,29 +144,30 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
     }
   };
   return (
-    <Popover.Root onOpenChange={(o) => { if (o) actions.context(sessionId).then(setInfo, reportError); }}>
+    <Popover.Root onOpenChange={setOpen}>
       <Popover.Trigger
         data-testid="context-meter"
-        title={`${fmtTokens(used)} of ${fmtTokens(window_)} tokens in context`}
+        title={`${usedText} in context; ${windowText}`}
         className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted tabular-nums hover:bg-hover hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <Ring share={share} />
-        <span>{share < 0.01 && used ? "<1" : Math.round(share * 100)}%</span>
+        <span>{!window_ ? fmtTokens(used) : `${share < 0.01 && used ? "<1" : Math.round(share * 100)}%${model?.context_assumed ? "?" : ""}`}</span>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="end" sideOffset={8} className="z-50">
           <Popover.Popup className={cn(popupClass, "w-80 p-3.5")} data-testid="context-popup">
             <Popover.Title className="text-ui font-semibold">Context</Popover.Title>
-            <p className="mt-0.5 text-caption text-muted tabular-nums">
-              {fmtTokens(used)} of {fmtTokens(window_)} tokens · compacts at {fmtTokens(limit)}
+            <p className="mt-0.5 text-caption text-muted tabular-nums" data-testid="context-summary">
+              {est?.estimated ? "~" : ""}{fmtTokens(used)}{window_ && !model?.context_assumed ? ` of ${fmtTokens(window_)}` : ""} tokens{limit ? ` · compacts at ${fmtTokens(limit)}` : ""}
             </p>
+            {(!model || model.context_assumed) && <p className="mt-0.5 text-caption text-faint" data-testid="context-window-unknown">{windowText}</p>}
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sunken">
               <div className={cn("h-full rounded-full", share >= COMPACT_SHARE ? "bg-danger" : share >= 0.6 ? "bg-warn" : "bg-accent")} style={{ width: `${Math.max(1, share * 100)}%` }} />
             </div>
             {info && (
               <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-caption tabular-nums">
                 {info.zones.filter((z) => z.bytes).map((z) => (
-                  <div key={z.key} className="contents">
+                  <div key={z.key} className="contents" data-testid={`zone-${z.key}`}>
                     <dt className="text-muted">{ZONE[z.key] ?? z.key}</dt>
                     <dd className="text-right">~{fmtTokens(z.estimated_tokens)}</dd>
                   </div>

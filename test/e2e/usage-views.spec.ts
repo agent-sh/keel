@@ -71,6 +71,8 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
   await expect(row).toContainText("asked for");
   await row.click();
   await expect(panel.getByTestId("compaction-detail")).toContainText("Request 1 after");
+  // Before and after are averaged over the same compactions: those measured after.
+  await expect(panel.getByTestId("compactions-after")).toContainText(/\d+ of \d+ measured/);
   await shoot(page, "usage-views-04-compactions");
 
   await panel.getByRole("radio", { name: "Compare" }).click();
@@ -79,6 +81,10 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
   await panel.getByTestId("compare-model-a").selectOption(HAIKU);
   await panel.getByTestId("compare-model-b").selectOption(STAND_IN);
   await expect(panel.getByTestId("compare-table")).toContainText("Rate limited");
+  // A count of failures differs by how many, not in rate points.
+  const limited = panel.getByTestId("compare-table").locator("tr").filter({ hasText: "Rate limited" });
+  await expect(limited).toContainText(/\d+ (more|fewer)/);
+  await expect(limited).not.toContainText("pts");
   await shoot(page, "usage-views-05-compare");
 
   for (const s of [real, fail]) await request.delete(`/api/sessions/${s.id}`);

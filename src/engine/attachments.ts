@@ -13,8 +13,10 @@ import type { AttachmentBlock, Message } from "../core/types.ts";
 import type { ModelInfo } from "../providers/types.ts";
 
 export const ATTACHMENT_MAX = 20 * 1024 * 1024; // the same cap as the Rust Keel's uploads
-// About 25k tokens: what one Read of a file returns in Claude Code. Longer text goes by path.
-export const TEXT_INLINE = 100_000;
+// About 25k tokens: what one Read of a file returns in Claude Code. Longer text
+// goes by path. Shared with the context estimate (src/engine/compact.ts).
+export { TEXT_INLINE } from "./compact.ts";
+import { TEXT_INLINE, TEXT_MEDIA } from "./compact.ts";
 
 let root = "";
 export const setAttachmentsRoot = (dir: string) => void (root = join(dir, "attachments"));
@@ -41,7 +43,7 @@ export function attachmentPath(id: string): string | undefined {
 }
 
 const isText = (a: AttachmentBlock, bytes: Buffer) =>
-  (/^text\/|json|xml|yaml|toml|javascript|typescript|x-sh|csv|markdown/.test(a.media_type) || a.media_type === "application/octet-stream") &&
+  (TEXT_MEDIA.test(a.media_type) || a.media_type === "application/octet-stream") &&
   !bytes.subarray(0, 8000).includes(0);
 
 const cache = new Map<string, Buffer>();
