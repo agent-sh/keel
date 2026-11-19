@@ -42,4 +42,21 @@ test("park refuses while a background command runs in the worktree, and stops it
   } finally {
     await stopJob(job);
   }
+  // Another session's command in that worktree, and another session working in it.
+  const made2 = await (await call("/api/worktrees", "POST", { workspace: repo, title: "w2" })).json();
+  const s2 = made2.session;
+  const guest = store.createSession({ workspace: join(root, "elsewhere"), model: "m", title: "guest" });
+  const other = startJob({ sessionId: guest.id, command: "sleep 31", cwd: s2.workspace, logDir: join(root, "jobs"), background: true });
+  try {
+    const refused = await call("/api/sessions/:id/worktree/park", "POST", {}, { id: s2.id });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).jobs.map((j: any) => [j.command, j.session_id])).toEqual([["sleep 31", guest.id]]);
+  } finally {
+    await stopJob(other);
+  }
+  const sharer = store.createSession({ workspace: s2.workspace, model: "m", title: "sharer" });
+  const shared = await call("/api/sessions/:id/worktree/park", "POST", { stop_shells: true }, { id: s2.id });
+  expect(shared.status).toBe(409);
+  expect((await shared.json()).sessions.map((x: any) => x.id)).toEqual([sharer.id]);
+  expect(existsSync(s2.workspace)).toBe(true);
 });

@@ -11,6 +11,7 @@
 import type { Subprocess } from "bun";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { contains, realOf } from "../core/paths.ts";
 
 export type Job = {
   id: string;            // short text id (Claude task_id)
@@ -312,6 +313,8 @@ export async function stopJob(j: Job, reason = "was stopped"): Promise<void> {
 }
 
 export const jobsOf = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId);
+// Running jobs of any session whose folder is in `dir` (where links land).
+export const jobsIn = (dir: string) => { const d = realOf(dir); return [...jobs.values()].filter((j) => running(j) && contains(d, realOf(j.cwd))); };
 export const findJob = (sessionId: string, id: string | number) =>
   [...jobs.values()].find((j) => j.sessionId === sessionId && (j.id === String(id) || j.num === Number(id)));
 

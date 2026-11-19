@@ -2,7 +2,8 @@
 // review comments sent back to the model.
 import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { jobsOf, running, stopJob } from "../../tools/jobs.ts";
+import { contains, realOf } from "../../core/paths.ts";
+import { jobsIn, stopJob } from "../../tools/jobs.ts";
 import { GitError, Worktrees } from "../../worktree/manager.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
@@ -28,18 +29,29 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
     if (!w) return { error: bad("the session has no managed worktree") };
     return { s, w };
   };
-  // Whether the session's folder may go or move now: not while a turn runs,
-  // nor while its background commands run in it (they would fail on their
-  // next write), unless the owner says to stop them (stop_shells), as archive does.
+  // What would break if a session's folder went or moved now: a turn running
+  // there (this session's or another's), another session working in it, and
+  // background commands of any session whose folder is in it (they would fail
+  // on their next write). Folders compare where their links land.
+  const inside = (id: string) => {
+    const s = store.session(id), w = wts.get(id);
+    const dir = w?.state === "active" ? w.path : s?.workspace;
+    if (!dir) return { others: [], jobs: [], turns: [] };
+    const others = store.sessions().filter((o) => o.id !== id && !o.archived && contains(realOf(dir), realOf(o.workspace)));
+    return { others, jobs: jobsIn(dir), turns: [...(s ? [s] : []), ...others].filter((o) => engine.isRunning(o.id)) };
+  };
+  const busy = (id: string) => { const u = inside(id); return u.turns.length > 0 || u.others.length > 0 || u.jobs.length > 0; };
+  // Whether it may happen now; the owner can have the commands stopped with it
+  // (stop_shells), as archive does. Other sessions in the folder are named, never stopped.
   const inUse = async (id: string, stopShells: boolean, what: string): Promise<Response | null> => {
-    if (engine.isRunning(id)) return bad("a turn is running; stop it first", 409);
-    const jobs = jobsOf(id).filter(running);
-    if (!jobs.length) return null;
-    if (!stopShells) return json({ error: `the session still runs ${jobs.length} background command${jobs.length > 1 ? "s" : ""} in its folder: ${jobs.map((j) => j.command.slice(0, 80)).join("; ")}. Send stop_shells to stop ${jobs.length > 1 ? "them" : "it"} first.`, jobs: jobs.map((j) => ({ id: j.id, command: j.command })) }, 409);
-    await Promise.all(jobs.map((j) => stopJob(j, `was stopped: its session's worktree was ${what}`)));
+    const u = inside(id);
+    if (u.turns.length) return bad(u.turns[0]!.id === id ? "a turn is running; stop it first" : `a turn of ${u.turns.map((o) => o.title || o.id).join(", ")} is running in this folder; stop it first`, 409);
+    if (u.others.length) return json({ error: `${u.others.map((o) => o.title || o.id).join(", ")} ${u.others.length > 1 ? "work" : "works"} in this folder too: move or archive ${u.others.length > 1 ? "them" : "it"} first.`, sessions: u.others.map((o) => ({ id: o.id, title: o.title })) }, 409);
+    if (!u.jobs.length) return null;
+    if (!stopShells) return json({ error: `${u.jobs.length} background command${u.jobs.length > 1 ? "s" : ""} still run${u.jobs.length > 1 ? "" : "s"} in this folder: ${u.jobs.map((j) => j.command.slice(0, 80)).join("; ")}. Send stop_shells to stop ${u.jobs.length > 1 ? "them" : "it"} first.`, jobs: u.jobs.map((j) => ({ id: j.id, command: j.command, session_id: j.sessionId })) }, 409);
+    await Promise.all(u.jobs.map((j) => stopJob(j, `was stopped: the worktree it ran in was ${what}`)));
     return null;
   };
-  const busy = (id: string) => engine.isRunning(id) || jobsOf(id).some(running);
   const emit = (id: string) => bus.emit({ t: "feature", name: "worktree", session_id: id, data: { changed: true } });
   const keep = () => { const n = Number(store.db.query<{ value: string }, []>("SELECT value FROM perm_settings WHERE key = 'worktree_keep'").get()?.value ?? process.env.KEEL_WORKTREE_KEEP ?? 15); return Number.isFinite(n) && n >= 0 ? n : 15; };
   // Retention runs at start and after each new worktree; failures are captured, never fatal.
@@ -104,7 +116,9 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         const b = await body(req);
-        const held = await inUse(s.id, !!b.stop_shells, "moved");
+        // Into a worktree the main checkout stays; back to main the worktree's folder goes.
+        if (b.to !== "main" && engine.isRunning(s.id)) return bad("a turn is running; stop it first", 409);
+        const held = b.to === "main" ? await inUse(s.id, !!b.stop_shells, "moved") : null;
         if (held) return held;
         const w = wts.get(s.id);
         if (b.to === "worktree") {
