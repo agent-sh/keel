@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
@@ -69,7 +69,9 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   // A session that wrote a file has checkpoints: its share is shown and dropping them frees the rewind data.
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
-  const w = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Wrote a file", text: "Create the file notes-storage-check.txt with the text hello, using your file writing tool. Then reply done." } })).json()).session;
+  const wsDir = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `storage-${Date.now()}`);
+  mkdirSync(wsDir, { recursive: true });
+  const w = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: wsDir, title: "Wrote a file", text: "Create the file notes-storage-check.txt with the text hello, using your file writing tool. Then reply done." } })).json()).session;
   await expect.poll(async () => (await (await request.get(`/api/sessions/${w.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 120_000 }).toBe(true);
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
   expect((await (await request.get(`/api/sessions/${w.id}/checkpoints`)).json()).turns.length).toBeGreaterThan(0);

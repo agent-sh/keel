@@ -1,4 +1,6 @@
 import { expect, test } from "./isolate.ts";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: the Claude tool profile in the UI. A plan checklist, a file
@@ -11,10 +13,11 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   const name = `notes-${Date.now()}.txt`;
-  await page.goto("/");
-  await page.getByTestId("model-picker").click();
-  await page.getByPlaceholder("Search models").fill("haiku 5.5");
-  await page.getByRole("option").first().click();
+  // Its own scratch folder: the files the model writes never land in a checkout.
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `tools-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  await page.goto(`/s/${session.id}`);
 
   await page.getByTestId("composer").fill(
     `Do exactly these steps with your tools, one call each, in order: ` +
