@@ -13,10 +13,11 @@ export const triggerClass = (compact?: boolean) =>
 // and said to be missing once the listing is in (a listing still on its way
 // proves nothing). "Choose a model" is only for no selection at all; "No
 // models" only once the listing came back empty.
-export function TriggerLabel({ label, any, value }: { label?: string; any: boolean; value?: string }) {
+// `placeholder` names what an empty choice means ("Same as the session").
+export function TriggerLabel({ label, any, value, placeholder }: { label?: string; any: boolean; value?: string; placeholder?: string }) {
   const loaded = useStore((s) => s.loaded.models);
   const missing = !label && !!value && loaded;
-  const text = label ?? (value ? value : any ? "Choose a model" : loaded ? "No models" : "Loading models");
+  const text = label ?? (value ? value : placeholder ?? (any ? "Choose a model" : loaded ? "No models" : "Loading models"));
   return (
     <>
       <span className="max-w-40 truncate sm:max-w-56" title={missing ? `${value} is not in the current listing` : undefined}>{text}</span>
@@ -30,7 +31,7 @@ export function TriggerLabel({ label, any, value }: { label?: string; any: boole
 // after the page; until then the same trigger stands in, and a click on it
 // opens the menu once it is there. `openSignal` opens it when it changes.
 // `machine`: the session is that daemon's, and its listing is the one offered.
-export function ModelPicker(props: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string }) {
+export function ModelPicker(props: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string }) {
   const atMount = useRef(props.openSignal ?? 0);
   const [clicked, setClicked] = useState(0);
   const peer = usePeerModels(props.machine);
@@ -43,7 +44,7 @@ export function ModelPicker(props: { value: string; onChange: (id: string) => vo
     <Suspense
       fallback={
         <button type="button" data-testid="model-picker" className={triggerClass(props.compact)} onClick={() => setClicked((n) => n + 1)}>
-          <TriggerLabel label={label} any={any} value={props.value} />
+          <TriggerLabel label={label} any={any} value={props.value} placeholder={props.placeholder} />
         </button>
       }
     >

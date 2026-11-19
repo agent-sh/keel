@@ -41,6 +41,20 @@ test("goals and the shared task list", async ({ page, request }) => {
   await expect.poll(idle, { timeout: 60_000 }).toBe(true);
   await shoot(page, "goals-02-met");
 
+  // The verifier's model is the session's until the owner picks one on the card, from the listing.
+  const verifier = page.getByTestId("goal-verifier-model");
+  const goalNow = async () => (await (await request.get(`/api/sessions/${session.id}/goal`)).json()).goal;
+  await expect(verifier).toContainText("Same as the session");
+  await verifier.getByTestId("model-picker").click();
+  await page.getByPlaceholder("Search models").fill(HAIKU);
+  await page.getByTestId("model-popup").locator(`[data-testid="model-option"][data-model="${HAIKU}"]`).first().click();
+  await expect.poll(async () => (await goalNow()).verifier_model).toBe(HAIKU);
+  await expect(verifier).not.toContainText("Same as the session");
+  await shoot(page, "goals-02b-verifier-model");
+  await verifier.getByTestId("goal-verifier-reset").click();
+  await expect.poll(async () => (await goalNow()).verifier_model).toBeNull();
+  await expect(verifier).toContainText("Same as the session");
+
   // The shared list: the owner's item reaches the model, which keeps it in its plan.
   await page.getByTestId("task-add").fill("Write a one-line summary of goal.txt");
   await page.getByTestId("task-add").press("Enter");

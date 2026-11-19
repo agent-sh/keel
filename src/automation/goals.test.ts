@@ -93,8 +93,8 @@ test("a check of a goal that was replaced meanwhile decides nothing about the ne
 test("a paused goal is not resumed in an archived session", async () => {
   const s = session();
   await goals.set(s.id, { objective: "ship it" });
-  goals.patch(s.id, { status: "paused" });
+  await goals.patch(s.id, { status: "paused" });
   store.updateSession(s.id, { archived: true });
-  expect(() => goals.patch(s.id, { status: "pursuing" })).toThrow(/archived/);
+  await expect(goals.patch(s.id, { status: "pursuing" })).rejects.toThrow(/archived/);
   expect(goals.get(s.id)!.status).toBe("paused");
 });

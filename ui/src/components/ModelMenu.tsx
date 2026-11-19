@@ -17,7 +17,7 @@ import { machineName } from "../lib/fleet.ts";
 // last so they can be shown again. Nothing here names a model. A chunk of its
 // own (Combobox is large): ModelPicker shows the same trigger until it loads.
 // `machine`: the session is another daemon's; its listing is the one offered.
-export function ModelMenu({ value, onChange, compact, openSignal, machine }: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string }) {
+export function ModelMenu({ value, onChange, compact, openSignal, machine, placeholder }: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string }) {
   const [open, setOpen] = useState(!!openSignal);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -114,7 +114,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine }: { v
       itemToStringLabel={(i: Item) => i.label}
     >
       <Combobox.Trigger data-testid="model-picker" className={triggerClass(compact)}>
-        <TriggerLabel label={selected ? (all.some((o) => o.label === selected.label && o.value !== selected.value) ? `${selected.label} · ${selected.providerLabel}` : selected.label) : undefined} any={all.length > 0} value={value} />
+        <TriggerLabel label={selected ? (all.some((o) => o.label === selected.label && o.value !== selected.value) ? `${selected.label} · ${selected.providerLabel}` : selected.label) : undefined} any={all.length > 0} value={value} placeholder={placeholder} />
       </Combobox.Trigger>
       <Combobox.Portal>
         <Combobox.Positioner align="start" sideOffset={6} className="z-50 outline-none">

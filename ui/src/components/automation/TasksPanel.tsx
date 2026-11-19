@@ -3,8 +3,9 @@ import { Check, CircleDot, ExternalLink, Flag, Pause, Play, Trash2, X } from "lu
 import { useEffect, useState } from "react";
 import type { Session } from "../../../../src/core/types.ts";
 import { auto, openSession, useAuto, type Goal, type Task } from "../../lib/automation.ts";
-import { reportError, failed } from "../../lib/store.ts";
+import { reportError, failed, useStore } from "../../lib/store.ts";
 import { cn, fmtTokens } from "../../lib/utils.ts";
+import { ModelPicker } from "../ModelPicker.tsx";
 import { Empty, IconButton, SectionTitle } from "./bits.tsx";
 
 const GOAL_LABEL: Record<Goal["status"], string> = {
@@ -67,6 +68,7 @@ function GoalCard({ g, sid }: { g: Goal; sid: string }) {
         </span>
       </div>
       <p className="mt-1.5 text-ui whitespace-pre-wrap" data-testid="goal-text">{g.objective}</p>
+      <VerifierModel g={g} sid={sid} />
       {(g.last_reason || g.status_reason) && (
         <p className="mt-1.5 text-caption text-muted" data-testid="goal-reason">
           {g.status_reason && g.status !== "pursuing" ? g.status_reason : g.last_reason}
@@ -89,6 +91,26 @@ function GoalCard({ g, sid }: { g: Goal; sid: string }) {
         </div>
       )}
       {!open && <button type="button" onClick={() => setEdit(true)} className="mt-2 text-caption text-accent hover:underline">Set a new goal</button>}
+    </div>
+  );
+}
+
+// The model of the independent check before the goal counts as met. None of
+// its own: the judge's model, else the session's (src/automation/verify.ts).
+function VerifierModel({ g, sid }: { g: Goal; sid: string }) {
+  const fallback = useStore((s) => g.judge_model ?? s.sessions[sid]?.model ?? "");
+  const name = useStore((s) => s.models.find((m) => m.id === fallback)?.name ?? fallback);
+  const set = (m: string | null) => auto.patchGoal(sid, { verifier_model: m }).catch(reportError);
+  const same = `Same as the ${g.judge_model ? "judge" : "session"}${name ? ` (${name})` : ""}`;
+  return (
+    <div className="mt-1.5 flex items-center gap-1 text-caption text-muted" data-testid="goal-verifier-model" data-model={g.verifier_model ?? ""}>
+      <span className="shrink-0 text-faint">Checked by</span>
+      <ModelPicker compact value={g.verifier_model ?? ""} onChange={(m) => set(m)} placeholder={same} />
+      {g.verifier_model && (
+        <button type="button" onClick={() => set(null)} className="shrink-0 rounded px-1.5 py-0.5 text-faint hover:bg-hover hover:text-fg" data-testid="goal-verifier-reset" title={same}>
+          Use the {g.judge_model ? "judge's" : "session's"}
+        </button>
+      )}
     </div>
   );
 }

@@ -107,9 +107,15 @@ export async function set(sessionId: string, input: { objective: string; token_b
   return g;
 }
 
-export function patch(sessionId: string, p: { status?: "paused" | "pursuing"; objective?: string; token_budget?: number | null; max_turns?: number | null }): Goal {
+export async function patch(sessionId: string, p: { status?: "paused" | "pursuing"; objective?: string; token_budget?: number | null; max_turns?: number | null; verifier_model?: string | null }): Promise<Goal> {
   const g = get(sessionId);
   if (!g) throw Object.assign(new Error("the session has no goal"), { status: 404 });
+  // null: the verifier runs on the judge's model, else the session's.
+  if (p.verifier_model !== undefined) {
+    if (p.verifier_model !== null && typeof p.verifier_model !== "string") throw new Error("verifier_model is a model id or null");
+    if (p.verifier_model) await D().providers.resolve(p.verifier_model);
+    g.verifier_model = p.verifier_model || null;
+  }
   if (p.objective !== undefined) {
     const o = String(p.objective).trim();
     if (!o || o.length > OBJECTIVE_MAX) throw new Error(`the objective is 1 to ${OBJECTIVE_MAX} characters`);

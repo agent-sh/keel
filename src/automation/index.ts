@@ -410,7 +410,7 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/sessions/:id/goal": {
       GET: (req: any) => (session(req.params.id) ? json({ goal: goals.get(req.params.id) ?? null }) : bad("no such session", 404)),
       PUT: (req: any) => attempt(async () => json({ goal: await goals.set(req.params.id, await body(req)) })),
-      PATCH: (req: any) => attempt(async () => json({ goal: goals.patch(req.params.id, await body(req)) })),
+      PATCH: (req: any) => attempt(async () => json({ goal: await goals.patch(req.params.id, await body(req)) })),
       DELETE: (req: any) => (session(req.params.id) ? json({ ok: true, cleared: goals.clear(req.params.id) }) : bad("no such session", 404)),
     },
     "/api/sessions/:id/tasks": {
