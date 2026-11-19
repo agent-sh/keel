@@ -11,9 +11,14 @@ const base = (sid: string) => `/api/sessions/${sid}/draft`;
 
 export const getDraft = (sid: string) => api<Draft>(base(sid));
 
-export async function fromServer(sid: string, f: DraftFile): Promise<Attachment> {
+// A file removed meanwhile (another window sent or dropped it) answers 404:
+// that is no attachment, never its error text as one.
+export async function fromServer(sid: string, f: DraftFile): Promise<Attachment | null> {
   const url = `${base(sid)}/files/${f.id}`;
-  const buf = await (await fetch(url)).arrayBuffer();
+  const r = await fetch(url);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`draft image: HTTP ${r.status}`);
+  const buf = await r.arrayBuffer();
   let s = "";
   const b = new Uint8Array(buf);
   for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
@@ -28,8 +33,9 @@ export const dropImage = (sid: string, id: string) =>
 
 export const clearDraft = (sid: string) => api(base(sid), { method: "DELETE" }).catch((e) => reportError(e, { at: "draft clear" }));
 
-// Text from outside was moved into the box: empty it on the server.
-export const textTaken = (sid: string) => api(base(sid), { method: "POST", body: JSON.stringify({ text: "", origin: "page" }) }).catch((e) => reportError(e, { at: "draft take" }));
+// Text from outside was moved into the box: empty it on the server, only if
+// it is still that write (a newer one stays for the next take).
+export const textTaken = (sid: string, at: number) => api(base(sid), { method: "POST", body: JSON.stringify({ text: "", taken: at, origin: "page" }) }).catch((e) => reportError(e, { at: "draft take" }));
 
 // The owner is typing here: a capture without a session comes to this one.
 const lastPing = new Map<string, number>();

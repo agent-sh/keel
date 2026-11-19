@@ -25,7 +25,7 @@ const MAX_FILES = 20;
 const TARGET_MS = 60_000; // a capture without a session goes to the one used this recently
 
 export type DraftFile = { id: string; name: string; mime: string; origin: string | null; added_ms: number; bytes: number };
-export type Draft = { text?: string; origin?: string | null; attachments: DraftFile[]; updated_ms?: number };
+export type Draft = { text?: string; origin?: string | null; text_ms?: number; attachments: DraftFile[]; updated_ms?: number };
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -64,14 +64,20 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
       .query<DraftFile, [string]>("SELECT id, name, mime, origin, added_ms, length(data) AS bytes FROM draft_files WHERE session_id = ? ORDER BY added_ms, id")
       .all(id);
     const updated = Math.max(row?.updated_ms ?? 0, ...attachments.map((a) => a.added_ms));
-    return { ...(row?.text ? { text: row.text, origin: row.origin } : {}), attachments, ...(updated ? { updated_ms: updated } : {}) };
+    // `text_ms`: which write the text is, for the page to say it took exactly that one.
+    return { ...(row?.text ? { text: row.text, origin: row.origin, text_ms: row.updated_ms } : {}), attachments, ...(updated ? { updated_ms: updated } : {}) };
   };
 
   // When the owner last used each session: his message, a draft change, typing.
   const used = new Map<string, number>();
   const touch = (id: string) => used.set(id, Date.now());
+  // The owner's own words count: every automatic sender tags what it sends
+  // (a loop, a wait, an agent's report, a peer: `kind`; momentum, the queue:
+  // `origin`), at the place it sends. Speech is the owner's too.
   bus.on((f) => {
-    if (f.t === "event" && f.event.kind === "user" && !(f.event.data as { origin?: string })?.origin) touch(f.event.session_id);
+    if (f.t !== "event" || f.event.kind !== "user") return;
+    const d = f.event.data as { origin?: string; kind?: string };
+    if (!d?.kind && (!d?.origin || d.origin === "voice")) touch(f.event.session_id);
   });
 
   const changed = (id: string) => {
@@ -121,7 +127,11 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
           db.run("INSERT INTO draft_files (id, session_id, name, mime, data, origin, added_ms) VALUES (?, ?, ?, ?, ?, ?, ?)", [im.id, s.id, im.name, im.mime, im.data, origin, now + i]);
         });
         if (b.text !== undefined) {
-          db.run("INSERT INTO drafts (session_id, text, origin, updated_ms) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, origin = excluded.origin, updated_ms = excluded.updated_ms", [s.id, b.text, origin, now]);
+          // Each write gets its own time, so two deliveries in one millisecond read apart.
+          const prev = db.query<{ updated_ms: number }, [string]>("SELECT updated_ms FROM drafts WHERE session_id = ?").get(s.id)?.updated_ms ?? 0;
+          // `taken`: the page moved the text of that write into its box; a newer write stays.
+          if (typeof b.taken === "number") db.run("UPDATE drafts SET text = '', updated_ms = ? WHERE session_id = ? AND updated_ms = ?", [Math.max(now, prev + 1), s.id, b.taken]);
+          else db.run("INSERT INTO drafts (session_id, text, origin, updated_ms) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, origin = excluded.origin, updated_ms = excluded.updated_ms", [s.id, b.text, origin, Math.max(now, prev + 1)]);
         }
         if (origin === "page") touch(s.id);
         return json(changed(s.id));

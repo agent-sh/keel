@@ -105,22 +105,27 @@ export function Composer({
     const sid = session?.id;
     if (!sid) return;
     let live = true;
+    let tookAt = 0; // the write whose text is in the box already: a repeat of it adds nothing
+    let ids = new Set<string>(); // the draft's files as last heard
     const take = async (d: Draft) => {
       if (!live || sidRef.current !== sid) return;
-      if (d.text) {
+      if (d.text && d.text_ms !== tookAt) {
         const add = d.text;
+        tookAt = d.text_ms ?? 0;
         setText((cur) => (cur.trim() ? `${cur}${cur.endsWith("\n") ? "" : "\n"}${add}` : add));
-        textTaken(sid);
+        if (d.text_ms !== undefined) textTaken(sid, d.text_ms);
         setNotice(d.origin && d.origin !== "page" ? `Text added from ${d.origin}.` : "Text added from outside the page.");
       }
-      const ids = new Set(d.attachments.map((f) => f.id));
-      setImages((cur) => cur.filter((a) => a.file || ids.has(a.id) || pendingKeep.current.has(a.id)));
+      ids = new Set(d.attachments.map((f) => f.id));
+      const now = ids;
+      setImages((cur) => cur.filter((a) => a.file || now.has(a.id) || pendingKeep.current.has(a.id)));
       for (const f of d.attachments) {
         if (have.current.has(f.id)) continue;
         have.current.add(f.id);
         try {
           const a = await fromServer(sid, f);
-          if (live && sidRef.current === sid) setImages((cur) => (cur.some((x) => x.id === a.id) ? cur : [...cur, a]));
+          // Gone meanwhile, or dropped by a newer update while it loaded: not added.
+          if (a && live && sidRef.current === sid && ids.has(a.id)) setImages((cur) => (cur.some((x) => x.id === a.id) ? cur : [...cur, a]));
         } catch (e) {
           have.current.delete(f.id);
           reportError(e, { at: "draft image" });

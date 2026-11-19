@@ -89,3 +89,40 @@ test("session draft", async ({ page, request }) => {
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// The page's "taken" names the write it took: a newer write that lands while
+// that acknowledgment is on its way stays, and is added to the box once.
+// A draft image removed elsewhere while it loads is not added as its error.
+test("a draft write is taken once and a newer one stays", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Two writes" } })).json();
+  const at = `/api/sessions/${session.id}/draft`;
+  // Every acknowledgment is held until the test lets it go.
+  const gates: (() => void)[] = [];
+  await page.route(new RegExp(`${at}$`), async (r) => {
+    if (r.request().method() === "POST" && JSON.parse(r.request().postData() ?? "{}").taken !== undefined) await new Promise<void>((go) => gates.push(go));
+    await r.fallback();
+  });
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await request.post(at, { data: { text: "first note", origin: "capture" } });
+  await expect(page.getByTestId("composer")).toHaveValue("first note");
+  await request.post(at, { data: { text: "second note", origin: "capture" } });
+  await expect(page.getByTestId("composer")).toHaveValue("first note\nsecond note");
+  await expect.poll(() => gates.length).toBe(2);
+  // The first write's acknowledgment lands: the second write stays on the daemon.
+  gates[0]!();
+  await expect.poll(async () => (await (await request.get(at)).json()).text).toBe("second note");
+  gates[1]!();
+  await expect.poll(async () => (await (await request.get(at)).json()).text).toBeUndefined();
+  await page.unroute(new RegExp(`${at}$`));
+  await page.reload();
+  await expect(page.getByTestId("composer")).toHaveValue("first note\nsecond note");
+
+  // An image whose file is gone by the time the page reads it is not attached.
+  await page.route(/\/draft\/files\//, (r) => r.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "no such file" }) }));
+  await request.post(at, { data: { images: [{ name: "late.png", mime: "image/png", data: PNG }], origin: "capture" } });
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId("attachments").locator("img")).toHaveCount(0);
+  await page.unroute(/\/draft\/files\//);
+  await request.delete(`/api/sessions/${session.id}`);
+});
