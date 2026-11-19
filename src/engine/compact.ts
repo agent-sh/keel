@@ -5,6 +5,7 @@
 // the owner's recent words verbatim instead of the history; the history stays
 // stored, readable and searchable. Nothing earlier is rewritten.
 import type { Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
+import { imageTokens } from "./images.ts";
 
 // Share of the model's window at which a turn compacts before its next call.
 export const COMPACT_SHARE = 0.85;
@@ -170,6 +171,20 @@ export function contextTokens(lineage: StoredEvent[]): { used: number; measured:
   return { used: measured + estimated, measured, estimated, last };
 }
 
+// UTF-8 bytes of a value as JSON, with each image counted at its estimated
+// token cost (4 bytes a token, as the rest of the estimate) instead of its base64.
+function jsonBytes(v: unknown): number {
+  let images = 0;
+  const text = JSON.stringify(v, (_k, x) => {
+    if (x && typeof x === "object" && x.type === "image" && typeof x.data === "string") {
+      images += imageTokens(x) * 4;
+      return { type: "image" };
+    }
+    return x;
+  });
+  return utf8Bytes(text ?? "") + images;
+}
+
 // UTF-8 bytes of a string (what "bytes" means wherever it is reported).
 export const utf8Bytes = (s: string) => {
   let n = 0;
@@ -196,13 +211,13 @@ const PATH_NOTE_BYTES = 330;
 // is model-specific and counted as that note).
 function tailBytes(e: StoredEvent): number {
   if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : utf8Bytes(JSON.stringify(e.data.blocks ?? []));
-  if (e.kind === "tool_result") return utf8Bytes(JSON.stringify(e.data.results ?? []));
+  if (e.kind === "tool_result") return jsonBytes(e.data.results ?? []);
   if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
-  if (e.kind === "compaction") return utf8Bytes(JSON.stringify(e.data));
+  if (e.kind === "compaction") return jsonBytes(e.data);
   if (e.kind !== "user") return 0;
   let n = utf8Bytes(String(e.data.text ?? ""));
   for (const b of (e.data.images ?? []) as any[]) {
-    if (b.type !== "attachment") n += utf8Bytes(JSON.stringify(b));
+    if (b.type !== "attachment") n += jsonBytes(b);
     else n += b.size <= TEXT_INLINE && (TEXT_MEDIA.test(b.media_type) || b.media_type === "application/octet-stream") ? b.size + PATH_NOTE_BYTES : PATH_NOTE_BYTES;
   }
   return n;
