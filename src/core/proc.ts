@@ -13,6 +13,9 @@ const released = (e: unknown) => (e as any)?.code === "ERR_INVALID_STATE" || /re
 export async function pump(pipe: Pipe, onChunk: (c: Uint8Array) => void, where = "child pipe"): Promise<void> {
   if (!pipe || typeof pipe === "number") return;
   const r = pipe.getReader();
+  // Releasing the lock rejects `closed`; nobody waits on it, so it would surface
+  // as an unhandled rejection.
+  r.closed.catch(() => {});
   try {
     for (;;) {
       const { done, value } = await r.read();

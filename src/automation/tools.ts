@@ -195,7 +195,7 @@ const close_agent: Tool = {
 const waitSchema = {
   type: "object",
   properties: {
-    kind: { type: "string", enum: ["timer", "file", "log", "http", "process"], description: "What to wait on" },
+    kind: { type: "string", enum: ["timer", "file", "log", "http", "process", "pr_checks"], description: "What to wait on" },
     seconds: { type: "number", description: "timer: seconds from now" },
     path: { type: "string", description: "file: wait until it exists (and holds `contains`); log: watch lines appended to it" },
     contains: { type: "string", description: "file: text the file must contain" },
@@ -203,6 +203,8 @@ const waitSchema = {
     url: { type: "string", description: "http: the URL to probe" },
     status: { type: "number", description: "http: the status to wait for (default any 2xx or 3xx)" },
     pid: { type: "number", description: "process: wait until this process ends" },
+    repo: { type: "string", description: "pr_checks: the GitHub repository, owner/name" },
+    pr_number: { type: "number", description: "pr_checks: wait until every check of this pull request has finished (or it is merged or closed); the result names the failed checks" },
     timeout_seconds: { type: "number", description: "Give up after this long (default 600, timers use their own time)" },
     note: { type: "string", description: "What you are waiting for, shown back to you when it fires" },
   },
@@ -212,16 +214,21 @@ const waitSchema = {
 const waitRun = (input: any, ctx: ToolContext) => guard(() => {
   if (input.kind === "webhook" || input.spec?.kind === "webhook") return fail("A webhook wait is the owner's to create.");
   const spec = waits.normalize(input, ctx.cwd);
-  if (spec.kind === "monitor") return fail("Use the monitor tool for a command's output.");
+  if (waits.isMonitor(spec.kind)) return fail("Use the monitor tool for a command's output or a socket.");
   return waitResult(waits.create(ctx.sessionId, spec, { timeout_seconds: input.timeout_seconds, note: input.note }));
 });
 
 const waitDesc =
-  "Wait without spending tokens: the daemon checks a condition (a timer, a file appearing or containing text, a new log line matching a pattern, an HTTP status, a process ending) and wakes this session with the result when it holds or the timeout passes. " +
+  "Wait without spending tokens: the daemon checks a condition (a timer, a file appearing or containing text, a new log line matching a pattern, an HTTP status, a process ending, every check of a GitHub pull request finishing) and wakes this session with the result when it holds or the timeout passes. " +
   "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work.";
 
-const WaitFor: Tool = { name: "WaitFor", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun };
-const wait_for: Tool = { name: "wait_for", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun };
+// A pull request wait runs gh with the owner's login against a repository the
+// model names: the gate judges it as its own tool (wait_pr_checks), so it asks
+// where other actions ask and the owner can allow it by that name.
+const waitTarget = async (input: any) =>
+  input?.kind === "pr_checks" || input?.spec?.kind === "pr_checks" ? { name: "wait_pr_checks", readOnly: false, input, cls: { kind: "other" as const } } : null;
+const WaitFor: Tool = { name: "WaitFor", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
+const wait_for: Tool = { name: "wait_for", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
 
 const cancel_wait: Tool = {
   name: "cancel_wait",
@@ -236,20 +243,28 @@ const monitorSchema = {
   type: "object",
   properties: {
     command: { type: "string", description: "Shell command whose output lines are events (a tail -F, a polling script, a build)" },
+    ws: {
+      type: "object",
+      description: "Instead of command: a WebSocket to listen to; each text message is one event. The socket closing ends the monitor.",
+      properties: { url: { type: "string", description: "ws:// or wss:// URL" }, protocols: { type: "array", items: { type: "string" }, description: "Subprotocols to offer" } },
+      required: ["url"],
+    },
     description: { type: "string", description: "What the monitor watches, shown back with each event" },
     match: { type: "string", description: "Optional regular expression: only matching lines are events" },
     timeout_ms: { type: "number", description: "Deadline in milliseconds (default 300000, at most a day)" },
   },
-  required: ["command"],
 };
 
 const monitorRun = (input: any, ctx: ToolContext) => guard(() => {
-  const spec = waits.normalize({ kind: "monitor", command: input.command, match: input.match }, ctx.cwd);
+  if (!!input.command === !!input.ws) return fail("Give a monitor either command or ws, not both.");
+  const spec = input.ws
+    ? waits.normalize({ kind: "websocket", url: input.ws.url, protocols: input.ws.protocols, match: input.match }, ctx.cwd)
+    : waits.normalize({ kind: "monitor", command: input.command, match: input.match }, ctx.cwd);
   const w = waits.create(ctx.sessionId, spec, { timeout_seconds: input.timeout_ms ? Number(input.timeout_ms) / 1000 : undefined, note: input.description });
-  return ok(`Monitor ${w.id} started. Matching output lines arrive as messages, batched; it ends when the command exits or at its deadline (${Math.round((w.deadline - Date.now()) / 1000)} s). Stop it with ${familyOf(D().store.session(ctx.sessionId)?.model ?? "") === "claude" ? "TaskStop" : "cancel_wait"} and its id.`);
+  return ok(`Monitor ${w.id} started. Matching output lines arrive as messages, batched; it ends when the ${spec.kind === "websocket" ? "socket closes" : "command exits"} or at its deadline (${Math.round((w.deadline - Date.now()) / 1000)} s). Stop it with ${familyOf(D().store.session(ctx.sessionId)?.model ?? "") === "claude" ? "TaskStop" : "cancel_wait"} and its id.`);
 });
 
-const monitorDesc = "Run a command in the background and receive its output lines as events while you keep working, without polling. Use it to tail a log, watch a build, or poll a status with a small script that prints when something changes.";
+const monitorDesc = "Run a command in the background and receive its output lines as events while you keep working, without polling. Use it to tail a log, watch a build, or poll a status with a small script that prints when something changes. For a server that pushes events, give ws with its URL instead of a command: each message is an event.";
 const Monitor: Tool = { name: "Monitor", families: CLAUDE, readOnly: false, description: monitorDesc, input_schema: monitorSchema, run: monitorRun };
 const monitor: Tool = { name: "monitor", families: OTHERS, readOnly: false, description: monitorDesc, input_schema: monitorSchema, run: monitorRun };
 

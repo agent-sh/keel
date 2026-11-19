@@ -15,6 +15,8 @@ export function waitLabel(w: WaitRecord): string {
     case "http": return `HTTP ${s.url}${s.status ? ` = ${s.status}` : ""}`;
     case "process": return `Process ${s.pid}`;
     case "monitor": return `Monitor ${s.command}`;
+    case "websocket": return `Socket ${s.url}${s.match ? ` /${s.match}/` : ""}`;
+    case "pr_checks": return `Checks of ${s.repo}#${s.pr_number}`;
     case "session": return `${s.message_id ? "Handled by" : "Idle"} ${s.title || s.session}`;
   }
 }
@@ -99,7 +101,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-mono text-caption">{waitLabel(w)}</div>
                   <div className="truncate text-micro text-faint">
-                    {w.note || "no note"} · {w.kind === "monitor" ? `${w.events} events · ` : ""}gives up {inMs(w.deadline)}{w.last_error ? ` · ${w.last_error}` : ""}
+                    {w.note || "no note"} · {w.kind === "monitor" || w.kind === "websocket" ? `${w.events} events · ` : ""}gives up {inMs(w.deadline)}{w.last_error ? ` · ${w.last_error}` : ""}
                   </div>
                 </div>
                 <IconButton title="Cancel" danger onClick={() => auto.cancelWait(w.id).catch(reportError)}><X className="size-3.5" /></IconButton>

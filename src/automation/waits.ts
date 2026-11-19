@@ -2,6 +2,7 @@ import { existsSync, openSync, readSync, closeSync, readFileSync, statSync } fro
 import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert } from "./core.ts";
 import * as activity from "./activity.ts";
+import { readText } from "../core/proc.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -15,6 +16,10 @@ export type WaitSpec =
   | { kind: "http"; url: string; status?: number }
   | { kind: "process"; pid: number }
   | { kind: "monitor"; command: string; match?: string; coalesce_ms?: number; max_events?: number }
+  // A monitor on a WebSocket: each text message is one line of events.
+  | { kind: "websocket"; url: string; protocols?: string[]; match?: string; coalesce_ms?: number; max_events?: number }
+  // A pull request's checks on GitHub, read with the owner's gh login.
+  | { kind: "pr_checks"; repo: string; pr_number: number }
   | { kind: "session"; machine: string; session: string; title?: string; message_id?: string };
 
 // A wait kind another module probes (the fleet's session notices): how a spec
@@ -44,6 +49,7 @@ const DEFAULT_TIMEOUT = 600;
 const MONITOR_DEFAULT = 300;
 const MAX_TIMEOUT = 366 * 86400;
 const MONITOR_MAX = 86400;
+export const isMonitor = (kind: string) => kind === "monitor" || kind === "websocket";
 export const WAIT_LIMIT = 50; // active waits per session, the bound Claude Code puts on scheduled tasks
 
 export function migrate() {
@@ -92,7 +98,7 @@ export function activeFor(sessionId: string): number {
 }
 
 // Probe state that is not worth a column: log offsets, monitor tails.
-const live = new Map<string, { offset?: number; lastProbe?: number; proc?: Bun.Subprocess; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
+const live = new Map<string, { offset?: number; lastProbe?: number; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
 
 function resolvePath(p: string, cwd: string) {
   return isAbsolute(p) ? p : resolve(cwd, p);
@@ -153,6 +159,25 @@ export function normalize(raw: any, cwd: string): WaitSpec {
       if (!procAlive(pid)) throw new Error(`process ${pid} has already ended`);
       return { kind, pid };
     }
+    case "websocket": {
+      const u = new URL(String(spec.url));
+      if (!/^wss?:$/.test(u.protocol)) throw new Error("a socket monitor needs a ws:// or wss:// URL");
+      if (u.username || u.password) throw new Error("a socket URL carries no credentials");
+      if (spec.match) new RegExp(spec.match);
+      const protocols = Array.isArray(spec.protocols) ? spec.protocols.map(String).filter(Boolean).slice(0, 8) : undefined;
+      return {
+        kind, url: u.href, protocols: protocols?.length ? protocols : undefined, match: spec.match ? String(spec.match) : undefined,
+        coalesce_ms: Math.min(Math.max(Number(spec.coalesce_ms ?? 500), 0), 60_000),
+        max_events: Math.min(Math.max(Number(spec.max_events ?? 20), 1), 200),
+      };
+    }
+    case "pr_checks": {
+      const repo = String(spec.repo ?? "").trim();
+      const n = Number(spec.pr_number ?? spec.pr);
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.startsWith("-")) throw new Error("a pr_checks wait needs repo as owner/name");
+      if (!Number.isInteger(n) || n < 1) throw new Error("a pr_checks wait needs a positive pr_number");
+      return { kind, repo, pr_number: n };
+    }
     case "monitor":
       if (!spec.command) throw new Error("a monitor needs a command");
       if (spec.match) new RegExp(spec.match);
@@ -162,7 +187,7 @@ export function normalize(raw: any, cwd: string): WaitSpec {
         max_events: Math.min(Math.max(Number(spec.max_events ?? 20), 1), 200),
       };
     default:
-      throw new Error("a wait is a timer (seconds), file (path, contains?), log (path, match), http (url, status?), process (pid) or monitor (command, match?)");
+      throw new Error("a wait is a timer (seconds), file (path, contains?), log (path, match), http (url, status?), process (pid), pr_checks (repo, pr_number), monitor (command, match?) or websocket (url, match?)");
   }
 }
 
@@ -172,7 +197,7 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   if (s.archived) throw new Error("the session is archived");
   if (activeFor(sessionId) >= WAIT_LIMIT) throw new Error(`the session already has ${WAIT_LIMIT} active waits; cancel one first`);
   const now = Date.now();
-  const isMon = spec.kind === "monitor";
+  const isMon = isMonitor(spec.kind);
   let timeout = Number(opts.timeout_seconds ?? (isMon ? MONITOR_DEFAULT : DEFAULT_TIMEOUT));
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("timeout_seconds must be a positive number");
   timeout = Math.min(timeout, isMon ? MONITOR_MAX : MAX_TIMEOUT);
@@ -190,6 +215,7 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   }
   live.set(rec.id, st);
   if (spec.kind === "monitor") startMonitor(rec);
+  if (spec.kind === "websocket") startSocket(rec);
   emit("wait", get(rec.id));
   return get(rec.id)!;
 }
@@ -201,6 +227,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   if (st?.proc) {
     try { process.kill(-st.proc.pid, "SIGTERM"); } catch {}
   }
+  if (st?.ws) try { st.ws.close(1000); } catch {}
   live.delete(id);
   D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ? WHERE id = ?").run(status, outcome.slice(0, 4000), Date.now(), id);
   const rec = get(id)!;
@@ -228,7 +255,11 @@ function setError(id: string, msg: string | null) {
   D().store.db.query("UPDATE waits SET last_error = ? WHERE id = ?").run(msg, id);
 }
 
-const PROBE_MS: Partial<Record<WaitSpec["kind"], number>> = { file: 1000, log: 1000, process: 1000, http: 3000 };
+// pr_checks at the pace gh pr checks --watch polls (10 s).
+const PROBE_MS: Partial<Record<WaitSpec["kind"], number>> = { file: 1000, log: 1000, process: 1000, http: 3000, pr_checks: 10_000 };
+// A pull request that shows no checks yet may get them in a moment: it fires
+// as "no checks" only after this long.
+const EMPTY_CHECKS_GRACE = 120_000;
 
 async function probe(w: WaitRecord): Promise<string | undefined> {
   const s = w.spec;
@@ -280,9 +311,105 @@ async function probe(w: WaitRecord): Promise<string | undefined> {
     }
     case "process":
       return procAlive(s.pid) ? undefined : `Process ${s.pid} has ended.`;
+    case "pr_checks": {
+      const p = Bun.spawn([process.env.KEEL_GH_BIN || "gh", "pr", "view", String(s.pr_number), "--repo", s.repo, "--json", "state,statusCheckRollup"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const [out, err, code] = await Promise.all([readText(p.stdout, "gh pr view"), readText(p.stderr, "gh pr view"), p.exited]);
+      if (code !== 0) throw new Error(`gh pr view failed: ${err.trim().slice(0, 300)}`);
+      setError(w.id, null);
+      return prChecksVerdict(JSON.parse(out), s.repo, s.pr_number, Date.now() - w.created >= EMPTY_CHECKS_GRACE);
+    }
     default:
       return undefined;
   }
+}
+
+// Feeds a monitor's lines into its batch: a matching line waits up to
+// coalesce_ms for the next before the batch is delivered.
+function lineSink(id: string, s: { match?: string; coalesce_ms?: number }) {
+  const st = live.get(id)!;
+  const re = s.match ? new RegExp(s.match) : undefined;
+  return (line: string) => {
+    if (!line.trim()) return;
+    // A line over 2,000 characters is delivered in pieces.
+    for (const piece of line.match(/[\s\S]{1,2000}/g)!) {
+      st.tail!.push(piece);
+      if (st.tail!.length > 20) st.tail!.shift();
+      if (re && !re.test(piece)) continue;
+      st.batch!.push(piece);
+      st.flushAt ??= Date.now() + (s.coalesce_ms ?? 500);
+    }
+  };
+}
+
+// A WebSocket monitor: each text message is one line (newlines folded), a
+// binary frame is named by its size, a message over 1 MiB or the socket
+// closing ends it. The daemon opens the socket, so the gate judged the call.
+function startSocket(w: WaitRecord) {
+  const s = w.spec as Extract<WaitSpec, { kind: "websocket" }>;
+  const st = live.get(w.id) ?? {};
+  live.set(w.id, st);
+  st.batch = [];
+  st.tail = [];
+  st.dropped = 0;
+  const onLine = lineSink(w.id, s);
+  const end = (why: string) => {
+    if (get(w.id)?.status !== "active") return;
+    flushMonitor(w.id, true);
+    const tail = !get(w.id)?.events && st.tail?.length ? `\nLast messages:\n${st.tail.slice(-5).join("\n")}` : "";
+    settle(w.id, "ended", `${why}${tail}`);
+  };
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(s.url, s.protocols);
+  } catch (e) {
+    queueMicrotask(() => end(`The socket could not be opened: ${(e as Error).message}`));
+    return;
+  }
+  st.ws = ws;
+  ws.binaryType = "arraybuffer";
+  let opened = false;
+  const opening = setTimeout(() => { if (!opened) { end("The socket did not open within 20 seconds."); try { ws.close(); } catch {} } }, 20_000);
+  ws.onopen = () => { opened = true; clearTimeout(opening); };
+  ws.onmessage = (ev) => {
+    const size = typeof ev.data === "string" ? Buffer.byteLength(ev.data) : (ev.data as ArrayBuffer).byteLength;
+    if (size > 1 << 20) {
+      end(`A message of ${size} bytes is over the 1 MiB a socket monitor takes; it was stopped. Subscribe to a filtered feed if the server has one.`);
+      try { ws.close(1009); } catch {}
+      return;
+    }
+    onLine(typeof ev.data === "string" ? ev.data.replace(/\r?\n|\r/g, " ") : `[binary frame, ${size} bytes]`);
+  };
+  ws.onerror = () => { if (!opened) end("The socket could not be opened."); };
+  ws.onclose = (ev) => { clearTimeout(opening); end(opened ? `The socket was closed by the other side (code ${ev.code}${ev.reason ? `, ${ev.reason}` : ""}).` : `The socket could not be opened (code ${ev.code}).`); };
+}
+
+// Reads `gh pr view --json state,statusCheckRollup`. A check run is done when
+// its status is COMPLETED; a commit status has no status and is done when its
+// state is SUCCESS, FAILURE or ERROR. A merged or closed pull request fires at
+// once; one with no checks fires only after the grace period.
+export function prChecksVerdict(v: any, repo: string, n: number, graceOver: boolean): string | undefined {
+  const state = String(v?.state ?? "");
+  if (state === "MERGED" || state === "CLOSED") return `PR #${n} in ${repo} is ${state}.`;
+  const checks: any[] = Array.isArray(v?.statusCheckRollup) ? v.statusCheckRollup : [];
+  if (!checks.length) return graceOver ? `PR #${n} in ${repo} has no checks.` : undefined;
+  let passed = 0, skipped = 0;
+  const failed: string[] = [];
+  for (const c of checks) {
+    const name = String(c?.name || c?.context || "unnamed check");
+    if (typeof c?.status === "string") {
+      if (c.status !== "COMPLETED") return undefined;
+      const k = String(c.conclusion ?? "");
+      if (k === "SUCCESS") passed++;
+      else if (k === "NEUTRAL" || k === "SKIPPED") skipped++;
+      else failed.push(name);
+    } else {
+      const k = String(c?.state ?? "");
+      if (k === "SUCCESS") passed++;
+      else if (k === "FAILURE" || k === "ERROR") failed.push(name);
+      else return undefined; // PENDING, EXPECTED or unknown: not done
+    }
+  }
+  return `PR #${n} in ${repo} checks completed: ${passed} passed, ${failed.length} failed, ${skipped} skipped${failed.length ? ` (failed: ${failed.slice(0, 8).join(", ")}${failed.length > 8 ? ", ..." : ""})` : ""}.`;
 }
 
 function startMonitor(w: WaitRecord) {
@@ -299,18 +426,7 @@ function startMonitor(w: WaitRecord) {
   });
   st.proc = proc;
   D().store.db.query("UPDATE waits SET state = ? WHERE id = ?").run(JSON.stringify({ pgid: proc.pid, start: startTime(proc.pid) }), w.id);
-  const re = s.match ? new RegExp(s.match) : undefined;
-  const onLine = (line: string) => {
-    if (!line.trim()) return;
-    // A line over 2,000 characters is delivered in pieces.
-    for (const piece of line.match(/[\s\S]{1,2000}/g)!) {
-      st.tail!.push(piece);
-      if (st.tail!.length > 20) st.tail!.shift();
-      if (re && !re.test(piece)) continue;
-      st.batch!.push(piece);
-      st.flushAt ??= Date.now() + (s.coalesce_ms ?? 500);
-    }
-  };
+  const onLine = lineSink(w.id, s);
   // An explicit reader: Bun can release a pipe's reader when the process ends,
   // and an async iterator then rejects outside any handler.
   const read = async (stream: ReadableStream<Uint8Array>) => {
@@ -373,7 +489,7 @@ export async function tick() {
     const now = Date.now();
     for (const w of list(undefined, 0)) {
       if (w.status !== "active") continue;
-      if (w.kind === "monitor") {
+      if (isMonitor(w.kind)) {
         flushMonitor(w.id);
         if (now >= w.deadline) settle(w.id, "timeout", "The monitor reached its deadline and was stopped. Start it again if it is still needed.");
         continue;
@@ -404,7 +520,7 @@ export function recover() {
   for (const w of list(undefined, 0)) {
     if (w.status !== "active") continue;
     if (w.kind === "log") live.set(w.id, { offset: (() => { try { return statSync((w.spec as any).path).size; } catch { return 0; } })() });
-    if (w.kind !== "monitor") continue;
+    if (!isMonitor(w.kind)) continue;
     const row = D().store.db.query<{ state: string | null }, [string]>("SELECT state FROM waits WHERE id = ?").get(w.id);
     const st = row?.state ? JSON.parse(row.state) : {};
     if (st.pgid && st.start && startTime(st.pgid) === st.start) {
@@ -415,5 +531,8 @@ export function recover() {
 }
 
 export function stopAll() {
-  for (const [, st] of live) if (st.proc) try { process.kill(-st.proc.pid, "SIGTERM"); } catch {}
+  for (const [, st] of live) {
+    if (st.proc) try { process.kill(-st.proc.pid, "SIGTERM"); } catch {}
+    if (st.ws) try { st.ws.close(1001); } catch {}
+  }
 }
