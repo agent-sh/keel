@@ -33,7 +33,22 @@ export class GitError extends Error {
   constructor(message: string, readonly status = 409) { super(message); }
 }
 
-export async function git(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean } = {}): Promise<string> {
+// git's worktree bookkeeping (.git/worktrees/<name>) is not safe for two
+// commands at once: parallel agents of one repository failed to start with
+// "failed to read .git/worktrees/<name>/commondir". Worktree commands of one
+// repository run one after another.
+const worktreeQueue = new Map<string, Promise<unknown>>();
+
+export function git(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean } = {}): Promise<string> {
+  if (args[0] !== "worktree") return gitNow(cwd, args, opts);
+  const run = (worktreeQueue.get(cwd) ?? Promise.resolve()).then(() => gitNow(cwd, args, opts));
+  const tail = run.catch(() => {});
+  worktreeQueue.set(cwd, tail);
+  tail.then(() => { if (worktreeQueue.get(cwd) === tail) worktreeQueue.delete(cwd); });
+  return run;
+}
+
+async function gitNow(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean }): Promise<string> {
   const p = Bun.spawn(["git", ...args], {
     cwd, env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0", ...opts.env },
     stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : "ignore", stdout: "pipe", stderr: "pipe", timeout: 120_000,

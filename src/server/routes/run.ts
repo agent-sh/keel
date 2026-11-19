@@ -90,7 +90,9 @@ export const runRoutes: RouteModule = (deps) => {
         const ids = family(s.id);
         const approvals = (gate?.approvals({ pending: true }) ?? []).filter((a) => ids.includes(a.session_id));
         const questions = ids.flatMap((id) => pendingQuestions(id).map((call_id) => ({ session_id: id, call_id })));
-        const agentsLive = agents.list(s.id).filter((a) => a.status === "running" || a.status === "waiting").length;
+        // An agent that ended but whose report has not reached the session yet
+        // still counts: its report starts the turn that uses it.
+        const agentsLive = agents.list(s.id).filter((a) => a.status === "running" || a.status === "waiting" || a.handback).length;
         const waitsLive = waits.list(s.id, 0).filter((w) => w.status === "active").length;
         const jobsLive = jobsOf(s.id).filter((j) => j.background && running(j)).length;
         return json({
