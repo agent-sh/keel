@@ -215,9 +215,19 @@ export function sourceFiles(cwd: string): string[] {
 }
 
 // What a server is, whatever it is called: the URL, or the program's file
-// name and its arguments (one agent names /usr/bin/node, another node).
+// name and its arguments (one agent names /usr/bin/node, another node). A URL
+// is compared as RFC 3986 says: scheme and host in any case, the default port
+// left out, the path (less a trailing slash) and the query exactly.
 export function endpoint(c: McpServerConfig): string {
-  if (c.url) return c.url.replace(/\/+$/, "").toLowerCase();
+  if (c.url) {
+    try {
+      const u = new URL(c.url.trim());
+      const auth = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
+      return `${u.protocol}//${auth}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}${u.hash}`;
+    } catch {
+      return c.url.trim().replace(/\/+$/, "");
+    }
+  }
   return [basename(c.command ?? ""), ...(c.args ?? [])].join(" ");
 }
 
