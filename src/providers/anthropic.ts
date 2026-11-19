@@ -116,7 +116,29 @@ export class AnthropicProvider implements Provider {
     return ids.filter((i) => i.startsWith("global.") || !globals.has(bare(i))).map((model) => ({ model }));
   }
 
+  // Sent-back thinking under the provider's prefix check, as Anthropic's
+  // preserved-thinking guide says to handle it: the beta and "error" on every
+  // request (the wire already left out the thinking it knows is stale), and on
+  // the refusal that names a block bound to a different conversation, this
+  // request again once with "drop_block"; the engine keeps that for the
+  // session. A route that does not take the setting goes on without it.
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
+    const route = `${this.id}:${req.model}`;
+    if (bindingRefused.has(route)) return this.send(req, onDelta);
+    const bound = (mode: "error" | "drop_block") => withBeta({ ...req, blockBinding: mode }, BINDING_BETA);
+    try {
+      return await this.send(bound(req.dropThinking ? "drop_block" : "error"), onDelta);
+    } catch (e) {
+      const text = String((e as Error)?.message ?? e);
+      if ((e as any)?.status !== 400) throw e;
+      if (BOUND_ELSEWHERE.test(text) && !req.dropThinking) return { ...(await this.send(bound("drop_block"), onDelta)), binding_refused: text };
+      if (!/block_binding|thinking-binding-controls/.test(text)) throw e;
+      bindingRefused.add(route);
+      return this.send(req, onDelta);
+    }
+  }
+
+  private async send(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     if (!this.auth) throw new Error(`${this.id}: no credentials`);
     const ctx = { ...ctxFor(this.id, req, []), legacyIsMine: true };
     // Deferred tools and tool_reference blocks: the beta each platform names
@@ -149,6 +171,12 @@ export class AnthropicProvider implements Provider {
     }, req));
   }
 }
+
+const BINDING_BETA = "thinking-binding-controls-2026-08-01";
+// Anthropic says to match this refusal by these words only; the rest of its text can change.
+const BOUND_ELSEWHERE = /The block is bound to a different conversation/;
+// Routes that refused the setting (a model or platform without it).
+const bindingRefused = new Set<string>();
 
 function withBeta(req: ProviderRequest, beta: string): ProviderRequest {
   const have = req.extraHeaders?.["anthropic-beta"];

@@ -6,8 +6,9 @@
 // provider state (a signature, an encrypted reasoning item). That state is
 // replayed only to the same origin; every other wire gets the plain text.
 export type TextBlock = { type: "text"; text: string; signature?: string; origin?: string };
-export type ThinkingBlock = { type: "thinking"; thinking: string; signature?: string; origin?: string; opaque?: unknown };
-export type RedactedThinkingBlock = { type: "redacted_thinking"; data: string };
+// `bind`: the fingerprint of what was sent before the block (src/providers/wires/binding.ts).
+export type ThinkingBlock = { type: "thinking"; thinking: string; signature?: string; origin?: string; opaque?: unknown; bind?: string };
+export type RedactedThinkingBlock = { type: "redacted_thinking"; data: string; bind?: string };
 export type ImageBlock = { type: "image"; media_type: string; data: string };
 export type ToolUseBlock = { type: "tool_use"; id: string; name: string; input: unknown; signature?: string; origin?: string };
 // A deferred tool a tool search loaded: on the Anthropic wire the provider puts
@@ -135,6 +136,7 @@ export type SessionSettings = {
   peer_turns?: number; // turns other sessions may start before the owner speaks here again
   max_steps?: number;  // model steps one turn may take; absent = no budget
   skill_mode?: string; // a skill kept on as standing instructions
+  drop_thinking?: boolean; // the provider refused this session's sent-back thinking once: "drop_block" from then on
 };
 
 // `anchor`: the session's head when it was queued (the branch it was written on).

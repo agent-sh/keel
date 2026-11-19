@@ -3,6 +3,7 @@
 import type { AssistantBlock, Message } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { project } from "../project.ts";
+import { bindReply, carry, unbind, type Binder } from "./binding.ts";
 import type { ProviderRequest, ProviderResult } from "../types.ts";
 import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
@@ -29,8 +30,8 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
         case "text": return { type: "text", text: b.text };
         case "thinking":
           // A thought without a signature cannot be replayed on this wire.
-          return b.signature ? { type: "thinking", thinking: b.thinking, signature: b.signature } : null;
-        case "redacted_thinking": return b;
+          return b.signature ? carry({ type: "thinking", thinking: b.thinking, signature: b.signature }, b.bind) : null;
+        case "redacted_thinking": return carry({ type: "redacted_thinking", data: b.data }, b.bind);
         case "tool_use": return { type: "tool_use", id: b.id, name: b.name, input: b.input };
         case "tool_result":
           return {
@@ -76,17 +77,23 @@ export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?:
   if (cut > 0 && cut < req.system.length) system.push({ type: "text", text: req.system.slice(0, cut), ...(cache && { cache_control: cache }) });
   system.push({ type: "text", text: cut > 0 && cut < req.system.length ? req.system.slice(cut) : req.system, ...(cache && { cache_control: cache }) });
   if (systemPrefix) system.unshift({ type: "text", text: systemPrefix });
+  // Thinking whose prefix changed since it was written is left out (binding.ts).
+  const bound = unbind(toWire(req.messages, ctx, cache, deferred.length > 0), system, tools);
+  binders.set(req, bound.binder);
   const body: Record<string, any> = {
     model: req.model,
     max_tokens: req.maxTokens ?? 64_000,
     system,
-    messages: toWire(req.messages, ctx, cache, deferred.length > 0),
-    thinking: { type: "adaptive", display: "summarized" },
+    messages: bound.messages,
+    thinking: { type: "adaptive", display: "summarized", ...(req.blockBinding ? { block_binding: { prefix_mismatch_behavior: req.blockBinding } } : {}) },
     output_config: { effort: req.effort ?? "high" },
   };
   if (tools.length) body.tools = tools;
   return body;
 }
+
+// Each request's walk, left after its last message: the reply's thinking is bound from there.
+const binders = new WeakMap<ProviderRequest, Binder>();
 
 export const anthropicWire: WireCodec = {
   body: (req, ctx) => ({ ...anthropicBody(req, ctx), stream: true }),
@@ -98,6 +105,7 @@ export const anthropicWire: WireCodec = {
     let stop = "end_turn";
     let stopDetails: ProviderResult["stop_details"];
     let finished = false;
+    let transformations: ProviderResult["input_transformations"];
     return {
       get finished() { return finished; },
       event(e) {
@@ -105,6 +113,7 @@ export const anthropicWire: WireCodec = {
         if (!ev) return;
         switch (ev.type) {
           case "message_start": {
+            if (Array.isArray(ev.message?.input_transformations)) transformations = ev.message.input_transformations;
             const u = ev.message?.usage ?? {};
             usage.input = u.input_tokens ?? 0;
             usage.cache_read = u.cache_read_input_tokens ?? 0;
@@ -131,6 +140,8 @@ export const anthropicWire: WireCodec = {
             break;
           }
           case "message_delta":
+            // After a fallback mid-stream, the last message_delta carries the list that counts.
+            if (Array.isArray(ev.input_transformations ?? ev.delta?.input_transformations)) transformations = ev.input_transformations ?? ev.delta.input_transformations;
             if (ev.delta?.stop_reason) stop = ev.delta.stop_reason;
             if (ev.delta?.stop_details) stopDetails = ev.delta.stop_details;
             if (ev.usage?.output_tokens !== undefined) usage.output = ev.usage.output_tokens;
@@ -156,7 +167,15 @@ export const anthropicWire: WireCodec = {
           else if (b.type === "redacted_thinking") out.push({ type: "redacted_thinking", data: b.data });
           else if (b.type === "tool_use") out.push({ type: "tool_use", id: b.id, name: b.name, input: parseArgs(json.get(i) ?? "") });
         });
-        return { blocks: out, usage, stop, stop_details: stopDetails, model: req.model, served };
+        // Each thinking block keeps the fingerprint of what came before it, in the form it is sent back.
+        const b = binders.get(req);
+        if (b) for (const x of out) {
+          const wire = toWire([{ role: "assistant", content: [x] }], ctx, undefined)[0]?.content[0];
+          if (!wire) continue;
+          const bind = bindReply(b, [wire])[0];
+          if (bind) (x as any).bind = bind;
+        }
+        return { blocks: out, usage, stop, stop_details: stopDetails, model: req.model, served, ...(transformations ? { input_transformations: transformations } : {}) };
       },
     };
   },

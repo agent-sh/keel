@@ -41,7 +41,7 @@ export function project(messages: Message[], o: ProjectOpts): Message[] {
       for (const b of m.content) {
         if (b.type === "thinking") {
           if (!mine(b.origin)) continue;
-          content.push({ type: "thinking", thinking: b.thinking, signature: b.signature, opaque: b.opaque, origin: b.origin });
+          content.push({ type: "thinking", thinking: b.thinking, signature: b.signature, opaque: b.opaque, origin: b.origin, bind: b.bind });
         } else if (b.type === "redacted_thinking") {
           if (o.legacyIsMine) content.push(b);
         } else if (b.type === "text") {

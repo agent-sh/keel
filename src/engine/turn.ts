@@ -481,7 +481,7 @@ export class Engine {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
     if (st.native && purpose !== "reader") st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c));
-    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id };
+    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
     // A reader's request carries no conversation for the hooks to add to.
     if (purpose === "reader") req.cache = false;
     else for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
@@ -514,6 +514,7 @@ export class Engine {
         }));
         if (!quiet || attempt) this.status(id, { kind: "idle" });
         this.measure((h) => h.requestDone?.(session, req, res));
+        this.boundThinking(id, res);
         return res;
       } catch (e) {
         this.measure((h) => h.requestFailed?.(session, req, e, signal.aborted));
@@ -538,6 +539,19 @@ export class Engine {
         await sleep(wait, signal);
       }
     }
+  }
+
+  // The provider's prefix check on sent-back thinking failed although the
+  // wire left out what it knew was stale: a change it cannot see. The session
+  // asks for "drop_block" from then on (Anthropic's recovery), and the miss is
+  // captured once. Drops of thinking another model or account wrote are not ours.
+  private boundThinking(id: string, res: ProviderResult) {
+    const missed = (res.input_transformations ?? []).filter((t) => t.reason === "prefix_binding_mismatch");
+    if (!res.binding_refused && !missed.length) return;
+    const s = this.store.session(id);
+    if (!s || s.settings.drop_thinking) return;
+    this.store.mergeSettings(id, { drop_thinking: true });
+    this.errors.capture("provider", new Error(res.binding_refused ?? `the provider ${missed[0]!.type === "thinking_mismatch_allowed" ? "read" : "dropped"} sent-back thinking whose prefix changed`), { session: id, paths: missed.map((t) => t.path), then: "drop_block for this session" });
   }
 
   // A turn another agent runs (an ACP agent): it stores its own replies and calls.

@@ -48,6 +48,12 @@ export type ProviderRequest = {
   speed?: string;
   extraBody?: Record<string, unknown>;
   extraHeaders?: Record<string, string>;
+  // Anthropic's prefix check on sent-back thinking (thinking.block_binding),
+  // set by a driver whose platform takes it: "error" refuses a request with a
+  // changed prefix; "drop_block" lets the provider leave such thinking out.
+  blockBinding?: "error" | "drop_block";
+  // The session asks for "drop_block" (a refused prefix was seen on it before).
+  dropThinking?: boolean;
   // Set by the registry: every answer's headers, for its rate-limit windows.
   onHeaders?: (h: Headers) => void;
 };
@@ -66,6 +72,11 @@ export type ProviderResult = {
   model: string;
   // The tier the provider says served the call (`service_tier`, `usage.speed`).
   served?: string;
+  // What the provider did to the input (Anthropic's input_transformations): thinking it dropped or let through.
+  input_transformations?: { type: string; path?: string; reason?: string }[];
+  // The provider refused the request's sent-back thinking as bound to another
+  // conversation (its message); it was answered again with "drop_block".
+  binding_refused?: string;
 };
 
 // The tool profile and projection rules a model gets. A family is per model:
