@@ -204,9 +204,25 @@ const wait_agent: Tool = {
             : a.status === "stopped" ? { interrupted: { by: a.stopped_by ?? null, report: a.result } }
               : { incomplete: { reason: a.end_reason ?? null, report: a.result } };
     }
-    return ok(JSON.stringify({ status, timed_out: res.length > 0 && !res.some((a) => agents.isEnded(a)) }));
+    const text = JSON.stringify({ status, timed_out: res.length > 0 && !res.some((a) => agents.isEnded(a)) });
+    // Acked when this result is stored as it is (stepDone), not when the turn
+    // was stopped and its result says so instead.
+    if (ctx.callId) waited.set(ctx.callId, { parent: ctx.sessionId, ids: res.filter((a) => agents.isEnded(a)).map((a) => a.id), text });
+    return ok(text);
   }),
 };
+
+// wait_agent results not yet seen stored, by tool call id.
+const waited = new Map<string, { parent: string; ids: string[]; text: string }>();
+export function ackStoredWaits(sessionId: string, results: { tool_use_id: string; content: unknown }[]) {
+  for (const r of results) {
+    const w = waited.get(r.tool_use_id);
+    if (!w || w.parent !== sessionId) continue;
+    waited.delete(r.tool_use_id);
+    const stored = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
+    if (stored.includes(w.text)) agents.ackWaited(sessionId, w.ids);
+  }
+}
 
 const close_agent: Tool = {
   name: "close_agent",

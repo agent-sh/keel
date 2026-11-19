@@ -13,7 +13,7 @@ import * as snooze from "./snooze.ts";
 import { afterTurn, capture, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
-import { automationTools, extendTaskStop } from "./tools.ts";
+import { ackStoredWaits, automationTools, extendTaskStop } from "./tools.ts";
 import * as waits from "./waits.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
@@ -86,6 +86,11 @@ function init(deps: Deps) {
         // The answer to a question is the owner's word: it ends a snooze.
         snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");
       }
+    },
+    // A step's tool results are stored: wait_agent reports they hold are delivered.
+    stepDone: (s) => {
+      const last = deps.store.events(s.id).findLast((e) => e.kind === "tool_result");
+      if (last) ackStoredWaits(s.id, last.data.results ?? []);
     },
     turnEnd: (s, reason) => {
       afterTurn(s.id, () => {

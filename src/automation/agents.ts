@@ -699,9 +699,11 @@ export async function send(id: string, message: string, interrupt = false): Prom
 }
 
 // Returns as soon as one of the agents has a final status (with every other
-// one already final), or at the timeout, as Codex's wait_agent does. Results
-// handed back here are not delivered again, not even from a batch already
-// lined up for the parent.
+// one already final), or at the timeout, as Codex's wait_agent does. A result
+// it returns is not delivered again (not even from a batch already lined up
+// for the parent) once acked: ackWaited, after the wait's tool result holding
+// it is stored. A wait cut by a stop leaves the report owed, for the parent's
+// next turn.
 export async function waitAll(parentId: string, ids: string[] | undefined, timeoutMs: number, signal?: AbortSignal): Promise<AgentRecord[]> {
   const targets = ids?.length ? ids.map((i) => resolveTarget(parentId, i)) : list(parentId).filter((a) => a.status === "running" || a.status === "waiting");
   if (targets.length && !targets.some((a) => isEnded(get(a.id)!))) {
@@ -712,13 +714,18 @@ export async function waitAll(parentId: string, ids: string[] | undefined, timeo
     quit.abort();
     signal?.removeEventListener("abort", stopAll);
   }
-  const out = targets.map((a) => get(a.id)!);
-  for (const a of out) {
-    if (!isEnded(a)) continue;
+  return targets.map((a) => get(a.id)!);
+}
+
+// The parent has these agents' results in a stored tool result: their
+// reports are no longer owed.
+export function ackWaited(parentId: string, ids: string[]) {
+  for (const id of ids) {
+    const a = get(id);
+    if (!a || !isEnded(a)) continue;
     withdraw(parentId, (m) => m.kind === "subagent" && m.agent_id === a.id);
     if (a.handback) update(a.id, { handback: false });
   }
-  return out;
 }
 
 export function resolveTarget(parentId: string, target: string): AgentRecord {

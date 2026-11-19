@@ -9,7 +9,7 @@ import { toMessages } from "../engine/turn.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import { flush, setDeps } from "./core.ts";
-import { automationTools } from "./tools.ts";
+import { ackStoredWaits, automationTools } from "./tools.ts";
 import * as waits from "./waits.ts";
 
 test("an agent in a mode that writes nothing gets no worktree", () => {
@@ -99,13 +99,27 @@ test("a report a wait returned is not delivered to the parent again", async () =
   end(a, "end_turn", "report A");
   end(b, "end_turn", "report B");
   await settled();
-  await tool("wait_agent").run({ targets: [a.id] }, ctx);
+  const out = await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: "w1" });
+  ackStoredWaits(parent.id, [{ tool_use_id: "w1", content: out.content }]); // the engine stored the result
   busy.delete(parent.id);
   sends.length = 0;
   flush(parent.id);
   const to = sends.filter((x) => x.id === parent.id).map((x) => x.text).join("\n");
   expect(to).toContain("report B");
   expect(to).not.toContain("report A");
+});
+
+test("a report a wait returned stays owed when the turn was stopped before its result was stored", async () => {
+  busy.add(parent.id);
+  const a = await spawn();
+  end(a, "end_turn", "report C");
+  await settled();
+  await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: "w2" });
+  ackStoredWaits(parent.id, [{ tool_use_id: "w2", content: "Interrupted by the user while this tool ran." }]);
+  busy.delete(parent.id);
+  sends.length = 0;
+  flush(parent.id);
+  expect(sends.filter((x) => x.id === parent.id).map((x) => x.text).join("\n")).toContain("report C");
 });
 
 test("forked context is the parent's selected branch as its next request reads it", async () => {
