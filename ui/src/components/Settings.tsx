@@ -133,7 +133,7 @@ const GROUP: Record<string, string> = {
 const ORDER = ["Working", "Toolkit", "Safety", "Machine", "Reach", "More", "Keel"];
 const groupOf = (id?: string) => (id ? GROUP[id] ?? "More" : "");
 // Sections of figures and lists use the width; forms keep a reading measure.
-const WIDE = new Set(["usage", "resources", "storage", "machines", "models", "mcp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs"]);
+const WIDE = new Set(["usage", "resources", "storage", "machines", "models", "mcp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
 
 export function Settings({ section }: { section: string }) {
   useSyncExternalStore(settingsSections.subscribe, settingsSections.version);
