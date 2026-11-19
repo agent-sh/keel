@@ -215,3 +215,20 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
   .k-dock-mark[aria-current]::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 4px; height: 3px; border-radius: 2px; background: var(--fg); }
   .k-dock-need { flex-shrink: 0; padding: 0 8px; border-radius: 10px; font: 700 11.5px/22px var(--font-inst); font-stretch: 75%; color: var(--accent-fg); background: var(--st-need); }
 }
+
+/* The station head already names the folder: the helm header drops its folder chip. */
+.k-station [data-testid="session-header"] button[title*="Click to copy the path"] { display: none; }
+.k-station [data-testid="session-header"] > div:has(> [data-testid="session-title"]) { flex: 1; }
+
+/* Badges on a folded mark: the unread dot and the like at its corner; "needs you" is read, not shown (the diamond says it). */
+.k-tick-badges { position: absolute; top: 2px; right: 3px; display: flex; gap: 2px; }
+.k-tick-badges svg { display: none; }
+.k-tick-badges [data-testid="unread-dot"] { width: 6px; height: 6px; background: var(--fg); }
+.k-tick-badges .k-needs { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.k-tick-badges [data-testid="snoozed-mark"] { display: block; width: 9px; height: 9px; color: var(--muted); }
+/* Agents a session started: small marks under its own, on the folded rail. */
+.k-tick-kids [data-testid="session-children"] { display: flex; flex-direction: column; align-items: center; margin: 0; padding: 0; border: 0; }
+.k-tick-kids [data-testid="session-children"] > button { display: none; }
+.k-tick-kids [data-testid="child-session"] { width: 22px; height: 12px; padding: 0; font-size: 0; justify-content: center; gap: 0; }
+.k-tick-kids [data-testid="child-session"] > * { display: none; }
+.k-tick-kids [data-testid="child-session"]::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); }

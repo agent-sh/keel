@@ -167,6 +167,9 @@ export function Bridge() {
   const picked = useMemo(() => pickStations(list, watches, helm, Math.max(room, helm ? 1 : 0), st), [list, watches, helm, room, st]);
   const focus = st.focus;
   const shown = focus ? picked.filter((s) => s.id === helm) : picked;
+  // A helm that is not a live session (archived, or not on this daemon) still gets its station.
+  const sessions = useStore((x) => x.sessions);
+  const orphan = helm && !picked.some((s) => s.id === helm) ? helm : null;
   const all = shown;
   shownNow = picked.map((s) => s.id);
   useEffect(() => stations.setShown(all.map((s) => s.id)));
@@ -188,6 +191,9 @@ export function Bridge() {
   return (
     <>
       <main ref={track} className="k-stations" data-count={all.length + (fresh ? 1 : 0)} data-focus={focus || undefined} data-testid="bridge">
+        {orphan && (sessions[orphan] ? <Station key={orphan} s={sessions[orphan]!} helm pinned={false} shown={shownNow} /> : (
+          <section className="k-station" data-helm data-station={orphan} aria-label="Session"><div className="k-band" aria-hidden="true" /><SessionView id={orphan} /></section>
+        ))}
         {all.map((s) => <Station key={s.id} s={s} helm={s.id === helm} pinned={st.pinned.includes(s.id)} shown={shownNow} />)}
         {fresh && <NewStation />}
         {!fresh && all.length === 0 && <NewStation />}

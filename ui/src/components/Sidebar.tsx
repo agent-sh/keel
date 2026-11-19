@@ -96,6 +96,9 @@ export function NeedsYou({ sessionId }: { sessionId: string }) {
   return <span data-testid="needs-you" title={`${n} approval${n === 1 ? "" : "s"} waiting`} className="k-needs">needs you</span>;
 }
 
+// The tab the index opens on (the folded rail's archive button asks for "archived").
+let openOn: "active" | "archived" = "active";
+
 // Folded: one mark per session, the ones that need you on top.
 const BANDS: { w: Watch[]; label: string }[] = [
   { w: ["need"], label: "Needs you" },
@@ -130,7 +133,9 @@ function Marks({ current }: { current: string | null }) {
                 >
                   <Mark w={watches[s.id]!} />
                   <span className="sr-only">{s.title || "New session"}</span>
+                  <span className="k-tick-badges"><NeedsYou sessionId={s.id} /><SessionBadges sessionId={s.id} /></span>
                 </button>
+                <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
               </li>
             ))}
           </ol>
@@ -143,7 +148,7 @@ function Marks({ current }: { current: string | null }) {
 function Index({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
   useFleet((s) => s.machines.length); // machine names in the group heads
-  const [tab, setTab] = useState<"active" | "archived">("active");
+  const [tab, setTab] = useState<"active" | "archived">(() => { const t = openOn; openOn = "active"; return t; });
   const [archived, setArchived] = useState<Session[]>([]);
   useEffect(() => {
     if (tab === "archived") api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => setArchived(r.sessions)).catch(reportError);
@@ -209,6 +214,11 @@ export function Sidebar({ open }: { open: boolean }) {
       </div>
       {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" aria-label="Sessions by state"><Marks current={current} /></nav>}
       <div className="k-rail-foot">
+        {!open && (
+          <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; savePref("sidebar", true); }}>
+            <Archive />
+          </button>
+        )}
         {!open && (
           <button type="button" className="k-act" data-testid="show-sidebar" aria-label="All sessions by folder" title="All sessions by folder (Ctrl B)" onClick={() => savePref("sidebar", true)}>
             <ListTree />

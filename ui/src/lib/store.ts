@@ -203,7 +203,8 @@ export const actions = {
   remove: async (id: string) => {
     await api(`/api/sessions/${id}`, { method: "DELETE" });
     const { [id]: _, ...rest } = state.sessions;
-    set({ sessions: rest });
+    const { [id]: __, ...events } = state.events;
+    set({ sessions: rest, events });
   },
 };
 
@@ -274,7 +275,14 @@ export function connect() {
     set({ connected: true });
     // Catch up on whatever happened while disconnected.
     actions.loadSessions();
-    for (const id of Object.keys(state.events)) actions.loadSession(id);
+    // Several sessions' events can be held (the bridge shows many); one deleted meanwhile is dropped.
+    for (const id of Object.keys(state.events)) {
+      actions.loadSession(id).catch((e) => {
+        if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
+        const { [id]: _, ...events } = state.events;
+        set({ events });
+      });
+    }
     for (const l of features) l.reconnect?.();
   };
   ws.onmessage = (m) => apply(JSON.parse(m.data));
