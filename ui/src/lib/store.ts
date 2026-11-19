@@ -343,19 +343,32 @@ export function connect() {
     clearInterval(pinger);
     clearTimeout(deadline);
     if (socket !== ws) return;
+    drops++;
     set({ connected: false });
     setTimeout(connect, (retry = Math.min(retry * 2, 8000)));
   };
 }
 
 // Client-side error tracking: every uncaught error goes to the server's table.
+let drops = 0; // socket drops so far: a network failure around one is the daemon going away
 export function reportError(err: unknown, context?: unknown) {
   const e = err instanceof Error ? err : new Error(String(err));
-  fetch("/api/errors", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: e.message, stack: e.stack, context: { url: location.pathname, ...(context as object) } }),
-  }).catch(() => {});
+  const url = location.pathname;
+  const post = () =>
+    fetch("/api/errors", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: e.message, stack: e.stack, context: { url, ...(context as object) } }),
+    }).catch(() => {});
+  // A request cut because the daemon went away (a restart) is the connection
+  // state the page already shows, and the reconnect reloads: only a network
+  // failure while the socket stays up is tracked.
+  if (e instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(e.message)) {
+    const at = drops;
+    setTimeout(() => { if (state.connected && drops === at) post(); }, 3000);
+    return;
+  }
+  post();
 }
 window.addEventListener("error", (e) => reportError(e.error ?? e.message, { kind: "window.error" }));
 window.addEventListener("unhandledrejection", (e) => reportError(e.reason, { kind: "unhandledrejection" }));
