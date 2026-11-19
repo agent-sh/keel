@@ -67,7 +67,7 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
     const u = new URLSearchParams(Object.entries(from ? { harness: row.harness, id: row.id } : ident(row)) as [string, string][]);
     api<Preview>(`${paths(from).preview}?${u}`).then((r) => { if (live) setP(r); }, (e) => { if (live) setErr(e.message); });
     return () => { live = false; };
-  }, [row.harness, row.id, row.path, from]);
+  }, [row, from]); // the row picked again (a fresh listing's) is read again: copies made since show
   const shown = p && p.session.id === row.id && (from || row.harness === "keel" || p.session.path === row.path) ? p : null;
   // A copy opens by its own id, the one the preview on screen names (a copy
   // made after it was read does not take its place); the original is not read.
