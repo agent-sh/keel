@@ -29,10 +29,10 @@ test("hooks", async ({ page, request }) => {
   const project = page.locator(`[data-testid="hook-source"][data-scope="project"]`).filter({ hasText: ws.split("/").pop()! });
   await expect(project).toHaveAttribute("data-active", "false");
   await expect(page.locator('[data-testid="hook-source"][data-scope="owner"]').first()).toHaveAttribute("data-active", "true");
-  await project.getByRole("button", { name: "Read" }).click();
+  await project.click();
   await expect(page.getByTestId("hook-text")).toContainText("PostToolUse");
   await shoot(page, "hooks-01-unpinned");
-  await project.getByTestId("hook-pin").click();
+  await page.getByTestId("hook-pin").click();
   await expect(project).toHaveAttribute("data-active", "true");
 
   await page.goto(`/s/${session.id}`);

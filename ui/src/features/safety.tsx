@@ -38,7 +38,7 @@ panels.add(
 
 settingsSections.add({
   id: "safety",
-  label: "Safety",
+  label: "Permissions",
   words: "permissions mode reviewer review model secrets passkey trust hooks quarantine",
   icon: <ShieldCheck className="size-4" />,
   order: 20,

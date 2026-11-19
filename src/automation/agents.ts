@@ -10,6 +10,7 @@ import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { Worktrees } from "../worktree/manager.ts";
 import { contains } from "../core/paths.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
+import { configDir } from "../providers/config.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. One level deep. The child gets
@@ -50,6 +51,7 @@ export type AgentDef = {
   isolation?: "worktree" | "none";
   body?: string;
   source: string;
+  file?: string; // the definition's file (none for a built-in)
   silent?: boolean; // its result goes to its own panel (a reviewer's findings), not to the parent's conversation
 };
 
@@ -181,7 +183,7 @@ function readDir(dir: string, source: string): AgentDef[] {
       const name = String(fm.meta.name ?? f.slice(0, -3));
       const tools = listOf(fm.meta.tools);
       out.push({
-        name, source, body: fm.body,
+        name, source, file: p, body: fm.body,
         description: String(fm.meta.description ?? ""),
         tools: tools?.includes("*") ? undefined : tools,
         disallowed: listOf(fm.meta.disallowedTools ?? fm.meta.disallowed_tools),
@@ -202,7 +204,8 @@ function readDir(dir: string, source: string): AgentDef[] {
 export function definitions(cwd: string): AgentDef[] {
   const byName = new Map<string, AgentDef>(BUILTIN.map((d) => [d.name, d]));
   const config = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
-  for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner")]) byName.set(d.name, d);
+  // The owner's: the Rust Keel's folder, Claude Code's, then keel-bun's own (it wins a name).
+  for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
   const dirs: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {
     dirs.unshift(d);

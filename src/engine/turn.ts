@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { rootOf } from "../safety/trust.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
@@ -8,6 +10,7 @@ import { lineage } from "../core/tree.ts";
 import type { AssistantBlock, Message, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
+import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { toolsFor } from "../tools/registry.ts";
 import { allHooks, type ToolCall } from "./hooks.ts";
@@ -86,26 +89,50 @@ export function toMessages(events: StoredEvent[]): Message[] {
 // instruction file loads as last trusted); null leaves the file out.
 export const instructionFilter: { file?: (path: string, text: string) => string | null } = {};
 
+// The instruction files a session in `cwd` loads, outermost first: the
+// owner's own (<config>/AGENTS.md, for every folder), then the AGENTS.md
+// (else CLAUDE.md) of each folder from the root down to `cwd`.
+export function instructionPaths(cwd: string): { path: string; scope: "owner" | "parent" | "folder" }[] {
+  const out: { path: string; scope: "owner" | "parent" | "folder" }[] = [];
+  const seen = new Set<string>();
+  for (let dir = cwd; !seen.has(dir); dir = dirname(dir)) {
+    seen.add(dir);
+    const name = ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
+    if (name) out.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
+    if (dirname(dir) === dir) break;
+  }
+  const own = join(configDir(), "AGENTS.md");
+  if (existsSync(own) && !out.some((f) => f.path === own)) out.unshift({ path: own, scope: "owner" });
+  return out;
+}
+
+// A `@path` line of a file outside a repository brings that file in (up to
+// 4 hops), as Claude Code reads its memory files. A repository's files keep
+// the line as text: what they would import is not under their trust pin.
+export function expandImports(text: string, from: string, depth = 0, seen = new Set([from])): string {
+  if (depth >= 4) return text;
+  return text.replace(/^@(\S+)[ \t]*$/gm, (line, ref: string) => {
+    const p = ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : resolve(dirname(from), ref);
+    if (seen.has(p) || rootOf(dirname(p))) return line;
+    try {
+      const t = readFileSync(p, "utf8");
+      seen.add(p);
+      return expandImports(t, p, depth + 1, seen).trimEnd();
+    } catch {
+      return line;
+    }
+  });
+}
+
 export function instructionFiles(cwd: string): string {
   const parts: string[] = [];
-  let dir = cwd;
-  const seen = new Set<string>();
-  while (!seen.has(dir)) {
-    seen.add(dir);
-    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
-      const p = join(dir, name);
-      if (existsSync(p)) {
-        try {
-          const raw = readFileSync(p, "utf8");
-          const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
-          if (text !== null) parts.unshift(`# ${p}\n\n${text.slice(0, 40_000)}`);
-        } catch {}
-        break; // AGENTS.md wins over CLAUDE.md in the same folder
-      }
-    }
-    const up = dirname(dir);
-    if (up === dir) break;
-    dir = up;
+  for (const { path: p } of instructionPaths(cwd)) {
+    try {
+      const read = readFileSync(p, "utf8");
+      const raw = rootOf(dirname(p)) ? read : expandImports(read, p);
+      const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
+      if (text !== null) parts.push(`# ${p}\n\n${text.slice(0, 40_000)}`);
+    } catch {}
   }
   return parts.join("\n\n");
 }

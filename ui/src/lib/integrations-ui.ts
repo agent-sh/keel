@@ -21,8 +21,8 @@ settingsSections.add({
   label: "Hooks",
   words: "hooks pretooluse posttooluse stop prompt hooks.json trust pin",
   icon: createElement(Webhook, { className: "size-4" }),
-  order: 41,
-  component: lazy(() => import("../components/IntegrationsPanel.tsx").then((m) => ({ default: m.HooksSettings }))),
+  order: 15,
+  component: lazy(() => import("../components/surfaces/Hooks.tsx")),
 });
 
 registerCommand({ id: "integrations", label: "Memory and supervisor", group: "General", words: "tacit momentum", run: () => navigate({ name: "settings", section: "integrations" }) });

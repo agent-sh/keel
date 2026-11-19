@@ -16,7 +16,6 @@ type UIState = {
   palette: boolean;
   shortcuts: boolean;
   errors: boolean;
-  mcp: boolean; // the MCP servers sheet
   modelMenu: number; // bumped to ask the composer's model picker to open
   permMenu: number; // bumped to ask the session header's permission menu to open
   enterSends: boolean;
@@ -62,7 +61,6 @@ let state: UIState = {
   palette: false,
   shortcuts: false,
   errors: false,
-  mcp: false,
   modelMenu: 0,
   permMenu: 0,
   enterSends: pref("keel.enterSends", true),

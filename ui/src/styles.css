@@ -4,6 +4,7 @@
 
 /* The Bridge: the shell and how its parts look. Unlayered, so it wins over utilities. */
 @import "./bridge.css";
+@import "./toolkit.css";
 
 /* Design tokens. Every color, size and motion in the UI comes from here;
    components never pick raw values.

@@ -3,7 +3,7 @@ import { HAIKU, shoot } from "./shots.ts";
 
 const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 
-// Feature: MCP servers. Add a stdio server from the panel, see it ready with
+// Feature: MCP servers. Add a stdio server from Settings > MCP servers, see it ready with
 // its tools, turn it off and on, reconnect it, then a model finds its tool
 // with search_tools and runs it with mcp_call.
 test("mcp servers", async ({ page, request }) => {
@@ -21,6 +21,7 @@ test("mcp servers", async ({ page, request }) => {
   await expect(panel).toBeVisible();
   await shoot(page, "mcp-01-panel");
 
+  await panel.getByTestId("toolkit-add-+add").click();
   await panel.getByTestId("mcp-add-name").fill("echo");
   await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE}`);
   await panel.getByTestId("mcp-add-submit").click();
@@ -56,8 +57,7 @@ test("mcp servers", async ({ page, request }) => {
   await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
   await row.getByTestId("mcp-reconnect").click();
   await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
-  await page.keyboard.press("Escape");
-  await expect(panel).toBeHidden();
+  await page.goto("/");
 
   await page.getByTestId("model-picker").click();
   await page.getByPlaceholder("Search models").fill("haiku 5.5");

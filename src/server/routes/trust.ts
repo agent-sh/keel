@@ -36,9 +36,13 @@ const bad = (error: string, status = 400) => json({ error }, status);
 // From a remote device, loading a repository's files or putting protected files back needs the owner's passkey.
 const needs = (req: Request, action: string) => (!presence || presence.allows(req, action) ? null : json({ error: "this needs your passkey from a remote device", presence: { action } }, 428));
 
+// The pins, for the settings pages that write a repository's files for the owner.
+export let trustRef: Trust | undefined;
+
 export const trustRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
   const trust = new Trust(store);
+  trustRef = trust;
   const quarantine = new Quarantine(store, join(store.stateDir, "quarantine"));
   instructionFilter.file = (path, text) => trust.instructionText(path, text);
   skillFilter.allow = (dir) => trust.skillAllowed(dir);

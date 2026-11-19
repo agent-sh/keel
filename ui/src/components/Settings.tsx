@@ -123,16 +123,17 @@ settingsSections.add(
 
 // Sections grouped by what they are about; a section another lane adds falls in by id, else under More.
 const GROUP: Record<string, string> = {
-  general: "Working", models: "Working", providers: "Working", agents: "Working", keyboard: "Working", voice: "Working",
-  safety: "Safety", hooks: "Safety", alerts: "Safety",
+  general: "Working", models: "Working", providers: "Working", keyboard: "Working", voice: "Working",
+  mcp: "Toolkit", skills: "Toolkit", commands: "Toolkit", agents: "Toolkit", plugins: "Toolkit", hooks: "Toolkit", instructions: "Toolkit",
+  safety: "Safety", alerts: "Safety",
   machines: "Machine", resources: "Machine", storage: "Machine", daemon: "Machine", phone: "Machine", usage: "Machine",
   integrations: "Reach", elsewhere: "Reach", export: "Reach",
   about: "Keel",
 };
-const ORDER = ["Working", "Safety", "Machine", "Reach", "More", "Keel"];
+const ORDER = ["Working", "Toolkit", "Safety", "Machine", "Reach", "More", "Keel"];
 const groupOf = (id?: string) => (id ? GROUP[id] ?? "More" : "");
 // Sections of figures and lists use the width; forms keep a reading measure.
-const WIDE = new Set(["usage", "resources", "storage", "machines", "models"]);
+const WIDE = new Set(["usage", "resources", "storage", "machines", "models", "mcp", "skills", "commands", "agents", "plugins", "hooks", "instructions"]);
 
 export function Settings({ section }: { section: string }) {
   useSyncExternalStore(settingsSections.subscribe, settingsSections.version);

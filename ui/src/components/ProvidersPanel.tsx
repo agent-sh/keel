@@ -73,7 +73,7 @@ type CheckRow = { fixture: string; result: "pass" | "fail" | "n/a"; ms: number; 
 
 // The conformance check of protocol v1 (`keel plugin check <id>`): fake
 // credentials, a fake vendor, every fixture of the spec.
-function PluginCheck({ id }: { id: string }) {
+export function PluginCheck({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
   const [r, setR] = useState<{ rows: CheckRow[]; summary: { passed: number; failed: number; not_applicable: number } } | null>(null);
   const [err, setErr] = useState<string | null>(null);

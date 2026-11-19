@@ -26,6 +26,7 @@ import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
 import { takeoverRoutes } from "./takeover.ts";
 import { hookRoutes } from "./hooks.ts";
+import { surfaceRoutes } from "./surfaces.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { reviewRoutes } from "./reviews.ts";
@@ -81,6 +82,7 @@ export const routeModules: RouteModule[] = [
   importRoutes,
   takeoverRoutes, // taking over a session another harness runs
   hookRoutes,
+  surfaceRoutes, // Settings: skills, agent files, instruction files, the hooks file, plugins.toml
   runRoutes, // the command line: keel run, keel send
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
   telemetryRoutes, // last: its tool timing starts after every gate

@@ -2,7 +2,7 @@
 // Codex share). The session's system prompt lists each skill's name and
 // description once (frozen, so cached); the body loads only when the model
 // calls the skill tool, with Claude Code's argument substitution.
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
@@ -20,7 +20,22 @@ export type Skill = {
   modelInvocable: boolean;
   argumentHint?: string;
   arguments: string[];
+  kind: "skill" | "command"; // a SKILL.md folder, or a command file (<name>.md)
+  root: string; // the folder it was found in (~/.claude/skills, <repo>/.agents/skills)
+  enabled: boolean; // the owner can turn a skill off without deleting it
 };
+
+// Skills the owner turned off, by name: <config>/skills.json { "off": [...] }.
+const offFile = () => join(configDir(), "skills.json");
+export function skillsOff(): Set<string> {
+  try { return new Set((JSON.parse(readFileSync(offFile(), "utf8")).off ?? []).map(String)); } catch { return new Set(); }
+}
+export function setSkillOff(name: string, off: boolean) {
+  const set = skillsOff();
+  if (off) set.add(name); else set.delete(name);
+  mkdirSync(configDir(), { recursive: true });
+  writeFileSync(offFile(), JSON.stringify({ off: [...set].sort() }, null, 2) + "\n");
+}
 
 // Small YAML subset: scalars, quoted strings, [a, b] and "- a" lists, | and > blocks.
 export function frontmatter(text: string): { data: Record<string, any>; body: string } {
@@ -87,37 +102,60 @@ const FOREIGN_BODY = /(^|[\s"'`(~/])\.(cursor|codex)\/|\bcursor-[a-z]+-[a-z_-]+|
 export const foreignSkill = (name: string, description: string, body: string) =>
   FOREIGN_TITLE.test(`${name} ${description}`) || FOREIGN_BODY.test(body);
 
+// Command files, the older form of a skill Claude Code still reads
+// (<folder>/<name>.md, the same frontmatter): the owner's, then the
+// project's from the working directory up to the repository root.
+export function commandRoots(cwd: string): { dir: string; scope: Skill["scope"] }[] {
+  const home = homedir();
+  const roots: { dir: string; scope: Skill["scope"] }[] = [
+    { dir: join(home, ".claude/commands"), scope: "personal" },
+    { dir: join(configDir(), "commands"), scope: "personal" },
+  ];
+  const top = gitRoot(cwd) ?? cwd;
+  for (let d = cwd; ; d = dirname(d)) {
+    if (d !== home) roots.push({ dir: join(d, ".claude/commands"), scope: "project" });
+    if (d === top || dirname(d) === d) break;
+  }
+  return roots;
+}
+
 export function discoverSkills(cwd: string): Skill[] {
   const out = new Map<string, Skill>();
+  const off = skillsOff();
   const seenReal = new Set<string>();
+  // `held` is what the trust pin decides on: a skill's folder, a command's file.
+  const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"]) => {
+    let real: string;
+    try { if (!statSync(file).isFile()) return; real = realpathSync(file); } catch { return; }
+    if (seenReal.has(real)) return;
+    if (scope === "project" && skillFilter.allow && !skillFilter.allow(held)) return;
+    seenReal.add(real);
+    let text = "";
+    try { text = readFileSync(file, "utf8"); } catch { return; }
+    const { data, body } = frontmatter(text);
+    const name = String((kind === "skill" && data.name) || fallback);
+    if (out.has(name) || /[<>​]/.test(name)) return;
+    const desc = [data.description || body.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") || "", data.when_to_use || ""]
+      .filter(Boolean).join(" ").slice(0, 1536);
+    if (scope === "personal" && foreignSkill(name, desc, body)) return;
+    const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];
+    out.set(name, {
+      name, description: desc, dir: dirname(file), file, scope, kind,
+      userInvocable: data["user-invocable"] !== false,
+      modelInvocable: data["disable-model-invocation"] !== true,
+      argumentHint: data["argument-hint"] || undefined,
+      arguments: args,
+      root,
+      enabled: !off.has(name),
+    });
+  };
+  const list = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
   for (const { dir, scope } of skillRoots(cwd)) {
-    let names: string[] = [];
-    try { names = readdirSync(dir); } catch { continue; }
-    for (const n of names.sort()) {
-      if (n.startsWith(".") || n === "synced") continue;
-      const file = join(dir, n, "SKILL.md");
-      let real: string;
-      try { if (!statSync(file).isFile()) continue; real = realpathSync(file); } catch { continue; }
-      if (seenReal.has(real)) continue;
-      if (scope === "project" && skillFilter.allow && !skillFilter.allow(join(dir, n))) continue;
-      seenReal.add(real);
-      let text = "";
-      try { text = readFileSync(file, "utf8"); } catch { continue; }
-      const { data, body } = frontmatter(text);
-      const name = String(data.name || n);
-      if (out.has(name) || /[<>​]/.test(name)) continue;
-      const desc = [data.description || body.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") || "", data.when_to_use || ""]
-        .filter(Boolean).join(" ").slice(0, 1536);
-      if (scope === "personal" && foreignSkill(name, desc, body)) continue;
-      const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];
-      out.set(name, {
-        name, description: desc, dir: dirname(file), file, scope,
-        userInvocable: data["user-invocable"] !== false,
-        modelInvocable: data["disable-model-invocation"] !== true,
-        argumentHint: data["argument-hint"] || undefined,
-        arguments: args,
-      });
-    }
+    for (const n of list(dir)) if (!n.startsWith(".") && n !== "synced") add(join(dir, n, "SKILL.md"), join(dir, n), n, dir, scope, "skill");
+  }
+  // A skill wins a name over a command file, as in Claude Code.
+  for (const { dir, scope } of commandRoots(cwd)) {
+    for (const n of list(dir)) if (n.endsWith(".md") && !n.startsWith(".")) add(join(dir, n), join(dir, n), n.slice(0, -3), dir, scope, "command");
   }
   // By name: the listing in the shared, cached prompt prefix stays byte-stable.
   return [...out.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -170,9 +208,9 @@ export function renderSkill(body: string, args: string, names: string[], vars: R
 const loaded = new SessionMap<Set<string>>(64);
 
 export function loadSkill(name: string, args: string, ctx: ToolContext) {
-  const skill = discoverSkills(ctx.cwd).find((s) => s.name === name || s.name === name.replace(/^\//, ""));
+  const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => s.name === name || s.name === name.replace(/^\//, ""));
   if (!skill) {
-    const names = discoverSkills(ctx.cwd).filter((s) => s.modelInvocable).map((s) => s.name);
+    const names = discoverSkills(ctx.cwd).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
     return fail(`No skill named "${name}". Available: ${names.join(", ") || "none"}.`);
   }
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);
@@ -194,6 +232,7 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
   const skill = discoverSkills(cwd).find((s) => s.name === name);
   if (!skill) return { error: `no skill named ${name}` };
   if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
+  if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
   const text = renderSkill(body, args, skill.arguments, {
     CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
@@ -205,7 +244,7 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
 // The listing: every name, descriptions while they fit the budget.
 const LISTING_BUDGET = 8_000;
 export function skillListing(cwd: string): string {
-  const skills = discoverSkills(cwd).filter((s) => s.modelInvocable);
+  const skills = discoverSkills(cwd).filter((s) => s.modelInvocable && s.enabled);
   if (!skills.length) return "";
   let used = 0;
   const lines = skills.map((s) => {

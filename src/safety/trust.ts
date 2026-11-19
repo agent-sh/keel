@@ -60,6 +60,11 @@ function skillDigest(dir: string): string | null {
   return sha(parts.join("\n"));
 }
 
+// A command file (<repo>/.claude/commands/<name>.md): its content.
+function commandDigest(p: string): string | null {
+  try { return statSync(p).isFile() ? sha(readFileSync(p)) : null; } catch { return null; }
+}
+
 export class Trust {
   constructor(private store: Store) {
     store.migrate(SCHEMA);
@@ -102,6 +107,13 @@ export class Trust {
           found.push({ path: p, kind: "instructions", digest: sha(text), content: text });
           break;
         } catch {}
+      }
+      // Command files are skills in the older form: each file is pinned.
+      for (const n of (() => { try { return readdirSync(join(d, ".claude/commands")).sort(); } catch { return []; } })()) {
+        const p = join(d, ".claude/commands", n);
+        if (!n.endsWith(".md")) continue;
+        const digest = commandDigest(p);
+        if (digest) found.push({ path: p, kind: "skill", digest });
       }
       for (const sub of [".agents/skills", ".claude/skills"]) {
         let names: string[] = [];
@@ -161,7 +173,7 @@ export class Trust {
 
   skillAllowed(dir: string): boolean {
     if (!rootOf(dir)) return true;
-    const digest = skillDigest(dir);
+    const digest = dir.endsWith(".md") ? commandDigest(dir) : skillDigest(dir);
     return !digest || this.check(dir, "skill", digest, null) === "trusted";
   }
 

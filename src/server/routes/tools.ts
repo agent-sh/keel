@@ -1,12 +1,12 @@
 // Owner-facing routes of the tools: answer a question a tool is waiting on,
-// see and stop background jobs, list skills. Also joins the turn loop: a
+// see and stop background jobs (skills are in routes/surfaces.ts). Also joins the turn loop: a
 // background job that ended reaches the model as a stored note on its next
 // request, so the bytes stay the same on every later request.
 import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { adoptJobs, drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
-import { discoverSkills, renderForOwner } from "../../tools/skills.ts";
+import { renderForOwner } from "../../tools/skills.ts";
 import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
 
@@ -94,17 +94,6 @@ export const toolRoutes: RouteModule = (deps) => {
           if (matches.length >= 200) { truncated = true; proc.kill(); }
         }, "content search");
         return json({ matches, truncated });
-      },
-    },
-    "/api/skills": {
-      GET: (req: any) => {
-        const cwd = new URL(req.url).searchParams.get("cwd") || deps.workspace;
-        return json({
-          skills: discoverSkills(cwd).map((s) => ({
-            name: s.name, description: s.description, root: s.dir, scope: s.scope,
-            user_invocable: s.userInvocable, model_invocable: s.modelInvocable, argument_hint: s.argumentHint,
-          })),
-        });
       },
     },
   };

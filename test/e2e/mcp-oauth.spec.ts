@@ -20,7 +20,8 @@ test("mcp oauth sign-in", async ({ page, request }) => {
     await page.getByTestId("composer").fill("/mcp");
     await page.keyboard.press("Enter");
     const panel = page.getByTestId("mcp-panel");
-    await panel.getByTestId("mcp-add-url-tab").click();
+    await panel.getByTestId("toolkit-add-+add").click();
+    await panel.getByTestId("seg-url").click();
     await panel.getByTestId("mcp-add-name").fill("signed");
     await panel.getByTestId("mcp-add-target").fill(`http://127.0.0.1:${port}/mcp`);
     await panel.getByTestId("mcp-add-submit").click();

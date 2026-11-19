@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openMcp } from "./shots.ts";
 
 // Feature: the Chrome bridge built in. Every session has it with no setup: the
 // MCP panel lists it as built in and idle (its tools ship with Keel, so nothing
@@ -21,11 +21,11 @@ test("chrome bridge", async ({ page, request }) => {
   await page.keyboard.press("Control+k");
   await page.getByTestId("palette-input").fill("MCP servers");
   await page.keyboard.press("Enter");
-  const row = page.locator('[data-testid="mcp-server"][data-name="chrome"]');
+  await page.waitForURL(/\/settings\/mcp$/);
+  const row = await openMcp(page, "chrome");
   await expect(row.getByTestId("mcp-bundled")).toContainText("Chrome bridge");
   await expect(row.getByTestId("mcp-tool-count")).toHaveText(/\d+ tools/);
   await shoot(page, "chrome-01-panel");
-  await page.keyboard.press("Escape");
 
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `chrome-${Date.now()}`);
   mkdirSync(ws, { recursive: true });

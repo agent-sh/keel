@@ -1,16 +1,16 @@
-// The tools lane's entries in the workbench: the MCP servers sheet from the
+// The tools lane's entries in the workbench: Settings > MCP servers from the
 // palette and /mcp, and one slash command per skill the session can run.
 import { slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
 import { api, reportError } from "./store.ts";
-import { setUI } from "./ui.ts";
+import { navigate } from "./ui.ts";
 
-const setMcpOpen = (mcp: boolean) => setUI({ mcp });
+const openMcp = () => navigate({ name: "settings", section: "mcp" });
 
-registerCommand({ id: "mcp", label: "MCP servers", group: "General", words: "tools servers mcp plugins connect", run: () => setMcpOpen(true) });
-slash.add({ id: "mcp", label: "Manage tool servers", run: () => setMcpOpen(true) });
+registerCommand({ id: "mcp", label: "MCP servers", group: "General", words: "tools servers mcp plugins connect", run: openMcp });
+slash.add({ id: "mcp", label: "Manage tool servers", run: openMcp });
 
-type SkillInfo = { name: string; description: string; user_invocable: boolean; argument_hint?: string };
+type SkillInfo = { name: string; description: string; user_invocable: boolean; enabled: boolean; argument_hint?: string };
 const byFolder = new Map<string, Set<string>>();
 
 // Skills differ per folder (project skills): load a folder's once, show each
@@ -21,7 +21,7 @@ export async function loadSkillCommands(workspace: string) {
   try {
     const { skills } = await api<{ skills: SkillInfo[] }>(`/api/skills?cwd=${encodeURIComponent(workspace)}`);
     const names = byFolder.get(workspace)!;
-    for (const s of skills.filter((x) => x.user_invocable)) {
+    for (const s of skills.filter((x) => x.user_invocable && x.enabled)) {
       names.add(s.name);
       if (slash.all().some((i) => i.id === s.name && i.run)) continue; // a working built-in command keeps its name
       slash.add({

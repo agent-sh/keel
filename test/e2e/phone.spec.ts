@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openMcp } from "./shots.ts";
 
 // Feature: phone control. A stand-in for the Hermes gateway's phone socket
 // serves the daemon's phone server; with PHONE_ADB=<emulator serial> it acts on
@@ -51,14 +51,11 @@ test("phone control: read, tap by index, read again; not armed, stopped, turned 
 
     // Listed armed, with its tools, no setup.
     await request.post("/api/mcp/reload", { data: { server: "phone" } });
-    await page.goto(`/s/${session.id}`);
-    await page.getByTestId("composer").fill("/mcp");
-    await page.keyboard.press("Enter");
-    const row = page.getByTestId("mcp-panel").locator('[data-testid="mcp-server"][data-name="phone"]');
+    const row = await openMcp(page, "phone");
     await expect(row).toHaveAttribute("data-state", "armed");
     await expect(row).toContainText("Built in · Phone control");
     await shoot(page, "phone-01-armed");
-    await page.keyboard.press("Escape");
+    await page.goto(`/s/${session.id}`);
 
     // Ask mode: the reads run, the tap is put to the owner.
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
@@ -107,8 +104,7 @@ test("phone control: read, tap by index, read again; not armed, stopped, turned 
 
     // Turned off in Keel: listed off, out of search, a call says so and the gateway is not asked.
     edit((s) => (s.armed = true));
-    await page.getByTestId("composer").fill("/mcp");
-    await page.keyboard.press("Enter");
+    await openMcp(page, "phone");
     await row.getByTestId("mcp-toggle").click();
     await expect(row).toHaveAttribute("data-state", "disabled");
     const hits = await (await request.get("/api/mcp/search?q=phone tap")).json();

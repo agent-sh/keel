@@ -55,8 +55,8 @@ settingsSections.add({
   label: "Agents",
   words: "advisor consult second opinion subagents model",
   icon: <Bot className="size-4" />,
-  order: 41,
-  component: lazy(() => import("./AgentSettings.tsx")),
+  order: 13,
+  component: lazy(() => import("../surfaces/Agents.tsx")),
 });
 
 // The session's goal and the task list the model and the owner share.

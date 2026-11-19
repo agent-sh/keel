@@ -37,3 +37,11 @@ export async function remoteHeaders(request: APIRequestContext, base = ""): Prom
   const { path } = await (await request.get(`${base}/api/remote-access`)).json();
   return { "x-forwarded-for": "10.0.0.2", authorization: `Bearer ${new URL(path, "http://x").searchParams.get("token")}` };
 }
+
+// Settings > MCP servers with one server picked; its reader is the
+// `mcp-server` element (data-name, data-state).
+export async function openMcp(page: Page, name?: string) {
+  if (!page.url().endsWith("/settings/mcp")) await page.goto("/settings/mcp");
+  if (name) await page.locator(`[data-testid="mcp-entry"][data-name="${name}"]`).click();
+  return page.locator(`[data-testid="mcp-server"]${name ? `[data-name="${name}"]` : ""}`);
+}

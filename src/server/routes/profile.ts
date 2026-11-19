@@ -2,8 +2,8 @@
 // with what the model offers, the tool profile its family gets, and the
 // instruction files the session's prompt carries. POST picks a model with its
 // reasoning and speed in one step (applied from the next request, also mid-turn).
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { instructionPaths } from "../../engine/turn.ts";
 import type { RouteModule } from "../app.ts";
 import { speedOffer } from "../../providers/registry.ts";
 import type { ModelInfo } from "../../providers/types.ts";
@@ -12,23 +12,18 @@ import { toolsFor } from "../../tools/registry.ts";
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const INSTRUCTION_LIMIT = 40_000; // what the system prompt includes of one file (engine/turn.ts)
 
-// The AGENTS.md (else CLAUDE.md) of the folder and every folder above it, as the prompt reads them.
+// The instruction files the prompt reads (engine/turn.ts), with their sizes.
 function instructions(cwd: string) {
   const files: { path: string; scope: string; bytes: number; included_bytes: number; truncated: boolean }[] = [];
   const warnings: string[] = [];
-  for (let dir = cwd, prev = ""; dir !== prev; prev = dir, dir = dirname(dir)) {
-    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
-      const path = join(dir, name);
-      if (!existsSync(path)) continue;
-      try {
-        const bytes = statSync(path).size;
-        const included = Buffer.byteLength(readFileSync(path, "utf8").slice(0, INSTRUCTION_LIMIT));
-        files.unshift({ path, scope: dir === cwd ? "folder" : "parent", bytes, included_bytes: included, truncated: included < bytes });
-        if (included < bytes) warnings.push(`${path} is cut at ${INSTRUCTION_LIMIT} characters`);
-      } catch (e) {
-        warnings.push(`${path}: ${(e as Error).message}`);
-      }
-      break; // AGENTS.md wins over CLAUDE.md in the same folder
+  for (const { path, scope } of instructionPaths(cwd)) {
+    try {
+      const bytes = statSync(path).size;
+      const included = Buffer.byteLength(readFileSync(path, "utf8").slice(0, INSTRUCTION_LIMIT));
+      files.push({ path, scope, bytes, included_bytes: included, truncated: included < bytes });
+      if (included < bytes) warnings.push(`${path} is cut at ${INSTRUCTION_LIMIT} characters`);
+    } catch (e) {
+      warnings.push(`${path}: ${(e as Error).message}`);
     }
   }
   return { files, warnings };

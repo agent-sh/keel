@@ -1,0 +1,390 @@
+// Settings > MCP servers: every server Keel connects to, its state and
+// error, sign-in, its tools (each one a read or not), what else it publishes,
+// adding one (a local command or a remote URL) and importing what the other
+// harnesses already use. /mcp and the palette open it.
+import { Collapsible } from "@base-ui/react/collapsible";
+import { ChevronRight, Download, Eye, Globe, KeyRound, LogOut, RefreshCw, RotateCw, SquareTerminal, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import type { ImportableServer } from "../../../../src/mcp/config.ts";
+import type { McpServerState } from "../../../../src/mcp/manager.ts";
+import { api, reportError } from "../../lib/store.ts";
+import { ago, cn } from "../../lib/utils.ts";
+import { Blank, FolderLine, Ledger, ReaderHead, Seg, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
+
+// A command line to argv: spaces split, quotes group.
+function argv(line: string): string[] {
+  const out: string[] = [];
+  for (const m of line.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g)) out.push(m[1] ?? m[2] ?? m[3]!);
+  return out;
+}
+// KEY=value lines (env) or Key: value lines (headers) to an object.
+function pairs(text: string, sep: "=" | ":"): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const l of text.split("\n")) {
+    const i = l.indexOf(sep);
+    if (i > 0) out[l.slice(0, i).trim()] = l.slice(i + 1).trim();
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+const LABEL: Record<McpServerState["state"], string> = {
+  ready: "Ready", connecting: "Connecting", error: "Failed", needs_auth: "Needs sign-in", disabled: "Off", idle: "Starts on first use",
+  missing: "Not installed", armed: "Armed on the phone", not_armed: "Not armed", unreachable: "Gateway not answering",
+};
+export const mcpMark = (s: McpServerState): Mark =>
+  s.state === "needs_auth" ? "need" : s.state === "connecting" ? "work" : s.state === "error" || s.state === "unreachable" ? "fail" : s.state === "disabled" || s.state === "missing" || s.state === "not_armed" ? "off" : "on";
+// Tools are offered: a process that starts on first use, or phone control the owner armed.
+const offered = (s: McpServerState) => s.state === "ready" || s.state === "idle" || s.state === "armed" || s.state === "not_armed";
+const toolCount = (s: McpServerState) =>
+  s.state === "armed" || s.state === "not_armed" ? `${LABEL[s.state]} · ${s.tools} tools` : s.state === "ready" || s.state === "idle" ? `${s.tools} tool${s.tools === 1 ? "" : "s"}` : LABEL[s.state];
+type Act = (path: string, body?: unknown, method?: string) => Promise<void>;
+
+function IconButton({ title, onClick, children, danger, testid }: { title: string; onClick: () => void; children: React.ReactNode; danger?: boolean; testid?: string }) {
+  return (
+    <button type="button" title={title} aria-label={title} data-testid={testid} onClick={onClick}
+      className={cn("grid size-7 place-items-center rounded-md text-faint transition-colors hover:bg-hover", danger ? "hover:text-danger" : "hover:text-fg")}>
+      {children}
+    </button>
+  );
+}
+
+function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
+  const base = `/api/mcp/servers/${encodeURIComponent(s.name)}`;
+  const canSignIn = s.state === "needs_auth" || (s.sign_in && !s.signed_in && s.state === "error");
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="mcp-server" data-name={s.name} data-state={s.state}>
+      <ReaderHead
+        title={s.name}
+        path={s.target}
+        right={<span data-testid="mcp-toggle-wrap"><Toggle testid="mcp-toggle" on={s.enabled} label={`Turn ${s.name} ${s.enabled ? "off" : "on"}`} onChange={(on) => act(`${base}/toggle`, { enabled: on })} /></span>}
+        facts={[
+          ["State", LABEL[s.state]],
+          ["Tools", <span data-testid="mcp-tool-count">{toolCount(s)}</span>],
+          ["Transport", s.transport],
+          ...(s.bundled ? [["Source", <span data-testid="mcp-bundled">Built in · {s.bundled}</span>] as [string, React.ReactNode]] : []),
+          ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),
+          ...(s.state === "ready" && s.last_connected ? [["Connected", ago(s.last_connected)] as [string, string]] : []),
+        ]}
+      >
+        <div className="mt-3.5 flex flex-wrap items-center gap-2">
+          {canSignIn && (
+            <button type="button" data-testid="mcp-sign-in" className="k-btn" data-ink onClick={async () => {
+              const r = await api<{ url: string }>(`${base}/sign-in`, { method: "POST" }).catch((e) => (reportError(e), null));
+              if (r?.url) window.open(r.url, "_blank", "noopener");
+            }}><KeyRound /> Sign in</button>
+          )}
+          {s.signed_in && <button type="button" className="k-btn" onClick={() => act(`${base}/sign-out`)}><LogOut /> Sign out</button>}
+          <button type="button" className="k-btn" data-testid="mcp-reconnect" onClick={() => act(`${base}/reconnect`)}><RotateCw /> Reconnect</button>
+          {!s.bundled && <button type="button" className="k-btn" data-quiet data-testid="mcp-remove" onClick={() => act(base, undefined, "DELETE")}><Trash2 /> Remove</button>}
+        </div>
+        {s.error && s.state !== "disabled" && (
+          <div className="k-issue mt-3" data-tone={s.state === "missing" || s.state === "not_armed" ? "quiet" : s.state === "needs_auth" ? "need" : undefined} data-testid="mcp-error">{s.error.slice(0, 600)}</div>
+        )}
+      </ReaderHead>
+      <div className="k-reader-body">
+        {offered(s) && s.tool_names.length > 0 && (s.bundled ? (
+          <div>
+            <div className="k-sub">Tools</div>
+            <div className="flex flex-wrap gap-1">{s.tool_names.map((t) => <span key={t} className="k-chip font-mono">{t}</span>)}</div>
+          </div>
+        ) : <div><div className="k-sub">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
+        {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
+        {!offered(s) && !s.error && <p className="text-caption text-faint">Its tools show once it connects.</p>}
+      </div>
+    </div>
+  );
+}
+
+// A server's tools, each one a toggle: a tool the owner counts as a read runs
+// without asking; every other one asks first. What the server itself calls
+// read-only is only its word, shown with a mark, until the owner takes it.
+function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
+  const [all, setAll] = useState(false);
+  const reads = new Set(s.read_tools);
+  const hinted = s.hinted_reads.filter((t) => !reads.has(t));
+  const put = (tools: string[]) => act(`${base}/reads`, { tools }, "PUT");
+  const shown = all ? s.tool_names : s.tool_names.slice(0, 10);
+  return (
+    <div data-testid="mcp-tool-reads">
+      <div className="flex flex-wrap gap-1">
+        {shown.map((t) => {
+          const read = reads.has(t);
+          const hint = s.hinted_reads.includes(t);
+          return (
+            <button
+              key={t}
+              type="button"
+              data-testid="mcp-tool-read"
+              data-tool={t}
+              aria-pressed={read}
+              title={`${read ? "Counts as a read: runs without asking. Click to ask first again." : "Asks before it runs. Click to count it as a read."}${hint ? " The server calls it read-only." : ""}`}
+              onClick={() => put(read ? s.read_tools.filter((x) => x !== t) : [...s.read_tools, t])}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-1.5 py-px font-mono text-micro transition-colors",
+                read ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-line text-muted hover:border-line-strong hover:text-fg",
+              )}
+            >
+              {read && <Eye className="size-3" aria-hidden />}
+              {t}
+              {hint && !read && <span className="text-faint" aria-hidden>·ro</span>}
+            </button>
+          );
+        })}
+        {s.tool_names.length > 10 && (
+          <button type="button" onClick={() => setAll(!all)} className="px-1 text-micro text-faint hover:text-fg">
+            {all ? "fewer" : `+${s.tool_names.length - 10} more`}
+          </button>
+        )}
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 text-micro text-faint">
+        <span>{reads.size ? `${reads.size} of ${s.tool_names.length} count as reads` : "Every tool asks first"}</span>
+        {hinted.length > 0 && (
+          <button type="button" data-testid="mcp-reads-hinted" onClick={() => put([...s.read_tools, ...hinted])} className="text-accent hover:underline">
+            Count the {hinted.length} it calls read-only as reads
+          </button>
+        )}
+        {reads.size > 0 && <button type="button" onClick={() => put([])} className="hover:text-fg hover:underline">Ask for all</button>}
+      </div>
+    </div>
+  );
+}
+
+type Resource = { uri?: string; uriTemplate?: string; name?: string; description?: string; mimeType?: string };
+type Prompt = { name: string; description?: string; arguments?: { name: string; description?: string; required?: boolean }[] };
+
+// What a server publishes besides tools: its resources (read one) and its
+// prompt templates (fill the arguments, see the text). Listed when opened.
+function ServerContents({ s, base }: { s: McpServerState; base: string }) {
+  const [open, setOpen] = useState(false);
+  const [resources, setResources] = useState<Resource[] | null>(null);
+  const [prompts, setPrompts] = useState<Prompt[] | null>(null);
+  const [shown, setShown] = useState<{ title: string; text: string } | null>(null);
+  const [args, setArgs] = useState<Record<string, Record<string, string>>>({});
+  useEffect(() => {
+    if (!open) return;
+    if (s.resources) api<{ resources: Resource[] }>(`${base}/resources`).then((r) => setResources(r.resources)).catch(reportError);
+    if (s.prompts) api<{ prompts: Prompt[] }>(`${base}/prompts`).then((r) => setPrompts(r.prompts)).catch(reportError);
+  }, [open, base, s.resources, s.prompts]);
+  const read = (uri: string) =>
+    api<{ text: string }>(`${base}/resource?uri=${encodeURIComponent(uri)}`).then((r) => setShown({ title: uri, text: r.text })).catch(reportError);
+  const fill = (p: Prompt) =>
+    api<{ text: string }>(`${base}/prompts/${encodeURIComponent(p.name)}`, { method: "POST", body: JSON.stringify({ arguments: args[p.name] ?? {} }) })
+      .then((r) => setShown({ title: p.name, text: r.text }))
+      .catch(reportError);
+  const what = [s.resources && "resources", s.prompts && "prompts"].filter(Boolean).join(" and ");
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen}>
+      <Collapsible.Trigger data-testid="mcp-contents-toggle" className="group/c inline-flex items-center gap-1 text-caption text-muted hover:text-fg">
+        <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/c:rotate-90" />
+        {what[0]!.toUpperCase() + what.slice(1)}
+      </Collapsible.Trigger>
+      <Collapsible.Panel data-testid="mcp-contents" className="mt-1.5 space-y-2">
+        {s.resources && (
+          <div>
+            <div className="text-micro font-medium text-faint">Resources</div>
+            {resources === null ? <div className="text-micro text-faint">Loading</div> : resources.length === 0 ? <div className="text-micro text-faint">None</div> : (
+              <ul className="mt-1 space-y-0.5">
+                {resources.map((r) => (
+                  <li key={r.uri ?? r.uriTemplate} className="flex items-baseline gap-2 text-caption">
+                    {r.uri ? (
+                      <button type="button" data-testid="mcp-resource" onClick={() => read(r.uri!)} className="font-mono text-accent hover:underline">{r.uri}</button>
+                    ) : (
+                      <span className="font-mono text-muted" title="A template: the model fills it in">{r.uriTemplate}</span>
+                    )}
+                    {(r.name || r.description) && <span className="truncate text-faint">{r.description ?? r.name}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {s.prompts && (
+          <div>
+            <div className="text-micro font-medium text-faint">Prompts</div>
+            {prompts === null ? <div className="text-micro text-faint">Loading</div> : prompts.length === 0 ? <div className="text-micro text-faint">None</div> : (
+              <ul className="mt-1 space-y-1.5">
+                {prompts.map((p) => (
+                  <li key={p.name} data-testid="mcp-prompt" data-name={p.name} className="flex flex-wrap items-center gap-2 text-caption">
+                    <span className="font-mono text-fg">{p.name}</span>
+                    {p.description && <span className="text-faint">{p.description}</span>}
+                    {(p.arguments ?? []).map((a) => (
+                      <input
+                        key={a.name}
+                        aria-label={`${p.name} ${a.name}`}
+                        placeholder={a.name + (a.required ? "" : " (optional)")}
+                        value={args[p.name]?.[a.name] ?? ""}
+                        onChange={(e) => setArgs((x) => ({ ...x, [p.name]: { ...x[p.name], [a.name]: e.target.value } }))}
+                        className="h-7 w-36 rounded-md border border-line bg-bg px-2 text-caption outline-none placeholder:text-faint focus:border-accent"
+                      />
+                    ))}
+                    <button type="button" data-testid="mcp-prompt-get" onClick={() => fill(p)} className="rounded-md border border-line px-2 py-0.5 text-caption text-muted hover:bg-hover hover:text-fg">Show</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {shown && (
+          <div data-testid="mcp-content-text" className="rounded-md border border-line bg-bg">
+            <div className="flex items-center justify-between border-b border-line px-2 py-1">
+              <span className="truncate font-mono text-micro text-muted">{shown.title}</span>
+              <IconButton title="Close" onClick={() => setShown(null)}><X className="size-3.5" /></IconButton>
+            </div>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-micro text-fg">{shown.text}</pre>
+          </div>
+        )}
+      </Collapsible.Panel>
+    </Collapsible.Root>
+  );
+}
+
+function AddServer({ onAdded }: { onAdded: (servers: McpServerState[], name: string) => void }) {
+  const [kind, setKind] = useState<"command" | "url">("command");
+  const [name, setName] = useState("");
+  const [target, setTarget] = useState("");
+  const [extra, setExtra] = useState("");
+  const [bearer, setBearer] = useState("");
+  const [err, setErr] = useState("");
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setErr("");
+    const words = argv(target.trim());
+    const body = kind === "command"
+      ? { name: name.trim(), command: words[0], args: words.slice(1), env: pairs(extra, "=") }
+      : { name: name.trim(), url: target.trim(), headers: pairs(extra, ":"), bearer_env: bearer.trim() || undefined };
+    try {
+      const r = await api<{ servers: McpServerState[] }>("/api/mcp/servers", { method: "POST", body: JSON.stringify(body) });
+      onAdded(r.servers, name.trim());
+      setName(""); setTarget(""); setExtra(""); setBearer("");
+    } catch (x) {
+      setErr((x as Error).message);
+    }
+  };
+  return (
+    <form onSubmit={submit} className="k-form" data-testid="mcp-add">
+      <div className="k-form-row">
+        <Seg value={kind} onChange={(k) => { setKind(k); setExtra(""); }} label="Kind" options={[["command", "Local command"], ["url", "Remote URL"]]} />
+        <span className="k-form-hint">{kind === "command" ? "A program Keel starts, speaking MCP over stdio." : "Streamable HTTP. Sign-in (OAuth) is offered when the server asks for it."}</span>
+      </div>
+      <label>Name<input data-testid="mcp-add-name" data-mono value={name} onChange={(e) => setName(e.target.value)} placeholder="docs" /></label>
+      <label>{kind === "command" ? "Command" : "URL"}
+        <input data-testid="mcp-add-target" data-mono value={target} onChange={(e) => setTarget(e.target.value)} placeholder={kind === "command" ? "npx -y @modelcontextprotocol/server-everything" : "https://example.com/mcp"} />
+      </label>
+      <label>{kind === "command" ? "Environment, one KEY=value a line" : "Headers, one Name: value a line"}
+        <textarea data-testid="mcp-add-extra" value={extra} onChange={(e) => setExtra(e.target.value)} rows={2} placeholder={kind === "command" ? "LOG_LEVEL=warn" : "X-Team: tools"} />
+      </label>
+      {kind === "url" && (
+        <label>Bearer token from the variable<input data-mono data-testid="mcp-add-bearer" value={bearer} onChange={(e) => setBearer(e.target.value)} placeholder="DOCS_TOKEN (its value never enters the file)" /></label>
+      )}
+      {err && <p className="k-form-err" data-testid="mcp-add-error">{err}</p>}
+      <div><button type="submit" data-testid="mcp-add-submit" className="k-btn" data-ink disabled={!name.trim() || !target.trim()}>Add the server</button></div>
+    </form>
+  );
+}
+
+// The same server is often configured in several agents: one row each, with the agents that hold it.
+function ImportList({ items, onImport }: { items: ImportableServer[]; onImport: (i: ImportableServer) => void }) {
+  const target = (i: ImportableServer) => i.config.url ?? [i.config.command, ...(i.config.args ?? [])].join(" ");
+  const rows = new Map<string, { first: ImportableServer; labels: string[]; configured: boolean }>();
+  for (const i of items) {
+    const k = `${i.name}\u0000${target(i)}`;
+    const r = rows.get(k);
+    if (r) { r.labels.push(i.label); r.configured ||= i.configured; }
+    else rows.set(k, { first: i, labels: [i.label], configured: i.configured });
+  }
+  const list = [...rows.values()].sort((a, b) => Number(a.configured) - Number(b.configured) || a.first.name.localeCompare(b.first.name));
+  if (!list.length) return <p className="text-caption text-faint">Claude Code, Codex and the others hold no servers Keel can read.</p>;
+  return (
+    <div data-testid="mcp-importable">
+      {list.map(({ first: i, labels, configured }) => (
+        <div key={i.source + i.name} className="flex items-center gap-2.5 border-b border-line py-2.5 last:border-0">
+          {i.config.url ? <Globe className="size-3.5 shrink-0 text-faint" /> : <SquareTerminal className="size-3.5 shrink-0 text-faint" />}
+          <span className="shrink-0 text-ui font-medium">{i.name}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" title={target(i)}>{target(i)}</span>
+          {labels.map((l) => <span key={l} className="k-chip">{l.replace(/^Claude Code \((.*)\)$/, "Claude · $1")}</span>)}
+          {configured ? <span className="w-20 shrink-0 text-right text-caption text-faint">Added</span> : (
+            <button type="button" data-testid="mcp-import" onClick={() => onImport(i)} className="k-btn w-20 justify-center"><Download /> Import</button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function McpServers() {
+  const [servers, setServers] = useState<McpServerState[] | null>(null);
+  const [importable, setImportable] = useState<ImportableServer[]>([]);
+  const [sel, setSel] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+  const load = useCallback(() => api<{ servers: McpServerState[] }>("/api/mcp/servers").then((r) => setServers(r.servers)).catch(reportError), []);
+  const loadImportable = useCallback(() => api<{ servers: ImportableServer[] }>("/api/mcp/importable").then((r) => setImportable(r.servers)).catch(reportError), []);
+  // States change on the daemon (connects, crashes): read them again while the page is open.
+  useEffect(() => {
+    load();
+    loadImportable();
+    const t = setInterval(load, 1500);
+    return () => clearInterval(t);
+  }, [load, loadImportable]);
+  useEffect(() => { if (servers && !sel) setSel(servers.find((s) => !s.bundled)?.name ?? servers[0]?.name ?? "+add"); }, [servers]);
+
+  const act: Act = async (path, body, method = "POST") => {
+    try {
+      const r = await api<{ servers: McpServerState[] }>(path, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+      setServers(r.servers);
+      if (method === "DELETE") { loadImportable(); setSel(null); }
+    } catch (e) {
+      setNote((e as Error).message);
+    }
+  };
+  const all = servers ?? [];
+  const entry = (s: McpServerState) => ({ id: s.name, name: s.name, desc: s.bundled ?? tilde(s.target), mark: mcpMark(s), markLabel: LABEL[s.state], aside: s.state === "ready" || s.state === "idle" ? `${s.tools}` : LABEL[s.state].toLowerCase(), testid: "mcp-entry" });
+  const groups: Group[] = [
+    { id: "yours", title: "Yours", path: "mcp.json", entries: all.filter((s) => !s.bundled).map(entry) },
+    { id: "bundled", title: "Built into Keel", entries: all.filter((s) => s.bundled).map(entry) },
+  ];
+  const cur = all.find((s) => s.name === sel);
+  const ready = all.filter((s) => s.state === "ready" || s.state === "idle" || s.state === "armed");
+  const waiting = all.filter((s) => s.state === "needs_auth").length;
+  const failed = all.filter((s) => mcpMark(s) === "fail").length;
+  const fresh = importable.filter((i) => !i.configured).length;
+
+  return (
+    <div data-testid="mcp-panel">
+      <FolderLine global="Tools load on demand: the model searches for them" tally={[
+        { n: all.length, label: "servers" },
+        { n: ready.reduce((n, s) => n + s.tools, 0), label: "tools offered" },
+        ...(waiting ? [{ n: waiting, label: "need sign-in", tone: "need" as const }] : []),
+        ...(failed ? [{ n: failed, label: "failed", tone: "fail" as const }] : []),
+      ]} />
+      {note && (
+        <div className="k-issue mb-3 flex items-center gap-2" data-tone="quiet" data-testid="mcp-note">
+          <span className="min-w-0 flex-1">{note}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setNote("")}><X className="size-3.5" /></button>
+        </div>
+      )}
+      <Ledger testid="mcp-servers" groups={groups} selected={sel} onSelect={setSel}
+        add={[{ id: "+add", label: "Add a server" }, { id: "+import", label: fresh ? `Import from other agents (${fresh})` : "Import from other agents" }]}
+        empty="No servers yet.">
+        {sel === "+add" ? (
+          <>
+            <ReaderHead title="Add a server" desc="It is written to Keel's mcp.json. Its tools stay out of every request until the model searches for them, so a server costs no tokens until it is used." />
+            <div className="k-reader-body"><AddServer onAdded={(s, name) => { setServers(s); loadImportable(); setSel(name); }} /></div>
+          </>
+        ) : sel === "+import" ? (
+          <>
+            <ReaderHead title="Import from other agents" desc="The servers Claude Code, Codex and the others are set up with, read from their own files. Importing copies one into Keel's mcp.json." right={
+              <button type="button" className="k-btn" data-testid="mcp-reload" onClick={async () => {
+                try {
+                  const r = await api<{ line: string; servers: McpServerState[] }>("/api/mcp/reload", { method: "POST", body: "{}" });
+                  setServers(r.servers);
+                  setNote(r.line);
+                } catch (e) { setNote((e as Error).message); }
+              }}><RefreshCw /> Read mcp.json again</button>
+            } />
+            <div className="k-reader-body"><ImportList items={importable} onImport={async (i) => { await act("/api/mcp/import", { source: i.source, name: i.name }); loadImportable(); setSel(i.name); }} /></div>
+          </>
+        ) : cur ? <ServerReader key={cur.name} s={cur} act={act} /> : <Blank title={servers ? "No server picked" : "Reading the servers"} />}
+      </Ledger>
+    </div>
+  );
+}

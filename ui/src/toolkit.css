@@ -1,0 +1,117 @@
+/* The toolkit pages (MCP servers, skills, commands, agents, plugins, hooks,
+   instructions): one instrument. A ledger of what the daemon loads, grouped
+   by where each entry comes from, and beside it the reader with the file
+   itself. Marks speak the Bridge's shape language: a dot is on, a hollow
+   ring is off, a violet diamond waits for the owner, a red square failed. */
+
+.k-folder { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: -4px 0 16px; }
+.k-folder-label { font: 700 11.5px/1 var(--font-inst); font-stretch: 75%; color: var(--faint); }
+.k-tally { display: flex; gap: 22px; margin-left: auto; }
+.k-tally > div { display: flex; align-items: baseline; gap: 6px; }
+.k-tally b { font: 700 18px/1 var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--fg); }
+.k-tally span { font: 500 11px/1 var(--font-inst); font-stretch: 75%; color: var(--faint); }
+.k-tally [data-tone="need"] b { color: var(--st-need); }
+.k-tally [data-tone="fail"] b { color: var(--st-fail); }
+
+.k-ledger {
+  display: grid; grid-template-columns: minmax(17rem, 23rem) minmax(0, 1fr);
+  height: max(30rem, calc(100dvh - 250px));
+  border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: var(--raised);
+}
+.k-ledger-list { min-height: 0; overflow-y: auto; padding-bottom: 12px; background: var(--panel); border-right: 1px solid var(--line); }
+.k-ledger-find { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 7px; height: 40px; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--faint); }
+.k-ledger-find svg { width: 13px; height: 13px; flex-shrink: 0; }
+.k-ledger-find input { width: 100%; background: transparent; outline: none; font-size: 12.5px; color: var(--fg); }
+.k-ledger-find input::placeholder { color: var(--faint); }
+.k-ledger-find ~ div .k-src { top: 41px; }
+.k-src { position: sticky; top: 0; z-index: 1; display: flex; align-items: baseline; gap: 8px; padding: 13px 14px 6px; background: linear-gradient(var(--panel) 85%, color-mix(in oklch, var(--panel) 0%, transparent)); }
+.k-src b { flex-shrink: 0; font: 700 11.5px/1.2 var(--font-inst); font-stretch: 75%; color: var(--muted); }
+.k-src code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px/1.2 var(--font-mono); color: var(--faint); }
+.k-src i { margin-left: auto; font: normal 500 10.5px/1 var(--font-inst); font-stretch: 75%; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.k-entry {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; column-gap: 11px; row-gap: 2px; align-items: center;
+  width: 100%; padding: 7px 14px 8px; text-align: left; transition: background-color 120ms var(--ease-out);
+}
+.k-entry:hover { background: var(--hover); }
+.k-entry:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.k-entry[aria-current="true"] { background: var(--raised); box-shadow: inset 3px 0 0 var(--fg), inset 0 1px 0 var(--line), inset 0 -1px 0 var(--line); }
+.k-entry .k-mark { width: 8px; height: 8px; }
+.k-entry-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12.5px/1.3 var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.01em; color: var(--fg); }
+.k-entry-aside { font: 500 10.5px/1 var(--font-inst); font-stretch: 75%; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.k-entry-desc { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.35; color: var(--faint); }
+.k-entry[data-off] .k-entry-name { color: var(--faint); font-weight: 500; }
+.k-entry[data-add] { grid-template-columns: 10px minmax(0, 1fr); margin-top: 6px; color: var(--muted); }
+.k-entry[data-add] .k-entry-name { color: var(--muted); font-weight: 500; }
+.k-entry[data-add] svg { width: 12px; height: 12px; }
+.k-ledger-empty { padding: 24px 16px; font-size: 12.5px; color: var(--faint); }
+
+.k-reader { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.k-reader-head { padding: 18px 22px 15px; border-bottom: 1px solid var(--line); }
+.k-reader-title { display: flex; align-items: center; gap: 10px; }
+.k-reader-title h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 700 20px/1.2 var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.025em; }
+.k-reader-title > h3 + * { margin-left: auto; }
+.k-reader-desc { margin-top: 6px; max-width: 64ch; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.k-path { display: block; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/1.4 var(--font-mono); color: var(--faint); }
+.k-facts { display: flex; flex-wrap: wrap; gap: 8px 26px; margin-top: 13px; }
+.k-facts > div { display: flex; flex-direction: column; gap: 3px; }
+.k-facts dt { font: 700 10px/1 var(--font-inst); font-stretch: 75%; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.k-facts dd { font-size: 12.5px; line-height: 1.3; color: var(--fg); font-variant-numeric: tabular-nums; }
+.k-reader-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 22px 22px; }
+.k-reader-body > * + * { margin-top: 16px; }
+.k-blank { display: grid; place-content: center; gap: 6px; height: 100%; padding: 24px; text-align: center; color: var(--faint); font-size: 12.5px; }
+.k-blank b { font: 700 13px var(--font-inst); font-stretch: 87.5%; color: var(--muted); }
+.k-sub { font: 700 11px/1 var(--font-inst); font-stretch: 75%; color: var(--faint); margin-bottom: 8px; }
+
+/* The file: what the setting is. Amber while it holds changes not saved yet (work in progress). */
+.k-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.k-editor-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; height: 38px; padding: 0 10px 0 22px; border-bottom: 1px solid var(--line); font: 500 11px/1 var(--font-inst); font-stretch: 75%; color: var(--faint); }
+.k-editor-bar > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-editor-bar .k-dirty { color: var(--st-work); }
+.k-editor-bar .k-saved { color: var(--st-done); }
+.k-editor-bar > .k-btn:first-of-type { margin-left: auto; }
+.k-editor textarea { flex: 1; min-height: 12rem; resize: none; padding: 14px 22px 28px; border: 0; outline: none; background: var(--sunken); color: var(--fg); font: 12.5px/1.65 var(--font-mono); tab-size: 2; }
+.k-editor-pre { flex: 1; min-height: 12rem; margin: 0; overflow: auto; padding: 14px 22px 28px; background: var(--sunken); color: var(--muted); font: 12.5px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+.k-editor-note { padding: 7px 22px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.k-editor-note[data-tone="fail"] { color: var(--danger); }
+
+.k-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; flex-shrink: 0; padding: 0 11px; border-radius: 3px; font: 600 12px/1 var(--font-sans); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); transition: background-color 120ms var(--ease-out); }
+.k-btn:hover { background: var(--hover); }
+.k-btn[data-ink] { background: var(--fg); color: var(--bg); box-shadow: none; }
+.k-btn[data-ink]:hover { background: var(--accent-hover); }
+.k-btn[data-quiet] { box-shadow: none; color: var(--muted); }
+.k-btn[data-quiet]:hover { color: var(--fg); }
+.k-btn:disabled { opacity: 0.4; pointer-events: none; }
+.k-btn svg { width: 13px; height: 13px; }
+
+.k-issue { padding: 8px 11px; border-radius: 3px; background: var(--danger-soft); box-shadow: inset 3px 0 0 var(--st-fail); font: 11.5px/1.55 var(--font-mono); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.k-issue[data-tone="need"] { background: color-mix(in oklch, var(--st-need) 9%, transparent); box-shadow: inset 3px 0 0 var(--st-need); font-family: var(--font-sans); font-size: 12.5px; }
+.k-issue[data-tone="quiet"] { background: var(--sunken); box-shadow: inset 3px 0 0 var(--line-strong); font-family: var(--font-sans); font-size: 12.5px; color: var(--muted); }
+
+.k-form { display: grid; gap: 12px; max-width: 40rem; }
+.k-form label { display: grid; gap: 5px; font: 700 10px/1 var(--font-inst); font-stretch: 75%; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.k-form input, .k-form textarea { height: 32px; padding: 0 10px; border-radius: 3px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--fg); font: 13px var(--font-sans); letter-spacing: 0; text-transform: none; outline: none; }
+.k-form textarea { height: auto; min-height: 4.5rem; padding: 8px 10px; resize: vertical; font: 12.5px/1.5 var(--font-mono); }
+.k-form input:focus, .k-form textarea:focus { border-color: var(--fg); }
+.k-form input[data-mono] { font-family: var(--font-mono); font-size: 12.5px; }
+.k-form-row { display: flex; align-items: center; gap: 8px; }
+.k-form-hint { font-size: 12px; color: var(--faint); }
+.k-form-err { font-size: 12.5px; color: var(--danger); }
+
+.k-seg { display: inline-flex; padding: 2px; border-radius: 4px; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); }
+.k-seg button { height: 24px; padding: 0 10px; border-radius: 3px; font: 600 11.5px/1 var(--font-sans); color: var(--muted); }
+.k-seg button[aria-checked="true"] { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line); }
+
+.k-switch { position: relative; display: flex; width: 34px; height: 19px; flex-shrink: 0; padding: 2px; border-radius: 10px; background: var(--line-strong); transition: background-color 150ms var(--ease-out); }
+.k-switch[data-checked] { background: var(--fg); }
+.k-switch-thumb { width: 15px; height: 15px; border-radius: 50%; background: var(--raised); box-shadow: var(--shadow-1); transition: transform 150ms var(--ease-out); }
+.k-switch[data-checked] .k-switch-thumb { transform: translateX(15px); }
+.k-switch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.k-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: 3px; font: 500 11px/1 var(--font-inst); font-stretch: 75%; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
+
+@media (max-width: 767px) {
+  .k-ledger { grid-template-columns: 1fr; height: auto; }
+  .k-ledger-list { max-height: 40dvh; border-right: 0; border-bottom: 1px solid var(--line); }
+  .k-tally { margin-left: 0; }
+}

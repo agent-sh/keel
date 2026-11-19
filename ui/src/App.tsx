@@ -8,6 +8,7 @@ import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
 import { AdminBand } from "./components/AdminBand.tsx";
 import "./lib/integrations-ui.ts";
+import "./lib/surfaces-ui.ts";
 import { installKeymap } from "./lib/keys.ts";
 import { actions, connect, reportError } from "./lib/store.ts";
 import { phone, savePref, setUI, useUI } from "./lib/ui.ts";
@@ -15,7 +16,6 @@ import { phone, savePref, setUI, useUI } from "./lib/ui.ts";
 // Overlays and Settings load on first use; the first page carries the shell only.
 const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
 const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
-const McpPanel = lazy(() => import("./components/McpPanel.tsx").then((m) => ({ default: m.McpPanel })));
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
 // The bridge (stations, sessions) is its own chunk, fetched with the page.
 const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
@@ -71,12 +71,10 @@ function Overlays() {
   const palette = useUI((s) => s.palette);
   const shortcuts = useUI((s) => s.shortcuts);
   const errors = useUI((s) => s.errors);
-  const mcp = useUI((s) => s.mcp);
   return (
     <>
       <OnFirstOpen open={palette}><Palette /></OnFirstOpen>
       <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
-      <OnFirstOpen open={mcp}><McpPanel open={mcp} onOpenChange={(o) => setUI({ mcp: o })} /></OnFirstOpen>
       <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
     </>
   );
