@@ -24,6 +24,8 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
   const c = (checkpoints = new Checkpoints(store, deps.bus, errors, join(store.stateDir, "checkpoints")));
   const quiet = (at: string, f: () => unknown) =>
     Promise.resolve().then(f).catch((e) => void errors.capture("server", e, { at }));
+  // A store that grew past its budget (or holds sessions that are gone) is trimmed soon after start.
+  setTimeout(() => quiet("checkpoint maintenance", () => c.maintain()), 60_000).unref?.();
   registerHooks({
     beforeTool: async (s, call) => void (await quiet("checkpoint before", () => c.before(s, call))),
     afterTool: (s, call) => c.after(s, call),
@@ -41,7 +43,7 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         const sh = c.shadow(s.workspace);
-        return json({ turns: await c.turns(s), scope: sh.mode, reason: sh.reason ?? null });
+        return json({ turns: await c.turns(s), scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
       }),
     },
     "/api/sessions/:id/checkpoints/diff": {

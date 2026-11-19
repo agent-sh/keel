@@ -17,7 +17,7 @@ type Pending = { title: string; body: { turn?: number; paths?: string[] }; previ
 export function ChangesPanel({ session }: { session: Session }) {
   const sessionId = session.id;
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [scope, setScope] = useState<{ scope: string; reason: string | null }>({ scope: "tree", reason: null });
+  const [scope, setScope] = useState<{ scope: string; reason: string | null; skipped?: string[]; skipped_count?: number }>({ scope: "tree", reason: null });
   const [all, setAll] = useState<Diff | null>(null);
   const [turnDiff, setTurnDiff] = useState<Record<number, Diff>>({});
   const [pending, setPending] = useState<Pending | null>(null);
@@ -28,9 +28,9 @@ export function ChangesPanel({ session }: { session: Session }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ turns: Turn[]; scope: string; reason: string | null }>(`/api/sessions/${sessionId}/checkpoints`);
+      const r = await api<{ turns: Turn[]; scope: string; reason: string | null; skipped?: string[]; skipped_count?: number }>(`/api/sessions/${sessionId}/checkpoints`);
       setTurns(r.turns);
-      setScope({ scope: r.scope, reason: r.reason });
+      setScope({ scope: r.scope, reason: r.reason, skipped: r.skipped, skipped_count: r.skipped_count });
       setTurnDiff({});
       const first = r.turns[0]?.turn;
       setAll(first === undefined ? { files: [], diff: "", truncated: false, scope: "tree" } : await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?from=${first}`));
@@ -90,6 +90,11 @@ export function ChangesPanel({ session }: { session: Session }) {
           </Tabs.List>
           {scope.scope === "written" && (
             <span className="truncate text-caption text-warn" title={scope.reason ?? ""}>Only files the tools wrote are tracked: {scope.reason}</span>
+          )}
+          {scope.scope !== "written" && !!scope.skipped_count && (
+            <span className="truncate text-caption text-faint" data-testid="checkpoint-skipped" title={scope.skipped?.join("\n")}>
+              {scope.skipped_count} large file{scope.skipped_count === 1 ? "" : "s"} left out of checkpoints
+            </span>
           )}
         </div>
         {(done || err) && (

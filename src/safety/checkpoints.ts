@@ -3,7 +3,7 @@
 // ("end"). A turn's diff is start..end; a rewind puts files back as they were
 // at a turn's start, and skips files changed outside the session's turns
 // since (the owner's or another session's edits) unless told otherwise.
-import { rmSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, rmSync, statfsSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -29,6 +29,34 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn INTEGER NOT NULL, at TEXT NOT NULL, tree TEXT NOT NULL, paths TEXT, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS checkpoints_session ON checkpoints(session_id, turn, created);
 `;
+
+// Retention: the newest KEEP checkpoints of a session (Claude Code keeps the
+// 100 most recent), and a store no larger than the budget (default the
+// smaller of 10 GB and 5% of the disk it is on), oldest first.
+const KEEP = Number(process.env.KEEL_CHECKPOINT_KEEP ?? 100);
+function budget(root: string): number {
+  if (process.env.KEEL_CHECKPOINT_BUDGET_MB) return Number(process.env.KEEL_CHECKPOINT_BUDGET_MB) * 1024 * 1024;
+  try {
+    mkdirSync(root, { recursive: true });
+    const st = statfsSync(root);
+    return Math.min(10 * 1024 ** 3, st.blocks * st.bsize * 0.05);
+  } catch {
+    return 10 * 1024 ** 3;
+  }
+}
+function sizeOf(dir: string): number {
+  let n = 0;
+  const walk = (d: string) => {
+    let names: string[] = [];
+    try { names = readdirSync(d); } catch { return; }
+    for (const x of names) {
+      const p = join(d, x);
+      try { const st = lstatSync(p); if (st.isDirectory()) walk(p); else n += st.size; } catch {}
+    }
+  };
+  walk(dir);
+  return n;
+}
 
 type Live = { turn: number; start: Promise<Checkpoint>; written: Set<string>; dirty: boolean };
 
@@ -135,6 +163,44 @@ export class Checkpoints {
     const tree = await sh.snapshot(start.paths ?? undefined);
     this.save({ session_id: s.id, turn: live.turn, at: "end", tree, paths: start.paths });
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { turn: live.turn } });
+    this.maybeMaintain(s.workspace);
+  }
+
+  // Every 20 turn ends of a workspace, or when the last pass was an hour ago:
+  // retention, then the store is repacked and what no checkpoint holds goes.
+  private ends = new Map<string, { n: number; at: number }>();
+  private maybeMaintain(workspace: string) {
+    const e = this.ends.get(workspace) ?? { n: 0, at: Date.now() };
+    e.n++;
+    this.ends.set(workspace, e);
+    if (e.n < 20 && Date.now() - e.at < 3600_000) return;
+    this.ends.set(workspace, { n: 0, at: Date.now() });
+    this.maintain().catch((err) => this.errors.capture("server", err, { at: "checkpoint maintenance" }));
+  }
+
+  async maintain(): Promise<{ removed: number; bytes: number }> {
+    const db = this.store.db;
+    let removed = 0;
+    // Rows of sessions that are gone, and past the newest KEEP of each session.
+    removed += db.query("DELETE FROM checkpoints WHERE session_id NOT IN (SELECT id FROM sessions)").run().changes;
+    removed += db.query(`DELETE FROM checkpoints WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created DESC) AS r FROM checkpoints) WHERE r > ?)`).run(KEEP).changes;
+    const gcAll = async () => {
+      const rows = db.query<{ id: string; tree: string; workspace: string }, []>("SELECT c.id, c.tree, s.workspace FROM checkpoints c JOIN sessions s ON s.id = c.session_id").all();
+      const by = new Map<string, Map<string, string>>();
+      for (const r of rows) (by.get(r.workspace) ?? by.set(r.workspace, new Map()).get(r.workspace)!).set(r.id, r.tree);
+      for (const ws of new Set([...this.shadows.keys(), ...by.keys()])) await this.shadow(ws).maintain(by.get(ws) ?? new Map());
+    };
+    await gcAll();
+    // Over the budget: the oldest tenth goes, until it fits.
+    const cap = budget(this.root);
+    let bytes = sizeOf(this.root);
+    for (let i = 0; i < 6 && bytes > cap; i++) {
+      const n = Math.max(1, Math.ceil((db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM checkpoints").get()?.n ?? 0) / 10));
+      removed += db.query("DELETE FROM checkpoints WHERE id IN (SELECT id FROM checkpoints ORDER BY created LIMIT ?)").run(n).changes;
+      await gcAll();
+      bytes = sizeOf(this.root);
+    }
+    return { removed, bytes };
   }
 
   // The turns with checkpoints, each with what it changed.
