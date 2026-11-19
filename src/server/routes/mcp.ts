@@ -4,7 +4,8 @@ import { installMcpTools } from "../../mcp/tools.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { readConfig, type McpServerConfig } from "../../mcp/config.ts";
-import { importHome } from "../../mcp/sources.ts";
+import { endpoint, importHome } from "../../mcp/sources.ts";
+import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
 import { presence } from "./permissions.ts";
@@ -200,6 +201,72 @@ export const mcpRoutes: RouteModule = (deps) => {
       POST: () => {
         const changed = m.syncSources();
         return json({ changed, servers: m.list() });
+      },
+    },
+    // Connectors: the vendors' own remote servers, with what each needs to sign in.
+    "/api/mcp/connectors": {
+      GET: async (req: Request) => {
+        const have = new Map(m.list().filter((s) => s.endpoint).map((s) => [s.endpoint!, s.name]));
+        const gh = await ghSignedIn();
+        const connectors = await Promise.all(SUGGESTED.map(async (c) => ({
+          ...c,
+          access: await access(c.url).catch((e) => ({ kind: "unreachable" as const, error: (e as Error).message })),
+          added: have.get(endpoint({ url: c.url })),
+          gh: c.via === "gh" ? gh : undefined,
+        })));
+        return json({ connectors, redirect_uri: `${new URL(req.url).origin}/api/mcp/oauth/callback`, registry: REGISTRY });
+      },
+    },
+    "/api/mcp/connectors/:id": {
+      POST: async (req: any) => {
+        const c = SUGGESTED.find((x) => x.id === req.params.id);
+        if (!c) return bad(`no connector named ${req.params.id}`, 404);
+        const b = await body(req);
+        const gh = c.via === "gh" && b.client_id === undefined && (await ghSignedIn());
+        // The GitHub CLI's sign-in runs gh at each connect: a command, so a remote device needs the passkey.
+        if (gh) { const guard = needs(req); if (guard) return guard; }
+        const cfg = connectorConfig(c, { gh, client_id: b.client_id ? String(b.client_id).trim() : undefined, client_secret_env: b.client_secret_env ? String(b.client_secret_env).trim() : undefined });
+        const name = String(b.name ?? c.id);
+        const err = m.add(name, cfg);
+        return err ? bad(err) : json({ name, servers: m.list() });
+      },
+    },
+    // The official MCP registry (or a file: mirror), searched by name.
+    "/api/mcp/registry": {
+      GET: async (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        try {
+          const r = await searchRegistry(q.get("q") ?? "", q.get("cursor") ?? undefined);
+          const have = new Set(m.list().map((s) => s.endpoint).filter(Boolean));
+          return json({ ...r, servers: r.servers.map((x) => ({ ...x, suggested_name: keelName(x.name), added: (!!x.remote && have.has(endpoint({ url: x.remote.url }))) || (!!x.package && have.has(endpoint({ command: x.package.command, args: x.package.args }))) })) });
+        } catch (e) {
+          deps.errors.capture("server", e, { at: "mcp registry search" });
+          return bad((e as Error).message, 502);
+        }
+      },
+    },
+    // Add a registry server: its remote URL with the headers it asks for, or its package run as a command with its env.
+    "/api/mcp/registry/add": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        const found = (await searchRegistry(String(b.server ?? ""))).servers.find((x) => x.name === b.server);
+        if (!found) return bad(`the registry has no server named ${b.server}`, 404);
+        const values = (b.values && typeof b.values === "object" ? b.values : {}) as Record<string, string>;
+        const useRemote = b.kind !== "package" && !!found.remote;
+        const spec = useRemote ? found.remote!.headers : found.package?.env ?? [];
+        const missing = spec.filter((v) => v.required && !String(values[v.name] ?? "").trim()).map((v) => v.name);
+        if (missing.length) return bad(`${found.name} needs ${missing.join(", ")}`);
+        const given = Object.fromEntries(spec.filter((v) => String(values[v.name] ?? "").trim()).map((v) => [v.name, String(values[v.name]).trim()]));
+        let cfg: McpServerConfig;
+        if (useRemote) cfg = { url: found.remote!.url, ...(Object.keys(given).length ? { headers: given } : {}) };
+        else if (found.package) {
+          const guard = needs(req);
+          if (guard) return guard;
+          cfg = { command: found.package.command, args: found.package.args, ...(Object.keys(given).length ? { env: given } : {}) };
+        } else return bad(`${found.name} has nothing Keel can run`);
+        const name = String(b.name ?? keelName(found.name));
+        const err = m.add(name, cfg);
+        return err ? bad(err) : json({ name, servers: m.list() });
       },
     },
     "/api/mcp/servers/:name/resources": {

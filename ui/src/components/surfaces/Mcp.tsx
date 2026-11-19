@@ -9,6 +9,7 @@ import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
 import { api, reportError, failed } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
+import { Connect } from "./McpConnect.tsx";
 import { Blank, FolderLine, Ledger, ReaderHead, Seg, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
 
 // A command line to argv: spaces split, quotes group.
@@ -481,9 +482,14 @@ export default function McpServers() {
         </div>
       )}
       <Ledger testid="mcp-servers" groups={groups} selected={sel} onSelect={setSel}
-        add={[{ id: "+add", label: "Add a server" }, { id: "+import", label: fresh ? `Import from other agents (${fresh})` : "Import from other agents" }]}
+        add={[{ id: "+connect", label: "Connect an app" }, { id: "+add", label: "Add a server" }, { id: "+import", label: fresh ? `Import from other agents (${fresh})` : "Import from other agents" }]}
         empty="No servers yet.">
-        {sel === "+add" ? (
+        {sel === "+connect" ? (
+          <>
+            <ReaderHead title="Connect an app" desc="The apps' own MCP servers, run by their makers. What each needs to sign in is read from the server itself; a sign-in opens the maker's page and the token stays with Keel." />
+            <div className="k-reader-body"><Connect onDone={(s, name) => { setServers(s); setNote(`${name} is added.`); }} /></div>
+          </>
+        ) : sel === "+add" ? (
           <>
             <ReaderHead title="Add a server" desc="It is written to Keel's mcp.json. Its tools stay out of every request until the model searches for them, so a server costs no tokens until it is used." />
             <div className="k-reader-body"><AddServer onAdded={(s, name) => { setServers(s); loadImportable(); setSel(name); }} /></div>

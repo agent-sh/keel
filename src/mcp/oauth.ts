@@ -51,6 +51,16 @@ export class OAuthStore {
     this.write(f);
   }
 
+  // A removed server takes its tokens and its client registration with it
+  // (as Claude Code does): the next server at that address registers anew, so
+  // a client the provider has since forgotten is never offered again.
+  forget(server: string) {
+    const f = this.read();
+    delete f.servers[server];
+    for (const k of Object.keys(f.clients)) if (k.startsWith(`${server} `)) delete f.clients[k];
+    this.write(f);
+  }
+
   // A valid access token, refreshed when it is about to expire.
   async token(server: string): Promise<string | undefined> {
     const f = this.read();
@@ -81,7 +91,8 @@ export class OAuthStore {
     const as = await authServerMetadata(issuer);
     const resource = prm?.resource ?? canonicalResource(url);
     const f = this.read();
-    const key = `${as.issuer} ${redirectUri}`;
+    // One client per server (and issuer and redirect): removing the server forgets it.
+    const key = `${server} ${as.issuer} ${redirectUri}`;
     let client: Client | undefined = cfg.client_id
       ? { client_id: cfg.client_id, client_secret: cfg.client_secret_env ? process.env[cfg.client_secret_env] : undefined, redirect_uri: redirectUri }
       : f.clients[key];

@@ -11,7 +11,7 @@ import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpClient, RpcError, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
-import { readSources, sourceFiles, sourced } from "./sources.ts";
+import { endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
 import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
@@ -64,6 +64,7 @@ export type McpServerState = {
   resources_rev: number; // goes up when its resource list changed (a list read again shows it)
   resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
   sync?: { source: string; name: string; label: string; gone: boolean }; // follows another agent's entry
+  endpoint?: string; // what the server is, whatever it is called (sources.ts endpoint)
 };
 
 // One item of a resources/read result, as the server gave it (a body is never fetched beyond it).
@@ -436,6 +437,7 @@ export class McpManager {
       version: e.client?.version,
       // Name, title and version; icons (data URIs of kilobytes) stay out of a list polled every second or two.
       server_info: e.client?.serverInfo ? { name: e.client.serverInfo.name, title: (e.client.serverInfo as any).title, version: e.client.serverInfo.version } : undefined,
+      endpoint: e.bundled ? undefined : endpoint(e.config),
       sign_in: !!e.config.url && !e.config.bearer_env && !e.config.headers_helper,
       sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,
       signed_in: !!e.config.url && this.oauth.signedIn(e.name),
@@ -479,6 +481,7 @@ export class McpManager {
     this.drop(name);
     delete this.cfg.servers[name];
     writeConfig(this.cfg);
+    this.oauth.forget(name);
   }
 
   // A call still running on the old client finishes there (its result is

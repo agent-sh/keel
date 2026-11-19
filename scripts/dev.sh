@@ -28,6 +28,8 @@ export KEEL_IMPORT_HERMES_DIR="${KEEL_IMPORT_HERMES_DIR:-$DEV/import/hermes}"
 # ~/.hermes) is read from a scratch home (the MCP import and port e2e write them there).
 export KEEL_IMPORT_HOME="${KEEL_IMPORT_HOME:-$DEV/import/home}"
 mkdir -p "$DEV/import/home"
+# The MCP registry is a saved listing beside the state (the connect e2e writes it), not the public one.
+export KEEL_MCP_REGISTRY="${KEEL_MCP_REGISTRY:-file://$DEV/registry.json}"
 # The tacit stand-in (never the owner's memory store) and the scripted
 # provider for the paths a real model cannot be made to take. The owner hooks
 # file lives in the scratch config folder.
