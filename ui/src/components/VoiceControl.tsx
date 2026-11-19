@@ -77,7 +77,10 @@ export function VoiceCard() {
     try {
       const r = await fetch(`/api/sessions/${id}/voice`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
       const b = await r.json();
-      if (!r.ok) throw new Error(b.error ?? `HTTP ${r.status}`);
+      if (!r.ok) {
+        if (b.state) { states.set(id, b.state); bump(); }
+        throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { error_id: b.error_id, status: r.status });
+      }
       states.set(id, b);
       bump();
     } catch (e) {

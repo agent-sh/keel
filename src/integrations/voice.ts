@@ -295,6 +295,20 @@ export class Voice {
   async control(id: string, action: string): Promise<VoiceState> {
     const s = this.voiceSession(id);
     if (!s) throw Object.assign(new Error("voice is for the owner's own sessions, not a subagent's or an archived one"), { status: 409 });
+    // Mute, Unmute and Stop act on the conversation this session holds. A
+    // click from a page that still shows it here after the voice moved to
+    // another session changes nothing; the answer names where it went.
+    if (action !== "talk") {
+      const r = await this.report();
+      const f = r?.active === true ? this.focused(r) : null;
+      if (f && f !== s.id) {
+        this.last = null;
+        const state = await this.state(id);
+        this.changed(id);
+        const t = this.store.session(f)?.title?.trim();
+        throw Object.assign(new Error(`Voice moved to ${t || f}; nothing was changed here`), { status: 409, state });
+      }
+    }
     try {
       if (action === "talk") {
         await this.hook("session-start", { session_id: s.id, cwd: s.workspace });

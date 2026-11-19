@@ -32,7 +32,8 @@ export const voiceRoutes: RouteModule = (deps) => {
         try {
           return json(await v.control(s.id, b.action));
         } catch (e) {
-          return bad((e as Error).message, (e as any).status ?? 502);
+          const state = (e as any).state;
+          return json(state ? { error: (e as Error).message, state } : { error: (e as Error).message }, (e as any).status ?? 502);
         }
       },
     },

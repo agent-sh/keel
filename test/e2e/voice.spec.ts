@@ -65,10 +65,24 @@ test("voice", async ({ page, request }) => {
   await card.getByTestId("voice-mute").click();
   await expect(card.getByTestId("voice-state")).toContainText("Muted");
   await shoot(page, "voice-04-muted");
-  await card.getByTestId("voice-stop").click();
-  await expect(card.getByTestId("voice-state")).toContainText("Off.");
+  // The voice moves to the other session; the card follows. A Stop or Unmute
+  // click still in flight from this session (a stale page) changes nothing and
+  // says where the voice went. Stop where the voice is ends it, once.
+  expect((await request.post(`/api/sessions/${other.id}/voice`, { data: { action: "talk" } })).status()).toBe(200);
+  await expect(card.getByTestId("voice-talk")).toBeVisible();
+  for (const action of ["stop", "unmute"]) {
+    const late = await request.post(`/api/sessions/${session.id}/voice`, { data: { action } });
+    expect(late.status()).toBe(409);
+    const b = await late.json();
+    expect(b.error).toContain("Voice moved to No voice here");
+    expect(b.state.here).toBe(false);
+  }
+  expect(log()).not.toContain("ctl off");
+  expect(log()).not.toContain("ctl unmute");
+  await shoot(page, "voice-05-moved");
+  expect((await request.post(`/api/sessions/${other.id}/voice`, { data: { action: "stop" } })).status()).toBe(200);
   await expect.poll(() => waiting().length).toBe(0);
-  expect(log()).toContain("ctl off");
+  expect((log().match(/^ctl off/gm) ?? []).length).toBe(1);
   expect((await request.post(`/api/sessions/${session.id}/voice`, { data: { action: "shout" } })).status()).toBe(400);
 
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
