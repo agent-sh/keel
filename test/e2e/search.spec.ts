@@ -82,7 +82,7 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
   const run = (await (await request.post("/api/sessions", { data: { model: M, text: `script:calls [{"name":"Bash","input":{"command":"echo shout-${tag}-done"}}]` } })).json()).session;
   await idle(run.id);
   const ref = await (await request.post(`/api/attachments?name=saffron-${tag}.txt`, { headers: { "content-type": "text/plain" }, data: "ledger" })).json();
-  const filed = (await (await request.post("/api/sessions", { data: { model: M, text: "(attached file)", images: [ref] } })).json()).session;
+  const filed = (await (await request.post("/api/sessions", { data: { model: M, images: [ref] } })).json()).session;
   await idle(filed.id);
   expect((await (await request.get(`/api/sessions/${filed.id}`)).json()).session.title).toBe(`saffron-${tag}.txt`);
   for (const d of ["alpha", "beta"]) mkdirSync(`${home}/.cache/keel-work/bun/e2e-ws/${d}/api`, { recursive: true });
