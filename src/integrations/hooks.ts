@@ -17,6 +17,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
 import { configDir } from "../providers/config.ts";
+import { readText } from "../core/proc.ts";
 
 export const EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PreCompact"] as const;
 export type HookEvent = (typeof EVENTS)[number];
@@ -236,13 +237,8 @@ async function runHook(h: Handler, input: string, cwd: string, ms: number): Prom
   }
   let timedOut = false;
   const t = setTimeout(() => { timedOut = true; try { process.kill(-p.pid, "SIGKILL"); } catch {} }, ms);
-  const read = async (s: ReadableStream<Uint8Array>) => {
-    const r = s.getReader();
-    const parts: Uint8Array[] = [];
-    try { for (;;) { const { done, value } = await r.read(); if (done) break; parts.push(value); } } catch {}
-    return Buffer.concat(parts).toString("utf8");
-  };
-  const [stdout, stderr, code] = await Promise.all([read(p.stdout as ReadableStream<Uint8Array>), read(p.stderr as ReadableStream<Uint8Array>), p.exited]);
+  const read = (s: ReadableStream<Uint8Array> | number | undefined) => readText(s, "hook").catch(() => "");
+  const [stdout, stderr, code] = await Promise.all([read(p.stdout), read(p.stderr), p.exited]);
   clearTimeout(t);
   return { code: timedOut ? null : code, stdout, stderr };
 }

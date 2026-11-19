@@ -18,6 +18,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import { lineage } from "../core/tree.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
+import { readText } from "../core/proc.ts";
 
 export function findBin(envVar: string, name: string, env = process.env): string | null {
   const given = env[envVar]?.trim();
@@ -37,20 +38,7 @@ export async function runBounded(argv: string[], stdin: string, ms: number): Pro
   }
   const kill = () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} };
   const timer = setTimeout(kill, ms);
-  // An explicit reader: Bun can release a pipe's reader when the process ends,
-  // and a reader it released rejects outside any handler.
-  const read = async () => {
-    const r = (p.stdout as ReadableStream<Uint8Array>).getReader();
-    const parts: Uint8Array[] = [];
-    try {
-      for (;;) {
-        const { done, value } = await r.read();
-        if (done) break;
-        parts.push(value);
-      }
-    } catch {}
-    return Buffer.concat(parts).toString("utf8");
-  };
+  const read = () => readText(p.stdout, "tacit").catch(() => "");
   try {
     const [out, code] = await Promise.all([read(), p.exited]);
     return code === 0 ? out.trim() || null : null;

@@ -2,7 +2,7 @@ import { existsSync, openSync, readSync, closeSync, readFileSync, statSync } fro
 import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert } from "./core.ts";
 import * as activity from "./activity.ts";
-import { readText } from "../core/proc.ts";
+import { pumpText, readText } from "../core/proc.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -427,25 +427,15 @@ function startMonitor(w: WaitRecord) {
   st.proc = proc;
   D().store.db.query("UPDATE waits SET state = ? WHERE id = ?").run(JSON.stringify({ pgid: proc.pid, start: startTime(proc.pid) }), w.id);
   const onLine = lineSink(w.id, s);
-  // An explicit reader: Bun can release a pipe's reader when the process ends,
-  // and an async iterator then rejects outside any handler.
   const read = async (stream: ReadableStream<Uint8Array>) => {
-    const dec = new TextDecoder("utf-8", { fatal: false });
-    const r = stream.getReader();
     let buf = "";
-    try {
-      for (;;) {
-        const { done, value } = await r.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split(/\r\n|\n|\r/);
-        buf = parts.pop()!;
-        for (const p of parts) onLine(p);
-        if (buf.length > 2000) { onLine(buf); buf = ""; }
-      }
-    } catch {
-      // the pipe closed with the process; what it wrote is already read
-    }
+    await pumpText(stream, (t) => {
+      buf += t;
+      const parts = buf.split(/\r\n|\n|\r/);
+      buf = parts.pop()!;
+      for (const p of parts) onLine(p);
+      if (buf.length > 2000) { onLine(buf); buf = ""; }
+    }, "monitor").catch(() => {}); // the pipe closed with the process; what it wrote is already read
     if (buf) onLine(buf);
   };
   Promise.all([read(proc.stdout as ReadableStream<Uint8Array>), read(proc.stderr as ReadableStream<Uint8Array>), proc.exited])

@@ -31,6 +31,7 @@ import type { Engine } from "../engine/turn.ts";
 import type { McpManager } from "../mcp/manager.ts";
 import type { McpTool } from "../mcp/client.ts";
 import shipped from "./parlar_tools.json" with { type: "json" };
+import { pumpLines, readText } from "../core/proc.ts";
 
 export const PARLAR_SERVER = "parlar";
 // parlar's Codex mode: the session id on every call and hook, speech as plain `[voice uN]` lines.
@@ -60,18 +61,7 @@ export function discoverParlar(home: string, env: (k: string) => string | undefi
 
 type Ran = { code: number | null; stdout: string; stderr: string };
 
-async function readAll(s: ReadableStream<Uint8Array>): Promise<string> {
-  const r = s.getReader();
-  const parts: Uint8Array[] = [];
-  try {
-    for (;;) {
-      const { done, value } = await r.read();
-      if (done) break;
-      parts.push(value);
-    }
-  } catch {}
-  return Buffer.concat(parts).toString("utf8");
-}
+const readAll = (s: ReadableStream<Uint8Array>) => readText(s, "parlar").catch(() => "");
 
 export type VoiceState = { available: boolean; running?: boolean; on?: boolean; here?: boolean; mic_muted?: boolean; phase?: string; listening?: boolean };
 
@@ -244,20 +234,13 @@ export class Voice {
           p = Bun.spawn([this.bin, "ctl", "watch"], { stdin: "ignore", stdout: "pipe", stderr: "ignore", detached: true });
           const kill = () => { try { process.kill(-p!.pid, "SIGKILL"); } catch {} };
           ac.signal.addEventListener("abort", kill, { once: true });
-          const r = (p.stdout as ReadableStream<Uint8Array>).getReader();
-          let buf = "";
-          for (;;) {
-            const { done, value } = await r.read().catch(() => ({ done: true, value: undefined }));
-            if (done) break;
-            buf += Buffer.from(value!).toString("utf8");
-            let i: number;
-            while ((i = buf.indexOf("\n")) >= 0) {
-              const line = buf.slice(0, i);
-              buf = buf.slice(i + 1);
-              heard = true;
-              if (!line.includes('"levels"')) await this.sync(); // levels stream all the time; the rest is state
-            }
-          }
+          // One state read at a time, in order, as the lines come.
+          let chain = Promise.resolve();
+          await pumpLines(p.stdout, (line) => {
+            heard = true;
+            if (!line.includes('"levels"')) chain = chain.then(() => this.sync()); // levels stream all the time; the rest is state
+          }, "parlar watch").catch(() => {});
+          await chain;
           ac.signal.removeEventListener("abort", kill);
         } catch {}
         if (ac.signal.aborted) return;

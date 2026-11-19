@@ -19,6 +19,9 @@ test("specs take test from isolate.ts, which restores daemon-wide settings", () 
 test("child process pipes are read through src/core/proc.ts", () => {
   const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts") && !f.endsWith("core/proc.ts"));
   expect(offenders(src, /new Response\([\w.!]*\.std(out|err)\b|for await \([^)]*\.std(out|err)\b/)).toEqual([]);
+  // A reader of its own misses the release at exit (its closed promise rejects
+  // unhandled); only an HTTP body may be read with one.
+  expect(offenders(src, /(?<!\.body)\.getReader\(\)/)).toEqual([]);
 });
 
 test("path containment is contains(root, p) from src/core/paths.ts", () => {
