@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { lineage } from "../core/tree.ts";
-import { toMessages } from "../engine/turn.ts";
+import { registerHooks } from "../engine/hooks.ts";
+import { Engine, toMessages } from "../engine/turn.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
-import { flush, setDeps } from "./core.ts";
-import { ackStoredWaits, automationTools } from "./tools.ts";
+import { dropPending, flush, setDeps } from "./core.ts";
+import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
 
 test("an agent in a mode that writes nothing gets no worktree", () => {
@@ -120,6 +121,43 @@ test("a report a wait returned stays owed when the turn was stopped before its r
   sends.length = 0;
   flush(parent.id);
   expect(sends.filter((x) => x.id === parent.id).map((x) => x.text).join("\n")).toContain("report C");
+});
+
+// The real turn loop: a wait's result is stored while another call of the
+// same step still runs, then the daemon dies. The report it holds was
+// delivered with that result: the next daemon does not deliver it again.
+test("a report a wait returned is delivered once when the daemon dies mid-step", async () => {
+  const a = await spawn();
+  end(a, "end_turn", "report D");
+  await settled();
+  registerHooks(waitAckHooks);
+  let release!: () => void;
+  const held = new Promise<any>((r) => (release = () => r({ content: "held read done" })));
+  const tools = [tool("wait_agent"), { name: "held_read", description: "", input_schema: { type: "object" }, readOnly: true, run: () => held } as any];
+  const info = { id: "m:x", model: "x", name: "x", family: "gpt", context: 16_000, output: 64, efforts: [], tools: true };
+  let asked = 0;
+  const provider = { stream: async () => (++asked === 1
+    ? { blocks: [{ type: "tool_use", id: "wd", name: "wait_agent", input: { targets: [a.id] } }, { type: "tool_use", id: "hd", name: "held_read", input: {} }], usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, stop: "tool_use", model: "x" }
+    : { blocks: [{ type: "text", text: "done" }], usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: "x" }) };
+  const runner = new Engine(store, bus, { models: async () => [info], current: () => [info], resolve: async () => ({ provider, info }) } as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  (runner as any).step = async () => ({ provider, info, tools, system: "s", systemSplit: 0, native: false });
+  busy.add(parent.id);
+  const stored = () => store.events(parent.id).some((e) => e.kind === "tool_result" && JSON.stringify(e.data).includes("report D"));
+  runner.send(parent.id, "wait for it");
+  for (let i = 0; i < 200 && !stored(); i++) await Bun.sleep(10);
+  expect(stored()).toBe(true);
+  // The crash: the held read never settled, the step never ended, nothing in memory survives.
+  dropPending(parent.id);
+  agents.recover();
+  busy.delete(parent.id);
+  sends.length = 0;
+  flush(parent.id);
+  expect(sends.filter((x) => x.id === parent.id && x.text.includes("report D"))).toEqual([]);
+  expect(agents.get(a.id)!.handback).toBeFalsy();
+  busy.add(parent.id);
+  release();
+  await runner.idle(parent.id);
+  busy.delete(parent.id);
 });
 
 test("forked context is the parent's selected branch as its next request reads it", async () => {

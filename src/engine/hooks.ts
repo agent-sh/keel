@@ -40,6 +40,9 @@ export type TurnHooks = {
   // For measuring only: every call that was dispatched, however it ended,
   // with the time the tool itself took (no approval wait, no afterTool hooks).
   toolRan?: (s: Session, call: ToolCall, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted" }) => void;
+  // A tool result was stored: called in the same SQLite transaction as the
+  // append, so what it records (a handback delivered) commits with the result.
+  resultStored?: (s: Session, results: ToolResultBlock[]) => void;
   // After a step's tool results are stored, before the next model call (a
   // tool that asked for a fresh context gets its checkpoint here).
   stepDone?: (s: Session) => void | Promise<void>;

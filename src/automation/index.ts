@@ -13,7 +13,7 @@ import * as snooze from "./snooze.ts";
 import { afterTurn, capture, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
-import { ackStoredWaits, automationTools, extendTaskStop } from "./tools.ts";
+import { automationTools, extendTaskStop, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
@@ -55,6 +55,7 @@ function init(deps: Deps) {
   registerShared(...automationTools, consult.advisorTool);
   extendTaskStop();
 
+  registerHooks(waitAckHooks);
   registerHooks({
     // The owner's task-list edits since the last request, as one note.
     beforeRequest: (s, req) =>
@@ -86,13 +87,6 @@ function init(deps: Deps) {
         // The answer to a question is the owner's word: it ends a snooze.
         snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");
       }
-    },
-    // A step's tool results are stored: wait_agent reports they hold are delivered.
-    stepDone: (s) => {
-      // The step's results: one event per call, stored after its assistant reply.
-      const evs = deps.store.events(s.id);
-      const step = evs.slice(evs.findLastIndex((e) => e.kind === "assistant") + 1).filter((e) => e.kind === "tool_result");
-      if (step.length) ackStoredWaits(s.id, step.flatMap((e) => e.data.results ?? []));
     },
     turnEnd: (s, reason) => {
       afterTurn(s.id, () => {

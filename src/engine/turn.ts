@@ -718,7 +718,12 @@ export class Engine {
           const settle = (r: ToolResultBlock) => {
             const shown = this.shown.get(r.tool_use_id);
             this.shown.delete(r.tool_use_id);
-            this.append(id, "tool_result", { results: [r], ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+            this.store.db.transaction(() => {
+              this.append(id, "tool_result", { results: [r], ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+              for (const h of allHooks()) {
+                try { h.resultStored?.(session, [r]); } catch (e) { this.errors.capture("server", e, { hook: "resultStored", session: id }); }
+              }
+            })();
           };
           await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx)).then(settle)));
           if (cut) settle({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });

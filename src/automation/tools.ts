@@ -1,4 +1,5 @@
 import type { Tool, ToolContext, ToolOutput } from "../tools/types.ts";
+import type { TurnHooks } from "../engine/hooks.ts";
 import { fail, ok } from "../tools/types.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
@@ -224,6 +225,12 @@ export function ackStoredWaits(sessionId: string, results: { tool_use_id: string
     if (stored.includes(w.text)) agents.ackWaited(sessionId, w.ids);
   }
 }
+
+// A wait's reports are delivered with the result that holds them, in the
+// same commit: a crash later in the step does not deliver them again.
+export const waitAckHooks: TurnHooks = {
+  resultStored: (s, results) => ackStoredWaits(s.id, results),
+};
 
 const close_agent: Tool = {
   name: "close_agent",
