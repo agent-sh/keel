@@ -29,6 +29,16 @@ test("mcp servers", async ({ page, request }) => {
   await expect(row.getByTestId("mcp-tool-count")).toHaveText("2 tools");
   await shoot(page, "mcp-02-ready");
 
+  // The server's resources and prompt templates: read one, fill one.
+  await row.getByTestId("mcp-contents-toggle").click();
+  await row.getByTestId("mcp-resource").filter({ hasText: "echo://readme" }).click();
+  await expect(row.getByTestId("mcp-content-text")).toContainText("The echo server repeats what it is given.");
+  await row.getByLabel("greet who").fill("the owner");
+  await row.locator('[data-testid="mcp-prompt"][data-name="greet"]').getByTestId("mcp-prompt-get").click();
+  await expect(row.getByTestId("mcp-content-text")).toContainText("user: Say hello to the owner.");
+  await shoot(page, "mcp-02b-contents");
+  await row.getByTestId("mcp-contents-toggle").click();
+
   await row.getByTestId("mcp-toggle").click();
   await expect(row).toHaveAttribute("data-state", "disabled");
   await shoot(page, "mcp-03-off");

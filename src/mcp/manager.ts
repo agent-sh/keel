@@ -48,6 +48,8 @@ export type McpServerState = {
   sign_in: boolean;   // the server can take an OAuth sign-in (HTTP)
   signed_in: boolean;
   bundled?: string;   // the label of a server Keel brings itself
+  resources: boolean; // the connected server offers resources
+  prompts: boolean;   // the connected server offers prompt templates
 };
 
 export type McpReloadedServer = { name: string; change: "added" | "removed" | "changed" | "unchanged" };
@@ -303,6 +305,8 @@ export class McpManager {
       sign_in: !!e.config.url && !e.config.bearer_env,
       signed_in: !!e.config.url && this.oauth.signedIn(e.name),
       bundled: e.bundled?.label,
+      resources: !!e.client?.capabilities.resources,
+      prompts: !!e.client?.capabilities.prompts,
     }));
   }
 

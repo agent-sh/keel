@@ -115,12 +115,102 @@ function ServerRow({ s, act }: { s: McpServerState; act: (path: string, body?: u
           {s.tool_names.length > shown.length && <span className="px-1 text-micro text-faint">+{s.tool_names.length - shown.length} more</span>}
         </div>
       )}
+      {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
       {s.state === "ready" && s.last_connected && (
         <div className="mt-1.5 pl-[18px] text-micro text-faint">
           {s.server_info?.name ? `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""} · ` : ""}MCP {s.version} · connected {ago(s.last_connected)}
         </div>
       )}
     </div>
+  );
+}
+
+type Resource = { uri?: string; uriTemplate?: string; name?: string; description?: string; mimeType?: string };
+type Prompt = { name: string; description?: string; arguments?: { name: string; description?: string; required?: boolean }[] };
+
+// What a server publishes besides tools: its resources (read one) and its
+// prompt templates (fill the arguments, see the text). Listed when opened.
+function ServerContents({ s, base }: { s: McpServerState; base: string }) {
+  const [open, setOpen] = useState(false);
+  const [resources, setResources] = useState<Resource[] | null>(null);
+  const [prompts, setPrompts] = useState<Prompt[] | null>(null);
+  const [shown, setShown] = useState<{ title: string; text: string } | null>(null);
+  const [args, setArgs] = useState<Record<string, Record<string, string>>>({});
+  useEffect(() => {
+    if (!open) return;
+    if (s.resources) api<{ resources: Resource[] }>(`${base}/resources`).then((r) => setResources(r.resources)).catch(reportError);
+    if (s.prompts) api<{ prompts: Prompt[] }>(`${base}/prompts`).then((r) => setPrompts(r.prompts)).catch(reportError);
+  }, [open, base, s.resources, s.prompts]);
+  const read = (uri: string) =>
+    api<{ text: string }>(`${base}/resource?uri=${encodeURIComponent(uri)}`).then((r) => setShown({ title: uri, text: r.text })).catch(reportError);
+  const fill = (p: Prompt) =>
+    api<{ text: string }>(`${base}/prompts/${encodeURIComponent(p.name)}`, { method: "POST", body: JSON.stringify({ arguments: args[p.name] ?? {} }) })
+      .then((r) => setShown({ title: p.name, text: r.text }))
+      .catch(reportError);
+  const what = [s.resources && "resources", s.prompts && "prompts"].filter(Boolean).join(" and ");
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="mt-2 pl-[18px]">
+      <Collapsible.Trigger data-testid="mcp-contents-toggle" className="group/c inline-flex items-center gap-1 text-caption text-muted hover:text-fg">
+        <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/c:rotate-90" />
+        {what[0]!.toUpperCase() + what.slice(1)}
+      </Collapsible.Trigger>
+      <Collapsible.Panel data-testid="mcp-contents" className="mt-1.5 space-y-2">
+        {s.resources && (
+          <div>
+            <div className="text-micro font-medium text-faint">Resources</div>
+            {resources === null ? <div className="text-micro text-faint">Loading</div> : resources.length === 0 ? <div className="text-micro text-faint">None</div> : (
+              <ul className="mt-1 space-y-0.5">
+                {resources.map((r) => (
+                  <li key={r.uri ?? r.uriTemplate} className="flex items-baseline gap-2 text-caption">
+                    {r.uri ? (
+                      <button type="button" data-testid="mcp-resource" onClick={() => read(r.uri!)} className="font-mono text-accent hover:underline">{r.uri}</button>
+                    ) : (
+                      <span className="font-mono text-muted" title="A template: the model fills it in">{r.uriTemplate}</span>
+                    )}
+                    {(r.name || r.description) && <span className="truncate text-faint">{r.description ?? r.name}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {s.prompts && (
+          <div>
+            <div className="text-micro font-medium text-faint">Prompts</div>
+            {prompts === null ? <div className="text-micro text-faint">Loading</div> : prompts.length === 0 ? <div className="text-micro text-faint">None</div> : (
+              <ul className="mt-1 space-y-1.5">
+                {prompts.map((p) => (
+                  <li key={p.name} data-testid="mcp-prompt" data-name={p.name} className="flex flex-wrap items-center gap-2 text-caption">
+                    <span className="font-mono text-fg">{p.name}</span>
+                    {p.description && <span className="text-faint">{p.description}</span>}
+                    {(p.arguments ?? []).map((a) => (
+                      <input
+                        key={a.name}
+                        aria-label={`${p.name} ${a.name}`}
+                        placeholder={a.name + (a.required ? "" : " (optional)")}
+                        value={args[p.name]?.[a.name] ?? ""}
+                        onChange={(e) => setArgs((x) => ({ ...x, [p.name]: { ...x[p.name], [a.name]: e.target.value } }))}
+                        className="h-7 w-36 rounded-md border border-line bg-bg px-2 text-caption outline-none placeholder:text-faint focus:border-accent"
+                      />
+                    ))}
+                    <button type="button" data-testid="mcp-prompt-get" onClick={() => fill(p)} className="rounded-md border border-line px-2 py-0.5 text-caption text-muted hover:bg-hover hover:text-fg">Show</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {shown && (
+          <div data-testid="mcp-content-text" className="rounded-md border border-line bg-bg">
+            <div className="flex items-center justify-between border-b border-line px-2 py-1">
+              <span className="truncate font-mono text-micro text-muted">{shown.title}</span>
+              <IconButton title="Close" onClick={() => setShown(null)}><X className="size-3.5" /></IconButton>
+            </div>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-micro text-fg">{shown.text}</pre>
+          </div>
+        )}
+      </Collapsible.Panel>
+    </Collapsible.Root>
   );
 }
 
