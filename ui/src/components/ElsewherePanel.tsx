@@ -4,7 +4,7 @@ import type { ReadPrompt, Row } from "../../../src/drive/drive.ts";
 import type { Turn } from "../../../src/drive/transcript.ts";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { takeOver } from "./TakeOver.tsx";
+import { copyable, takeOver, TOOL } from "./TakeOver.tsx";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 
@@ -220,7 +220,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
             </div>
           </div>
         ) : <span className="text-ui text-faint">{id}</span>}
-        {s && s.transcript && !s.host && (s.kind === "claude" || s.kind === "codex") && (
+        {s && copyable(s) && (
           <button
             data-testid="elsewhere-import"
             title="Import into Keel: a copy that goes on here; the original keeps running"
@@ -236,7 +236,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
             <ArrowDownToLine className="size-4" />
           </button>
         )}
-        {s && s.live && s.transcript && !s.host && (s.kind === "claude" || s.kind === "codex") && (
+        {s && s.live && copyable(s) && (
           <button
             data-testid="elsewhere-takeover"
             title="Take over: end it where it runs and go on with it in Keel"
@@ -244,7 +244,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
             onClick={async () => {
               setNote(null);
               try {
-                const res = await takeOver(s.id, s.name || s.id, s.kind === "claude" ? "Claude Code" : "Codex");
+                const res = await takeOver(s.id, s.name || s.id, TOOL[s.kind] ?? s.kind);
                 if (res) navigate({ name: "session", id: res.session.id });
               } catch (e) {
                 setNote({ ok: false, text: (e as Error).message });

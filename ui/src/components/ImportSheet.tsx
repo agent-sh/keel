@@ -10,7 +10,7 @@ import type { Found, Harness } from "../../../src/integrations/import/types.ts";
 import { useFleet } from "../lib/fleet.ts";
 import { api, reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { takeOver } from "./TakeOver.tsx";
+import { takeOver, TOOL } from "./TakeOver.tsx";
 import { ago, cn } from "../lib/utils.ts";
 
 type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean } };
@@ -156,10 +156,10 @@ function Running({ onDone }: { onDone: () => void }) {
       {usable.map((r) => (
         <div key={r.id} data-testid="import-running-row" data-id={r.id} className="flex items-center gap-2 px-3 py-1.5">
           <span className="size-1.5 shrink-0 rounded-full bg-ok" />
-          <span className="min-w-0 flex-1 truncate text-ui">{r.name || r.id}<span className="ml-1.5 text-micro text-faint">{r.kind === "claude" ? "Claude Code" : "Codex"} · {r.state}</span></span>
+          <span className="min-w-0 flex-1 truncate text-ui">{r.name || r.id}<span className="ml-1.5 text-micro text-faint">{TOOL[r.kind] ?? r.kind} · {r.state}</span></span>
           <button type="button" title="Import a copy; the original keeps running" onClick={() => go(api("/api/import", { method: "POST", body: JSON.stringify({ outside: r.id, mode: r.imported ? "open" : undefined }) }))}
             className="h-6 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg">{r.imported ? "Open copy" : "Copy"}</button>
-          <button type="button" data-testid="import-takeover" onClick={() => go(takeOver(r.id, r.name || r.id, r.kind === "claude" ? "Claude Code" : "Codex"))}
+          <button type="button" data-testid="import-takeover" onClick={() => go(takeOver(r.id, r.name || r.id, TOOL[r.kind] ?? r.kind))}
             className="h-6 shrink-0 rounded-md border border-line-strong px-2 text-caption font-medium hover:bg-hover">Take over</button>
         </div>
       ))}

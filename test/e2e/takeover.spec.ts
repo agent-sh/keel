@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -107,6 +108,25 @@ test("take over a running session: ended where it ran, or copied with the one st
     await expect(page.getByTestId("assistant-text").last()).toContainText("Closing s-dep: the work is saved.");
     expect(state().stopped).toEqual(["s-api", "s-dep"]);
 
+    // An Antigravity conversation, found in its store by its id (only a scratch store is written).
+    const first = await (await request.get("/api/import/sessions?limit=1")).json();
+    const agyHome = first.harnesses.find((h: any) => h.harness === "agy")?.store as string | undefined;
+    if (agyHome?.includes("keel-work")) {
+      const id = `a7a7a7a7-0000-4000-8000-${String(Date.now()).slice(-12)}`;
+      // The fixture writes SQLite, so it runs under Bun.
+      execFileSync("bun", ["-e", `import { agySession } from ${JSON.stringify(resolve("test/e2e/fixtures/import-stores.ts"))}; agySession(${JSON.stringify(agyHome)}, ${JSON.stringify(dir)}, ${JSON.stringify(id)}, "Fanad");`]);
+      edit((s) => s.agents.push({ host: "", stale: false, source: "", detail: "", hold: "", hold_until: 0, job: "", thread: "", pane: "", model: "", cwd: dir, t: now - 30, last: now - 30, tool: "agy", name: "lighthouse", session: id, live: true, state: "idle", label: "idle" }));
+      await page.goto(`/s/${session.id}`);
+      await openPanel(page, "elsewhere");
+      await page.getByTestId("elsewhere-panel").locator(`[data-id="agy:${id}"]`).click();
+      await page.getByTestId("elsewhere-takeover").click();
+      await confirm(page);
+      await expect(page).not.toHaveURL(new RegExp(session.id));
+      made.push(page.url().split("/s/")[1]!);
+      await expect(page.getByTestId("assistant-text").last()).toContainText("The lighthouse is Fanad.");
+      expect(state().stopped).toEqual(["s-api", "s-dep", id]);
+    }
+
     // A model asks: a card only the owner answers, even in full auto. This
     // agent view has no stop, so the copy comes back with the one step to take.
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
@@ -123,7 +143,7 @@ test("take over a running session: ended where it ran, or copied with the one st
     const events = (await (await request.get(`/api/sessions/${session.id}`)).json()).events;
     const result = JSON.stringify(events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).at(-1).content);
     expect(result).toContain("Type /exit in its terminal");
-    expect(state().stopped).toEqual(["s-api", "s-dep"]);
+    expect(state().stopped).not.toContain("s-cron");
     const cronCopy = /Keel copied \\"log-rotor\\" as session ([\w-]+)/.exec(result)?.[1];
     if (cronCopy) made.push(cronCopy);
   } finally {

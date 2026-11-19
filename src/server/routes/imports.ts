@@ -50,10 +50,12 @@ export const importRoutes: RouteModule = (deps) => {
     if (b.outside) {
       let f;
       try { f = await drive.find(String(b.outside)); } catch (e) { return bad((e as Error).message, (e as any).status ?? 404); }
-      const harness = f.row.kind === "claude" || f.row.kind === "codex" ? f.row.kind : null;
+      const harness = (["claude", "codex", "agy"] as const).find((k) => k === f.row.kind);
       if (!harness) return bad(`sessions of ${f.row.kind} cannot be imported yet`, 409);
-      if (f.row.host || !f.raw.transcript || !existsSync(f.raw.transcript)) return bad("the agent view names no transcript on this machine for this session", 409);
-      b = { path: f.raw.transcript, harness };
+      // An Antigravity conversation is found in its stores by its id when the row names no file.
+      if (harness === "agy" && !f.row.host && !f.raw.transcript && typeof f.raw.session === "string") b = { harness, id: f.raw.session };
+      else if (f.row.host || !f.raw.transcript || !existsSync(f.raw.transcript)) return bad("the agent view names no transcript on this machine for this session", 409);
+      else b = { path: f.raw.transcript, harness };
     }
     if (b.path) {
       if (typeof b.path !== "string" || !b.path.startsWith("/")) return bad("path must be absolute");
@@ -63,7 +65,7 @@ export const importRoutes: RouteModule = (deps) => {
     }
     if (!isHarness(b.harness)) return bad(b.harness ? `unknown harness ${b.harness}` : "give harness and id, or path");
     if (typeof b.id !== "string" || !b.id) return bad("give the session's id");
-    return imports.find(b.harness, b.id) ?? bad(`${b.harness} has no session ${b.id}`, 404);
+    return imports.find(b.harness, b.id) ?? (imports.invalidate(), imports.find(b.harness, b.id)) ?? bad(`${b.harness} has no session ${b.id}`, 404);
   };
 
   // ---- transcripts on another machine of the fleet (its daemon reads them)

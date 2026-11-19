@@ -47,7 +47,7 @@ export const takeoverRoutes: RouteModule = (deps: Deps) => {
   const judged = new WeakMap<object, Found>();
   const tool: CatalogTool = {
     server: "keel", name: "session_import", qualified: "keel__session_import",
-    description: "Copy a Claude Code or Codex session (an id from keel__sessions_all) into Keel: a new Keel session the first time, the Keel session made before brought up to date after that. take_over: true also ends the original where it runs and goes on in Keel; only the owner allows that, and a session at work or on a prompt is copied, not ended. The Keel session runs on the model named, else on this session's.",
+    description: "Copy a Claude Code, Codex or Antigravity (agy) session (an id from keel__sessions_all) into Keel: a new Keel session the first time, the Keel session made before brought up to date after that. take_over: true also ends the original where it runs and goes on in Keel; only the owner allows that, and a session at work or on a prompt is copied, not ended. The Keel session runs on the model named, else on this session's.",
     readOnly: false,
     input_schema: {
       type: "object", additionalProperties: false, required: ["id"],
@@ -107,7 +107,7 @@ export const takeoverRoutes: RouteModule = (deps: Deps) => {
         if (presence && !presence.allows(req, "takeover")) return json({ error: "this needs your passkey from a remote device", presence: { action: "takeover" } }, 428);
         const b = await body(req);
         if (!b.session && !b.path && !(b.harness && b.id)) return bad("name the session: session (from the drive list), harness and id, or path");
-        if (b.harness && !["claude", "codex"].includes(b.harness)) return bad(`unknown harness ${b.harness}`);
+        if (b.harness && !["claude", "codex", "agy"].includes(b.harness)) return bad(`unknown harness ${b.harness}`);
         try {
           const d = await t.takeOver({ session: b.session, harness: b.harness, id: b.id, path: b.path, model: b.model, title: b.title });
           return json(d);

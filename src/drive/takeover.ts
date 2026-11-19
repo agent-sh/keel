@@ -127,13 +127,16 @@ export class TakeOver {
 
   // The source a running row names: its transcript on this machine.
   sourceOf(f: Found): Source {
-    const harness = f.row.kind === "claude" || f.row.kind === "codex" ? f.row.kind : null;
+    const harness = (["claude", "codex", "agy"] as const).find((k) => k === f.row.kind);
     if (!harness) throw new HttpError(409, `sessions of ${f.row.kind} cannot be copied yet`);
     if (f.host) throw new HttpError(409, `"${f.row.name}" runs on ${f.host}; Keel copies only sessions whose file is on this machine`);
     const t = typeof f.raw.transcript === "string" ? f.raw.transcript : "";
-    if (!t) throw new HttpError(409, `the agent view does not name the file "${f.row.name}" keeps, so Keel cannot copy it`);
-    const src = this.imports.byPath(t, harness);
-    if (!src) throw new HttpError(409, `the file ${t} that "${f.row.name}" keeps could not be read`);
+    // An Antigravity conversation is found in its stores by its id when the row names no file.
+    const byId = () => (harness === "agy" && typeof f.raw.session === "string" ? this.imports.find("agy", f.raw.session) : undefined);
+    // The store list is cached for seconds; a conversation started since is read again.
+    const src = t ? this.imports.byPath(t, harness) : (byId() ?? (this.imports.invalidate(), byId()));
+    if (!t && !src) throw new HttpError(409, `the agent view does not name the file "${f.row.name}" keeps, so Keel cannot copy it`);
+    if (!src) throw new HttpError(409, `the file ${t || f.raw.session} that "${f.row.name}" keeps could not be read`);
     return src;
   }
 
@@ -378,11 +381,11 @@ export class TakeOver {
     const out = raws.filter((r) => (av.KINDS as readonly string[]).includes(r.tool) && r.live === true).map((raw) => {
       const busy = inFlight(raw);
       const r = { ...toRow(raw), ...(busy ? { state: "working" as const, detail: busy } : {}) };
-      const harness = r.kind === "claude" || r.kind === "codex" ? (r.kind as Harness) : null;
+      const harness = (["claude", "codex", "agy"] as const).find((k) => k === r.kind) ?? null;
       const t = !raw.host && typeof raw.transcript === "string" ? raw.transcript : null;
-      const src = t && harness ? this.imports.byPath(t, harness) : undefined;
+      const src = harness && !raw.host ? (t ? this.imports.byPath(t, harness) : harness === "agy" && raw.session ? this.imports.find("agy", raw.session) : undefined) : undefined;
       const link = src ? this.imports.links(src.harness, src.id)[0] : undefined;
-      return { ...r, harness, transcript_path: t, imported: link?.session_id };
+      return { ...r, harness, transcript_path: src?.path ?? t, imported: link?.session_id };
     });
     return { sessions: out };
   }

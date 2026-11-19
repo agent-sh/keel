@@ -21,7 +21,9 @@ export async function takeOver(session: string, name: string, tool: string): Pro
   return api<Answer>("/api/import/takeover", { method: "POST", body: JSON.stringify({ session }) });
 }
 
-const TOOL: Record<string, string> = { claude: "Claude Code", codex: "Codex", agy: "agy" };
+export const TOOL: Record<string, string> = { claude: "Claude Code", codex: "Codex", agy: "Antigravity" };
+// Whether Keel can copy a row of the drive list: a file it names here, or an Antigravity conversation by its id.
+export const copyable = (s: { kind: string; host: string; transcript: boolean }) => !s.host && ((s.transcript && (s.kind === "claude" || s.kind === "codex")) || s.kind === "agy");
 
 type Origin = { origin: null | { label: string; live_source: null | { id: string; since_ms: number } } };
 
