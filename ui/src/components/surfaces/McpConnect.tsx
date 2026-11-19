@@ -41,10 +41,10 @@ function ConnectorCard({ c, redirect, onDone }: { c: Card; redirect: string; onD
   const viaGh = c.via === "gh" && c.gh;
   return (
     <div className="flex flex-col gap-2 border-b border-line py-3 last:border-0" data-testid="mcp-connector" data-id={c.id} data-access={c.access.kind}>
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <Globe className="size-3.5 shrink-0 text-faint" />
         <span className="shrink-0 text-ui font-medium">{c.name}</span>
-        <span className="min-w-0 flex-1 truncate text-caption text-faint">{c.what}</span>
+        <span className="min-w-40 flex-1 truncate text-caption text-faint">{c.what}</span>
         <span className="k-chip" data-testid="mcp-connector-access" title={c.access.issuer ? `Signs in at ${c.access.issuer}` : c.access.error}>{viaGh ? "Your GitHub CLI sign-in" : NEEDS[c.access.kind]}</span>
         <a className="k-btn" data-quiet href={c.docs} target="_blank" rel="noopener" aria-label={`${c.name} documentation`}><ExternalLink /></a>
         {c.added ? <span className="w-28 shrink-0 text-right text-caption text-faint" data-testid="mcp-connector-added">In Keel as {c.added}</span>
@@ -86,7 +86,7 @@ function RegistryHit({ h, onDone }: { h: Hit; onDone: Done }) {
   const target = h.remote?.url ?? [h.package?.command, ...(h.package?.args ?? [])].join(" ");
   return (
     <div className="flex flex-col gap-1.5 border-b border-line py-2.5 last:border-0" data-testid="mcp-registry-hit" data-name={h.name}>
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         {h.remote ? <Globe className="size-3.5 shrink-0 text-faint" /> : <SquareTerminal className="size-3.5 shrink-0 text-faint" />}
         <span className="shrink-0 text-ui font-medium">{h.title ?? h.suggested_name}</span>
         <span className="min-w-0 shrink truncate font-mono text-micro text-faint" title={h.name}>{h.name}</span>
