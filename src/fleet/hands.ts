@@ -22,6 +22,7 @@ const PATH_KEYS = ["file_path", "absolute_path", "path", "notebook_path", "dir_p
 
 export type HandsRequest = {
   session: string;
+  call?: string;
   tool: string;
   input: any;
   cwd: string;
@@ -82,7 +83,7 @@ export async function runHands(q: HandsRequest, spillRoot: string, signal: Abort
   const seen = seenBySession.get(q.session) ?? new Map();
   seenBySession.set(q.session, seen);
   const ctx: ToolContext = {
-    sessionId: q.session, cwd: q.cwd, signal, seen, spillDir,
+    sessionId: q.session, cwd: q.cwd, signal, seen, spillDir, callId: typeof q.call === "string" ? q.call : undefined,
     wrapSpawn: q.sandbox ? (argv) => confine(argv, { sandbox: "workspace-write", network: false }, q.root) : undefined,
   };
   return tool.run(q.input, ctx);

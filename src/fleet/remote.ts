@@ -24,7 +24,7 @@ export async function remoteRun(
     const p = await fleet.peer(m.id);
     const r = await linkFetch(p, "/api/fleet/hands", {
       method: "POST",
-      body: JSON.stringify({ session: ctx.sessionId, tool: call.tool, input: call.input, cwd, root, sandbox: !!call.sandbox }),
+      body: JSON.stringify({ session: ctx.sessionId, call: ctx.callId, tool: call.tool, input: call.input, cwd, root, sandbox: !!call.sandbox }),
       signal: ctx.signal,
       timeout: CALL_MS,
     });

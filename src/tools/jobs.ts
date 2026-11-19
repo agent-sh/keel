@@ -27,6 +27,8 @@ export type Job = {
   signal?: string | null;
   stopReason?: string;
   background: boolean;   // the model was told it runs on; its end is reported
+  callId?: string;       // the tool call that started it
+  by?: "owner";          // the owner ran it from the terminal pane
   pid: number;
   readOff: number;       // bytes of the log already handed to the model
   decoder: TextDecoder;
@@ -84,6 +86,8 @@ export type StartOpts = {
   background?: boolean;
   // The session confinement (a beforeTool hook sets ctx.wrapSpawn).
   wrap?: (argv: string[]) => string[];
+  callId?: string;
+  by?: "owner";
 };
 
 export function startJob(o: StartOpts): Job {
@@ -96,7 +100,7 @@ export function startJob(o: StartOpts): Job {
   const argv = o.wrap ? o.wrap(bare) : bare;
   const env = o.env ?? toolEnv(o.sessionId);
   const job = { id, num, sessionId: o.sessionId, command: o.command, description: o.description, cwd: o.cwd, pty: !!o.pty,
-    log, started: Date.now(), background: !!o.background, readOff: 0, decoder: new TextDecoder() } as Job;
+    log, started: Date.now(), background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by } as Job;
   if (o.pty) {
     job.proc = Bun.spawn(argv, {
       cwd: o.cwd, env: { ...env, TERM: "xterm-256color" },
@@ -111,8 +115,9 @@ export function startJob(o: StartOpts): Job {
         cwd: o.cwd, env, stdin: "ignore", stdout: fd, stderr: fd, detached: true,
       });
     } finally { closeSync(fd); }
-    writeFileSync(metaPath(log), JSON.stringify(meta(job, job.proc.pid)));
   }
+  // A PTY's record is history only: it never outlives its daemon to be adopted.
+  writeFileSync(metaPath(log), JSON.stringify({ ...meta(job, job.proc.pid), ...(o.pty ? { pty: true, reported: true } : {}) }));
   job.pid = job.proc.pid;
   const proc = job.proc;
   job.exited = proc.exited.then((code) => {
@@ -128,10 +133,16 @@ export function startJob(o: StartOpts): Job {
   return job;
 }
 
-type Meta = { id: string; num: number; sessionId: string; command: string; description?: string; cwd: string; started: number; background: boolean; pid: number; boot?: string; reported?: boolean };
+// The sidecar of a job's log: what adoption needs, and once it ended how it
+// ended, so the terminal pane lists commands of earlier daemons too.
+export type Meta = {
+  id: string; num: number; sessionId: string; command: string; description?: string; cwd: string; started: number; background: boolean; pid: number;
+  boot?: string; reported?: boolean; pty?: boolean; call_id?: string; by?: "owner";
+  ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
+};
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
-  started: j.started, background: j.background, pid, boot: procStart(pid),
+  started: j.started, background: j.background, pid, boot: procStart(pid), call_id: j.callId, by: j.by,
 });
 
 // The start time of a process (Linux), so a reused pid is not taken for the job.
@@ -149,9 +160,9 @@ function finish(job: Job, code: number | null, signal: string | null) {
   job.ended = Date.now();
   job.exitCode = code;
   job.signal = signal;
-  if (!job.pty) {
-    try { writeFileSync(metaPath(job.log), JSON.stringify({ ...meta(job, job.pid), reported: true })); } catch {}
-  }
+  try {
+    writeFileSync(metaPath(job.log), JSON.stringify({ ...meta(job, job.pid), reported: true, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason }));
+  } catch {}
   if (job.background) {
     const what = job.description ? `"${job.description}"` : `\`${job.command.slice(0, 80)}\``;
     const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? "ended while Keel restarted; its exit code is unknown" : `exited with code ${code}`);
@@ -179,7 +190,7 @@ export function adoptJobs(spillRoot: string): number {
       const log = join(dir, `${m.id}.log`);
       let resolve!: () => void;
       const job: Job = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
-        pty: false, log, started: m.started, background: true, pid: m.pid, readOff: size(log), decoder: new TextDecoder(),
+        pty: false, log, started: m.started, background: true, pid: m.pid, readOff: size(log), decoder: new TextDecoder(), callId: m.call_id, by: m.by,
         exited: new Promise<void>((r) => (resolve = r)) };
       counter = Math.max(counter, m.num);
       jobs.set(job.id, job);
@@ -267,6 +278,13 @@ export const jobsOf = (sessionId: string) => [...jobs.values()].filter((j) => j.
 export const findJob = (sessionId: string, id: string | number) =>
   [...jobs.values()].find((j) => j.sessionId === sessionId && (j.id === String(id) || j.num === Number(id)));
 
+// A note for the model's next request (the owner ran a command it should know of).
+export function addNotice(sessionId: string, text: string) {
+  const list = notices.get(sessionId) ?? [];
+  list.push(text);
+  notices.set(sessionId, list);
+}
+
 export function drainNotices(sessionId: string): string[] {
   const n = notices.get(sessionId) ?? [];
   notices.delete(sessionId);
@@ -276,7 +294,7 @@ export function drainNotices(sessionId: string): string[] {
 export const jobView = (j: Job) => ({
   id: j.id, num: j.num, command: j.command, description: j.description, cwd: j.cwd, pty: j.pty, log: j.log,
   started: j.started, ended: j.ended, exit_code: j.exitCode, signal: j.signal, background: j.background, bytes: size(j.log),
-  running: running(j), last: lastLine(j.log),
+  running: running(j), last: lastLine(j.log), call_id: j.callId, by: j.by, stop_reason: j.stopReason,
 });
 
 // The last line a job printed (a progress line, an ETA), for the owner's view

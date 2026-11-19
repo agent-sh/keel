@@ -82,6 +82,19 @@ export class ScriptedProvider implements Provider {
       case "billing":
         // An account state, not a passing failure: turns are refused until the owner acts.
         throw new ProviderError("quota", "Scripted: your credit balance is too low to make this request. Add credits at https://example.com/billing.", 402);
+      case "calls": {
+        // `script:calls [{"name":...,"input":...}, ...]`: one call per round, in
+        // order, then a reply naming the last result. For specs that need tool
+        // calls a real model cannot be made to send exactly.
+        const calls = callsAfter(owner);
+        const at = msgs.findLastIndex((m) => m.role === "user" && textOf(m).includes("script:calls"));
+        const done = msgs.slice(at + 1).filter((m) => m.role === "assistant").length;
+        const next = calls[done];
+        if (next) return reply(`Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
+        const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
+        const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
+        return reply(`Done with ${calls.length} call${calls.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
+      }
       case "rate-limit-long":
         throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 15 min", 429, 15 * 60_000);
       case "rate-limit":
@@ -145,4 +158,18 @@ export class ScriptedProvider implements Provider {
         return reply(compacted ? "Scripted reply, after a compaction." : "Scripted reply.");
     }
   }
+}
+
+// The JSON list that follows `script:calls` in a text.
+function callsAfter(text: string): { name: unknown; input?: unknown }[] {
+  const i = text.indexOf("script:calls");
+  const start = text.indexOf("[", i);
+  if (i < 0 || start < 0) return [];
+  for (let end = text.indexOf("]", start); end >= 0; end = text.indexOf("]", end + 1)) {
+    try {
+      const v = JSON.parse(text.slice(start, end + 1));
+      return Array.isArray(v) ? v : [];
+    } catch {}
+  }
+  return [];
 }

@@ -39,7 +39,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   const script = track ? `trap 'pwd -P >| ${shq(cwdFile)} 2>/dev/null' EXIT\nexec 2>&1\n${o.command}` : `exec 2>&1\n${o.command}`;
   const job = startJob({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,
-    argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn,
+    argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, callId: ctx.callId,
   });
   if (o.background) return { state: "running", job, output: "" };
 

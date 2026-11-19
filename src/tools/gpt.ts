@@ -72,7 +72,7 @@ const exec_command: Tool = {
     const t0 = Date.now();
     const job = startJob({
       sessionId: ctx.sessionId, command: cmd, cwd, logDir: logDir(ctx), pty: !!input.tty,
-      argv: [shell, input.login === false ? "-c" : "-lc", cmd], env: toolEnv(ctx.sessionId, { PAGER: "cat", GIT_PAGER: "cat" }), wrap: ctx.wrapSpawn,
+      argv: [shell, input.login === false ? "-c" : "-lc", cmd], env: toolEnv(ctx.sessionId, { PAGER: "cat", GIT_PAGER: "cat" }), wrap: ctx.wrapSpawn, callId: ctx.callId,
     });
     await waitJob(job, clamp(input.yield_time_ms, 10_000, 250, 30_000), ctx.signal);
     return ok(execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, 50_000)));

@@ -38,6 +38,7 @@ import { runRoutes } from "./run.ts";
 import { marksRoutes } from "./marks.ts";
 import { convoRoutes } from "./convo.ts";
 import { placesRoutes } from "./places.ts";
+import { terminalRoutes } from "./terminal.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -69,6 +70,7 @@ export const routeModules: RouteModule[] = [
   integrationRoutes,
   driveRoutes,
   fleetRoutes, // after the gates: sends a placed session's workspace calls to their machine
+  terminalRoutes, // after fleet: a placed session's commands are asked of its machine
   mobileRoutes, // after automation: it registers the phone as an alert channel
   draftRoutes,
   marksRoutes, // after automation: unread marks are its alerts

@@ -254,14 +254,17 @@ export function apply(f: Frame) {
     const e = f.event;
     // A finished turn may have moved a window (its answers' headers, a plan's use).
     if (e.kind === "turn_end") limitsSoon();
+    // The socket is in order: what streamed before a stored step is that step's,
+    // also when the step is a replay of what a snapshot already brought.
+    const cleared = (e.kind === "assistant" || e.kind === "turn_end") && !!state.drafts[e.session_id];
+    if (cleared) state = { ...state, drafts: { ...state.drafts, [e.session_id]: {} } };
     const list = state.events[e.session_id];
-    if (!list) return void loading.get(e.session_id)?.push(e); // not loaded; loading it later reads it from the store
-    if (list.length && list[list.length - 1]!.seq >= e.seq) return; // a replay of what is here
+    if (!list) { loading.get(e.session_id)?.push(e); if (cleared) set({}); return; } // not loaded; loading it later reads it from the store
+    if (list.length && list[list.length - 1]!.seq >= e.seq) { if (cleared) set({}); return; } // a replay of what is here
     // The new event is the head of its session (the store appends at the head).
     const s = state.sessions[e.session_id];
     if (s) state = { ...state, sessions: { ...state.sessions, [s.id]: { ...s, head: e.id } } };
-    const drafts = e.kind === "assistant" || e.kind === "turn_end" ? { ...state.drafts, [e.session_id]: {} } : state.drafts;
-    set({ events: { ...state.events, [e.session_id]: [...list, e] }, drafts });
+    set({ events: { ...state.events, [e.session_id]: [...list, e] } });
   } else if (f.t === "delta") {
     const cur = state.drafts[f.session_id] ?? {};
     const b = cur[f.index] ?? { kind: f.kind, text: "", name: f.name };

@@ -19,6 +19,7 @@ function useJobs(sessionId: string, working: boolean) {
   useEffect(() => {
     let stop = false;
     let timer: Timer | undefined;
+    let misses = 0;
     const load = async () => {
       try {
         const r = await actions.jobs(sessionId);
