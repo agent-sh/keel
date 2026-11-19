@@ -28,11 +28,23 @@ async function gpuName(): Promise<string | undefined> {
   return value;
 }
 
+// What a new job can have: Linux's MemAvailable; on macOS the free, inactive
+// and purgeable pages (os.freemem counts only the free ones, a few GB on a
+// machine with tens of GB to give).
 function memAvailableMb(): number {
   try {
     const m = readFileSync("/proc/meminfo", "utf8").match(/MemAvailable:\s+(\d+)/);
     if (m) return Math.round(Number(m[1]) / 1024);
   } catch {}
+  if (platform() === "darwin") {
+    try {
+      const out = Bun.spawnSync(["vm_stat"], { stdout: "pipe", stderr: "ignore" }).stdout.toString();
+      const page = Number(out.match(/page size of (\d+)/)?.[1] ?? 16384);
+      const n = (k: string) => Number(out.match(new RegExp(`Pages ${k}:\\s+(\\d+)`))?.[1] ?? 0);
+      const pages = n("free") + n("inactive") + n("purgeable") + n("speculative");
+      if (pages) return Math.round((pages * page) / 1048576);
+    } catch {}
+  }
   return Math.round(freemem() / 1048576);
 }
 

@@ -21,7 +21,8 @@ export function PreviewPanel({ session }: { session: Session }) {
   // forwarder), and the page opens them through this daemon's remote portal.
   const remote = splitId(session.id);
   const local = (p: Port): Port => (remote && p.url ? { ...p, url: p.url.replace(/^\/portal\//, `/fleet-portal/${remote.machine}/`) } : p);
-  const load = () => api<{ ports: Port[] }>(`/api/sessions/${session.id}/portal`).then((r) => setPorts(r.ports.map(local))).catch(reportError);
+  // A session deleted meanwhile (here or on its daemon) has no ports: not an error.
+  const load = () => api<{ ports: Port[] }>(`/api/sessions/${session.id}/portal`).then((r) => setPorts(r.ports.map(local))).catch((e) => ((e as any)?.status === 404 ? setPorts([]) : reportError(e)));
   useEffect(() => {
     load();
     const t = setInterval(load, 5000); // a dev server the session starts shows up within seconds

@@ -662,18 +662,20 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     },
 
     // Any /api route of this daemon, for a paired daemon's forwarder.
-    "/api/fleet/linked/*": linked(async (req) => {
+    // Its own port, not the request's host: through an ssh tunnel the host is
+    // the far end's local port, which means nothing here.
+    "/api/fleet/linked/*": async (req: any, srv: any) => linked(async (req) => {
       const url = new URL(req.url);
       const rest = url.pathname.slice("/api/fleet/linked/".length);
       if (/^fleet\/(machines|linked)\b/.test(decodeURIComponent(rest))) return bad("not through to a third daemon");
-      const r = await fetch(`${url.origin}/api/${rest}${url.search}`, {
+      const r = await fetch(`http://127.0.0.1:${srv.port}/api/${rest}${url.search}`, {
         method: req.method,
         body: ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer(),
         headers: { "content-type": req.headers.get("content-type") ?? "application/json" },
         redirect: "manual",
       });
       return new Response(r.body, { status: r.status, headers: { "content-type": r.headers.get("content-type") ?? "application/octet-stream" } });
-    }),
+    })(req),
 
     // The Rust Keel's peer records: in keel-bun every machine with a granted directory.
     "/api/peers": {
