@@ -335,9 +335,11 @@ export class Vault {
   // Every known value in a request's messages replaced by its placeholder,
   // nothing else looked for: the last check on what is sent to a provider.
   // Every string is masked, at any depth, except the provider's own bytes at
-  // their known places: an image's or document's data, a signed thinking block
-  // (its text, signature and opaque item), a redacted thinking block's data
-  // and a tool call's signature. What holds no known value is returned as it
+  // their known places: an image's or document's data, a whole thinking or
+  // redacted thinking block (signed text, its binding to the request,
+  // src/providers/wires/binding.ts; an edit would break it; a block that must
+  // lose a value is dropped by the request builder, never edited) and a tool
+  // call's signature. What holds no known value is returned as it
   // is (the same objects, the same bytes).
   mask<T>(messages: T): T {
     if (!this.byValue.size) return messages;
@@ -365,8 +367,7 @@ export class Vault {
       if (!b || typeof b !== "object" || Array.isArray(b)) return all(b);
       switch (b.type) {
         case "image": case "document": return except(b, ["data"]);
-        case "thinking": return b.signature || b.opaque ? b : except(b, []);
-        case "redacted_thinking": return except(b, ["data"]);
+        case "thinking": case "redacted_thinking": return b;
         case "tool_use": return except(b, ["signature"]);
         case "tool_result": {
           const o = except(b, ["content"]);

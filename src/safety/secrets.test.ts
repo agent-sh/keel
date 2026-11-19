@@ -127,12 +127,13 @@ test("the request mask covers every field but the provider's own bytes", () => {
   expect(res[0].content[0].content[0].text).toBe("[value of $FIX]");
   expect(res[0].content[0].content[1]).toBe(img);
   // The provider's bytes stay: an image's data, a signed thinking block, a tool call's signature.
-  const signed = { type: "thinking", thinking: value, signature: "sig" };
-  const msgs = [{ role: "user", content: [img] }, { role: "assistant", content: [signed, { type: "redacted_thinking", data: value }, { type: "tool_use", id: "t", name: "x", input: {}, signature: value }] }];
+  const signed = { type: "thinking", thinking: value, signature: "sig", bind: "b1" };
+  const redacted = { type: "redacted_thinking", data: value, bind: "b2" };
+  const msgs = [{ role: "user", content: [img] }, { role: "assistant", content: [signed, redacted, { type: "tool_use", id: "t", name: "x", input: {}, signature: value }] }];
   const kept = v.mask(msgs) as any;
   expect(kept[0]).toBe(msgs[0]);
   expect(kept[1].content[0]).toBe(signed);
-  expect(kept[1].content[1].data).toBe(value);
+  expect(kept[1].content[1]).toBe(redacted);
   expect(kept[1].content[2].signature).toBe(value);
   // Nothing known: the same objects.
   const clean = [{ role: "user", content: [{ type: "text", text: "plain" }] }];
