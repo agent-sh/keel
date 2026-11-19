@@ -10,6 +10,7 @@
 // Spec: agentclientprotocol.com/protocol/v1 (initialize, session/new, load,
 // resume, prompt, cancel, close; session/update, session/request_permission,
 // fs/read_text_file, fs/write_text_file toward the client).
+import type { AgentConfinement } from "./confine.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Store } from "../core/store.ts";
@@ -135,7 +136,8 @@ export class AcpRunner {
   private live = new Map<string, Live>();
   private starting = new Map<string, Promise<Live>>();
 
-  constructor(private store: Store, private agents: AcpAgents, private judge: Judge, private capture: (e: unknown, ctx: Json) => void) {
+  constructor(private store: Store, private agents: AcpAgents, private judge: Judge, private capture: (e: unknown, ctx: Json) => void,
+    private confine: (s: Session, agent: AcpAgent) => AgentConfinement = (_s, a) => ({ argv: [a.run!.command, ...a.run!.args], confined: false, note: `${a.name} runs unconfined.`, writable: [] })) {
     store.migrate("CREATE TABLE IF NOT EXISTS acp_links (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, acp_session TEXT NOT NULL, ts INTEGER NOT NULL)");
   }
 
@@ -159,7 +161,10 @@ export class AcpRunner {
   private async open(s: Session, id: string, io: ExternalIO): Promise<Live> {
     const agent = this.agents.get(id);
     if (!agent?.run) throw Object.assign(new Error(`the ACP agent ${id} is not installed here`), { expected: true });
-    const conn = new AcpConnection([agent.run.command, ...agent.run.args], { cwd: s.workspace, env: agent.run.env }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
+    // Its own process is confined as Keel's commands are; the session is told how.
+    const c = this.confine(s, agent);
+    const conn = new AcpConnection(c.argv, { cwd: s.workspace, env: agent.run.env }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
+    io.append("note", { kind: "acp", sandbox: c.confined ? "on" : "off", text: c.note });
     const live: Live = { agent, conn, acpSession: "", caps: {} };
     conn.onNotification = (method, params) => { if (method === "session/update") this.update(live, params); };
     conn.onRequest = (method, params) => this.request(live, method, params);

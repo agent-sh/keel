@@ -2,6 +2,7 @@
 // joined with what is installed, and the owner's own entries), adding and
 // removing an entry, and the turn hook that hands an `acp:` session's turns to
 // its agent. Permission requests and file access of the agent go through the gate.
+import { confineAgent } from "../../acp/confine.ts";
 import { allHooks, registerHooks, type TurnHooks } from "../../engine/hooks.ts";
 import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { AcpProvider, readCustom, writeCustom } from "../../acp/agents.ts";
@@ -31,7 +32,9 @@ export const acpRoutes: RouteModule = (deps) => {
     return "deny" in r ? r : undefined;
   };
   g.__keelAcp?.dispose();
-  const runner = (g.__keelAcp = new AcpRunner(deps.store, provider.agents, judge, (e, ctx) => deps.errors.capture("provider", e, ctx)));
+  // The agent's process follows the session's sandbox and network, as its commands would.
+  const permOf = (sessionId?: string) => gate ? (sessionId ? gate.perm(sessionId) : { sandbox: gate.defaultSandbox(), network: true }) : { sandbox: "off" as const, network: true };
+  const runner = (g.__keelAcp = new AcpRunner(deps.store, provider.agents, judge, (e, ctx) => deps.errors.capture("provider", e, ctx), (s, a) => confineAgent(a, permOf(s.id), s.workspace)));
   // Registered once per hook list (a hot reload may make a new one); it calls the runner of now.
   g.__keelAcpHook ??= { external: (s) => (g.__keelAcp?.claims(s) ? (io) => g.__keelAcp!.turn(s, io) : undefined) };
   if (!allHooks().includes(g.__keelAcpHook)) registerHooks(g.__keelAcpHook);
@@ -53,7 +56,9 @@ export const acpRoutes: RouteModule = (deps) => {
 
   const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));
   const listing = () => json({
-    agents: provider.agents.list().map((a) => ({ ...a, installed: !!a.run, model: `acp:${a.id}`, run: a.run ? { command: a.run.command, args: a.run.args } : undefined })),
+    // How a new session's agent would run (the default sandbox): the card says it plainly.
+    agents: provider.agents.list().map((a) => ({ ...a, installed: !!a.run, model: `acp:${a.id}`, run: a.run ? { command: a.run.command, args: a.run.args } : undefined,
+      ...(a.run ? { sandbox: (({ confined, note }) => ({ confined, note }))(confineAgent(a, permOf(), deps.workspace, false)) } : {}) })),
     error: provider.agents.error,
     running: runner.running(),
   });

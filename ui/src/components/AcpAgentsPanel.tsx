@@ -7,7 +7,7 @@ import { navigate } from "../lib/ui.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type Cmd = { command: string; args: string[] };
-type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; model: string; run?: Cmd; add?: Cmd; website?: string };
+type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; model: string; run?: Cmd; add?: Cmd; website?: string; sandbox?: { confined: boolean; note: string } };
 type Listing = { agents: Agent[]; error?: string; running: { session: string; agent: string }[] };
 
 const line = (c?: Cmd) => (c ? [c.command.replace(/^\/home\/[^/]+/, "~"), ...c.args].join(" ") : "");
@@ -37,7 +37,10 @@ export function AcpAgentsSettings() {
       <Card>
         {installed.length === 0 && <SettingRow label="No agent installed" hint="Install one from the list below, or add your own command." ><span /></SettingRow>}
         {installed.map((a) => (
-          <SettingRow key={a.id} label={a.name} hint={<span className="font-mono text-caption" data-testid="acp-agent-command">{line(a.run)}</span>}>
+          <SettingRow key={a.id} label={a.name} hint={<>
+            <span className="block font-mono text-caption" data-testid="acp-agent-command">{line(a.run)}</span>
+            {a.sandbox && <span className={a.sandbox.confined ? "block text-caption text-muted" : "block text-caption text-warn"} data-testid="acp-agent-sandbox" data-confined={String(a.sandbox.confined)}>{a.sandbox.note}</span>}
+          </>}>
             <div className="flex items-center gap-2" data-testid={`acp-agent-${a.id}`}>
               <span className="text-caption text-faint">{a.source === "custom" ? "Yours" : "Registry"}</span>
               <button type="button" className={btn} onClick={() => void start(a)} data-testid="acp-agent-start">New session</button>

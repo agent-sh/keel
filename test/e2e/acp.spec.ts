@@ -142,6 +142,9 @@ test("acp client", async ({ page, request }) => {
   await page.getByTestId("acp-add").click();
   await expect(page.getByTestId("acp-agent-standin")).toBeVisible();
   await shoot(page, "acp-10-agents");
+  // The card says how a new session's agent runs (the default sandbox here).
+  const { default_sandbox } = await (await request.get("/api/permissions/settings")).json();
+  await expect(page.getByTestId("acp-agent-sandbox").first()).toHaveAttribute("data-confined", String(default_sandbox !== "off"));
 
   await page.getByTestId("acp-agent-standin").getByTestId("acp-agent-start").click();
   await expect(page).toHaveURL(/\/s\//);
@@ -150,7 +153,8 @@ test("acp client", async ({ page, request }) => {
   expect(s.model).toBe("acp:standin");
   // The picker has the agent as a model of the ACP agents provider.
   await expect(page.getByText("not in current listing")).toHaveCount(0);
-  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask" } });
+  // The agent's own process runs in the session's sandbox, as Keel's commands do.
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "workspace-write" } });
   const note = join(s.workspace, "acp-note.txt");
   rmSync(note, { force: true });
 
@@ -179,12 +183,21 @@ test("acp client", async ({ page, request }) => {
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("assistant-text").last()).toContainText("Before, you said: hello from the e2e", { timeout: 30_000 });
 
+  // What the agent does outside ACP stays in the sandbox: a write outside the folder is refused.
+  await expect(page.getByTestId("note").filter({ hasText: "runs in the command sandbox (workspace-write)" })).toHaveCount(1);
+  const outside = join(process.env.HOME!, ".cache/keel-work/bun", `acp-escape-${Date.now()}.txt`);
+  await page.getByTestId("composer").fill(`escape ${outside}`);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("assistant-text").last()).toContainText("Blocked:", { timeout: 30_000 });
+  expect(existsSync(outside)).toBe(false);
+  await shoot(page, "acp-13-sandboxed");
+
   // Stop cancels the agent's turn; the call it left running ends with it.
   await page.getByTestId("composer").fill("wait for me");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("tool-call").filter({ hasText: "sleep 600" })).toBeVisible({ timeout: 30_000 });
   await page.getByTestId("stop").click();
-  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 });
+  await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 30_000 });
   await expect(page.getByTestId("tool-call").filter({ hasText: "sleep 600" })).not.toHaveAttribute("data-state", "running");
 
   // A session that talked keeps its agent: moving it to a model is refused.

@@ -23,6 +23,14 @@ async function prompt(id: number, p: any) {
     return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
   }
   said.push(text);
+  // Its own file access, outside ACP: a sandboxed agent cannot write there.
+  const escape = text.match(/escape (\S+)/)?.[1];
+  if (escape) {
+    let r: string;
+    try { require("node:fs").writeFileSync(escape, "outside"); r = "I wrote outside the folder."; } catch (e) { r = `Blocked: ${(e as Error).message}`; }
+    update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: r } });
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
   if (/wait/.test(text)) {
     update(s, { sessionUpdate: "tool_call", toolCallId: "call-wait", title: "sleep 600", kind: "execute", status: "in_progress", rawInput: { command: "sleep 600" } });
     await new Promise<void>((r) => (cancel = r));
