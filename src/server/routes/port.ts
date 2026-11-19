@@ -1,7 +1,8 @@
 // Bring the owner's setup over from the other harnesses: GET is the plan
 // (nothing is written), POST runs the picked items (one run at a time).
 import type { RouteModule } from "../app.ts";
-import { AREAS, apply, plan, type Area } from "../../integrations/port.ts";
+import { AREAS, apply, PARTS, plan, planParts, portHome, strip, type Area } from "../../integrations/port.ts";
+import { configDir } from "../../providers/config.ts";
 import { sharedImports } from "../../integrations/import/service.ts";
 import { gate } from "./permissions.ts";
 
@@ -25,7 +26,24 @@ export const portRoutes: RouteModule = (deps) => {
       GET: async (req: Request) => {
         const l = limits(new URL(req.url).searchParams);
         if (!l) return json({ error: "days is a number above 0 and max one of 0 or more" }, 400);
-        return json(await plan(portDeps(), l));
+        if (new URL(req.url).searchParams.get("stream") !== "1") return json(await plan(portDeps(), l));
+        // One JSON line per area as it is read (the first plan on a fresh state
+        // builds the sessions index, which takes the longest), then a done line.
+        const enc = new TextEncoder();
+        return new Response(new ReadableStream({
+          async start(c) {
+            const line = (v: unknown) => { try { c.enqueue(enc.encode(JSON.stringify(v) + "\n")); } catch {} };
+            line({ home: portHome(), config: configDir(), parts: PARTS });
+            try {
+              await planParts(portDeps(), l, (p) => line({ part: { areas: p.areas, items: p.items.map(strip), ms: p.ms } }));
+              line({ done: true });
+            } catch (e) {
+              errors.capture("server", e, { at: "port plan" });
+              line({ error: (e as Error).message });
+            }
+            try { c.close(); } catch {}
+          },
+        }), { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
       },
       POST: async (req: Request) => {
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;

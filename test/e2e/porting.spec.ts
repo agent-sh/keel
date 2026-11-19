@@ -102,6 +102,14 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
     await shoot(page, "port-01b-permissions");
     await shoot(page, "port-01-plan");
 
+    // The plan streams one line per area as it is read, every item under its own area.
+    const lines = (await (await request.get("/api/port?stream=1&max=0")).text()).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines[0].parts.flat()).toEqual(expect.arrayContaining(["instructions", "permissions", "sessions"]));
+    expect(lines.at(-1)).toEqual({ done: true });
+    const parts = lines.filter((l) => l.part);
+    expect(parts.map((l) => l.part.areas).sort()).toEqual([...lines[0].parts].sort());
+    for (const l of parts) for (const i of l.part.items) expect(i.id.startsWith(`${i.area}:`)).toBe(true);
+
     // Sessions are their own spec's; this one brings everything else it picks.
     for (const box of await panel.locator('[data-port-source] input[type="checkbox"]').all()) if (await box.isChecked()) await box.uncheck();
     await panel.getByRole("button", { name: /^Bring \d+ over$/ }).click();

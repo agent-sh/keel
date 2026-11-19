@@ -646,24 +646,42 @@ function planPermissions(items: Planned[], deps: PortDeps) {
 
 // ---- the plan and the apply ------------------------------------------------------------
 
-export async function planned(deps: PortDeps, opts: { days?: number; max?: number } = {}): Promise<Planned[]> {
-  const items: Planned[] = [];
+// The plan area by area, each handed to `onPart` as soon as it is read (the
+// sessions index of a fresh state takes the longest: it reads meanwhile, and
+// comes last). A part names the areas it covers, so the page knows what is left.
+export type Part = { areas: Area[]; items: Planned[]; ms: number };
+export const PARTS: Area[][] = [["instructions"], ["memory"], ["skills", "plugins"], ["mcp"], ["hooks"], ["permissions"], ["settings"], ["sessions"]];
+
+// `only`: the areas wanted (a run of picked items reads only theirs); hooks
+// need the skills part (plugins carry hooks), so it is read for them too.
+export async function planParts(deps: PortDeps, opts: { days?: number; max?: number; only?: Area[] } = {}, onPart: (p: Part) => void = () => {}): Promise<Planned[]> {
+  const all: Planned[] = [];
   const hooks: HookCandidate[] = [];
-  const guard = async (area: Area, f: () => void | Promise<void>) => {
-    try { await f(); } catch (e) { items.push({ id: `${area}:error`, area, source: "Keel", title: `Reading ${area}`, state: "error", reason: (e as Error).message, pick: false }); }
+  const want = (areas: Area[]) => !opts.only || areas.some((a) => opts.only!.includes(a) || (a === "skills" && opts.only!.includes("hooks")));
+  const part = async (areas: Area[], f: (items: Planned[]) => void | Promise<void>) => {
+    if (!want(areas)) return;
+    const t0 = Date.now();
+    const items: Planned[] = [];
+    try { await f(items); } catch (e) { items.push({ id: `${areas[0]}:error`, area: areas[0]!, source: "Keel", title: `Reading ${areas[0]}`, state: "error", reason: (e as Error).message, pick: false }); }
+    all.push(...items);
+    onPart({ areas, items, ms: Date.now() - t0 });
   };
-  await guard("instructions", () => planInstructions(items));
-  await guard("memory", () => planMemory(items, deps.store));
-  await guard("skills", () => planSkills(items, hooks));
-  await guard("mcp", () => planMcp(items, deps));
-  await guard("hooks", () => planHooks(items, hooks));
-  await guard("permissions", () => planPermissions(items, deps));
-  await guard("sessions", () => planSessions(items, deps, { days: opts.days ?? SESSION_DAYS, max: opts.max ?? SESSION_MAX }));
-  await guard("settings", () => planSettings(items));
-  return items;
+  const sessions = part(["sessions"], (items) => planSessions(items, deps, { days: opts.days ?? SESSION_DAYS, max: opts.max ?? SESSION_MAX }));
+  await part(["instructions"], (items) => planInstructions(items));
+  await part(["memory"], (items) => planMemory(items, deps.store));
+  await part(["skills", "plugins"], (items) => planSkills(items, hooks));
+  await part(["mcp"], (items) => planMcp(items, deps));
+  await part(["hooks"], (items) => planHooks(items, hooks));
+  await part(["permissions"], (items) => planPermissions(items, deps));
+  await part(["settings"], (items) => planSettings(items));
+  await sessions;
+  // The order the page shows: by area, as AREAS lists them.
+  return all.sort((a, b) => AREAS.indexOf(a.area) - AREAS.indexOf(b.area));
 }
 
-const strip = ({ run: _, ...it }: Planned): Item => it;
+export const planned = (deps: PortDeps, opts: { days?: number; max?: number } = {}) => planParts(deps, opts);
+
+export const strip = ({ run: _, ...it }: Planned): Item => it;
 
 export async function plan(deps: PortDeps, opts: { days?: number; max?: number } = {}): Promise<Plan> {
   return { home: portHome(), config: configDir(), items: (await planned(deps, opts)).map(strip) };
@@ -672,7 +690,10 @@ export async function plan(deps: PortDeps, opts: { days?: number; max?: number }
 // `ids`: the items to run (default: the ones the plan picks). An item that
 // fails does not stop the others.
 export async function apply(deps: PortDeps, o: { ids?: string[]; areas?: Area[]; days?: number; max?: number } = {}): Promise<{ items: Applied[]; counts: Record<string, number> }> {
-  const all = await planned(deps, o);
+  // Picked items name their areas (ids start with one): only those are read again.
+  const named = o.ids ? [...new Set(o.ids.map((id) => id.split(":")[0] as Area).filter((a) => AREAS.includes(a)))] : undefined;
+  const only = named && o.areas ? named.filter((a) => o.areas!.includes(a)) : named ?? o.areas;
+  const all = await planParts(deps, { ...o, only });
   const want = o.ids ? new Set(o.ids) : null;
   const out: Applied[] = [];
   const counts: Record<string, number> = { applied: 0, failed: 0, done: 0, skipped: 0 };

@@ -92,32 +92,63 @@ export function PortSettings() {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<"" | "reading" | "bringing">("reading");
   const [done, setDone] = useState<{ applied: number; failed: number } | null>(null);
+  // Areas still being read: the plan comes one area at a time (the sessions
+  // index of a fresh state takes longest), and what is in can be picked and
+  // brought before the rest arrives.
+  const [pending, setPending] = useState<string[]>([]);
   const read = () => {
     setBusy("reading");
-    fetch("/api/port").then(async (r) => {
-      const p = (await r.json()) as Plan & { error?: string };
-      if (!r.ok) throw new Error(p.error ?? `HTTP ${r.status}`);
-      setPlan(p);
-      setPicked(new Set(p.items.filter((i) => i.pick && runnable(i)).map((i) => i.id)));
-    }).catch(reportError).finally(() => setBusy(""));
+    setDone(null);
+    (async () => {
+      const r = await fetch("/api/port?stream=1");
+      if (!r.ok || !r.body) throw new Error(((await r.json().catch(() => ({}))) as any).error ?? `HTTP ${r.status}`);
+      const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          if (!line.trim()) continue;
+          const m = JSON.parse(line);
+          if (m.parts) {
+            setPlan({ home: m.home, config: m.config, items: [] });
+            setPicked(new Set());
+            setPending((m.parts as string[][]).flat());
+          } else if (m.part) {
+            const items = m.part.items as Item[];
+            setPlan((p) => (p ? { ...p, items: [...p.items.filter((i) => !m.part.areas.includes(i.area)), ...items] } : p));
+            setPicked((cur) => new Set([...cur, ...items.filter((i) => i.pick && runnable(i)).map((i) => i.id)]));
+            setPending((cur) => cur.filter((a) => !m.part.areas.includes(a)));
+          } else if (m.error) throw new Error(m.error);
+        }
+      }
+      setPending([]);
+    })().catch(reportError).finally(() => setBusy((b) => (b === "reading" ? "" : b)));
   };
   useEffect(read, []);
   const set = (ids: string[], on: boolean) => setPicked((p) => { const n = new Set(p); for (const id of ids) on ? n.add(id) : n.delete(id); return n; });
   const bring = () => {
     setBusy("bringing");
-    fetch("/api/port", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids: [...picked] }) }).then(async (r) => {
+    const ids = [...picked];
+    fetch("/api/port", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids }) }).then(async (r) => {
       const out = await r.json();
       if (!r.ok) throw new Error(out.error ?? `HTTP ${r.status}`);
-      // The results stay on the rows; a later read shows them as here.
-      setPlan((p) => (p ? { ...p, items: out.items } : p));
-      setPicked(new Set());
+      // The results stay on the rows (only the areas brought were read again); a later read shows them as here.
+      const got = new Set((out.items as Item[]).map((i) => i.area));
+      setPlan((p) => (p ? { ...p, items: [...p.items.filter((i) => !got.has(i.area)), ...out.items] } : p));
+      setPicked((cur) => new Set([...cur].filter((id) => !ids.includes(id))));
       setDone({ applied: out.counts.applied, failed: out.counts.failed });
-    }).catch(reportError).finally(() => setBusy(""));
+    }).catch(reportError).finally(() => setBusy((b) => (b === "bringing" ? "" : b)));
   };
+  const order = Object.keys(AREA);
   const areas = useMemo(() => {
     const m = new Map<string, Item[]>();
     for (const i of plan?.items ?? []) (m.get(i.area) ?? m.set(i.area, []).get(i.area)!).push(i);
-    return [...m.entries()];
+    return [...m.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
   }, [plan]);
   const count = (s: State) => plan?.items.filter((i) => i.state === s).length ?? 0;
   return (
@@ -132,6 +163,7 @@ export function PortSettings() {
             {plan && (
               <div className="mt-1 text-caption tabular-nums text-faint" data-port-summary>
                 {count("new")} new, {count("update")} changed, {count("done")} already here, {count("skip")} left out{count("error") ? `, ${count("error")} unreadable` : ""}
+                {pending.length > 0 && <span data-port-reading> · reading {pending.map((a) => AREA[a]?.label.toLowerCase() ?? a).join(", ")}</span>}
                 {done && <span className={done.failed ? "text-danger" : "text-ok"}> · brought {done.applied}{done.failed ? `, ${done.failed} failed` : ""}</span>}
               </div>
             )}
@@ -139,7 +171,7 @@ export function PortSettings() {
           <button type="button" disabled={!!busy} onClick={read} className="h-8 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50">
             {busy === "reading" ? "Reading" : "Read again"}
           </button>
-          <button type="button" disabled={!!busy || !picked.size} onClick={bring} className="h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">
+          <button type="button" disabled={busy === "bringing" || !picked.size} onClick={bring} className="h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">
             {busy === "bringing" ? "Bringing" : `Bring ${picked.size} over`}
           </button>
         </div>
@@ -154,6 +186,14 @@ export function PortSettings() {
             {area === "sessions" ? <Sessions items={list} picked={picked} set={set} /> : (
               <ul>{list.map((i) => <Row key={i.id} it={i} on={picked.has(i.id)} toggle={() => set([i.id], !picked.has(i.id))} />)}</ul>
             )}
+          </div>
+        </Card>
+      ))}
+      {pending.filter((a) => !areas.some(([x]) => x === a)).map((a) => (
+        <Card key={a}>
+          <div className="flex items-baseline gap-2 py-4" data-port-pending={a}>
+            <span className="text-ui font-medium">{AREA[a]?.label ?? a}</span>
+            <span className="animate-pulse text-caption text-faint">Reading</span>
           </div>
         </Card>
       ))}
