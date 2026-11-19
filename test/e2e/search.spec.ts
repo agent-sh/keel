@@ -84,6 +84,7 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
   const ref = await (await request.post(`/api/attachments?name=saffron-${tag}.txt`, { headers: { "content-type": "text/plain" }, data: "ledger" })).json();
   const filed = (await (await request.post("/api/sessions", { data: { model: M, text: "(attached file)", images: [ref] } })).json()).session;
   await idle(filed.id);
+  expect((await (await request.get(`/api/sessions/${filed.id}`)).json()).session.title).toBe(`saffron-${tag}.txt`);
   for (const d of ["alpha", "beta"]) mkdirSync(`${home}/.cache/keel-work/bun/e2e-ws/${d}/api`, { recursive: true });
   const old = (await (await request.post("/api/sessions", { data: { model: M, workspace: `${home}/.cache/keel-work/bun/e2e-ws/alpha/api` } })).json()).session;
   await request.patch(`/api/sessions/${old.id}`, { data: { title: `École ${tag}`, archived: true } });
@@ -117,6 +118,19 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
   await rows.filter({ has: page.getByTestId("hit-archived") }).click();
   await expect(page).toHaveURL(new RegExp(`/s/${old.id}`));
   expect((await (await request.get(`/api/sessions/${old.id}`)).json()).session.archived).toBe(true);
+
+  // The full index: same-named folders read apart, and a tag picked in Sessions does not empty Archived.
+  const near = (await (await request.post("/api/sessions", { data: { model: M, workspace: `${home}/.cache/keel-work/bun/e2e-ws/alpha/api` } })).json()).session;
+  await request.patch(`/api/sessions/${near.id}`, { data: { title: `Near ${tag}`, tags: [`t${tag}`] } });
+  await page.getByTestId("show-sidebar").click();
+  const heads = page.getByTestId("session-list").locator(".k-group-head");
+  await expect(heads.filter({ hasText: "alpha/api" })).toHaveCount(1);
+  await expect(heads.filter({ hasText: "beta/api" })).toHaveCount(1);
+  await shoot(page, "search-05-sidebar-folders");
+  await page.getByTestId("tag-filter").getByRole("button", { name: `t${tag}` }).click();
+  await expect(page.getByTestId("session-list")).toContainText(`Near ${tag}`);
+  await page.getByTestId("tab-archived").click();
+  await expect(page.getByTestId("session-list")).toContainText(`École ${tag}`);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

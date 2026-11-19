@@ -322,7 +322,9 @@ export class Engine {
     this.release(id);
     const ev = this.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
     // The title comes from the owner's first words, not from a timer's or a report's envelope.
-    if (!opts.meta) this.titleFrom(id, text);
+    // A prompt of only attachments is named by its first file, not by the placeholder.
+    const files = (opts.images ?? []).filter((b: any) => b?.type === "attachment").map((b: any) => String(b.name));
+    if (!opts.meta) this.titleFrom(id, text === "(attached file)" && files.length ? files.join(", ") : text === "(image)" ? "Image" : text);
     this.start(id);
     this.emitQueue(id);
     return { event: ev };
