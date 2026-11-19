@@ -57,7 +57,7 @@ const sessions = command("sessions", SESSIONS_USAGE, {
   if (v.json) return (printJson(list), EXIT.ok);
   if (!list.length) return (console.error("no sessions"), EXIT.ok);
   for (const s of list) {
-    const state = s.archived ? "archived" : s.phase;
+    const state = s.archived ? "archived" : s.phase === "idle" && s.settings.failed_ms ? "failed" : s.phase;
     console.log(`${s.id}  ${ago(s.updated).padStart(4)}  ${state.padEnd(8)}  ${modelName(s.model).slice(0, 28).padEnd(28)}  ${(line(s.title) || "(untitled)").slice(0, 60)}  ${tilde(s.workspace)}`);
   }
   return EXIT.ok;

@@ -21,8 +21,9 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   // The turn runs while the page shows the home screen, not this session.
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, text: "Reply with only the word done." } })).json();
   await expect(page.getByTestId("inbox-count")).toHaveText("1", { timeout: 60_000 });
-  const row = page.getByTestId("session-row").filter({ hasText: "Reply with only the word done." });
-  await expect(row.getByTestId("unread-dot")).toBeVisible();
+  // The folded rail: an unread session keeps a full mark.
+  const row = page.locator(`[data-testid="session-row"][data-session="${session.id}"]`);
+  await expect(row).toHaveAttribute("data-unread", "true");
   await shoot(page, "alerts-01-unread");
 
   if (hooked && NOTIFY_LOG) {
@@ -42,7 +43,7 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await page.getByTestId("inbox-item").first().click();
   await expect(page).toHaveURL(new RegExp(`/s/${session.id}`));
   await expect(page.getByTestId("inbox-count")).toHaveCount(0);
-  await expect(row.getByTestId("unread-dot")).toHaveCount(0);
+  await expect(row).not.toHaveAttribute("data-unread", "true");
   await shoot(page, "alerts-03-read");
 
   // Routes per kind are a settings section.

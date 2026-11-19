@@ -12,11 +12,12 @@ import { useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
+import { lastLine, useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
+import { useAuto } from "../lib/automation.ts";
+import { folderOf, Mark, modelOf } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
-import { Mark } from "./Mark.tsx";
 import { archive } from "../lib/sessops.ts";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
@@ -101,49 +102,90 @@ export function NeedsYou({ sessionId }: { sessionId: string }) {
 // The tab the index opens on (the folded rail's archive button asks for "archived").
 let openOn: "active" | "archived" = "active";
 
-// Folded: one mark per session, the ones that need you on top.
-const BANDS: { w: Watch[]; label: string }[] = [
-  { w: ["need"], label: "Needs you" },
-  { w: ["work"], label: "Working" },
-  { w: ["fail"], label: "Failed" },
-  { w: ["done", "idle"], label: "Done" },
+// Folded: one mark per session, banded by what each needs from you, each band
+// headed by its word and count. Within a band the newest work is on top. A
+// finished session you have not looked at keeps a full mark; one you have
+// seen goes quiet. Hovering or focusing a mark shows its card.
+const BANDS: { w: Watch[]; label: string; short: string }[] = [
+  { w: ["need"], label: "Needs you", short: "Need" },
+  { w: ["work"], label: "Working", short: "Work" },
+  { w: ["fail"], label: "Failed", short: "Fail" },
+  { w: ["done", "idle"], label: "Done", short: "Done" },
 ];
 function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
-  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id).sort((a, b) => a.created - b.created), [sessions]);
+  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id).sort((a, b) => b.updated - a.updated), [sessions]);
   const watches = useWatches(list);
   const shown = useStations((x) => x.shown);
+  const unread = useAuto((s) => s.unread.sessions);
+  const [card, setCard] = useState<{ id: string; y: number } | null>(null);
+  const show = (id: string) => (e: { currentTarget: HTMLElement }) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setCard({ id, y: r.top + r.height / 2 });
+  };
+  const hide = () => setCard(null);
   return (
     <>
       {BANDS.map((b) => {
         const items = list.filter((s) => b.w.includes(watches[s.id]!));
         if (!items.length) return null;
         return (
-          <ol key={b.label} className="k-marks" data-watch={b.w[0]} aria-label={b.label}>
-            {items.map((s) => (
-              <li key={s.id}>
-                <button
-                  type="button"
-                  className="k-tick"
-                  data-testid="session-row"
-                  data-session={s.id}
-                  data-watch={watches[s.id]}
-                  data-shown={shown.includes(s.id) || undefined}
-                  aria-current={current === s.id ? "page" : undefined}
-                  title={`${s.title || "New session"}\n${WATCH_LABEL[watches[s.id]!]}, ${ago(s.updated)}`}
-                  onClick={() => navigate({ name: "session", id: s.id })}
-                >
-                  <Mark w={watches[s.id]!} />
-                  <span className="sr-only">{s.title || "New session"}</span>
-                  <span className="k-tick-badges"><NeedsYou sessionId={s.id} /><SessionBadges sessionId={s.id} /></span>
-                </button>
-                <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
-              </li>
-            ))}
-          </ol>
+          <section key={b.label} className="k-marks" data-watch={b.w[0]} aria-label={`${b.label}: ${items.length}`} data-testid="rail-band">
+            <h3 className="k-marks-head" aria-hidden="true"><span>{b.short}</span><span className="tabular-nums">{items.length}</span></h3>
+            <ol>
+              {items.map((s) => (
+                <li key={s.id}>
+                  <button
+                    type="button"
+                    className="k-tick"
+                    data-testid="session-row"
+                    data-session={s.id}
+                    data-watch={watches[s.id]}
+                    data-shown={shown.includes(s.id) || undefined}
+                    data-unread={unread[s.id] ? true : undefined}
+                    aria-current={current === s.id ? "page" : undefined}
+                    aria-label={`${s.title || "New session"}, ${WATCH_LABEL[watches[s.id]!]}, ${ago(s.updated)}`}
+                    onPointerEnter={show(s.id)}
+                    onPointerLeave={hide}
+                    onFocus={show(s.id)}
+                    onBlur={hide}
+                    onClick={() => { hide(); navigate({ name: "session", id: s.id }); }}
+                  >
+                    <Mark w={watches[s.id]!} />
+                    <span className="sr-only">{s.title || "New session"}</span>
+                    <span className="k-tick-badges"><NeedsYou sessionId={s.id} /><SessionBadges sessionId={s.id} /></span>
+                  </button>
+                  <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
+                </li>
+              ))}
+            </ol>
+          </section>
         );
       })}
+      {card && sessions[card.id] && <RailCard s={sessions[card.id]!} w={watches[card.id] ?? "idle"} y={card.y} unread={unread[card.id] ?? 0} />}
     </>
+  );
+}
+
+// The card beside a mark: what the session is, where, and what it needs.
+function RailCard({ s, w, y, unread }: { s: Session; w: Watch; y: number; unread: number }) {
+  const events = useStore((x) => x.events[s.id]);
+  const approvals = useSafety((x) => x.approvals[s.id]?.length ?? 0);
+  const line = lastLine(events, s.workspace);
+  const top = Math.min(Math.max(y, 72), innerHeight - 72);
+  return (
+    <div className="k-rail-card" data-watch={w} style={{ top }} data-testid="rail-card" aria-hidden="true">
+      <div className="k-rail-card-row">
+        <Mark w={w} />
+        <span className="k-rail-card-word">{WATCH_LABEL[w]}</span>
+        <span className="k-rail-card-time">{ago(s.updated)}</span>
+      </div>
+      <p className="k-rail-card-title">{s.title || "New session"}</p>
+      <p className="k-rail-card-meta">{folderOf(s)}<span aria-hidden="true"> / </span>{modelOf(s.model)}</p>
+      {approvals > 0 && <p className="k-rail-card-need">{approvals === 1 ? "An approval waits for you" : `${approvals} approvals wait for you`}</p>}
+      {line && <p className="k-rail-card-line">{line}</p>}
+      {unread > 0 && approvals === 0 && <p className="k-rail-card-new">New since you looked</p>}
+    </div>
   );
 }
 

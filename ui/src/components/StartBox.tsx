@@ -1,8 +1,9 @@
-import { MessageSquare } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
+import { useWatches, WATCH_LABEL } from "../lib/watch.ts";
+import { Mark } from "./Mark.tsx";
 import { Composer } from "./Composer.tsx";
 import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
 import { Kbd } from "./Kbd.tsx";
@@ -30,9 +31,10 @@ export function StartBox() {
   const noModels = useStore((s) => s.loaded.models && s.models.length === 0);
   const firstRun = loaded.sessions && !Object.values(sessions).some((s) => !s.archived);
   const recent = useMemo(
-    () => Object.values(sessions).filter((s) => !s.archived && s.workspace === workspace).sort((a, b) => b.updated - a.updated).slice(0, 4),
+    () => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && s.workspace === workspace).sort((a, b) => b.updated - a.updated).slice(0, 5),
     [sessions, workspace],
   );
+  const watches = useWatches(recent);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -78,9 +80,10 @@ export function StartBox() {
                     key={s.id}
                     type="button"
                     onClick={() => navigate({ name: "session", id: s.id })}
+                    data-testid="recent-session"
                     className="group flex h-10 items-center gap-3 border-b border-line text-left text-ui text-muted last:border-0 hover:text-fg"
                   >
-                    <MessageSquare className="size-4 text-faint group-hover:text-accent" />
+                    <span className="grid w-4 place-items-center" title={WATCH_LABEL[watches[s.id] ?? "idle"]}><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
                     <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{ago(s.updated)}</span>
                   </button>

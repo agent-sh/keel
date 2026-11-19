@@ -71,6 +71,8 @@ function without(r: Record<string, number>, id: string) {
   return rest;
 }
 
+const STALE_FAIL_MS = 24 * 3600_000;
+
 // The stations to show: the helm, the pinned ones, then by attention up to
 // `room`. Pinned keep their order and lead; the others follow in the order
 // they started, so a station never jumps when its state changes.
@@ -89,9 +91,13 @@ export function pickStations(live: Session[], watches: Record<string, Watch>, he
   const pinned = [...s.pinned, ...daemonPinned].map((id) => by.get(id)).filter((x): x is Session => !!x);
   const chosen = new Set(pinned.map((x) => x.id));
   if (helm && by.has(helm)) chosen.add(helm);
+  // A failure asks for a station while it is fresh; one from days ago waits
+  // its turn with the finished work (the rail still shows it failed).
+  const now = Date.now();
+  const rank = (x: Session) => (watches[x.id] === "fail" && now - x.updated > STALE_FAIL_MS ? WATCH_RANK.done : WATCH_RANK[watches[x.id]!]);
   const rest = live
     .filter((x) => !chosen.has(x.id) && !closedNow(x) && !x.parent_id)
-    .sort((a, b) => WATCH_RANK[watches[a.id]!] - WATCH_RANK[watches[b.id]!] || b.updated - a.updated);
+    .sort((a, b) => rank(a) - rank(b) || b.updated - a.updated);
   for (const x of rest) {
     if (chosen.size >= room) break;
     chosen.add(x.id);

@@ -42,6 +42,8 @@ export function watchOf(s: Session, events: StoredEvent[] | undefined, approvals
     if (events.some((e) => e.kind === "turn_start")) return "fail";
     return "idle";
   }
+  // Events not loaded (the rail lists every session): the daemon's marks say it.
+  if (s.settings.failed_ms) return "fail";
   return s.usage.output > 0 ? "done" : "idle";
 }
 

@@ -115,6 +115,7 @@ export type SessionSettings = {
   pinned_ms?: number;  // pinned at; absent = not pinned
   tags?: string[];
   done_ms?: number;    // the owner marked the work finished; his next prompt clears it
+  failed_ms?: number;  // the last turn ended in a failure; the next turn's start clears it
   accept_messages?: boolean; // false: messages from other sessions are refused
   peer_turns?: number; // turns other sessions may start before the owner speaks here again
   max_steps?: number;  // model steps one turn may take; absent = no budget

@@ -225,7 +225,7 @@ export class Engine {
 
   private titleFrom(id: string, text: string) {
     const s = this.store.session(id);
-    if (s && !s.title) this.bus.emit({ t: "session", session: this.store.updateSession(id, { title: text.slice(0, 80).split("\n")[0] }) });
+    if (s && !s.title) this.bus.emit({ t: "session", session: this.store.updateSession(id, { title: firstLineTitle(text) }) });
   }
 
   // Resolves when the session's running turn (if any) has fully ended.
@@ -767,4 +767,14 @@ class Slots {
     this.free++;
     this.waiting.shift()?.();
   }
+}
+
+// A title from the first prompt: its first line, cut at a word before 80
+// characters with an ellipsis, never in the middle of a word.
+export function firstLineTitle(text: string, max = 80): string {
+  const line = (text.split("\n").find((l) => l.trim()) ?? "").replace(/\s+/g, " ").trim();
+  if (line.length <= max) return line;
+  const cut = line.slice(0, max - 1);
+  const at = cut.lastIndexOf(" ");
+  return (at > max / 2 ? cut.slice(0, at) : cut).replace(/[\s,.;:]+$/, "") + "\u2026";
 }

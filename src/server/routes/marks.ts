@@ -78,6 +78,30 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
     return true;
   });
 
+  // Whether the last turn failed, kept on the session so every list (the
+  // rail, the phone, the command line) shows it without the session's events.
+  // Sessions from before the mark get it from their stored events once.
+  const failedAt = (id: string) => {
+    const e = store.db
+      .query<{ kind: string; ts: number; reason: string | null }, [string]>(
+        "SELECT kind, ts, json_extract(data, '$.reason') AS reason FROM events WHERE session_id = ? AND kind IN ('turn_start', 'turn_end', 'error') ORDER BY seq DESC LIMIT 1")
+      .get(id);
+    return e && (e.kind === "error" || (e.kind === "turn_end" && e.reason === "error")) ? e.ts : null;
+  };
+  for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
+    if (s.settings.failed_ms) continue;
+    const at = failedAt(s.id);
+    if (at) store.mergeSettings(s.id, { failed_ms: at });
+  }
+  bus.on((f) => {
+    if (f.t !== "event") return;
+    const { kind, session_id: id, data, ts } = f.event;
+    if (kind === "turn_start" && store.session(id)?.settings.failed_ms) store.mergeSettings(id, { failed_ms: null });
+    else if (kind === "error" || (kind === "turn_end" && data.reason === "error")) store.mergeSettings(id, { failed_ms: ts });
+    else return;
+    emit(id);
+  });
+
   // The owner's next prompt reopens a session he marked done.
   bus.on((f) => {
     if (f.t !== "event" || f.event.kind !== "user") return;

@@ -73,7 +73,7 @@ function StationHead({ s, w, helm, pinned, shown }: { s: Session; w: Watch; helm
   return (
     <header className="k-station-head" data-testid="station-head">
       <div className="k-station-row">
-        <span className="k-station-word">{WATCH_LABEL[w]}</span>
+        <span className="k-station-word"><Mark w={w} />{WATCH_LABEL[w]}</span>
         {w === "work" && start && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
         <span className="k-station-meta truncate">{folderOf(s)}  {modelOf(s.model)}</span>
         <span className="k-station-tools">
@@ -84,7 +84,7 @@ function StationHead({ s, w, helm, pinned, shown }: { s: Session; w: Watch; helm
           <Tool label="Close the station (Alt W)" testid="station-close" onClick={() => closeStation(s.id)}><X /></Tool>
         </span>
       </div>
-      <h2 className="k-station-title truncate" title={s.title}>{s.title || "New session"}</h2>
+      <h2 className="k-station-title" title={s.title}>{s.title || "New session"}</h2>
       <p className="k-station-line truncate">{lastLine(events, s.workspace) || " "}</p>
       {pinned && <span className="k-pin-mark" aria-hidden="true" />}
     </header>
