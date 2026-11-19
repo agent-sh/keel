@@ -16,6 +16,7 @@ import { permissionRoutes } from "./permissions.ts";
 import { secretRoutes } from "./secrets.ts";
 import { trustRoutes } from "./trust.ts";
 import { nestedRoutes } from "./nested.ts";
+import { repeatRoutes } from "./repeat.ts";
 import { planRoutes } from "./plan.ts";
 import { providersRoutes } from "./providers.ts";
 import { profileRoutes } from "./profile.ts";
@@ -46,6 +47,7 @@ import { remoteRoutes } from "./remote.ts";
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
   codeModeRoutes, // refuses run_code for a session on another machine before the gate asks about it
+  repeatRoutes, // before the gate: a repeat it refuses needs no approval; it reads a result before others add to it
   permissionRoutes, // first: its beforeTool gate decides before the others run
   planRoutes,
   trustRoutes, // protected files are watched around calls the gate let through
