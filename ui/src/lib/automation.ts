@@ -8,7 +8,7 @@ import type { WaitRecord } from "../../../src/automation/waits.ts";
 import type { Activity } from "../../../src/automation/activity.ts";
 import type { Snooze } from "../../../src/automation/snooze.ts";
 import type { Goal, Task } from "../../../src/automation/goals.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { actions, api, onFeature, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 
@@ -76,6 +76,8 @@ export const auto = {
   },
   reviewAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/reviews`, { method: "POST", body: JSON.stringify({ agent_id: a.id }) }),
   stopAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/agents/${a.id}/stop`, { method: "POST" }),
+  // From the agent's own session: the whole agent, as its parent's card stops it.
+  stopAgentSession: (sessionId: string) => api(`/api/sessions/${sessionId}/as-agent/stop`, { method: "POST" }),
   cancelWait: (id: string) => api(`/api/waits/${id}`, { method: "DELETE" }),
   patchLoop: (id: string, body: Partial<LoopRecord>) => api(`/api/loops/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   runLoop: (id: string) => api(`/api/loops/${id}/run`, { method: "POST" }),
@@ -224,6 +226,11 @@ auto.load().catch(reportError);
 
 
 export const openSession = (id: string) => navigate({ name: "session", id });
+
+// Stop on a session's page: an agent's session stops the whole agent (by the
+// owner, its waits cancelled), any other session its turn.
+export const stopHere = (s: { id: string; parent_id?: string | null }) =>
+  (s.parent_id ? auto.stopAgentSession(s.id).catch((e) => ((e as { status?: number }).status === 400 ? actions.interrupt(s.id) : Promise.reject(e))) : actions.interrupt(s.id)).catch(reportError);
 
 // Where a row leads, asked of the daemon when the owner opens it (the client's
 // session list can be stale): the agent session, or its parent when the agent

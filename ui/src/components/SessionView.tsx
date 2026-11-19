@@ -3,6 +3,7 @@ import { setBaseTitle } from "./Attention.tsx";
 import { FolderX, WifiOff } from "lucide-react";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
+import { stopHere } from "../lib/automation.ts";
 import { Composer } from "./Composer.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
 import { openPanel, SidePanel } from "./SidePanel.tsx";
@@ -95,7 +96,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                 onModel={(m) => switchSession(session.id, { model: m }).catch(reportError)}
                 onSend={(t, images) => actions.send(session.id, t, { images })}
                 onQueue={(t, images) => actions.send(session.id, t, { mode: "queue", images })}
-                onStop={() => actions.interrupt(session.id).catch(reportError)}
+                onStop={() => void stopHere(session)}
                 {...(session.parent_id ? { onEscape: () => navigate({ name: "session", id: session.parent_id! }), stopLabel: "Stop this agent" } : {})}
                 focus={focus}
                 autoFocus={focus && matchMedia("(min-width: 768px)").matches}

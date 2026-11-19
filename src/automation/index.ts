@@ -250,6 +250,18 @@ export const automationRoutes: RouteModule = (deps) => {
         return json({ ok: true, stopped: was === "running" || was === "waiting" });
       },
     },
+    // Stop from the agent's own session (its page's Stop this agent): the
+    // whole agent, as its parent's card stops it, by the owner, waits cancelled.
+    "/api/sessions/:id/as-agent/stop": {
+      POST: (req: any) => {
+        if (!session(req.params.id)) return bad("no such session", 404);
+        const a = agents.byChild(req.params.id);
+        if (!a) return bad("this session is not an agent's");
+        const was = a.status;
+        agents.stop(a.id, "owner");
+        return json({ ok: true, stopped: was === "running" || was === "waiting" });
+      },
+    },
     "/api/sessions/:id/agents/:agent_id/message": {
       POST: (req: any) => attempt(async () => {
         const a = agents.get(req.params.agent_id);

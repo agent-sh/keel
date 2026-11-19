@@ -10,6 +10,7 @@ import { leafOf, lineage } from "../../../src/core/tree.ts";
 import { getUI, navigate, notePick, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
 import { resolveModelArg } from "./picker.ts";
 import { switchSession } from "./switch.ts";
+import { stopHere } from "./automation.ts";
 
 const current = () => {
   const r = getUI().route;
@@ -72,9 +73,9 @@ registerCommand(
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => navigator.clipboard.writeText(lastReply(current()!.id)) },
   // In an agent's session Escape goes back to the session that started it, as
   // leaving a view does; stopping the agent is its own labeled button.
-  { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working" && !current()?.parent_id, run: () => actions.interrupt(current()!.id).catch(reportError) },
+  { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working" && !current()?.parent_id, run: () => void stopHere(current()!) },
   { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", when: () => !!current()?.parent_id, run: () => navigate({ name: "session", id: current()!.parent_id! }) },
-  { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => actions.interrupt(current()!.id).catch(reportError) },
+  { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => void stopHere(current()!) },
   { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { actions.patch(current()!.id, { archived: true }).catch(reportError); navigate({ name: "new" }); } },
   { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => navigator.clipboard.writeText(location.href) },
   { id: "end", label: "Go to the end and follow", group: "Session", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new Event("keel:end")) },
