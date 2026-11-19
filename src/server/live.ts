@@ -16,6 +16,8 @@ export class Live {
   // The reply each running turn has streamed since its last stored step.
   private drafts = new Map<string, DraftBlocks>();
   private started = Date.now();
+  // A session's queue and turn status now (the app sets it once the engine exists).
+  state?: (id: string) => { queue: any[]; held: boolean; status: any };
 
   constructor(private store: Store, private bus: Bus, private publish: (topic: string, data: string) => void) {
     bus.on((f) => {
@@ -65,6 +67,14 @@ export class Live {
       cursors[id] = last;
       const d = this.drafts.get(id);
       if (d) send(ws, { t: "draft", session_id: id, blocks: d, rev: this.bus.rev() });
+      // Queue and status as they are now, so a page whose snapshot came just
+      // before the socket needs no second snapshot.
+      const st = this.state?.(id);
+      if (st) {
+        const rev = this.bus.rev();
+        ws.send(JSON.stringify({ t: "queue", session_id: id, queue: st.queue, held: st.held, rev }));
+        ws.send(JSON.stringify({ t: "status", session_id: id, status: st.status, rev }));
+      }
     }
     ws.subscribe(LIVE);
     send(ws, { t: "replayed", cursors });

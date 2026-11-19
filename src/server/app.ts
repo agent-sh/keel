@@ -82,6 +82,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   initAccess(store.stateDir);
   // Bun's publish writes a frame to every subscribed tab natively, serialized once.
   const live = new Live(store, bus, (topic, data) => server.publish(topic, data));
+  live.state = (id) => ({ queue: store.queue(id), held: engine.isHeld(id), status: engine.statusOf(id) });
 
   const session = (id: string) => store.session(id);
 

@@ -425,8 +425,9 @@ export function connect() {
     opened = true;
     const loads: Promise<unknown>[] = [first ? first.then(() => {}, reload) : reload()];
     // Queue and status of the open sessions moved meanwhile (their events come by the
-    // replay); one deleted meanwhile is dropped.
-    for (const id of Object.keys(cursors)) {
+    // replay); one deleted meanwhile is dropped. On the page's first socket the
+    // snapshots were just taken and the replay brings queue and status: no second load.
+    for (const id of first ? [] : Object.keys(cursors)) {
       loads.push(actions.loadSession(id).catch((e) => {
         if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
         const { [id]: _, ...events } = state.events;

@@ -35,6 +35,16 @@ test("chat with tools", async ({ page, request }) => {
   await shoot(page, "04-second-turn");
 
   await expect(page.getByTestId("session-list")).toContainText("List the files");
+
+  // Opened fresh, the session page asks for its snapshot once: the socket's replay brings the rest.
+  const id = new URL(page.url()).pathname.split("/s/")[1]!;
+  const loads: string[] = [];
+  page.on("request", (r) => { if (new URL(r.url()).pathname === `/api/sessions/${id}`) loads.push(r.url()); });
+  await page.reload();
+  await expect(page.getByTestId("turn-end")).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => document.readyState)).toBe("complete");
+  await page.waitForLoadState("networkidle");
+  expect(loads).toHaveLength(1);
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
