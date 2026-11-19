@@ -16,13 +16,24 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 export let telemetry: Telemetry | undefined;
 
 type Bad = { error: string; status: number };
+const PERIODS = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 };
 
 export const telemetryRoutes: RouteModule = ({ store, bus }) => {
   const t = (telemetry = new Telemetry(store, bus));
   // The filters every report takes; `prefix` reads one side of a comparison.
+  // `period` (day, week, month) is the last 24 hours, 7 days or 30 days up
+  // to now; it does not mix with explicit bounds, and another word is refused.
   const filter = (q: URLSearchParams, prefix = ""): Filter | Bad => {
     const num = (k: string) => (q.get(prefix + k) ? Number(q.get(prefix + k)) : undefined);
-    const since = num("since_ms"), until = num("until_ms"), bucket = num("bucket_ms");
+    let since = num("since_ms"), until = num("until_ms");
+    const bucket = num("bucket_ms");
+    const period = q.get(prefix + "period");
+    if (period !== null) {
+      if (!(period in PERIODS)) return { error: `unknown period ${period}: day, week or month`, status: 400 };
+      if (since !== undefined || until !== undefined) return { error: "period and since_ms/until_ms do not mix", status: 400 };
+      until = Date.now();
+      since = until - PERIODS[period as keyof typeof PERIODS];
+    }
     if ([since, until, bucket].some((v) => v !== undefined && !Number.isFinite(v))) return { error: "a bound is not a number", status: 400 };
     if (since !== undefined && until !== undefined && since > until) return { error: `${prefix}since_ms is after ${prefix}until_ms`, status: 400 };
     if (bucket !== undefined && bucket < 60_000) return { error: "bucket_ms is under a minute", status: 400 };
@@ -65,12 +76,11 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
     "/api/telemetry/examples": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
+        const f = filter(q);
+        if (bad(f)) return json({ error: f.error }, f.status);
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
         if (limit !== undefined && !Number.isFinite(limit)) return json({ error: "limit is not a number" }, 400);
-        const ms = (k: string) => (q.get(k) ? Number(q.get(k)) : undefined);
-        const since = ms("since_ms"), until = ms("until_ms");
-        if ([since, until].some((v) => v !== undefined && !Number.isFinite(v))) return json({ error: "since_ms and until_ms are milliseconds" }, 400);
-        return json({ examples: t.examples({ tool: q.get("tool") || undefined, session: q.get("session_id") || undefined, limit, since, until }) });
+        return json({ examples: t.examples({ tool: q.get("tool") || undefined, session: f.session, limit, since: f.since, until: f.until }) });
       },
     },
     "/api/telemetry/vocabulary": {

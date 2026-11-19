@@ -388,7 +388,7 @@ export class Engine {
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn"): Promise<ProviderResult> {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
-    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose };
+    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id };
     for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
@@ -403,6 +403,7 @@ export class Engine {
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;
           partial.set(d.index, p);
+          this.measure((h) => h.requestDelta?.(session, req, d));
           if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
         });
         if (!quiet || attempt) this.status(id, { kind: "idle" });
@@ -574,6 +575,13 @@ export class Engine {
     // An interrupt answers at once, whether or not a gate or the tool honors the signal.
     const stopped = new Promise<null>((r) => ctx.signal.addEventListener("abort", () => r(null), { once: true }));
     let result: ToolResultBlock;
+    // Measured from dispatch: a call that never ran (denied, stopped at its gate) has no row.
+    let t0: number | undefined;
+    const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted") => {
+      const ms = Date.now() - t0!;
+      this.measure((h) => h.toolRan?.(session, call, r, { ms, outcome }));
+      return r;
+    };
     try {
       for (const h of allHooks()) {
         if (!h.beforeTool) continue;
@@ -587,16 +595,19 @@ export class Engine {
         if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
       }
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
+      t0 = Date.now();
       const run = call.ctx.dispatch ? call.ctx.dispatch(tool, call.input, call.ctx) : tool.run(call.input, call.ctx);
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);
-      if (!out) return interrupted();
+      if (!out) return ran(interrupted(), "interrupted");
       result = { type: "tool_result", tool_use_id: u.id, content: out.content, is_error: out.is_error || undefined };
+      ran(result, result.is_error ? "error" : "ok");
     } catch (e) {
-      if (ctx.signal.aborted) return interrupted();
+      if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(), "interrupted");
       this.errors.capture("tool", e, { tool: u.name, session: ctx.sessionId });
-      return { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
+      const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
+      return t0 === undefined ? failed : ran(failed, "error");
     }
     for (const h of allHooks()) await Promise.resolve(h.afterTool?.(session, call, result)).catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
     return result;

@@ -1,0 +1,70 @@
+// The ledger's attribution over the event tree, which a live e2e cannot set
+// up: history from before telemetry (a fork copied with it), and branches.
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Bus } from "../core/bus.ts";
+import { Store } from "../core/store.ts";
+import { allHooks } from "../engine/hooks.ts";
+import { Telemetry } from "./telemetry.ts";
+
+const withStore = (f: (store: Store) => void) => {
+  const root = mkdtempSync(join(tmpdir(), "keel-telemetry-"));
+  try { f(new Store(root)); } finally { rmSync(root, { recursive: true, force: true }); }
+};
+const use = { type: "tool_use", id: "call_12", name: "inspect", input: {} };
+
+test("history from before telemetry counts each request once, a fork's copy included", () => withStore((store) => {
+  const a = store.createSession({ model: "p:m", workspace: "/" });
+  store.append(a.id, "user", { text: "go" });
+  const step = store.append(a.id, "assistant", { blocks: [use], model: "p:m", usage: { input: 10, output: 2, cache_read: 0, cache_write: 0, cost: 0.25 }, stop: "tool_use" });
+  store.append(a.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "call_12", is_error: true, content: "Fixture report unavailable\nmore" }] });
+  store.append(a.id, "assistant", { blocks: [{ type: "text", text: "Earlier call_12 failed" }], model: "p:m", usage: { input: 1, output: 1, cache_read: 0, cache_write: 0, cost: 0 }, stop: "end_turn" });
+  const b = store.createSession({ model: "p:m", workspace: "/" });
+  store.copyEvents(b.id, store.events(a.id));
+
+  const t = new Telemetry(store, new Bus());
+  const r = t.report({});
+  expect(r.total.calls).toBe(2);
+  expect(r.total.priced_cost_usd).toBe(0.25);
+  expect([r.total.tool_calls, r.total.tool_errors]).toEqual([1, 1]);
+  const [ex] = t.examples({});
+  expect(ex).toMatchObject({ session_id: a.id, call_id: "call_12", error: "Fixture report unavailable", event_id: step.id });
+}));
+
+test("a request is booked to its own branch, route and turn", () => withStore((store) => {
+  const s = store.createSession({ model: "p:main", workspace: "/" });
+  const root = store.append(s.id, "user", { text: "Start" });
+  store.append(s.id, "assistant", { blocks: [{ type: "text", text: "ok" }], model: "p:main", usage: {}, stop: "end_turn" });
+  const t = new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  const send = (purpose: "turn" | "side" | "summary", prompt: number, route = "p:main") => {
+    const req = { model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal, purpose, route } as any;
+    const sess = store.session(s.id)!;
+    hooks.requestSent!(sess, req);
+    hooks.requestDone!(sess, req, { blocks: [], stop: "end_turn", usage: { input: prompt, output: 1, cache_read: 0, cache_write: 0 } } as any);
+  };
+  const head = store.session(s.id)!.head!;
+  // Branch A asks; sibling B asks; a summary is installed on A, then B's turn
+  // runs, then A's.
+  const askA = store.append(s.id, "user", { text: "Verify A" }, head);
+  const askB = store.append(s.id, "user", { text: "Verify B" }, head);
+  store.append(s.id, "compaction", { mode: "summary", summary: "s", covered: root.id, tokens_before: 500 }, askA.id);
+  const turnA = store.append(s.id, "turn_start", { model: "p:main" });
+  store.append(s.id, "turn_start", { model: "p:main" }, askB.id);
+  send("turn", 900);
+  store.updateSession(s.id, { head: turnA.id });
+  send("turn", 70);
+  send("side", 5, "q:advisor");
+  store.append(s.id, "turn_end", { reason: "end_turn", usage: {} });
+  send("side", 3);
+
+  const [c] = t.compactions({ session: s.id }).compactions;
+  expect(c!.tokens_after).toBe(70);
+  expect(c!.kept!.verbatim_events).toBe(2); // the start's reply and "Verify A", never B's
+  const turn = (t.tokens({ session: s.id }).turns as any[]).find((x) => x.turn_event === turnA.id);
+  expect(turn.prompt).toBe("Verify A");
+  expect(turn.requests).toBe(1); // the side answers are in no turn
+  expect(t.report({}).by_model.map((m) => [m.model, m.calls]).sort()).toEqual([["p:main", 4], ["q:advisor", 1]]);
+}));

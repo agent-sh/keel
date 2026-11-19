@@ -24,12 +24,17 @@ export type TurnHooks = {
   requestSent?: (s: Session, req: ProviderRequest) => void;
   requestDone?: (s: Session, req: ProviderRequest, res: ProviderResult) => void;
   requestFailed?: (s: Session, req: ProviderRequest, err: unknown, aborted: boolean) => void;
+  // Each streamed piece of the answer, side answers too (they never reach the bus).
+  requestDelta?: (s: Session, req: ProviderRequest, d: { kind: string; text: string }) => void;
   afterResponse?: (s: Session, res: ProviderResult, messages: Message[]) => void | Promise<void>;
   // Before each tool call, in registration order; may wait (an approval). The
   // first deny wins and the call does not run. Watch call.ctx.signal.
   beforeTool?: (s: Session, call: ToolCall) => ToolGate | Promise<ToolGate>;
   // After each call that ran, with its result (checkpoints, audit).
   afterTool?: (s: Session, call: ToolCall, result: ToolResultBlock) => void | Promise<void>;
+  // For measuring only: every call that was dispatched, however it ended,
+  // with the time the tool itself took (no approval wait, no afterTool hooks).
+  toolRan?: (s: Session, call: ToolCall, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted" }) => void;
   // After a step's tool results are stored, before the next model call (a
   // tool that asked for a fresh context gets its checkpoint here).
   stepDone?: (s: Session) => void | Promise<void>;

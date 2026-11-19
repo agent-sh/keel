@@ -29,6 +29,9 @@ export type ProviderRequest = {
   // Why the engine asks: a step of a turn, a compaction summary, or a side
   // answer outside the history. Read by telemetry; drivers ignore it.
   purpose?: "turn" | "summary" | "side";
+  // The qualified model id (provider:model) the request goes to, for
+  // measuring; `model` is the name on the wire.
+  route?: string;
   // Filled by the registry from the listing: the levels the model takes.
   efforts?: string[];
   // The session's speed choice (a SpeedOffer id); the registry turns it into
