@@ -58,7 +58,9 @@ test("branches, fork, rename, archive, search, delete", async ({ page, request }
   await page.getByTestId("tab-active").click();
   await expect(page.getByTestId("session-list")).toContainText(`Fruit fork ${tag}`);
 
-  // Search what was said: the edited prompt of the first session opens on its branch.
+  // Search what was said: the edited prompt of the first session opens on its
+  // branch as a preview; the session's own branch moves only on Continue.
+  const headBefore = (await (await request.get(`/api/sessions/${session.id}`)).json()).session.head;
   await page.keyboard.press("Control+k");
   await page.getByTestId("palette-input").fill(`banana ${tag}`);
   const hit = page.getByRole("option").filter({ hasText: "banana" }).first();
@@ -67,6 +69,13 @@ test("branches, fork, rename, archive, search, delete", async ({ page, request }
   await hit.click();
   await expect(page).toHaveURL(new RegExp(session.id));
   await expect(page.getByTestId("branch-pos")).toHaveText("2/2");
+  await expect(page.getByTestId("branch-preview")).toBeVisible();
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.head).toBe(headBefore);
+  await shoot(page, "tree-05-search-preview");
+  await page.getByTestId("preview-continue").click();
+  await expect(page.getByTestId("branch-preview")).toHaveCount(0);
+  await expect(page.getByTestId("branch-pos")).toHaveText("2/2");
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.head).not.toBe(headBefore);
 
   // Delete the fork.
   await page.goto(forkUrl);

@@ -1,7 +1,7 @@
-import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
+import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { MemoryNote } from "./MemoryNote.tsx";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { lineage } from "../../../src/core/tree.ts";
+import { leafOf, lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
@@ -387,7 +387,15 @@ function Live({ sessionId, working, asking, since }: { sessionId: string; workin
 export function Transcript({ sessionId }: { sessionId: string }) {
   const all = useStore((s) => s.events[sessionId]);
   const session = useStore((s) => s.sessions[sessionId])!;
-  const events = useMemo(() => (all ? lineage(all, session.head) : undefined), [all, session.head]);
+  // A search hit on another branch is read in place: that branch is shown, the
+  // session's own branch (where the next reply goes) does not move.
+  const preview = useUI((s) => (s.preview?.session === sessionId ? s.preview.event : null));
+  const shownHead = useMemo(() => {
+    if (!all || !preview || !all.some((e) => e.id === preview) || lineage(all, session.head).some((e) => e.id === preview)) return session.head;
+    return leafOf(all, preview);
+  }, [all, preview, session.head]);
+  const previewing = shownHead !== session.head;
+  const events = useMemo(() => (all ? lineage(all, shownHead) : undefined), [all, shownHead]);
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -470,6 +478,16 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         }}
       >
         <div ref={content} className="mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
+          {previewing && (
+            <div className="sticky top-2 z-10 flex items-center gap-2 rounded-lg border border-brass/50 bg-raised px-3.5 py-2 text-ui shadow-2" data-testid="branch-preview">
+              <GitBranch className="size-4 shrink-0 text-brass" />
+              <span className="min-w-0 flex-1 text-muted">You are reading another branch. Replies still go to the current one.</span>
+              <button type="button" data-testid="preview-continue" disabled={session.phase === "working"} title={session.phase === "working" ? "Possible when the turn ends" : undefined}
+                onClick={() => actions.setHead(sessionId, preview!, true).then(() => setUI({ preview: null })).catch(reportError)}
+                className="h-7 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">Continue from this branch</button>
+              <button type="button" data-testid="preview-back" onClick={() => setUI({ preview: null })} className="h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">Back to the current one</button>
+            </div>
+          )}
           {events.length === 0 && session.phase !== "working" && <p className="py-10 text-center text-ui text-faint">No messages yet.</p>}
           {events.map((e, idx) => {
             if (e.kind === "user") {

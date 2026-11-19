@@ -167,7 +167,9 @@ export const actions = {
   interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST" }),
   patch: async (id: string, body: Partial<Omit<Session, "settings">> & { settings?: Record<string, unknown> }) => {
     const r = await api<{ session: Session }>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) });
-    set({ sessions: { ...state.sessions, [id]: r.session } });
+    // A reply that comes after a newer change (from another tab, or a later edit here) does not undo it.
+    const cur = state.sessions[id];
+    if (!cur || r.session.updated >= cur.updated) set({ sessions: { ...state.sessions, [id]: r.session } });
     return r.session;
   },
   // `leaf`: show the newest end of the branch below the event (a version

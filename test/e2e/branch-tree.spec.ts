@@ -13,6 +13,7 @@ test("branch tree and labels", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN } })).json();
   await page.goto(`/s/${session.id}`);
   const composer = page.getByTestId("composer");
+  const tag = `zt${Date.now().toString(36)}`; // search finds this run's words only
   for (const [i, t] of ["Plan the parser", "Write the tokenizer"].entries()) {
     await composer.fill(t);
     await composer.press("Enter");
@@ -21,7 +22,7 @@ test("branch tree and labels", async ({ page, request }) => {
   // Edit the second prompt, then answer the edit again: three ways after the first prompt.
   await page.getByTestId("user-message").last().hover();
   await page.getByTestId("edit-message").last().click();
-  await page.getByTestId("edit-box").fill("Write the tokenizer with a state machine");
+  await page.getByTestId("edit-box").fill(`Write the tokenizer with a state machine ${tag}`);
   await page.getByTestId("edit-send").click();
   await expect(page.getByTestId("branch-pos")).toHaveText("2/2");
   await expect(page.getByTestId("turn-end")).toHaveCount(2);
@@ -58,6 +59,25 @@ test("branch tree and labels", async ({ page, request }) => {
   await expect(page.getByTestId("branch-pos")).toHaveText("3/3");
   await panel.getByTestId("label-row").filter({ hasText: "first tokenizer" }).locator("button").first().click();
   await expect(page.getByTestId("branch-pos")).toHaveText("1/3");
+
+  // A search hit on another branch is read in place: the session's branch
+  // stays, a reply asks first, Continue makes it the branch.
+  const before = (await (await request.get(`/api/sessions/${session.id}`)).json()).session.head;
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill(`state machine ${tag}`);
+  await page.getByRole("option").filter({ hasText: "state machine" }).first().click();
+  await expect(page).toHaveURL(new RegExp(session.id));
+  await expect(page.getByTestId("branch-preview")).toBeVisible();
+  await expect(page.getByTestId("user-message").last()).toContainText("state machine");
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.head).toBe(before);
+  await composer.fill("a reply while reading");
+  await composer.press("Enter");
+  await expect(page.getByText("You are reading another branch. Choose Continue")).toBeVisible();
+  await shoot(page, "tree-02-search-preview");
+  await page.getByTestId("preview-continue").click();
+  await expect(page.getByTestId("branch-preview")).toHaveCount(0);
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.head).not.toBe(before);
+  await composer.fill("");
 
   // Remove one.
   await panel.getByTestId("label-row").filter({ hasText: "parser plan" }).hover();

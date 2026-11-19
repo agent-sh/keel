@@ -7,6 +7,7 @@ import { fuzzy } from "../lib/keys.ts";
 import { dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { onFeature, reportError, useStore } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
+import { lineage } from "../../../src/core/tree.ts";
 import { cn } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -55,6 +56,10 @@ export function Composer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const enterSends = useUI((s) => s.enterSends);
+  // Reading another branch from search: a reply would go to the session's own branch, so ask first.
+  const previewEvent = useUI((s) => (session && s.preview?.session === session.id ? s.preview.event : null));
+  const sessionEvents = useStore((s) => (session ? s.events[session.id] : undefined));
+  const offBranch = !!previewEvent && !!sessionEvents?.some((e) => e.id === previewEvent) && !lineage(sessionEvents!, session!.head).some((e) => e.id === previewEvent);
   const modelSignal = useUI((s) => s.modelMenu);
   const [pickerSignal, setPickerSignal] = useState(0);
   const lastSignal = useRef(modelSignal);
@@ -253,6 +258,7 @@ export function Composer({
       const item = slashItems.find((i) => i.id === cmd[1]);
       if (item) return runSlash(item, (cmd[2] ?? "").trim());
     }
+    if (offBranch) return setNotice("You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.");
     // The box clears at once (the next prompt can be typed while this one is on
     // its way); a failed send puts the text back if the box is still empty.
     const sent = images;

@@ -137,12 +137,12 @@ export const turnRoutes: RouteModule = (deps) => {
       POST: async (req: any) => {
         const s = sessionOr404(req.params.id);
         if (!s) return bad("no such session", 404);
-        if (engine.isRunning(s.id)) return bad("a turn is running", 409);
         const b = (await req.json()) as any;
         const all = store.events(s.id);
         if (!all.some((e) => e.id === b.head_event_id)) return bad("not an event of this session");
-        // `reveal`: only switch when the event is not on the branch shown now.
+        // `reveal`: only switch when the event is not on the branch shown now (also while a turn runs).
         if (b.reveal && lineage(all, s.head).some((e) => e.id === b.head_event_id)) return json({ ok: true, head: s.head });
+        if (engine.isRunning(s.id)) return bad("a turn is running", 409);
         const head = b.leaf === false ? b.head_event_id : leafOf(all, b.head_event_id);
         const next = store.updateSession(s.id, { head });
         bus.emit({ t: "session", session: next });

@@ -27,6 +27,9 @@ type UIState = {
   composerSeed: { text: string; n: number; session?: string } | null;
   panel: string | null; // the open tab of the side panel
   focusEvent: string | null; // a message to scroll to once its session is shown (?e=)
+  // A message opened from search on another branch: shown without moving the
+  // session's branch until the owner chooses to continue from it.
+  preview: { session: string; event: string } | null;
 };
 
 function parse(): Route {
@@ -68,6 +71,7 @@ let state: UIState = {
   composerSeed: null,
   panel: pref("keel.panel", null),
   focusEvent: new URLSearchParams(location.search).get("e"),
+  preview: null,
 };
 const subs = new Set<() => void>();
 const subscribe = (f: () => void) => {

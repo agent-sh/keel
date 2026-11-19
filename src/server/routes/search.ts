@@ -46,11 +46,11 @@ export const searchRoutes: RouteModule = ({ store }) => {
         const match = ftsQuery(q);
         if (!match) return Response.json({ query: q, hits: [] });
         const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+        // Every word matches the title or folder; matched over all sessions, then ranked and cut.
+        const like = words.map((w) => `%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
         const titles = store.db
-          .query<any, []>("SELECT id, title, workspace, updated, archived FROM sessions ORDER BY archived, updated DESC LIMIT 2000")
-          .all()
-          .filter((t) => words.every((w) => `${t.title} ${t.workspace}`.toLowerCase().includes(w)))
-          .slice(0, limit);
+          .query<any, string[]>(`SELECT id, title, workspace, updated, archived FROM sessions WHERE ${like.map(() => "lower(coalesce(title, '') || ' ' || workspace) LIKE ? ESCAPE '\\'").join(" AND ")} ORDER BY archived, updated DESC LIMIT ${limit}`)
+          .all(...like);
         let content: any[] = [];
         try {
           content = store.db
