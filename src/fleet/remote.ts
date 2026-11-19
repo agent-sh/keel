@@ -37,3 +37,23 @@ export async function remoteRun(
     return { content: `Error [PEER_UNREACHABLE]: ${m.name}: ${(e as Error).message}. Nothing ran there, or its result was lost; check before retrying.`, is_error: true };
   }
 }
+
+// One command on a machine, with no tool state (keel__run_on): its own shell,
+// started in the directory asked for, bounded like a shell call.
+export async function remoteExec(fleet: Fleet, m: MachineRow, ctx: ToolContext, command: string, cwdIn?: string): Promise<ToolOutput> {
+  const root = m.workspace_root!;
+  const cwd = cwdIn ? (isAbsolute(cwdIn) ? cwdIn : resolve(root, cwdIn)) : root;
+  fleet.step(ctx.sessionId, ctx.callId, m.id);
+  try {
+    const p = await fleet.peer(m.id);
+    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script: command, cwd, root }), signal: ctx.signal, timeout: CALL_MS });
+    const b = (await r.json().catch(() => ({}))) as { code?: number; out?: string; error?: string };
+    if (!r.ok || b.error) return { content: `Error [PEER]: ${m.name} answered: ${b.error ?? `HTTP ${r.status}`}`, is_error: true };
+    const out = (b.out ?? "").trimEnd();
+    return { content: `${out || "(no output)"}${b.code ? `\nExit code ${b.code}` : ""}`, is_error: !!b.code };
+  } catch (e) {
+    if (ctx.signal.aborted) return { content: "Interrupted.", is_error: true };
+    if (!(e instanceof LinkError)) throw e;
+    return { content: `Error [PEER_UNREACHABLE]: ${m.name}: ${(e as Error).message}. It may or may not have run there; check before retrying.`, is_error: true };
+  }
+}

@@ -30,6 +30,22 @@ const KEEPALIVE_MS = 5_000; // under Bun's 10 s idle timeout: a long call keeps 
 
 export let fleet: Fleet | undefined;
 
+// A JSON answer that may take minutes: spaces go out while it works (valid
+// JSON whitespace), so the connection is not closed as idle.
+function keepalive(work: () => Promise<unknown>): Response {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(c) {
+      const tick = setInterval(() => { try { c.enqueue(enc.encode(" ")); } catch {} }, KEEPALIVE_MS);
+      let out: unknown;
+      try { out = await work(); } catch (e) { out = { error: (e as Error).message }; }
+      clearInterval(tick);
+      try { c.enqueue(enc.encode(JSON.stringify(out))); c.close(); } catch {}
+    },
+  });
+  return new Response(stream, { headers: { "content-type": "application/json" } });
+}
+
 export const fleetRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, engine, errors } = deps;
   const f = (fleet = new Fleet(store, bus, errors));
@@ -541,6 +557,24 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         } catch {
           return json({ exists: false, dir: false });
         }
+      }),
+    },
+
+    // One script in the granted directory, for a handoff's git steps: no tool
+    // state (a tool's shell keeps its own working directory between calls).
+    "/api/fleet/hands/exec": {
+      POST: linked(async (req) => {
+        const b = await body(req);
+        const cwd = resolve(String(b.cwd ?? ""));
+        if (!b.root || !inside(cwd, resolve(b.root)) || !existsSync(cwd)) return json({ code: 127, out: `not a directory inside the granted one: ${cwd}` });
+        return keepalive(async () => {
+          const p = Bun.spawn(["bash", "-c", String(b.script ?? "")], {
+            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, signal: req.signal,
+            timeout: 10 * 60_000, // the longest a shell call may run in any family
+          });
+          const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+          return { code, out: (out + err).slice(-200_000) };
+        });
       }),
     },
 

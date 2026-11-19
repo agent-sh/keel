@@ -4,7 +4,7 @@ import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Fleet } from "./fleet.ts";
 import { HttpError, type Messages } from "./messages.ts";
-import { remoteRun } from "./remote.ts";
+import { remoteExec } from "./remote.ts";
 
 let fleet: Fleet | undefined;
 let messages: Messages | undefined;
@@ -60,7 +60,7 @@ const runOn: Tool = {
     const release = await fleet.acquire(m.id, ctx.signal).catch((e) => e as Error);
     if (release instanceof Error) return fail(release.message);
     try {
-      const out = await remoteRun(fleet, m, ctx, { tool: "Bash", input: { command: String(input.command) }, cwd: input.cwd });
+      const out = await remoteExec(fleet, m, ctx, String(input.command), input.cwd);
       const text = typeof out.content === "string" ? out.content : out.content.map((b) => (b.type === "text" ? b.text : "[image]")).join("\n");
       return { content: `[ran on ${m.name}]\n${text}`, is_error: out.is_error };
     } finally {

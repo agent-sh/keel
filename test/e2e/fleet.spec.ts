@@ -83,6 +83,20 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(tool).toContainText(ROOT);
     await shoot(page, "fleet-03-tool-on-peer");
 
+    // One command on the other machine from a session that stays here.
+    await page.getByTestId("new-session").click();
+    await page.getByTestId("machine-picker").click();
+    await page.locator('[data-testid="machine-option"][data-machine="local"]').click();
+    await page.getByTestId("composer").fill("Call keel__run_on once with machine \"devbox\" and command \"cat note.txt\". Then reply with its output only.");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
+    const run = page.locator('[data-tool="keel__run_on"]').first();
+    await expect(run.getByTestId("tool-machine")).toHaveText("devbox");
+    await run.click();
+    await expect(run).toContainText(`[ran on devbox]`);
+    await expect(run).toContainText(token);
+    await shoot(page, "fleet-04-run-on");
+
     const errors = (await (await request.get("/api/errors")).json()).errors;
     expect(errors.slice(0, errors.length - errorsBefore).filter((e: any) => e.source !== "provider")).toEqual([]);
   } finally {

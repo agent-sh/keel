@@ -64,15 +64,9 @@ export class Handoffs {
       return { code, out: out + err };
     }
     const p = await this.fleet.peer(machine.id);
-    const r = await linkFetch(p, "/api/fleet/hands", {
-      method: "POST",
-      body: JSON.stringify({ session: "handoff", tool: "Bash", input: { command: `${script}\necho "__rc=$?"`, timeout: 600_000 }, cwd, root: machine.workspace_root }),
-      timeout: 11 * 60_000,
-    });
-    const b = (await r.json()) as any;
-    const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? b.error ?? "");
-    const m = text.match(/__rc=(\d+)\s*$/);
-    return { code: m ? Number(m[1]) : 1, out: text.replace(/\n?__rc=\d+\s*$/, "") };
+    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: machine.workspace_root }), timeout: 11 * 60_000 });
+    const b = (await r.json()) as { code: number; out: string; error?: string };
+    return { code: b.code ?? 1, out: b.out ?? b.error ?? "" };
   }
 
   private async must(machine: MachineRow | null, cwd: string, script: string, what: string): Promise<string> {
