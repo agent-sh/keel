@@ -70,7 +70,8 @@ test("agents on another machine: spawn there, send files, the gate per machine",
       },
     });
     await page.goto(`/s/${s}`);
-    await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 60_000 });
+    // The parent may end a second turn when the agent reports back: the first end is enough here.
+    await expect(page.getByTestId("turn-end").first()).toBeVisible({ timeout: 60_000 });
     const call = page.getByTestId("agent-call").first();
     await expect(call.getByTestId("agent-call-machine")).toHaveText(NAME);
     await expect(call.getByTestId("agent-call-branch")).toContainText("keel/agent-");
@@ -109,7 +110,7 @@ test("agents on another machine: spawn there, send files, the gate per machine",
     await card.getByTestId("allow-always").click();
     await expect(page.getByTestId("grant-pattern")).toHaveValue(`keel__spawn_on_machine:${NAME.toLowerCase()}`);
     await page.getByTestId("grant-session").click();
-    await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("turn-end").first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("agent-call")).toHaveCount(2);
     // The second start ran under the grant: no second card held the turn.
     await expect(page.getByTestId("approval")).toHaveCount(0);

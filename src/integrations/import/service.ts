@@ -107,7 +107,9 @@ export class Imports {
   // reads the index as it is; `force` walks again.
   async fresh(ms = 1000, force = false) {
     if (!force && this.complete && Date.now() - this.builtAt < REFRESH_MS) return;
-    const r = this.refresh();
+    // A walk already under way may have passed a folder before a file landed in
+    // it: a forced look waits for that walk and walks again.
+    const r = force && this.building ? this.building.then(() => this.refresh()) : this.refresh();
     await Promise.race([r, new Promise((res) => setTimeout(res, ms))]);
   }
 

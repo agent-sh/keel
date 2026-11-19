@@ -20,6 +20,7 @@ import { shq } from "./shell.ts";
 import { toolEnv, UNREAD_CAP } from "./jobs.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
+import { pump } from "../core/proc.ts";
 
 export const RUN_CODE = "run_code";
 
@@ -109,11 +110,11 @@ async function head(stream: ReadableStream<Uint8Array> | undefined): Promise<{ t
   if (!stream) return { text: "", dropped: 0 };
   const parts: Uint8Array[] = [];
   let held = 0, dropped = 0;
-  for await (const chunk of stream) {
+  await pump(stream, (chunk) => {
     const take = Math.min(chunk.length, KEPT - held);
     if (take > 0) { parts.push(chunk.subarray(0, take)); held += take; }
     dropped += chunk.length - take;
-  }
+  }, "run_code output");
   return { text: new TextDecoder().decode(Buffer.concat(parts)), dropped };
 }
 
