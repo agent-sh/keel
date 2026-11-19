@@ -43,7 +43,8 @@ test("voice", async ({ page, request }) => {
   await expect(page.getByText("[voice u1]")).toBeVisible();
   await expect(page.getByTestId("assistant-text").last()).toContainText(/heron/i);
   expect(log()).toMatch(new RegExp(`say ${session.id} \\S`));
-  expect(log()).toContain(`hook stop --harness codex ${session.id}`);
+  // The stop hook runs after the turn's end reaches the page: wait for its line.
+  await expect.poll(log).toContain(`hook stop --harness codex ${session.id}`);
   await expect.poll(() => waiting().length).toBe(1); // armed again after the turn
   await page.keyboard.press("Escape");
   await shoot(page, "voice-03-heard");

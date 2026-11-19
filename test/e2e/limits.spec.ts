@@ -26,10 +26,12 @@ test("limits: windows in Settings, account states, the chip by the picker", asyn
   await shoot(page, "limits-01-settings");
 
   // A session on a provider that refuses turns: the chip says so before a turn fails again.
-  const refused = problems.find(([, p]) => p.kind === "billing") ?? problems[0];
-  test.skip(!refused, "no provider has an account problem");
-  const [pid, p] = refused!;
+  // A provider whose listing was refused has no model to start a session on.
   const { models } = await (await request.get("/api/models")).json();
+  const listed = problems.filter(([id]) => models.some((m: any) => m.provider === id));
+  const refused = listed.find(([, p]) => p.kind === "billing") ?? listed[0];
+  test.skip(!refused, "no provider with a listed model has an account problem");
+  const [pid, p] = refused!;
   const model = models.find((m: any) => m.provider === pid);
   const s = (await (await request.post("/api/sessions", { data: { model: model.id } })).json()).session;
   await page.goto(`/s/${s.id}`);
