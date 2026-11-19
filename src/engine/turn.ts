@@ -12,7 +12,7 @@ import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../pr
 import { toolsFor } from "../tools/registry.ts";
 import { allHooks, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
+import { checkpointAt, COMPACT_SHARE, contextTokens, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, backoffMs, errorText, retryable, sleep } from "./retry.ts";
@@ -561,7 +561,7 @@ export class Engine {
         this.emitSession(id);
         const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
         if (res.stop === "refusal" || !summary) return;
-        const data = { mode: "summary", summary, owner_messages: ownerWords(events), auto: true, ahead: true, covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now() };
+        const data = { mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), auto: true, ahead: true, covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now() };
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
       .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
@@ -603,7 +603,7 @@ export class Engine {
       const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
       if (res.stop === "refusal" || !summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
       const ev = this.append(id, "compaction", {
-        mode: "summary", summary, owner_messages: ownerWords(events), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), focus: opts.focus, auto: !!opts.auto,
         tokens_before: before, usage: u, model: st.info.id,
       });
       this.emitSession(id);

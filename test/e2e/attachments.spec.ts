@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { crc32, deflateSync } from "node:zlib";
 import { HAIKU, shoot } from "./shots.ts";
 
 // A one-page PDF with one line of text, offsets computed so readers accept it.
@@ -17,6 +18,19 @@ function pdf(line: string): Buffer {
   out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${at.map((n) => `${String(n).padStart(10, "0")} 00000 n \n`).join("")}`;
   out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, "latin1");
+}
+
+// A solid 32x32 PNG of one color.
+function png(r: number, g: number, b: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const t = Buffer.from(type, "latin1");
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([t, data])) >>> 0);
+    return Buffer.concat([len, t, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(32, 0); ihdr.writeUInt32BE(32, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: 32 }, () => [r, g, b]).flat())]);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.concat(Array(32).fill(row)))), chunk("IEND", Buffer.alloc(0))]);
 }
 
 // Feature: files other than images attach to a prompt: a text file goes
@@ -54,6 +68,22 @@ test("text, PDF and other files attached to a prompt", async ({ page, request })
   expect(await got.text()).toContain("Orchid-7");
   expect(got.headers()["content-disposition"]).toContain("notes.txt");
   expect((await request.post("/api/attachments?name=empty.txt", { data: Buffer.alloc(0) })).status()).toBe(400);
+
+  // A picture and the files stay with their message through a compaction:
+  // the checkpoint keeps them, so the next request still carries the pixels.
+  await page.getByTestId("attach-input").setInputFiles([{ name: "swatch.png", mimeType: "image/png", buffer: png(0, 170, 60) }]);
+  await composer.fill("Keep this picture in mind. Reply with only the word kept.");
+  await composer.press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 90_000 });
+  await composer.fill("/compact");
+  await composer.press("Enter");
+  await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 90_000 });
+  const cp = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.find((e: any) => e.kind === "compaction");
+  expect(cp.data.owner_media.flat().map((b: any) => b.type)).toEqual(["attachment", "attachment", "attachment", "image"]);
+  await composer.fill("What single color fills the picture I sent? One word.");
+  await composer.press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 90_000 });
+  await expect(page.getByTestId("assistant-text").last()).toContainText(/green/i);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

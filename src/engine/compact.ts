@@ -4,7 +4,7 @@
 // a `compaction` event is appended. From there the model sees the summary and
 // the owner's recent words verbatim instead of the history; the history stays
 // stored, readable and searchable. Nothing earlier is rewritten.
-import type { Message, StoredEvent, Usage } from "../core/types.ts";
+import type { Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
 
 // Share of the model's window at which a turn compacts before its next call.
 export const COMPACT_SHARE = 0.85;
@@ -43,43 +43,74 @@ export function summaryPrompt(focus?: string): string {
   ].join("\n");
 }
 
+// Images and files of the owner's kept messages travel through a compaction
+// with their message, newest first within this many bytes (base64 images,
+// attached files by size): under Anthropic's 32 MB and OpenAI's 50 MB request
+// caps with room for the rest. Older ones leave a note in their place.
+export const OWNER_MEDIA_BYTES = 20 * 1024 * 1024;
+
+type Entry = { text: string; media: PromptBlock[] };
+
 // The owner's own messages since the last checkpoint (and those the last
-// summary kept), newest kept first within the byte budget, oldest first.
-export function ownerWords(lineage: StoredEvent[]): string[] {
-  let all: string[] = [];
-  const at: number[] = []; // the index of each word's event
+// summary kept), with their images and files.
+function ownerEntries(lineage: StoredEvent[]): Entry[] {
+  let all: Entry[] = [];
+  const at: number[] = []; // the index of each message's event
   lineage.forEach((e, i) => {
     if (e.kind === "compaction") {
-      // Words of the verbatim tail of a summary prepared ahead stay.
+      // Messages of the verbatim tail of a summary prepared ahead stay.
       const covered = e.data.covered ? lineage.findIndex((x) => x.id === e.data.covered) : -1;
       const tail = covered >= 0 ? all.filter((_, k) => at[k]! > covered) : [];
-      all = [...(e.data.mode === "summary" ? e.data.owner_messages ?? [] : []), ...tail];
+      const kept: Entry[] = e.data.mode === "summary" ? (e.data.owner_messages ?? []).map((t: string, k: number) => ({ text: t, media: e.data.owner_media?.[k] ?? [] })) : [];
+      all = [...kept, ...tail];
       at.length = 0;
       at.push(...all.map(() => i));
     } else if (e.kind === "user" && (!e.data.origin || e.data.origin === "steer" || e.data.origin === "queued")) {
-      all.push(e.data.text);
+      all.push({ text: e.data.text, media: (e.data.images ?? []).filter((b: any) => b.type === "image" || b.type === "attachment") });
       at.push(i);
     }
   });
-  const kept: string[] = [];
+  // Newest first within the text budget, then oldest first.
+  const kept: Entry[] = [];
   let bytes = 0;
   for (let i = all.length - 1; i >= 0; i--) {
-    const b = Buffer.byteLength(all[i]!);
+    const b = Buffer.byteLength(all[i]!.text);
     if (bytes + b > OWNER_WORDS_BYTES) break;
     bytes += b;
-    kept.unshift(all[i]!);
+    kept.unshift({ ...all[i]! });
+  }
+  let media = 0;
+  for (let i = kept.length - 1; i >= 0; i--) {
+    kept[i]!.media = kept[i]!.media.map((m: any) => {
+      const n = m.type === "image" ? m.data.length : m.type === "attachment" ? m.size : 0;
+      if (m.type === "text" || media + n <= OWNER_MEDIA_BYTES) { media += n; return m; }
+      return { type: "text", text: `[An ${m.type === "image" ? "image" : `attached file (${m.name})`} the owner sent with this message is no longer in the context.]` };
+    });
   }
   return kept;
 }
 
-export function summaryMessage(data: { summary: string; owner_messages?: string[] }): Message {
-  const owner = data.owner_messages?.length
-    ? `\n\n[The owner's messages before the compaction, oldest first:]\n${data.owner_messages.map((t) => `<message>\n${t}\n</message>`).join("\n")}`
-    : "";
-  return {
-    role: "user",
-    content: [{ type: "text", text: `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${owner}` }],
-  };
+export function ownerWords(lineage: StoredEvent[]): string[] {
+  return ownerEntries(lineage).map((e) => e.text);
+}
+
+// Aligned with ownerWords; absent when no kept message carried an image or a file.
+export function ownerMedia(lineage: StoredEvent[]): PromptBlock[][] | undefined {
+  const m = ownerEntries(lineage).map((e) => e.media);
+  return m.some((x) => x.length) ? m : undefined;
+}
+
+export function summaryMessage(data: { summary: string; owner_messages?: string[]; owner_media?: PromptBlock[][] }): Message {
+  const head = `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}`;
+  const msgs = data.owner_messages ?? [];
+  if (!data.owner_media) {
+    const owner = msgs.length ? `\n\n[The owner's messages before the compaction, oldest first:]\n${msgs.map((t) => `<message>\n${t}\n</message>`).join("\n")}` : "";
+    return { role: "user", content: [{ type: "text", text: head + owner }] };
+  }
+  // Each message with the images and files it was sent with, in place.
+  const content: any[] = [{ type: "text", text: `${head}\n\n[The owner's messages before the compaction, oldest first, with what they attached:]` }];
+  msgs.forEach((t, k) => content.push(...(data.owner_media![k] ?? []), { type: "text", text: `<message>\n${t}\n</message>` }));
+  return { role: "user", content };
 }
 
 // Tokens the next request will carry: what the provider counted on the last

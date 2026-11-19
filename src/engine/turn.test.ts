@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { toMessages } from "./turn.ts";
+import { ownerMedia, ownerWords } from "./compact.ts";
 
 let seq = 0;
 const ev = (id: string, parent: string | null, kind: StoredEvent["kind"], data: any): StoredEvent => ({ id, session_id: "s", seq: ++seq, parent, kind, data, ts: 0 });
@@ -41,4 +42,21 @@ test("branches: versions share a parent, leafOf finds the newest end", () => {
   expect(versions(events, events[0]!).map((e) => e.id)).toEqual(["u1", "u1b"]);
   expect(leafOf(events, "u1")).toBe("u3");
   expect(lineage(events, "u1b").map((e) => e.id)).toEqual(["u1b"]);
+});
+
+test("the owner's images and files stay with their message through a compaction", () => {
+  const img = { type: "image" as const, media_type: "image/png", data: "AAAA" };
+  const file = { type: "attachment" as const, id: "f".repeat(64), name: "a.pdf", media_type: "application/pdf", size: 10 };
+  const line = [
+    ev("m1", null, "user", { text: "look at A", images: [img] }),
+    ev("m2", "m1", "assistant", { blocks: [{ type: "text", text: "red" }], stop: "end_turn" }),
+    ev("m3", "m2", "user", { text: "and this file", images: [file] }),
+  ];
+  const media = ownerMedia(line)!;
+  expect(media).toEqual([[img], [file]]);
+  const cp = ev("m4", "m3", "compaction", { mode: "summary", summary: "s", owner_messages: ownerWords(line), owner_media: media });
+  const m = toMessages([...line, cp]);
+  expect(m[0]!.content.map((b: any) => b.type)).toEqual(["text", "image", "text", "attachment", "text"]);
+  // A later compaction keeps them again, from the first one's record.
+  expect(ownerMedia([...line, cp])).toEqual([[img], [file]]);
 });
