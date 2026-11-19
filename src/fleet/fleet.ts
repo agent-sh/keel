@@ -18,6 +18,15 @@ type Relay = { abort: AbortController; sessions: Map<string, Session>; live: boo
 type Tunnel = { proc: Bun.Subprocess; port: number };
 type Queue = { running: number; waiting: { resolve: () => void; reject: (e: Error) => void }[] };
 
+// Every ssh -L this process opened, across hot reloads: closed when the
+// daemon exits (each is its own ssh process and would outlive it).
+const g = globalThis as { __keelTunnels?: Set<Bun.Subprocess>; __keelTunnelsExit?: boolean };
+const openTunnels = (g.__keelTunnels ??= new Set());
+if (!g.__keelTunnelsExit) {
+  g.__keelTunnelsExit = true;
+  process.on("exit", () => { for (const p of openTunnels) try { p.kill(); } catch {} });
+}
+
 const RELAY_MAX_BACKOFF = 60_000; // a lost relay is reopened after 1, 2, 4 s ... up to a minute
 const RELAY_SILENCE_MS = 45_000; // the far daemon pings every 15 s: three missed pings and the stream is dead
 const FACTS_FRESH_MS = 60_000; // load1 averages a minute: a queue limit older than that is read again
@@ -43,8 +52,11 @@ export class Fleet {
   }
 
   stop() {
-    for (const r of this.relays.values()) { r.abort.abort(); clearTimeout(r.timer); }
+    const relays = [...this.relays.values()];
+    this.relays.clear(); // first: an aborted relay that is no longer listed does not reopen
+    for (const r of relays) { r.abort.abort(); clearTimeout(r.timer); }
     for (const t of this.tunnels.values()) t.then((t) => t.proc.kill()).catch(() => {});
+    this.tunnels.clear();
   }
 
   // ---- records
@@ -167,6 +179,8 @@ export class Fleet {
       [sshProgram(), "-N", ...SSH_BASE, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-L", `127.0.0.1:${port}:127.0.0.1:${m.daemon_port}`, m.ssh_host],
       { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
     );
+    openTunnels.add(proc);
+    proc.exited.then(() => openTunnels.delete(proc));
     const deadline = Date.now() + CONNECT_MS + 5000;
     while (Date.now() < deadline) {
       if (proc.exitCode !== null) {

@@ -51,7 +51,10 @@ function keepalive(work: () => Promise<unknown>): Response {
 
 export const fleetRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, engine, errors } = deps;
-  const f = (fleet = new Fleet(store, bus, errors));
+  // A hot reload builds a new fleet: the old one closes its relays and tunnels first.
+  const g = globalThis as { __keelFleet?: Fleet };
+  g.__keelFleet?.stop();
+  const f = (fleet = g.__keelFleet = new Fleet(store, bus, errors));
   const msgs = new Messages(store, bus, engine, f, (id) => (gate ? gate.perm(id) : undefined), (m, s) => {
     alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
   });
