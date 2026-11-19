@@ -39,14 +39,59 @@ test("mcp servers", async ({ page, request }) => {
   await shoot(page, "mcp-02a-reads");
   await add.click();
   await expect(add).toHaveAttribute("aria-pressed", "false");
+  // A marked tool the server no longer offers is not counted, and is listed apart.
+  await request.put("/api/mcp/servers/echo/reads", { data: { tools: ["echo", "vanished"] } });
+  await expect(row.getByTestId("mcp-reads-count")).toHaveText("1 of 2 current tools count as reads");
+  await expect(row.getByTestId("mcp-reads-gone")).toContainText("vanished");
+  await row.getByTestId("mcp-reads-gone").getByRole("button", { name: "Forget them" }).click();
+  await expect(row.getByTestId("mcp-reads-gone")).toHaveCount(0);
+  await row.locator('[data-testid="mcp-tool-read"][data-tool="echo"]').click();
+  await expect(row.getByTestId("mcp-reads-count")).toHaveText("Every tool asks first");
 
   // The server's resources and prompt templates: read one, fill one.
+  const gets: string[] = [];
+  page.on("request", (r) => { if (r.url().includes("/prompts/greet")) gets.push(r.postData() ?? ""); });
   await row.getByTestId("mcp-contents-toggle").click();
+  // The listing goes on past a page that ends in an empty cursor.
+  await expect(row.getByTestId("mcp-resource")).toHaveText(["echo://readme", "echo://bundle"]);
+  await expect(row.getByTestId("mcp-list-failed")).toHaveCount(0); // no templates is not a failure
   await row.getByTestId("mcp-resource").filter({ hasText: "echo://readme" }).click();
   await expect(row.getByTestId("mcp-content-text")).toContainText("The echo server repeats what it is given.");
+  // A read of several items keeps each apart, under its own URI, with a binary's real size.
+  await row.getByTestId("mcp-resource").filter({ hasText: "echo://bundle" }).click();
+  const items = row.getByTestId("mcp-resource-item");
+  await expect(items).toHaveCount(3);
+  await expect(items.nth(0)).toContainText("echo://bundle/a");
+  await expect(items.nth(1)).toContainText("beta\nsecond line");
+  await expect(items.nth(2)).toContainText("Binary application/octet-stream, 1 byte");
+  // A required argument is asked for before anything is sent; an optional one left empty is not sent.
+  const greet = row.locator('[data-testid="mcp-prompt"][data-name="greet"]');
+  await expect(greet).toContainText("Whom to greet");
+  await greet.getByTestId("mcp-prompt-get").click();
+  await expect(greet.getByTestId("mcp-prompt-error")).toHaveText("who is required");
+  await expect(row.getByLabel("greet who")).toBeFocused();
+  expect(gets).toHaveLength(0);
   await row.getByLabel("greet who").fill("the owner");
-  await row.locator('[data-testid="mcp-prompt"][data-name="greet"]').getByTestId("mcp-prompt-get").click();
+  await greet.getByTestId("mcp-prompt-get").click();
   await expect(row.getByTestId("mcp-content-text")).toContainText("Say hello to the owner.");
+  expect(gets.map((b) => JSON.parse(b).arguments)).toEqual([{ who: "the owner" }]);
+  // Only optional arguments: the field shows before anything is asked; empty, none is sent.
+  const sum = row.locator('[data-testid="mcp-prompt"][data-name="summarize"]');
+  await expect(sum).toContainText("optional");
+  await sum.getByTestId("mcp-prompt-get").click();
+  await expect(row.getByTestId("mcp-content-text")).toContainText("Summarize.");
+  await expect(row.getByTestId("mcp-content-text")).not.toContainText("Tone");
+  await row.getByLabel("summarize tone").fill("plain English");
+  await sum.getByTestId("mcp-prompt-get").click();
+  await expect(row.getByTestId("mcp-content-text")).toContainText("Tone: plain English.");
+  // A conversation shows who says what, one message each.
+  await row.locator('[data-testid="mcp-prompt"][data-name="dialog"]').getByTestId("mcp-prompt-get").click();
+  const msgs = row.getByTestId("mcp-prompt-message");
+  await expect(msgs).toHaveCount(2);
+  await expect(msgs.nth(0)).toHaveAttribute("data-role", "user");
+  await expect(msgs.nth(1)).toHaveAttribute("data-role", "assistant");
+  await expect(msgs.nth(1)).toContainText("Hello back");
+  await row.locator('[data-testid="mcp-prompt"][data-name="greet"]').getByTestId("mcp-prompt-get").click();
   await shoot(page, "mcp-02b-contents");
   await row.getByTestId("mcp-contents-toggle").click();
 
@@ -84,6 +129,7 @@ test("mcp servers", async ({ page, request }) => {
   const menu = page.getByTestId("slash-menu");
   await expect(menu).toContainText("/echo:greet");
   await expect(menu).toContainText("<who>");
+  await expect(menu).toContainText("/echo:dialog");
   await shoot(page, "mcp-05-prompt-menu");
   // Picked from the menu, it waits for its argument; sent without one, it says what it needs.
   await page.keyboard.press("Enter");

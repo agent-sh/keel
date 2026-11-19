@@ -185,7 +185,10 @@ export const mcpRoutes: RouteModule = (deps) => {
       GET: async (req: any) => {
         const k = known(req.params.name);
         if (k) return k;
-        try { return json({ resources: await m.resources(req.params.name) }); } catch (e) { return bad((e as Error).message, 409); }
+        const q = new URL(req.url).searchParams;
+        const list = q.get("list"), cursor = q.get("cursor");
+        const from = cursor !== null && (list === "resources" || list === "templates") ? { list, cursor } as const : undefined;
+        try { return json(await m.resources(req.params.name, req.signal, from)); } catch (e) { return bad((e as Error).message, 409); }
       },
     },
     "/api/mcp/servers/:name/resource": {
@@ -194,7 +197,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (!uri) return bad("uri is required");
         const k = known(req.params.name);
         if (k) return k;
-        try { return json({ uri, text: await m.readResource(req.params.name, uri) }); } catch (e) { return bad((e as Error).message, 409); }
+        try { return json({ uri, items: await m.readResource(req.params.name, uri, req.signal) }); } catch (e) { return bad((e as Error).message, 409); }
       },
     },
     "/api/mcp/servers/:name/prompts": {
@@ -247,7 +250,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (k) return k;
         const args = (await body(req)).arguments ?? {};
         if (typeof args !== "object" || Array.isArray(args)) return bad("arguments must be an object");
-        try { return json({ name: req.params.prompt, text: await m.getPrompt(req.params.name, req.params.prompt, args) }); } catch (e) { return bad((e as Error).message, 409); }
+        try { return json({ name: req.params.prompt, messages: await m.promptMessages(req.params.name, req.params.prompt, args, req.signal) }); } catch (e) { return bad((e as Error).message, 409); }
       },
     },
   };

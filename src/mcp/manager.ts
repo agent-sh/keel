@@ -9,7 +9,7 @@ import type { ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
-import { AuthRequired, McpClient, type McpCallResult, type McpTool, type Transport } from "./client.ts";
+import { AuthRequired, McpClient, RpcError, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { OAuthStore } from "./oauth.ts";
 import { toOutput } from "./result.ts";
@@ -59,7 +59,34 @@ export type McpServerState = {
   bundled?: string;   // the label of a server Keel brings itself
   resources: boolean; // the connected server offers resources
   prompts: boolean;   // the connected server offers prompt templates
+  resources_rev: number; // goes up when its resource list changed (a list read again shows it)
+  resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
 };
+
+// One item of a resources/read result, as the server gave it (a body is never fetched beyond it).
+export type ResourceItem = { uri: string; mimeType?: string; text?: string; bytes?: number };
+// One half of a resource listing: its entries, or why it failed; `next` when the bound stopped it.
+export type ResourceHalf = { items: any[]; error?: string; unsupported?: boolean; next?: string };
+// A prompt message as the server returned it, its role kept apart from its content.
+export type PromptMessage = { role: string; type: string; text: string };
+
+// The bytes base64 holds (padding deducted).
+export const b64Bytes = (b: string) => {
+  const t = b.replace(/\s/g, "");
+  return Math.max(0, Math.floor((t.length * 3) / 4) - (t.endsWith("==") ? 2 : t.endsWith("=") ? 1 : 0));
+};
+
+function promptPart(c: any): { type: string; text: string } {
+  const type = String(c?.type ?? "unknown");
+  if (type === "text") return { type, text: String(c.text ?? "") };
+  if (type === "resource") {
+    const r = c.resource ?? {};
+    return { type, text: r.text !== undefined ? String(r.text) : `[embedded ${r.mimeType ?? "binary"}, ${b64Bytes(String(r.blob ?? ""))} bytes: ${r.uri ?? "no URI"}]` };
+  }
+  if (type === "resource_link") return { type, text: `[resource link ${c.name ?? c.title ?? ""}: ${c.uri ?? "no URI"}]`.replace("link : ", "link: ") };
+  if (type === "image" || type === "audio") return { type, text: `[${type} ${c.mimeType ?? ""}, ${b64Bytes(String(c.data ?? ""))} bytes]`.replace(" ,", ",") };
+  return { type, text: `[${type}]` };
+}
 
 export type McpReloadedServer = { name: string; change: "added" | "removed" | "changed" | "unchanged" | "checked" };
 
@@ -76,6 +103,9 @@ type Entry = {
   www?: string | null;
   failures: number;
   bundled?: BundledServer;
+  resourcesRev: number;
+  updates: Record<string, number>;
+  subscribed: Set<string>;
 };
 
 // Credential-shaped variables stay out of tool servers' environments unless
@@ -176,7 +206,7 @@ export class McpManager {
   }
 
   private addEntry(name: string, config: McpServerConfig, bundled?: BundledServer) {
-    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled };
+    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled, resourcesRev: 0, updates: {}, subscribed: new Set() };
     this.entries.set(name, e);
     registerCatalog({
       name,
@@ -243,27 +273,59 @@ export class McpManager {
       const t = this.transport(e);
       e.connecting = (async () => {
         const client = await McpClient.connect(t, (e.config.timeout_secs ?? 30) * 1000, e.era);
-        if (this.entries.get(name) !== e || e.state === "disabled" || this.disposed) {
+        // Removed, turned off or replaced meanwhile: this client is nobody's.
+        const stale = () => this.entries.get(name) !== e || e.state === "disabled" || this.disposed;
+        if (stale()) {
           client.close();
           throw new Error(`${name} was changed while it connected`);
         }
+        // Watched from the start: a server that exits during discovery is not ready.
+        let gone: string | undefined;
+        client.onClose = (why) => {
+          gone = why;
+          if (e.client !== client) return;
+          e.client = undefined;
+          e.state = "error";
+          e.error = why;
+        };
         // A server without the tools capability may still answer; one that
-        // does not just has no tools.
-        e.tools = await client.listTools().catch((err) => {
-          if (client.capabilities.tools === undefined) return [];
+        // does not just has no tools (unless it went away meanwhile).
+        let tools: McpTool[];
+        try {
+          tools = await client.listTools().catch((err) => {
+            if (client.capabilities.tools === undefined && !client.isClosed) return [];
+            throw err;
+          });
+        } catch (err) {
+          client.close();
           throw err;
-        });
+        }
+        if (stale()) {
+          client.close();
+          throw new Error(`${name} was changed while it connected`);
+        }
+        if (gone !== undefined || client.isClosed) throw new Error(`${name} closed during discovery: ${gone ?? "the connection is closed"}`);
+        e.tools = tools;
         e.client = client;
         e.era = client.era;
         e.state = "ready";
         e.last = Date.now();
         e.failures = 0;
-        client.onListChanged = () => { client.listTools().then((t) => (e.tools = t)).catch(() => {}); };
-        client.onClose = (why) => {
+        e.resourcesRev++;
+        e.subscribed.clear();
+        // The latest list wins: an older reply that lands last is dropped.
+        let asked = 0;
+        client.onListChanged = () => {
+          const mine = ++asked;
+          client.listTools().then(
+            (t) => { if (mine === asked && e.client === client) e.tools = t; },
+            (err) => { if (mine === asked && e.client === client) this.errors.capture("server", err, { mcp: name, at: "tools/list after a change" }); },
+          );
+        };
+        client.onResources = (c) => {
           if (e.client !== client) return;
-          e.client = undefined;
-          e.state = "error";
-          e.error = why;
+          if ("list" in c) e.resourcesRev++;
+          else e.updates = { ...e.updates, [c.uri]: (e.updates[c.uri] ?? 0) + 1 };
         };
         return client;
       })()
@@ -344,6 +406,8 @@ export class McpManager {
       bundled: e.bundled?.label,
       resources: !!e.client?.capabilities.resources,
       prompts: !!e.client?.capabilities.prompts,
+      resources_rev: e.resourcesRev,
+      resource_updates: e.updates,
     } as McpServerState;
     });
   }
@@ -381,12 +445,16 @@ export class McpManager {
     writeConfig(this.cfg);
   }
 
+  // A call still running on the old client finishes there (its result is
+  // the old server's); the client closes when nothing waits on it.
   private drop(name: string) {
     const e = this.entries.get(name);
     if (!e) return;
-    e.client?.close();
+    const c = e.client;
+    e.client = undefined;
     this.entries.delete(name);
     unregisterCatalog(name);
+    if (c) c.retire();
   }
 
   toggle(name: string, enabled: boolean) {
@@ -500,21 +568,36 @@ export class McpManager {
 
   // ---- resources and prompts ----
 
-  async resources(name: string, signal?: AbortSignal) {
+  // Concrete resources and templates are listed apart: either half shows
+  // when the other fails, and a server without templates is not a failure.
+  async resources(name: string, signal?: AbortSignal, from?: { list: "resources" | "templates"; cursor: string }): Promise<{ resources: ResourceHalf; templates: ResourceHalf }> {
     const c = await this.ensure(name, 15_000);
-    const [resources, templates] = await Promise.all([
-      c.listResources(signal),
-      c.listResourceTemplates(signal).catch(() => []),
-    ]);
-    return [...resources, ...templates];
+    const half = async (list: "resources" | "templates"): Promise<ResourceHalf> => {
+      if (from && from.list !== list) return { items: [] };
+      try {
+        const r = await (list === "resources" ? c.listResources(signal, from?.cursor) : c.listResourceTemplates(signal, from?.cursor));
+        return { items: r.items, next: r.next };
+      } catch (err) {
+        if (err instanceof RpcError && err.code === -32601) return { items: [], unsupported: true };
+        return { items: [], error: (err as Error).message };
+      }
+    };
+    const [resources, templates] = await Promise.all([half("resources"), half("templates")]);
+    return { resources, templates };
   }
 
-  async readResource(name: string, uri: string, signal?: AbortSignal): Promise<string> {
+  // Each item apart, in order, with the URI the server returned. Reading a
+  // URI subscribes to its changes when the server offers that.
+  async readResource(name: string, uri: string, signal?: AbortSignal): Promise<ResourceItem[]> {
     const c = await this.ensure(name, 15_000);
     const r = await c.readResource(uri, signal);
-    return (r?.contents ?? [])
-      .map((p: any) => (p.text !== undefined ? p.text : `[binary ${p.mimeType ?? "data"}, ${Math.round(((p.blob?.length ?? 0) * 3) / 4)} bytes: ${p.uri}]`))
-      .join("\n");
+    const e = this.entries.get(name);
+    if (e && c.capabilities.resources?.subscribe && !e.subscribed.has(uri)) {
+      e.subscribed.add(uri);
+      c.rpc("resources/subscribe", { uri }).catch((err) => { e.subscribed.delete(uri); this.errors.capture("server", err, { mcp: name, at: "resources/subscribe" }); });
+    }
+    return (r?.contents ?? []).map((p: any): ResourceItem =>
+      p.text !== undefined ? { uri: String(p.uri ?? uri), mimeType: p.mimeType, text: String(p.text) } : { uri: String(p.uri ?? uri), mimeType: p.mimeType, bytes: b64Bytes(String(p.blob ?? "")) });
   }
 
   async prompts(name: string, signal?: AbortSignal) {
@@ -522,14 +605,16 @@ export class McpManager {
     return c.listPrompts(signal);
   }
 
-  async getPrompt(name: string, prompt: string, args: Record<string, string>, signal?: AbortSignal): Promise<string> {
+  async promptMessages(name: string, prompt: string, args: Record<string, string>, signal?: AbortSignal): Promise<PromptMessage[]> {
     const c = await this.ensure(name, 15_000);
     const r = await c.getPrompt(prompt, args, signal);
-    const msgs: any[] = r?.messages ?? [];
-    const text = (m: any) => (m.content?.type === "text" ? m.content.text : m.content?.type === "resource" ? m.content.resource?.text ?? "" : `[${m.content?.type}]`);
-    // All the owner's words: the text itself; a conversation keeps who says what.
-    if (msgs.every((m) => m.role === "user")) return msgs.map(text).join("\n\n");
-    return msgs.map((m) => `${m.role}: ${text(m)}`).join("\n");
+    return (r?.messages ?? []).map((m: any) => ({ role: String(m.role ?? "user"), ...promptPart(m.content) }));
+  }
+
+  // The text a prompt gives the model. All the owner's words read as their
+  // text; a conversation keeps who says what, one labelled block per message.
+  async getPrompt(name: string, prompt: string, args: Record<string, string>, signal?: AbortSignal): Promise<string> {
+    return promptText(await this.promptMessages(name, prompt, args, signal));
   }
 
   // Every prompt of the connected servers that offer prompts, for the slash
@@ -553,4 +638,15 @@ export class McpManager {
       .filter((e) => e.state !== "disabled" && e.state !== "missing")
       .map((e) => ({ name: e.name, instructions: e.bundled?.instructions ?? e.client?.instructions }));
   }
+}
+
+export function promptText(msgs: PromptMessage[]): string {
+  if (msgs.every((m) => m.role === "user")) return msgs.map((m) => m.text).join("\n\n");
+  return msgs.map((m) => `<${m.role}>\n${m.text}\n</${m.role}>`).join("\n");
+}
+
+// A read result as text for the model: each item under its own URI.
+export function resourceText(items: ResourceItem[]): string {
+  if (items.length === 1 && items[0]!.text !== undefined) return items[0]!.text;
+  return items.map((i) => i.text !== undefined ? `--- ${i.uri}${i.mimeType ? ` (${i.mimeType})` : ""}\n${i.text}` : `--- ${i.uri}: binary ${i.mimeType ?? "data"}, ${i.bytes} bytes`).join("\n");
 }

@@ -4,7 +4,7 @@
 // harnesses already use. /mcp and the palette open it.
 import { Collapsible } from "@base-ui/react/collapsible";
 import { ChevronRight, Download, Eye, Globe, KeyRound, LogOut, RefreshCw, RotateCw, SquareTerminal, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
 import { api, reportError, failed } from "../../lib/store.ts";
@@ -102,6 +102,10 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
   const [all, setAll] = useState(false);
   const reads = new Set(s.read_tools);
   const hinted = s.hinted_reads.filter((t) => !reads.has(t));
+  // Counted against the tools the server offers now; a marked tool it no
+  // longer offers is listed apart, kept until the owner drops it.
+  const current = s.read_tools.filter((t) => s.tool_names.includes(t));
+  const gone = s.read_tools.filter((t) => !s.tool_names.includes(t));
   const put = (tools: string[]) => act(`${base}/reads`, { tools }, "PUT");
   const shown = all ? s.tool_names : s.tool_names.slice(0, 10);
   return (
@@ -137,7 +141,7 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
         )}
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 text-micro text-faint">
-        <span>{reads.size ? `${reads.size} of ${s.tool_names.length} count as reads` : "Every tool asks first"}</span>
+        <span data-testid="mcp-reads-count">{current.length ? `${current.length} of ${s.tool_names.length} current tools count as reads` : "Every tool asks first"}</span>
         {hinted.length > 0 && (
           <button type="button" data-testid="mcp-reads-hinted" onClick={() => put([...s.read_tools, ...hinted])} className="text-accent hover:underline">
             Count the {hinted.length} it calls read-only as reads
@@ -145,33 +149,76 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
         )}
         {reads.size > 0 && <button type="button" onClick={() => put([])} className="hover:text-fg hover:underline">Ask for all</button>}
       </div>
+      {gone.length > 0 && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 text-micro text-faint" data-testid="mcp-reads-gone">
+          <span>Marked as reads, no longer offered: <span className="font-mono">{gone.join(", ")}</span></span>
+          <button type="button" onClick={() => put(current)} className="hover:text-fg hover:underline">Forget them</button>
+        </div>
+      )}
     </div>
   );
 }
 
 type Resource = { uri?: string; uriTemplate?: string; name?: string; description?: string; mimeType?: string };
+type Half = { items: Resource[]; error?: string; unsupported?: boolean; next?: string };
+type Item = { uri: string; mimeType?: string; text?: string; bytes?: number };
+type Message = { role: string; type: string; text: string };
 type Prompt = { name: string; description?: string; arguments?: { name: string; description?: string; required?: boolean }[] };
+type Shown = { title: string; uri?: string; rev?: number; items?: Item[]; messages?: Message[] };
 
 // What a server publishes besides tools: its resources (read one) and its
-// prompt templates (fill the arguments, see the text). Listed when opened.
+// prompt templates (fill the arguments, see the messages). Listed when
+// opened, and listed again when the server says its list changed or it
+// reconnected; a body is read only when the owner asks.
 function ServerContents({ s, base }: { s: McpServerState; base: string }) {
   const [open, setOpen] = useState(false);
-  const [resources, setResources] = useState<Resource[] | null>(null);
+  const [lists, setLists] = useState<{ resources: Half; templates: Half } | null>(null);
   const [prompts, setPrompts] = useState<Prompt[] | null>(null);
-  const [shown, setShown] = useState<{ title: string; text: string } | null>(null);
-  const [args, setArgs] = useState<Record<string, Record<string, string>>>({});
+  const [shown, setShown] = useState<Shown | null>(null);
+  const [err, setErr] = useState("");
+  const loadLists = useCallback(() => {
+    api<{ resources: Half; templates: Half }>(`${base}/resources`).then(setLists).catch((e) => setErr(failed(e, { at: "Mcp resources" })));
+  }, [base]);
   useEffect(() => {
-    if (!open) return;
-    if (s.resources) api<{ resources: Resource[] }>(`${base}/resources`).then((r) => setResources(r.resources)).catch(reportError);
-    if (s.prompts) api<{ prompts: Prompt[] }>(`${base}/prompts`).then((r) => setPrompts(r.prompts)).catch(reportError);
-  }, [open, base, s.resources, s.prompts]);
+    if (open && s.resources) loadLists();
+  }, [open, s.resources, s.resources_rev, s.last_connected, loadLists]);
+  useEffect(() => {
+    if (open && s.prompts) api<{ prompts: Prompt[] }>(`${base}/prompts`).then((r) => setPrompts(r.prompts)).catch((e) => setErr(failed(e, { at: "Mcp prompts" })));
+  }, [open, base, s.prompts, s.last_connected]);
+  // Load more goes on from where the bound stopped, for that one list.
+  const more = (list: "resources" | "templates", cursor: string) =>
+    api<{ resources: Half; templates: Half }>(`${base}/resources?list=${list}&cursor=${encodeURIComponent(cursor)}`)
+      .then((r) => setLists((x) => x && { ...x, [list]: { ...x[list], items: [...x[list].items, ...r[list].items], next: r[list].next, error: r[list].error } }))
+      .catch((e) => setErr(failed(e, { at: "Mcp resources" })));
   const read = (uri: string) =>
-    api<{ text: string }>(`${base}/resource?uri=${encodeURIComponent(uri)}`).then((r) => setShown({ title: uri, text: r.text })).catch(reportError);
-  const fill = (p: Prompt) =>
-    api<{ text: string }>(`${base}/prompts/${encodeURIComponent(p.name)}`, { method: "POST", body: JSON.stringify({ arguments: args[p.name] ?? {} }) })
-      .then((r) => setShown({ title: p.name, text: r.text }))
-      .catch(reportError);
+    api<{ items: Item[] }>(`${base}/resource?uri=${encodeURIComponent(uri)}`)
+      .then((r) => setShown({ title: uri, uri, rev: s.resource_updates[uri] ?? 0, items: r.items }))
+      .catch((e) => setErr(failed(e, { at: "Mcp resource" })));
+  const stale = !!shown?.uri && (s.resource_updates[shown.uri] ?? 0) !== shown.rev;
   const what = [s.resources && "resources", s.prompts && "prompts"].filter(Boolean).join(" and ");
+  const half = (label: string, list: "resources" | "templates", h: Half) => (
+    <>
+      {h.error && (
+        <li className="flex items-baseline gap-2 text-caption text-danger" data-testid="mcp-list-failed" data-list={list}>
+          Listing the {label} failed: {h.error}
+          <button type="button" onClick={loadLists} className="text-muted hover:text-fg hover:underline">Retry</button>
+        </li>
+      )}
+      {h.items.map((r) => (
+        <li key={r.uri ?? r.uriTemplate} className="flex items-baseline gap-2 text-caption">
+          {r.uri ? (
+            <button type="button" data-testid="mcp-resource" onClick={() => read(r.uri!)} className="font-mono text-accent hover:underline">{r.uri}</button>
+          ) : (
+            <span className="font-mono text-muted" title="A template: the model fills it in">{r.uriTemplate}</span>
+          )}
+          {(r.name || r.description) && <span className="truncate text-faint">{r.description ?? r.name}</span>}
+        </li>
+      ))}
+      {h.next !== undefined && (
+        <li><button type="button" data-testid="mcp-load-more" data-list={list} onClick={() => more(list, h.next!)} className="text-caption text-muted hover:text-fg hover:underline">More may exist: load more {label}</button></li>
+      )}
+    </>
+  );
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen}>
       <Collapsible.Trigger data-testid="mcp-contents-toggle" className="group/c inline-flex items-center gap-1 text-caption text-muted hover:text-fg">
@@ -179,62 +226,116 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
         {what[0]!.toUpperCase() + what.slice(1)}
       </Collapsible.Trigger>
       <Collapsible.Panel data-testid="mcp-contents" className="mt-1.5 space-y-2">
+        {err && <div className="text-micro text-danger">{err}</div>}
         {s.resources && (
           <div>
             <div className="text-micro font-medium text-faint">Resources</div>
-            {resources === null ? <div className="text-micro text-faint">Loading</div> : resources.length === 0 ? <div className="text-micro text-faint">None</div> : (
-              <ul className="mt-1 space-y-0.5">
-                {resources.map((r) => (
-                  <li key={r.uri ?? r.uriTemplate} className="flex items-baseline gap-2 text-caption">
-                    {r.uri ? (
-                      <button type="button" data-testid="mcp-resource" onClick={() => read(r.uri!)} className="font-mono text-accent hover:underline">{r.uri}</button>
-                    ) : (
-                      <span className="font-mono text-muted" title="A template: the model fills it in">{r.uriTemplate}</span>
-                    )}
-                    {(r.name || r.description) && <span className="truncate text-faint">{r.description ?? r.name}</span>}
-                  </li>
-                ))}
-              </ul>
-            )}
+            {lists === null ? <div className="text-micro text-faint">Loading</div>
+              : !lists.resources.items.length && !lists.templates.items.length && !lists.resources.error && !lists.templates.error ? <div className="text-micro text-faint">None</div> : (
+                <ul className="mt-1 space-y-0.5">
+                  {half("resources", "resources", lists.resources)}
+                  {half("templates", "templates", lists.templates)}
+                </ul>
+              )}
           </div>
         )}
         {s.prompts && (
           <div>
             <div className="text-micro font-medium text-faint">Prompts</div>
             {prompts === null ? <div className="text-micro text-faint">Loading</div> : prompts.length === 0 ? <div className="text-micro text-faint">None</div> : (
-              <ul className="mt-1 space-y-1.5">
-                {prompts.map((p) => (
-                  <li key={p.name} data-testid="mcp-prompt" data-name={p.name} className="flex flex-wrap items-center gap-2 text-caption">
-                    <span className="font-mono text-fg">{p.name}</span>
-                    {p.description && <span className="text-faint">{p.description}</span>}
-                    {(p.arguments ?? []).map((a) => (
-                      <input
-                        key={a.name}
-                        aria-label={`${p.name} ${a.name}`}
-                        placeholder={a.name + (a.required ? "" : " (optional)")}
-                        value={args[p.name]?.[a.name] ?? ""}
-                        onChange={(e) => setArgs((x) => ({ ...x, [p.name]: { ...x[p.name], [a.name]: e.target.value } }))}
-                        className="h-7 w-36 rounded-md border border-line bg-bg px-2 text-caption outline-none placeholder:text-faint focus:border-accent"
-                      />
-                    ))}
-                    <button type="button" data-testid="mcp-prompt-get" onClick={() => fill(p)} className="rounded-md border border-line px-2 py-0.5 text-caption text-muted hover:bg-hover hover:text-fg">Show</button>
-                  </li>
-                ))}
+              <ul className="mt-1 space-y-2">
+                {prompts.map((p) => <PromptForm key={p.name} p={p} base={base} onShown={(messages) => setShown({ title: p.name, messages })} />)}
               </ul>
             )}
           </div>
         )}
         {shown && (
           <div data-testid="mcp-content-text" className="rounded-md border border-line bg-bg">
-            <div className="flex items-center justify-between border-b border-line px-2 py-1">
+            <div className="flex items-center justify-between gap-2 border-b border-line px-2 py-1">
               <span className="truncate font-mono text-micro text-muted">{shown.title}</span>
+              {stale && (
+                <button type="button" data-testid="mcp-resource-stale" onClick={() => read(shown.uri!)} className="ml-auto text-micro text-warn hover:underline">Changed on the server: read again</button>
+              )}
               <IconButton title="Close" onClick={() => setShown(null)}><X className="size-3.5" /></IconButton>
             </div>
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-micro text-fg">{shown.text}</pre>
+            <div className="max-h-64 space-y-1.5 overflow-auto px-2 py-1.5">
+              {shown.items?.map((it, i) => (
+                <div key={i} data-testid="mcp-resource-item">
+                  {(shown.items!.length > 1 || it.uri !== shown.uri) && <div className="font-mono text-micro text-faint">{it.uri}{it.mimeType ? ` · ${it.mimeType}` : ""}</div>}
+                  {it.text !== undefined
+                    ? <pre className="whitespace-pre-wrap break-words font-mono text-micro text-fg">{it.text}</pre>
+                    : <div className="text-micro text-muted">Binary {it.mimeType ?? "data"}, {it.bytes} {it.bytes === 1 ? "byte" : "bytes"}</div>}
+                </div>
+              ))}
+              {shown.messages?.map((m, i) => (
+                <div key={i} data-testid="mcp-prompt-message" data-role={m.role}>
+                  <div className="text-micro font-medium text-faint">{m.role}{m.type !== "text" ? ` · ${m.type}` : ""}</div>
+                  <pre className="whitespace-pre-wrap break-words font-mono text-micro text-fg">{m.text}</pre>
+                </div>
+              ))}
+              {shown.messages?.length === 0 && <div className="text-micro text-faint">The prompt has no messages.</div>}
+            </div>
           </div>
         )}
       </Collapsible.Panel>
     </Collapsible.Root>
+  );
+}
+
+// One prompt's arguments, each with its name, required mark and description.
+// Show asks the server only once every required argument is given; an
+// optional one left empty is not sent.
+function PromptForm({ p, base, onShown }: { p: Prompt; base: string; onShown: (m: Message[]) => void }) {
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const [err, setErr] = useState("");
+  const refs = useRef<Record<string, HTMLInputElement | null>>({});
+  const params = p.arguments ?? [];
+  const show = async (e: FormEvent) => {
+    e.preventDefault();
+    const missing = params.find((a) => a.required && !(vals[a.name] ?? "").trim());
+    if (missing) {
+      setErr(`${missing.name} is required`);
+      refs.current[missing.name]?.focus();
+      return;
+    }
+    setErr("");
+    const args = Object.fromEntries(params.filter((a) => (vals[a.name] ?? "") !== "").map((a) => [a.name, vals[a.name]!]));
+    try {
+      const r = await api<{ messages: Message[] }>(`${base}/prompts/${encodeURIComponent(p.name)}`, { method: "POST", body: JSON.stringify({ arguments: args }) });
+      onShown(r.messages);
+    } catch (x) {
+      setErr(failed(x, { at: "Mcp prompt" }));
+    }
+  };
+  return (
+    <li data-testid="mcp-prompt" data-name={p.name} className="text-caption">
+      <form onSubmit={show} className="flex flex-wrap items-end gap-2">
+        <div className="min-w-0 basis-full">
+          <span className="font-mono text-fg">{p.name}</span>
+          {p.description && <span className="ml-2 text-faint">{p.description}</span>}
+        </div>
+        {params.map((a) => (
+          <label key={a.name} className="flex flex-col gap-0.5">
+            <span className="max-w-56 truncate text-micro text-muted" title={a.description}>
+              {a.name}{a.required ? <span className="text-danger" aria-hidden> *</span> : <span className="text-faint"> optional</span>}
+              {a.description && <span className="text-faint"> · {a.description}</span>}
+            </span>
+            <input
+              ref={(el) => { refs.current[a.name] = el; }}
+              aria-label={`${p.name} ${a.name}`}
+              aria-required={!!a.required}
+              aria-description={a.description}
+              title={a.description}
+              value={vals[a.name] ?? ""}
+              onChange={(e) => setVals((x) => ({ ...x, [a.name]: e.target.value }))}
+              className="h-7 w-56 rounded-md border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
+            />
+          </label>
+        ))}
+        <button type="submit" data-testid="mcp-prompt-get" className="h-7 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg">Show</button>
+        {err && <span className="basis-full text-micro text-danger" role="alert" data-testid="mcp-prompt-error">{err}</span>}
+      </form>
+    </li>
   );
 }
 

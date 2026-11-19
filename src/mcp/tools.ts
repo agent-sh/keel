@@ -6,7 +6,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { catalogSources, catalogTools, registerCatalog, type CatalogTool } from "../tools/catalog.ts";
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
-import type { McpManager } from "./manager.ts";
+import { resourceText, type McpManager } from "./manager.ts";
 
 const words = (s: string) =>
   s
@@ -98,6 +98,11 @@ function unknownTool(name: string, all: CatalogTool[]): string {
   return `No tool named ${name}.${near.length ? ` Closest: ${near.map((h) => h.x.qualified).join(", ")}.` : ""}${pending.length ? ` Still connecting: ${pending.join(", ")}; search again shortly.` : ""} Find tools with search_tools.`;
 }
 
+// What the gate judged for a call: if the server is reloaded while the card
+// waits and the tool changes, the owner's answer was for another tool.
+const judged = new WeakMap<object, string>();
+const shape = (t: CatalogTool) => JSON.stringify([t.qualified, t.description, t.input_schema, !!t.readOnly]);
+
 const McpCall: Tool = {
   name: "mcp_call",
   readOnly: false,
@@ -106,6 +111,7 @@ const McpCall: Tool = {
     const all = await catalogTools();
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
     const args = input?.arguments ?? {};
+    if (t && input && typeof input === "object") judged.set(input, shape(t));
     if (t) return { name: t.qualified, readOnly: !!t.readOnly, input: args, cls: t.judge ? await t.judge(args) : undefined };
     // A name not known yet (its server still starting, after the catalog
     // waited on it) is refused, never judged as a read: by the time it would
@@ -127,6 +133,9 @@ const McpCall: Tool = {
     const all = await catalogTools();
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
     if (!t) return fail(unknownTool(name, all));
+    const was = judged.get(input);
+    if (was !== undefined && was !== shape(t))
+      return fail(`${t.qualified} changed while this call waited (its server was reloaded): the answer given was for the old tool. Search for it again and call it anew.`);
     const args = input.arguments ?? {};
     if (typeof args !== "object" || Array.isArray(args)) return fail("arguments must be an object.");
     const required: string[] = (t.input_schema as any).required ?? [];
@@ -163,10 +172,15 @@ function builtins(m: McpManager): CatalogTool[] {
           return s.length ? `Servers with resources: ${s.join(", ")}` : "No connected server offers resources.";
         }
         const r = await m.resources(i.server);
-        return r.length ? r.map((x: any) => `${x.uri ?? x.uriTemplate}  ${x.name ?? ""}${x.description ? `: ${oneLine(x.description, 100)}` : ""}`).join("\n") : `${i.server} lists no resources.`;
+        const all = [...r.resources.items, ...r.templates.items];
+        const lines = all.map((x: any) => `${x.uri ?? x.uriTemplate}  ${x.name ?? ""}${x.description ? `: ${oneLine(x.description, 100)}` : ""}`);
+        if (r.resources.error) lines.push(`(listing the resources failed: ${r.resources.error})`);
+        if (r.templates.error) lines.push(`(listing the templates failed: ${r.templates.error})`);
+        if (r.resources.next || r.templates.next) lines.push("(the list was cut at 50 pages: more may exist)");
+        return lines.length ? lines.join("\n") : `${i.server} lists no resources.`;
       })),
     t("read_resource", "Read one resource of an MCP server as text.", { server: { type: "string" }, uri: { type: "string" } }, ["server", "uri"],
-      (i) => guard(() => m.readResource(i.server, i.uri))),
+      (i) => guard(async () => resourceText(await m.readResource(i.server, i.uri)))),
     t("list_prompts", "List the prompt templates an MCP server publishes, or which servers offer prompts when no server is given.",
       { server: { type: "string" } }, [], (i) => guard(async () => {
         if (!i.server) {

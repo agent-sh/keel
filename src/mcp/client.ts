@@ -51,7 +51,18 @@ export class McpClient {
   instructions?: string;
   capabilities: Record<string, any> = {};
   onListChanged?: () => void;
-  onClose?: (why: string) => void;
+  // The resource list changed, or (after a subscription) one resource's body did.
+  onResources?: (change: { list: true } | { uri: string }) => void;
+  // Set late, it still hears a close that already happened.
+  private closeHook?: (why: string) => void;
+  private closedWhy?: string;
+  get onClose() { return this.closeHook; }
+  set onClose(f: ((why: string) => void) | undefined) {
+    this.closeHook = f;
+    if (f && this.closedWhy !== undefined) f(this.closedWhy);
+  }
+  get isClosed() { return this.closed; }
+  get inflight() { return this.pending.size; }
 
   private nextId = 1;
   private pending = new Map<number | string, Pending>();
@@ -149,7 +160,8 @@ export class McpClient {
       this.failAll(this.withStderr(new Error(why)));
       if (!this.closed) {
         this.closed = true;
-        this.onClose?.(why);
+        this.closedWhy = why;
+        this.closeHook?.(why);
       }
     });
   }
@@ -177,6 +189,8 @@ export class McpClient {
       return;
     }
     if (msg.method === "notifications/tools/list_changed") this.onListChanged?.();
+    else if (msg.method === "notifications/resources/list_changed") this.onResources?.({ list: true });
+    else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
   }
 
   private write(msg: unknown) {
@@ -285,8 +299,9 @@ export class McpClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`));
+        this.settled();
       }, timeoutMs);
-      const done = (f: (v: any) => void) => (v: any) => { clearTimeout(timer); opt.signal?.removeEventListener("abort", onAbort); f(v); };
+      const done = (f: (v: any) => void) => (v: any) => { clearTimeout(timer); opt.signal?.removeEventListener("abort", onAbort); f(v); this.settled(); };
       const onAbort = () => {
         this.pending.delete(id);
         if (this.era === "legacy") this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "cancelled" } });
@@ -315,27 +330,42 @@ export class McpClient {
     else await this.post(msg);
   }
 
-  // Lists follow nextCursor; a bound stops a server that never ends a listing.
-  private async list<T>(method: string, key: string, signal?: AbortSignal): Promise<T[]> {
-    const out: T[] = [];
-    let cursor: string | undefined;
+  // Lists follow nextCursor: only a missing one ends a listing (a cursor is an
+  // opaque string, "" included). A bound stops a server that never ends one;
+  // what it stopped at comes back as `next`, so a caller can go on from there.
+  async page<T>(method: string, key: string, signal?: AbortSignal, from?: string): Promise<{ items: T[]; next?: string }> {
+    const items: T[] = [];
+    let cursor = from;
     for (let page = 0; page < 50; page++) {
-      const r = await this.rpc(method, cursor ? { cursor } : {}, { signal });
-      out.push(...(r?.[key] ?? []));
-      cursor = r?.nextCursor;
-      if (!cursor) break;
+      const r = await this.rpc(method, cursor !== undefined ? { cursor } : {}, { signal });
+      items.push(...(r?.[key] ?? []));
+      cursor = typeof r?.nextCursor === "string" ? r.nextCursor : undefined;
+      if (cursor === undefined) return { items };
     }
-    return out;
+    return { items, next: cursor };
+  }
+  private async list<T>(method: string, key: string, signal?: AbortSignal): Promise<T[]> {
+    return (await this.page<T>(method, key, signal)).items;
   }
 
   listTools(signal?: AbortSignal) { return this.list<McpTool>("tools/list", "tools", signal); }
-  listResources(signal?: AbortSignal) { return this.list<any>("resources/list", "resources", signal); }
-  listResourceTemplates(signal?: AbortSignal) { return this.list<any>("resources/templates/list", "resourceTemplates", signal); }
+  listResources(signal?: AbortSignal, from?: string) { return this.page<any>("resources/list", "resources", signal, from); }
+  listResourceTemplates(signal?: AbortSignal, from?: string) { return this.page<any>("resources/templates/list", "resourceTemplates", signal, from); }
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
   readResource(uri: string, signal?: AbortSignal) { return this.rpc("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rpc("prompts/get", { name, arguments: args }, { signal }); }
   callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>): Promise<McpCallResult> {
     return this.rpc("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs });
+  }
+
+  // Close once nothing waits on this client (a reload replaced it).
+  retire() {
+    if (!this.pending.size) return this.close();
+    this.retiring = true;
+  }
+  private retiring = false;
+  private settled() {
+    if (this.retiring && !this.pending.size) queueMicrotask(() => this.close());
   }
 
   close() {
