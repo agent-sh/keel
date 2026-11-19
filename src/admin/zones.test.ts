@@ -57,4 +57,9 @@ test("failures fall into classes by the driver's kind, the status, then the word
   expect(errorClass(Object.assign(new Error("input is too long for the context window"), { status: 400 }))).toBe("context_overflow");
   expect(errorClass(new Error("read ECONNRESET"))).toBe("stream_drop");
   expect(errorClass(new Error("something odd"))).toBe("other");
+  // The caller's own stop is decided by its signal, not here: an abort the
+  // driver tagged, or one of no known origin, is a failure of the call.
+  expect(errorClass(Object.assign(new Error("deadline"), { name: "AbortError", kind: "network" }))).toBe("stream_drop");
+  expect(errorClass(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }))).toBe("stream_drop");
+  expect(errorClass(Object.assign(new Error("timed out"), { name: "TimeoutError" }))).toBe("stream_drop");
 });

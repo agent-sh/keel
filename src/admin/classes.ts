@@ -22,11 +22,15 @@ const WORDS: [RegExp, ErrorClass][] = [
   [/internal server error|service unavailable|bad gateway/i, "server"],
 ];
 
-// null: not a failure of the call (the owner stopped it).
+// null: not a failure of the call (a driver said it was cancelled). Whether
+// the owner stopped it is the caller's signal, checked before this: an abort
+// while that signal is live came from the transport (a deadline, a dropped
+// connection) or from nowhere known, and is counted as a dropped stream.
 export function errorClass(e: unknown): ErrorClass | null {
   const err = e as any;
-  if (!err || err.name === "AbortError" || err.kind === "cancelled") return null;
+  if (!err || err.kind === "cancelled") return null;
   if (typeof err.kind === "string" && KIND[err.kind]) return KIND[err.kind]!;
+  if (err.name === "AbortError" || err.name === "TimeoutError") return "stream_drop";
   const status = Number(err.status ?? err.statusCode ?? 0);
   const msg = String(err.message ?? err ?? "");
   if (status === 429) return "rate_limit";
