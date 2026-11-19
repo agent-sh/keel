@@ -12,6 +12,7 @@ import { Live } from "./live.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch } from "./switch.ts";
+import { bundleRoutes, compressJson } from "./compress.ts";
 
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
@@ -67,6 +68,9 @@ function withModules(core: Record<string, any>, modules: RouteModule[], deps: De
   return { ...core, ...Object.fromEntries(Object.entries(out).map(([p, t]) => [p, t.ALL ?? t])) };
 }
 
+// The UI's pages; the client routes the rest.
+const PAGES = ["/", "/s/:id", "/settings", "/settings/:section"];
+
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // Bun's default idle timeout, and the point where a handler counts as slow.
 const IDLE_S = 10;
@@ -93,7 +97,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       try {
         const refused = admit(req, srv);
         if (refused) return refused;
-        return await h(req, srv);
+        return await compressJson(req, await h(req, srv));
       } catch (e) {
         const st = (e as any)?.status;
         // `code`: a machine-readable reason, when the refusal has one (off_branch).
@@ -113,10 +117,9 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     reusePort: false, // one daemon per port (Bun 1.4 binds a taken port anyway: start.ts checks first)
     development: opts.development ? { hmr: true, console: true } : false,
     routes: withModules({
-      "/": index,
-      "/s/:id": index,
-      "/settings": index,
-      "/settings/:section": index,
+      // A built binary serves its bundle compressed (compress.ts); the dev
+      // server bundles on request with HMR and serves the files itself.
+      ...(bundleRoutes(index, PAGES, (e) => errors.capture("server", e, { at: "bundle compression" })) ?? Object.fromEntries(PAGES.map((p) => [p, index]))),
 
       "/api/models": {
         GET: wrap(async (req) => {
