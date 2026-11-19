@@ -4,6 +4,7 @@
 // chat per model request, execute_tool per tool call. No SDK: one POST of
 // resourceSpans per batch. Only shapes and numbers leave; never prompt text,
 // replies or tool input (the conventions make content opt-in).
+import type { KeySource } from "../providers/creds.ts";
 import type { Span } from "./trace.ts";
 
 type AnyValue = { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean } | { arrayValue: { values: AnyValue[] } };
@@ -115,10 +116,40 @@ export function headersOf(v: string | undefined): Record<string, string> {
   return out;
 }
 
+// The auth headers: a reference, never the secret. The setting names an
+// environment variable or a keyring entry (read like a provider key, see
+// providers/creds.ts) whose value is `k=v,k2=v2`, as OTEL_EXPORTER_OTLP_HEADERS
+// is; without it those variables are read. The UI sees the names only.
+export type HeaderRef = { env?: string; cred?: string };
+export function headerRefError(v: unknown): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  const r = v as HeaderRef;
+  if (typeof v !== "object" || Array.isArray(v) || Object.keys(v).some((k) => k !== "env" && k !== "cred")) return "otlp_headers is { env } or { cred }, or null";
+  if (!!r.env === !!r.cred) return "otlp_headers names one source: an environment variable (env) or a keyring entry (cred)";
+  if (r.env !== undefined && (typeof r.env !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(r.env))) return "otlp_headers.env is an environment variable name";
+  if (r.cred !== undefined && (typeof r.cred !== "string" || !/^[\w.@:/-]{1,200}$/.test(r.cred))) return "otlp_headers.cred is a keyring entry name";
+  return undefined;
+}
+
+export type HeaderSource = { src: KeySource; label: string; from: "setting" | "env" };
+export function headerSourceOf(ref: HeaderRef | null | undefined, env: Record<string, string | undefined>): HeaderSource | null {
+  if (ref?.env) return { src: { env: ref.env }, label: `$${ref.env}`, from: "setting" };
+  if (ref?.cred) return { src: { cred: ref.cred }, label: `keyring entry ${ref.cred}`, from: "setting" };
+  for (const n of ["OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS"]) if (env[n]) return { src: { env: n }, label: `$${n}`, from: "env" };
+  return null;
+}
+
+export type HeadersShown = { label: string; from: "setting" | "env"; names: string[]; missing: boolean };
+// What reading a source gave: the headers to send and how they show (names, never values).
+export function headersRead(source: Pick<HeaderSource, "label" | "from">, value: string | null): { headers: Record<string, string>; shown: HeadersShown } {
+  const headers = headersOf(value ?? undefined);
+  return { headers, shown: { label: source.label, from: source.from, names: Object.keys(headers), missing: !Object.keys(headers).length } };
+}
+
 const BATCH = 512;
 const QUEUE = 5000;
 
-export type ExportState = { endpoint: string | null; from: "setting" | "env" | null; sent: number; dropped: number; failures: number; last_ok_ms: number | null; last_error: string | null; queued: number };
+export type ExportState = { endpoint: string | null; from: "setting" | "env" | null; headers: HeadersShown | null; sent: number; dropped: number; failures: number; last_ok_ms: number | null; last_error: string | null; queued: number };
 
 // Batches finished spans and posts them; a failed post waits 30 s, the spans kept.
 export class OtlpExporter {
@@ -126,15 +157,31 @@ export class OtlpExporter {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private backoffUntil = 0;
   private busy = false;
-  state: ExportState = { endpoint: null, from: null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null, queued: 0 };
+  private source: HeaderSource | null = null;
+  state: ExportState = { endpoint: null, from: null, headers: null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null, queued: 0 };
 
-  constructor(private resource: Record<string, unknown>, private headers: Record<string, string>, private onFail: (e: Error) => void) {}
+  // read: a source's value (providers/creds.ts key(), which caches a keyring read a few minutes).
+  constructor(private resource: Record<string, unknown>, private read: (src: KeySource) => Promise<string | null>, private onFail: (e: Error) => void) {}
 
-  configure(ep: { url: string; from: "setting" | "env" } | null) {
+  configure(ep: { url: string; from: "setting" | "env" } | null, headers: HeaderSource | null = null) {
     // The counts are the current endpoint's: another endpoint starts from none.
     if (ep?.url !== this.state.endpoint) Object.assign(this.state, { endpoint: ep?.url ?? null, from: ep?.from ?? null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null });
+    if (headers?.label !== this.source?.label) this.state.last_error = null;
+    this.source = headers;
+    this.state.headers = headers ? { label: headers.label, from: headers.from, names: [], missing: false } : null;
     this.backoffUntil = 0;
     if (!ep) { this.queue = []; this.state.queued = 0; }
+    if (headers) void this.headers().catch(() => {});
+  }
+
+  // The headers to send now; the state shows their names.
+  private async headers(): Promise<Record<string, string>> {
+    const src = this.source;
+    if (!src) return {};
+    const r = headersRead(src, await this.read(src.src));
+    if (this.source === src) this.state.headers = r.shown;
+    if (r.shown.missing) throw new Error(`OTLP export headers: ${src.label} ${src.src.cred ? "has no value in the keyring" : "is not set in the daemon's environment"} (it holds k=v pairs, as OTEL_EXPORTER_OTLP_HEADERS does)`);
+    return r.headers;
   }
 
   push(s: Span) {
@@ -151,7 +198,8 @@ export class OtlpExporter {
     this.busy = true;
     const batch = this.queue.splice(0, BATCH);
     try {
-      const r = await fetch(this.state.endpoint, { method: "POST", headers: { "content-type": "application/json", ...this.headers }, body: JSON.stringify(toOtlp(batch, this.resource)), signal: AbortSignal.timeout(10_000) });
+      const headers = await this.headers();
+      const r = await fetch(this.state.endpoint, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(toOtlp(batch, this.resource)), signal: AbortSignal.timeout(10_000) });
       if (!r.ok) throw new Error(`OTLP export to ${this.state.endpoint}: HTTP ${r.status}: ${(await r.text().catch(() => "")).slice(0, 300)}`);
       this.state.sent += batch.length;
       this.state.last_ok_ms = Date.now();

@@ -19,7 +19,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildBundle } from "../../admin/bundle.ts";
 import { installLogs, LEVELS, logDir, logLines, onLog } from "../../admin/logs.ts";
-import { endpointOf, headersOf, OtlpExporter } from "../../admin/otlp.ts";
+import { endpointOf, headerRefError, headerSourceOf, OtlpExporter } from "../../admin/otlp.ts";
+import { key } from "../../providers/creds.ts";
 import { onSettings, registerSettings, settings } from "../../admin/settings.ts";
 import { traceparent, Tracer } from "../../admin/trace.ts";
 import { registerEnv } from "../../tools/jobs.ts";
@@ -33,8 +34,8 @@ import { buildId } from "./admin.ts";
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const G = globalThis as any;
 
-registerSettings("observe", { otlp_endpoint: null }, (v) =>
-  v.otlp_endpoint === null || (typeof v.otlp_endpoint === "string" && /^https?:\/\/\S+$/.test(v.otlp_endpoint)) ? undefined : "otlp_endpoint is an http(s) URL, or null",
+registerSettings("observe", { otlp_endpoint: null, otlp_headers: null }, (v) =>
+  v.otlp_endpoint === null || (typeof v.otlp_endpoint === "string" && /^https?:\/\/\S+$/.test(v.otlp_endpoint)) ? headerRefError(v.otlp_headers) : "otlp_endpoint is an http(s) URL, or null",
 );
 
 // Keel's source folder, when the daemon runs from a checkout (not the one binary), and its commit.
@@ -57,11 +58,11 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   G.__keelOtlp?.stop();
   const exporter = new OtlpExporter(
     { "service.name": "keel", "service.version": version, "process.pid": process.pid, "telemetry.sdk.name": "keel", "telemetry.sdk.language": "javascript" },
-    headersOf(process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS ?? process.env.OTEL_EXPORTER_OTLP_HEADERS),
+    key,
     (e) => errors.capture("server", e, { at: "otlp export" }),
   );
   G.__keelOtlp = exporter;
-  const point = () => exporter.configure(endpointOf(settings().observe?.otlp_endpoint, process.env));
+  const point = () => exporter.configure(endpointOf(settings().observe?.otlp_endpoint, process.env), headerSourceOf(settings().observe?.otlp_headers, process.env));
   point();
   G.__keelOtlpOff?.();
   G.__keelOtlpOff = onSettings(point);

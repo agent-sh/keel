@@ -33,6 +33,20 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     await page.getByTestId("otlp-save").click();
     await expect(page.getByTestId("otlp-state")).toContainText("0 sent");
 
+    // Auth headers by reference: a name is saved, never a secret, and the daemon says what it found there.
+    const hdr = page.getByTestId("otlp-headers");
+    await expect(hdr.getByTestId("otlp-headers-state")).toContainText("No auth headers are sent.");
+    await hdr.getByRole("radio", { name: "Keyring" }).click();
+    await expect(hdr.getByTestId("otlp-headers-name")).toHaveAttribute("aria-label", "Keyring entry name");
+    await hdr.getByRole("radio", { name: "Environment" }).click();
+    await hdr.getByTestId("otlp-headers-name").fill("KEEL_E2E_UNSET_HEADERS");
+    await hdr.getByTestId("otlp-headers-save").click();
+    await expect(hdr.getByTestId("otlp-headers-state")).toContainText("$KEEL_E2E_UNSET_HEADERS is not set in the daemon's environment");
+    expect((await (await request.get("/api/settings")).json()).settings.observe.otlp_headers).toEqual({ env: "KEEL_E2E_UNSET_HEADERS" });
+    await shoot(page, "observe-00-auth-headers");
+    await hdr.getByTestId("otlp-headers-clear").click();
+    await expect(hdr.getByTestId("otlp-headers-state")).toContainText("No auth headers are sent.");
+
     const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Observe check" } })).json();
     await page.goto(`/s/${session.id}`);
     await page.getByTestId("composer").fill("script:billing");
@@ -77,6 +91,25 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     expect(chat.attributes).toEqual(expect.arrayContaining([{ key: "gen_ai.operation.name", value: { stringValue: "chat" } }, { key: "error.type", value: { stringValue: "quota" } }, { key: "gen_ai.conversation.id", value: { stringValue: session.id } }]));
     // Shapes and numbers only: no prompt text leaves.
     expect(JSON.stringify(got)).not.toContain("script:billing");
+
+    // A subagent's first turn sits under the spawn call in the parent's trace.
+    const { session: lead } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Subagent trace" } })).json();
+    await page.goto(`/s/${lead.id}`);
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "child work\nscript:calls []", isolation: "none" } }])}`);
+    await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("turn-end").first()).toBeVisible({ timeout: 20_000 });
+    const spawned = async () => {
+      const first = (await (await request.get(`/api/debug/traces?session_id=${lead.id}`)).json()).traces.at(-1);
+      const spans = first ? (await (await request.get(`/api/debug/traces/${first.trace_id}`)).json()).spans : [];
+      return spans.filter((x: any) => x.session_id !== lead.id && x.status !== "running").length;
+    };
+    await expect.poll(spawned, { timeout: 15_000 }).toBe(2);
+    await openPanel(page, "traces");
+    await page.getByTestId("trace-row").last().click();
+    const tree = page.getByTestId("trace-view");
+    await expect(tree.locator('[data-testid="span-row"][data-kind="turn"][data-depth="2"]')).toContainText("Subagent turn", { timeout: 15_000 });
+    await expect(tree.locator('[data-testid="span-row"][data-kind="request"][data-depth="3"]')).toHaveCount(1);
+    await shoot(page, "observe-06-subagent-trace");
 
     // Fix this: a new session handed the bundle (on the stand-in here; the owner's default model otherwise).
     await page.route("**/api/debug/fix", (r) => r.continue({ postData: JSON.stringify({ ...JSON.parse(r.request().postData() ?? "{}"), model: STAND_IN }) }));

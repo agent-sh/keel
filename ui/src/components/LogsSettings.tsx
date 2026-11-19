@@ -9,7 +9,9 @@ import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
 type Line = { ts: number; level: "debug" | "info" | "warn" | "error"; text: string };
-type Export = { endpoint: string | null; from: "setting" | "env" | null; sent: number; dropped: number; failures: number; last_ok_ms: number | null; last_error: string | null; queued: number };
+type HeadersShown = { label: string; from: "setting" | "env"; names: string[]; missing: boolean };
+type HeaderRef = { env?: string; cred?: string };
+type Export = { endpoint: string | null; from: "setting" | "env" | null; headers: HeadersShown | null; sent: number; dropped: number; failures: number; last_ok_ms: number | null; last_error: string | null; queued: number };
 const LEVELS = ["debug", "info", "warn", "error"] as const;
 const KEEP = 1000;
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
@@ -44,12 +46,71 @@ function Exporter() {
           <button type="submit" className={btn} disabled={draft === null || draft.trim() === saved} data-testid="otlp-save">Save</button>
         </form>
       </div>
+      <AuthHeaders saved={settings.observe?.otlp_headers ?? null} shown={st.headers} patch={patch} onSaved={load} />
       <SettingRow label="Export" hint={err || st.last_error || (st.endpoint ? `To ${st.endpoint}${st.from === "env" ? " (from the environment)" : ""}.` : "Off.")}>
         <span className={cn("text-ui tabular-nums", st.last_error ? "text-danger" : "text-muted")} data-testid="otlp-state">
           {st.endpoint ? `${st.sent} sent${st.queued ? `, ${st.queued} waiting` : ""}${st.dropped ? `, ${st.dropped} dropped` : ""}${st.last_ok_ms ? `, last ${when(st.last_ok_ms)}` : ""}` : "Off"}
         </span>
       </SettingRow>
     </Card>
+  );
+}
+
+// The collector's auth headers, by reference: the name of a daemon environment
+// variable or a keyring entry holding `k=v` pairs. The value never comes here;
+// the daemon reports the header names it found.
+function AuthHeaders({ saved, shown, patch, onSaved }: { saved: HeaderRef | null; shown: HeadersShown | null; patch: (p: any) => Promise<unknown>; onSaved: () => void }) {
+  const savedKind = saved?.cred ? "cred" : "env";
+  const savedName = saved?.cred ?? saved?.env ?? "";
+  const [kind, setKind] = useState<"env" | "cred">(savedKind);
+  const [name, setName] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const value = name ?? savedName;
+  const dirty = value.trim() !== savedName || (value.trim() !== "" && kind !== savedKind);
+  const save = (ref: HeaderRef | null) =>
+    patch({ observe: { otlp_headers: ref ? { env: ref.env ?? null, cred: ref.cred ?? null } : null } })
+      .then(() => { setName(null); setErr(""); onSaved(); })
+      .catch((e) => setErr(e.message));
+  const submit = () => {
+    const n = value.trim();
+    return save(n ? (kind === "env" ? { env: n } : { cred: n }) : null);
+  };
+  return (
+    <div className="flex flex-col gap-3 border-b border-line py-4" data-testid="otlp-headers">
+      <div>
+        <div className="text-base font-medium">Auth headers</div>
+        <div className="mt-0.5 text-ui text-muted">Named here, never stored here: an environment variable of the daemon or a keyring entry whose value is <span className="font-mono text-caption">key=value</span> pairs, comma separated, as in OTEL_EXPORTER_OTLP_HEADERS (for example <span className="font-mono text-caption">Authorization=Bearer …</span>). Empty uses OTEL_EXPORTER_OTLP_HEADERS when the daemon has it.</div>
+      </div>
+      <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); submit().catch(reportError); }}>
+        <Segmented label="Where the headers are" value={kind} onChange={setKind} options={[{ value: "env", label: "Environment" }, { value: "cred", label: "Keyring" }]} />
+        <input
+          value={value}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={kind === "env" ? "COLLECTOR_HEADERS" : "otlp-collector"}
+          aria-label={kind === "env" ? "Environment variable name" : "Keyring entry name"}
+          spellCheck={false}
+          autoComplete="off"
+          data-testid="otlp-headers-name"
+          className="h-8 min-w-0 max-w-xs flex-1 rounded-md border border-line bg-sunken px-2.5 font-mono text-caption outline-none focus:border-ring"
+        />
+        <button type="submit" className={btn} disabled={!dirty} data-testid="otlp-headers-save">Save</button>
+        {saved && <button type="button" className={btn} onClick={() => save(null).catch(reportError)} data-testid="otlp-headers-clear">Clear</button>}
+      </form>
+      <div className={cn("text-ui", err || shown?.missing ? "text-danger" : "text-muted")} data-testid="otlp-headers-state">
+        {err ? err
+          : !shown ? "No auth headers are sent."
+          : shown.missing ? `${shown.label} ${shown.label.startsWith("keyring") ? "has no value in the keyring" : "is not set in the daemon's environment"}: no headers are sent.`
+          : (
+            <>
+              Sends{" "}
+              {shown.names.map((n, i) => (
+                <span key={n}>{i ? ", " : ""}<span className="font-mono text-caption text-fg">{n}: ••••••</span></span>
+              ))}
+              {shown.names.length ? " " : "the headers "}from {shown.label}{shown.from === "env" ? " (the environment default)" : ""}.
+            </>
+          )}
+      </div>
+    </div>
   );
 }
 
