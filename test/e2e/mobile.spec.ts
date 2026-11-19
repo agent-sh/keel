@@ -172,7 +172,8 @@ test("pair a phone, approve from it, push, revoke", async ({ page, request }) =>
     // The phone reads the reply from its cursor.
     const after = await (await phone.call("GET", `/v1/sync?since=${cursor}`)).json();
     expect(after.messages.some((m: any) => m.role === "agent" && m.chat_id === session.id)).toBe(true);
-    expect(after.approvals.some((a: any) => a.id === approval.id)).toBe(false);
+    // The card comes back closed, so a phone that cached it cancels its notification.
+    expect(after.approvals.filter((a: any) => a.id === approval.id).map((a: any) => a.state)).toEqual(["approved"]);
 
     // The session's Loops are the phone's cron jobs; it can pause one.
     const loop = await (await request.post("/api/loops", { data: { session_id: session.id, name: "phone loop", prompt: "say ok", schedule: "daily" } })).json();

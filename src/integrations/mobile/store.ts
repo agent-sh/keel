@@ -27,6 +27,7 @@ export type Device = {
 };
 export type PushRecord = {
   id: string; device_id: string; kind: string; session_id?: string | null; sent_ms: number; ok: boolean; error?: string | null; acked_ms?: number | null;
+  token_hash?: string | null;
 };
 
 const nowSecs = () => Date.now() / 1000;
@@ -35,11 +36,13 @@ type DevRow = { id: string; name: string; pub: string; apub: string; nolock: num
 const toDevice = (r: DevRow): Device => ({
   id: r.id, name: r.name, pub: r.pub, apub: r.apub, nolock: !!r.nolock, revoked: !!r.revoked, created: r.created_secs, last_seen: r.last_seen_secs,
 });
-const toPush = (r: any): PushRecord => ({ ...r, ok: !!r.ok });
+const toPush = ({ token_hash, ...r }: any): PushRecord => ({ ...r, ok: !!r.ok });
 
 export class MobileStore implements ReplayStore {
   constructor(private store: Pick<Store, "db" | "migrate">) {
     store.migrate(SCHEMA);
+    // Which token a push went to: a phone's new registration starts its own record.
+    if (!store.db.query("SELECT 1 FROM pragma_table_info('pushes') WHERE name = 'token_hash'").get()) store.migrate("ALTER TABLE pushes ADD COLUMN token_hash TEXT");
     // Events stored before this table existed get their places in order, once.
     store.db.run("INSERT OR IGNORE INTO event_gseq (event_id) SELECT id FROM events WHERE id NOT IN (SELECT event_id FROM event_gseq) ORDER BY ts, rowid");
   }
@@ -139,9 +142,14 @@ export class MobileStore implements ReplayStore {
       )
       .all(deviceId ?? null);
   }
+  // A push is recorded before it is sent, so a receipt that beats the push
+  // service's answer finds its row; the answer then fills in the outcome and
+  // keeps the receipt. Rows are in send order (rowid).
   recordPush(r: PushRecord) {
-    this.db.query("INSERT OR REPLACE INTO pushes (id, device_id, kind, session_id, sent_ms, ok, error, acked_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(r.id, r.device_id, r.kind, r.session_id ?? null, r.sent_ms, r.ok ? 1 : 0, r.error ?? null, r.acked_ms ?? null);
+    this.db.query(
+      `INSERT INTO pushes (id, device_id, kind, session_id, sent_ms, ok, error, acked_ms, token_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET ok = excluded.ok, error = excluded.error, acked_ms = COALESCE(pushes.acked_ms, excluded.acked_ms)`,
+    ).run(r.id, r.device_id, r.kind, r.session_id ?? null, r.sent_ms, r.ok ? 1 : 0, r.error ?? null, r.acked_ms ?? null, r.token_hash ?? null);
     // A month of records is plenty to say whether pushes arrive.
     this.db.query("DELETE FROM pushes WHERE sent_ms < ?").run(Date.now() - 30 * 86_400_000);
   }
@@ -149,16 +157,23 @@ export class MobileStore implements ReplayStore {
   ackPush(deviceId: string, pushId: string): boolean {
     return this.db.query("UPDATE pushes SET acked_ms = COALESCE(acked_ms, ?) WHERE id = ? AND device_id = ?").run(Date.now(), pushId, deviceId).changes > 0;
   }
-  // Whether the phone has a token, its newest push, and how many accepted pushes
-  // it has not confirmed since the last one it did.
+  // Whether the phone has a token; the newest push to that token and how many
+  // accepted pushes to it are unconfirmed since the last one it confirmed. A
+  // new token starts untested; the old token's pushes stay as `previous`. An
+  // app that never confirmed any push may not send receipts at all: then there
+  // is no warning, only `receipts: false`.
   pushStatus(deviceId: string) {
-    const registered = !!this.db.query("SELECT 1 FROM push_devices WHERE device_id = ?").get(deviceId);
-    const last = this.db.query<any, [string]>("SELECT * FROM pushes WHERE device_id = ? ORDER BY sent_ms DESC, rowid DESC LIMIT 1").get(deviceId);
-    const { n } = this.db.query<{ n: number }, [string, string]>(
-      `SELECT COUNT(*) AS n FROM pushes WHERE device_id = ? AND ok = 1 AND acked_ms IS NULL
-         AND sent_ms > COALESCE((SELECT MAX(sent_ms) FROM pushes WHERE device_id = ? AND acked_ms IS NOT NULL), 0)`,
-    ).get(deviceId, deviceId)!;
-    return { registered, last: last ? toPush(last) : null, unacknowledged: n, warning: n >= 3 };
+    const tok = this.db.query<{ token: string }, [string]>("SELECT token FROM push_devices WHERE device_id = ?").get(deviceId);
+    const th = tok ? sha256Hex(tok.token) : null;
+    const receipts = !!this.db.query("SELECT 1 FROM pushes WHERE device_id = ? AND acked_ms IS NOT NULL").get(deviceId);
+    const current = "device_id = ?1 AND (token_hash = ?2 OR (token_hash IS NULL AND ?2 IS NULL))";
+    const last = this.db.query<any, [string, string | null]>(`SELECT * FROM pushes WHERE ${current} ORDER BY rowid DESC LIMIT 1`).get(deviceId, th);
+    const previous = this.db.query<any, [string, string | null]>("SELECT * FROM pushes WHERE device_id = ?1 AND token_hash IS NOT ?2 ORDER BY rowid DESC LIMIT 1").get(deviceId, th);
+    const { n } = this.db.query<{ n: number }, [string, string | null]>(
+      `SELECT COUNT(*) AS n FROM pushes WHERE ${current} AND ok = 1 AND acked_ms IS NULL
+         AND rowid > COALESCE((SELECT MAX(rowid) FROM pushes WHERE ${current} AND acked_ms IS NOT NULL), 0)`,
+    ).get(deviceId, th)!;
+    return { registered: !!tok, last: last ? toPush(last) : null, previous: previous ? toPush(previous) : null, unacknowledged: n, receipts, warning: receipts && n >= 3 };
   }
 
   // --- global sequence ---------------------------------------------------------
@@ -169,13 +184,17 @@ export class MobileStore implements ReplayStore {
   gseqOf(eventId: string): number {
     return this.db.query<{ gseq: number }, [string]>("SELECT gseq FROM event_gseq WHERE event_id = ?").get(eventId)?.gseq ?? 0;
   }
-  // Events after a global cursor across all sessions, oldest first.
-  eventsAfter(since: number, limit: number): (StoredEvent & { gseq: number })[] {
+  // Events after a global cursor across all sessions, oldest first; only the
+  // given kinds when named.
+  eventsAfter(since: number, limit: number, kinds?: string[]): (StoredEvent & { gseq: number })[] {
+    const only = kinds?.length ? ` AND e.kind IN (${kinds.map(() => "?").join(", ")})` : "";
     return this.db
-      .query<any, [number, number]>(
-        "SELECT e.*, g.gseq FROM event_gseq g JOIN events e ON e.id = g.event_id WHERE g.gseq > ? ORDER BY g.gseq LIMIT ?",
-      )
-      .all(since, limit)
+      .query<any, any[]>(`SELECT e.*, g.gseq FROM event_gseq g JOIN events e ON e.id = g.event_id WHERE g.gseq > ?${only} ORDER BY g.gseq LIMIT ?`)
+      .all(since, ...(kinds ?? []), limit)
       .map((r) => ({ ...r, data: JSON.parse(r.data) }));
+  }
+  // When the event at a cursor was stored (the newest one at or before it).
+  tsOfGseq(gseq: number): number | undefined {
+    return this.db.query<{ ts: number }, [number]>("SELECT e.ts FROM event_gseq g JOIN events e ON e.id = g.event_id WHERE g.gseq <= ? ORDER BY g.gseq DESC LIMIT 1").get(gseq)?.ts;
   }
 }

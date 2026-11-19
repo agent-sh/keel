@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "../../providers/config.ts";
+import { sha256Hex } from "./sig.ts";
 import type { MobileStore, PushRecord } from "./store.ts";
 
 const FILE = "fcm-service-account.json";
@@ -111,6 +112,8 @@ export async function send(mobile: MobileStore, seq: number, msg: PushMessage, d
     // opens. Only the live status collapses; alerts are each their own news.
     const android: any = { priority: msg.high ? "HIGH" : "NORMAL", ttl: "900s" };
     if (msg.kind === "live") android.collapse_key = "live";
+    const rec: PushRecord = { id, device_id: t.device_id, kind: msg.kind, session_id: msg.session_id ?? null, sent_ms: Date.now(), ok: false, error: "sending", acked_ms: null, token_hash: sha256Hex(t.token) };
+    mobile.recordPush(rec);
     let ok = false, error: string | undefined;
     try {
       const res = await fetch(url, {
@@ -121,18 +124,22 @@ export async function send(mobile: MobileStore, seq: number, msg: PushMessage, d
       });
       ok = res.ok;
       if (!ok) {
-        // The app was removed or its token rotated: stop sending to it.
-        if (res.status === 404) mobile.dropPushToken(t.token);
-        if (res.status === 401) cached = null;
         const d: any = await res.json().catch(() => ({}));
-        error = `the push service answered ${res.status}: ${d?.error?.status ?? d?.error?.message ?? "refused"}`;
+        // The app was removed or its token rotated: the push service says
+        // UNREGISTERED for that token. Only the token tried is dropped, never a
+        // newer one the phone registered meanwhile; any other 404 keeps it.
+        const code = [d?.error?.status, ...((d?.error?.details ?? []) as any[]).map((x) => x?.errorCode)];
+        if (code.includes("UNREGISTERED")) mobile.dropPushToken(t.token);
+        if (res.status === 401) cached = null;
+        error = `the push service answered ${res.status}: ${code.includes("UNREGISTERED") ? "UNREGISTERED" : d?.error?.status ?? d?.error?.message ?? "refused"}`;
       }
     } catch (e) {
       error = `the push service was not reached: ${(e as Error).message}`;
     }
-    const rec: PushRecord = { id, device_id: t.device_id, kind: msg.kind, session_id: msg.session_id ?? null, sent_ms: Date.now(), ok, error: error ?? null, acked_ms: null };
+    Object.assign(rec, { ok, error: error ?? null });
     mobile.recordPush(rec);
-    out.push(rec);
+    const { token_hash: _, ...shown } = rec;
+    out.push(shown);
   }
   return out;
 }

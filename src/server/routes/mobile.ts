@@ -58,7 +58,12 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
       const stillOpen = () => {
         if (read()) return false;
         if (a.kind === "approval") return gate?.approval(a.data?.approval_id)?.state === "pending";
-        if (a.kind === "question") return !!a.session_id && pendingQuestions(a.session_id).includes(a.data?.call_id);
+        // The question is the asking session's (a child's, when a subagent asks),
+        // while the alert sits on the parent where it is answered.
+        if (a.kind === "question") {
+          const asker = a.data?.open_session ?? a.session_id;
+          return !!asker && pendingQuestions(asker).includes(a.data?.call_id);
+        }
         return true;
       };
       await holdThenSend({

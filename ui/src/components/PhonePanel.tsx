@@ -10,7 +10,7 @@ import { Card } from "./Settings.tsx";
 type PushRec = { id: string; kind: string; sent_ms: number; ok: boolean; error?: string | null; acked_ms?: number | null };
 type Device = {
   id: string; name: string; nolock: boolean; revoked: boolean; created: number; last_seen: number;
-  push: { registered: boolean; unacknowledged: number; warning: boolean; last: PushRec | null };
+  push: { registered: boolean; unacknowledged: number; warning: boolean; receipts: boolean; last: PushRec | null; previous: PushRec | null };
 };
 type Bundle = { code: string; public_url: string; pair_link: string; qr_svg: string; expires_ms: number };
 type Settings = { public_url: string; push: { configured: boolean; path: string } };
@@ -105,9 +105,12 @@ function pushLine(d: Device): { text: string; tone: "ok" | "warn" | "muted" | "d
   if (!p.registered) return { text: "No push token yet: open the app on the phone once", tone: "muted" };
   if (p.warning) return { text: `${p.unacknowledged} pushes in a row not confirmed by the phone`, tone: "warn" };
   const l = p.last;
-  if (!l) return { text: "Push on, nothing sent yet", tone: "ok" };
+  if (!l) return { text: p.previous ? "New push token, not tested yet" : "Push on, nothing sent yet", tone: "ok" };
+  if (!l.ok && l.error === "sending") return { text: "Sending a push", tone: "muted" };
   if (!l.ok) return { text: `Last push failed: ${l.error ?? "refused"}`, tone: "danger" };
-  return { text: `Last push (${l.kind}) ${since(l.sent_ms)}, ${l.acked_ms ? "confirmed by the phone" : "not confirmed yet"}`, tone: l.acked_ms ? "ok" : "muted" };
+  // An app that never confirmed a push may not send receipts: unknown, not failed.
+  const state = l.acked_ms ? "confirmed by the phone" : p.receipts ? "not confirmed yet" : p.unacknowledged > 1 ? "no receipt from this app yet" : "not confirmed yet";
+  return { text: `Last push (${l.kind}) ${since(l.sent_ms)}, ${state}`, tone: l.acked_ms ? "ok" : "muted" };
 }
 
 function DeviceRow({ d, canPush, reload }: { d: Device; canPush: boolean; reload: () => void }) {

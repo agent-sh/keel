@@ -16,11 +16,19 @@ export type Answers = Record<string, { picked: string[]; other?: string }>;
 
 type Pending = { sessionId: string; resolve: (a: Answers | null) => void };
 const pending = new Map<string, Pending>();
+// Questions that stopped waiting, newest last: a phone that saw one pending
+// learns it closed. A few hundred are plenty.
+const closed: { call_id: string; session_id: string; at: number; answered: boolean }[] = [];
+const close = (call_id: string, session_id: string, answered: boolean) => {
+  closed.push({ call_id, session_id, at: Date.now(), answered });
+  if (closed.length > 300) closed.splice(0, closed.length - 300);
+};
+export const closedQuestions = (sinceMs: number) => closed.filter((q) => q.at >= sinceMs);
 
 export function ask(ctx: ToolContext): Promise<Answers | null> {
   const id = ctx.callId ?? `q-${Date.now()}`;
   return new Promise((resolve) => {
-    const done = (a: Answers | null) => { pending.delete(id); ctx.signal.removeEventListener("abort", onAbort); resolve(a); };
+    const done = (a: Answers | null) => { if (pending.delete(id)) close(id, ctx.sessionId, a !== null); ctx.signal.removeEventListener("abort", onAbort); resolve(a); };
     const onAbort = () => done(null);
     ctx.signal.addEventListener("abort", onAbort, { once: true });
     pending.set(id, { sessionId: ctx.sessionId, resolve: done });
