@@ -299,8 +299,9 @@ export class Engine {
     const done = this.loop(id, abort.signal)
       .catch((e) => {
         if (abort.signal.aborted) return;
-        const rec = this.errors.capture("provider", e, { session: id });
-        this.append(id, "error", { message: errorText(e), error_id: rec.id });
+        // A refusal a hook meant (`expected`) is said in the transcript, not tracked as a failure.
+        const rec = (e as any)?.expected ? undefined : this.errors.capture("provider", e, { session: id });
+        this.append(id, "error", { message: errorText(e), error_id: rec?.id });
       })
       .finally(() => {
         this.running.delete(id);

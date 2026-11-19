@@ -21,6 +21,7 @@ import { usageRoutes } from "./usage.ts";
 import { searchRoutes } from "./search.ts";
 import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
+import { hookRoutes } from "./hooks.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { reviewRoutes } from "./reviews.ts";
@@ -59,5 +60,6 @@ export const routeModules: RouteModule[] = [
   draftRoutes,
   boardRoutes,
   importRoutes,
+  hookRoutes,
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

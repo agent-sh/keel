@@ -455,6 +455,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
                 </div>
               );
             }
+            if (e.kind === "note" && e.data.hook) return <MemoryNote key={e.id} label="From a hook" text={e.data.text} hooks={[e.data.hook]} />;
             if (e.kind === "note" && e.data.memory) return <MemoryNote key={e.id} text={e.data.text} hooks={e.data.memory.hooks ?? []} />;
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.

@@ -49,7 +49,7 @@ export type Verdict = { allow: boolean; risk: string; reason: string; model: str
 // A call the reviewer refused; the owner can let one retry of it through.
 export type Blocked = { id: string; session_id: string; tool: string; summary: string; reason: string; risk: string; model: string; key: string; retry?: boolean; created: number };
 
-type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string };
+type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean };
 
 export class Gate {
   private waiting = new Map<string, Waiter>();
@@ -235,6 +235,27 @@ export class Gate {
     if ("deny" in out) return out;
   }
 
+  // A card for this one call that only the owner answers (a hook asked): no
+  // grant, mode change or reviewer settles it.
+  async askOnce(session: Session, call: ToolCall, name: string, why: string): Promise<{ deny: string } | void> {
+    const a: Approval = {
+      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: "other",
+      summary: JSON.stringify(call.input ?? {}).slice(0, 400), input: clip(call.input), risk: "high", why, suggest: [], state: "pending", created: Date.now(),
+    };
+    this.save(a);
+    const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
+      this.waiting.set(a.id, { resolve, call, cls: { kind: "other" }, session, name, once: true });
+      const onAbort = () => {
+        if (!this.waiting.delete(a.id)) return;
+        this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
+        resolve({ deny: "The turn was stopped before the owner answered." });
+      };
+      if (call.ctx.signal.aborted) onAbort();
+      else call.ctx.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    if ("deny" in out) return out;
+  }
+
   resolve(id: string, sessionId: string, c: Choice): { ok: true } | { error: string; status: number } {
     const a = this.approval(id);
     if (!a || a.session_id !== sessionId) return { error: "no such approval", status: 404 };
@@ -268,7 +289,7 @@ export class Gate {
   // After a mode or grant change: open cards that are now settled resolve.
   private recheck(which: (w: Waiter) => boolean) {
     for (const [id, w] of [...this.waiting]) {
-      if (!which(w)) continue;
+      if (!which(w) || w.once) continue; // a one-call card only the owner answers
       const d = this.evaluate(w.session, w.name, w.cls);
       const a = this.approval(id);
       if (!a) continue;

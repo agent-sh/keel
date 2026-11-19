@@ -85,3 +85,52 @@ export function IntegrationsSettings() {
     </div>
   );
 }
+
+type HookSource = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[] };
+
+// Settings: hook files. The owner's runs; a repository's runs once pinned after reading it.
+export function HooksSettings() {
+  const [sources, setSources] = useState<HookSource[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const load = () => get<{ sources: HookSource[] }>("/api/hooks").then((r) => setSources(r.sources)).catch(reportError);
+  useEffect(() => { load(); }, []);
+  const pin = async (s: HookSource) => {
+    setErr("");
+    const r = await fetch("/api/hooks/trust", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: s.root, sha256: s.sha256 }) });
+    if (!r.ok) setErr((await r.json()).error);
+    load();
+  };
+  return (
+    <div className="flex flex-col gap-4" data-testid="hooks-settings">
+      <p className="text-ui text-muted">
+        Commands that run at fixed points of a session, in the hooks.json shape Claude Code and Codex use. A hook can block a call or a prompt, ask the owner, add context or keep a turn going; it never allows anything. Yours live in <code className="font-mono text-caption">~/.config/keel-bun/hooks.json</code>; a repository's <code className="font-mono text-caption">.keel/hooks.json</code> runs only after you pin the exact file.
+      </p>
+      {err && <p className="rounded-md bg-danger-soft px-3 py-2 text-caption text-danger">{err}</p>}
+      {sources?.length === 0 && <Card><p className="py-5 text-center text-ui text-faint">No hook files in your config or in the folders Keel has worked in.</p></Card>}
+      {sources?.map((s) => (
+        <Card key={s.path}>
+          <div className="flex items-center gap-2.5 py-3" data-testid="hook-source" data-scope={s.scope} data-active={s.active}>
+            <span className={cn("size-2 shrink-0 rounded-full", s.active ? "bg-ok" : "bg-warn")} />
+            <span className="min-w-0 flex-1 truncate font-mono text-caption" title={s.path}>{s.path.replace(/^\/home\/[^/]+/, "~")}</span>
+            <span className="shrink-0 rounded-xs bg-panel px-1.5 text-micro text-muted">{s.scope === "owner" ? "yours" : "repository"}</span>
+            {s.scope === "project" && !s.active && s.sha256 && (
+              <button type="button" data-testid="hook-pin" onClick={() => pin(s)} className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90">Pin this file</button>
+            )}
+            <button type="button" onClick={() => setOpen(open === s.path ? null : s.path)} className="h-7 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg">{open === s.path ? "Hide" : "Read"}</button>
+          </div>
+          <div className="flex flex-wrap gap-1.5 border-t border-line py-2.5">
+            {Object.entries(s.events).map(([e, n]) => <span key={e} className="rounded-md border border-line px-1.5 py-px font-mono text-micro text-muted">{e} · {n}</span>)}
+            {!Object.keys(s.events).length && <span className="text-caption text-faint">No handlers</span>}
+          </div>
+          {s.problems.length > 0 && (
+            <ul className="space-y-0.5 border-t border-line py-2.5" data-testid="hook-problems">
+              {s.problems.map((p) => <li key={p} className="text-caption text-muted">{p}</li>)}
+            </ul>
+          )}
+          {open === s.path && <pre className="-mx-5 max-h-80 overflow-auto border-t border-line bg-sunken px-5 py-3 font-mono text-micro leading-relaxed" data-testid="hook-text">{s.text}</pre>}
+        </Card>
+      ))}
+    </div>
+  );
+}

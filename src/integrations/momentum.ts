@@ -75,7 +75,7 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     if (s.archived) return { ok: false, code: "archived", error: "the session is archived" };
     const tagged = text.trimStart().startsWith("[momentum]") ? text : `[momentum] ${text.trim()}`;
     // A message sent while a turn runs reaches it at the next step (steer); else it starts one.
-    c.engine.send(s.id, tagged);
+    c.engine.send(s.id, tagged, { mode: action === "steer" ? "steer" : "queue", meta: { origin: "momentum" } });
     return { ok: true, accepted: action };
   }
   return { ok: false, error: "invalid command json" };

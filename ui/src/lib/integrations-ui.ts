@@ -1,6 +1,6 @@
 // The integrations lane's place in the workbench: a settings section, the
 // /memory command, and how a memory note reads in the transcript.
-import { Brain, Share } from "lucide-react";
+import { Brain, Share, Webhook } from "lucide-react";
 import { createElement, Fragment, lazy } from "react";
 import { headerActions, settingsSections, slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
@@ -14,6 +14,15 @@ settingsSections.add({
   icon: createElement(Brain, { className: "size-4" }),
   order: 40,
   component: lazy(() => import("../components/IntegrationsPanel.tsx").then((m) => ({ default: m.IntegrationsSettings }))),
+});
+
+settingsSections.add({
+  id: "hooks",
+  label: "Hooks",
+  words: "hooks pretooluse posttooluse stop prompt hooks.json trust pin",
+  icon: createElement(Webhook, { className: "size-4" }),
+  order: 41,
+  component: lazy(() => import("../components/IntegrationsPanel.tsx").then((m) => ({ default: m.HooksSettings }))),
 });
 
 registerCommand({ id: "integrations", label: "Memory and supervisor", group: "General", words: "tacit momentum", run: () => navigate({ name: "settings", section: "integrations" }) });
