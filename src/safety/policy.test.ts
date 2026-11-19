@@ -26,7 +26,9 @@ test("modes", () => {
   expect(kind(decide(sh("npm test"), facts("ask", { rules: [rule("shell", "npm test *")] })))).toBe("allow");
   expect(kind(decide(sh("npm test && rm x"), facts("ask", { rules: [rule("shell", "npm test *")] })))).toBe("ask-low");
   expect(kind(decide(edit("/w/repo/a.ts"), facts("auto-edits")))).toBe("allow");
-  expect(kind(decide(edit("/w/repo/.git/config"), facts("auto-edits")))).toBe("ask-low");
+  expect(kind(decide(edit("/w/repo/.git/config"), facts("auto-edits")))).toBe("ask-high");
+  expect(kind(decide(edit("/w/repo/.envrc"), facts("ask", { rules: [rule("edit", "/w/repo")] })))).toBe("ask-high");
+  expect(kind(decide(edit("/w/repo/.git/HEAD"), facts("auto-edits")))).toBe("ask-low");
   expect(kind(decide(edit("/etc/hosts"), facts("auto-edits")))).toBe("ask-low");
   expect(kind(decide(sh("npm test"), facts("auto-edits", { sandboxed: true })))).toBe("allow");
   expect(kind(decide(sh("npm test"), facts("full-auto")))).toBe("allow");

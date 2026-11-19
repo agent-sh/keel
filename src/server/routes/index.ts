@@ -13,6 +13,7 @@ import { voiceRoutes } from "./voice.ts";
 import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { secretRoutes } from "./secrets.ts";
+import { trustRoutes } from "./trust.ts";
 import { providersRoutes } from "./providers.ts";
 import { profileRoutes } from "./profile.ts";
 import { pwaRoutes } from "./pwa.ts";
@@ -34,7 +35,7 @@ import { attachmentRoutes } from "./attachments.ts";
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
   permissionRoutes, // first: its beforeTool gate decides before the others run
-  secretRoutes, // after the gate: a call it allowed runs with its secrets put back
+  trustRoutes, // protected files are watched around calls the gate let through
   checkpointRoutes,
   workspaceRoutes,
   pwaRoutes,
@@ -63,5 +64,6 @@ export const routeModules: RouteModule[] = [
   draftRoutes,
   importRoutes,
   hookRoutes,
+  secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

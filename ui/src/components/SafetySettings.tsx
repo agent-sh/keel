@@ -54,6 +54,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
           </div>
         </SettingRow>
       </Card>
+      <TrustCard />
       <WorktreesCard />
       {children}
     </div>
@@ -123,6 +124,26 @@ function WorktreesCard() {
             {note && <span className="text-caption text-muted" data-testid="worktree-prune-note">{note}</span>}
           </div>
         </div>
+      </Card>
+    </div>
+  );
+}
+
+// Whether a repository's new instruction files and skills load on first sight.
+function TrustCard() {
+  const [v, setV] = useState<"auto" | "ask" | null>(null);
+  useEffect(() => { api<{ new_files: "auto" | "ask" }>("/api/trust/settings").then((r) => setV(r.new_files)).catch(reportError); }, []);
+  const put = (new_files: "auto" | "ask") => api<{ new_files: "auto" | "ask" }>("/api/trust/settings", { method: "PUT", body: JSON.stringify({ new_files }) }).then((r) => setV(r.new_files)).catch(reportError);
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="px-1 text-ui font-medium text-muted">Repository files</h3>
+      <Card>
+        <SettingRow label="A repository's new instruction files and skills" hint="A changed one always waits for you, and a repository's hook file always does. The Trust panel of a session shows what is held.">
+          <select data-testid="trust-new-files" value={v ?? ""} onChange={(e) => put(e.target.value as "auto" | "ask")} className="h-8 rounded-md border border-line bg-raised px-2 text-ui outline-none focus:border-line-strong">
+            <option value="auto">Load on first sight</option>
+            <option value="ask">Wait for me</option>
+          </select>
+        </SettingRow>
       </Card>
     </div>
   );

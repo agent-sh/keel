@@ -73,6 +73,9 @@ export function skillRoots(cwd: string): { dir: string; scope: Skill["scope"] }[
   return roots;
 }
 
+// A feature may hold back a repository's skill (one changed since it was trusted).
+export const skillFilter: { allow?: (dir: string) => boolean } = {};
+
 export function discoverSkills(cwd: string): Skill[] {
   const out = new Map<string, Skill>();
   const seenReal = new Set<string>();
@@ -85,6 +88,7 @@ export function discoverSkills(cwd: string): Skill[] {
       let real: string;
       try { if (!statSync(file).isFile()) continue; real = realpathSync(file); } catch { continue; }
       if (seenReal.has(real)) continue;
+      if (scope === "project" && skillFilter.allow && !skillFilter.allow(join(dir, n))) continue;
       seenReal.add(real);
       let text = "";
       try { text = readFileSync(file, "utf8"); } catch { continue; }

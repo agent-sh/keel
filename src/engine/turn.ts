@@ -82,6 +82,10 @@ export function toMessages(events: StoredEvent[]): Message[] {
   return merged;
 }
 
+// A feature may hold back or replace a file's text (a repository's changed
+// instruction file loads as last trusted); null leaves the file out.
+export const instructionFilter: { file?: (path: string, text: string) => string | null } = {};
+
 export function instructionFiles(cwd: string): string {
   const parts: string[] = [];
   let dir = cwd;
@@ -91,7 +95,11 @@ export function instructionFiles(cwd: string): string {
     for (const name of ["AGENTS.md", "CLAUDE.md"]) {
       const p = join(dir, name);
       if (existsSync(p)) {
-        try { parts.unshift(`# ${p}\n\n${readFileSync(p, "utf8").slice(0, 40_000)}`); } catch {}
+        try {
+          const raw = readFileSync(p, "utf8");
+          const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
+          if (text !== null) parts.unshift(`# ${p}\n\n${text.slice(0, 40_000)}`);
+        } catch {}
         break; // AGENTS.md wins over CLAUDE.md in the same folder
       }
     }

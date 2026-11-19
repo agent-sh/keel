@@ -54,6 +54,7 @@ type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: 
 export class Gate {
   private waiting = new Map<string, Waiter>();
   private roots = new Map<string, string>();
+  private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
   // Reviewer mode's judge (set by the permission routes, which hold the providers).
   judge: (a: ReviewAsk) => Promise<Verdict> = async () => ({ unavailable: "no reviewer is set up" });
@@ -215,15 +216,34 @@ export class Gate {
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
+    return this.card(session, call, name, cls, summary, { ...d.ask, notice });
+  }
+
+  // A card for this one call that only the owner answers (a hook asked): no
+  // grant, mode change or reviewer settles it.
+  async askOnce(session: Session, call: ToolCall, name: string, why: string): Promise<{ deny: string } | void> {
+    const c = classify(call.tool, call.input, call.ctx.cwd);
+    const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
+    const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(call.input ?? {}).slice(0, 400);
+    return this.card(session, call, name, cls, summary, { risk: "high", why, suggest: [] }, true);
+  }
+
+  // Calls the owner allowed on a card (the protected-path sweep leaves their work alone).
+  ownerAllowed(callId: string | undefined): boolean {
+    return !!callId && this.allowedCalls.has(callId);
+  }
+
+  private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
+    ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string }, once = false): Promise<{ deny: string } | void> {
     const a: Approval = {
-      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind,
-      summary, notice,
-      input: clip(call.input), risk: d.ask.risk, why: d.ask.why, suggest: d.ask.suggest, state: "pending", created: Date.now(),
+      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
+      summary, notice: ask.notice,
+      input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: Date.now(),
     };
     this.save(a);
     const signal = call.ctx.signal;
     const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
-      this.waiting.set(a.id, { resolve, call, cls, session, name });
+      this.waiting.set(a.id, { resolve, call, cls, session, name, once });
       const onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
         this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
@@ -233,27 +253,8 @@ export class Gate {
       else signal.addEventListener("abort", onAbort, { once: true });
     });
     if ("deny" in out) return out;
-  }
-
-  // A card for this one call that only the owner answers (a hook asked): no
-  // grant, mode change or reviewer settles it.
-  async askOnce(session: Session, call: ToolCall, name: string, why: string): Promise<{ deny: string } | void> {
-    const a: Approval = {
-      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: "other",
-      summary: JSON.stringify(call.input ?? {}).slice(0, 400), input: clip(call.input), risk: "high", why, suggest: [], state: "pending", created: Date.now(),
-    };
-    this.save(a);
-    const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
-      this.waiting.set(a.id, { resolve, call, cls: { kind: "other" }, session, name, once: true });
-      const onAbort = () => {
-        if (!this.waiting.delete(a.id)) return;
-        this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
-        resolve({ deny: "The turn was stopped before the owner answered." });
-      };
-      if (call.ctx.signal.aborted) onAbort();
-      else call.ctx.signal.addEventListener("abort", onAbort, { once: true });
-    });
-    if ("deny" in out) return out;
+    this.allowedCalls.add(call.id);
+    if (this.allowedCalls.size > 2000) this.allowedCalls.delete(this.allowedCalls.values().next().value!);
   }
 
   resolve(id: string, sessionId: string, c: Choice): { ok: true } | { error: string; status: number } {
@@ -289,7 +290,7 @@ export class Gate {
   // After a mode or grant change: open cards that are now settled resolve.
   private recheck(which: (w: Waiter) => boolean) {
     for (const [id, w] of [...this.waiting]) {
-      if (!which(w) || w.once) continue; // a one-call card only the owner answers
+      if (w.once || !which(w)) continue; // a one-call card only the owner answers
       const d = this.evaluate(w.session, w.name, w.cls);
       const a = this.approval(id);
       if (!a) continue;

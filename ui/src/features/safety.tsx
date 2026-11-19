@@ -1,6 +1,6 @@
 // The safety lane's side panels and commands: what the session changed
 // (checkpoints and rewind) and the branch review. Imported once from main.tsx.
-import { FileDiff, GitPullRequestArrow, ShieldCheck } from "lucide-react";
+import { FileDiff, FileLock2, GitPullRequestArrow, ShieldCheck } from "lucide-react";
 import { lazy } from "react";
 import { panels, settingsSections } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
@@ -26,6 +26,13 @@ panels.add(
     order: 30,
     component: lazy(() => import("../components/BranchReview.tsx").then((m) => ({ default: m.BranchReview }))),
   },
+  {
+    id: "trust",
+    label: "Trust",
+    icon: <FileLock2 className="size-4" />,
+    order: 40,
+    component: lazy(() => import("../components/TrustPanel.tsx").then((m) => ({ default: m.TrustPanel }))),
+  },
 );
 
 settingsSections.add({
@@ -45,6 +52,7 @@ const toggle = (id: string) => savePref("panel", getUI().panel === id ? null : i
 
 registerCommand(
   { id: "panel-changes", label: "Changes panel: diffs, rewind and revert", group: "View", keys: "mod+shift+d", inInput: true, words: "checkpoint undo rewind revert diff", when: inSession, run: () => toggle("changes") },
+  { id: "panel-trust", label: "Trust panel: repository files, hooks and quarantine", group: "View", words: "trust hooks quarantine agents instructions skills", when: inSession, run: () => toggle("trust") },
   { id: "panel-review", label: "Review the branch", group: "View", words: "pull request comment worktree", when: inSession, run: () => toggle("review") },
 );
 

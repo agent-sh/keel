@@ -68,6 +68,8 @@ export const inside = (p: string, dir: string) => {
   return r === "" || (!r.startsWith("..") && !isAbsolute(r));
 };
 
+export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
+
 export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string };
 
 export function decide(c: CallClass, f: Facts): Decision {
@@ -87,6 +89,10 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "edit") {
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };
+    // A file the repository runs or reads its configuration from later (git
+    // hooks, direnv, the project's hook and MCP files): the owner's call, one at a time.
+    const runs = c.paths.find((p) => RUNS_LATER.test(relative(f.workspace, p)));
+    if (runs) return { ask: { risk: "high", why: `it changes ${relative(f.workspace, runs)}, which runs or configures things outside the sandbox later`, suggest: [] } };
     const editRules = f.rules.filter((r) => r.kind === "edit");
     const covered = (p: string) => editRules.some((r) => inside(p, r.pattern));
     // The repository's own metadata never edits itself in auto-edits mode.
