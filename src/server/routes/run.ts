@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import type { ModelInfo } from "../../providers/types.ts";
 import { isMode } from "../../safety/policy.ts";
 import type { Deps, RouteModule } from "../app.ts";
-import { gate } from "./permissions.ts";
+import { asksLess, gate, presence } from "./permissions.ts";
 import * as agents from "../../automation/agents.ts";
 import * as waits from "../../automation/waits.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
@@ -129,6 +129,11 @@ export const runRoutes: RouteModule = (deps) => {
           const cwd = resolve(b.cwd || deps.workspace);
           s = store.sessions({ archived: false }).find((x) => !x.parent_id && x.workspace === cwd);
           if (!s) throw fail(`no session in ${cwd} to continue`, 404);
+        }
+        // A mode that asks less than the session's (or the default) is an
+        // authority change: from a remote device it takes the passkey.
+        if (b.permission_mode && gate && presence && asksLess(b.permission_mode, s ? gate.perm(s.id).mode : gate.defaultMode()) && !presence.allows(req, `perm:${s?.id ?? "new"}`)) {
+          return json({ error: "this needs your passkey from a remote device", presence: { action: `perm:${s?.id ?? "new"}` } }, 428);
         }
         if (s) {
           if (s.archived) throw fail("the session is archived", 409);

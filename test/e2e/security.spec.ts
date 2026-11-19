@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU } from "./shots.ts";
 
 // Regression checks from the security review: each one is an attack that
 // worked before its fix. A remote device is a request with x-forwarded-for
@@ -38,6 +38,11 @@ test("a remote device needs the passkey for what runs programs", async ({ page, 
     expect(mcp.status()).toBe(428);
     expect((await (await request.get("/api/mcp/servers")).json()).servers.map((s: any) => s.name)).not.toContain(name);
     expect((await request.post("/api/mcp/import", { headers: AWAY, data: { source: "x", name } })).status()).toBe(428);
+    // The run endpoint (the CLI's) took a permission mode that asks less, unchecked.
+    const before = (await (await request.get("/api/sessions")).json()).sessions.length;
+    const run = await request.post("/api/run", { headers: AWAY, data: { text: "Reply with ok.", model: HAIKU, permission_mode: "full-auto" } });
+    expect(run.status()).toBe(428);
+    expect((await (await request.get("/api/sessions")).json()).sessions.length).toBe(before);
   } finally {
     const { passkeys } = await (await request.get("/api/owner-presence")).json();
     for (const p of passkeys) await request.delete(`/api/owner-presence/${encodeURIComponent(p.id)}`);
