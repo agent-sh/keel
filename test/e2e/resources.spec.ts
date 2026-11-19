@@ -3,7 +3,8 @@ import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: Settings > Resources shows the daemon and the processes it started,
 // a command a session's tool runs in the background is booked to that session,
-// and the memory and CPU of the last hour are charted.
+// and the memory and CPU of the last hour are charted. A command's descendant
+// that called setsid and lost its parent is still counted, from the job's cgroup.
 test("resources view", async ({ page, request }) => {
   const cmd = `sleep ${100 + Math.floor(Math.random() * 800)}`;
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
@@ -15,6 +16,13 @@ test("resources view", async ({ page, request }) => {
     const r = await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json();
     return r.processes.some((p: any) => p.command.includes(cmd) && p.kind === "tool");
   }, { timeout: 120_000 }).toBe(true);
+  const orphan = `sleep ${1000 + Math.floor(Math.random() * 800)}`;
+  await request.post(`/api/sessions/${s.id}/terminal/run`, { data: { command: `(setsid ${orphan} &); sleep 900` } });
+  await expect.poll(async () => {
+    const r = await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json();
+    const p = r.processes.find((x: any) => x.name === "sleep" && x.command === orphan);
+    return !!p && r.jobs.some((j: any) => j.contain === "cgroup" && j.pids.includes(p.pid) && j.memory_bytes > 0);
+  }, { timeout: 20_000 }).toBe(true);
 
   await page.goto("/settings/resources");
   const panel = page.getByTestId("resources-panel");
@@ -28,6 +36,6 @@ test("resources view", async ({ page, request }) => {
 
   // Deleting the session stops its commands.
   await request.delete(`/api/sessions/${s.id}`);
-  await expect.poll(async () => (await (await request.get("/api/resources?refresh=1")).json()).processes.some((p: any) => p.command.includes(cmd))).toBe(false);
+  await expect.poll(async () => (await (await request.get("/api/resources?refresh=1")).json()).processes.some((p: any) => p.command.includes(cmd) || p.command === orphan)).toBe(false);
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
 });

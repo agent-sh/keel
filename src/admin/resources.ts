@@ -5,7 +5,7 @@
 // runs every 5 s while a turn works, every 30 s when idle.
 import { readdirSync, readFileSync, statfsSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
-import { jobPids } from "../tools/jobs.ts";
+import { liveJobs, type Job } from "../tools/jobs.ts";
 
 const TICK_MS = 10; // USER_HZ is 100 on Linux (getconf CLK_TCK)
 const ACTIVE_MS = 5_000;
@@ -59,6 +59,8 @@ function kindOf(name: string, command: string, session?: string): string {
 // What to call a process: the command a shell wrapper runs, not the wrapper.
 function labelOf(name: string, args: string[]): string {
   const script = (args[0] === "bash" || args[0]?.endsWith("/bash") || args[0] === "sh") && args[1] === "-c" ? args[2] : undefined;
+  // A job's exit-code wrapper (bash -c SCRIPT EXITFILE CMD...): named by its command.
+  if (script && /^("\$@"|p=\$KEEL_CONCEAL)/.test(script) && args.length > 4) return labelOf(name, args.slice(4));
   if (script) {
     const lines = script.split("\n").map((l) => l.trim()).filter((l) => l && !/^(trap|exec 2>&1|set -)/.test(l));
     if (lines.length) return lines.join("; ").slice(0, 200);
@@ -86,6 +88,18 @@ export function intervalCpu(prev: Map<string, number>, now: { pid: number; start
   return { used, at, gone };
 }
 
+// What a job's cgroup says it used: CPU of every process it ever had (ended
+// ones included) and the memory it holds now (page cache too). Null without one.
+export function cgroupCost(dir: string): { pids: number[]; cpu_user_ms: number; cpu_system_ms: number; memory_bytes: number } | null {
+  const procs = read(`${dir}/cgroup.procs`);
+  const cpu = read(`${dir}/cpu.stat`);
+  if (!procs && !cpu) return null;
+  const usec = (k: string) => Number(new RegExp(`^${k} (\\d+)`, "m").exec(cpu)?.[1] ?? 0) / 1000;
+  return { pids: procs.split("\n").filter(Boolean).map(Number), cpu_user_ms: usec("user_usec"), cpu_system_ms: usec("system_usec"), memory_bytes: Number(read(`${dir}/memory.current`).trim() || 0) };
+}
+
+export type JobCost = { id: string; session_id: string; label: string; contain: "cgroup" | "group"; processes: number; cpu_user_ms: number; cpu_system_ms: number; memory_bytes: number; pids: number[] };
+
 export class Resources {
   private last = new Map<number, { cpu: number; ts: number }>();
   private prev = new Map<number, { cpu: number; ts: number }>();
@@ -95,6 +109,7 @@ export class Resources {
   private cpuAt = new Map<string, number>();
   private history: Sample[] = [];
   private procs: Proc[] = [];
+  private jobs: JobCost[] = [];
   private measured = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private busy = new Set<string>();
@@ -122,29 +137,37 @@ export class Resources {
     (this.timer as any).unref?.();
   }
 
-  // Every process under the daemon, children of children included, and the
-  // background jobs a previous daemon started and this one adopted (with
-  // their children). Each thread's `children` file names the processes it
-  // started, so only the daemon's own trees are read, not every process.
-  private descendants(): number[] {
+  // Every process under the daemon, children of children included, and every
+  // process of the jobs still alive: from its cgroup when it has one (that
+  // holds setsid and double-forked descendants, and what a finished command
+  // left running), else its leader and the leader's children, for jobs a
+  // previous daemon started and this one adopted. Each thread's `children`
+  // file names the processes it started, so only these trees are read.
+  private descendants(jobs: { job: Job; cg: ReturnType<typeof cgroupCost> }[]): { pids: number[]; jobOf: Map<number, Job> } {
     const out: number[] = [];
+    const jobOf = new Map<number, Job>();
     const seen = new Set<number>([process.pid]);
-    const walk = (pid: number) => {
+    const add = (n: number) => { if (seen.has(n)) return false; seen.add(n); out.push(n); return true; };
+    const walk = (pid: number, j?: Job) => {
       let tids: string[] = [];
       try { tids = readdirSync(`/proc/${pid}/task`); } catch { return; }
       for (const t of tids) for (const c of read(`/proc/${pid}/task/${t}/children`).split(" ")) {
         const n = Number(c);
-        if (n && !seen.has(n)) { seen.add(n); out.push(n); walk(n); }
+        if (n && add(n)) { if (j) jobOf.set(n, j); walk(n, j); }
       }
     };
+    for (const { job, cg } of jobs) {
+      if (cg) for (const pid of cg.pids) { add(pid); jobOf.set(pid, job); }
+      else if (stat(job.pid)) { add(job.pid); jobOf.set(job.pid, job); walk(job.pid, job); }
+    }
     walk(process.pid);
-    for (const pid of jobPids()) if (!seen.has(pid) && stat(pid)) { seen.add(pid); out.push(pid); walk(pid); }
-    return out;
+    return { pids: out, jobOf };
   }
 
   sample(): void {
     const now = Date.now();
-    const pids = this.descendants();
+    const jobs = liveJobs().map((job) => ({ job, cg: job.cgroup ? cgroupCost(job.cgroup) : null }));
+    const { pids, jobOf } = this.descendants(jobs);
     const live = new Set(pids);
     // A process that ended: its last CPU stays on its session's total.
     for (const [pid, p] of this.seen) {
@@ -162,7 +185,7 @@ export class Resources {
       const s = status(pid);
       const args = read(`/proc/${pid}/cmdline`).split("\0").filter(Boolean);
       const command = args.join(" ").slice(0, 1000) || st.name;
-      const session_id = this.seen.get(pid)?.session_id ?? sessionOf(pid);
+      const session_id = this.seen.get(pid)?.session_id ?? sessionOf(pid) ?? jobOf.get(pid)?.sessionId;
       const cpu = st.utime + st.stime;
       const p: Proc = {
         pid, ppid: st.ppid, name: st.name, label: labelOf(st.name, args), command, kind: kindOf(st.name, command, session_id), session_id, started_ms: st.start,
@@ -173,6 +196,16 @@ export class Resources {
     }
     procs.sort((a, b) => b.rss_bytes - a.rss_bytes);
     this.procs = procs;
+    // Each job whole: its cgroup's own totals, or the sum of the processes found for it.
+    const byPid = new Map(procs.map((p) => [p.pid, p]));
+    this.jobs = jobs.map(({ job, cg }) => {
+      const mine = pids.filter((p) => jobOf.get(p) === job).map((p) => byPid.get(p)).filter((p): p is Proc => !!p);
+      const sum = (k: "cpu_user_ms" | "cpu_system_ms" | "rss_bytes") => mine.reduce((n, p) => n + p[k], 0);
+      return {
+        id: job.id, session_id: job.sessionId, label: job.description ?? job.command.slice(0, 200), contain: cg ? "cgroup" as const : "group" as const, processes: mine.length,
+        cpu_user_ms: cg ? cg.cpu_user_ms : sum("cpu_user_ms"), cpu_system_ms: cg ? cg.cpu_system_ms : sum("cpu_system_ms"), memory_bytes: cg ? cg.memory_bytes : sum("rss_bytes"), pids: mine.map((p) => p.pid),
+      };
+    });
     const d = this.daemon(now);
     this.measured = now;
     const cpuMs = d.cpu_user_ms + d.cpu_system_ms + procs.reduce((n, p) => n + p.cpu_user_ms + p.cpu_system_ms, 0);
@@ -247,6 +280,7 @@ export class Resources {
       },
       daemon: { ...daemon, ...share(daemon.rss_bytes, daemon.cpu_percent) },
       processes: procs.map((p) => ({ ...p, ...share(p.rss_bytes, p.cpu_percent) })),
+      jobs: q.session ? this.jobs.filter((j) => j.session_id === q.session) : this.jobs,
       kinds: [...kinds.entries()].map(([kind, list]) => ({ kind, processes: list.length, rss_bytes: sum(list, "rss_bytes"), cpu_percent: sum(list, "cpu_percent"), ...share(sum(list, "rss_bytes"), sum(list, "cpu_percent")) })),
       sessions: [...sessions.entries()]
         .filter(([id]) => !q.session || id === q.session)
