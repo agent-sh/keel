@@ -149,17 +149,15 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
   );
 }
 
-const PLACEHOLDERS = new Set(["(image)", "(attached file)"]);
-
 // The new version keeps the prompt's attachments, in their order: they are
 // shown here before Send, and only the words change.
 function EditPrompt({ e, s, onDone }: { e: StoredEvent; s: Session; onDone: () => void }) {
   const raw: string = e.data.text ?? "";
-  const [text, setText] = useState<string>(PLACEHOLDERS.has(raw) ? "" : raw);
+  const [text, setText] = useState<string>(raw);
   const blocks: PromptBlock[] = e.data.images ?? [];
   const n = blocks.length;
   const ok = !!text.trim() || n > 0;
-  const send = () => ok && actions.edit(s.id, e.id, text.trim() || (blocks.some((b) => b.type === "image") ? "(image)" : "(attached file)")).then(onDone, reportError);
+  const send = () => ok && actions.edit(s.id, e.id, text.trim()).then(onDone, reportError);
   return (
     <div className="flex justify-end animate-in" data-event-id={e.id}>
       <div className="w-[min(85%,40rem)] rounded-xl border border-line-strong bg-raised p-2 shadow-2">

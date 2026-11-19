@@ -43,11 +43,8 @@ export const turnRoutes: RouteModule = (deps) => {
         if (!q || q.session_id !== req.params.id) return bad("no such queued prompt (it may have been sent)", 404);
         if (b.text === undefined && b.steer === undefined && b.position === undefined) return bad("nothing to change");
         let text = b.text === undefined ? undefined : String(b.text).trim();
-        // A screenshot or file alone is a prompt, as the composer sends it.
-        if (text === "") {
-          if (!q.images?.length) return bad("text cannot be empty");
-          text = q.images.some((x: any) => x.type === "image") ? "(image)" : "(attached file)";
-        }
+        // A screenshot or file alone is a prompt, without made-up words.
+        if (text === "" && !q.images?.length) return bad("text cannot be empty");
         let pos: number | undefined;
         if (b.position !== undefined) {
           const others = store.queue(q.session_id).filter((x) => x.id !== q.id && x.steer === (b.steer ?? q.steer));
@@ -206,7 +203,7 @@ export const turnRoutes: RouteModule = (deps) => {
         bus.emit({ t: "session", session });
         // `before`: the prompt itself is not copied; its words and attachments go back to the box.
         const prompt = b.before && at.kind === "user" ? at : undefined;
-        const text = prompt && prompt.data.text !== "(image)" && prompt.data.text !== "(attached file)" ? prompt.data.text : prompt ? "" : undefined;
+        const text = prompt ? String(prompt.data.text ?? "") : undefined;
         return json({ session, prompt_text: text, prompt_images: prompt?.data.images?.length ? prompt.data.images : undefined, events_copied: copy.length, queue_left: left }, 201);
       },
     },

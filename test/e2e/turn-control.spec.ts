@@ -117,13 +117,13 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   await expect(page.getByTestId("queue-held")).toBeVisible({ timeout: 10_000 });
   let q = await queue();
   expect(q.held).toBe(true);
-  expect(q.queue.map((x) => [x.text, x.steer, x.images?.length ?? 0])).toEqual([["(image)", false, 1], ["(image)", false, 1], ["alpha", false, 0], ["bravo", false, 0], ["charlie", false, 0]]);
+  expect(q.queue.map((x) => [x.text, x.steer, x.images?.length ?? 0])).toEqual([["", false, 1], ["", false, 1], ["alpha", false, 0], ["bravo", false, 0], ["charlie", false, 0]]);
   const bytes = q.queue[0].images[0].data;
 
   // Move up is one place: charlie goes above bravo, nothing runs.
   await page.getByTestId("queue-item").filter({ hasText: "charlie" }).hover();
   await page.getByTestId("queue-item").filter({ hasText: "charlie" }).getByTestId("queue-move-up").click();
-  await expect.poll(async () => (await queue()).queue.map((x) => x.text)).toEqual(["(image)", "(image)", "alpha", "charlie", "bravo"]);
+  await expect.poll(async () => (await queue()).queue.map((x) => x.text)).toEqual(["", "", "alpha", "charlie", "bravo"]);
   expect((await queue()).held).toBe(true);
   await shoot(page, "turn-05-queue-held-screenshots");
 
@@ -133,7 +133,7 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   const cleared = await request.patch(`/api/sessions/${sid}/queue/${cap.id}`, { data: { text: "" } });
   expect(cleared.status()).toBe(200);
   const after = (await cleared.json()).queue.find((x: any) => x.id === cap.id);
-  expect([after.text, after.images[0].data]).toEqual(["(image)", bytes]);
+  expect([after.text, after.images[0].data]).toEqual(["", bytes]);
   const alpha = q.queue[2];
   expect((await request.patch(`/api/sessions/${sid}/queue/${alpha.id}`, { data: { text: " " } })).status()).toBe(400);
 
@@ -151,7 +151,7 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   await composer.fill("");
   // The rest drains after alpha's turn (the send released the hold).
   await expect.poll(ends, { timeout: 30_000 }).toBe(n + 5);
-  expect((await events()).filter((e) => e.kind === "user" && e.data.origin === "queued").map((e) => e.data.text).slice(-5)).toEqual(["alpha", "(image)", "(image)", "charlie", "bravo"]);
+  expect((await events()).filter((e) => e.kind === "user" && e.data.origin === "queued").map((e) => e.data.text).slice(-5)).toEqual(["alpha", "", "", "charlie", "bravo"]);
 
   // A held follow-up written on one branch, with the chat moved back to an earlier one.
   const firstEnd = (await events()).filter((e) => e.kind === "turn_end").at(-1);

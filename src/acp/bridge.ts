@@ -296,7 +296,7 @@ export class AcpBridge {
         await this.ensureFrames();
         const done = new Promise<Json>((resolve, reject) => this.turns.set(id, { resolve, reject, streamed: "", cancelled: false }));
         try {
-          await this.daemon.send("POST", `/api/sessions/${id}/messages`, { text: text || "(image)", images });
+          await this.daemon.send("POST", `/api/sessions/${id}/messages`, { text, images });
         } catch (e) {
           this.turns.delete(id);
           throw e;
