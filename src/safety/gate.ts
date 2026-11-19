@@ -154,7 +154,21 @@ export class Gate {
     return rule;
   }
 
+  // Revoked in this daemon: each can be put back once, exactly as it was (the Undo of a revoke).
+  private revoked = new Map<string, Rule>();
+  restore(id: string): Rule | null {
+    const r = this.revoked.get(id);
+    if (!r) return null;
+    this.revoked.delete(id);
+    this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(r.id, r.kind, r.pattern, r.scope, r.lifetime, r.session_id ?? null, r.created);
+    this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
+    return r;
+  }
+
   revoke(id: string): boolean {
+    const was = this.store.db.query<Rule, [string]>("SELECT * FROM perm_rules WHERE id = ?").get(id);
+    if (was) this.revoked.set(id, was);
     const n = this.store.db.query("DELETE FROM perm_rules WHERE id = ?").run(id).changes;
     if (n) this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     return n > 0;

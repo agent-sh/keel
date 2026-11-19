@@ -299,6 +299,26 @@ export class Checkpoints {
     return out;
   }
 
+  // Take back one hunk of what the session changed in a file since the start
+  // of `from` (the daemon's own diff, applied in reverse). An undo point first.
+  async revertHunk(s: Session, o: { from: number; path: string; index: number; header: string }) {
+    const sh = this.shadow(s.workspace);
+    const d = await this.diff(s, { from: o.from });
+    const patch = hunkPatch(d.diff, o.path, o.index, o.header);
+    if (!patch) throw new Bad("that hunk is no longer as shown: look at the diff again", 409);
+    const now = await this.now(s);
+    const undo = this.save({ session_id: s.id, turn: this.currentTurn(s.id), at: "undo", tree: now.tree, paths: now.paths });
+    try {
+      await sh.git(["apply", "-R", "--whitespace=nowarn", "-"], { input: patch });
+    } catch (e) {
+      throw new Bad(`the hunk does not apply to the file as it is now: ${(e as Error).message.slice(0, 200)}`, 409);
+    }
+    const after = await this.now(s);
+    this.save({ session_id: s.id, turn: undo.turn, at: "after", tree: after.tree, paths: after.paths });
+    this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { rewind: true } });
+    return { files: [o.path], skipped: [], outside: [], undo: undo.id, scope: sh.mode };
+  }
+
   // Put files back as they were at the start of `turn` (all the files that
   // changed since, or only `paths`), or as an undo checkpoint holds them.
   async rewind(s: Session, opts: { turn?: number; checkpoint?: string; paths?: string[]; preview?: boolean; includeOutside?: boolean }) {
@@ -341,6 +361,23 @@ export class Checkpoints {
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { rewind: true } });
     return { files: restore, skipped, outside, undo: undo.id, scope: scopePaths ? "written" : "tree" };
   }
+}
+
+// One hunk of one file's diff, as a patch git can apply (headers kept).
+export function hunkPatch(diff: string, path: string, index: number, header: string): string | null {
+  const sections = diff.split(/^(?=diff --git )/m);
+  const sec = sections.find((x) => x.startsWith(`diff --git a/${path} b/${path}`));
+  if (!sec) return null;
+  const lines = sec.split("\n");
+  const first = lines.findIndex((l) => l.startsWith("@@"));
+  if (first < 0) return null;
+  const starts = lines.map((l, i) => (l.startsWith("@@") ? i : -1)).filter((i) => i >= 0);
+  const at = starts[index];
+  if (at === undefined || lines[at] !== header) return null;
+  const end = starts[index + 1] ?? lines.length;
+  const body = lines.slice(at, end);
+  while (body.length && body.at(-1) === "") body.pop();
+  return [...lines.slice(0, first), ...body].join("\n") + "\n";
 }
 
 export class Bad extends Error {

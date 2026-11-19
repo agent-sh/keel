@@ -49,6 +49,24 @@ async function run(cwd: string, argv: string[]): Promise<{ out: string; err: str
   return { out, err, code };
 }
 
+// A pull request's checks in a few words: a failure wins, then what waits, a
+// cancelled or skipped check is not a failure.
+export function summarizeChecks(rows: any[]) {
+  const status = (c: any): string => {
+    const v = String(c.conclusion || c.state || c.status || "").toUpperCase();
+    if (["SUCCESS", "NEUTRAL"].includes(v)) return "passed";
+    if (["FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE"].includes(v)) return "failed";
+    if (v === "CANCELLED") return "cancelled";
+    if (v === "SKIPPED" || v === "STALE") return "skipped";
+    if (v === "ACTION_REQUIRED") return "action_required";
+    return "pending";
+  };
+  const list = rows.map((c) => ({ name: String(c.name || c.context || "check"), status: status(c), url: c.detailsUrl || c.targetUrl || undefined, workflow: c.workflowName || undefined }));
+  const n = (s: string) => list.filter((x) => x.status === s).length;
+  const summary = !list.length ? "none" : n("failed") ? "failing" : n("pending") ? "pending" : n("action_required") ? "action_required" : "passing";
+  return { summary, passed: n("passed"), failed: n("failed"), pending: n("pending"), cancelled: n("cancelled"), skipped: n("skipped"), action_required: n("action_required"), rows: list };
+}
+
 // A branch name from the first words of the title.
 const slug = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 4).join("-").slice(0, 28).replace(/-$/, "") || "session";
 
@@ -324,8 +342,12 @@ export class Worktrees {
   }
 
   async pr(w: Worktree): Promise<{ pr: any; available: boolean; error?: string }> {
-    const r = await run(w.path, ["gh", "pr", "view", w.branch, "--json", "number,url,title,state,isDraft,headRefOid,baseRefName,reviewDecision"]);
-    if (r.code === 0) return { pr: JSON.parse(r.out), available: true };
+    const r = await run(w.path, ["gh", "pr", "view", w.branch, "--json", "number,url,title,state,isDraft,headRefOid,baseRefName,reviewDecision,statusCheckRollup"]);
+    if (r.code === 0) {
+      const pr = JSON.parse(r.out);
+      const local = (await git(w.path, ["rev-parse", "HEAD"], { ok: true })).trim();
+      return { pr: { ...pr, statusCheckRollup: undefined, checks: summarizeChecks(pr.statusCheckRollup ?? []), head_matches: !local || pr.headRefOid === local }, available: true };
+    }
     if (/no pull requests found/i.test(r.err)) return { pr: null, available: true };
     return { pr: null, available: false, error: r.err.trim().slice(0, 300) || `gh exit ${r.code}` };
   }

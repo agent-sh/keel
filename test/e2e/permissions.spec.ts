@@ -56,6 +56,12 @@ test("permission gate", async ({ page, request }) => {
   await grant.hover();
   await grant.getByTestId("revoke-grant").click();
   await expect(grant).toHaveCount(0);
+  // Undo puts that exact grant back once; revoke it again for what follows.
+  await page.getByTestId("grant-undo").getByRole("button", { name: "Undo" }).click();
+  await expect(grant).toBeVisible();
+  await grant.hover();
+  await grant.getByTestId("revoke-grant").click();
+  await expect(grant).toHaveCount(0);
   await page.keyboard.press("Escape");
 
   // 5. Read-only mode refuses without asking.

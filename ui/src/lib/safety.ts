@@ -64,6 +64,10 @@ export const safety = {
   },
   answer: (sessionId: string, approvalId: string, body: { choice: string; reason?: string; rules?: Suggest[] }) =>
     api(`/api/sessions/${sessionId}/approvals/${approvalId}`, { method: "POST", body: JSON.stringify(body) }),
+  restore: async (id: string) => {
+    await api(`/api/permissions/grants/${id}/restore`, { method: "POST" });
+    await safety.loadGrants();
+  },
   revoke: async (id: string) => {
     await api(`/api/permissions/grants/${id}`, { method: "DELETE" });
     set({ grants: state.grants.filter((g) => g.id !== id) });

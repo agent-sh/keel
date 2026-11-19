@@ -20,12 +20,13 @@ test("checkpoints and rewind", async ({ page, request }) => {
   mkdirSync(ws, { recursive: true });
   writeFileSync(join(ws, "a.txt"), "one\n");
   writeFileSync(join(ws, "keep.txt"), "base\n");
+  writeFileSync(join(ws, "long.txt"), Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
   execFileSync("git", ["init", "-q"], { cwd: ws });
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   const say = (text: string) => request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
 
-  await say("Run exactly this one Bash command and nothing else: echo two >> a.txt && echo new > b.txt\nThen reply ok.");
+  await say("Run exactly this one Bash command and nothing else: echo two >> a.txt && echo new > b.txt && sed -i '1s/.*/FIRST/;30s/.*/LAST/' long.txt\nThen reply ok.");
   await turnsDone(request, session.id, 1);
   await say("Run exactly this one Bash command and nothing else: echo three >> a.txt\nThen reply ok.");
   await turnsDone(request, session.id, 2);
@@ -35,15 +36,23 @@ test("checkpoints and rewind", async ({ page, request }) => {
   await page.goto(`/s/${session.id}`);
   await page.getByTestId("panel-toggle-changes").click();
   const panel = page.getByTestId("changes-panel");
-  await expect(panel.getByTestId("diff-file")).toHaveCount(3);
+  await expect(panel.getByTestId("diff-file")).toHaveCount(4);
   await expect(panel.locator('[data-path="keep.txt"]')).toContainText("outside");
   await shoot(page, "ckpt-01-session");
 
   await panel.getByTestId("tab-turns").click();
   await expect(panel.getByTestId("turn-checkpoint")).toHaveCount(2);
   await panel.getByTestId("turn-checkpoint").last().locator("summary").click();
-  await expect(panel.getByTestId("turn-checkpoint").last().getByTestId("diff-file")).toHaveCount(2);
+  await expect(panel.getByTestId("turn-checkpoint").last().getByTestId("diff-file")).toHaveCount(3);
   await shoot(page, "ckpt-02-turns");
+
+  // Revert one hunk of long.txt: its first line comes back, its last stays changed.
+  await panel.getByTestId("tab-session").click();
+  const long = panel.locator('[data-path="long.txt"]');
+  await expect(long.getByTestId("revert-hunk")).toHaveCount(2);
+  await long.getByTestId("revert-hunk").first().click();
+  await expect(panel.getByTestId("rewind-done")).toContainText("Restored 1 file");
+  expect(readFileSync(join(ws, "long.txt"), "utf8")).toMatch(/^line 1\n[\s\S]*\nLAST\n$/);
 
   // Revert one file (b.txt, created by the session).
   await panel.getByTestId("tab-session").click();
@@ -58,7 +67,7 @@ test("checkpoints and rewind", async ({ page, request }) => {
   await panel.getByTestId("turn-checkpoint").first().getByTestId("rewind-turn").click();
   await page.getByTestId("rewind-go").click();
   // a.txt loses turn 2's line; b.txt (reverted above, there before turn 2) comes back.
-  await expect(panel.getByTestId("rewind-done")).toContainText("Restored 2 files, kept 1");
+  await expect(panel.getByTestId("rewind-done")).toContainText("Restored 3 files, kept 1");
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\n");
   expect(existsSync(join(ws, "b.txt"))).toBe(true);
 

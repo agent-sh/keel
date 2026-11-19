@@ -55,6 +55,17 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         return json(await c.diff(s, { turn: num("turn"), from: num("from") }));
       }),
     },
+    "/api/sessions/:id/changes/revert": {
+      POST: (req: any) => guard(async () => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
+        if (busy(s.id, s.workspace)) return bad("a turn is running in this workspace; stop it first", 409);
+        if (typeof b.path !== "string" || !Number.isInteger(b.hunk?.index) || typeof b.hunk?.header !== "string" || !Number.isFinite(b.from)) return bad("give path, hunk { index, header } and from (the turn)");
+        if (b.path.startsWith("/") || b.path.split("/").includes("..")) return bad("the path is relative to the workspace and stays inside it");
+        return json(await c.revertHunk(s, { from: Number(b.from), path: b.path, index: b.hunk.index, header: b.hunk.header }));
+      }),
+    },
     "/api/sessions/:id/rewind": {
       POST: (req: any) => guard(async () => {
         const s = store.session(req.params.id);

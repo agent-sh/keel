@@ -7,7 +7,11 @@ import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadWorktree, setStartInWorktree, useStartInWorktree, useWorktree } from "../lib/worktree.ts";
 import { popupClass } from "./ui.tsx";
 
-type Pr = { number: number; url: string; title: string; state: string; isDraft: boolean };
+type Pr = { number: number; url: string; title: string; state: string; isDraft: boolean; head_matches?: boolean; checks?: { summary: string; passed: number; failed: number; pending: number; rows: { name: string; status: string; url?: string }[] } };
+const CHECKS: Record<string, { text: string; cls: string }> = {
+  passing: { text: "checks pass", cls: "text-ok" }, failing: { text: "checks fail", cls: "text-danger" },
+  pending: { text: "checks running", cls: "text-warn" }, action_required: { text: "checks wait on a person", cls: "text-warn" },
+};
 
 const btn = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-ui hover:bg-hover disabled:opacity-50 [&>svg]:size-3.5 [&>svg]:text-faint";
 
@@ -79,6 +83,19 @@ export function WorktreeChip({ session }: { session: Session }) {
                 <span className="text-micro text-faint">{pr.pr.isDraft ? "draft" : pr.pr.state.toLowerCase()}</span>
                 <ExternalLink className="size-3.5 text-faint" />
               </a>
+            )}
+            {wt.state === "active" && pr?.pr?.checks && pr.pr.checks.summary !== "none" && (
+              <details className="mt-1.5 text-caption" data-testid="pr-checks">
+                <summary className={cn("cursor-pointer", CHECKS[pr.pr.checks.summary]?.cls)}>
+                  {CHECKS[pr.pr.checks.summary]?.text}: {pr.pr.checks.passed} passed{pr.pr.checks.failed ? `, ${pr.pr.checks.failed} failed` : ""}{pr.pr.checks.pending ? `, ${pr.pr.checks.pending} running` : ""}
+                  {pr.pr.head_matches === false && <span className="text-warn"> · the pull request is not at your local head</span>}
+                </summary>
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {pr.pr.checks.rows.map((c, i) => (
+                    <li key={i} className="flex gap-2"><span className="min-w-0 flex-1 truncate">{c.url ? <a className="hover:underline" href={c.url} target="_blank" rel="noreferrer">{c.name}</a> : c.name}</span><span className="text-faint">{c.status}</span></li>
+                  ))}
+                </ul>
+              </details>
             )}
             {wt.state === "active" && pr && !pr.available && <p className="mt-3 text-caption text-faint" data-testid="pr-unavailable">Pull requests: {pr.error}</p>}
 

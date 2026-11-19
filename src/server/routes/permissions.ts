@@ -192,6 +192,14 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         return pk.remove(req.params.pid) ? json({ ok: true }) : bad("no such passkey", 404);
       },
     },
+    "/api/permissions/grants/:gid/restore": {
+      POST: (req: any) => {
+        const guard = needs(req, "grant");
+        if (guard) return guard;
+        const r = g.restore(req.params.gid);
+        return r ? json({ grant: r }) : bad("no revoke of that grant to undo in this daemon", 400);
+      },
+    },
     "/api/permissions/grants/:gid": {
       DELETE: (req: any) => (g.revoke(req.params.gid) ? json({ ok: true }) : bad("no such grant", 404)),
     },

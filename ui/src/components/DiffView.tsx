@@ -45,15 +45,18 @@ const STATUS: Record<string, { label: string; cls: string }> = {
 export type Comment = { path: string; line: number; text: string };
 
 // Files with their diffs. `actions` renders per-file buttons (revert);
-// `onComment` turns line numbers into "add a comment" targets.
+// `onComment` turns line numbers into "add a comment" targets; `onHunk`
+// puts a revert button on each hunk.
+export type HunkRef = { path: string; index: number; header: string };
 export function DiffView({
-  files, patch, actions, comments, onComment, empty,
+  files, patch, actions, comments, onComment, onHunk, empty,
 }: {
   files: FileChange[];
   patch: string;
   actions?: (f: FileChange) => ReactNode;
   comments?: Comment[];
   onComment?: (c: Comment) => void;
+  onHunk?: (h: HunkRef) => void;
   empty?: string;
 }) {
   const parsed = useMemo(() => new Map(parsePatch(patch).map((p) => [p.path, p])), [patch]);
@@ -61,14 +64,14 @@ export function DiffView({
   return (
     <div className="flex flex-col gap-2" data-testid="diff-view">
       {files.map((f) => (
-        <FileBlock key={f.path} f={f} p={parsed.get(f.path)} actions={actions} comments={comments?.filter((c) => c.path === f.path)} onComment={onComment} />
+        <FileBlock key={f.path} f={f} p={parsed.get(f.path)} actions={actions} comments={comments?.filter((c) => c.path === f.path)} onComment={onComment} onHunk={onHunk} />
       ))}
     </div>
   );
 }
 
-function FileBlock({ f, p, actions, comments, onComment }: {
-  f: FileChange; p?: FilePatch; actions?: (f: FileChange) => ReactNode; comments?: Comment[]; onComment?: (c: Comment) => void;
+function FileBlock({ f, p, actions, comments, onComment, onHunk }: {
+  f: FileChange; p?: FilePatch; actions?: (f: FileChange) => ReactNode; comments?: Comment[]; onComment?: (c: Comment) => void; onHunk?: (h: HunkRef) => void;
 }) {
   const [open, setOpen] = useState(true);
   const [draft, setDraft] = useState<{ line: number; text: string } | null>(null);
@@ -95,6 +98,7 @@ function FileBlock({ f, p, actions, comments, onComment }: {
             <table className="w-full border-collapse">
               <tbody>
                 {p.lines.map((l, i) => {
+                  const hunkIndex = l.kind === "hunk" ? p.lines.slice(0, i).filter((x) => x.kind === "hunk").length : -1;
                   const lineNo = l.new ?? l.old ?? 0;
                   const here = comments?.filter((c) => l.kind !== "del" && l.kind !== "hunk" && c.line === l.new) ?? [];
                   return [
@@ -119,7 +123,13 @@ function FileBlock({ f, p, actions, comments, onComment }: {
                         )}
                       </td>
                       <td className="w-4 select-none pl-2 text-faint">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : ""}</td>
-                      <td className="whitespace-pre pr-4">{l.text}</td>
+                      <td className="whitespace-pre pr-4">
+                        {l.text}
+                        {onHunk && l.kind === "hunk" && (
+                          <button data-testid="revert-hunk" onClick={() => onHunk({ path: f.path, index: hunkIndex, header: l.text })}
+                            className="float-right ml-3 rounded px-1.5 font-sans text-micro text-muted hover:bg-hover hover:text-fg">Revert hunk</button>
+                        )}
+                      </td>
                     </tr>,
                     ...here.map((c, j) => (
                       <tr key={`${i}-c${j}`}>

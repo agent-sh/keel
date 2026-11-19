@@ -132,6 +132,7 @@ const KIND = { shell: "Command", edit: "Edits", tool: "Tool" } as const;
 
 export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const grants = useSafety((s) => s.grants);
+  const [undo, setUndo] = useState<{ id: string; pattern: string } | null>(null);
   const byScope = Object.entries(
     grants.reduce<Record<string, typeof grants>>((acc, g) => ((acc[g.lifetime === "session" ? "For one session" : g.scope] ??= []).push(g), acc), {}),
   );
@@ -151,6 +152,12 @@ export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
             </Dialog.Close>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
+            {undo && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg bg-accent-soft/50 px-3 py-1.5 text-caption" data-testid="grant-undo">
+                <span className="min-w-0 flex-1 truncate">Revoked <code className="font-mono">{undo.pattern}</code></span>
+                <button className="font-medium text-accent hover:underline" onClick={() => safety.restore(undo.id).then(() => setUndo(null)).catch(reportError)}>Undo</button>
+              </div>
+            )}
             {grants.length === 0 && <p className="px-3 py-8 text-center text-ui text-faint">No grants yet. "Always allow" on an approval adds one.</p>}
             {byScope.map(([scope, list]) => (
               <section key={scope} className="mb-2">
@@ -163,7 +170,7 @@ export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
                     <button
                       data-testid="revoke-grant"
                       title="Revoke"
-                      onClick={() => safety.revoke(g.id).catch(reportError)}
+                      onClick={() => safety.revoke(g.id).then(() => setUndo({ id: g.id, pattern: g.pattern })).catch(reportError)}
                       className="grid size-7 place-items-center rounded-md text-faint opacity-0 hover:bg-danger-soft hover:text-danger group-hover:opacity-100 focus-visible:opacity-100"
                     >
                       <Trash2 className="size-3.5" />

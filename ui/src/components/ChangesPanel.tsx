@@ -133,6 +133,13 @@ export function ChangesPanel({ session }: { session: Session }) {
               patch={all.diff}
               empty="The session has not changed any files yet."
               actions={(f) => firstTurn !== undefined && <RevertButton onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />}
+              onHunk={firstTurn === undefined ? undefined : async (h) => {
+                setErr("");
+                try {
+                  setDone(await api<RewindResult>(`/api/sessions/${sessionId}/changes/revert`, { method: "POST", body: JSON.stringify({ path: h.path, hunk: { index: h.index, header: h.header }, from: firstTurn }) }));
+                  load();
+                } catch (e) { setErr((e as Error).message); }
+              }}
             />
           )}
         </Tabs.Panel>
