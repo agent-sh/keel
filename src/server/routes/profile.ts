@@ -34,7 +34,7 @@ function instructions(cwd: string, nested: Iterable<string> = []) {
 
 // How a family's tools edit files, read off its tool set.
 function toolProfile(info: ModelInfo) {
-  const tools = toolsFor(info.family);
+  const tools = info.tools === false ? [] : toolsFor(info.family); // as the turn sends them
   const names = tools.map((t) => t.name);
   const patch = tools.find((t) => t.freeform);
   const edit_grammar = patch ? `${patch.name} (${patch.freeform!.syntax} grammar)` : names.includes("Edit") ? "Edit (exact string replace)" : names.includes("replace") ? "replace (exact string replace)" : "none";

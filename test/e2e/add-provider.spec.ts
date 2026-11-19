@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { FAKE_KEY, FAKE_MODEL, startFake } from "./fixtures/fake-endpoint.ts";
+import { FAKE_KEY, FAKE_MODEL, FAKE_TEXT_MODEL, startFake } from "./fixtures/fake-endpoint.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: adding a provider by hand in Settings > Providers. A stand-in
@@ -58,7 +58,7 @@ test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", a
     expect(JSON.stringify(saved)).not.toContain(FAKE_KEY);
 
     const row = page.locator(`[data-testid="provider-row"][data-provider="${id}"]`);
-    await expect(row).toContainText("1 model");
+    await expect(row).toContainText("2 models");
     await row.getByTestId("provider-models-toggle").click();
     const m = row.locator(`[data-testid="provider-model"][data-model="${id}:${FAKE_MODEL}"]`);
     await expect(m).toContainText("33k");
@@ -85,6 +85,39 @@ test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", a
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
     await expect(page.getByTestId("assistant-text").last()).toContainText("Hello from the lab server.");
     await expect(page.getByTestId("turn-cost").first()).toBeVisible();
+
+    // A model the probe finds without tools is sent none, and the composer says so; the owner's word wins.
+    await page.goto("/settings/providers");
+    await page.locator(`[data-testid="provider-row"][data-provider="${id}"]`).getByTestId("provider-models-toggle").click();
+    const t = page.locator(`[data-testid="provider-model"][data-model="${id}:${FAKE_TEXT_MODEL}"]`);
+    await t.getByTestId("model-probe").click();
+    await expect(t.locator('[data-cap="tools"]')).toHaveAttribute("data-value", "false", { timeout: 60_000 });
+    await page.goto("/");
+    await page.getByTestId("model-picker").last().click();
+    await page.getByPlaceholder("Search models").fill(FAKE_TEXT_MODEL);
+    await page.locator(`[data-testid="model-option"][data-model="${id}:${FAKE_TEXT_MODEL}"]`).first().click();
+    await expect(page.getByTestId("model-no-tools")).toContainText("cannot use tools (the probe found it)");
+    await shoot(page, "add-provider-05-no-tools");
+    const sent = fake.requests.length;
+    await page.getByTestId("composer").fill("Say hello.");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Hello from the lab server.", { timeout: 60_000 });
+    expect(fake.requests.slice(sent).filter((r) => r.model === FAKE_TEXT_MODEL).map((r) => r.tools)).toEqual([0]);
+    const session = page.url().split("/s/")[1]!;
+    await page.goto("/settings/providers");
+    await page.locator(`[data-testid="provider-row"][data-provider="${id}"]`).getByTestId("provider-models-toggle").click();
+    await t.getByTestId("model-edit").click();
+    await t.getByTestId("model-tools").selectOption("true");
+    await t.getByTestId("model-editor-save").click();
+    await expect(t.locator('[data-cap="tools"]')).toHaveAttribute("data-value", "true");
+    await page.goto(`/s/${session}`);
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(page.getByTestId("model-no-tools")).toHaveCount(0);
+    const again = fake.requests.length;
+    await page.getByTestId("composer").fill("Say hello again.");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+    expect(fake.requests.slice(again).filter((r) => r.model === FAKE_TEXT_MODEL).every((r) => r.tools > 0)).toBe(true);
 
     // Remove: the file and the key Keel saved go.
     await page.goto("/settings/providers");

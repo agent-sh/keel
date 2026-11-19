@@ -61,7 +61,7 @@ function Editor({ m, provider, onDone }: { m: ListedModel; provider: string; onD
   const input = "h-7 w-full rounded-md border border-line-strong bg-raised px-2 text-ui outline-none focus:border-accent";
   const tri = (k: "tools" | "images", label: string) => (
     <label className="block"><span className="text-micro text-faint">{label}</span>
-      <select className={input} value={o[k]} onChange={(e) => setO({ ...o, [k]: e.target.value })}>
+      <select className={input} data-testid={`model-${k}`} value={o[k]} onChange={(e) => setO({ ...o, [k]: e.target.value })}>
         <option value="">as found</option><option value="true">yes</option><option value="false">no</option>
       </select>
     </label>

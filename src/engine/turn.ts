@@ -436,7 +436,9 @@ export class Engine {
     const system = await this.systemOf(session);
     const want = session.settings.effort;
     const effort = want && info.efforts.includes(want) ? want : info.efforts.includes("high") ? "high" : undefined;
-    return { provider, info, tools: toolsFor(info.family), system: system.text, systemSplit: system.split, effort };
+    // A model known to take no tool definitions (the owner, a probe, its listing
+    // or catalog said so) is sent none: it would refuse them or answer garbled.
+    return { provider, info, tools: info.tools === false ? [] : toolsFor(info.family), system: system.text, systemSplit: system.split, effort };
   }
 
   // A subagent on this machine runs on its parent's system prompt byte for byte

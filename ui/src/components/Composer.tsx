@@ -409,6 +409,11 @@ export function Composer({
           ))}
         </div>
       )}
+      {info?.tools === false && (
+        <div className="px-4 pt-1.5 text-caption text-warn" data-testid="model-no-tools" role="status">
+          {info.name} cannot use tools{info.known_from?.tools ? ` (${TOOLS_FROM[info.known_from.tools]})` : ""}: it answers in text only, without reading files or running commands.
+        </div>
+      )}
       {images.length > 0 && info && <Capability name={info.name} images={info.images} pdf={info.pdf} shots={images.some((a) => !a.file)} pdfs={images.some((a) => a.file?.media_type === "application/pdf")} />}
 
       <textarea
@@ -511,6 +516,9 @@ export function Composer({
     </>
   );
 }
+
+// Who said a model takes no tools (an owner's "yes" wins over the rest).
+const TOOLS_FROM = { owner: "you set it", probe: "the probe found it", listing: "its server says so", catalog: "the catalog says so" } as const;
 
 // What the chosen model does with what is attached, before Send: a model that
 // says yes, one that says no, and one whose listing says nothing are three
