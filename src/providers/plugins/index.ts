@@ -117,10 +117,21 @@ export class Plugins {
   onChange?: () => void;
 
   constructor(private stateDir: string, private capture: (e: unknown, ctx?: unknown) => void, private version = "0.1.0") {
-    // A hot reload builds a new registry in the same process: the previous
-    // one's plugins stop, so no process is left behind.
+    // A hot reload builds a new registry in the same process: it takes over the
+    // previous one's plugin processes, so a plugin whose entry did not change
+    // keeps running (and its requests in flight) and load() restarts only a
+    // changed one or stops a removed one. No process is left behind.
     const g = globalThis as { __keelPlugins?: Plugins };
-    g.__keelPlugins?.stopAll();
+    const prev = g.__keelPlugins;
+    if (prev && prev !== this) {
+      for (const [id, p] of prev.procs) {
+        if (p.state === "stopped") continue;
+        (p as any).capture = capture;
+        p.onChange = () => this.onChange?.();
+        this.procs.set(id, p);
+      }
+      prev.procs = new Map();
+    }
     g.__keelPlugins = this;
   }
 
