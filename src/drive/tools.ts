@@ -72,7 +72,7 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
           return fmt(e);
         }
       }),
-    t("session_send",
+    t("session_message",
       "Send a message to another session; an ended one is resumed with it. Held while the session waits on a prompt (answer it with keel__session_answer). A line starting with ! / or -, an @ mention, a $ mention for Codex, and any text for an ended session go to the owner to send.",
       { to: { type: "string" }, text: { type: "string" } }, ["to", "text"], false,
       async (i) => {
@@ -82,7 +82,7 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
           return fmt(e);
         }
       },
-      judging("session_send", async (i) => {
+      judging("session_message", async (i) => {
         const f = await target(i.to, i);
         if (!f.row.drive.send) throw new DriveError("NOT_AVAILABLE", `that session is ${f.row.state} and takes no message`);
         const { body, owner } = drive.judgeText(f, String(i.text ?? ""));

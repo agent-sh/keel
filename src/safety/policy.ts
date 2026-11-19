@@ -38,7 +38,7 @@ export type CallClass =
   // too wide (keel__spawn_on_machine:<machine>: one machine, not all of them).
   | { kind: "other"; grant?: string }
   // A message, answer or model command into another session. `resource` names
-  // the tool and the target (keel__session_send:claude:abc); `owner` says why
+  // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
   | { kind: "drive"; target: string; resource: string; shown: string; owner?: string }
   // A call its tool refused before it was judged (the reason is the result).
@@ -159,7 +159,7 @@ function decideShell(command: string, f: Facts): Decision {
 // session: only a standing answer for driving does (drive:<id>, drive:*). A
 // text its harness would act on, a text for an ended session and an allow on
 // another session's prompt are the owner's: no mode covers them, only a rule
-// naming the tool and the target (keel__session_send:<id>, or :*).
+// naming the tool and the target (keel__session_message:<id>, or :*).
 function decideDrive(c: Extract<CallClass, { kind: "drive" }>, f: Facts): Decision {
   if (f.mode === "read-only") return { deny: "This session is read-only: it does not drive other sessions." };
   const tools = f.rules.filter((r) => r.kind === "tool").map((r) => r.pattern);

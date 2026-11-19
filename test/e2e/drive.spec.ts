@@ -108,7 +108,7 @@ test("sessions elsewhere: list, read, send, held while a prompt is open", async 
     writeFileSync(stateFile, JSON.stringify(s2));
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
     const say = (text: string) => request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
-    const call = (to: string, text: string) => `Make exactly one tool call: mcp_call with {"tool":"keel__session_send","arguments":{"to":"${to}","text":"${text}"}}. Then reply with the tool's result word for word.`;
+    const call = (to: string, text: string) => `Make exactly one tool call: mcp_call with {"tool":"keel__session_message","arguments":{"to":"${to}","text":"${text}"}}. Then reply with the tool's result word for word.`;
     await say(call("codex:t-mig", "status please"));
     await turnsDone(request, session.id, 1);
     expect(state().queue.at(-1)).toMatchObject({ key: "t-mig", body: "status please" });

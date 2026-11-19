@@ -26,7 +26,7 @@ export const driveRoutes: RouteModule = (deps: Deps) => {
   registerHooks({
     system: () =>
       drive.configured()
-        ? "The owner's sessions of other harnesses (Claude Code, Codex, agy) can be listed, read and messaged: search_tools \"sessions\" finds keel__sessions_all, keel__session_read, keel__session_send, keel__session_answer, keel__session_model and keel__session_resume. Read a session before acting on it; never answer its prompts or message it unless the task asks for that."
+        ? "The owner's sessions of other harnesses (Claude Code, Codex, agy) can be listed, read and messaged: search_tools \"sessions\" finds keel__sessions_all, keel__session_read, keel__session_message, keel__session_answer, keel__session_model and keel__session_resume. Read a session before acting on it; never answer its prompts or message it unless the task asks for that."
         : "",
   });
 

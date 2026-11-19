@@ -33,16 +33,16 @@ test("an option decides the answer; a contradicting decision is refused; the has
 });
 
 test("driving: only a drive answer covers a send; what is the owner's no mode covers", () => {
-  const base: Facts = { mode: "ask", workspace: "/w", sandboxed: false, rules: [], tool: "keel__session_send" };
-  const send = { kind: "drive" as const, target: "claude:a", resource: "keel__session_send:claude:a", shown: "hi" };
+  const base: Facts = { mode: "ask", workspace: "/w", sandboxed: false, rules: [], tool: "keel__session_message" };
+  const send = { kind: "drive" as const, target: "claude:a", resource: "keel__session_message:claude:a", shown: "hi" };
   const rule = (pattern: string) => ({ id: pattern, kind: "tool" as const, pattern, scope: "/w", lifetime: "always" as const, created: 0 });
   expect(decide(send, base)).toHaveProperty("ask");
-  expect(decide(send, { ...base, rules: [rule("keel__session_send")] })).toHaveProperty("ask");
+  expect(decide(send, { ...base, rules: [rule("keel__session_message")] })).toHaveProperty("ask");
   expect(decide(send, { ...base, rules: [rule("drive:claude:a")] })).toEqual({ allow: true });
   expect(decide(send, { ...base, mode: "full-auto" })).toEqual({ allow: true });
   expect(decide(send, { ...base, mode: "read-only" })).toHaveProperty("deny");
   const owner = { ...send, owner: "a line that starts with !" };
   const d = decide(owner, { ...base, mode: "full-auto", rules: [rule("drive:*")] }) as any;
   expect(d.ask.risk).toBe("high");
-  expect(decide(owner, { ...base, rules: [rule("keel__session_send:*")] })).toEqual({ allow: true });
+  expect(decide(owner, { ...base, rules: [rule("keel__session_message:*")] })).toEqual({ allow: true });
 });
