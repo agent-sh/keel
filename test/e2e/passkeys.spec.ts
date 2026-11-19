@@ -2,7 +2,7 @@ import { expect, test, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, remoteHeaders, shoot } from "./shots.ts";
 
 const BASE = new URL(process.env.KEEL_URL ?? "http://127.0.0.1:47961");
 // A name that is not the desk but still a secure context: *.localhost is loopback in Chromium.
@@ -49,7 +49,7 @@ test("passkeys for remote approvals", async ({ page, browser, request }) => {
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: ws });
     writeFileSync(join(ws, "a.txt"), "a\n");
     const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
-    const loose = await request.put(`/api/sessions/${session.id}/permissions`, { headers: { "x-forwarded-for": "10.0.0.2" }, data: { mode: "full-auto" } });
+    const loose = await request.put(`/api/sessions/${session.id}/permissions`, { headers: await remoteHeaders(request), data: { mode: "full-auto" } });
     expect(loose.status()).toBe(428);
     expect((await loose.json()).presence.action).toBe(`perm:${session.id}`);
 

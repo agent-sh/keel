@@ -39,6 +39,7 @@ import { marksRoutes } from "./marks.ts";
 import { convoRoutes } from "./convo.ts";
 import { placesRoutes } from "./places.ts";
 import { terminalRoutes } from "./terminal.ts";
+import { remoteRoutes } from "./remote.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -49,6 +50,7 @@ export const routeModules: RouteModule[] = [
   checkpointRoutes,
   workspaceRoutes,
   pwaRoutes,
+  remoteRoutes,
   mcpRoutes,
   voiceRoutes, // after mcp: it bundles the say tool
   toolRoutes,

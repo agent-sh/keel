@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, remoteHeaders, shoot } from "./shots.ts";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
@@ -87,7 +87,7 @@ test("move to a folder, clone into a worktree, images, repositories, open", asyn
   // /api/open refuses what it must; a real open would start a program on the desktop.
   expect((await request.post("/api/open", { data: { session_id: session.id, path: "missing.txt" } })).status()).toBe(404);
   expect((await request.post("/api/open", { data: { session_id: session.id, path: "../first/notes.md" } })).status()).toBe(403);
-  expect((await request.post("/api/open", { data: { session_id: session.id, path: "dot.png" }, headers: { "x-forwarded-for": "10.0.0.2" } })).status()).toBe(403);
+  expect((await request.post("/api/open", { data: { session_id: session.id, path: "dot.png" }, headers: await remoteHeaders(request) })).status()).toBe(403);
 
   // Clone into a worktree of its own: a commit to branch from first.
   for (const args of [["add", "-A"], ["commit", "-qm", "first"]]) expect(spawnSync("git", args, { cwd: b }).status).toBe(0);

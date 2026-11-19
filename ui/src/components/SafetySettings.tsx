@@ -56,6 +56,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
         </SettingRow>
       </Card>
       <PasskeysCard />
+      <RemoteAccessCard />
       <TrustCard />
       <WorktreesCard />
       {children}
@@ -216,6 +217,34 @@ function PasskeysCard() {
             </p>
           )}
           {msg && <p className={msg.error ? "mt-2 text-caption text-danger" : "mt-2 text-caption text-ok"} data-testid="passkey-msg">{msg.text}</p>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// Remote access: a browser on another device opens this link once (through
+// the tunnel or proxy whose host is in KEEL_ALLOWED_HOSTS); without it, any
+// request through a proxy is refused. Shown at the desk only.
+function RemoteAccessCard() {
+  const [link, setLink] = useState<{ path: string; hosts: string[] } | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { api<{ path: string; hosts: string[] }>("/api/remote-access").then(setLink).catch(() => setLink(null)); }, []);
+  if (!link) return null;
+  const full = link.hosts[0] ? `https://${link.hosts[0]}${link.path}` : link.path;
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="px-1 text-ui font-medium text-muted">Remote access</h3>
+      <Card>
+        <div className="py-4" data-testid="remote-access">
+          <p className="text-ui text-muted">
+            A request through a tunnel or proxy, from another address or from another account on this machine needs this daemon's access token. Open this link once on the other device; it keeps the token as a cookie. Anyone with the link can use Keel as you.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <code className="min-w-0 flex-1 truncate rounded bg-code px-2 py-1 font-mono text-caption text-fg" data-testid="remote-access-link">{full.replace(/token=[^&]+/, "token=\u2026")}</code>
+            <button data-testid="remote-access-copy" onClick={() => navigator.clipboard.writeText(full).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, reportError)} className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">{copied ? "Copied" : "Copy link"}</button>
+          </div>
+          {!link.hosts.length && <p className="mt-2 text-caption text-faint">No tunnel host is set: start the daemon with KEEL_ALLOWED_HOSTS naming it.</p>}
         </div>
       </Card>
     </div>

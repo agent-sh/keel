@@ -3,11 +3,11 @@
 // Zed: "agent_servers": { "Keel": { "command": "keel", "args": ["acp"] } }.
 import { parseArgs } from "node:util";
 import { AcpBridge, type DaemonApi } from "../acp/bridge.ts";
-import { findDaemon } from "./client.ts";
+import { authHeaders, findDaemon } from "./client.ts";
 
 export function daemonApi(base: string): DaemonApi {
   const call = async (method: string, path: string, body?: unknown) => {
-    const r = await fetch(base + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const r = await fetch(base + path, { method, headers: { "content-type": "application/json", ...authHeaders() }, body: body === undefined ? undefined : JSON.stringify(body) });
     const b = (await r.json().catch(() => ({}))) as any;
     if (!r.ok) throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { code: r.status === 404 ? -32002 : -32603 });
     return b;
@@ -17,7 +17,7 @@ export function daemonApi(base: string): DaemonApi {
     send: (method, path, body) => call(method, path, body),
     frames: (on) =>
       new Promise((resolve, reject) => {
-        const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+        const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws", { headers: authHeaders() } as any);
         ws.onopen = () => {
           ws.send(JSON.stringify({ op: "resume", cursors: {} })); // events from now on
           resolve(() => ws.close());

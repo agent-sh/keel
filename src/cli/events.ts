@@ -3,7 +3,7 @@
 // session reads stored events by seq (ordered, never lost) and uses the
 // WebSocket for streamed text and to wake the next read early.
 import type { StoredEvent } from "../core/types.ts";
-import { clean, type Client } from "./client.ts";
+import { authHeaders, clean, type Client } from "./client.ts";
 
 const short = (v: unknown, n = 160) => {
   const s = clean(String(v ?? "")).replace(/\s+/g, " ").trim();
@@ -89,7 +89,7 @@ export class Follower {
   connect(): Promise<void> {
     return new Promise((resolve) => {
       try {
-        const ws = new WebSocket(this.c.base.replace(/^http/, "ws") + "/ws");
+        const ws = new WebSocket(this.c.base.replace(/^http/, "ws") + "/ws", { headers: authHeaders() } as any);
         this.ws = ws;
         // The daemon sends a socket events and deltas only after its resume;
         // events before now are read by seq, so this one asks from now on.

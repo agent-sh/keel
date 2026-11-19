@@ -8,6 +8,20 @@
 // separated, for a tunnel or reverse proxy): a DNS-rebinding page reaches
 // 127.0.0.1 under its own name and is refused by that. Clients that are not
 // browsers (the CLI, the phone app, fleet peers) send no Origin and pass.
+//
+// Who is calling comes from the socket, never from Host alone. A direct call on
+// loopback from a process of this daemon's own user (or root) is the owner's
+// machine. Everything else needs the access token (`<state>/api-token`, 0600):
+// a call through a proxy or tunnel (a forwarding header), a peer that is not
+// on loopback, and a loopback call from another account (its owner is read
+// from the kernel's socket table). The token comes as `Authorization: Bearer`,
+// the `keel_token` cookie (set by /api/remote/enter for a remote browser) or
+// `?token=` on /ws. The phone API (/v1, /pair) signs its own requests and the
+// portal carries a capability key in its path: neither needs it.
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+
 type Check = (req: Request, path: string) => Response | undefined;
 const checks: Check[] = [];
 export const addAdmission = (c: Check) => void checks.push(c);
@@ -47,17 +61,102 @@ export function originCheck(req: Request): Response | undefined {
   return undefined;
 }
 
+// ---- who is calling
+
+export const FORWARDING = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip", "cf-connecting-ip", "true-client-ip"];
+export const forwarded = (req: Request) => FORWARDING.some((h) => req.headers.has(h));
+
+const LOOPBACK_IP = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+// What admit learned about a request's socket, for isLocal (safety/presence.ts).
+const peers = new WeakMap<Request, { loopback: boolean }>();
+export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false;
+
+// The uid holding the other end of a loopback connection, from the kernel's
+// socket table; undefined where there is none (not Linux), null when the
+// connection is not in it. Reading the table costs milliseconds on a busy
+// machine, so an answer is kept for a second per client port.
+const uidCache = new Map<string, { uid: number | null; at: number }>();
+function peerUid(peerPort: number, serverPort: number): number | null | undefined {
+  const k = `${peerPort}:${serverPort}`;
+  const hit = uidCache.get(k);
+  if (hit && Date.now() - hit.at < 1000) return hit.uid;
+  const want = (p: number) => `:${p.toString(16).toUpperCase().padStart(4, "0")}`;
+  const local = want(peerPort), rem = want(serverPort);
+  let found = false;
+  let uid: number | null = null;
+  for (const t of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text: string;
+    try { text = readFileSync(t, "utf8"); } catch { continue; }
+    found = true;
+    for (const line of text.split("\n")) {
+      const f = line.trim().split(/\s+/);
+      if (f[1]?.endsWith(local) && f[2]?.endsWith(rem)) { uid = Number(f[7]); break; }
+    }
+    if (uid !== null) break;
+  }
+  if (!found) return undefined;
+  if (uidCache.size > 4096) uidCache.clear();
+  uidCache.set(k, { uid, at: Date.now() });
+  return uid;
+}
+
+let token = "";
+// The access token, made once per state folder with mode 0600.
+export function initAccess(stateDir: string) {
+  const p = join(stateDir, "api-token");
+  if (!existsSync(p)) writeFileSync(p, randomBytes(32).toString("base64url") + "\n", { mode: 0o600 });
+  chmodSync(p, 0o600);
+  token = readFileSync(p, "utf8").trim();
+}
+export const accessToken = () => token;
+
+const same = (a: string, b: string) => a.length === b.length && a.length > 0 && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+export function hasToken(req: Request, allowQuery = false): boolean {
+  if (!token) return false;
+  const auth = req.headers.get("authorization") ?? "";
+  if (auth.startsWith("Bearer ") && same(auth.slice(7).trim(), token)) return true;
+  const cookie = /(?:^|;\s*)keel_token=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1];
+  if (cookie && same(decodeURIComponent(cookie), token)) return true;
+  if (allowQuery) {
+    const q = new URL(req.url).searchParams.get("token");
+    if (q && same(q, token)) return true;
+  }
+  return false;
+}
+
+// Paths with their own authentication: the phone's signed API and its pair
+// page, the portal's capability key, the token exchange itself, and health.
+const OWN_AUTH = /^\/(v1\/|pair$|portal\/|fleet-portal\/|api\/remote\/enter$|api\/health$)/;
+
+export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined): Response | undefined {
+  const ip = srv?.requestIP(req);
+  const loopback = !!ip && LOOPBACK_IP.test(ip.address);
+  peers.set(req, { loopback: !!ip ? loopback : true });
+  if (OWN_AUTH.test(new URL(req.url).pathname)) return undefined;
+  let why: string | null = null;
+  if (forwarded(req)) why = "a request through a proxy or tunnel";
+  else if (ip && !loopback) why = `a request from ${ip.address}`;
+  else if (ip && srv?.port) {
+    const uid = peerUid(ip.port, srv.port);
+    const me = process.getuid?.();
+    if (uid === null) why = "a connection the kernel does not list";
+    else if (uid !== undefined && me !== undefined && uid !== me && uid !== 0) why = `a process of another account (uid ${uid})`;
+  }
+  if (!why || hasToken(req, new URL(req.url).pathname === "/ws")) return undefined;
+  return refuse(`${why} needs the access token (Settings > Safety > Remote access)`);
+}
+
 // The portal proxies a session's own dev server under a capability key in its
 // path, served sandboxed (opaque origin, no access to the API): its pages send
 // Origin "null" and must still load. Only the Host check applies there.
 const PORTAL = /^\/(fleet-)?portal\//;
 
-export function admit(req: Request): Response | undefined {
-  const path0 = new URL(req.url).pathname;
-  const guard = PORTAL.test(path0) ? (allowedHost(req.headers.get("host")) ? undefined : refuse("host not allowed")) : originCheck(req);
-  if (guard) return guard;
-  if (!checks.length) return undefined;
+export function admit(req: Request, srv?: Bun.Server<unknown>): Response | undefined {
   const path = new URL(req.url).pathname;
+  const guard = PORTAL.test(path) ? (allowedHost(req.headers.get("host")) ? undefined : refuse("host not allowed")) : originCheck(req);
+  if (guard) return guard;
+  const who = callerCheck(req, srv);
+  if (who) return who;
   for (const c of checks) {
     const r = c(req, path);
     if (r) return r;

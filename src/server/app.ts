@@ -7,7 +7,7 @@ import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, running, stopJob } from "../tools/jobs.ts";
-import { admit, originCheck } from "./admission.ts";
+import { admit, initAccess } from "./admission.ts";
 import { Live } from "./live.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
@@ -74,6 +74,7 @@ const bad = (message: string, status = 400) => json({ error: message }, status);
 
 export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }, modules: RouteModule[] = []) {
   const { store, bus, engine, providers, errors } = deps;
+  initAccess(store.stateDir);
   // Bun's publish writes a frame to every subscribed tab natively, serialized once.
   const live = new Live(store, bus, (topic, data) => server.publish(topic, data));
 
@@ -89,7 +90,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       let slow = false;
       const timer = setTimeout(() => { slow = true; srv.timeout(req, 0); }, SLOW_MS);
       try {
-        const refused = admit(req);
+        const refused = admit(req, srv);
         if (refused) return refused;
         return await h(req, srv);
       } catch (e) {
@@ -249,7 +250,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     fetch(req, srv) {
       const url = new URL(req.url);
       if (url.pathname === "/ws") {
-        const refused = originCheck(req);
+        const refused = admit(req, srv);
         if (refused) return refused;
         if (srv.upgrade(req)) return;
         return bad("websocket upgrade failed");

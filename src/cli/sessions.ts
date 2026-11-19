@@ -4,7 +4,7 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
-import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError } from "./client.ts";
+import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
 import { exitOf, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watch, worktreeArg } from "./run.ts";
 
@@ -196,7 +196,7 @@ const send = command("send", SEND_USAGE, {
   const draft = await c.get<any>(`/api/sessions/${s.id}/draft`).catch(() => ({ attachments: [] }));
   const held: any[] = [];
   for (const f of draft.attachments ?? []) {
-    const r = await fetch(`${c.base}/api/sessions/${s.id}/draft/files/${f.id}`);
+    const r = await fetch(`${c.base}/api/sessions/${s.id}/draft/files/${f.id}`, { headers: authHeaders() });
     if (r.ok) held.push({ type: "image", media_type: f.mime, data: Buffer.from(await r.arrayBuffer()).toString("base64") });
   }
   const body = [draft.text, text].filter((t) => t?.trim()).join("\n\n") || "(see the attached files)";

@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { unitTemplate } from "../admin/unit.ts";
 import { lockHolder } from "../admin/daemon.ts";
 import { restore as restoreBackup } from "../admin/storage.ts";
-import { findDaemon } from "./client.ts";
+import { authHeaders, findDaemon } from "./client.ts";
 
 const stateDirOf = (v?: string) => resolve(v ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
 // --url, KEEL_URL, the address the state folder's daemon recorded, the default bind.
@@ -23,7 +23,7 @@ const time = (ms: number) => new Date(ms).toLocaleString(undefined, { hourCycle:
 async function call(url: string, path: string, init?: RequestInit): Promise<any> {
   let r: Response;
   try {
-    r = await fetch(url + path, { ...init, headers: { "content-type": "application/json" } });
+    r = await fetch(url + path, { ...init, headers: { "content-type": "application/json", ...authHeaders() } });
   } catch {
     throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
   }

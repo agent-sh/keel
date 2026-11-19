@@ -35,6 +35,10 @@ export function findDaemon(v: { url?: string; "state-dir"?: string }): Found {
   return { url: DEFAULT_URL, from: "default", stateDir };
 }
 
+// A daemon reached through a tunnel or from another account needs its access
+// token (KEEL_TOKEN, from the daemon's <state>/api-token).
+export const authHeaders = (): Record<string, string> => (process.env.KEEL_TOKEN ? { authorization: `Bearer ${process.env.KEEL_TOKEN}` } : {});
+
 export class Client {
   constructor(readonly base: string) {}
 
@@ -43,7 +47,7 @@ export class Client {
     try {
       r = await fetch(this.base + path, {
         method,
-        headers: { "content-type": raw?.type ?? "application/json" },
+        headers: { "content-type": raw?.type ?? "application/json", ...authHeaders() },
         body: raw ? raw.body : body === undefined ? undefined : JSON.stringify(body),
       });
     } catch {

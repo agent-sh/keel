@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
 export const SHOTS = process.env.KEEL_SHOTS ?? `${process.env.HOME}/.cache/keel-work/bun/shots`;
@@ -29,4 +29,11 @@ export async function openPanel(page: Page, id: string) {
   if (await hand.isVisible()) return hand.click();
   await page.getByTestId("panel-menu").click();
   await page.getByTestId(`panel-pick-${id}`).click();
+}
+
+// Headers of a remote device: a proxy's forwarding header and the daemon's
+// access token (read at the desk), so the request reaches the route as remote.
+export async function remoteHeaders(request: APIRequestContext, base = ""): Promise<Record<string, string>> {
+  const { path } = await (await request.get(`${base}/api/remote-access`)).json();
+  return { "x-forwarded-for": "10.0.0.2", authorization: `Bearer ${new URL(path, "http://x").searchParams.get("token")}` };
 }

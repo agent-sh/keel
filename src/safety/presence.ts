@@ -10,6 +10,7 @@ import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
 } from "@simplewebauthn/server";
 import type { Store } from "../core/store.ts";
+import { forwarded, peerIsRemote } from "../server/admission.ts";
 
 const TIMEOUT = 300_000; // the upstream ceremony timeout; receipts last as long
 const SCHEMA = `CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, rp_id TEXT NOT NULL, origin TEXT NOT NULL, public_key TEXT NOT NULL, counter INTEGER NOT NULL, transports TEXT, label TEXT, created INTEGER NOT NULL, used INTEGER);`;
@@ -48,7 +49,7 @@ export function forwardedStanding(req: Request): Standing | null {
 export function isLocal(req: Request): boolean {
   const fwd = forwardedStanding(req);
   if (fwd) return fwd.local;
-  if (req.headers.get("x-forwarded-for") || req.headers.get("forwarded")) return false;
+  if (forwarded(req) || peerIsRemote(req)) return false;
   const host = (req.headers.get("host") ?? "").replace(/:\d+$/, "").toLowerCase();
   const local = (h: string) => h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
   if (!local(host)) return false;

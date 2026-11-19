@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, remoteHeaders, shoot } from "./shots.ts";
 
 // Two daemons on this machine stand in for two machines: this one (KEEL_URL)
 // forwards to the other (KEEL_PEER_URL).
@@ -27,7 +27,10 @@ test("fleet forwarder keeps the caller's presence standing", async ({ page, brow
   const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
   test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
-  for (const m of (await (await request.get("/api/fleet/machines")).json()).machines) if (m.daemon_url === PEER) await request.delete(`/api/fleet/machines/${m.id}`);
+  // Start clean: no old record of that daemon, nor sessions placed on one.
+  const old = (await (await request.get("/api/fleet/machines")).json()).machines.filter((m: any) => m.daemon_url === PEER).map((m: any) => m.id);
+  for (const s of (await (await request.get("/api/sessions")).json()).sessions) if (old.includes(s.machine)) await request.delete(`/api/sessions/${s.id}`);
+  for (const id of old) await request.delete(`/api/fleet/machines/${id}`);
   mkdirSync(ROOT, { recursive: true });
   const paired = await request.post("/api/fleet/machines", { data: { name: "presence-peer", daemon_url: PEER, workspace_root: ROOT } });
   expect(paired.status()).toBe(201);
@@ -49,13 +52,13 @@ test("fleet forwarder keeps the caller's presence standing", async ({ page, brow
     await expect(phone.getByTestId("passkey-msg")).toHaveText("Passkey enrolled.");
 
     // A remote device through the forwarder: the far daemon asks for the passkey.
-    const loose = await request.put(fwd, { headers: { "x-forwarded-for": "10.0.0.2" }, data: { mode: "full-auto" } });
+    const loose = await request.put(fwd, { headers: await remoteHeaders(request), data: { mode: "full-auto" } });
     expect(loose.status()).toBe(428);
     expect((await loose.json()).presence.action).toBe(`perm:${session.id}`);
     expect(await farMode()).toBe("ask");
     // A standing written by hand, not by the link, counts as remote there too.
     const forged = await request.put(`${PEER}/api/sessions/${session.id}/permissions`, {
-      headers: { "x-forwarded-for": "10.0.0.2", "x-keel-standing": JSON.stringify({ local: true, enrolled: false }), "x-keel-standing-key": "guess" },
+      headers: { ...(await remoteHeaders(request, PEER)), "x-keel-standing": JSON.stringify({ local: true, enrolled: false }), "x-keel-standing-key": "guess" },
       data: { mode: "full-auto" },
     });
     expect(forged.status()).toBe(428);
