@@ -1,5 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -73,6 +74,16 @@ test("session draft", async ({ page, request }) => {
   // Bad input is refused with a reason.
   expect((await request.post(`/api/sessions/${a}/draft`, { data: { images: [{ mime: "application/pdf", data: PNG }] } })).status()).toBe(400);
   expect((await request.post(`/api/sessions/nope/draft`, { data: { text: "x" } })).status()).toBe(404);
+
+  // Deleting a session takes its unsent draft (text and files) with it.
+  const gone = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Draft then delete" } })).json()).session.id;
+  await request.post(`/api/sessions/${gone}/draft`, { data: { text: "unsent words", images: [{ mime: "image/png", data: PNG }] } });
+  expect((await request.delete(`/api/sessions/${gone}`)).ok()).toBe(true);
+  const { state_dir } = await (await request.get("/api/daemon")).json();
+  const db = new DatabaseSync(join(state_dir, "keel.db"), { readOnly: true });
+  const left = db.prepare("SELECT (SELECT COUNT(*) FROM drafts WHERE session_id = ?) + (SELECT COUNT(*) FROM draft_files WHERE session_id = ?) AS n").get(gone, gone) as { n: number };
+  db.close();
+  expect(left.n).toBe(0);
 
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;

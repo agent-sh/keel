@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
@@ -52,6 +53,18 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await expect(panel.getByTestId("backup-row")).toHaveCount(Math.min(before + 1, 5));
   await panel.getByTestId("backup-now").scrollIntoViewIfNeeded();
   await shoot(page, "storage-03-policy-backups");
+
+  // A damaged manifest marks that one backup; the others stay listed.
+  await panel.getByTestId("backup-now").click();
+  await expect.poll(async () => (await (await request.get("/api/backups")).json()).backups.length).toBeGreaterThan(1);
+  const damaged = (await (await request.get("/api/backups")).json()).backups[0];
+  writeFileSync(join(damaged.path, "manifest.json"), '{"created_ms": 1,');
+  await page.reload();
+  await expect(panel.getByTestId("backup-unreadable")).toHaveCount(1);
+  expect(await panel.getByTestId("backup-row").count()).toBeGreaterThan(1);
+  await panel.getByTestId("backup-unreadable").scrollIntoViewIfNeeded();
+  await shoot(page, "storage-03b-backup-unreadable");
+  rmSync(damaged.path, { recursive: true, force: true });
 
   // A session that wrote a file has checkpoints: its share is shown and dropping them frees the rewind data.
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;

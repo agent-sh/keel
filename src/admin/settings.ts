@@ -10,6 +10,10 @@ const sections = new Map<string, Section>();
 const listeners = new Set<(s: Record<string, any>) => void>();
 let file = "";
 let current: Record<string, any> = {};
+// Set when settings.json exists but cannot be read: the defaults are shown, and
+// no ordinary save may replace the file (it still holds the owner's other
+// sections). resetSettings() moves it aside first.
+let unreadable: string | undefined;
 
 export function registerSettings(name: string, defaults: Record<string, unknown>, check: (v: any) => string | undefined) {
   sections.set(name, { defaults, check });
@@ -17,12 +21,31 @@ export function registerSettings(name: string, defaults: Record<string, unknown>
 
 export function loadSettings(stateDir: string, onError: (e: unknown) => void) {
   file = join(stateDir, "settings.json");
+  unreadable = undefined;
   try {
     current = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    if (!current || typeof current !== "object" || Array.isArray(current)) throw new Error("it is not a JSON object");
   } catch (e) {
-    onError(Object.assign(new Error(`settings.json cannot be read: ${(e as Error).message}; the defaults are used`), { cause: e }));
+    unreadable = (e as Error).message;
+    onError(Object.assign(new Error(`settings.json cannot be read: ${unreadable}; the defaults are used and saving is refused until it is fixed or reset`), { cause: e }));
     current = {};
   }
+}
+
+// Why settings.json could not be read, when it could not.
+export const settingsUnreadable = () => unreadable;
+
+// Moves an unreadable settings.json aside (its bytes kept as
+// settings.json.unreadable-<time>) so the defaults can be saved again.
+export function resetSettings(): { ok: true; moved_to?: string } {
+  if (unreadable === undefined) return { ok: true };
+  const aside = `${file}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  if (existsSync(file)) renameSync(file, aside);
+  unreadable = undefined;
+  current = {};
+  const all = settings();
+  for (const f of listeners) f(all);
+  return { ok: true, moved_to: aside };
 }
 
 // Every section with its defaults filled in.
@@ -44,7 +67,8 @@ function merge(target: any, patch: any): any {
   return out;
 }
 
-export function patchSettings(patch: unknown): { ok: true; settings: Record<string, any> } | { ok: false; error: string } {
+export function patchSettings(patch: unknown): { ok: true; settings: Record<string, any> } | { ok: false; error: string; status?: number } {
+  if (unreadable !== undefined) return { ok: false, status: 409, error: `settings.json cannot be read (${unreadable}); fix the file and restart, or reset it, before saving` };
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) return { ok: false, error: "the body must be a JSON object" };
   for (const k of Object.keys(patch)) if (!sections.has(k)) return { ok: false, error: `unknown settings section ${k}` };
   const next = merge(current, patch);

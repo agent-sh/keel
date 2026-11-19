@@ -19,17 +19,35 @@ type Report = {
   orphan_checkpoints: number;
 };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
-type Backup = { name: string; path: string; created_ms: number; reason: string; sessions: number; events: number; bytes: number };
-type Candidate = { id: string; title: string; updated_ms: number; bytes: number };
+type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string };
+type Candidate = { id: string; title: string; updated_ms: number; bytes: number; family_updated_ms: number; subagents: { id: string; title: string }[] };
 
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
 
 export const useSettings = () => {
   const [s, setS] = useState<Record<string, any> | null>(null);
-  useEffect(() => { api<{ settings: Record<string, any> }>("/api/settings").then((r) => setS(r.settings)).catch(reportError); }, []);
+  const [unreadable, setUnreadable] = useState<string | undefined>();
+  useEffect(() => { api<{ settings: Record<string, any>; unreadable?: string }>("/api/settings").then((r) => (setS(r.settings), setUnreadable(r.unreadable))).catch(reportError); }, []);
   const patch = useCallback((p: Record<string, any>) => api<{ settings: Record<string, any> }>("/api/settings", { method: "PATCH", body: JSON.stringify(p) }).then((r) => setS(r.settings)), []);
-  return [s, patch] as const;
+  const reset = useCallback(() => api<{ settings: Record<string, any>; moved_to?: string }>("/api/settings/reset", { method: "POST" }).then((r) => (setS(r.settings), setUnreadable(undefined), r.moved_to)), []);
+  return [s, patch, unreadable, reset] as const;
 };
+
+// settings.json could not be read: what is shown are the defaults, and saving
+// stays refused until the file is fixed (and the daemon restarted) or reset.
+function UnreadableSettings({ why, onReset }: { why: string; onReset: () => Promise<string | undefined> }) {
+  const [moved, setMoved] = useState<string | undefined>();
+  return (
+    <div role="alert" data-testid="settings-unreadable" className="flex items-start gap-3 rounded-lg border border-danger/40 bg-danger/10 px-5 py-4 text-ui">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">settings.json cannot be read; these are the defaults</div>
+        <div className="mt-0.5 text-muted">{why}. Saving is off so the file keeps your other settings. Fix it and restart the daemon, or reset: the file moves aside, kept as is.</div>
+        {moved && <div className="mt-1 truncate font-mono text-caption text-faint" title={moved}>{moved}</div>}
+      </div>
+      <button type="button" className={btn} onClick={() => onReset().then(setMoved).catch(reportError)}>Reset</button>
+    </div>
+  );
+}
 
 // A number of days, or Never when empty.
 function DaysField({ value, onSave, label, testid }: { value: number | null; onSave: (v: number | null) => Promise<unknown>; label: string; testid?: string }) {
@@ -87,14 +105,15 @@ export function StoragePanel() {
   const [done, setDone] = useState<string | null>(null);
   const [cpDone, setCpDone] = useState<string | null>(null);
   const [openFolder, setOpenFolder] = useState<string | null>(null);
-  const [backups, setBackups] = useState<Backup[]>([]);
-  const [settings, patch] = useSettings();
+  const [backups, setBackups] = useState<Backup[] | null>(null);
+  const [backupsFailed, setBackupsFailed] = useState(false);
+  const [settings, patch, unreadable, resetSettings] = useSettings();
 
   const load = useCallback((refresh = false) => {
     setBusy(true);
     return Promise.all([
       api<Report>(`/api/storage${refresh ? "?refresh=1" : ""}`).then(setR),
-      api<{ backups: Backup[] }>("/api/backups").then((b) => setBackups(b.backups)),
+      api<{ backups: Backup[] }>("/api/backups").then((b) => (setBackups(b.backups), setBackupsFailed(false)), (e) => { setBackupsFailed(true); throw e; }),
     ]).catch(reportError).finally(() => setBusy(false));
   }, []);
   useEffect(() => { load(true); }, [load]);
@@ -108,10 +127,11 @@ export function StoragePanel() {
   };
   const remove = async () => {
     if (!found?.sessions.length) return;
-    const ok = await confirmAction({ title: `Delete ${found.sessions.length} archived sessions?`, body: `Their transcripts and spilled output go, ${fmtBytes(found.bytes)} in all. This cannot be undone; a backup can bring them back.`, action: "Delete", danger: true });
+    const subs = found.sessions.reduce((n, s) => n + s.subagents.length, 0);
+    const ok = await confirmAction({ title: `Delete ${found.sessions.length} archived sessions?`, body: `Their transcripts and spilled output go${subs ? `, with ${subs} subagent sessions` : ""}, ${fmtBytes(found.bytes)} in all. A family where a subagent works or changed since this list is skipped. This cannot be undone; a backup can bring them back.`, action: "Delete", danger: true });
     if (!ok) return;
     const x = await api<{ deleted: string[]; skipped: { why: string }[] }>("/api/storage/cleanup", {
-      method: "POST", body: JSON.stringify({ older_than_days: found.days, sessions: found.sessions.map((s) => ({ id: s.id, updated_ms: s.updated_ms })) }),
+      method: "POST", body: JSON.stringify({ older_than_days: found.days, sessions: found.sessions.map((s) => ({ id: s.id, updated_ms: s.updated_ms, family_updated_ms: s.family_updated_ms })) }),
     });
     setDone(`Deleted ${x.deleted.length}${x.skipped.length ? `; ${x.skipped.length} skipped (${[...new Set(x.skipped.map((s) => s.why))].join(", ")})` : ""}.`);
     setFound(null);
@@ -130,6 +150,7 @@ export function StoragePanel() {
   const other = r.plugins_bytes + r.reports_bytes;
   return (
     <div className="flex flex-col gap-4" data-testid="storage-panel">
+      {unreadable !== undefined && <UnreadableSettings why={unreadable} onReset={resetSettings} />}
       <Card>
         <div className="flex items-center gap-3 border-b border-line py-4">
           <div className="min-w-0 flex-1">
@@ -168,6 +189,7 @@ export function StoragePanel() {
               {found.sessions.slice(0, 12).map((s) => (
                 <div key={s.id} className="flex h-9 items-center gap-3 border-b border-line/60 px-3 text-ui last:border-0">
                   <span className="min-w-0 flex-1 truncate">{s.title || "Untitled"}</span>
+                  {s.subagents.length > 0 && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted" data-testid="cleanup-subagents" title={s.subagents.map((x) => x.title || x.id).join("\n")}>+{s.subagents.length} subagent{s.subagents.length > 1 ? "s" : ""}</span>}
                   <span className="text-caption tabular-nums text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span>
                   <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(s.bytes)}</span>
                 </div>
@@ -204,17 +226,24 @@ export function StoragePanel() {
         <div className="flex items-center gap-3 border-b border-line py-4">
           <div className="min-w-0 flex-1">
             <div className="text-base font-medium">Backups</div>
-            <div className="mt-0.5 text-ui text-muted">A checked copy of the conversations and settings{settings?.backup.before_restart ? ", made before every restart" : ""}. The last {settings?.backup.keep ?? 5} are kept. Restore with <span className="font-mono text-caption">keel restore NAME</span> while the daemon is stopped.</div>
+            <div className="mt-0.5 text-ui text-muted">A checked copy of the conversations, their attached files and the settings{settings?.backup.before_restart ? ", made before every restart" : ""}. The last {settings?.backup.keep ?? 5} are kept. Restore with <span className="font-mono text-caption">keel restore NAME</span> while the daemon is stopped.</div>
           </div>
           <button type="button" className={btn} data-testid="backup-now" onClick={() => api("/api/backups", { method: "POST" }).then(() => load(true)).catch(reportError)}>Back up now</button>
         </div>
-        {backups.length === 0 && <p className="py-4 text-ui text-faint">No backups yet.</p>}
-        {backups.map((b) => (
+        {backupsFailed && <p className="py-4 text-ui text-danger" data-testid="backups-failed">The list of backups could not be read.</p>}
+        {!backupsFailed && backups?.length === 0 && <p className="py-4 text-ui text-faint">No backups yet.</p>}
+        {backups?.map((b) => (
           <div key={b.name} className="flex h-10 items-center gap-3 border-b border-line/60 text-ui last:border-0" data-testid="backup-row">
-            <span className="tabular-nums">{when(b.created_ms)}</span>
-            <span className="text-caption text-faint">{b.reason}</span>
-            <span className="ml-auto text-caption tabular-nums text-muted">{b.sessions} sessions</span>
-            <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(b.bytes)}</span>
+            <span className="tabular-nums">{b.created_ms ? when(b.created_ms) : b.name}</span>
+            {b.unreadable ? (
+              <span className="min-w-0 truncate text-caption text-danger" title={b.unreadable} data-testid="backup-unreadable">manifest unreadable; not checked, never pruned</span>
+            ) : (
+              <>
+                <span className="text-caption text-faint">{b.reason}</span>
+                <span className="ml-auto text-caption tabular-nums text-muted">{b.sessions} sessions</span>
+                <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(b.bytes ?? 0)}</span>
+              </>
+            )}
           </div>
         ))}
       </Card>

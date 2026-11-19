@@ -3,7 +3,9 @@
 //
 // GET   /api/bootstrap                     build id, pid, draining, folders, settings
 // GET   /api/settings                      { settings }
-// PATCH /api/settings                      a JSON merge patch -> { settings }; 400 leaves nothing changed
+// PATCH /api/settings                      a JSON merge patch -> { settings }; 400 leaves nothing changed,
+//                                          409 while settings.json cannot be read (its bytes are kept)
+// POST  /api/settings/reset                moves an unreadable settings.json aside -> { moved_to, settings }
 // GET   /api/storage?refresh=1             sizes by kind and by session
 // POST  /api/storage/cleanup               { older_than_days, sessions? } | { leftovers: true }
 // GET   /api/backups                       { backups }
@@ -18,7 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
 import { acquireLock, Daemon } from "../../admin/daemon.ts";
-import { loadSettings, onSettings, patchSettings, settings } from "../../admin/settings.ts";
+import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
@@ -101,11 +103,14 @@ export const adminRoutes: RouteModule = (deps) => {
     },
 
     "/api/settings": {
-      GET: () => json({ settings: settings() }),
+      GET: () => json({ settings: settings(), ...(settingsUnreadable() !== undefined ? { unreadable: settingsUnreadable() } : {}) }),
       PATCH: async (req: Request) => {
         const r = patchSettings(await body(req));
-        return r.ok ? json({ settings: r.settings }) : json({ error: r.error }, 400);
+        return r.ok ? json({ settings: r.settings }) : json({ error: r.error }, r.status ?? 400);
       },
+    },
+    "/api/settings/reset": {
+      POST: () => json({ ...resetSettings(), settings: settings() }),
     },
 
     "/api/storage": {
@@ -121,8 +126,8 @@ export const adminRoutes: RouteModule = (deps) => {
           const list = storage.candidates(days);
           return json({ sessions: list, bytes: list.reduce((n, s) => n + s.bytes, 0), deleted: [], skipped: [] });
         }
-        if (!Array.isArray(b.sessions) || b.sessions.some((s: any) => typeof s?.id !== "string" || typeof s?.updated_ms !== "number")) {
-          return json({ error: "sessions is a list of { id, updated_ms } from the listing" }, 400);
+        if (!Array.isArray(b.sessions) || b.sessions.some((s: any) => typeof s?.id !== "string" || typeof s?.updated_ms !== "number" || (s.family_updated_ms !== undefined && typeof s.family_updated_ms !== "number"))) {
+          return json({ error: "sessions is a list of { id, updated_ms, family_updated_ms } from the listing" }, 400);
         }
         const r = await storage.cleanup(days, b.sessions);
         return json({ sessions: storage.candidates(days), ...r });

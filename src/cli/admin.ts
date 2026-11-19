@@ -117,10 +117,10 @@ const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--ur
     const days = Number(v["older-than"]);
     if (!Number.isInteger(days) || days < 1) throw new Error("--older-than is a whole number of days");
     const list = await call(url, "/api/storage/cleanup", { method: "POST", body: JSON.stringify({ older_than_days: days }) });
-    for (const s of list.sessions) console.log(`${time(s.updated_ms)}  ${mb(s.bytes).padStart(9)}  ${s.title || s.id}`);
+    for (const s of list.sessions) console.log(`${time(s.updated_ms)}  ${mb(s.bytes).padStart(9)}  ${s.title || s.id}${s.subagents?.length ? `  (with ${s.subagents.length} subagent sessions)` : ""}`);
     console.log(`${list.sessions.length} archived sessions, ${mb(list.bytes)}`);
     if (!v.yes || !list.sessions.length) return (v.yes || !list.sessions.length ? 0 : console.log("run again with --yes to delete them"), 0);
-    const r = await call(url, "/api/storage/cleanup", { method: "POST", body: JSON.stringify({ older_than_days: days, sessions: list.sessions.map((s: any) => ({ id: s.id, updated_ms: s.updated_ms })) }) });
+    const r = await call(url, "/api/storage/cleanup", { method: "POST", body: JSON.stringify({ older_than_days: days, sessions: list.sessions.map((s: any) => ({ id: s.id, updated_ms: s.updated_ms, family_updated_ms: s.family_updated_ms })) }) });
     console.log(`deleted ${r.deleted.length}${r.skipped.length ? `, skipped ${r.skipped.length}: ${r.skipped.map((s: any) => s.why).join(", ")}` : ""}`);
     return 0;
   });
@@ -133,7 +133,7 @@ const backup = wrap("keel backup [--url URL]  A checked copy of the database and
 
 const backups = wrap("keel backups [--url URL] [--json]", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups");
-  out(r, !!v.json, () => r.backups.map((b: any) => `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})`).join("\n") || "no backups");
+  out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})`).join("\n") || "no backups");
   return 0;
 });
 

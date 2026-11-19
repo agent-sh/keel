@@ -8,6 +8,14 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS drafts (session_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', origin TEXT, updated_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS draft_files (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, origin TEXT, added_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS draft_files_session ON draft_files(session_id, added_ms);
+-- A deleted session takes its unsent draft with it, whichever path deleted it;
+-- the sweep below clears what was left before this trigger existed.
+CREATE TRIGGER IF NOT EXISTS drafts_session_gone AFTER DELETE ON sessions BEGIN
+  DELETE FROM drafts WHERE session_id = OLD.id;
+  DELETE FROM draft_files WHERE session_id = OLD.id;
+END;
+DELETE FROM drafts WHERE session_id NOT IN (SELECT id FROM sessions);
+DELETE FROM draft_files WHERE session_id NOT IN (SELECT id FROM sessions);
 `;
 
 const IMAGE = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);

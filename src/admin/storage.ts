@@ -5,7 +5,7 @@
 // the durable state that are checked when written and can be restored.
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -194,7 +194,21 @@ export class Storage {
     this.bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle" } });
   }
 
-  // Archived sessions archived at least `days` ago (subagents' go with their parent).
+  // A session's descendants (subagents and theirs), nearest first.
+  private descendants(id: string) {
+    return this.store.db
+      .query<{ id: string; title: string; updated: number; phase: string; bytes: number }, [string]>(
+        `WITH RECURSIVE d(id) AS (SELECT id FROM sessions WHERE parent_id = ?1 UNION SELECT s.id FROM sessions s JOIN d ON s.parent_id = d.id)
+         SELECT s.id, s.title, s.updated, s.phase, COALESCE((SELECT SUM(length(data)) FROM events e WHERE e.session_id = s.id), 0) AS bytes
+         FROM sessions s JOIN d ON d.id = s.id`,
+      )
+      .all(id);
+  }
+
+  // Archived sessions archived at least `days` ago, each with the subagent
+  // sessions that go with it. `family_updated_ms` is the latest change in the
+  // whole family: the delete compares it, so work started in a child after the
+  // list was made saves the family.
   candidates(days: number) {
     const cut = Date.now() - days * DAY;
     return this.store.db
@@ -203,11 +217,20 @@ export class Storage {
          FROM sessions s WHERE s.archived = 1 AND s.parent_id IS NULL AND s.updated <= ? ORDER BY s.updated`,
       )
       .all(cut)
-      .map((r) => ({ id: r.id, title: r.title, updated_ms: r.updated, bytes: r.bytes }));
+      .map((r) => {
+        const kids = this.descendants(r.id);
+        return {
+          id: r.id, title: r.title, updated_ms: r.updated, bytes: r.bytes + kids.reduce((n, k) => n + k.bytes, 0),
+          family_updated_ms: Math.max(r.updated, ...kids.map((k) => k.updated)),
+          subagents: kids.map((k) => ({ id: k.id, title: k.title, updated_ms: k.updated })),
+        };
+      });
   }
 
-  // Deletes the listed sessions that are still that old and unchanged since listed.
-  async cleanup(days: number, list: { id: string; updated_ms: number }[]) {
+  // Deletes the listed sessions that are still that old and unchanged since
+  // listed, each with its subagents. A family where any session is working, or
+  // changed since the list, is skipped whole before anything is interrupted.
+  async cleanup(days: number, list: { id: string; updated_ms: number; family_updated_ms?: number }[]) {
     const now = new Map(this.candidates(days).map((c) => [c.id, c]));
     const deleted: string[] = [];
     const skipped: { id: string; why: string }[] = [];
@@ -215,8 +238,14 @@ export class Storage {
       const c = now.get(want.id);
       if (!c) { skipped.push({ id: want.id, why: this.store.session(want.id) ? "no longer archived that long" : "already gone" }); continue; }
       if (c.updated_ms !== want.updated_ms) { skipped.push({ id: want.id, why: "changed since it was listed" }); continue; }
-      // Its subagents' sessions go with it.
-      for (const sub of this.store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE parent_id = ?").all(want.id)) await this.removeSession(sub.id);
+      const kids = this.descendants(want.id);
+      const live = kids.find((k) => k.phase === "working" || this.engine.isRunning(k.id));
+      if (live || this.engine.isRunning(want.id)) { skipped.push({ id: want.id, why: live ? `its subagent ${live.title || live.id} is working` : "a turn is running" }); continue; }
+      const listed = want.family_updated_ms ?? want.updated_ms;
+      const moved = kids.find((k) => k.updated > listed);
+      if (moved) { skipped.push({ id: want.id, why: `its subagent ${moved.title || moved.id} changed since it was listed` }); continue; }
+      // Deepest first, so no child outlives its parent.
+      for (const sub of kids.reverse()) await this.removeSession(sub.id);
       await this.removeSession(want.id);
       deleted.push(want.id);
     }
@@ -273,6 +302,19 @@ export class Storage {
         copyFileSync(join(this.dir, f), join(tmp, f));
         files.push(f);
       }
+      // Uploaded files the prompts refer to (<state>/attachments/<sha256>/<name>).
+      // They never change once written, so a hard link is a full copy at no
+      // extra space; another filesystem gets a real copy.
+      const att = join(this.dir, "attachments");
+      if (existsSync(att)) for (const id of readdirSync(att)) {
+        if (!/^[0-9a-f]{64}$/.test(id)) continue;
+        for (const name of readdirSync(join(att, id))) {
+          mkdirSync(join(tmp, "attachments", id), { recursive: true });
+          const from = join(att, id, name), to = join(tmp, "attachments", id, name);
+          try { linkSync(from, to); } catch { copyFileSync(from, to); }
+          files.push(`attachments/${id}/${name}`);
+        }
+      }
       const check = verify(tmp);
       if (!check.ok) throw new Error(`the backup did not check out: ${check.why}`);
       if (check.sessions !== counts.sessions || check.events < counts.events) throw new Error(`the backup holds ${check.sessions} sessions and ${check.events} events, the store ${counts.sessions} and ${counts.events}`);
@@ -300,22 +342,40 @@ export class Storage {
 
   private prune() {
     const keep = settings().backup.keep as number;
-    for (const b of this.backups().slice(keep)) rmSync(join(this.backupRoot, b.name), { recursive: true, force: true });
+    for (const b of this.backups().filter((b) => !b.unreadable).slice(keep)) rmSync(join(this.backupRoot, b.name), { recursive: true, force: true });
     // A partial copy left by a crash during a backup.
     if (existsSync(this.backupRoot)) for (const d of readdirSync(this.backupRoot)) if (d.endsWith(".partial")) rmSync(join(this.backupRoot, d), { recursive: true, force: true });
   }
 
-  backups() {
+  // Every backup folder, newest first. One whose manifest cannot be read is
+  // listed as such (its time from the folder name) rather than hiding the
+  // others, and is never pruned: nothing says what it holds.
+  backups(): Backup[] {
     if (!existsSync(this.backupRoot)) return [];
     return readdirSync(this.backupRoot)
       .filter((d) => d.startsWith("keel-") && existsSync(join(this.backupRoot, d, "manifest.json")))
-      .map((name) => {
-        const m = JSON.parse(readFileSync(join(this.backupRoot, name, "manifest.json"), "utf8"));
-        return { name, path: join(this.backupRoot, name), created_ms: m.created_ms as number, reason: m.reason as string, sessions: m.sessions as number, events: m.events as number, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0) };
+      .map((name): Backup => {
+        const path = join(this.backupRoot, name);
+        try {
+          const m = JSON.parse(readFileSync(join(path, "manifest.json"), "utf8"));
+          if (typeof m.created_ms !== "number" || !Array.isArray(m.files)) throw new Error("it lacks created_ms or files");
+          return { name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0) };
+        } catch (e) {
+          return { name, path, created_ms: stampMs(name), reason: "", sessions: null, events: null, bytes: null, unreadable: `manifest.json cannot be read: ${(e as Error).message}` };
+        }
       })
-      .sort((a, b) => b.created_ms - a.created_ms);
+      .sort((a, b) => (b.created_ms ?? 0) - (a.created_ms ?? 0));
   }
 }
+
+type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string };
+
+// keel-2026-11-19T10-00-00-000Z -> its time, or null.
+const stampMs = (name: string) => {
+  const m = /^keel-(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z$/.exec(name);
+  const t = m ? Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`) : NaN;
+  return Number.isNaN(t) ? null : t;
+};
 
 export const shadowDir = (stateDir: string, workspace: string) =>
   join(stateDir, "checkpoints", createHash("sha256").update(workspace).digest("hex").slice(0, 16) + ".git");
@@ -330,7 +390,11 @@ export function verify(dir: string): { ok: true; sessions: number; events: numbe
     const m = JSON.parse(readFileSync(mf, "utf8"));
     for (const f of m.files as { name: string; sha256: string }[]) {
       if (!existsSync(join(dir, f.name))) return { ok: false, why: `${f.name} is missing` };
-      if (createHash("sha256").update(readFileSync(join(dir, f.name))).digest("hex") !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
+      const sha = createHash("sha256").update(readFileSync(join(dir, f.name))).digest("hex");
+      if (sha !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
+      // An attachment's folder is named by its content's hash.
+      const a = /^attachments\/([0-9a-f]{64})\//.exec(f.name);
+      if (a && a[1] !== sha) return { ok: false, why: `${f.name} does not match its hash` };
     }
   }
   let db: Database | undefined;
@@ -357,10 +421,23 @@ export function restore(stateDir: string, backupDir: string) {
   const aside = join(stateDir, `before-restore-${stamp}`);
   mkdirSync(aside, { recursive: true });
   for (const f of ["keel.db", "keel.db-wal", "keel.db-shm"]) if (existsSync(join(stateDir, f))) renameSync(join(stateDir, f), join(aside, f));
-  for (const f of readdirSync(backupDir)) {
-    if (f === "manifest.json") continue;
+  // The state's JSON files are what a backup holds of them: one the backup
+  // does not have (a settings file written after it) moves aside too, so the
+  // restored state reads as it did then, defaults included.
+  const inBackup = new Set(readdirSync(backupDir));
+  for (const f of readdirSync(stateDir)) if (f.endsWith(".json") && !inBackup.has(f)) renameSync(join(stateDir, f), join(aside, f));
+  for (const f of inBackup) {
+    if (f === "manifest.json" || f === "attachments") continue;
     if (f.endsWith(".json") && existsSync(join(stateDir, f))) copyFileSync(join(stateDir, f), join(aside, f));
     copyFileSync(join(backupDir, f), join(stateDir, f));
+  }
+  // Attachments are stored by content: one already present is the same bytes.
+  const att = join(backupDir, "attachments");
+  if (existsSync(att)) for (const id of readdirSync(att)) for (const name of readdirSync(join(att, id))) {
+    const to = join(stateDir, "attachments", id, name);
+    if (existsSync(to)) continue;
+    mkdirSync(join(stateDir, "attachments", id), { recursive: true });
+    copyFileSync(join(att, id, name), to);
   }
   return { ...check, aside };
 }
