@@ -33,18 +33,18 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
   // there (this session's or another's), another session working in it, and
   // background commands of any session whose folder is in it (they would fail
   // on their next write). Folders compare where their links land.
-  const inside = (id: string) => {
+  const usage = (id: string) => {
     const s = store.session(id), w = wts.get(id);
     const dir = w?.state === "active" ? w.path : s?.workspace;
     if (!dir) return { others: [], jobs: [], turns: [] };
     const others = store.sessions().filter((o) => o.id !== id && !o.archived && contains(realOf(dir), realOf(o.workspace)));
     return { others, jobs: jobsIn(dir), turns: [...(s ? [s] : []), ...others].filter((o) => engine.isRunning(o.id)) };
   };
-  const busy = (id: string) => { const u = inside(id); return u.turns.length > 0 || u.others.length > 0 || u.jobs.length > 0; };
+  const busy = (id: string) => { const u = usage(id); return u.turns.length > 0 || u.others.length > 0 || u.jobs.length > 0; };
   // Whether it may happen now; the owner can have the commands stopped with it
   // (stop_shells), as archive does. Other sessions in the folder are named, never stopped.
   const inUse = async (id: string, stopShells: boolean, what: string): Promise<Response | null> => {
-    const u = inside(id);
+    const u = usage(id);
     if (u.turns.length) return bad(u.turns[0]!.id === id ? "a turn is running; stop it first" : `a turn of ${u.turns.map((o) => o.title || o.id).join(", ")} is running in this folder; stop it first`, 409);
     if (u.others.length) return json({ error: `${u.others.map((o) => o.title || o.id).join(", ")} ${u.others.length > 1 ? "work" : "works"} in this folder too: move or archive ${u.others.length > 1 ? "them" : "it"} first.`, sessions: u.others.map((o) => ({ id: o.id, title: o.title })) }, 409);
     if (!u.jobs.length) return null;
