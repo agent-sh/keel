@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError } from "../lib/store.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
+import { PathText } from "./PathText.tsx";
 
 type Profile = {
   model: { id: string; name: string; provider: string; family: string; context: number; output: number; billing: string; price?: { input: number; output: number } } | null;
@@ -71,7 +72,7 @@ export function ProfilePanel({ session }: { session: Session }) {
             <ul className="flex flex-col gap-1">
               {p.instructions.files.map((f) => (
                 <li key={f.path} className="flex items-baseline gap-2" data-scope={f.scope}>
-                  <span className="min-w-0 truncate font-mono text-caption" title={f.path}>{f.path}</span>
+                  <PathText path={f.path} className="font-mono text-caption" />
                   {f.scope === "nested" && <span className="shrink-0 text-micro text-faint" title="Loaded when the work reached its folder">on reach</span>}
                   <span className={cn("shrink-0 text-micro tabular-nums", f.truncated ? "text-warn" : "text-faint")}>{(f.bytes / 1024).toFixed(1)} KB{f.truncated ? ", cut" : ""}</span>
                 </li>

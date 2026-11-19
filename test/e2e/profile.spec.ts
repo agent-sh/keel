@@ -1,4 +1,6 @@
 import { expect, test } from "./isolate.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 // Feature: the session profile. The Profile tab shows the session's model and
@@ -40,6 +42,23 @@ test("profile: the panel, and a model pick with reasoning and speed", async ({ p
     expect(back.speed.choice).toBe("standard");
     expect(back.reasoning.choice).toBeUndefined();
   }
+  await request.delete(`/api/sessions/${s.id}`);
+});
+
+// An instruction file deep in folders keeps its name on screen: the path is
+// cut in the middle, the whole of it in the row's title.
+test("profile: a long instruction path shows its file name", async ({ page, request }) => {
+  const deep = join(process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bun`, `profile-${Date.now()}`, ...Array.from({ length: 6 }, (_, i) => `a-rather-long-folder-name-number-${i}`));
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(deep, "AGENTS.md"), "Answer briefly.\n");
+  const s = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: deep } })).json()).session;
+  await page.goto(`/s/${s.id}`);
+  await openPanel(page, "profile");
+  const path = page.getByTestId("profile-instructions").locator(`[title="${join(deep, "AGENTS.md")}"]`);
+  await expect(path).toBeVisible();
+  await expect(path).toHaveText(/…\/(.*\/)?AGENTS\.md$/);
+  expect(await path.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await shoot(page, "profile-03-long-path");
   await request.delete(`/api/sessions/${s.id}`);
 });
 
