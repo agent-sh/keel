@@ -137,7 +137,9 @@ export class ScriptedProvider implements Provider {
         return reply("Paused at a server tool.", "pause_turn");
       }
       case "refuse": {
-        const r = await reply("I will not");
+        // `script:refuse <word>`: the partial reply carries the word (a search test looks for it).
+        const word = owner.match(/script:refuse\s+(\S+)/)?.[1];
+        const r = await reply(word ? `I will not ${word}` : "I will not");
         return { ...r, stop: "refusal", stop_details: { category: "cyber", explanation: "Scripted refusal for the test." } };
       }
       case "overflow":

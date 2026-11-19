@@ -79,6 +79,11 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
   const home = process.env.HOME!;
   const idle = (id: string) => expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
 
+  // A declined reply's partial text is hidden in the transcript, and not found either.
+  const refused = (await (await request.post("/api/sessions", { data: { model: M, text: `script:refuse veto${tag}` } })).json()).session;
+  await idle(refused.id);
+  expect((await (await request.get(`/api/sessions/${refused.id}`)).json()).events.some((e: any) => e.kind === "assistant" && e.data.stop === "refusal")).toBe(true);
+  expect((await (await request.get(`/api/search?q=veto${tag}`)).json()).hits.filter((h: any) => h.session_id === refused.id && h.kind === "assistant")).toEqual([]);
   const run = (await (await request.post("/api/sessions", { data: { model: M, text: `script:calls [{"name":"Bash","input":{"command":"echo shout-${tag}-done"}}]` } })).json()).session;
   await idle(run.id);
   const ref = await (await request.post(`/api/attachments?name=saffron-${tag}.txt`, { headers: { "content-type": "text/plain" }, data: "ledger" })).json();

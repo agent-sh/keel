@@ -10,6 +10,9 @@ import type { RouteModule } from "../app.ts";
 export const TOOL_EXCERPT = 4000;
 const L = TOOL_EXCERPT;
 
+// A declined reply is discarded (the transcript hides its partial text), so it is not found either.
+const KEPT = "coalesce(json_extract(e.data, '$.stop'), '') != 'refusal'";
+
 // One INSERT per kind of row, over `SRC` (the events table, or NEW in a trigger).
 // Columns: text, event_id, session_id, kind, ts, ref (a tool call id), cut.
 const ROWS = (SRC: string) => [
@@ -20,12 +23,12 @@ const ROWS = (SRC: string) => [
    FROM ${SRC} WHERE e.kind = 'user') x WHERE x.t != ''`,
   `SELECT x.t, x.id, x.session_id, 'assistant', x.ts, NULL, 0 FROM (SELECT e.id, e.session_id, e.ts,
      (SELECT group_concat(json_extract(value, '$.text'), char(10)) FROM json_each(e.data, '$.blocks') WHERE json_extract(value, '$.type') = 'text') AS t
-   FROM ${SRC} WHERE e.kind = 'assistant') x WHERE x.t IS NOT NULL AND x.t != ''`,
+   FROM ${SRC} WHERE e.kind = 'assistant' AND ${KEPT}) x WHERE x.t IS NOT NULL AND x.t != ''`,
   // A tool call: its name and input (a command, a path, a pattern).
   // The words of the input, not its JSON: `Bash echo done`, not `{"command":"echo done"}`.
   `SELECT substr(x.t, 1, ${L}), x.id, x.session_id, 'tool_use', x.ts, x.ref, length(x.t) > ${L} FROM (SELECT e.id, e.session_id, e.ts, json_extract(j.value, '$.id') AS ref,
      json_extract(j.value, '$.name') || ' ' || coalesce((SELECT group_concat(v.value, ' ') FROM json_tree(j.value, '$.input') v WHERE v.type = 'text'), '') AS t
-   FROM ${SRC}, json_each(e.data, '$.blocks') j WHERE e.kind = 'assistant' AND json_extract(j.value, '$.type') = 'tool_use') x`,
+   FROM ${SRC}, json_each(e.data, '$.blocks') j WHERE e.kind = 'assistant' AND ${KEPT} AND json_extract(j.value, '$.type') = 'tool_use') x`,
   // What a tool gave back (text only; images are not words).
   `SELECT substr(x.t, 1, ${L}), x.id, x.session_id, 'tool_result', x.ts, x.ref, length(x.t) > ${L} FROM (SELECT e.id, e.session_id, e.ts, json_extract(j.value, '$.tool_use_id') AS ref,
      CASE json_type(j.value, '$.content') WHEN 'text' THEN json_extract(j.value, '$.content')
@@ -40,7 +43,7 @@ const NEW_SRC = "(SELECT NEW.id AS id, NEW.session_id AS session_id, NEW.kind AS
 const KINDS = "('user', 'assistant', 'tool_result', 'compaction', 'note')";
 
 // Bumped when what is indexed changes: the index is made again from the events once.
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 
 const SCHEMA = `
 DROP TRIGGER IF EXISTS search_fts_ins;
