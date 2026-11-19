@@ -104,6 +104,21 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("base\n");
   expect(readFileSync(join(ws, "late.txt"), "utf8")).toBe("late\n");
 
+  // The session moves to another folder: its turns still read, each named by
+  // the folder it ran in, and none is rewound into the new folder.
+  const moved = `${ws}-moved`;
+  mkdirSync(moved);
+  expect((await request.post(`/api/sessions/${session.id}/folder`, { data: { cwd: moved, copy_files: true } })).status()).toBe(200);
+  await page.reload();
+  await openPanel(page, "changes");
+  await panel.getByTestId("tab-turns").click();
+  await expect(panel.getByTestId("turn-checkpoint")).toHaveCount(2);
+  await expect(panel.getByTestId("turn-elsewhere")).toHaveCount(2);
+  await expect(panel.getByTestId("rewind-turn")).toHaveCount(0);
+  await panel.getByTestId("turn-checkpoint").first().locator("summary").click();
+  await expect(panel.getByTestId("turn-checkpoint").first().getByTestId("diff-file")).toHaveCount(1);
+  await shoot(page, "ckpt-05-moved");
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

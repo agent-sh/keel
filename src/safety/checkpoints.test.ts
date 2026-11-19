@@ -143,3 +143,30 @@ test("a hunk revert checks the hunk's lines, not only its header", async () => {
   await t.c.revertHunk(t.s, { from: t1, path: "note.txt", index: 0, header, body });
   expect(t.read("note.txt")).toBe("alpha\n");
 });
+
+test("history stays readable after the session moves to another folder and back", async () => {
+  const t = setup({ "note.txt": "alpha\n" });
+  const a = t.ws;
+  const t1 = await t.turn(() => t.write("note.txt", "beta\n"));
+  const b = join(a, "..", "b");
+  mkdirSync(b, { recursive: true });
+  writeFileSync(join(b, "note.txt"), "beta\n");
+  const move = (ws: string) => Object.assign(t.s, t.store.updateSession(t.s.id, { workspace: ws }));
+  move(b);
+  const call = { id: "c", tool: { name: "Bash", readOnly: false, kind: "shell" }, input: { command: "x" }, ctx: { cwd: b } } as any;
+  t.store.append(t.s.id, "turn_start", {});
+  await t.c.before(t.s, call);
+  writeFileSync(join(b, "note.txt"), "gamma\n");
+  await t.c.after(t.s, call);
+  await t.c.end(t.s);
+  await t.c.maintain();
+  for (const ws of [b, a]) {
+    move(ws);
+    const { turns } = await t.c.turns(t.s);
+    expect(turns.map((x) => [x.files.map((f) => f.path), x.elsewhere ?? null])).toEqual([[["note.txt"], ws === a ? null : a], [["note.txt"], ws === b ? null : b]]);
+    expect((await t.c.diff(t.s, { turn: t1 })).diff).toContain("+beta");
+  }
+  move(b);
+  await expect(t.c.rewind(t.s, { turn: t1, preview: true })).rejects.toThrow(/cannot be put back here/);
+  expect(readFileSync(join(a, "note.txt"), "utf8")).toBe("beta\n");
+});

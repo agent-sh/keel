@@ -7,7 +7,7 @@ import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
 
-type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean };
+type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
 type Diff = { files: FileChange[]; diff: string; truncated: boolean; partial?: string; scope: "tree" | "written"; incomplete?: boolean };
 type RewindResult = {
   files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; removes: string[]; uncaptured: string[];
@@ -32,7 +32,10 @@ export function ChangesPanel({ session }: { session: Session }) {
   // With the folder gone there is nothing to put files back into: the diffs
   // still read, the reverts are not offered.
   const gone = !!session.workspace_gone;
-  const canRevert = turns[0] !== undefined && !gone;
+  // The session diff and its reverts start at the first turn in this folder
+  // (turns from before a move to another folder belong to that folder).
+  const here = turns.filter((t) => !t.elsewhere);
+  const canRevert = here[0] !== undefined && !gone;
 
   const load = useCallback(async () => {
     try {
@@ -40,7 +43,7 @@ export function ChangesPanel({ session }: { session: Session }) {
       setTurns(r.turns);
       setScope({ scope: r.scope, reason: r.reason, skipped: r.skipped, skipped_count: r.skipped_count, expired: r.expired });
       setTurnDiff({});
-      const first = r.turns[0]?.turn;
+      const first = r.turns.find((t) => !t.elsewhere)?.turn;
       setAll(first === undefined ? { files: [], diff: "", truncated: false, scope: "tree" } : await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?from=${first}`));
     } catch (e) {
       setErr((e as Error).message);
@@ -92,7 +95,7 @@ export function ChangesPanel({ session }: { session: Session }) {
   });
   const fileDiff = (q: string) => async (path: string) => (await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?${q}&path=${encodeURIComponent(path)}`)).diff;
 
-  const firstTurn = turns[0]?.turn;
+  const firstTurn = here[0]?.turn;
   const tabCls = "h-8 rounded-md px-3 text-ui text-muted outline-none hover:text-fg data-[active]:bg-raised data-[active]:text-fg data-[active]:shadow-2 focus-visible:ring-2 focus-visible:ring-accent/30";
 
   return (
@@ -186,11 +189,13 @@ export function ChangesPanel({ session }: { session: Session }) {
                   <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-2">
                     <History className="size-4 shrink-0 text-faint" />
                     <span className="min-w-0 flex-1 truncate text-ui">{t.prompt || "(no prompt)"}</span>
+                    {t.elsewhere && <span className="max-w-40 truncate rounded-full bg-sunken px-1.5 font-mono text-micro text-muted" data-testid="turn-elsewhere" title={`This turn ran in ${t.elsewhere}, before the session moved; its files there are not put back from here`}>in {t.elsewhere.split("/").filter(Boolean).pop()}</span>}
+                    {t.unavailable && <span className="rounded-full bg-danger-soft px-1.5 text-micro text-danger" title={t.unavailable}>history unreadable</span>}
                     {t.incomplete && <span className="rounded-full bg-warn/15 px-1.5 text-micro text-warn" title="No snapshot was taken when this turn ended (the daemon stopped during it?): its diff is its start against the files now, which may hold later edits">incomplete</span>}
                     <span className="text-micro text-faint">{t.files.length} file{t.files.length === 1 ? "" : "s"}</span>
                     <span className="font-mono text-micro tabular-nums"><span className="text-ok">+{t.added}</span> <span className="text-danger">-{t.removed}</span></span>
                     <span className="w-8 text-right text-micro tabular-nums text-faint">{ago(t.created)}</span>
-                    {!gone && <button
+                    {!gone && !t.elsewhere && !t.unavailable && <button
                       data-testid="rewind-turn"
                       onClick={(e) => { e.preventDefault(); ask("Rewind files to before this turn?", { turn: t.turn }); }}
                       className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg"
