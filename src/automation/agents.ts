@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { lineage } from "../core/tree.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -782,6 +783,19 @@ function outsideWorktree(a: AgentRecord, sessionId: string, input: any): string 
 
 // After a restart: results still owed are delivered; an agent recorded as live
 // with nothing scheduled continues once by itself, then is reported failed.
+// The reason the session's last turn ended, when it ended by itself after the
+// last input it got (not parked by a restart, nothing sent after it).
+function endedTurn(sessionId: string): string | undefined {
+  const { store } = D();
+  const evs = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null);
+  for (let i = evs.length - 1; i >= 0; i--) {
+    const e = evs[i]!;
+    if (e.kind === "user") return undefined;
+    if (e.kind === "turn_end") return e.data.reason && e.data.reason !== "restart" ? String(e.data.reason) : undefined;
+  }
+  return undefined;
+}
+
 export function recover() {
   for (const a of list()) {
     if (a.handback && a.status !== "running" && a.status !== "waiting") { handback(a); continue; }
@@ -789,6 +803,11 @@ export function recover() {
     const parent = D().store.session(a.parent_id);
     if (!parent || parent.archived) { update(a.id, { status: "stopped", ended: Date.now(), result: collectResult(a) }); continue; }
     if (waits.activeFor(a.session_id) > 0) { update(a.id, { status: "waiting", background: true }); continue; }
+    // Its turn had ended (the end is stored before the end hooks run) and the
+    // daemon went down before the hook settled it: settle it now, once, the
+    // way the hook would have. Only a turn that was cut is continued.
+    const ended = endedTurn(a.session_id);
+    if (ended) { onTurnEnd(a.session_id, ended); continue; }
     if (a.restarts < 1) {
       update(a.id, { restarts: a.restarts + 1, background: true, status: "running" });
       deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });

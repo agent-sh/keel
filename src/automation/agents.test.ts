@@ -139,3 +139,17 @@ test("forked context is the parent's selected branch as its next request reads i
   expect(text).not.toContain("Discarded");
   expect(text).not.toContain("old question");
 });
+
+test("recovery settles a child whose turn had ended before the daemon went down, and continues one that was cut", async () => {
+  const [done, cut] = [await spawn(), await spawn()];
+  // done: its reply and end are stored, the end hook never ran.
+  store.append(done.session_id, "assistant", { blocks: [{ type: "text", text: "report D" }] });
+  store.append(done.session_id, "turn_end", { reason: "end_turn" });
+  sends.length = 0;
+  agents.recover();
+  await settled();
+  expect(agents.get(done.id)).toMatchObject({ status: "completed", restarts: 0 });
+  expect(sends.some((x) => x.id === done.session_id)).toBe(false);
+  expect(agents.get(cut.id)).toMatchObject({ status: "running", restarts: 1 });
+  expect(sends.filter((x) => x.id === cut.session_id).map((x) => x.text).join("")).toContain("Continue your task");
+});
