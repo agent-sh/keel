@@ -53,6 +53,8 @@ export type AgentDef = {
   source: string;
   file?: string; // the definition's file (none for a built-in)
   silent?: boolean; // its result goes to its own panel (a reviewer's findings), not to the parent's conversation
+  effort?: string; // a reasoning effort, used when the child's model lists it
+  format?: "codex"; // a Codex TOML file: its model is another harness's id, a preference rather than a demand
 };
 
 export const MAX_LIVE = Number(process.env.KEEL_MAX_SUBAGENTS ?? 8);
@@ -199,22 +201,50 @@ function readDir(dir: string, source: string): AgentDef[] {
   return out;
 }
 
+// Codex's custom agents: one TOML file each (name, description and
+// developer_instructions required; model, model_reasoning_effort and
+// features.shell_tool = false read too). Its sandbox and approval keys never
+// override the parent's in Codex, and do not here either.
+function readCodexDir(dir: string, source: string): AgentDef[] {
+  if (!existsSync(dir)) return [];
+  const out: AgentDef[] = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".toml")) continue;
+    const p = join(dir, f);
+    try {
+      if (statSync(p).size > 32 * 1024) continue;
+      const t = Bun.TOML.parse(readFileSync(p, "utf8")) as Record<string, any>;
+      const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+      const name = str(t.name), description = str(t.description), body = str(t.developer_instructions);
+      if (!name || !description || !body) throw new Error("a Codex agent file needs name, description and developer_instructions");
+      out.push({
+        name, description, body, source, file: p, format: "codex",
+        model: str(t.model), effort: str(t.model_reasoning_effort),
+        disallowed: t.features?.shell_tool === false ? ["Bash"] : undefined,
+      });
+    } catch (e) {
+      capture(e, { at: "agent definition", path: p });
+    }
+  }
+  return out;
+}
+
 // Built-ins, then the owner's, then the project's (nearest directory wins). A
 // project file never takes a built-in's name.
 export function definitions(cwd: string): AgentDef[] {
   const byName = new Map<string, AgentDef>(BUILTIN.map((d) => [d.name, d]));
   const config = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
   // The owner's: the Rust Keel's folder, Claude Code's, then keel-bun's own (it wins a name).
-  for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
+  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
   const dirs: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {
     dirs.unshift(d);
     if (existsSync(join(d, ".git")) || dirname(d) === d || d === homedir()) break;
   }
   for (const d of dirs) {
-    for (const sub of [".claude/agents", ".agents/agents", ".keel/agents"]) {
-      for (const def of readDir(join(d, sub), "project")) if (!BUILTIN.some((b) => b.name === def.name)) byName.set(def.name, def);
-    }
+    const here = [...readCodexDir(join(d, ".codex", "agents"), "project"), ...[".claude/agents", ".agents/agents", ".keel/agents"].flatMap((sub) => readDir(join(d, sub), "project"))];
+    for (const def of here) if (!BUILTIN.some((b) => b.name === def.name)) byName.set(def.name, def);
   }
   return [...byName.values()];
 }
@@ -378,8 +408,12 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     const bad = validSchema(input.output_schema);
     if (bad) throw new Error(bad);
   }
-  const model = input.fork ? parent.model : await pickModel(parent, input.model ?? def.model);
-  await D().providers.resolve(model);
+  // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
+  const model = input.fork ? parent.model
+    : !input.model && def.format === "codex" ? await pickModel(parent, def.model).catch(() => parent.model)
+    : await pickModel(parent, input.model ?? def.model);
+  const { info } = await D().providers.resolve(model);
+  const effort = def.effort && info.efforts?.includes(def.effort) ? def.effort : undefined;
   const title = (input.title || input.prompt.split("\n")[0]!).slice(0, 80);
   const id = Bun.randomUUIDv7().slice(-12);
   const mode = modeOfChild(parentId, def);
@@ -389,7 +423,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
       .place(parent, { machine: input.machine, cwd: input.cwd, worktree: wantWorktree, key: id, title })
     : null;
   const iso = placed ? null : await isolate(parent, def, input, title, id, mode);
-  const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title });
+  const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title, settings: effort ? { effort } : undefined });
   store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
   if (iso) wts().adopt(child.id, iso.wt);
   inheritPermissions(parentId, child.id, mode);

@@ -18,6 +18,7 @@ test.beforeAll(async ({ request }) => {
   put(join(ws, ".agents/skills/ship-notes/SKILL.md"), "---\nname: ship-notes\ndescription: Use when writing release notes for this repository.\n---\n\n# ship-notes\n\nList the merged changes.\n");
   put(join(ws, ".claude/commands/deploy-notes.md"), "---\ndescription: Write the deploy notes for $ARGUMENTS\nargument-hint: <version>\n---\n\nWrite deploy notes for version $ARGUMENTS.\n");
   put(join(ws, ".claude/agents/diff-checker.md"), "---\nname: diff-checker\ndescription: Use to check a diff before it lands.\ntools: Read, Grep\n---\n\nRead the diff and report problems.\n");
+  put(join(ws, ".codex/agents/pr-explorer.toml"), 'name = "pr_explorer"\ndescription = "Read-only explorer that gathers evidence before a change."\nmodel = "not-a-listed-model"\nmodel_reasoning_effort = "high"\ndeveloper_instructions = """\nStay in exploration mode.\nDo not edit files.\n"""\n\n[features]\nshell_tool = false\n');
   put(outside, "Shared rule: answer in one line.\n");
   execFileSync("git", ["init", "-q", ws]);
   // A session in the folder puts it first among the recent folders the pages are seen from.
@@ -99,6 +100,22 @@ test("toolkit: agents", async ({ page, request }) => {
   await expect(page.getByTestId("editor-saved")).toBeVisible();
   expect(readFileSync(join(ws, ".claude/agents/diff-checker.md"), "utf8")).toContain("file and line");
   await shoot(page, "toolkit-agents-01-file");
+
+  // A Codex agent file (TOML) is read the same way: its instructions, its model
+  // as a preference, no shell; a save is checked as TOML first.
+  await page.locator('[data-testid="agent-entry"][data-name="pr_explorer"]').click();
+  await expect(page.getByTestId("agents-ledger")).toContainText("This repository, Codex");
+  await expect(page.locator(".k-facts")).toContainText("not-a-listed-model when listed");
+  await expect(page.locator(".k-facts")).toContainText("Bash");
+  await expect(text).toHaveValue(/Stay in exploration mode/);
+  await text.fill((await text.inputValue()).replace('name = "pr_explorer"', 'name = "pr_explorer'));
+  await page.getByTestId("editor-save").click();
+  await expect(page.getByTestId("editor-note")).toContainText("not TOML");
+  expect(readFileSync(join(ws, ".codex/agents/pr-explorer.toml"), "utf8")).toContain('name = "pr_explorer"');
+  await shoot(page, "toolkit-agents-03-codex");
+  const codex = (await (await request.get(`/api/agents?cwd=${encodeURIComponent(ws)}`)).json()).agents.find((a: any) => a.name === "pr_explorer");
+  expect(codex).toMatchObject({ format: "codex", effort: "high", disallowed: ["Bash"], source: "project" });
+  expect(codex.body).toContain("Do not edit files.");
 
   // A built-in one reads, without an editor.
   await page.locator('[data-testid="agent-entry"]').first().click();

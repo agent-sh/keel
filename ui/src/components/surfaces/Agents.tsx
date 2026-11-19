@@ -8,6 +8,7 @@ import { Blank, FileEditor, FolderLine, Ledger, NewFile, ReaderHead, useFolder, 
 type Def = {
   name: string; description: string; source: string; file: string | null; model: string | null; tools: string[] | null; disallowed: string[] | null;
   permission_mode: string | null; isolation: string | null; read_only: boolean; trust: string | null;
+  format: "markdown" | "codex"; effort: string | null;
 };
 type Listing = { agents: Def[]; homes: { owner: string; project: string } };
 const dir = (f: string) => f.slice(0, f.lastIndexOf("/"));
@@ -30,7 +31,7 @@ export default function Agents() {
   const groups = new Map<string, Group>();
   for (const d of data?.agents ?? []) {
     const key = d.file ? dir(d.file) : "built-in";
-    const title = !d.file ? "Built in" : d.source === "project" ? "This repository" : /\/\.claude\/agents$/.test(key) ? "Claude Code" : "Yours";
+    const title = !d.file ? "Built in" : d.source === "project" ? (d.format === "codex" ? "This repository, Codex" : "This repository") : d.format === "codex" ? "Codex" : /\/\.claude\/agents$/.test(key) ? "Claude Code" : "Yours";
     const g = groups.get(key) ?? groups.set(key, { id: key, title, path: d.file ? key : undefined, entries: [] }).get(key)!;
     g.entries.push({ id: d.name, name: d.name, desc: d.description, mark: mark(d), aside: d.read_only ? "reads" : d.permission_mode ?? "", testid: "agent-entry" });
   }
@@ -68,7 +69,8 @@ export default function Agents() {
                 path={cur.file}
                 facts={[
                   ["Source", cur.file ? (cur.source === "project" ? "this repository" : "yours") : "built in"],
-                  ["Model", cur.model ?? "the session's"],
+                  ["Model", cur.model ? (cur.format === "codex" ? `${cur.model} when listed, else the session's` : cur.model) : "the session's"],
+                  ...(cur.effort ? [["Effort", `${cur.effort} when the model lists it`] as [string, string]] : []),
                   ["Tools", cur.tools ? `${cur.tools.length}` : cur.read_only ? "reads only" : "all"],
                   ...(cur.disallowed?.length ? [["Not allowed", cur.disallowed.join(", ")] as [string, string]] : []),
                   ["Mode", cur.read_only ? "read only" : cur.permission_mode ?? "the session's"],
@@ -77,7 +79,7 @@ export default function Agents() {
               />
               {file && (
                 <FileEditor
-                  name={cur.file ? `${cur.name}.md` : `${cur.name} (built in)`}
+                  name={cur.file ? cur.file.slice(cur.file.lastIndexOf("/") + 1) : `${cur.name} (built in)`}
                   text={file.text}
                   readOnly={cur.file ? undefined : "built in: a file of the same name in yours replaces it"}
                   onSave={cur.file ? async (text) => {

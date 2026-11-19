@@ -71,7 +71,16 @@ export const surfaceRoutes: RouteModule = (deps) => {
     name: d.name, description: d.description, source: d.source, file: d.file ?? null, model: d.model ?? null,
     tools: d.tools ?? null, disallowed: d.disallowed ?? null, permission_mode: d.permissionMode ?? null, isolation: d.isolation ?? null,
     read_only: !!d.readOnly, trust: d.file && d.source === "project" ? trustOf(cwd, d.file) : null,
+    format: d.format ?? "markdown", effort: d.effort ?? null,
   }));
+  // A Codex agent file is checked before it is written: TOML with its three required keys.
+  const codexFault = (t: string) => {
+    try {
+      const v = Bun.TOML.parse(t) as Record<string, unknown>;
+      const missing = ["name", "description", "developer_instructions"].filter((k) => typeof v[k] !== "string" || !(v[k] as string).trim());
+      return missing.length ? `a Codex agent file needs ${missing.join(", ")}` : null;
+    } catch (e) { return `not TOML: ${(e as Error).message}`; }
+  };
 
   // --- instruction files
   const instructionView = (cwd: string) => {
@@ -183,6 +192,8 @@ export const surfaceRoutes: RouteModule = (deps) => {
         const d = definitions(cwd).find((x) => x.name === b.name);
         if (!d) return bad(`no agent named ${b.name}`, 404);
         if (!d.file) return bad(`${d.name} is built in: write a file of the same name to change it`, 409);
+        const fault = d.format === "codex" ? codexFault(text(b)) : null;
+        if (fault) return bad(fault);
         write(d.file, text(b));
         if (d.source === "project") pin(cwd, d.file);
         return json({ agents: agentView(cwd) });
