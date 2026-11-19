@@ -16,7 +16,7 @@ const AREA: Record<string, { label: string; hint: string }> = {
   skills: { label: "Skills", hint: "Read where they are, so an update there reaches Keel." },
   plugins: { label: "Plugins", hint: "Claude Code plugins that are turned on: their skills, commands, agents and servers." },
   mcp: { label: "MCP servers", hint: "Added to Keel's servers; the values of env entries are copied, never shown." },
-  hooks: { label: "Hooks", hint: "Added to Keel's own hooks file; they run in every session." },
+  hooks: { label: "Hooks", hint: "Yours go to Keel's own hooks file and run in every session; a project's go to its .keel/hooks.json and run once you pin it in Settings > Hooks." },
   permissions: { label: "Permission rules", hint: "Allow rules whose meaning Keel's gate holds the same way; Keel's own checks still ask for risky commands. Deny and ask rules, and allows they carve exceptions from, stay out." },
   sessions: { label: "Sessions", hint: "Read-only copies. The Rust Keel's all; the others' recent ones, the rest stay in Import." },
   settings: { label: "Settings", hint: "What else the other tools keep." },

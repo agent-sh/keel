@@ -56,20 +56,21 @@ function shell(spec: string | undefined): Mapped {
 }
 
 // An edit rule: a folder and everything below it, written from the root or the home.
-function edit(spec: string | undefined): Mapped {
-  if (spec === undefined || spec === "*" || spec === "**") return { kind: "edit", pattern: "/" };
-  const m = spec.match(/^(\/\/|~\/)(.*?)\/\*\*$/);
-  if (!m || /[*?[\]!]/.test(m[2]!)) return { skip: "only a folder written from the root (//path/**) or the home (~/path/**) maps to Keel's edit rules, which cover a folder and all below it" };
-  const dir = m[1] === "//" ? `/${m[2]}` : `${homedir()}/${m[2]}`;
+// In a project's settings `/path` is from the project's root (`base`).
+function edit(spec: string | undefined, base?: string): Mapped {
+  if (spec === undefined || spec === "*" || spec === "**") return { kind: "edit", pattern: base ?? "/" };
+  const m = spec.match(base ? /^(\/\/|~\/|\/)(.*?)\/\*\*$/ : /^(\/\/|~\/)(.*?)\/\*\*$/);
+  if (!m || /[*?[\]!]/.test(m[2]!) || m[2]!.split("/").includes("..")) return { skip: `only a folder written from the root (//path/**)${base ? ", the project (/path/**)" : ""} or the home (~/path/**) maps to Keel's edit rules, which cover a folder and all below it` };
+  const dir = m[1] === "//" ? `/${m[2]}` : m[1] === "~/" ? `${homedir()}/${m[2]}` : `${base}/${m[2]}`;
   return { kind: "edit", pattern: dir.replace(/\/+$/, "") || "/" };
 }
 
-// One allow rule of Claude Code.
-export function claudeAllow(rule: string): Mapped {
+// One allow rule of Claude Code; `base`, for a project's settings, is its root.
+export function claudeAllow(rule: string, base?: string): Mapped {
   const p = parseRule(rule);
   if (!p) return { skip: "not a rule Claude Code reads" };
   if (p.tool === "Bash") return shell(p.spec);
-  if (p.tool === "Edit") return edit(p.spec);
+  if (p.tool === "Edit") return edit(p.spec, base);
   if (p.tool === "Write" || p.tool === "NotebookEdit" || p.tool === "MultiEdit") return { skip: `${p.tool} has no rule of its own in Keel: an edit rule would also allow every other edit tool` };
   if (READS.has(p.tool)) return { done: "Keel runs reads and web lookups without asking" };
   const mcp = p.tool.match(/^mcp__([^_*][^*]*?)__([^*]+)$/);

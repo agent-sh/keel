@@ -55,16 +55,18 @@ export function coveredFiles(root: string, groups: Partial<Record<HookEvent, Gro
       try { if (statSync(p).isDirectory()) walk(p); else out.add(p); } catch {}
     }
   };
+  // Scripts a hook runs from .keel/ or, for hooks brought from Claude Code, from .claude/.
   for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
-    for (const m of h.command.matchAll(/\.keel\/([\w./@+-]+)/g)) {
-      const p = resolve(keel, m[1]!.replace(/\/+$/, ""));
-      if (!contains(keel, p) || p === keel || p === join(keel, "hooks.json")) continue;
+    for (const m of h.command.matchAll(/(\.keel|\.claude)\/([\w./@+-]+)/g)) {
+      const base = join(root, m[1]!);
+      const p = resolve(base, m[2]!.replace(/\/+$/, ""));
+      if (!contains(base, p) || p === base || p === join(keel, "hooks.json")) continue;
       let st;
       try { st = statSync(p); } catch { out.add(p); continue; } // a missing script is covered as missing
       if (st.isDirectory()) walk(p);
       else {
         out.add(p);
-        if (dirname(p) !== keel) walk(dirname(p));
+        if (dirname(p) !== base) walk(dirname(p));
       }
     }
   }
@@ -88,11 +90,11 @@ function pinDigest(text: string, root: string, files: string[]): string {
   return h.digest("hex");
 }
 
-// Covered files that are links landing outside .keel/: the pin does not hold
+// Covered files that are links landing outside .keel/ (or .claude/ for a file there): the pin does not hold
 // what they run, so the file does not run.
 export const linksOut = (root: string, files: string[]) => {
-  const keel = realOf(join(root, ".keel"));
-  return files.filter((f) => { try { return lstatSync(f).isSymbolicLink() && !contains(keel, realOf(f)); } catch { return false; } });
+  const dirs = [".keel", ".claude"].map((d) => realOf(join(root, d)));
+  return files.filter((f) => { try { return lstatSync(f).isSymbolicLink() && !dirs.some((d) => contains(d, realOf(f))); } catch { return false; } });
 };
 
 // A repository's pins are kept for its git common dir (a worktree's are its
@@ -243,7 +245,7 @@ export class Hooks {
 async function runHook(h: Handler, input: string, cwd: string, ms: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
   let p: ReturnType<typeof Bun.spawn>;
   try {
-    p = Bun.spawn(["bash", "-c", h.command], { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, KEEL_PROJECT_DIR: cwd, CLAUDE_PROJECT_DIR: cwd } });
+    p = Bun.spawn(["bash", "-c", h.command], { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, KEEL_PROJECT_DIR: projectRoot(cwd), CLAUDE_PROJECT_DIR: projectRoot(cwd) } });
   } catch (e) {
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }

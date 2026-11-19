@@ -3,8 +3,9 @@
 // sessions and the Rust Keel's settings. `plan()` reads and writes nothing: it
 // lists every item found, what an apply does with it, and what is skipped and
 // why. `apply()` runs the picked items. Sources are only read; what is written
-// goes to Keel's own config folder, Keel's own state and tacit (through
-// tacit's own importer). Running it again changes nothing that is already
+// goes to Keel's own config folder, Keel's own state, tacit (through
+// tacit's own importer) and a project's own .keel/hooks.json (its Claude Code
+// hooks, which run only once the owner pins that file). Running it again changes nothing that is already
 // there: each item knows its own result in Keel and says "done".
 //
 // Shaped after Codex's external-agent migration (detect items by type, import
@@ -20,7 +21,7 @@ import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { expandImports } from "../engine/turn.ts";
 import { carriedPlugins, discoverSkills, frontmatter, pluginDir, skillsConfig, writeSkillsConfig, type SkillRoot } from "../tools/skills.ts";
-import { EVENTS, ownerHooksPath, parseHooks } from "./hooks.ts";
+import { EVENTS, ownerHooksPath, parseHooks, projectRoot } from "./hooks.ts";
 import { importable, readConfig, writeConfig, type McpServerConfig } from "../mcp/config.ts";
 import { identity, importHome } from "../mcp/sources.ts";
 import { findBin } from "./tacit.ts";
@@ -530,6 +531,55 @@ function planHooks(items: Planned[], fromPlugins: HookCandidate[]) {
   }
 }
 
+// A project's Claude Code hooks go to its own .keel/hooks.json, which runs
+// nothing until the owner pins it (Settings > Hooks): bringing them never
+// trusts them. The personal settings.local.json stays out: .keel/hooks.json
+// is the repository's file, which it may share.
+function planProjectHooks(items: Planned[], deps: PortDeps) {
+  const source = "Claude Code (project)";
+  for (const f of claudeFiles(deps)) {
+    if (!f.root) continue;
+    const at = tilde(f.root);
+    if (f.error) { if (f.file === "settings.json") items.push({ id: `hooks:error:${f.path}`, area: "hooks", source, title: tilde(f.path), state: "error", reason: f.error, pick: false }); continue; }
+    const target = join(f.root, ".keel", "hooks.json");
+    let mine: Record<string, any[]> = {};
+    try { mine = readJson(target).hooks ?? {}; } catch {}
+    const has = (event: string, matcher: string | undefined, command: string) => (mine[event] ?? []).some((g: any) => (g.matcher ?? "") === (matcher ?? "") && (g.hooks ?? []).some((h: any) => h.command === command));
+    for (const [event, groups] of Object.entries<any>(f.hooks ?? {})) for (const g of Array.isArray(groups) ? groups : []) for (const h of g?.hooks ?? []) {
+      const command = String(h?.command ?? "");
+      const id = `hooks:${source}:${hash(f.root)}:${f.file}:${event}:${hash(`${g.matcher ?? ""}\n${command}`)}`;
+      const item = { id, area: "hooks" as const, source, title: `${event}${g.matcher ? ` (${g.matcher})` : ""} in ${at}`, detail: command.slice(0, 160) || h?.type };
+      const skip = (reason: string) => items.push({ ...item, state: "skip", reason, pick: false });
+      if (f.file === "settings.local.json") { skip("a personal hook of this project (settings.local.json): Keel's project hooks are the repository's .keel/hooks.json, which it may share; add it to your own hooks to keep it"); continue; }
+      if (h?.type !== "command" || !command) { skip(`a ${h?.type ?? "untyped"} hook runs inside Claude Code`); continue; }
+      const why = native(command);
+      if (why) { skip(why); continue; }
+      if (!(EVENTS as readonly string[]).includes(event)) { skip(`Keel has no ${event} point`); continue; }
+      const script = scriptOf(command.replace(/"?\$\{?CLAUDE_PROJECT_DIR\}?"?/g, f.root));
+      if (script && statSync(script).size < 256 * 1024 && /CLAUDE_ENV_FILE/.test(readFileSync(script, "utf8"))) { skip("it writes Claude Code's CLAUDE_ENV_FILE, which Keel does not have"); continue; }
+      if (has(event, g.matcher, command)) { items.push({ ...item, state: "done", reason: `in ${tilde(target)}`, pick: false }); continue; }
+      const root = f.root;
+      items.push({
+        ...item, state: "new", pick: true,
+        run: async () => {
+          let text = "";
+          try { text = readFileSync(target, "utf8"); } catch {}
+          const file = text.trim() ? JSON.parse(text) : {};
+          file.hooks ??= {};
+          const list: any[] = (file.hooks[event] ??= []);
+          if (!list.some((x) => (x.matcher ?? "") === (g.matcher ?? "") && (x.hooks ?? []).some((y: any) => y.command === command))) {
+            const nh: any = { type: "command", command };
+            if (typeof h.timeout === "number") nh.timeout = h.timeout;
+            list.push({ ...(g.matcher ? { matcher: g.matcher } : {}), hooks: [nh] });
+            writeAtomic(target, JSON.stringify(file, null, 2) + "\n");
+          }
+          return `added to ${tilde(join(root, ".keel", "hooks.json"))}: it runs once you pin it in Settings > Hooks`;
+        },
+      });
+    }
+  }
+}
+
 // ---- sessions -----------------------------------------------------------------------
 
 // Codex's defaults for what an import of another agent's sessions takes.
@@ -575,7 +625,7 @@ async function planSessions(items: Planned[], deps: PortDeps, opts: { days: numb
 
 // ---- settings of the Rust Keel and of Claude Code that Keel does not take -----------
 
-function planSettings(items: Planned[]) {
+function planSettings(items: Planned[], deps: PortDeps) {
   const rc = rustConfig();
   const drive = join(rc, "drive.json");
   const mine = join(configDir(), "drive.json");
@@ -589,12 +639,49 @@ function planSettings(items: Planned[]) {
   const H = portHome();
   let s: any = {};
   try { s = readJson(join(H, ".claude", "settings.json")); } catch {}
+  // An env block: its names only (values may be keys). Not brought: Keel has no
+  // environment of its own per folder or per user setting; its commands run with
+  // the environment Keel was started with, and many of these set Claude Code itself.
+  for (const f of claudeFiles(deps)) {
+    const names = f.env && typeof f.env === "object" ? Object.keys(f.env) : [];
+    if (!names.length) continue;
+    items.push({ id: `settings:claude-env:${hash(f.path)}`, area: "settings", source: f.root ? "Claude Code (project)" : "Claude Code", title: `Environment in ${tilde(f.path)}`, detail: names.slice(0, 12).join(", ") + (names.length > 12 ? `, ${names.length - 12} more` : ""),
+      state: "skip", pick: false, reason: "Keel's commands run with the environment Keel was started with, and has no per-folder environment: set what a project needs in its own tooling (an .envrc)" });
+  }
   if (s.statusLine) items.push({ id: "settings:claude-statusline", area: "settings", source: "Claude Code", title: "Status line", detail: String(s.statusLine.command ?? "").slice(0, 120), state: "skip", reason: "it reads Claude Code's own state; Keel shows model, context and spend in its header", pick: false });
 }
 
+// ---- Claude Code's settings files --------------------------------------------------------
+// The user's (~/.claude/settings.json and settings.local.json) and each
+// project's, for the folders Keel knows (its sessions' folders and its own, at
+// their repository root, where Claude Code reads them): the shared
+// .claude/settings.json and the personal .claude/settings.local.json.
+type ClaudeFile = { file: string; path: string; root?: string; permissions?: any; hooks?: any; env?: any; error?: string };
+const knownRoots = (deps: PortDeps) => [...new Set(deps.store.sessions({}).map((x) => x.workspace).concat(deps.workspace).filter(isDir).map(projectRoot))].sort();
+function claudeFiles(deps: PortDeps): ClaudeFile[] {
+  const H = portHome();
+  const out: ClaudeFile[] = [];
+  const read = (dir: string, root?: string) => {
+    for (const file of ["settings.json", "settings.local.json"]) {
+      const path = join(dir, ".claude", file);
+      if (!existsSync(path)) continue;
+      try {
+        const j = readJson(path);
+        out.push({ file, path, root, permissions: j?.permissions, hooks: j?.hooks, env: j?.env });
+      } catch (e) { out.push({ file, path, root, error: (e as Error).message }); }
+    }
+  };
+  read(H);
+  for (const r of knownRoots(deps)) if (r !== H && r !== homedir()) read(r, r);
+  return out;
+}
+const rulesOf = (p: any, k: string): string[] => (p && Array.isArray(p[k]) ? p[k].filter((x: unknown) => typeof x === "string") : []);
+
 // ---- permission rules ------------------------------------------------------------------
-// Claude Code's user rules (they hold in every folder: scope /) and the Rust
-// Keel's stored answers (their own folder), as Keel's gate rules (port-permissions.ts).
+// Claude Code's user rules (they hold in every folder: scope /), each known
+// project's rules (its repository: the owner's pick in the preview is the trust
+// Claude Code asks for before a project's allow rules apply) and the Rust Keel's
+// stored answers (their own folder), as Keel's gate rules (port-permissions.ts).
 function planPermissions(items: Planned[], deps: PortDeps) {
   const H = portHome();
   const rc = rustConfig();
@@ -610,20 +697,35 @@ function planPermissions(items: Planned[], deps: PortDeps) {
       return `allowed: ${shown}`;
     } });
   };
-  for (const file of ["settings.json", "settings.local.json"]) {
-    let p: any;
-    try { p = readJson(join(H, ".claude", file)).permissions; } catch { continue; }
-    if (!p) continue;
-    const list = (k: string): string[] => (Array.isArray(p[k]) ? p[k].filter((x: unknown) => typeof x === "string") : []);
-    // A tool the owner denies or asks for in part: its allow rules stay out, since Keel could not keep the exception.
-    const held = new Set([...list("deny"), ...list("ask")].map((r) => parseRule(r)?.tool ?? r));
-    for (const kind of ["deny", "ask"] as const) for (const r of list(kind))
-      add(`permissions:claude:${file}:${kind}:${hash(r)}`, "Claude Code", `${kind} ${r}`, { skip: kind === "deny" ? "Keel's rules only allow: a call no rule allows asks, and its own checks ask for risky ones whatever the rules say" : "Keel's rules only allow: a call no rule allows asks already" }, "/");
-    for (const r of list("allow")) {
+  // Claude Code merges the rule lists of every level: a deny or ask anywhere
+  // (the user's files or a project's) holds over an allow at any level, so an
+  // allow of a tool held where it would apply stays out (Keel could not keep
+  // the exception). User rules hold in every folder, project rules in their
+  // repository (Claude Code reads them at the root).
+  const files = claudeFiles(deps);
+  const user = files.filter((f) => !f.root);
+  const projects = files.filter((f) => f.root);
+  const heldIn = (files: ClaudeFile[]) => {
+    const out: { tool: string; where: string }[] = [];
+    for (const f of files) for (const r of [...rulesOf(f.permissions, "deny"), ...rulesOf(f.permissions, "ask")]) out.push({ tool: parseRule(r)?.tool ?? r, where: f.root ? tilde(f.root) : "your user settings" });
+    return out;
+  };
+  const holds = (held: { tool: string; where: string }[], tool: string) => held.find((h) => h.tool === tool || (h.tool.endsWith("*") && tool.startsWith(h.tool.slice(0, -1))));
+  const userHeld = heldIn(user);
+  for (const f of [...user, ...projects]) {
+    const scope = f.root ?? "/";
+    const source = f.root ? "Claude Code (project)" : "Claude Code";
+    const key = f.root ? `claude-project:${hash(f.root)}:${f.file}` : `claude:${f.file}`;
+    const where = f.root ? ` (${tilde(f.root)})` : "";
+    // A user allow is held by a deny or ask in any project too: it would hold there.
+    const held = f.root ? [...heldIn(projects.filter((x) => x.root === f.root)), ...userHeld] : [...userHeld, ...heldIn(projects)]; // its own level named first
+    for (const kind of ["deny", "ask"] as const) for (const r of rulesOf(f.permissions, kind))
+      add(`permissions:${key}:${kind}:${hash(r)}`, source, `${kind} ${r}${where}`, { skip: kind === "deny" ? "Keel's rules only allow: a call no rule allows asks, and its own checks ask for risky ones whatever the rules say" : "Keel's rules only allow: a call no rule allows asks already" }, scope);
+    for (const r of rulesOf(f.permissions, "allow")) {
       const tool = parseRule(r)?.tool ?? r;
-      const m: Mapped = held.has(tool) || [...held].some((h) => h.endsWith("*") && tool.startsWith(h.slice(0, -1)))
-        ? { skip: `${tool} also has deny or ask rules there, which Keel could not keep` } : claudeAllow(r);
-      add(`permissions:claude:${file}:allow:${hash(r)}`, "Claude Code", r, m, "/");
+      const h = holds(held, tool);
+      const m: Mapped = h ? { skip: `${tool} also has deny or ask rules${h.where === (f.root ? tilde(f.root) : "your user settings") ? " there" : ` in ${h.where}`}, which Keel could not keep` } : claudeAllow(r, f.root);
+      add(`permissions:${key}:allow:${hash(r)}`, source, `${r}${where}`, m, scope);
     }
   }
   // The Rust Keel: its stored "always" answers, and what gate.json sets.
@@ -671,9 +773,9 @@ export async function planParts(deps: PortDeps, opts: { days?: number; max?: num
   await part(["memory"], (items) => planMemory(items, deps.store));
   await part(["skills", "plugins"], (items) => planSkills(items, hooks));
   await part(["mcp"], (items) => planMcp(items, deps));
-  await part(["hooks"], (items) => planHooks(items, hooks));
+  await part(["hooks"], (items) => { planHooks(items, hooks); planProjectHooks(items, deps); });
   await part(["permissions"], (items) => planPermissions(items, deps));
-  await part(["settings"], (items) => planSettings(items));
+  await part(["settings"], (items) => planSettings(items, deps));
   await sessions;
   // The order the page shows: by area, as AREAS lists them.
   return all.sort((a, b) => AREAS.indexOf(a.area) - AREAS.indexOf(b.area));
