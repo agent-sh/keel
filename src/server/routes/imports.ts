@@ -31,8 +31,9 @@ function tail(events: { kind: string; data: any }[], n = 6) {
 
 export const importRoutes: RouteModule = (deps) => {
   const { store, bus, providers } = deps;
+  // The index is built on first use (the import sheet), not at start: walking
+  // tens of thousands of other harnesses' files costs every start CPU and memory.
   const imports = new Imports(store);
-  imports.refresh().catch((e) => deps.errors.capture("server", e, { at: "import index" }));
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
   // The source's model when this daemon lists it, else the default one.
   const modelFor = async (f: Found): Promise<string | undefined> => {
@@ -74,7 +75,9 @@ export const importRoutes: RouteModule = (deps) => {
         const sort = u.get("sort") || undefined;
         if (sort && !["updated", "size", "title"].includes(sort)) return bad(`unknown sort ${sort}`);
         if (u.has("refresh")) imports.invalidate();
-        await imports.fresh(u.has("refresh") ? 10_000 : 1000);
+        // Opening the list walks the stores again; a search typed key by key or
+        // the next page reads the index the opening built.
+        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || (!u.get("q") && !Number(u.get("cursor") ?? 0)));
         const limit = u.get("limit") ? Number(u.get("limit")) : undefined;
         if (limit !== undefined && !(limit > 0)) return bad("limit must be a number above 0");
         const r = imports.list({ harness: harness as Harness | undefined, q: u.get("q") ?? undefined, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor: Number(u.get("cursor") ?? 0) || 0 });

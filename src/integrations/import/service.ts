@@ -33,8 +33,11 @@ const sourceStat = (f: Found) => {
   try { const s = statSync(f.harness === "keel" ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
 };
 
+const REFRESH_MS = 30_000;
+
 export class Imports {
   private building: Promise<void> | null = null;
+  private builtAt = 0;
   private keelCache: { at: number; rows: Found[] } | null = null;
   complete = false;
 
@@ -52,8 +55,11 @@ export class Imports {
       const seen = new Set<string>();
       const put = db.query("INSERT INTO import_index (path, harness, size, mtime, found) VALUES (?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, found = excluded.found");
       let n = 0;
+      let walked = 0;
       for (const [harness, files, found] of [["claude", claudeFiles(), claudeFound], ["codex", codexFiles(), codexFound]] as const) {
         for (const f of files) {
+          // The walk alone (a stat per file) yields too, not only the reads.
+          if (++walked % 1000 === 0) await new Promise((r) => setTimeout(r, 0));
           seen.add(f.path);
           const k = known.get(f.path);
           const mtime = Math.round(f.mtime);
@@ -68,6 +74,7 @@ export class Imports {
       const del = db.query("DELETE FROM import_index WHERE path = ?");
       for (const p of gone) del.run(p);
       this.complete = true;
+      this.builtAt = Date.now();
     })().finally(() => { this.building = null; });
     return this.building;
   }
@@ -77,7 +84,10 @@ export class Imports {
   }
 
   // Up to `ms` of a refresh before answering; the rest goes on in the background.
-  async fresh(ms = 1000) {
+  // A listing within REFRESH_MS of the last walk (a search typed key by key)
+  // reads the index as it is; `force` walks again.
+  async fresh(ms = 1000, force = false) {
+    if (!force && this.complete && Date.now() - this.builtAt < REFRESH_MS) return;
     const r = this.refresh();
     await Promise.race([r, new Promise((res) => setTimeout(res, ms))]);
   }
