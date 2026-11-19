@@ -10,6 +10,7 @@
 // The same reference always resolves to the same bytes for a given model.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { decodeText, textEncoding } from "../core/text.ts";
 import type { AttachmentBlock, Message } from "../core/types.ts";
 import type { ModelInfo } from "../providers/types.ts";
 
@@ -48,7 +49,7 @@ export function saveAttachment(bytes: Uint8Array, name: string, mediaType: strin
 export function servedType(path: string, name: string, declared?: string): string {
   const byName = Bun.file(name).type || Bun.file(path).type;
   if (byName && byName !== "application/octet-stream") return byName;
-  if (declared && TEXT_MEDIA.test(declared) && "text" in decodeText({ type: "attachment", id: "", name, media_type: declared, size: 0 }, read(path))) return "text/plain;charset=utf-8";
+  if (declared && TEXT_MEDIA.test(declared) && "text" in attachmentText({ type: "attachment", id: "", name, media_type: declared, size: 0 }, read(path))) return "text/plain;charset=utf-8";
   return "application/octet-stream";
 }
 
@@ -63,29 +64,22 @@ export function attachmentPath(id: string): string | undefined {
 const textType = (a: AttachmentBlock) =>
   TEXT_MEDIA.test(a.media_type) || a.media_type === "application/octet-stream";
 
-// A text file's characters: a byte-order mark names UTF-8 or UTF-16 (either
-// byte order), else the charset the upload declared, else UTF-8. Decoding is
-// strict. Bytes that are not text, or not valid in that encoding, give a
-// reason instead.
-export function decodeText(a: AttachmentBlock, bytes: Uint8Array): { text: string } | { why: string } {
+// A text file's characters, by the one decoder (core/text.ts) with the
+// charset the upload declared. Decoding is strict here: bytes that are not
+// text, or not valid in their encoding, give a reason instead.
+function attachmentText(a: AttachmentBlock, bytes: Uint8Array): { text: string } | { why: string } {
   if (!textType(a)) return { why: "it is not text" };
-  let enc = (a.charset ?? "utf-8").toLowerCase();
-  let body = bytes;
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) { enc = "utf-8"; body = bytes.subarray(3); }
-  else if (bytes[0] === 0xff && bytes[1] === 0xfe) { enc = "utf-16le"; body = bytes.subarray(2); }
-  else if (bytes[0] === 0xfe && bytes[1] === 0xff) { enc = "utf-16be"; body = bytes.subarray(2); }
-  if (enc === "utf8") enc = "utf-8";
-  if (enc === "utf-16") enc = "utf-16le";
+  const enc = textEncoding(bytes, a.charset).encoding;
   // A zero byte in UTF-8 text marks a binary file; UTF-16 holds them by design.
-  if (!enc.startsWith("utf-16") && body.subarray(0, 8000).includes(0)) return { why: "it is not text" };
-  let text: string;
+  if (!enc.startsWith("utf-16") && bytes.subarray(0, 8000).includes(0)) return { why: "it is not text" };
+  let r: ReturnType<typeof decodeText>;
   try {
-    text = new TextDecoder(enc, { fatal: true, ignoreBOM: true }).decode(body);
+    r = decodeText(bytes, { charset: a.charset, fatal: true });
   } catch (e) {
     return { why: e instanceof RangeError ? `its declared encoding ${enc} is not supported` : `it is not valid ${enc.toUpperCase()} text` };
   }
-  if (text.includes("\u0000")) return { why: "it is not text" };
-  return { text };
+  if (r.text.includes("\u0000")) return { why: "it is not text" };
+  return { text: r.text };
 }
 
 const cache = new Map<string, Buffer>();
@@ -110,7 +104,7 @@ export function resolveAttachments(messages: Message[], info: Pick<ModelInfo, "p
       if (!path) return { type: "text", text: `[Attached file ${a.name} is no longer stored.]` };
       const bytes = read(path);
       if (a.media_type === "application/pdf" && info.pdf) return { type: "document", media_type: a.media_type, data: bytes.toString("base64"), name: a.name };
-      const t = a.media_type === "application/pdf" || a.size > TEXT_INLINE ? undefined : decodeText(a, bytes);
+      const t = a.media_type === "application/pdf" || a.size > TEXT_INLINE ? undefined : attachmentText(a, bytes);
       if (t && "text" in t) return { type: "text", text: `<attached-file name="${a.name}" path="${path}">\n${t.text}\n</attached-file>` };
       // A PDF the listing does not say either way about is not sent inline, and
       // the note says support is unverified rather than missing.
