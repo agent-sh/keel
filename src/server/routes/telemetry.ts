@@ -3,7 +3,7 @@
 // to first token (p50, p95), output speed, cache hit rate, error rates, per
 // bucket of time, per model and per tool. Prices and per-turn cost are the
 // usage report's (/api/usage); this reports how the calls behaved.
-import { Telemetry } from "../../admin/telemetry.ts";
+import { BREAK_CAUSES, Telemetry } from "../../admin/telemetry.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -26,5 +26,15 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
         return json(t.report({ since, until, session, bucket }));
       },
     },
+    // GET /api/telemetry/examples?tool=&session_id=&limit=  the last failed tool calls
+    "/api/telemetry/examples": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
+        if (limit !== undefined && !Number.isFinite(limit)) return json({ error: "limit is not a number" }, 400);
+        return json({ examples: t.examples({ tool: q.get("tool") || undefined, session: q.get("session_id") || undefined, limit }) });
+      },
+    },
+    "/api/telemetry/vocabulary": { GET: () => json({ cache_break_causes: BREAK_CAUSES, outcomes: ["ok", "error", "interrupted"] }) },
   };
 };

@@ -128,6 +128,21 @@ export const adminRoutes: RouteModule = (deps) => {
       },
     },
 
+    // { sessions?: ids, archived?: true }: drops those sessions' checkpoints (a
+    // rewind to their turns is no longer possible) and those of deleted sessions.
+    "/api/storage/checkpoints": {
+      POST: async (req: Request) => {
+        const b = (await body(req)) ?? {};
+        if ((b.sessions !== undefined && (!Array.isArray(b.sessions) || b.sessions.some((x: unknown) => typeof x !== "string"))) || (b.archived !== undefined && typeof b.archived !== "boolean")) {
+          return json({ error: "the body is { sessions?: string[], archived?: boolean }" }, 400);
+        }
+        const ids: string[] = [...(b.sessions ?? [])];
+        if (b.archived) ids.push(...store.sessions({ archived: true }).map((s) => s.id));
+        for (const id of ids) if (!store.session(id)) return json({ error: `no such session ${id}` }, 404);
+        return json(await storage.removeCheckpoints(ids));
+      },
+    },
+
     "/api/backups": {
       GET: () => json({ backups: storage.backups(), settings: settings().backup }),
       POST: async () => json({ backup: storage.backup("asked for") }, 201),

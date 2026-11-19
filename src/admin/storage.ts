@@ -69,7 +69,21 @@ export class Storage {
         COALESCE((SELECT SUM(length(json_extract(i.value, '$.data'))) FROM events e, json_each(e.data, '$.images') i WHERE e.session_id = s.id AND e.kind = 'user'), 0) AS attach
       FROM sessions s`).all();
     const spillDirs = rows.map((r) => join(this.dir, "spill", r.id));
-    const sizes = await du([...Object.values(DIRS).map((d) => join(this.dir, d)), ...spillDirs]);
+    const cps = this.checkpointRows();
+    const shadowDirs = [...new Set(cps.map((c) => c.shadow))];
+    const sizes = await du([...Object.values(DIRS).map((d) => join(this.dir, d)), ...spillDirs, ...shadowDirs]);
+    // A folder's checkpoints live in one shadow repository; a session's part is
+    // its share of that folder's checkpoints (an estimate: they share objects).
+    const perShadow = new Map<string, number>();
+    for (const c of cps) perShadow.set(c.shadow, (perShadow.get(c.shadow) ?? 0) + c.n);
+    const cpOf = new Map(cps.map((c) => [c.session_id, { count: c.n, bytes: Math.round(((sizes.get(c.shadow) ?? 0) * c.n) / (perShadow.get(c.shadow) || 1)) }]));
+    const folders = new Map<string, { workspace: string; bytes: number; checkpoints: number; sessions: number }>();
+    for (const c of cps) {
+      const f = folders.get(c.shadow) ?? { workspace: c.workspace, bytes: sizes.get(c.shadow) ?? 0, checkpoints: 0, sessions: 0 };
+      f.checkpoints += c.n;
+      f.sessions++;
+      folders.set(c.shadow, f);
+    }
     const dbBytes = ["keel.db", "keel.db-wal", "keel.db-shm"].reduce((n, f) => n + (existsSync(join(this.dir, f)) ? statSync(join(this.dir, f)).size : 0), 0);
     const group = (pred: (r: (typeof rows)[number]) => boolean) => {
       const list = rows.filter(pred);
@@ -90,11 +104,68 @@ export class Storage {
       attachments_bytes: Math.round(rows.reduce((n, r) => n + r.attach, 0) * 0.75), // base64 in the store
       ...dirs,
       leftovers: { count: leftovers.length, bytes: [...leftoverSizes.values()].reduce((n, b) => n + b, 0) },
+      checkpoint_folders: [...folders.values()].sort((a, b) => b.bytes - a.bytes),
+      orphan_checkpoints: cps.filter((c) => c.gone).reduce((n, c) => n + c.n, 0),
       by_session: rows
-        .map((r) => ({ id: r.id, title: r.title, archived: !!r.archived, subagent: !!r.parent_id, transcript_bytes: r.bytes, spill_bytes: sizes.get(join(this.dir, "spill", r.id)) ?? 0, bytes: r.bytes + (sizes.get(join(this.dir, "spill", r.id)) ?? 0), updated_ms: r.updated }))
+        .map((r) => {
+          const spill = sizes.get(join(this.dir, "spill", r.id)) ?? 0;
+          const cp = cpOf.get(r.id) ?? { count: 0, bytes: 0 };
+          return { id: r.id, title: r.title, archived: !!r.archived, subagent: !!r.parent_id, transcript_bytes: r.bytes, spill_bytes: spill, checkpoints: cp.count, checkpoint_bytes: cp.bytes, bytes: r.bytes + spill + cp.bytes, updated_ms: r.updated };
+        })
         .sort((a, b) => b.bytes - a.bytes)
         .slice(0, 50),
     };
+  }
+
+  // Checkpoint rows per session with the shadow repository they live in
+  // (src/safety/shadow.ts: <state>/checkpoints/<sha256(folder)[:16]>.git).
+  private checkpointRows() {
+    const db = this.store.db;
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'checkpoints'").get()) return [];
+    return db
+      .query<{ session_id: string; workspace: string | null; n: number }, []>(
+        "SELECT c.session_id, s.workspace, COUNT(*) AS n FROM checkpoints c LEFT JOIN sessions s ON s.id = c.session_id GROUP BY c.session_id",
+      )
+      .all()
+      .map((r) => ({ ...r, gone: r.workspace === null, workspace: r.workspace ?? "", shadow: r.workspace === null ? "" : shadowDir(this.dir, r.workspace) }))
+      .filter((r) => r.gone || existsSync(r.shadow));
+  }
+
+  // Drops the checkpoints of the given sessions (and those of sessions that no
+  // longer exist), then lets git drop what no checkpoint still needs: the trees
+  // of the checkpoints that stay are pinned by refs first. Objects younger than
+  // an hour are kept, so a snapshot written meanwhile is never cut.
+  async removeCheckpoints(sessionIds: string[]) {
+    const db = this.store.db;
+    const busy = sessionIds.filter((id) => this.engine.isRunning(id));
+    if (busy.length) throw Object.assign(new Error("a turn of that session is running; stop it first"), { status: 409 });
+    const before = this.checkpointRows();
+    const touched = new Set(before.filter((r) => r.gone || sessionIds.includes(r.session_id)).map((r) => r.workspace).filter(Boolean));
+    const removed = db.transaction(() => {
+      let n = 0;
+      for (const id of sessionIds) n += db.query("DELETE FROM checkpoints WHERE session_id = ?").run(id).changes;
+      n += db.query("DELETE FROM checkpoints WHERE session_id NOT IN (SELECT id FROM sessions)").run().changes;
+      return n;
+    })();
+    let freed = 0;
+    for (const ws of touched) {
+      const dir = shadowDir(this.dir, ws);
+      if (!existsSync(join(dir, "HEAD"))) continue;
+      const size0 = (await du([dir])).get(dir) ?? 0;
+      const trees = db.query<{ id: string; tree: string }, [string]>("SELECT c.id, c.tree FROM checkpoints c JOIN sessions s ON s.id = c.session_id WHERE s.workspace = ?").all(ws);
+      const git = (args: string[], input?: string) => {
+        const r = Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_DIR: dir }, stdin: input === undefined ? "ignore" : new TextEncoder().encode(input), stdout: "pipe", stderr: "pipe" });
+        if (!r.success) throw new Error(`git ${args[0]} in ${dir}: ${r.stderr.toString().trim().slice(0, 300)}`);
+        return r.stdout.toString();
+      };
+      const old = git(["for-each-ref", "--format=%(refname)", "refs/keel/keep/"]).split("\n").filter(Boolean);
+      const refs = [...old.map((r) => `delete ${r}`), ...trees.map((t) => `update refs/keel/keep/${t.id} ${t.tree}`)];
+      if (refs.length) git(["update-ref", "--stdin"], refs.join("\n") + "\n");
+      git(["-c", "gc.reflogExpire=now", "-c", "gc.reflogExpireUnreachable=now", "gc", "--quiet", "--prune=1.hour.ago"]);
+      freed += Math.max(0, size0 - ((await du([dir])).get(dir) ?? 0));
+    }
+    this.last = undefined;
+    return { removed_checkpoints: removed, freed_bytes: freed };
   }
 
   // A session and what belongs to it: its turn, its commands, its spilled output.
@@ -230,6 +301,9 @@ export class Storage {
       .sort((a, b) => b.created_ms - a.created_ms);
   }
 }
+
+export const shadowDir = (stateDir: string, workspace: string) =>
+  join(stateDir, "checkpoints", createHash("sha256").update(workspace).digest("hex").slice(0, 16) + ".git");
 
 // Opens a backup's database read-only and checks it: SQLite's integrity check,
 // the files against the manifest, and what it holds.

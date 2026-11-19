@@ -14,7 +14,9 @@ type Report = {
   sessions: { count: number; transcript_bytes: number }; archived_sessions: { count: number; transcript_bytes: number }; subagent_sessions: { count: number; transcript_bytes: number };
   spilled_output_bytes: number; checkpoints_bytes: number; worktrees_bytes: number; reports_bytes: number; backups_bytes: number; plugins_bytes: number;
   leftovers: { count: number; bytes: number };
-  by_session: { id: string; title: string; archived: boolean; subagent: boolean; transcript_bytes: number; spill_bytes: number; bytes: number; updated_ms: number }[];
+  by_session: { id: string; title: string; archived: boolean; subagent: boolean; transcript_bytes: number; spill_bytes: number; checkpoints: number; checkpoint_bytes: number; bytes: number; updated_ms: number }[];
+  checkpoint_folders: { workspace: string; bytes: number; checkpoints: number; sessions: number }[];
+  orphan_checkpoints: number;
 };
 type Backup = { name: string; path: string; created_ms: number; reason: string; sessions: number; events: number; bytes: number };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number };
@@ -81,6 +83,7 @@ export function StoragePanel() {
   const [days, setDays] = useState("30");
   const [found, setFound] = useState<{ days: number; sessions: Candidate[]; bytes: number } | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [cpDone, setCpDone] = useState<string | null>(null);
   const [backups, setBackups] = useState<Backup[]>([]);
   const [settings, patch] = useSettings();
 
@@ -109,6 +112,14 @@ export function StoragePanel() {
     });
     setDone(`Deleted ${x.deleted.length}${x.skipped.length ? `; ${x.skipped.length} skipped (${[...new Set(x.skipped.map((s) => s.why))].join(", ")})` : ""}.`);
     setFound(null);
+    load(true);
+  };
+
+  const dropCheckpoints = async (what: { sessions?: string[]; archived?: boolean }, label: string) => {
+    const ok = await confirmAction({ title: `Drop the checkpoints ${label}?`, body: "Their turns can no longer be rewound. Files in the folder are not touched.", action: "Drop", danger: true });
+    if (!ok) return;
+    const x = await api<{ removed_checkpoints: number; freed_bytes: number }>("/api/storage/checkpoints", { method: "POST", body: JSON.stringify(what) });
+    setCpDone(`Dropped ${x.removed_checkpoints} checkpoints; ${fmtBytes(x.freed_bytes)} freed.`);
     load(true);
   };
 
@@ -206,16 +217,53 @@ export function StoragePanel() {
       </Card>
 
       <Card>
-        <div className="py-4 text-base font-medium">Largest sessions</div>
+        <div className="flex items-center gap-3 border-b border-line py-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-base font-medium">Checkpoints</div>
+            <div className="mt-0.5 text-ui text-muted">Snapshots of each folder before and after every turn, so a turn can be rewound. Dropping a session's checkpoints frees what no other session needs; its turns can no longer be rewound.</div>
+          </div>
+          {r.by_session.some((s) => s.archived && s.checkpoints) || r.orphan_checkpoints ? (
+            <button type="button" className={btn} data-testid="checkpoints-archived" onClick={() => dropCheckpoints({ archived: true }, "of every archived session").catch(reportError)}>
+              Drop archived
+            </button>
+          ) : null}
+        </div>
+        {cpDone && <p className="pt-3 text-ui text-muted" data-testid="checkpoints-done">{cpDone}</p>}
+        {r.checkpoint_folders.length === 0 && <p className="py-4 text-ui text-faint">No checkpoints yet.</p>}
+        {r.checkpoint_folders.map((f) => (
+          <div key={f.workspace} className="flex h-10 items-center gap-3 border-b border-line/60 text-ui last:border-0" data-testid="checkpoint-folder">
+            <span className="min-w-0 flex-1 truncate font-mono text-caption" title={f.workspace}>{f.workspace}</span>
+            <span className="text-caption tabular-nums text-faint">{f.sessions} sessions, {f.checkpoints} checkpoints</span>
+            <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(f.bytes)}</span>
+          </div>
+        ))}
+      </Card>
+
+      <Card>
+        <div className="flex items-center py-4 text-base font-medium">
+          Largest sessions
+          <span className="ml-auto text-caption font-normal text-faint">transcript, spilled output and its share of checkpoints</span>
+        </div>
         <div className="-mx-5 border-t border-line">
           {r.by_session.slice(0, 15).map((s) => (
-            <button key={s.id} type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="flex h-9 w-full items-center gap-3 border-b border-line/60 px-5 text-left text-ui last:border-0 hover:bg-hover">
-              <span className="min-w-0 flex-1 truncate">{s.title || "Untitled"}</span>
+            <div key={s.id} className="group flex h-9 w-full items-center gap-3 border-b border-line/60 px-5 text-ui last:border-0 hover:bg-hover" data-testid="storage-session">
+              <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
               {s.archived && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>}
               {s.subagent && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">subagent</span>}
+              {s.checkpoints > 0 && (
+                <button
+                  type="button"
+                  data-testid="session-checkpoints"
+                  title={`${s.checkpoints} checkpoints, about ${fmtBytes(s.checkpoint_bytes)}. Drop them.`}
+                  onClick={() => dropCheckpoints({ sessions: [s.id] }, `of ${s.title || "this session"}`).catch(reportError)}
+                  className="rounded-xs px-1.5 text-micro tabular-nums text-faint hover:bg-sunken hover:text-fg"
+                >
+                  {fmtBytes(s.checkpoint_bytes)} checkpoints
+                </button>
+              )}
               <span className="text-caption tabular-nums text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span>
               <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(s.bytes)}</span>
-            </button>
+            </div>
           ))}
         </div>
       </Card>

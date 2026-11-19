@@ -53,6 +53,23 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await panel.getByTestId("backup-now").scrollIntoViewIfNeeded();
   await shoot(page, "storage-03-policy-backups");
 
+  // A session that wrote a file has checkpoints: its share is shown and dropping them frees the rewind data.
+  const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const w = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Wrote a file", text: "Create the file notes-storage-check.txt with the text hello, using your file writing tool. Then reply done." } })).json()).session;
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${w.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 120_000 }).toBe(true);
+  await request.put("/api/permissions/settings", { data: { default_mode: prev } });
+  expect((await (await request.get(`/api/sessions/${w.id}/checkpoints`)).json()).turns.length).toBeGreaterThan(0);
+  await page.reload();
+  await expect(panel.getByTestId("checkpoint-folder").first()).toBeVisible();
+  const row = panel.getByTestId("storage-session").filter({ hasText: "Wrote a file" });
+  await row.getByTestId("session-checkpoints").click();
+  await page.getByTestId("confirm").getByRole("button", { name: "Drop" }).click();
+  await expect(panel.getByTestId("checkpoints-done")).toContainText("Dropped");
+  expect((await (await request.get(`/api/sessions/${w.id}/checkpoints`)).json()).turns.length).toBe(0);
+  await panel.getByTestId("checkpoints-done").scrollIntoViewIfNeeded();
+  await shoot(page, "storage-04-checkpoints");
+
   await request.patch("/api/settings", { data: { archive: { delete_archived_days: null } } });
-  await request.delete(`/api/sessions/${old2.id}`);
+  for (const id of [old2.id, w.id]) await request.delete(`/api/sessions/${id}`);
 });

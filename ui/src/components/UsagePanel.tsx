@@ -4,7 +4,8 @@
 // rates from the local telemetry.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, reportError, useStore } from "../lib/store.ts";
-import { cn, fmtTokens } from "../lib/utils.ts";
+import { navigate, setUI } from "../lib/ui.ts";
+import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Card, Segmented } from "./Settings.tsx";
 
@@ -21,7 +22,65 @@ type Report = {
   by_model: (Stats & { model: string })[];
   tools: { tool: string; tool_calls: number; tool_errors: number; tool_error_rate: number; p50_ms: number | null; p95_ms: number | null; total_ms: number }[];
   error_kinds: { message: string; count: number; last_ms: number }[];
+  breaks: { cause: string; count: number; last_ms: number | null; uncached_tokens: number }[];
+  spend: { day: Spend; month: Spend };
 };
+type Spend = { since_ms: number; usd: number; unpriced_calls: number; limit_usd: number | null };
+type Example = { session_id: string; ts: number; tool: string; ms: number | null; error: string | null; session_title?: string; session_gone: boolean; event_id?: string };
+
+export const CAUSE: Record<string, string> = {
+  expired: "the cache lifetime passed",
+  model_switch: "the model changed",
+  compaction: "a compaction rewrote the history",
+  prefix_changed: "the prompt prefix changed",
+};
+
+// The last failures of one tool, each linked to its session at the call.
+export function Failures({ tool, session }: { tool?: string; session?: string }) {
+  const [list, setList] = useState<Example[] | null>(null);
+  useEffect(() => {
+    const q = new URLSearchParams({ limit: "8", ...(tool ? { tool } : {}), ...(session ? { session_id: session } : {}) });
+    api<{ examples: Example[] }>(`/api/telemetry/examples?${q}`).then((r) => setList(r.examples)).catch(reportError);
+  }, [tool, session]);
+  if (!list) return null;
+  if (!list.length) return <p className="py-2 text-caption text-faint">No failed calls.</p>;
+  return (
+    <div className="flex flex-col" data-testid="tool-failures">
+      {list.map((e, i) => (
+        <div key={i} className="flex items-baseline gap-3 py-1 text-caption">
+          <span className="w-12 shrink-0 tabular-nums text-faint" title={when(e.ts)}>{ago(e.ts)}</span>
+          {!tool && <span className="shrink-0 font-mono text-muted">{e.tool}</span>}
+          <span className="min-w-0 flex-1 truncate font-mono text-muted" title={e.error ?? ""}>{e.error || "failed"}</span>
+          {!session && (e.session_gone ? <span className="shrink-0 text-faint">deleted session</span> : (
+            <button type="button" className="max-w-48 shrink-0 truncate text-accent hover:underline" onClick={() => { if (e.event_id) setUI({ focusEvent: e.event_id }); navigate({ name: "session", id: e.session_id }); }}>
+              {e.session_title || "the session"}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MoneyField({ value, onSave, label, testid }: { value: number | null; onSave: (v: number | null) => Promise<unknown>; label: string; testid?: string }) {
+  const [text, setText] = useState(value == null ? "" : String(value));
+  const [bad, setBad] = useState(false);
+  useEffect(() => setText(value == null ? "" : String(value)), [value]);
+  const save = () => {
+    const t = text.trim().replace(/^\$/, "");
+    const v = t === "" ? null : Number(t);
+    if (v !== null && !(v > 0)) return setBad(true);
+    setBad(false);
+    if (v !== value) onSave(v).catch((e) => { setBad(true); reportError(e); });
+  };
+  return (
+    <label className={cn("flex h-8 items-center gap-1 rounded-md border bg-raised px-2.5 text-ui", bad ? "border-danger" : "border-line-strong")}>
+      <span className="text-muted">$</span>
+      <input aria-label={label} data-testid={testid} inputMode="decimal" value={text} placeholder="None" onChange={(e) => setText(e.target.value)} onBlur={save}
+        onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()} className="w-16 bg-transparent text-right tabular-nums outline-none placeholder:text-faint" />
+    </label>
+  );
+}
 
 const RANGES = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 } as const;
 type Range = keyof typeof RANGES;
@@ -52,7 +111,7 @@ function Panel({ title, hint, children, testid }: { title: string; hint?: string
   );
 }
 
-function Table({ head, rows, align }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[] }) {
+function Table({ head, rows, align, onRow, expanded }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[]; onRow?: (i: number) => void; expanded?: (i: number) => ReactNode }) {
   return (
     <div className="-mx-4 overflow-x-auto">
       <table className="w-full text-ui">
@@ -62,11 +121,15 @@ function Table({ head, rows, align }: { head: string[]; rows: ReactNode[][]; ali
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={i} className="border-b border-line/60 last:border-0">
-              {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums", (align?.[j] ?? (j ? "r" : "l")) === "r" ? "text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
-            </tr>
-          ))}
+          {rows.map((r, i) => {
+            const more = expanded?.(i);
+            return [
+              <tr key={i} className={cn("border-b border-line/60 last:border-0", onRow && "cursor-default hover:bg-hover")} onClick={() => onRow?.(i)}>
+                {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums", (align?.[j] ?? (j ? "r" : "l")) === "r" ? "text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
+              </tr>,
+              more ? <tr key={`${i}-more`} className="border-b border-line/60"><td colSpan={r.length} className="bg-sunken/50 px-4 py-2">{more}</td></tr> : null,
+            ];
+          })}
         </tbody>
       </table>
     </div>
@@ -76,6 +139,10 @@ function Table({ head, rows, align }: { head: string[]; rows: ReactNode[][]; ali
 export function UsagePanel() {
   const [range, setRange] = useState<Range>("week");
   const [r, setR] = useState<Report | null>(null);
+  const [openTool, setOpenTool] = useState<string | null>(null);
+  const [budget, setBudget] = useState<{ daily_usd: number | null; monthly_usd: number | null } | null>(null);
+  useEffect(() => { api<{ settings: any }>("/api/settings").then((x) => setBudget(x.settings.budget)).catch(reportError); }, []);
+  const saveBudget = (p: Record<string, number | null>) => api<{ settings: any }>("/api/settings", { method: "PATCH", body: JSON.stringify({ budget: p }) }).then((x) => setBudget(x.settings.budget));
   const [cost, setCost] = useState<Record<string, { cost_usd?: number; priced_cost_usd: number; unpriced_calls: number }>>({});
   const models = useStore((s) => s.models);
   const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
@@ -132,6 +199,18 @@ export function UsagePanel() {
           series={[{ label: "Cache hit rate", color: "var(--series-1)" }]}
           bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} max={1} format={(v) => `${Math.round(v * 100)}%`}
         />
+        <div className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="cache-breaks">
+          {r.breaks.length === 0 ? "No request in this range read less from the cache than the one before it." : (
+            <div className="flex flex-wrap gap-x-5 gap-y-1">
+              {r.breaks.map((b) => (
+                <span key={b.cause}>
+                  <span className="font-medium tabular-nums text-fg">{b.count}</span> {b.count > 1 ? "breaks" : "break"}: {CAUSE[b.cause] ?? b.cause}
+                  <span className="text-faint">, {fmtTokens(b.uncached_tokens)} tokens sent again</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
       </Panel>
 
       <Panel title="Response time" hint="median per bucket" testid="chart-latency">
@@ -173,6 +252,8 @@ export function UsagePanel() {
         {r.tools.length ? (
           <Table
             head={["Tool", "Calls", "Failed", "Median", "95th", "Total time"]}
+            onRow={(i) => r.tools[i]!.tool_errors ? setOpenTool(openTool === r.tools[i]!.tool ? null : r.tools[i]!.tool) : undefined}
+            expanded={(i) => (openTool === r.tools[i]!.tool ? <Failures tool={openTool} /> : null)}
             rows={r.tools.map((x) => [
               <span className="font-mono text-caption">{x.tool}</span>, x.tool_calls,
               x.tool_errors ? <span className={x.tool_error_rate >= 0.15 ? "text-danger" : undefined}>{fmtPct(x.tool_error_rate)}</span> : "0%",
@@ -181,6 +262,29 @@ export function UsagePanel() {
           />
         ) : <p className="text-ui text-faint">No tool calls in this range.</p>}
       </Panel>
+
+      {budget && (
+        <Panel title="Spend limits" hint="a turn stops before a request once the limit is reached; calls without a known price are not counted" testid="usage-budget">
+          <div className="flex flex-col gap-3 sm:flex-row sm:gap-8">
+            {([["daily_usd", "Today", r.spend.day], ["monthly_usd", "This month", r.spend.month]] as const).map(([key, label, sp]) => (
+              <div key={key} className="flex flex-1 items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-ui font-medium">{label}</div>
+                  <div className="text-caption text-muted tabular-nums">
+                    {fmtUsd(sp.usd)} spent{sp.limit_usd ? ` of ${fmtUsd(sp.limit_usd)}` : ""}{sp.unpriced_calls ? `, ${sp.unpriced_calls} calls without a price` : ""}
+                  </div>
+                  {sp.limit_usd ? (
+                    <div className="mt-1.5 h-1.5 rounded-full bg-sunken">
+                      <div className={cn("h-1.5 rounded-full", sp.usd >= sp.limit_usd ? "bg-danger" : "bg-series-1")} style={{ width: `${Math.min(100, (sp.usd / sp.limit_usd) * 100)}%` }} />
+                    </div>
+                  ) : null}
+                </div>
+                <MoneyField label={`${label} limit`} testid={`budget-${key}`} value={budget[key]} onSave={(v) => saveBudget({ [key]: v })} />
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
 
       {r.error_kinds.length > 0 && (
         <Panel title="Why requests failed" testid="usage-failures">

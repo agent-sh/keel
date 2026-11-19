@@ -5,6 +5,7 @@
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { registerSettings, settings } from "./settings.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS telemetry_calls (
@@ -39,12 +40,28 @@ CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL
 
 type Pending = { t0: number; first?: number };
 
+// Why a request read less from the prompt cache than the one before it in the
+// same session: the cache lifetime passed (5 minutes is the default lifetime
+// of Anthropic's and Bedrock's cache, and the shortest any provider documents),
+// the model changed, a compaction rewrote the history, or the prefix changed.
+export const CACHE_TTL_MS = 5 * 60_000;
+export const BREAK_CAUSES = ["expired", "model_switch", "compaction", "prefix_changed"] as const;
+
+registerSettings(
+  "budget",
+  { daily_usd: null, monthly_usd: null },
+  (v) => ([v.daily_usd, v.monthly_usd].some((x) => x !== null && !(typeof x === "number" && x > 0)) ? "a limit is an amount of dollars above 0, or null" : undefined),
+);
+
 export class Telemetry {
   private pending = new Map<string, Pending>();
   private tools = new Map<string, number>();
 
   constructor(private store: Store, bus: Bus) {
     store.migrate(SCHEMA);
+    for (const [t, col, type] of [["telemetry_calls", "cache_break", "TEXT"], ["telemetry_tools", "call_id", "TEXT"], ["telemetry_tools", "error", "TEXT"]] as const) {
+      if (!store.columnExists(t, col)) store.db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
+    }
     this.backfill();
     bus.on((f) => {
       if (f.t === "delta") {
@@ -58,6 +75,8 @@ export class Telemetry {
     });
     registerHooks({
       beforeRequest: (s, req) => {
+        const over = this.overBudget();
+        if (over) throw Object.assign(new Error(over), { kind: "budget" });
         this.pending.set(s.id, { t0: Date.now() });
         return req;
       },
@@ -70,8 +89,8 @@ export class Telemetry {
         const t0 = this.tools.get(call.id);
         this.tools.delete(call.id);
         this.store.db
-          .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error) VALUES (?, ?, ?, ?, ?)")
-          .run(s.id, Date.now(), call.tool.name, t0 === undefined ? null : Date.now() - t0, result.is_error ? 1 : 0);
+          .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(s.id, Date.now(), call.tool.name, t0 === undefined ? null : Date.now() - t0, result.is_error ? 1 : 0, call.id, result.is_error ? excerpt(result.content) : null);
       },
       turnEnd: (s, reason) => {
         const p = this.pending.get(s.id);
@@ -85,11 +104,69 @@ export class Telemetry {
     const now = Date.now();
     const u = r.usage ?? {};
     const model = this.store.session(sessionId)?.model ?? "";
+    const brk = r.outcome === "ok" ? this.cacheBreak(sessionId, model, p.t0, u) : null;
     this.store.db
-      .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(sessionId, p.t0, model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
-        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error ?? null);
+        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error ?? null, brk);
+  }
+
+  // A request that read less than half of what the last one of the session
+  // sent, though its prompt is no shorter, broke the cache. Why, as far as
+  // the history and the clock say.
+  private cacheBreak(sessionId: string, model: string, ts: number, u: any): string | null {
+    const prev = this.store.db
+      .query<{ ts: number; model: string; prompt: number }, [string]>("SELECT ts, model, input + cache_read + cache_write AS prompt FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' ORDER BY ts DESC LIMIT 1")
+      .get(sessionId);
+    if (!prev || prev.prompt <= 0) return null;
+    const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
+    const compacted = this.compactedBetween(sessionId, prev.ts, ts);
+    // A shorter prompt without a compaction is a side request, not a break.
+    if (prompt < prev.prompt * 0.9 && prev.model === model && !compacted) return null;
+    if ((u.cache_read ?? 0) >= 0.5 * Math.min(prev.prompt, prompt)) return null;
+    return breakCause({ gapMs: ts - prev.ts, modelChanged: prev.model !== model, compacted });
+  }
+
+  private compactedBetween(sessionId: string, a: number, b: number) {
+    return !!this.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'compaction' AND ts > ? AND ts <= ? LIMIT 1").get(sessionId, a, b);
+  }
+
+  // Priced spend since local midnight and since the first of the month.
+  spend(now = new Date()) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const month = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const q = (since: number) => this.store.db.query<{ usd: number | null; unpriced: number | null }, [number]>("SELECT SUM(cost) AS usd, SUM(unpriced) AS unpriced FROM telemetry_calls WHERE ts >= ?").get(since)!;
+    const d = q(day), m = q(month);
+    const b = settings().budget;
+    return {
+      day: { since_ms: day, usd: d.usd ?? 0, unpriced_calls: d.unpriced ?? 0, limit_usd: b.daily_usd as number | null },
+      month: { since_ms: month, usd: m.usd ?? 0, unpriced_calls: m.unpriced ?? 0, limit_usd: b.monthly_usd as number | null },
+    };
+  }
+
+  private overBudget(): string | undefined {
+    const b = settings().budget;
+    if (!b.daily_usd && !b.monthly_usd) return undefined;
+    const s = this.spend();
+    const usd = (v: number) => "$" + v.toFixed(2);
+    if (b.daily_usd && s.day.usd >= b.daily_usd) return `The daily spend limit of ${usd(b.daily_usd)} is reached (${usd(s.day.usd)} today). Raise it in Settings > Usage to go on.`;
+    if (b.monthly_usd && s.month.usd >= b.monthly_usd) return `The monthly spend limit of ${usd(b.monthly_usd)} is reached (${usd(s.month.usd)} this month). Raise it in Settings > Usage to go on.`;
+    return undefined;
+  }
+
+  // The last failed tool calls, newest first, with where they happened.
+  examples(q: { tool?: string; session?: string; limit?: number }) {
+    const where = ["t.is_error = 1"];
+    const args: (string | number)[] = [];
+    if (q.tool) { where.push("t.tool = ?"); args.push(q.tool); }
+    if (q.session) { where.push("t.session_id = ?"); args.push(q.session); }
+    args.push(Math.min(100, Math.max(1, q.limit ?? 20)));
+    const sql = `SELECT t.session_id, t.ts, t.tool, t.ms, t.call_id, t.error, s.title AS session_title, s.id IS NULL AS session_gone,
+        (SELECT e.id FROM events e WHERE e.session_id = t.session_id AND e.kind = 'assistant' AND t.call_id IS NOT NULL AND instr(e.data, t.call_id) > 0 ORDER BY e.seq DESC LIMIT 1) AS event_id
+      FROM telemetry_tools t LEFT JOIN sessions s ON s.id = t.session_id WHERE ${where.join(" AND ")} ORDER BY t.ts DESC LIMIT ?`;
+    return this.store.db.query<any, any[]>(sql).all(...args)
+      .map((r) => ({ ...r, session_gone: !!r.session_gone, session_title: r.session_title ?? undefined, event_id: r.event_id ?? undefined }));
   }
 
   // Sessions from before telemetry: their stored steps give tokens and cost
@@ -124,7 +201,7 @@ export class Telemetry {
     if (q.since !== undefined) { where.push("ts >= ?"); args.push(q.since); }
     if (q.until !== undefined) { where.push("ts < ?"); args.push(q.until); }
     const w = where.join(" AND ");
-    const calls = db.query<CallRow, any[]>(`SELECT ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, error FROM telemetry_calls WHERE ${w} ORDER BY ts`).all(...args);
+    const calls = db.query<CallRow, any[]>(`SELECT ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, error, cache_break FROM telemetry_calls WHERE ${w} ORDER BY ts`).all(...args);
     const tools = db.query<ToolRow, any[]>(`SELECT ts, tool, ms, is_error FROM telemetry_tools WHERE ${w} ORDER BY ts`).all(...args);
     const since = q.since ?? Math.min(calls[0]?.ts ?? Date.now(), tools[0]?.ts ?? Date.now());
     const until = q.until ?? Date.now();
@@ -152,12 +229,31 @@ export class Telemetry {
       by_model: [...byModel.entries()].map(([model, list]) => ({ model, ...callStats(list) })).sort((a, b) => b.calls - a.calls),
       tools: [...byTool.entries()].map(([tool, list]) => ({ tool, ...toolStats(list), p50_ms: pct(list.map((t) => t.ms), 0.5), p95_ms: pct(list.map((t) => t.ms), 0.95), total_ms: list.reduce((n, t) => n + (t.ms ?? 0), 0) }))
         .sort((a, b) => b.tool_calls - a.tool_calls),
+      breaks: BREAK_CAUSES.map((cause) => {
+        const list = calls.filter((c) => c.cache_break === cause);
+        return { cause, count: list.length, last_ms: list.at(-1)?.ts ?? null, uncached_tokens: list.reduce((n, c) => n + c.input + c.cache_write, 0) };
+      }).filter((b) => b.count),
+      spend: this.spend(),
       error_kinds: [...errorKinds.entries()].map(([message, list]) => ({ message, count: list.length, last_ms: list.at(-1)!.ts })).sort((a, b) => b.count - a.count).slice(0, 10),
     };
   }
 }
 
-type CallRow = { ts: number; model: string; latency_ms: number | null; ttft_ms: number | null; input: number; output: number; cache_read: number; cache_write: number; cost: number | null; unpriced: number; outcome: string; error: string | null };
+type CallRow = { ts: number; model: string; latency_ms: number | null; ttft_ms: number | null; input: number; output: number; cache_read: number; cache_write: number; cost: number | null; unpriced: number; outcome: string; error: string | null; cache_break: string | null };
+
+export function breakCause(b: { gapMs: number; modelChanged: boolean; compacted: boolean }): (typeof BREAK_CAUSES)[number] {
+  if (b.modelChanged) return "model_switch";
+  if (b.compacted) return "compaction";
+  if (b.gapMs > CACHE_TTL_MS) return "expired";
+  return "prefix_changed";
+}
+
+// One line of a failed result, at most 140 characters.
+function excerpt(content: unknown): string {
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((b: any) => (b.type === "text" ? b.text : "")).join(" ") : "";
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  return line.length > 140 ? line.slice(0, 139) + "..." : line;
+}
 type ToolRow = { ts: number; tool: string; ms: number | null; is_error: number };
 
 function group<T>(list: T[], key: (t: T) => string) {
@@ -192,6 +288,7 @@ function callStats(list: CallRow[]) {
   return {
     calls: list.length,
     errors,
+    cache_breaks: list.filter((c) => c.cache_break).length,
     interrupted: list.filter((c) => c.outcome === "interrupted").length,
     error_rate: list.length ? errors / list.length : 0,
     latency_p50: pct(list.map((c) => c.latency_ms), 0.5),
