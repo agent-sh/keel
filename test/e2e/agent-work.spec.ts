@@ -74,6 +74,28 @@ test("agents: own worktree, structured reports, staggered starts", async ({ page
   expect(first.data.usage.cache_read).toBeGreaterThan(0);
   await shoot(page, "agent-work-03-staggered");
 
+  // 4. A fork: it starts with this conversation, and though it works in a
+  // worktree of its own it runs on the parent's system prompt, so its first
+  // request reads the parent's cached prefix instead of writing a copy.
+  await page.getByTestId("composer").fill("Remember this word for later: cobalt. Reply with only: noted.");
+  await page.keyboard.press("Enter");
+  await expect.poll(idle, { timeout: 60_000 }).toBe(true);
+  await page.getByTestId("composer").fill(
+    'Call the Agent tool once (not in the background) with subagent_type fork and description "Recall": the fork replies with only the word I asked you to remember and uses no tools. Then answer with only that word.',
+  );
+  await page.keyboard.press("Enter");
+  const card4 = page.getByTestId("agent-call").nth(4);
+  await expect(card4.getByTestId("agent-call-status")).toHaveText("Done", { timeout: 120_000 });
+  await expect.poll(idle, { timeout: 120_000 }).toBe(true);
+  const fork = (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents.find((a: any) => a.title === "Recall");
+  expect(fork.result.toLowerCase()).toContain("cobalt");
+  // Its own first request: the events before its turn are the parent's, copied.
+  const forkEvents = (await (await request.get(`/api/sessions/${fork.session_id}`)).json()).events;
+  const forkFirst = forkEvents.slice(forkEvents.findIndex((e: any) => e.kind === "turn_start")).find((e: any) => e.kind === "assistant");
+  expect(forkFirst.data.usage.cache_read).toBeGreaterThan(4 * forkFirst.data.usage.cache_write);
+  await card4.getByLabel("Details").click();
+  await shoot(page, "agent-work-04-fork");
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

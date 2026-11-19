@@ -433,16 +433,27 @@ export class Engine {
 
   private async step(session: Session, model: string): Promise<Step> {
     const { provider, info } = await this.providers.resolve(model);
-    let system = this.systems.get(session.id);
-    if (system === undefined) {
-      const extra = (await Promise.all(allHooks().map((h) => h.system?.(session) ?? ""))).filter(Boolean);
-      const shared = [CORE, ...extra].join("\n\n") + "\n\n";
-      system = { text: shared + sessionPrompt(session.workspace, session.created), split: shared.length };
-      this.systems.set(session.id, system);
-    }
+    const system = await this.systemOf(session);
     const want = session.settings.effort;
     const effort = want && info.efforts.includes(want) ? want : info.efforts.includes("high") ? "high" : undefined;
     return { provider, info, tools: toolsFor(info.family), system: system.text, systemSplit: system.split, effort };
+  }
+
+  // A subagent on this machine runs on its parent's system prompt byte for byte
+  // (its own place, a worktree, is in its task message), so its first request
+  // reads the prefix the parent cached instead of writing its own copy.
+  private async systemOf(session: Session): Promise<{ text: string; split: number }> {
+    let system = this.systems.get(session.id);
+    if (system) return system;
+    const parent = session.parent_id && !session.machine ? this.store.session(session.parent_id) : undefined;
+    if (parent) system = await this.systemOf(parent);
+    else {
+      const extra = (await Promise.all(allHooks().map((h) => h.system?.(session) ?? ""))).filter(Boolean);
+      const shared = [CORE, ...extra].join("\n\n") + "\n\n";
+      system = { text: shared + sessionPrompt(session.workspace, session.created), split: shared.length };
+    }
+    this.systems.set(session.id, system);
+    return system;
   }
 
   // Measuring hooks never stop a call.

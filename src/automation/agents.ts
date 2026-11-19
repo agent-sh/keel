@@ -571,7 +571,10 @@ function handback(a: AgentRecord) {
   const parent = D().store.session(a.parent_id);
   if (!parent || parent.archived) return;
   if (isPending(a.parent_id, (m) => m.kind === "subagent" && m.agent_id === a.id)) return; // already on its way
-  deliver(a.parent_id, `${HANDBACK_PREFACE}\n${reportBlock(a)}`, { kind: "subagent", agent_id: a.id, status: a.status }, {
+  // Said with each report while others run: models set timers to wait for the rest.
+  const left = list(a.parent_id).filter((o) => o.id !== a.id && !isEnded(o) && o.type !== "reviewer").length;
+  const still = left ? `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.` : "";
+  deliver(a.parent_id, `${HANDBACK_PREFACE}\n${reportBlock(a)}${still}`, { kind: "subagent", agent_id: a.id, status: a.status }, {
     coalesceMs: 300,
     onSent: () => update(a.id, { handback: false }),
   });
