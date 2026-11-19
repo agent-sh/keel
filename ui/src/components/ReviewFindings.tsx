@@ -103,6 +103,14 @@ function ReviewCard({ r, sessionId }: { r: Review; sessionId: string }) {
       {r.state === "failed" && <p className="px-3 py-2 text-caption text-danger">{r.error}</p>}
       {r.state === "running" && <p className="px-3 py-2 text-caption text-muted">The reviewer is reading the change.</p>}
       {r.summary && <p className="px-3 pt-2 text-caption text-muted">{r.summary}</p>}
+      {!!r.reading_order?.length && (
+        <details className="px-3 pt-2 text-caption" data-testid="reading-order">
+          <summary className="cursor-pointer text-muted">Reading order ({r.reading_order.length})</summary>
+          <ol className="mt-1 list-decimal pl-5 text-muted">
+            {r.reading_order.map((x, i) => <li key={i}><span className="font-mono text-fg">{x.section}</span>{x.why ? `: ${x.why}` : ""}</li>)}
+          </ol>
+        </details>
+      )}
       {r.state === "done" && !r.findings.length && <p className="px-3 py-2 text-caption text-muted">No findings.</p>}
       {r.findings.length > 0 && (
         <ul className="flex flex-col py-1" data-testid="findings">
