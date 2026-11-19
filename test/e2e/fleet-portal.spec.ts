@@ -92,7 +92,8 @@ test("portal: a session of another daemon, previewed through it, socket included
     // Closed over there, this daemon's address for it is gone too.
     const src = (await page.getByTestId("preview-frame").getAttribute("src"))!;
     await port.click();
-    expect((await request.get(src)).status()).toBe(404);
+    // Closing travels to the other daemon and back: wait for it.
+    await expect.poll(async () => (await request.get(src)).status()).toBe(404);
     const errors = (await (await request.get("/api/errors")).json()).errors;
     expect(errors.slice(0, errors.length - errorsBefore).filter((e: any) => e.source !== "provider")).toEqual([]);
   } finally {
