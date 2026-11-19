@@ -22,7 +22,13 @@ test("import and export", async ({ page, request }) => {
   const first = await (await request.get("/api/import/sessions?limit=1")).json();
   const store = (h: string) => first.harnesses.find((x: any) => x.harness === h).store as string;
   test.skip(!store("claude").includes("keel-work"), "needs scratch import stores (KEEL_IMPORT_*)");
-  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  // Only this test's own failures count (the daemon may be busy with others):
+  // what its page reports, and server errors of the import or of its sessions.
+  const start = Date.now();
+  const pageErrors: string[] = [];
+  const mine = new Set<string>();
+  page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") pageErrors.push(String(r.postDataJSON()?.message)); });
+  page.on("framenavigated", (f) => { const m = /\/s\/([^/?#]+)/.exec(f.url()); if (m) mine.add(m[1]!); });
   const tag = String(Date.now());
   const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `import-${tag}`);
   mkdirSync(cwd, { recursive: true });
@@ -112,6 +118,9 @@ test("import and export", async ({ page, request }) => {
   const batch = await (await request.post("/api/import/batch", { data: { items: [{ harness: "keel", id: `keel-${tag}` }, { harness: "codex", id: "no-such-rollout" }] } })).json();
   expect(batch.counts).toEqual({ opened: 1, failed: 1 });
 
-  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
-  expect(errorsAfter).toBe(errorsBefore);
+  if (again.session?.id) mine.add(again.session.id);
+  const serverErrors = ((await (await request.get("/api/errors")).json()).errors as any[])
+    .filter((e) => e.source !== "client" && e.ts >= start && (String(e.context?.at ?? "").startsWith("import") || mine.has(e.context?.session ?? e.context?.session_id)))
+    .map((e) => e.message);
+  expect([...pageErrors, ...serverErrors]).toEqual([]);
 });
