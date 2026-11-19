@@ -50,6 +50,9 @@ test("a built bundle is served precompressed, with per-coding ETags and 304s", a
   expect(new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(await r.arrayBuffer())))).toBe(js);
   expect(routes["/chunk-a.js"]!(req("gzip", { "if-none-match": r.headers.get("etag")! })).status).toBe(304);
   expect(routes["/chunk-a.js"]!(req(null)).headers.get("content-encoding")).toBeNull();
+  // The hashed file is cached for good, the page is asked again each load.
+  expect(r.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+  expect(routes["/"]!(req("gzip")).headers.get("cache-control")).toBe("no-cache");
   // The tiny page is served as it is.
   expect(await routes["/s/:id"]!(req("gzip")).text()).toContain("<!doctype html>");
 
