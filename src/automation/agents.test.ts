@@ -219,6 +219,28 @@ for (const legacy of [false, true]) test(`a later report with the same words is 
   expect(agents.get(a.id)!.handback).toBeFalsy();
 });
 
+// Live, no restart: a wait rereads the first report, and before its result is
+// stored the child finishes a second task. Storing the old result acks only
+// the report it holds: the second stays owed and goes out once.
+test("a wait result holding an earlier report does not ack a newer one", async () => {
+  busy.add(parent.id);
+  const a = await spawn();
+  end(a, "end_turn", "report J");
+  await settled();
+  const first = await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: "wj1" });
+  ackStoredWaits(parent.id, [{ tool_use_id: "wj1", content: first.content }]);
+  const again = await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: "wj2" }); // still the first report
+  await agents.send(a.id, "task two");
+  end(a, "end_turn", "report K");
+  await settled();
+  ackStoredWaits(parent.id, [{ tool_use_id: "wj2", content: again.content }]); // the old result is stored now
+  expect(agents.get(a.id)!.handback).toBe(true);
+  busy.delete(parent.id);
+  sends.length = 0;
+  flush(parent.id);
+  expect(sends.filter((x) => x.id === parent.id && x.text.includes("report K"))).toHaveLength(1);
+});
+
 // Call ids are unique only within a session: two parents whose waits share
 // one each get their own report marked delivered.
 test("waits with the same call id in two sessions each mark their own report delivered", async () => {
