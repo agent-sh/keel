@@ -31,24 +31,40 @@ export function Palette() {
   const watches = useWatches(live);
   useSyncExternalStore(onCommands, commandsVersion);
   const [q, setQ] = useState("");
-  const [sel, setSel] = useState(0);
+  // The highlighted row by its key: rows that arrive later (a search answer)
+  // never move the highlight to another result.
+  const [selKey, setSelKey] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const current = route.name === "session" ? sessions[route.id] : undefined;
 
-  const [hits, setHits] = useState<Hit[]>([]);
-  useEffect(() => { if (open) { setQ(""); setSel(0); setHits([]); } }, [open]);
+  // The daemon's answer for one query: rows of an older query are never shown
+  // or opened under a newer one.
+  const [search, setSearch] = useState<{ q: string; hits: Hit[]; failed?: string }>({ q: "", hits: [] });
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => { if (open) { setQ(""); setSelKey(null); setSearch({ q: "", hits: [] }); } }, [open]);
+  const wantsSearch = q.trim().length >= 2;
   // What was said in any session, from the daemon's index.
   useEffect(() => {
-    if (q.trim().length < 2) return setHits([]);
+    if (!wantsSearch) return;
     const ctl = new AbortController();
     const t = setTimeout(() => {
       fetch(`/api/search?q=${encodeURIComponent(q)}&limit=12`, { signal: ctl.signal })
-        .then((r) => r.json())
-        .then((r) => setHits((r.hits ?? []).filter((h: Hit) => h.event_id)))
-        .catch((e) => e.name !== "AbortError" && reportError(e, { kind: "search" }));
+        .then(async (r) => {
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
+          setSearch({ q, hits: (body.hits ?? []).filter((h: Hit) => h.event_id) });
+        })
+        .catch((e) => {
+          if (e.name === "AbortError") return;
+          reportError(e, { kind: "search" });
+          setSearch({ q, hits: [], failed: e.message });
+        });
     }, 120);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [q]);
+  }, [q, wantsSearch, attempt]);
+  const searching = wantsSearch && search.q !== q;
+  const hits = search.q === q ? search.hits : [];
+  const searchFailed = wantsSearch && search.q === q ? search.failed : undefined;
 
   const entries = useMemo(() => {
     const out: Entry[] = [];
@@ -92,10 +108,19 @@ export function Palette() {
     return out.sort((a, b) => (q ? best.get(a.group)! - best.get(b.group)! : order.indexOf(a.group) - order.indexOf(b.group))).slice(0, 60);
   }, [q, sessions, models, current, hits, watches]);
 
-  useEffect(() => setSel(0), [q]);
+  useEffect(() => setSelKey(null), [q]);
+  // The highlight stays on its row while it is listed, else it is the first row.
+  const found = selKey ? entries.findIndex((e) => e.key === selKey) : -1;
+  const sel = found >= 0 ? found : entries.length ? 0 : -1;
+  const active = sel >= 0 ? entries[sel] : undefined;
+  const optId = (e: Entry) => `palette-opt-${e.key.replace(/[^\w-]/g, "_")}`;
   useEffect(() => {
     list.current?.querySelector(`[data-i="${sel}"]`)?.scrollIntoView({ block: "nearest" });
   }, [sel]);
+  const move = (by: number) => {
+    if (!entries.length) return;
+    setSelKey(entries[Math.max(0, Math.min(entries.length - 1, (sel < 0 ? 0 : sel) + by))]!.key);
+  };
 
   const pick = (e?: Entry) => {
     if (!e) return;
@@ -120,20 +145,25 @@ export function Palette() {
             <Search className="size-4 shrink-0 text-faint" />
             <input
               autoFocus
+              role="combobox"
+              aria-expanded
+              aria-controls="palette-list"
+              aria-autocomplete="list"
+              aria-activedescendant={active ? optId(active) : undefined}
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search sessions, actions and models"
               data-testid="palette-input"
               className="h-13 w-full bg-transparent text-[15px] outline-none placeholder:text-faint"
               onKeyDown={(e) => {
-                if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(s + 1, entries.length - 1)); }
-                if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)); }
-                if (e.key === "Enter") { e.preventDefault(); pick(entries[sel]); }
+                if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+                if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+                if (e.key === "Enter") { e.preventDefault(); pick(active); }
               }}
             />
           </div>
-          <div ref={list} className="flex-1 overflow-y-auto overscroll-contain p-1.5" role="listbox">
-            {entries.length === 0 && <p className="px-3 py-8 text-center text-ui text-faint">Nothing matches "{q}".</p>}
+          <div ref={list} id="palette-list" className="flex-1 overflow-y-auto overscroll-contain p-1.5" role="listbox" aria-label="Results" aria-busy={searching || undefined}>
+            {entries.length === 0 && !searching && !searchFailed && <p className="px-3 py-8 text-center text-ui text-faint">Nothing matches "{q}".</p>}
             {entries.map((e, i) => (
               <div key={e.key}>
                 {(i === 0 || entries[i - 1]!.group !== e.group) && (
@@ -141,9 +171,10 @@ export function Palette() {
                 )}
                 <div
                   role="option"
+                  id={optId(e)}
                   data-i={i}
                   aria-selected={i === sel}
-                  onMouseMove={() => sel !== i && setSel(i)}
+                  onMouseMove={() => sel !== i && setSelKey(e.key)}
                   onClick={() => pick(e)}
                   className={cn("flex h-9 items-center gap-3 rounded-md px-2.5 text-[13.5px]", i === sel ? "bg-hover text-fg" : "text-muted")}
                 >
@@ -156,6 +187,18 @@ export function Palette() {
                 </div>
               </div>
             ))}
+            {searching && (
+              <p className="flex items-center gap-2 px-2.5 py-2.5 text-caption text-faint" data-testid="palette-searching">
+                <TextSearch className="size-3.5 animate-pulse-dot" /> Searching conversations
+              </p>
+            )}
+            {searchFailed && (
+              <div className="mx-1 mt-1.5 flex items-center gap-2.5 rounded-md border border-warn/40 px-2.5 py-2 text-caption" role="status" data-testid="palette-search-failed">
+                <span className="min-w-0 flex-1 text-muted">Conversation search is unavailable: <span className="text-fg">{searchFailed}</span></span>
+                <button type="button" data-testid="palette-search-retry" onClick={() => { setSearch({ q: "", hits: [] }); setAttempt((n) => n + 1); }}
+                  className="h-7 shrink-0 rounded-md px-2.5 font-medium text-accent-ink hover:bg-accent-soft">Retry</button>
+              </div>
+            )}
           </div>
           <div className="hidden items-center gap-4 border-t border-line px-4 py-2 text-micro text-faint sm:flex">
             <span className="flex items-center gap-1.5"><Kbd keys="↑" /><Kbd keys="↓" /> move</span>

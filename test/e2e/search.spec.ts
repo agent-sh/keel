@@ -24,4 +24,35 @@ test("search conversations", async ({ page, request }) => {
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
+
+  // A failed search says so and offers Retry; it is not "Nothing matches".
+  await page.keyboard.press("Control+k");
+  const input = page.getByTestId("palette-input");
+  await page.route(/\/api\/search\?/, (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "the index is rebuilding" }) }));
+  await input.fill(word);
+  await expect(page.getByTestId("palette-search-failed")).toContainText("the index is rebuilding");
+  await expect(page.getByTestId("palette")).not.toContainText("Nothing matches");
+  await shoot(page, "search-03-failed");
+  await page.unroute(/\/api\/search\?/);
+  await page.getByTestId("palette-search-retry").click();
+  await expect(page.getByTestId("palette-search-failed")).toHaveCount(0);
+  await expect(page.getByRole("option").filter({ hasText: word })).toHaveCount(1);
+
+  // The input names the highlighted row for assistive technology.
+  await input.focus();
+  const activeId = await input.getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  await expect(page.locator(`#${activeId}`)).toHaveAttribute("aria-selected", "true");
+
+  // A hit of the query just erased is not opened by Enter while the new
+  // query's answer is out.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route(/\/api\/search\?/, async (route) => { await held; await route.fallback(); });
+  await input.fill(`zz${word}`);
+  await expect(page.getByTestId("palette-searching")).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("palette")).toBeVisible();
+  release();
+  await page.unroute(/\/api\/search\?/);
 });
