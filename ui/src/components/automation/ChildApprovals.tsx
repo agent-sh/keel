@@ -2,7 +2,6 @@ import { Bot } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo } from "react";
 import { isLive, openSession, useAuto } from "../../lib/automation.ts";
 import { safety, useSafety } from "../../lib/safety.ts";
-import { reportError } from "../../lib/store.ts";
 const Approvals = lazy(() => import("../ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
 
 // The cards the session's agents wait on, answered here: the owner never has
@@ -13,7 +12,8 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
   const open = useSafety((s) => s.approvals);
   const ids = kids.map((k) => k.session_id).join(",");
   useEffect(() => {
-    for (const id of ids.split(",").filter(Boolean)) safety.loadSession(id).catch(reportError);
+    const release = ids.split(",").filter(Boolean).map((id) => safety.watch(id));
+    return () => release.forEach((f) => f());
   }, [ids]);
   const asking = kids.filter((k) => (open[k.session_id]?.length ?? 0) > 0);
   if (!asking.length) return null;
@@ -28,7 +28,7 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
           >
             <Bot className="size-3.5 text-accent" /> Agent {k.title} asks
           </button>
-          <Suspense fallback={null}><Approvals sessionId={k.session_id} /></Suspense>
+          <Suspense fallback={null}><Approvals sessionId={k.session_id} asker={`Agent ${k.title}`} /></Suspense>
         </div>
       ))}
     </div>

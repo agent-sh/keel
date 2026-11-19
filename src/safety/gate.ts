@@ -189,12 +189,18 @@ export class Gate {
     return n > 0;
   }
 
+  // Oldest first, ties broken by id, so every read (and the client, which
+  // sorts alike) puts the same card first. Open cards are read on their own:
+  // the bounded history never hides one.
   approvals(opts: { session?: string; pending?: boolean } = {}): Approval[] {
+    const db = this.store.db;
+    const open = opts.pending ? " AND state = 'pending'" : "";
     const rows = opts.session
-      ? this.store.db.query<{ data: string }, [string]>("SELECT data FROM approvals WHERE session_id = ? ORDER BY created").all(opts.session)
-      : this.store.db.query<{ data: string }, []>("SELECT data FROM approvals ORDER BY created DESC LIMIT 500").all().reverse();
-    const all = rows.map((r) => JSON.parse(r.data) as Approval);
-    return opts.pending ? all.filter((a) => a.state === "pending") : all;
+      ? db.query<{ data: string }, [string]>(`SELECT data FROM approvals WHERE session_id = ?${open} ORDER BY created, id`).all(opts.session)
+      : opts.pending
+        ? db.query<{ data: string }, []>("SELECT data FROM approvals WHERE state = 'pending' ORDER BY created, id").all()
+        : db.query<{ data: string }, []>("SELECT data FROM approvals ORDER BY created DESC, id DESC LIMIT 500").all().reverse();
+    return rows.map((r) => JSON.parse(r.data) as Approval);
   }
 
   approval(id: string): Approval | undefined {
@@ -300,11 +306,12 @@ export class Gate {
     if (this.allowedCalls.size > 2000) this.allowedCalls.delete(this.allowedCalls.values().next().value!);
   }
 
-  resolve(id: string, sessionId: string, c: Choice): { ok: true } | { error: string; status: number } {
+  resolve(id: string, sessionId: string, c: Choice): { ok: true } | { error: string; status: number; approval?: Approval } {
     const a = this.approval(id);
     if (!a || a.session_id !== sessionId) return { error: "no such approval", status: 404 };
     const w = this.waiting.get(id);
-    if (a.state !== "pending" || !w) return { error: "this approval is not open", status: 409 };
+    // A closed card says how it ended; an open one nothing waits on can no longer be answered.
+    if (a.state !== "pending" || !w) return { error: closedWhy(a), status: 409, approval: a };
     if ((c.choice === "session" || c.choice === "always") && a.risk === "high")
       return { error: `this card covers its one call only (${a.why}): answer once or deny`, status: 400 };
     if (c.choice === "deny") {
@@ -346,6 +353,14 @@ export class Gate {
       }
     }
   }
+}
+
+export function closedWhy(a: Approval): string {
+  const why = a.reason ? `: ${a.reason}` : "";
+  if (a.state === "allowed") return `already allowed (${a.choice === "once" || !a.choice ? "once" : a.choice === "session" ? "for this session" : "always"})${why}`;
+  if (a.state === "denied") return `already denied${why}`;
+  if (a.state === "cancelled") return `cancelled${why}`;
+  return "nothing waits on this card any more: it can no longer be answered";
 }
 
 function clip(v: any): any {

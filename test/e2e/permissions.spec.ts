@@ -80,11 +80,29 @@ test("permission gate", async ({ page, request }) => {
   await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
   await say("Run exactly this Bash command once and nothing else: rm alpha.txt. If it is denied, do not retry; quote the reason you were given.");
   await expect(card).toBeVisible({ timeout: 60_000 });
+  // The card is a named group: what it asks, with its command as the description.
+  await expect(page.getByRole("group", { name: /Run this command\?/ })).toHaveAccessibleDescription(/rm alpha\.txt/);
+  await expect(card).toContainText("Esc to deny with a reason");
+  // Escape opens the reason, Escape again goes back: the card stays open, nothing is sent.
+  await card.getByTestId("allow-once").focus();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("deny-reason")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("deny-reason")).toHaveCount(0);
+  await expect(card).toHaveCount(1);
+  const pending = (await (await request.get(`/api/sessions/${session.id}/approvals`)).json()).approvals;
+  expect(pending).toHaveLength(1);
   await card.getByTestId("deny").click();
   await page.getByTestId("deny-reason").fill("keep alpha, it is the fixture");
   await shoot(page, "perm-05-deny");
   await page.getByTestId("deny-send").click();
   await expect(turns()).toHaveCount(4, { timeout: 120_000 });
+  // A stale answer after the denial is refused with how the card ended.
+  const stale = await request.post(`/api/sessions/${session.id}/approvals/${pending[0].id}`, { data: { choice: "once" } });
+  expect(stale.status()).toBe(409);
+  const said = await stale.json();
+  expect(said.error).toMatch(/already denied: keep alpha/);
+  expect(said.approval.state).toBe("denied");
   expect(existsSync(join(ws, "alpha.txt"))).toBe(true);
   await expect(page.getByTestId("assistant-text").last()).toContainText(/fixture/i);
   await shoot(page, "perm-06-denied");

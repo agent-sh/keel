@@ -31,6 +31,22 @@ test("plan mode and plan approval", async ({ page, request }) => {
   await expect(card).toHaveCount(1, { timeout: 90_000 });
   await expect(card.getByTestId("plan-text")).toContainText(/newline/i, { timeout: 90_000 });
 
+  // An emptied edit approves nothing: not from the card, not through the route.
+  await card.getByTestId("plan-edit").click();
+  const shown = await card.locator("textarea").inputValue();
+  await card.locator("textarea").fill("  ");
+  await expect(card.getByTestId("plan-approve")).toBeDisabled();
+  const open = (await (await request.get(`/api/sessions/${session.id}/plan`)).json()).open;
+  expect(open).toHaveLength(1);
+  const blank = await request.post(`/api/sessions/${session.id}/plan/${open[0].id}`, { data: { approve: true, mode: "auto-edits", plan: " \n " } });
+  expect(blank.status()).toBe(400);
+  const after = await (await request.get(`/api/sessions/${session.id}/plan`)).json();
+  expect(after.open.map((c: { id: string }) => c.id)).toEqual([open[0].id]);
+  expect(after.plan).toBeNull();
+  await expect(page.getByTestId("permission-mode")).toHaveText("Plan");
+  await card.locator("textarea").fill(shown);
+  await card.getByTestId("plan-edit").click();
+
   await card.getByTestId("plan-mode").selectOption("auto-edits");
   await card.getByTestId("plan-approve").click();
   await expect(card).toHaveCount(0);

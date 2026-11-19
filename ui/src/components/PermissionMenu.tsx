@@ -29,8 +29,8 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
   useEffect(() => { if (signal !== atMount.current) setOpen(true); }, [signal]);
 
   useEffect(() => {
-    safety.loadSession(sessionId).catch(reportError);
     if (!modes.length) safety.loadSettings().catch(reportError);
+    return safety.watch(sessionId);
   }, [sessionId]);
 
   if (!perm) return null;

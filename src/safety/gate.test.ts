@@ -58,3 +58,17 @@ test("confinement follows the class the gate judged, not an input field", async 
   stop.abort();
   expect(await asked).toHaveProperty("deny");
 });
+
+test("open cards are read whole and in one order, however much history there is", () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-gate-")));
+  const g = new Gate(store, new Bus());
+  const row = (id: string, session: string, state: string, created: number) =>
+    store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?)").run(id, session, state, JSON.stringify({ id, session_id: session, state, created }), created);
+  row("b", "child", "pending", 5); // same millisecond, inserted first
+  row("a", "child", "pending", 5);
+  for (let i = 0; i < 500; i++) row(`old${i}`, "other", "allowed", 10 + i);
+  const ids = (l: { id: string }[]) => l.map((x) => x.id);
+  expect(ids(g.approvals({ pending: true }))).toEqual(["a", "b"]);
+  expect(ids(g.approvals({ session: "child", pending: true }))).toEqual(["a", "b"]);
+  expect(g.approvals().length).toBe(500); // the history stays bounded
+});

@@ -128,7 +128,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         }
         const rules = Array.isArray(b.rules) ? b.rules.filter((r: any) => ["shell", "edit", "tool"].includes(r?.kind) && typeof r.pattern === "string") : undefined;
         const r = g.resolve(req.params.aid, req.params.id, { choice: b.choice, reason: typeof b.reason === "string" ? b.reason : undefined, rules });
-        return "error" in r ? bad(r.error, r.status) : json(r);
+        return "error" in r ? json({ error: r.error, approval: r.approval }, r.status) : json(r);
       },
     },
     "/api/permissions/grants": {

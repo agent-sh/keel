@@ -59,7 +59,7 @@ function Plan({ c }: { c: Card }) {
         </form>
       ) : (
         <div className="flex flex-wrap items-center gap-1.5 px-4 py-3">
-          <button data-testid="plan-approve" onClick={() => send({ approve: true, mode, plan })} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90">
+          <button data-testid="plan-approve" disabled={!plan.trim()} title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"} onClick={() => send({ approve: true, mode, plan })} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
             Approve and go on in
           </button>
           <select value={mode} onChange={(e) => setMode(e.target.value)} data-testid="plan-mode" className="h-8 rounded-lg border border-line bg-raised px-2 text-ui outline-none">

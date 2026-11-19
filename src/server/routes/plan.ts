@@ -87,11 +87,13 @@ export const planRoutes: RouteModule = (deps: Deps) => {
           w.resolve({ approved: false, feedback: typeof b.feedback === "string" && b.feedback.trim() ? b.feedback.trim().slice(0, 4000) : undefined });
           return json({ ok: true });
         }
+        // An edit the owner emptied approves nothing (an omitted one keeps the shown plan).
+        if (b.plan !== undefined && (typeof b.plan !== "string" || !b.plan.trim())) return bad("the edited plan is empty: write the plan to approve, or keep planning");
         const mode = String(b.mode ?? "ask");
         if (!isMode(mode) || mode === "plan") return bad("pick the mode the work goes on in");
         // Leaving plan mode lets the session do more: from a remote device, the owner's passkey.
         if (presence && !presence.allows(req, `plan:${w.id}`)) return json({ error: "this needs your passkey from a remote device", presence: { action: `plan:${w.id}` } }, 428);
-        const plan = typeof b.plan === "string" && b.plan.trim() ? b.plan.trim().slice(0, 40_000) : w.plan;
+        const plan = typeof b.plan === "string" ? b.plan.trim().slice(0, 40_000) : w.plan;
         gate?.setPerm(w.session_id, { mode });
         const rec = { session_id: w.session_id, plan, approval_id: w.id, mode, approved_ms: Date.now() };
         store.db.query("INSERT INTO plans (session_id, data) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET data = excluded.data").run(w.session_id, JSON.stringify(rec));

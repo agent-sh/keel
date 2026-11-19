@@ -32,33 +32,69 @@ export function useSafety<T>(sel: (s: State) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state));
 }
 
-const loaded = new Set<string>();
+// Cards in the order the daemon reads them: oldest first, ties by id.
+const order = (a: Approval, b: Approval) => a.created - b.created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+const put = (list: Approval[], a: Approval) => {
+  const rest = list.filter((x) => x.id !== a.id);
+  return a.state === "pending" ? [...rest, a].sort(order) : rest;
+};
+
+// Receipt order is not decision order: frames that land while a snapshot is
+// on its way are replayed over it, so an older snapshot never brings back an
+// answered card or hides a new one.
+const inflight = new Set<Approval[]>();
+async function hydrate<T>(load: () => Promise<T>): Promise<[T, Approval[]]> {
+  const seen: Approval[] = [];
+  inflight.add(seen);
+  try {
+    return [await load(), seen];
+  } finally {
+    inflight.delete(seen);
+  }
+}
+const replay = (list: Approval[], seen: Approval[], session?: string) =>
+  seen.filter((a) => !session || a.session_id === session).reduce(put, [...list].sort(order));
+
+// Sessions on screen now (counted per view): a reconnect rereads these, not
+// every session this tab has ever shown. The rest come from the global list.
+const shown = new Map<string, number>();
 
 export const safety = {
   // A session deleted meanwhile is dropped, not an error: its views unmount,
   // and a reconnect no longer asks for it.
   async loadSession(id: string) {
-    loaded.add(id);
     try {
-      const [a, p] = await Promise.all([
+      const [[a, p], seen] = await hydrate(() => Promise.all([
         api<{ approvals: Approval[] }>(`/api/sessions/${id}/approvals`),
         api<{ perm: SessionPerm }>(`/api/sessions/${id}/permissions`),
-      ]);
-      set({ approvals: { ...state.approvals, [id]: a.approvals }, perms: { ...state.perms, [id]: p.perm } });
+      ]));
+      set({ approvals: { ...state.approvals, [id]: replay(a.approvals, seen, id) }, perms: { ...state.perms, [id]: p.perm } });
     } catch (e) {
       if ((e as { status?: number }).status !== 404) throw e;
-      loaded.delete(id);
+      shown.delete(id);
       const { [id]: _a, ...approvals } = state.approvals;
       const { [id]: _p, ...perms } = state.perms;
       set({ approvals, perms });
     }
   },
+  // A view shows this session's cards and mode: loaded now, and again on a
+  // reconnect while the view stays. Returns the release.
+  watch(id: string): () => void {
+    shown.set(id, (shown.get(id) ?? 0) + 1);
+    safety.loadSession(id).catch(reportError);
+    return () => {
+      const n = (shown.get(id) ?? 1) - 1;
+      if (n > 0) shown.set(id, n);
+      else shown.delete(id);
+    };
+  },
   // Open cards of every session (the sidebar marks the sessions that wait on the owner).
   async loadPending() {
-    const r = await api<{ approvals: Approval[] }>("/api/approvals");
-    const by: Record<string, Approval[]> = {};
+    const [r, seen] = await hydrate(() => api<{ approvals: Approval[] }>("/api/approvals"));
+    const by: Record<string, Approval[]> = Object.fromEntries(Object.keys(state.approvals).map((k) => [k, []]));
     for (const a of r.approvals) (by[a.session_id] ??= []).push(a);
-    set({ approvals: { ...Object.fromEntries(Object.keys(state.approvals).map((k) => [k, []])), ...by } });
+    for (const a of seen) by[a.session_id] ??= [];
+    set({ approvals: Object.fromEntries(Object.entries(by).map(([k, list]) => [k, replay(list, seen, k)])) });
   },
   async loadSettings() {
     const r = await api<{ modes: ModeInfo[]; sandbox?: SandboxInfo }>("/api/permissions/settings");
@@ -88,8 +124,8 @@ onFeature({
   frame(f) {
     if (f.name === "approval") {
       const a = f.data as Approval;
-      const list = (state.approvals[a.session_id] ?? []).filter((x) => x.id !== a.id);
-      set({ approvals: { ...state.approvals, [a.session_id]: a.state === "pending" ? [...list, a] : list } });
+      for (const seen of inflight) seen.push(a);
+      set({ approvals: { ...state.approvals, [a.session_id]: put(state.approvals[a.session_id] ?? [], a) } });
     } else if (f.name === "perm") {
       const p = f.data as SessionPerm;
       set({ perms: { ...state.perms, [p.session_id]: p } });
@@ -99,6 +135,6 @@ onFeature({
   },
   reconnect() {
     safety.loadPending().catch(reportError);
-    for (const id of loaded) safety.loadSession(id).catch(reportError);
+    for (const id of shown.keys()) safety.loadSession(id).catch(reportError);
   },
 });
