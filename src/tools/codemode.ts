@@ -141,11 +141,17 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
         else {
           const run = (tool: string, input: any) => ctx.callTool!(tool, input, c.id).catch((e) => ({ type: "tool_result" as const, tool_use_id: c.id, is_error: true, content: `Tool failed: ${(e as Error).message}` }));
           r = await run(c.tool, c.input);
-          // A catalog tool's own name (server__tool, as search_tools lists it) runs through mcp_call.
+          // A catalog tool's own name (server__tool, as search_tools lists it) runs as the
+          // session declares it: mcp__server__tool where tools load natively, else through mcp_call.
           if (r.is_error && r.content === `No tool named ${c.tool}.` && c.tool.includes("__")) {
-            c.input = { tool: c.tool, arguments: c.input };
-            c.tool = "mcp_call";
-            r = await run(c.tool, c.input);
+            const native = c.tool.startsWith("mcp__") ? null : `mcp__${c.tool}`;
+            const viaNative = native ? await run(native, c.input) : r;
+            if (native && viaNative.content !== `No tool named ${native}.`) { c.tool = native; r = viaNative; }
+            else {
+              c.input = { tool: c.tool.replace(/^mcp__/, ""), arguments: c.input };
+              c.tool = "mcp_call";
+              r = await run(c.tool, c.input);
+            }
           }
         }
         c.result = r;
@@ -194,7 +200,7 @@ export function runCodeTool(rec: CodeRecorder): Tool {
   return {
     name: RUN_CODE,
     description:
-      "Run JavaScript (Bun) in the workspace with your other tools callable from it: `await tools.<name>(input)` (or `await tools.call(\"<name>\", input)`) takes the same input as a direct call of that tool, returns its text output, and throws `ToolError` when the call fails or is refused; a tool search_tools found is called by its listed name, `await tools[\"server__tool\"](arguments)`. " +
+      "Run JavaScript (Bun) in the workspace with your other tools callable from it: `await tools.<name>(input)` (or `await tools.call(\"<name>\", input)`) takes the same input as a direct call of that tool, returns its text output, and throws `ToolError` when the call fails or is refused; a tool your tool search found is called by its listed name, `await tools[\"mcp__server__tool\"](arguments)`. " +
       "Each call goes through the same permissions as a direct call and is shown to the owner as its own call; the program itself is checked like a shell command of this session and runs in its sandbox. " +
       "The code is the body of an async function: `await` and `return` work at the top level; run independent calls together with `Promise.all`. " +
       "Only what the program prints (`console.log`) and the value it returns come back to you: the tool results it reads stay out of your context, so filter, count and summarize in code. " +

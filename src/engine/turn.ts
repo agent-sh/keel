@@ -14,6 +14,7 @@ import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, toolsFor } from "../tools/registry.ts";
+import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
 import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
@@ -176,7 +177,8 @@ function sessionPrompt(cwd: string, created: number): string {
 }
 
 type Running = { abort: AbortController; done: Promise<void> };
-type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string };
+// `native`: the request carries deferred tools (src/tools/defer.ts), refreshed per request.
+type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
 
 const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortError" });
 
@@ -438,7 +440,8 @@ export class Engine {
     const effort = want && info.efforts.includes(want) ? want : info.efforts.includes("high") ? "high" : undefined;
     // A model known to take no tool definitions (the owner, a probe, its listing
     // or catalog said so) is sent none: it would refuse them or answer garbled.
-    return { provider, info, tools: info.tools === false ? [] : toolsFor(info.family), system: system.text, systemSplit: system.split, effort };
+    const native = info.tools !== false && loadsNatively(provider.wire, info);
+    return { provider, info, tools: info.tools === false ? [] : toolsFor(info.family, native), system: system.text, systemSplit: system.split, effort, native };
   }
 
   // A subagent on this machine runs on its parent's system prompt byte for byte
@@ -468,6 +471,7 @@ export class Engine {
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn"): Promise<ProviderResult> {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
+    if (st.native && purpose !== "reader") st.tools = await withCatalog(st.tools, st.info.family, messages);
     let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id };
     // A reader's request carries no conversation for the hooks to add to.
     if (purpose === "reader") req.cache = false;
@@ -505,6 +509,15 @@ export class Engine {
       } catch (e) {
         this.measure((h) => h.requestFailed?.(session, req, e, signal.aborted));
         if (signal.aborted) throw abortError();
+        // A route that cannot take deferred tools gets the search pair, once.
+        if (st.native && !retryable(e) && isDeferError(e)) {
+          this.errors.capture("provider", e, { session: id, fallback: "deferred tools refused; using search_tools" });
+          refuseDefer(st.info.id);
+          st.native = false;
+          st.tools = toolsFor(st.info.family);
+          req = { ...req, tools: st.tools };
+          continue;
+        }
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
         const wait = backoffMs(attempt, e);
         if (wait > RETRY_WAIT_MAX_MS) {

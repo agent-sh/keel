@@ -119,6 +119,9 @@ export class AnthropicProvider implements Provider {
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     if (!this.auth) throw new Error(`${this.id}: no credentials`);
     const ctx = { ...ctxFor(this.id, req, []), legacyIsMine: true };
+    // Deferred tools and tool_reference blocks: the beta each platform names
+    // (Claude Code sends the same two).
+    if (req.tools.some((t) => t.defer)) req = withBeta(req, this.id === "bedrock" ? "tool-search-tool-2025-10-19" : "advanced-tool-use-2025-11-20");
     if (this.id === "anthropic") {
       const base = (this.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
       return runEvents(anthropicWire, req, ctx, onDelta, httpEvents({
@@ -145,4 +148,10 @@ export class AnthropicProvider implements Provider {
       headers: { ...this.headers(), accept: "application/vnd.amazon.eventstream" }, sign: this.signer(url),
     }, req));
   }
+}
+
+function withBeta(req: ProviderRequest, beta: string): ProviderRequest {
+  const have = req.extraHeaders?.["anthropic-beta"];
+  if (have?.split(",").some((b) => b.trim() === beta)) return req;
+  return { ...req, extraHeaders: { ...req.extraHeaders, "anthropic-beta": have ? `${have},${beta}` : beta } };
 }

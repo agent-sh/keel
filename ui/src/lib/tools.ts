@@ -11,7 +11,7 @@ const KINDS: Record<string, ToolKind> = {
   apply_patch: "patch", NotebookEdit: "notebook", Grep: "search", grep_search: "search", Glob: "glob", glob: "glob",
   list_directory: "list", WebSearch: "web", google_web_search: "web", WebFetch: "fetch", web_fetch: "fetch",
   TodoWrite: "plan", update_plan: "plan", write_todos: "plan", AskUserQuestion: "ask", request_user_input: "ask", ask_user: "ask",
-  Skill: "skill", skill: "skill", activate_skill: "skill", search_tools: "mcp", mcp_call: "mcp", keel__run_on: "shell", keel__session_send: "other", keel__sessions_list: "other", keel__machines_list: "other", keel__send_files: "other",
+  Skill: "skill", skill: "skill", activate_skill: "skill", search_tools: "mcp", ToolSearch: "mcp", mcp_call: "mcp", keel__run_on: "shell", keel__session_send: "other", keel__sessions_list: "other", keel__machines_list: "other", keel__send_files: "other",
 };
 export const toolKind = (name: string): ToolKind => KINDS[name] ?? (name.includes("__") ? "mcp" : "other");
 
@@ -39,7 +39,10 @@ export function questions(name: string, input: any): UiQuestion[] {
 export function resultText(r?: ToolResultBlock): string {
   if (!r) return "";
   if (typeof r.content === "string") return r.content;
-  return r.content.map((c) => (c.type === "text" ? c.text : "")).filter(Boolean).join("\n");
+  // A tool search's result names the tools it loaded (tool_reference blocks).
+  const loaded = r.content.filter((c: any) => c.type === "tool_reference").map((c: any) => c.tool_name as string);
+  const text = r.content.map((c) => (c.type === "text" ? c.text : "")).filter(Boolean).join("\n");
+  return loaded.length ? [text, `Loaded ${loaded.join(", ")}`].filter(Boolean).join("\n") : text;
 }
 
 // Instruction files the daemon appended to a call's result when the work

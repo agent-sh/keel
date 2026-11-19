@@ -31,7 +31,8 @@ const lastResult = async (request: APIRequestContext, id: string) => {
   const events = (await (await request.get(`/api/sessions/${id}`)).json()).events;
   return JSON.stringify(events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).at(-1)?.content ?? "");
 };
-const call = (tool: string, args: object) => `Make exactly one tool call: mcp_call with {"tool":"${tool}","arguments":${JSON.stringify(args)}}. Then reply with the tool's result word for word.`;
+// Claude loads a deferred MCP tool with ToolSearch, then calls it as mcp__<server>__<tool>.
+const call = (tool: string, args: object) => `Load mcp__${tool} with ToolSearch (query "select:mcp__${tool}"), then call it exactly once with ${JSON.stringify(args)}. Then reply with the tool's result word for word.`;
 
 test("phone control: read, tap by index, read again; not armed, stopped, turned off", async ({ page, request }) => {
   const phone = (await (await request.get("/api/mcp/servers")).json()).servers.find((s: any) => s.name === "phone");
@@ -60,7 +61,7 @@ test("phone control: read, tap by index, read again; not armed, stopped, turned 
     // Ask mode: the reads run, the tap is put to the owner.
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
     await request.post(`/api/sessions/${session.id}/messages`, {
-      data: { text: `Use search_tools to find the phone tools. Then with mcp_call: read the screen with phone__phone_state, tap the element whose text is "${target}" with phone__phone_tap and its index, then read the screen with phone__phone_state again to check the tap worked. Reply with one line saying what the screen shows now.` },
+      data: { text: `Load the phone tools with ToolSearch (query "select:mcp__phone__phone_state,mcp__phone__phone_tap"). Then read the screen with mcp__phone__phone_state, tap the element whose text is "${target}" with mcp__phone__phone_tap and its index, then read the screen with mcp__phone__phone_state again to check the tap worked. Reply with one line saying what the screen shows now.` },
     });
     await expect(page.getByTestId("approval")).toBeVisible({ timeout: 90_000 });
     await expect(page.getByTestId("approval")).toContainText("phone__phone_tap");

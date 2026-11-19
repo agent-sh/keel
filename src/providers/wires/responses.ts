@@ -53,7 +53,7 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
         flush();
         const output = typeof b.content === "string"
           ? b.content
-          : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.text }));
+          : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.type === "text" ? c.text : "" }));
         input.push({ type: "function_call_output", call_id: b.tool_use_id, output });
       }
     }

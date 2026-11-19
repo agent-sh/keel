@@ -252,6 +252,12 @@ export class McpManager {
         return e.tools.map((t) => this.catalogTool(e, t));
       },
       pending: () => (e.state === "connecting" ? [name] : []),
+      known: () => {
+        if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
+        if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];
+        if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
+        return e.state === "ready" ? e.tools.map((t) => this.catalogTool(e, t)) : [];
+      },
     });
     return e;
   }
@@ -261,6 +267,7 @@ export class McpManager {
       server: e.name,
       name: t.name,
       qualified: `${e.name}__${t.name}`,
+      mcp: true,
       description: t.description ?? t.title ?? "",
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
       readOnly: e.bundled ? e.bundled.reads(t.name) : !!e.config.read_tools?.includes(t.name),

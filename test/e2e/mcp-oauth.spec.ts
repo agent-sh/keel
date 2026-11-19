@@ -45,7 +45,7 @@ test("mcp oauth sign-in", async ({ page, request }) => {
     const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "OAuth MCP" } })).json();
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
     await page.goto(`/s/${session.id}`);
-    await page.getByTestId("composer").fill("Find the whoami tool of the signed MCP server with search_tools and run it with mcp_call. Reply with only what it answered.");
+    await page.getByTestId("composer").fill("Find the whoami tool of the signed MCP server with ToolSearch and run it. Reply with only what it answered.");
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
     await expect(page.getByTestId("assistant-text").last()).toContainText("fixture-owner");

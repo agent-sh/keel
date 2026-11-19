@@ -16,7 +16,12 @@ export type ProjectOpts = {
   // Claude on Bedrock or the Anthropic API: they count as this origin's when
   // the target says so (a Claude request), else as foreign.
   legacyIsMine?: boolean;
+  // The request declares deferred tools, so tool_reference blocks stay blocks
+  // (the Anthropic wire); otherwise each one becomes a line of text.
+  toolRefs?: boolean;
 };
+
+const refText = (name: string) => `Tool loaded: ${name}`;
 
 export function portableId(id: string): string {
   const clean = id.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -50,9 +55,13 @@ export function project(messages: Message[], o: ProjectOpts): Message[] {
       }
       if (content.length) out.push({ role: "assistant", content });
     } else {
-      const content: UserBlock[] = m.content.map((b) =>
-        b.type === "tool_result" ? { ...b, tool_use_id: portableId(b.tool_use_id) } : b,
-      );
+      const content: UserBlock[] = m.content.map((b) => {
+        if (b.type !== "tool_result") return b;
+        const c = typeof b.content === "string" || o.toolRefs || !b.content.some((x) => x.type === "tool_reference")
+          ? b.content
+          : b.content.map((x) => (x.type === "tool_reference" ? { type: "text" as const, text: refText(x.tool_name) } : x));
+        return { ...b, tool_use_id: portableId(b.tool_use_id), content: c };
+      });
       if (content.length) out.push({ role: "user", content });
     }
   }
@@ -76,5 +85,5 @@ export function toolNames(messages: Message[]): Map<string, string> {
 // A tool result's text (wires whose results take a string).
 export function resultText(content: string | { type: string; text?: string }[]): string {
   if (typeof content === "string") return content;
-  return content.map((c) => (c.type === "text" ? c.text : `[${c.type} attached]`)).join("\n");
+  return content.map((c) => (c.type === "text" ? c.text : c.type === "tool_reference" ? refText((c as any).tool_name) : `[${c.type} attached]`)).join("\n");
 }

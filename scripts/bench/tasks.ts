@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { want as catalogWant } from "./catalog-mcp.ts";
 import { TICKETS } from "./tracker-mcp.ts";
 
 export type Check = { ok: boolean; why: string };
@@ -500,4 +501,22 @@ const webdocs: Task = {
   },
 };
 
-export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker, webdocs];
+// Finding the right tools among many: three business servers of 40 tools each,
+// the task needs one tool of the crm server, two of billing, and the crm note.
+const NOTE = "Refunded duplicate Pro plan charge";
+const catalog: Task = {
+  id: "catalog",
+  kind: "tool discovery",
+  prompt: `Ada Lovelace was charged twice for the Pro plan on her latest invoice. Refund the duplicate charge (reason: duplicate) and add a note to her customer record with the text "${NOTE}". Reply with the refund id and the note id.`,
+  files: { "README.md": "# accounts\n\nCustomers, billing and operations live in the crm, billing and ops MCP servers.\n" },
+  mcp: Object.fromEntries(["crm", "billing", "ops"].map((s) => [s, { command: "bun", args: [join(import.meta.dir, "catalog-mcp.ts"), s] }])),
+  check(_dir, reply) {
+    const w = catalogWant();
+    const refunds = [w.refund, w.refundAlt].filter((r) => reply.includes(r));
+    if (refunds.length !== 1) return { ok: false, why: refunds.length ? "refunded both charges" : "no valid refund id" };
+    if (!reply.includes(w.note(NOTE))) return { ok: false, why: "no valid note id" };
+    return { ok: true, why: "refund and note" };
+  },
+};
+
+export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker, webdocs, catalog];

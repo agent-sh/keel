@@ -33,8 +33,8 @@ test("chrome bridge", async ({ page, request }) => {
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await page.goto(`/s/${session.id}`);
   await page.getByTestId("composer").fill(
-    "Find the Chrome tools with search_tools (query: chrome tabs). Run chrome__chrome_tabs with mcp_call and note the tab titles. " +
-      "Then run chrome__chrome_new_tab with mcp_call with url https://example.test/new. Finally reply with the tab titles you saw, comma separated.",
+    "Find the Chrome tools with ToolSearch (query: chrome tabs). Run mcp__chrome__chrome_tabs and note the tab titles. " +
+      "Then run mcp__chrome__chrome_new_tab with url https://example.test/new. Finally reply with the tab titles you saw, comma separated.",
   );
   await page.keyboard.press("Enter");
 
@@ -47,7 +47,7 @@ test("chrome bridge", async ({ page, request }) => {
   await page.getByTestId("deny-send").click();
 
   await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
-  const calls = page.getByTestId("tool-call").filter({ hasText: "mcp_call" });
+  const calls = page.getByTestId("tool-call").filter({ hasText: "mcp__chrome__chrome_tabs" });
   await expect(calls.first()).toBeVisible();
   // The read ran with no card: exactly one card was raised, for the action.
   const approvals = (await (await request.get(`/api/sessions/${session.id}/approvals?all`)).json()).approvals ?? [];

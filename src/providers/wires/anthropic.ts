@@ -19,8 +19,8 @@ const image = (b: { media_type: string; data: string }) => ({ type: "image", sou
 // History to the wire. Cache breakpoints: tools + system are frozen (one
 // breakpoint on the system), and a rolling breakpoint on the last user message
 // so each request reads the whole previous prefix from cache.
-export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine">, mark: typeof CACHE | undefined = CACHE): any[] {
-  const out: any[] = project(messages, ctx).map((m) => ({
+export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine">, mark: typeof CACHE | undefined = CACHE, toolRefs = false): any[] {
+  const out: any[] = project(messages, { ...ctx, toolRefs }).map((m) => ({
     role: m.role,
     content: m.content.map((b): any => {
       switch (b.type) {
@@ -37,7 +37,8 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
             type: "tool_result",
             tool_use_id: b.tool_use_id,
             is_error: b.is_error || undefined,
-            content: typeof b.content === "string" ? b.content : b.content.map((c) => (c.type === "image" ? image(c) : { type: "text", text: c.text })),
+            content: typeof b.content === "string" ? b.content
+              : b.content.map((c) => (c.type === "image" ? image(c) : c.type === "tool_reference" ? { type: "tool_reference", tool_name: c.tool_name } : { type: "text", text: c.text })),
           };
       }
     }).filter(Boolean),
@@ -53,13 +54,21 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
 
 export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?: string) {
   const cache = req.cache === false ? undefined : req.cacheTtl === "5m" ? { type: "ephemeral" as const, ttl: "5m" as const } : CACHE;
-  const tools = req.tools.map((t, i) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.input_schema,
-    eager_input_streaming: true,
-    ...(cache && i === req.tools.length - 1 ? { cache_control: cache } : {}),
-  }));
+  // Deferred tools are not part of the prompt (the provider leaves them out of
+  // the cached prefix until a tool_reference names one), so the tools
+  // breakpoint sits on the last eager tool and the deferred set can change freely.
+  const eager = req.tools.filter((t) => !t.defer);
+  const deferred = req.tools.filter((t) => t.defer);
+  const tools = [
+    ...eager.map((t, i) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input_schema,
+      eager_input_streaming: true,
+      ...(cache && i === eager.length - 1 ? { cache_control: cache } : {}),
+    })),
+    ...deferred.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema, defer_loading: true })),
+  ];
   // Breakpoints (4 at most): the tools, the system text every session shares,
   // the session's own system text, and the rolling one on the last user message.
   const cut = req.systemSplit ?? 0;
@@ -71,7 +80,7 @@ export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?:
     model: req.model,
     max_tokens: req.maxTokens ?? 64_000,
     system,
-    messages: toWire(req.messages, ctx, cache),
+    messages: toWire(req.messages, ctx, cache, deferred.length > 0),
     thinking: { type: "adaptive", display: "summarized" },
     output_config: { effort: req.effort ?? "high" },
   };

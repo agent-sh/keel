@@ -51,7 +51,8 @@ function summary(kind: ToolKind, name: string, input: any, cwd?: string): string
     case "web": return input.query ?? "";
     case "fetch": return input.url ?? input.prompt ?? "";
     case "skill": return [input.skill ?? input.name, input.args ?? input.arguments].filter(Boolean).join(" ");
-    case "mcp": return name === "search_tools" ? `search ${input.query ?? ""}` : input.tool ?? name;
+    // A dispatcher names its tool; a tool called by its own name shows its input.
+    case "mcp": return name === "search_tools" || name === "ToolSearch" ? `search ${input.query ?? ""}` : input.tool ?? (JSON.stringify(input).slice(0, 120) || name);
     case "plan": return planSummary(planItems(name, input));
     default: return toolSummary(name, input) ?? fleetSummary(name, input) ?? JSON.stringify(input).slice(0, 120);
   }

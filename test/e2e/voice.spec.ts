@@ -40,7 +40,7 @@ test("voice", async ({ page, request }) => {
   await shoot(page, "voice-02-listening");
 
   // The owner speaks: a message of the voice that runs a turn, and say reaches parlar.
-  writeFileSync(join(PARLAR, "speech"), "[voice u1] Find the say tool with search_tools, run parlar__say with mcp_call saying hello, then reply with the single word: heron.");
+  writeFileSync(join(PARLAR, "speech"), "[voice u1] Find the say tool with ToolSearch, run mcp__parlar__say saying hello, then reply with the single word: heron.");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
   await expect(page.getByText("[voice u1]")).toBeVisible();
   await expect(page.getByTestId("assistant-text").last()).toContainText(/heron/i);
@@ -53,7 +53,7 @@ test("voice", async ({ page, request }) => {
 
   // Another session: its say is refused before parlar is reached.
   const before = (log().match(/^say /gm) ?? []).length;
-  await request.post(`/api/sessions/${other.id}/messages`, { data: { text: "Find the say tool with search_tools and run parlar__say with mcp_call saying hi. Then reply with the tool's result only." } });
+  await request.post(`/api/sessions/${other.id}/messages`, { data: { text: "Find the say tool with ToolSearch and run mcp__parlar__say saying hi. Then reply with the tool's result only." } });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${other.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 120_000 }).toBe(true);
   const results = (await (await request.get(`/api/sessions/${other.id}`)).json()).events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results);
   expect(JSON.stringify(results)).toContain("not spoken");

@@ -8,6 +8,7 @@
 //   bun scripts/bench/run.ts --model bedrock:global.anthropic.claude-haiku-5-5 --label base [--reps 2] [--tasks a,b]
 //   bun scripts/bench/run.ts ... --gap 6   (then a follow-up prompt after a 6 minute pause, tasks side by side)
 //   bun scripts/bench/run.ts ... --without run_code   (a shared tool left out, to measure what it brings)
+//   bun scripts/bench/run.ts ... --no-defer   (Claude with every tool eager and the search_tools/mcp_call pair)
 //   bun scripts/bench/run.ts compare base lever1 ...
 //
 // Results go to $KEEL_BENCH_DIR (default ~/.cache/keel-work/bun/tokens): never into the repo.
@@ -42,7 +43,7 @@ function loadEnvFile(p: string) {
   }
 }
 
-async function bench(opts: { model: string; label: string; reps: number; tasks: string[]; gapMin?: number; without: string[] }) {
+async function bench(opts: { model: string; label: string; reps: number; tasks: string[]; gapMin?: number; without: string[]; noDefer?: boolean }) {
   loadEnvFile(join(homedir(), ".config/claude-code/bedrock.env"));
   const { Bus } = await import("../../src/core/bus.ts");
   const { ErrorTracker } = await import("../../src/core/errors.ts");
@@ -73,7 +74,8 @@ async function bench(opts: { model: string; label: string; reps: number; tasks: 
   perms.gate!.setDefaultMode("full-auto" as any);
   const { unregisterShared } = await import("../../src/tools/registry.ts");
   for (const name of opts.without) unregisterShared(name);
-  await providers.resolve(opts.model);
+  const resolved = await providers.resolve(opts.model);
+  if (opts.noDefer) (await import("../../src/tools/defer.ts")).refuseDefer(resolved.info.id);
 
   // The request shape, measured as it leaves the engine (after every hook).
   const shape = new Map<string, { tools: number; system: number; messages: number }>();
@@ -213,14 +215,14 @@ function compare(labels: string[]) {
 
 const { values, positionals } = parseArgs({
   args: Bun.argv.slice(2), allowPositionals: true,
-  options: { model: { type: "string" }, label: { type: "string" }, reps: { type: "string", default: "1" }, tasks: { type: "string", default: "" }, gap: { type: "string" }, without: { type: "string", default: "" } },
+  options: { model: { type: "string" }, label: { type: "string" }, reps: { type: "string", default: "1" }, tasks: { type: "string", default: "" }, gap: { type: "string" }, without: { type: "string", default: "" }, "no-defer": { type: "boolean", default: false } },
 });
 if (positionals[0] === "compare") compare(positionals.slice(1));
 else {
   if (!values.model || !values.label) {
-    console.error("usage: run.ts --model ID --label NAME [--reps N] [--tasks a,b] [--without tool,tool] | run.ts compare LABEL...");
+    console.error("usage: run.ts --model ID --label NAME [--reps N] [--tasks a,b] [--without tool,tool] [--no-defer] | run.ts compare LABEL...");
     process.exit(2);
   }
-  await bench({ model: values.model, label: values.label, reps: Number(values.reps), tasks: values.tasks ? values.tasks.split(",") : [], gapMin: values.gap ? Number(values.gap) : undefined, without: values.without ? values.without.split(",") : [] });
+  await bench({ model: values.model, label: values.label, reps: Number(values.reps), tasks: values.tasks ? values.tasks.split(",") : [], gapMin: values.gap ? Number(values.gap) : undefined, without: values.without ? values.without.split(",") : [], noDefer: values["no-defer"] });
   process.exit(0);
 }

@@ -1,4 +1,4 @@
-import type { ImageBlock, TextBlock, ToolResultBlock } from "../core/types.ts";
+import type { ImageBlock, TextBlock, ToolRefBlock, ToolResultBlock } from "../core/types.ts";
 import type { ToolSpec } from "../providers/types.ts";
 import type { CallClass } from "../safety/policy.ts";
 
@@ -32,7 +32,7 @@ export type ToolContext = {
 // `shown`: what the transcript shows for the call besides its result (the
 // owner's answers to a question, by question), stored on the tool_result event
 // and never sent to a model.
-export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_error?: boolean; shown?: unknown };
+export type ToolOutput = { content: string | (TextBlock | ImageBlock | ToolRefBlock)[]; is_error?: boolean; shown?: unknown };
 
 // What a call of a tool does, for the permission gate: declared by the tool,
 // never read off its input. readOnly tools are reads; a tool that declares no

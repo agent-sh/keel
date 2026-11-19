@@ -175,3 +175,26 @@ test("the Messages reader takes input counts sent at message_delta", () => {
   const u = p.result().usage;
   expect([u.input, u.cache_read, u.output]).toEqual([19, 4, 3]);
 });
+
+// Deferred tools: only the Anthropic wire with deferred tools in the request
+// keeps tool_reference blocks; the tools breakpoint sits on the last eager tool.
+test("deferred tools and tool_reference blocks on each wire", () => {
+  const history: Message[] = [
+    { role: "user", content: [{ type: "text", text: "go" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "ToolSearch", input: { query: "echo" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "tool_reference", tool_name: "mcp__echo__echo" }] }] },
+  ];
+  const tools = [
+    { name: "Bash", description: "b", input_schema: { type: "object" } },
+    { name: "mcp__echo__echo", description: "e", input_schema: { type: "object" }, defer: true },
+  ];
+  const body = anthropicWire.body({ ...req, messages: history, tools }, ctx);
+  expect(body.tools.map((t: any) => [t.name, !!t.defer_loading, !!t.cache_control])).toEqual([["Bash", false, true], ["mcp__echo__echo", true, false]]);
+  expect(body.messages[2].content[0].content).toEqual([{ type: "tool_reference", tool_name: "mcp__echo__echo" }]);
+  // Without deferred tools (a route that refused them), the reference is a line of text.
+  const eager = anthropicWire.body({ ...req, messages: history, tools: tools.slice(0, 1) }, ctx);
+  expect(eager.messages[2].content[0].content).toEqual([{ type: "text", text: "Tool loaded: mcp__echo__echo" }]);
+  const resp = responsesBody({ ...req, messages: history }, ctx, "openai");
+  expect(resp.input.find((i: any) => i.type === "function_call_output").output).toEqual([{ type: "input_text", text: "Tool loaded: mcp__echo__echo" }]);
+});
+

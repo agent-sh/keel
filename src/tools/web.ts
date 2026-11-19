@@ -189,6 +189,7 @@ export function htmlToText(html: string): string {
 // no web tool (search_tools finds them, mcp_call runs them).
 registerCatalog({
   name: "web",
+  except: ["claude", "gemini"],
   tools: async () => [
     {
       server: "web", name: "websearch", qualified: "web__websearch", readOnly: true,

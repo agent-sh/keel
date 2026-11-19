@@ -5,7 +5,8 @@ const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 
 // Feature: MCP servers. Add a stdio server from Settings > MCP servers, see it ready with
 // its tools, turn it off and on, reconnect it, then a model finds its tool
-// with search_tools and runs it with mcp_call.
+// with ToolSearch (a tool_reference loads it, the cached prefix unchanged) and
+// calls it by its own name, mcp__echo__echo, as Claude Code names MCP tools.
 test("mcp servers", async ({ page, request }) => {
   await request.delete("/api/mcp/servers/echo").catch(() => {});
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
@@ -108,16 +109,19 @@ test("mcp servers", async ({ page, request }) => {
   await page.getByPlaceholder("Search models").fill("haiku 5.5");
   await page.getByRole("option").first().click();
   await page.getByTestId("composer").fill(
-    "Use search_tools to find the echo tool, then run it with mcp_call with the text pelican. Then reply with the tool's output only.",
+    "Use ToolSearch to find the echo tool, then run it with the text pelican. Then reply with the tool's output only.",
   );
   await page.keyboard.press("Enter");
 
   await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
   const calls = page.getByTestId("tool-call");
-  await expect(calls.filter({ hasText: "search_tools" }).first()).toBeVisible();
-  await expect(calls.filter({ hasText: "mcp_call" }).first()).toBeVisible();
+  await expect(calls.filter({ hasText: "ToolSearch" }).first()).toBeVisible();
+  await expect(calls.filter({ hasText: "mcp__echo__echo" }).first()).toBeVisible();
   await expect(page.getByTestId("assistant-text").last()).toContainText("echo: pelican");
-  await calls.filter({ hasText: "mcp_call" }).first().click();
+  // The search's card names what it loaded.
+  await calls.filter({ hasText: "ToolSearch" }).first().click();
+  await expect(calls.filter({ hasText: "ToolSearch" }).first()).toContainText("Loaded mcp__echo__echo");
+  await calls.filter({ hasText: "mcp__echo__echo" }).first().click();
   await shoot(page, "mcp-04-chat");
 
   // The server's prompts are slash commands, as Claude Code lists them

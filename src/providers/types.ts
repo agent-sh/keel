@@ -8,6 +8,9 @@ export type ToolSpec = {
   // drivers that support it send the grammar and pass the raw text as
   // `{ input }`; others send input_schema.
   freeform?: { syntax: "lark" | "regex"; definition: string };
+  // Sent with defer_loading: not in the prompt until a tool search names it
+  // (the Anthropic wire only; see src/tools/defer.ts).
+  defer?: boolean;
 };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";

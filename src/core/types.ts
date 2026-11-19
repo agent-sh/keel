@@ -10,10 +10,14 @@ export type ThinkingBlock = { type: "thinking"; thinking: string; signature?: st
 export type RedactedThinkingBlock = { type: "redacted_thinking"; data: string };
 export type ImageBlock = { type: "image"; media_type: string; data: string };
 export type ToolUseBlock = { type: "tool_use"; id: string; name: string; input: unknown; signature?: string; origin?: string };
+// A deferred tool a tool search loaded: on the Anthropic wire the provider puts
+// the tool's definition in place of the block (the cached prefix is unchanged);
+// every other wire reads it as a line of text.
+export type ToolRefBlock = { type: "tool_reference"; tool_name: string };
 export type ToolResultBlock = {
   type: "tool_result";
   tool_use_id: string;
-  content: string | (TextBlock | ImageBlock)[];
+  content: string | (TextBlock | ImageBlock | ToolRefBlock)[];
   is_error?: boolean;
 };
 

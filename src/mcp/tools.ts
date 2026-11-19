@@ -3,35 +3,11 @@
 // one line per hit and the schema only for the hits shown, so finding a tool
 // costs a few hundred tokens instead of every server's schemas on every request.
 import { registerHooks } from "../engine/hooks.ts";
-import { catalogSources, catalogTools, registerCatalog, type CatalogTool } from "../tools/catalog.ts";
+import { catalogSources, catalogTools, registerCatalog, score, type CatalogTool } from "../tools/catalog.ts";
+export { score };
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import { resourceText, type McpManager } from "./manager.ts";
-
-const words = (s: string) =>
-  s
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-
-// Name hits weigh more than description hits; an exact name wins outright.
-export function score(t: CatalogTool, query: string): number {
-  const q = query.toLowerCase().trim();
-  if (!q) return 1;
-  if (t.qualified.toLowerCase() === q || t.name.toLowerCase() === q) return 1000;
-  const name = new Set([...words(t.qualified), ...words(t.name)]);
-  const desc = words(t.description);
-  let s = 0;
-  for (const w of words(q)) {
-    if (name.has(w)) s += 10;
-    else if ([...name].some((n) => n.startsWith(w) || w.startsWith(n))) s += 5;
-    const d = desc.filter((x) => x === w || (w.length > 3 && x.startsWith(w))).length;
-    s += Math.min(d, 3) * 2;
-  }
-  if (t.qualified.toLowerCase().includes(q)) s += 15;
-  return s;
-}
 
 const oneLine = (s: string, n = 160) => {
   const l = s.replace(/\s+/g, " ").trim();
@@ -205,7 +181,7 @@ export function installMcpTools(m: McpManager) {
       const s = m.configured();
       if (!s.length) return "";
       const lines = s.map((x) => `- ${x.name}${x.instructions ? `: ${oneLine(x.instructions, 200)}` : ""}`);
-      return `MCP servers are connected; their tools are not loaded. Find them with search_tools and run them with mcp_call:\n${lines.join("\n")}`;
+      return `MCP servers are connected; their tools are deferred: load them with your tool search tool (ToolSearch, or search_tools and mcp_call):\n${lines.join("\n")}`;
     },
   });
 }

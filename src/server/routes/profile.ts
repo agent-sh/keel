@@ -10,6 +10,7 @@ import type { RouteModule } from "../app.ts";
 import { speedOffer } from "../../providers/registry.ts";
 import type { ModelInfo } from "../../providers/types.ts";
 import { toolsFor } from "../../tools/registry.ts";
+import { loadsNatively } from "../../tools/defer.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const INSTRUCTION_LIMIT = 40_000; // what the system prompt includes of one file (engine/turn.ts)
@@ -33,8 +34,9 @@ function instructions(cwd: string, nested: Iterable<string> = []) {
 }
 
 // How a family's tools edit files, read off its tool set.
-function toolProfile(info: ModelInfo) {
-  const tools = info.tools === false ? [] : toolsFor(info.family); // as the turn sends them
+// The tools the model is sent (as the turn sends them): deferred ones load on demand.
+function toolProfile(info: ModelInfo, wire?: string) {
+  const tools = info.tools === false ? [] : toolsFor(info.family, loadsNatively(wire, info)).filter((t) => !t.defer);
   const names = tools.map((t) => t.name);
   const patch = tools.find((t) => t.freeform);
   const edit_grammar = patch ? `${patch.name} (${patch.freeform!.syntax} grammar)` : names.includes("Edit") ? "Edit (exact string replace)" : names.includes("replace") ? "replace (exact string replace)" : "none";
@@ -53,7 +55,7 @@ export const profileRoutes: RouteModule = ({ store, bus, providers }) => {
       model: info ? { id: info.id, name: info.name, provider: info.provider, family: info.family, context: info.context, output: info.output, billing: info.billing, price: info.price } : null,
       reasoning: { choice: s.settings.effort && info?.efforts.includes(s.settings.effort) ? s.settings.effort : undefined, options: info?.efforts.length ? { kind: "levels", levels: info.efforts } : { kind: info ? "none" : "unknown" } },
       speed: { choice: offer?.id ?? "standard", options: [{ speed: "standard", label: "Standard", available: true }, ...(info?.speeds ?? []).map((o) => ({ speed: o.id, label: o.label, available: true, note: o.note, price: o.price }))] },
-      ...(info ? toolProfile(info) : { tool_profile: null, eager_tools: [] }),
+      ...(info ? toolProfile(info, providers.get(info.provider)?.wire) : { tool_profile: null, eager_tools: [] }),
       instructions: instructions(s.workspace, s.machine ? [] : loadedPaths(store, s.id)),
     };
   };

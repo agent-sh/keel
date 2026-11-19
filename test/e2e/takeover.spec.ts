@@ -132,7 +132,7 @@ test("take over a running session: ended where it ran, or copied with the one st
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
     await page.goto(`/s/${session.id}`);
     await request.post(`/api/sessions/${session.id}/messages`, {
-      data: { text: 'Make exactly one tool call: mcp_call with {"tool":"keel__session_import","arguments":{"id":"claude:s-cron","take_over":true}}. Then reply with the tool\'s result word for word.' },
+      data: { text: 'Load keel__session_import with ToolSearch (query "select:keel__session_import"), then call it exactly once with {"id":"claude:s-cron","take_over":true}. Then reply with the tool\'s result word for word.' },
     });
     await expect(page.getByTestId("approval")).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId("approval")).toHaveAttribute("data-risk", "high");
