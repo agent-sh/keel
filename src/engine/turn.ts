@@ -444,7 +444,7 @@ export class Engine {
 
   private async step(session: Session, model: string): Promise<Step> {
     const { provider, info } = await this.providers.resolve(model);
-    const system = await this.systemOf(session);
+    const system = await this.systemOf(session, info);
     const want = session.settings.effort;
     const effort = want && info.efforts.includes(want) ? want : info.efforts.includes("high") ? "high" : undefined;
     // A model known to take no tool definitions (the owner, a probe, its listing
@@ -456,13 +456,13 @@ export class Engine {
   // A subagent on this machine runs on its parent's system prompt byte for byte
   // (its own place, a worktree, is in its task message), so its first request
   // reads the prefix the parent cached instead of writing its own copy.
-  private async systemOf(session: Session): Promise<{ text: string; split: number }> {
+  private async systemOf(session: Session, info?: ModelInfo): Promise<{ text: string; split: number }> {
     let system = this.systems.get(session.id);
     if (system) return system;
     const parent = session.parent_id && !session.machine ? this.store.session(session.parent_id) : undefined;
-    if (parent) system = await this.systemOf(parent);
+    if (parent) system = await this.systemOf(parent, info);
     else {
-      const extra = (await Promise.all(allHooks().map((h) => h.system?.(session) ?? ""))).filter(Boolean);
+      const extra = (await Promise.all(allHooks().map((h) => h.system?.(session, info) ?? ""))).filter(Boolean);
       const shared = [CORE, ...extra].join("\n\n") + "\n\n";
       system = { text: shared + sessionPrompt(session.workspace, session.created), split: shared.length };
     }

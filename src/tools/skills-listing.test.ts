@@ -16,3 +16,15 @@ test("the skill listing keeps every name and the used skills' descriptions", () 
   expect(one.length).toBe("- long: ".length + DESCRIPTION_CAP);
   expect(fitListing([{ name: "a", description: "fits", uses: 0 }]).nameOnly).toEqual([]);
 });
+
+// The budget is a share of the model's window (Claude Code: 1% at 4 characters a token), with a floor.
+test("the skill listing's budget follows the model's context window", async () => {
+  const { listingBudget, LISTING_FLOOR } = await import("./skills.ts");
+  expect(listingBudget(200_000)).toBe(8_000);
+  expect(listingBudget(1_000_000)).toBe(40_000);
+  expect(listingBudget()).toBe(8_000);
+  expect(listingBudget(16_000)).toBe(LISTING_FLOOR);
+  const entries = Array.from({ length: 60 }, (_, i) => ({ name: `skill-${i}`, description: `does thing ${i} `.repeat(20), uses: 0 }));
+  expect(fitListing(entries, listingBudget(200_000)).nameOnly.length).toBeGreaterThan(0);
+  expect(fitListing(entries, listingBudget(1_000_000)).nameOnly).toEqual([]);
+});

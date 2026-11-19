@@ -13,7 +13,7 @@ import { ownerHooksPath, parseHooks } from "../../integrations/hooks.ts";
 import { configDir } from "../../providers/config.ts";
 import { pluginsFile } from "../../providers/plugins/config.ts";
 import { rootOf } from "../../safety/trust.ts";
-import { discoverSkills, listingOf, setSkillOff, setSkillUsage, type Skill } from "../../tools/skills.ts";
+import { discoverSkills, listingBudget, listingOf, setSkillOff, setSkillUsage, type Skill } from "../../tools/skills.ts";
 import { presence } from "./permissions.ts";
 import { trustRef } from "./trust.ts";
 
@@ -62,7 +62,18 @@ export const surfaceRoutes: RouteModule = (deps) => {
     uses: () => new Map(store.db.query<{ name: string; count: number }, []>("SELECT name, count FROM skill_uses").all().map((r) => [r.name, r.count])),
     record: (name) => void store.db.query("INSERT INTO skill_uses (name, count, last) VALUES (?, 1, ?) ON CONFLICT(name) DO UPDATE SET count = count + 1, last = excluded.last").run(name, Date.now()),
   });
-  const skillView = (cwd: string, nameOnly: Set<string> = new Set(listingOf(cwd).nameOnly)) => (s: Skill) => ({
+  // The listing's budget follows the model's window: Settings shows it for the
+  // default model a new session starts on (a session on another model gets its own).
+  let shownFor: { model: string; window?: number } | null = null;
+  const refreshShownFor = async () => {
+    try {
+      const id = await deps.providers.defaultModel();
+      const m = (await deps.providers.models()).find((x) => x.id === id);
+      shownFor = m ? { model: m.id, window: m.context_assumed ? undefined : m.context } : null;
+    } catch { /* no model yet: the budget of an unstated window */ }
+    return shownFor;
+  };
+  const skillView = (cwd: string, nameOnly: Set<string> = new Set(listingOf(cwd, shownFor?.window).nameOnly)) => (s: Skill) => ({
     name: s.name, description: s.description, scope: s.scope, kind: s.kind, root: s.root, dir: s.dir, file: s.file, enabled: s.enabled,
     user_invocable: s.userInvocable, model_invocable: s.modelInvocable, argument_hint: s.argumentHint,
     trust: s.scope === "project" ? trustOf(cwd, held(s)) : null,
@@ -118,9 +129,14 @@ export const surfaceRoutes: RouteModule = (deps) => {
 
   return {
     "/api/skills": {
-      GET: (req: Request) => {
+      GET: async (req: Request) => {
         const cwd = cwdOf(req);
-        return json({ cwd, skills: discoverSkills(cwd).map(skillView(cwd)), homes: { personal: skillHome(cwd, "personal"), project: skillHome(cwd, "project") } });
+        const f = await refreshShownFor();
+        const fit = listingOf(cwd, f?.window);
+        return json({
+          cwd, skills: discoverSkills(cwd).map(skillView(cwd, new Set(fit.nameOnly))), homes: { personal: skillHome(cwd, "personal"), project: skillHome(cwd, "project") },
+          listing: { model: f?.model ?? null, window: f?.window ?? null, budget: listingBudget(f?.window), name_only: fit.nameOnly.length },
+        });
       },
       // { cwd, name, scope: personal | project, description }: a new SKILL.md.
       POST: (req: Request) => attempt(async () => {

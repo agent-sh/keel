@@ -305,7 +305,15 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
 // 2026-11-19): every name always; each description cut at 1,536 characters;
 // past the budget, descriptions go first from the skills loaded least, so the
 // ones in use keep their text; and a line says some are listed by name only.
-export const LISTING_BUDGET = 8_000;
+// The budget is 1% of the model's context window at 4 characters a token
+// (Claude Code 2.1.328: 8,000 characters for 200,000 tokens, 40,000 for a
+// million); a window nobody stated counts as 200,000. A small window still
+// gets the floor, about 500 tokens of names and descriptions.
+export const LISTING_SHARE = 0.01;
+export const LISTING_WINDOW = 200_000;
+export const LISTING_FLOOR = 2_000;
+export const listingBudget = (window?: number) => Math.max(LISTING_FLOOR, Math.floor((window || LISTING_WINDOW) * 4 * LISTING_SHARE));
+export const LISTING_BUDGET = listingBudget();
 export const DESCRIPTION_CAP = 1_536;
 export type ListingEntry = { name: string; description: string; uses: number };
 export function fitListing(entries: ListingEntry[], budget = LISTING_BUDGET): { lines: string[]; nameOnly: string[] } {
@@ -329,20 +337,22 @@ export function fitListing(entries: ListingEntry[], budget = LISTING_BUDGET): { 
 let usage: { uses(): Map<string, number>; record(name: string): void } | null = null;
 export const setSkillUsage = (u: typeof usage) => void (usage = u);
 
-export function listingOf(cwd: string) {
+// `window`: the context window of the session's model, in tokens.
+export function listingOf(cwd: string, window?: number) {
   const skills = discoverSkills(cwd).filter((s) => s.modelInvocable && s.enabled);
   const uses = usage?.uses() ?? new Map<string, number>();
-  return fitListing(skills.map((s) => ({ name: s.name, description: s.description, uses: uses.get(s.name) ?? 0 })));
+  return fitListing(skills.map((s) => ({ name: s.name, description: s.description, uses: uses.get(s.name) ?? 0 })), listingBudget(window));
 }
 
-export function skillListing(cwd: string): string {
-  const { lines, nameOnly } = listingOf(cwd);
+export function skillListing(cwd: string, window?: number): string {
+  const { lines, nameOnly } = listingOf(cwd, window);
   if (!lines.length) return "";
   const note = nameOnly.length ? `\n(${nameOnly.length} of them are listed by name only, to keep this list short: load one by name to read what it is for.)` : "";
   return `Skills you can load with the skill tool when a task matches one (the body comes back as its result):\n${lines.join("\n")}${note}`;
 }
 
-registerHooks({ system: (s) => skillListing(s.workspace) });
+// Built with the session's system prompt, which stays frozen: the budget is the window of the model it starts on.
+registerHooks({ system: (s, model) => skillListing(s.workspace, model && !model.context_assumed ? model.context : undefined) });
 
 export const skillTool = (name: string, nameKey: string, argsKey: string | null, description?: string): Tool => ({
   name,

@@ -8,8 +8,11 @@ export type SkillInfo = {
   name: string; description: string; scope: "personal" | "project"; kind: "skill" | "command"; root: string; dir: string; file: string;
   enabled: boolean; user_invocable: boolean; model_invocable: boolean; argument_hint?: string;
   trust: "trusted" | "new" | "changed" | "gone" | null; listing_tokens: number;
+  name_only?: boolean; // past the listing's budget: the model sees its name, not its description
 };
-type Listing = { skills: SkillInfo[]; homes: { personal: string; project: string } };
+// What the listing may take: a share of the default model's window, in characters.
+export type ListingBudget = { model: string | null; window: number | null; budget: number; name_only: number };
+type Listing = { skills: SkillInfo[]; homes: { personal: string; project: string }; listing?: ListingBudget };
 
 // Where a folder of skills or commands is, in words.
 export function rootTitle(s: SkillInfo): string {
@@ -39,7 +42,7 @@ export function groupSkills(list: SkillInfo[], aside: (s: SkillInfo) => string):
 }
 
 // One skill: what it costs, who can run it, its file.
-export function SkillReader({ name, cwd, onChanged }: { name: string; cwd: string; onChanged: (skills?: SkillInfo[]) => void }) {
+export function SkillReader({ name, cwd, onChanged, listing }: { name: string; cwd: string; onChanged: (skills?: SkillInfo[]) => void; listing?: ListingBudget }) {
   const [d, setD] = useState<{ skill: SkillInfo; text: string; body_tokens: number } | null>(null);
   const q = `cwd=${encodeURIComponent(cwd)}`;
   useEffect(() => { setD(null); api(`/api/skills/${encodeURIComponent(name)}?${q}`).then(setD).catch(reportError); }, [name, q]);
@@ -60,11 +63,16 @@ export function SkillReader({ name, cwd, onChanged }: { name: string; cwd: strin
           ["Kind", s.kind === "command" ? "command file" : "skill"],
           ["Runs for", loads(s)],
           ...(s.argument_hint ? [["Arguments", s.argument_hint] as [string, string]] : []),
-          ["Every session", s.model_invocable && s.enabled ? `~${tok(s.listing_tokens)} tokens` : "nothing"],
+          ["Every session", !s.model_invocable || !s.enabled ? "nothing" : s.name_only ? "its name only" : `~${tok(s.listing_tokens)} tokens`],
           ["When loaded", `~${tok(d.body_tokens)} tokens`],
           ...(s.trust ? [["Trust", s.trust] as [string, string]] : []),
         ]}
       >
+        {s.name_only && s.enabled && (
+          <div className="k-issue mt-3" data-tone="quiet" data-testid="skill-name-only">
+            Listed by name only: the skill list is past its budget{listing ? ` of ${listing.budget.toLocaleString()} characters (1% of ${listing.model ? `${listing.model}'s` : "the model's"} context window)` : ""}, and the skills loaded least lose their descriptions first. The model can still load it by name.
+          </div>
+        )}
         {held && (
           <div className="k-issue mt-3" data-tone="need" data-testid="skill-held">
             {s.trust === "new" ? "New in this repository: " : "Changed since you trusted it: "}
@@ -93,7 +101,8 @@ export default function Skills() {
   const list = data?.skills.filter((s) => s.kind === "skill") ?? [];
   const cur = sel && sel !== "+new" ? list.find((s) => s.name === sel) : undefined;
   useEffect(() => { if (data && !sel && list[0]) setSel(list[0].name); }, [data]);
-  const every = list.filter((s) => s.enabled && s.model_invocable).reduce((n, s) => n + s.listing_tokens, 0);
+  // A skill listed by name only costs its name's line.
+  const every = list.filter((s) => s.enabled && s.model_invocable).reduce((n, s) => n + (s.name_only ? Math.ceil((s.name.length + 3) / 4) : s.listing_tokens), 0);
   const held = list.filter((s) => skillMark(s) === "need").length;
   return (
     <div data-testid="skills-settings">
@@ -101,11 +110,12 @@ export default function Skills() {
         { n: list.length, label: "skills" },
         { n: list.filter((s) => !s.enabled).length, label: "off" },
         ...(held ? [{ n: held, label: "held", tone: "need" as const }] : []),
+        ...(data?.listing?.name_only ? [{ n: data.listing.name_only, label: "name only" }] : []),
         { n: every, label: "tokens a session" },
       ]} />
       <Ledger
         testid="skills-ledger"
-        groups={groupSkills(list, (s) => (!s.enabled ? "off" : s.model_invocable ? `${tok(s.listing_tokens)} tok` : "by hand"))}
+        groups={groupSkills(list, (s) => (!s.enabled ? "off" : !s.model_invocable ? "by hand" : s.name_only ? "name only" : `${tok(s.listing_tokens)} tok`))}
         selected={sel}
         onSelect={setSel}
         add={[{ id: "+new", label: "New skill" }]}
@@ -128,7 +138,7 @@ export default function Skills() {
             </div>
           </>
         ) : cur ? (
-          <SkillReader key={cur.name} name={cur.name} cwd={cwd} onChanged={(skills) => (skills ? setData({ ...data!, skills }) : load())} />
+          <SkillReader key={cur.name} name={cur.name} cwd={cwd} listing={data?.listing} onChanged={(skills) => (skills ? setData({ ...data!, skills }) : load())} />
         ) : (
           <Blank title="No skill picked">Pick one on the left, or make a new one.</Blank>
         )}

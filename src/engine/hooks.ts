@@ -1,5 +1,5 @@
 import type { Message, Session, StoredEvent, ToolResultBlock, TurnStatus, Usage } from "../core/types.ts";
-import type { ProviderRequest, ProviderResult } from "../providers/types.ts";
+import type { ModelInfo, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 
 // One tool call as the turn is about to run it.
@@ -12,8 +12,9 @@ export type ToolGate = void | { deny: string } | { input?: any; ctx?: Partial<To
 
 // Points where feature modules join the turn loop without editing it.
 export type TurnHooks = {
-  // Extra text for the system prompt; called once per session (the prompt is frozen).
-  system?: (s: Session) => string | Promise<string>;
+  // Extra text for the system prompt; called once per session (the prompt is
+  // frozen), with the model the session's first request goes to.
+  system?: (s: Session, model?: ModelInfo) => string | Promise<string>;
   // Change the request just before it is sent (compaction, volatile-tail notes).
   // Must keep the prefix stable: append, never rewrite earlier messages.
   beforeRequest?: (s: Session, req: ProviderRequest) => ProviderRequest | Promise<ProviderRequest>;
