@@ -227,6 +227,10 @@ describe("questions", () => {
     expect((await answer({ answers: both }, JSON.stringify([["build", "Debug"], ["checks", ["Integration"]]]))).status).toBe(200);
     await Bun.sleep(0);
     expect(got).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Integration"] } });
+    // Reopened later (a sync), the closed card still says what was picked, question by question.
+    const reopened = (await call("GET", "/v1/sync?since=0")).body.approvals.find((a: any) => a.id === "q-call-q");
+    expect(reopened).toMatchObject({ state: "approved", answers: { build: { picked: ["Debug"] }, checks: { picked: ["Integration"] } } });
+    expect(reopened.questions.map((q: any) => q.id)).toEqual(["build", "checks"]);
   });
 
   test("a question answered elsewhere comes back closed in the next sync", async () => {

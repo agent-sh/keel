@@ -18,9 +18,10 @@ type Pending = { sessionId: string; resolve: (a: Answers | null) => void };
 const pending = new Map<string, Pending>();
 // Questions that stopped waiting, newest last: a phone that saw one pending
 // learns it closed. A few hundred are plenty.
-const closed: { call_id: string; session_id: string; at: number; answered: boolean }[] = [];
-const close = (call_id: string, session_id: string, answered: boolean) => {
-  closed.push({ call_id, session_id, at: Date.now(), answered });
+// `answers`: what was picked, so a card reopened elsewhere shows it.
+const closed: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers }[] = [];
+const close = (call_id: string, session_id: string, answers: Answers | null) => {
+  closed.push({ call_id, session_id, at: Date.now(), answered: answers !== null, ...(answers ? { answers } : {}) });
   if (closed.length > 300) closed.splice(0, closed.length - 300);
 };
 export const closedQuestions = (sinceMs: number) => closed.filter((q) => q.at >= sinceMs);
@@ -28,7 +29,7 @@ export const closedQuestions = (sinceMs: number) => closed.filter((q) => q.at >=
 export function ask(ctx: ToolContext): Promise<Answers | null> {
   const id = ctx.callId ?? `q-${Date.now()}`;
   return new Promise((resolve) => {
-    const done = (a: Answers | null) => { if (pending.delete(id)) close(id, ctx.sessionId, a !== null); ctx.signal.removeEventListener("abort", onAbort); resolve(a); };
+    const done = (a: Answers | null) => { if (pending.delete(id)) close(id, ctx.sessionId, a); ctx.signal.removeEventListener("abort", onAbort); resolve(a); };
     const onAbort = () => done(null);
     ctx.signal.addEventListener("abort", onAbort, { once: true });
     pending.set(id, { sessionId: ctx.sessionId, resolve: done });

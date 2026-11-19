@@ -243,6 +243,18 @@ export function mobileApi(ctx: MobileCtx) {
       actions: [["Answer", "once", "primary"], ["Dismiss", "deny", "danger"]], state: "pending", choice: null, ts: e ? secs(e.ts) : null,
     };
   }
+  // A question that stopped waiting, with what was picked (by question id), as
+  // the desktop shows it: from this daemon's record, else the stored result.
+  function closedQuestion(q: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers }) {
+    const s = store.session(q.session_id);
+    const base = s ? questionCard(s, q.call_id) : { id: `q-${q.call_id}`, chat_id: q.session_id, session_key: q.session_id, kind: "question", command: "", description: "", options: [], questions: [] };
+    let answers = q.answers;
+    if (!answers && q.answered) {
+      const r = store.db.query<{ data: string }, [string, string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'tool_result' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(q.session_id, JSON.stringify(q.call_id));
+      answers = r ? JSON.parse(r.data).shown?.[q.call_id]?.answers : undefined;
+    }
+    return { ...base, actions: [], state: q.answered ? "approved" : "expired", choice: q.answered ? "once" : null, ts: secs(q.at), ...(answers ? { answers } : {}) };
+  }
   function questions(sessionId?: string) {
     const out: any[] = [];
     for (const s of sessionId ? [store.session(sessionId)].filter(Boolean) as Session[] : store.sessions()) {
@@ -258,7 +270,7 @@ export function mobileApi(ctx: MobileCtx) {
   // keeps cards it saw until it hears they closed, and cancels their notification then.
   const closedCards = (sinceMs: number) => [
     ...(ctx.gate()?.approvals() ?? []).filter((a) => a.state !== "pending" && (a.resolved ?? a.created) >= sinceMs).map(approvalOf),
-    ...closedQuestions(sinceMs).map((q) => ({ id: `q-${q.call_id}`, chat_id: q.session_id, session_key: q.session_id, kind: "question", command: "", description: "", options: [], actions: [], state: q.answered ? "approved" : "expired", choice: null, ts: secs(q.at) })),
+    ...closedQuestions(sinceMs).map((q) => closedQuestion(q)),
   ];
 
   // Bearer token, then the request signature over method, raw path and query,
@@ -356,7 +368,7 @@ export function mobileApi(ctx: MobileCtx) {
         answers[q.id] = other.length ? { picked, other: other.join(", ") } : { picked };
       }
       if (!answer(s.id, callId, answers)) return err("this question is no longer waiting", 409);
-      return json({ approval: { ...card, state: choice === "deny" ? "denied" : "approved", choice }, resolved: 1 });
+      return json({ approval: { ...card, actions: [], state: choice === "deny" ? "denied" : "approved", choice, answers }, resolved: 1 });
     }
     const g = ctx.gate();
     const a = g?.approval(aid);
