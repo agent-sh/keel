@@ -5,6 +5,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadWorktree, setStartInWorktree, useStartInWorktree, useWorktree } from "../lib/worktree.ts";
+import { confirmAction } from "./Confirm.tsx";
 import { popupClass } from "./ui.tsx";
 
 type Pr = { number: number; url: string; title: string; state: string; isDraft: boolean; head_matches?: boolean; checks?: { summary: string; passed: number; failed: number; pending: number; rows: { name: string; status: string; url?: string }[] } };
@@ -33,12 +34,12 @@ export function WorktreeChip({ session }: { session: Session }) {
   }, [open, wt?.state, wt?.commits_ahead]);
 
   if (!wt || (wt.state === "removed" && !wt.snapshot_ref)) return null;
-  const act = async (f: () => Promise<any>, ok?: (r: any) => { text: string; url?: string }) => {
+  const act = async (f: () => Promise<any>, ok?: (r: any) => { text: string; url?: string } | undefined) => {
     setBusy(true);
     setMsg(null);
     try {
       const r = await f();
-      if (ok) setMsg(ok(r));
+      if (ok) setMsg(ok(r) ?? null);
       await loadWorktree(session.id);
     } catch (e) {
       setMsg({ text: failed(e, { at: "WorktreeChip" }), error: true });
@@ -47,6 +48,23 @@ export function WorktreeChip({ session }: { session: Session }) {
     }
   };
   const post = (path: string, body?: object) => api(`/api/sessions/${session.id}${path}`, { method: "POST", body: JSON.stringify(body ?? {}) });
+  // The folder goes or moves: background commands still running in it are
+  // named first, and stopped only when the owner says so.
+  const shells = async <T,>(run: (stop: boolean) => Promise<T>, verb: string): Promise<T | undefined> => {
+    try {
+      return await run(false);
+    } catch (e) {
+      const jobs = (e as { body?: { jobs?: { command: string }[] } }).body?.jobs;
+      if ((e as { status?: number }).status !== 409 || !jobs?.length) throw e;
+      const ok = await confirmAction({
+        title: "Stop its background commands?",
+        body: `This session still runs ${jobs.map((j) => j.command.slice(0, 60)).join(", ")} in the worktree. ${verb} stops ${jobs.length > 1 ? "them" : "it"}.`,
+        action: `Stop and ${verb.toLowerCase()}`,
+        danger: true,
+      });
+      return ok ? run(true) : undefined;
+    }
+  };
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -136,10 +154,10 @@ export function WorktreeChip({ session }: { session: Session }) {
                     </button>
                   )}
                   <button className={btn} disabled={busy} data-testid="handoff-main" title="The main checkout switches to this branch and gets the uncommitted work; this folder goes"
-                    onClick={() => act(() => post("/worktree/handoff", { to: "main" }), (r) => ({ text: `Moved to the main checkout on ${r.branch}.` }))}>
+                    onClick={() => act(() => shells((stop) => post("/worktree/handoff", { to: "main", stop_shells: stop }), "Moving"), (r) => r && ({ text: `Moved to the main checkout on ${r.branch}.` }))}>
                     <MoveLeft /> Move to main checkout
                   </button>
-                  <button className={btn} disabled={busy} data-testid="worktree-park" onClick={() => act(() => post("/worktree/park"), () => ({ text: "Parked. The working state is saved on a ref." }))}>
+                  <button className={btn} disabled={busy} data-testid="worktree-park" onClick={() => act(() => shells((stop) => post("/worktree/park", { stop_shells: stop }), "Parking"), (r) => r && ({ text: "Parked. The working state is saved on a ref." }))}>
                     <Archive /> Park
                   </button>
                 </>
@@ -155,10 +173,11 @@ export function WorktreeChip({ session }: { session: Session }) {
                   disabled={busy}
                   data-testid="worktree-remove"
                   onClick={() => act(async () => {
-                    let r = await api(`/api/sessions/${session.id}/worktree`, { method: "DELETE" });
-                    if (!r.removed && confirm(`The worktree ${r.reason}. Remove it and keep its working state on a ref?`)) r = await api(`/api/sessions/${session.id}/worktree?snapshot=1`, { method: "DELETE" });
+                    const del = (q: string) => shells((stop) => api(`/api/sessions/${session.id}/worktree?${q}${stop ? "&stop_shells=1" : ""}`, { method: "DELETE" }), "Removing");
+                    let r = await del("");
+                    if (r && !r.removed && confirm(`The worktree ${r.reason}. Remove it and keep its working state on a ref?`)) r = await del("snapshot=1");
                     return r;
-                  }, (r) => ({ text: r.removed ? `Removed${r.branch_deleted ? ", with its branch" : ""}.` : `Kept: ${r.reason}.` }))}
+                  }, (r) => r && ({ text: r.removed ? `Removed${r.branch_deleted ? ", with its branch" : ""}.` : `Kept: ${r.reason}.` }))}
                 >
                   <Trash2 /> Remove
                 </button>

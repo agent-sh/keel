@@ -2,6 +2,7 @@
 // review comments sent back to the model.
 import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { jobsOf, running, stopJob } from "../../tools/jobs.ts";
 import { GitError, Worktrees } from "../../worktree/manager.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
@@ -27,10 +28,22 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
     if (!w) return { error: bad("the session has no managed worktree") };
     return { s, w };
   };
+  // Whether the session's folder may go or move now: not while a turn runs,
+  // nor while its background commands run in it (they would fail on their
+  // next write), unless the owner says to stop them (stop_shells), as archive does.
+  const inUse = async (id: string, stopShells: boolean, what: string): Promise<Response | null> => {
+    if (engine.isRunning(id)) return bad("a turn is running; stop it first", 409);
+    const jobs = jobsOf(id).filter(running);
+    if (!jobs.length) return null;
+    if (!stopShells) return json({ error: `the session still runs ${jobs.length} background command${jobs.length > 1 ? "s" : ""} in its folder: ${jobs.map((j) => j.command.slice(0, 80)).join("; ")}. Send stop_shells to stop ${jobs.length > 1 ? "them" : "it"} first.`, jobs: jobs.map((j) => ({ id: j.id, command: j.command })) }, 409);
+    await Promise.all(jobs.map((j) => stopJob(j, `was stopped: its session's worktree was ${what}`)));
+    return null;
+  };
+  const busy = (id: string) => engine.isRunning(id) || jobsOf(id).some(running);
   const emit = (id: string) => bus.emit({ t: "feature", name: "worktree", session_id: id, data: { changed: true } });
   const keep = () => { const n = Number(store.db.query<{ value: string }, []>("SELECT value FROM perm_settings WHERE key = 'worktree_keep'").get()?.value ?? process.env.KEEL_WORKTREE_KEEP ?? 15); return Number.isFinite(n) && n >= 0 ? n : 15; };
   // Retention runs at start and after each new worktree; failures are captured, never fatal.
-  const sweep = () => wts.prune(keep(), (id) => engine.isRunning(id)).then((r) => { for (const id of r.removed) emit(id); return r; });
+  const sweep = () => wts.prune(keep(), busy).then((r) => { for (const id of r.removed) emit(id); return r; });
   sweep().catch((e) => deps.errors.capture("server", e, { at: "worktree prune" }));
 
   return {
@@ -72,7 +85,7 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         const b = await body(req);
         const n = b.keep === undefined ? keep() : Math.floor(Number(b.keep));
         if (!(n >= 0)) return bad("keep is a number of worktrees, 0 or more");
-        return json(await wts.prune(n, (id) => engine.isRunning(id)));
+        return json(await wts.prune(n, busy));
       }),
     },
     "/api/worktrees/settings": {
@@ -90,8 +103,9 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
       POST: (req: any) => guard(async () => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
-        if (engine.isRunning(s.id)) return bad("a turn is running; stop it first", 409);
         const b = await body(req);
+        const held = await inUse(s.id, !!b.stop_shells, "moved");
+        if (held) return held;
         const w = wts.get(s.id);
         if (b.to === "worktree") {
           const r = await wts.toWorktree(s);
@@ -123,8 +137,10 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
       DELETE: (req: any) => guard(async () => {
         const m = managed(req.params.id);
         if (m.error) return m.error;
-        if (engine.isRunning(m.s.id)) return bad("a turn is running; stop it first", 409);
-        const r = await wts.remove(m.w, new URL(req.url).searchParams.has("snapshot"));
+        const q = new URL(req.url).searchParams;
+        const held = await inUse(m.s.id, q.has("stop_shells"), "removed");
+        if (held) return held;
+        const r = await wts.remove(m.w, q.has("snapshot"));
         emit(m.s.id);
         return json(r);
       }),
@@ -133,7 +149,8 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
       POST: (req: any) => guard(async () => {
         const m = managed(req.params.id);
         if (m.error) return m.error;
-        if (engine.isRunning(m.s.id)) return bad("a turn is running; stop it first", 409);
+        const held = await inUse(m.s.id, !!(await body(req)).stop_shells, "parked");
+        if (held) return held;
         const w = await wts.park(m.w);
         emit(m.s.id);
         return json({ worktree: await wts.status(w) });
