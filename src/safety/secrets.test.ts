@@ -99,3 +99,42 @@ test("a secret in a heredoc arrives exact, or is refused where nothing expands",
   expect(after.stuck).toEqual([]);
   expect(Bun.spawnSync(["bash", "-c", after.value.command], { cwd: dir, env: { PATH: process.env.PATH!, ...after.env } }).stdout.toString()).toContain(sha(value));
 });
+
+// The last mask before a request: every string holding a known value is
+// masked wherever it sits, a tool call's input at any depth included (its
+// field names say nothing); only the provider's own bytes at their known
+// places stay byte-exact.
+test("the request mask covers every field but the provider's own bytes", () => {
+  const v = new Vault();
+  const value = "fixture-raw-value-0123456789";
+  v.add(value, "test", "card", "s1", "FIX");
+  const call = (input: unknown) => [{ role: "assistant", content: [{ type: "tool_use", id: "t", name: "x", input }] }];
+  for (const [name, input] of [
+    ["text", { text: value }],
+    ["data", { data: value }],
+    ["signature", { signature: value }],
+    ["opaque", { opaque: value }],
+    ["an object typed image", { nested: { type: "image", data: value } }],
+    ["an object typed thinking", { deep: [{ type: "thinking", thinking: value }] }],
+  ] as const) {
+    const out = JSON.stringify(v.mask(call(input)));
+    expect({ name, has: out.includes(value) }).toEqual({ name, has: false });
+    expect(out).toContain("[value of $FIX]");
+  }
+  // A tool result's text and an image in it.
+  const img = { type: "image", media_type: "image/png", data: value };
+  const res = v.mask([{ role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: [{ type: "text", text: value }, img] }] }]) as any;
+  expect(res[0].content[0].content[0].text).toBe("[value of $FIX]");
+  expect(res[0].content[0].content[1]).toBe(img);
+  // The provider's bytes stay: an image's data, a signed thinking block, a tool call's signature.
+  const signed = { type: "thinking", thinking: value, signature: "sig" };
+  const msgs = [{ role: "user", content: [img] }, { role: "assistant", content: [signed, { type: "redacted_thinking", data: value }, { type: "tool_use", id: "t", name: "x", input: {}, signature: value }] }];
+  const kept = v.mask(msgs) as any;
+  expect(kept[0]).toBe(msgs[0]);
+  expect(kept[1].content[0]).toBe(signed);
+  expect(kept[1].content[1].data).toBe(value);
+  expect(kept[1].content[2].signature).toBe(value);
+  // Nothing known: the same objects.
+  const clean = [{ role: "user", content: [{ type: "text", text: "plain" }] }];
+  expect(v.mask(clean)).toBe(clean);
+});

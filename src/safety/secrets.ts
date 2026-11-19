@@ -332,34 +332,62 @@ export class Vault {
     return { value: (used.length ? out : v) as T, used, env, stuck };
   }
 
-  // Every known value in a JSON value replaced by its placeholder, nothing
-  // else looked for: the last check on what is sent to a provider. What holds
-  // no known value is returned as it is (the same objects, the same bytes).
-  mask<T>(v: T): T {
-    if (!this.byValue.size) return v;
+  // Every known value in a request's messages replaced by its placeholder,
+  // nothing else looked for: the last check on what is sent to a provider.
+  // Every string is masked, at any depth, except the provider's own bytes at
+  // their known places: an image's or document's data, a signed thinking block
+  // (its text, signature and opaque item), a redacted thinking block's data
+  // and a tool call's signature. What holds no known value is returned as it
+  // is (the same objects, the same bytes).
+  mask<T>(messages: T): T {
+    if (!this.byValue.size) return messages;
     const known = [...this.byValue.values()].sort((a, b) => b.value.length - a.value.length);
-    const walk = (x: any, key?: string): any => {
-      if (typeof x === "string") {
-        if (key === "data" || key === "signature" || key === "opaque") return x;
-        let out = x;
-        for (const e of known) if (out.includes(e.value)) out = out.split(e.value).join(this.placeholder(e));
-        return out;
-      }
-      if (Array.isArray(x)) {
-        let changed = false;
-        const a = x.map((y) => { const z = walk(y); if (z !== y) changed = true; return z; });
-        return changed ? a : x;
-      }
-      if (x && typeof x === "object") {
-        if (x.type === "thinking" || x.type === "redacted_thinking" || x.type === "image") return x;
-        let changed = false;
-        const o: any = {};
-        for (const [k, y] of Object.entries(x)) { const z = walk(y, k); if (z !== y) changed = true; o[k] = z; }
-        return changed ? o : x;
-      }
+    const str = (x: string) => {
+      let out = x;
+      for (const e of known) if (out.includes(e.value)) out = out.split(e.value).join(this.placeholder(e));
+      return out;
+    };
+    // Any JSON value, every string in it.
+    const all = (x: any): any => {
+      if (typeof x === "string") return str(x);
+      if (Array.isArray(x)) { let c = false; const a = x.map((y) => { const z = all(y); if (z !== y) c = true; return z; }); return c ? a : x; }
+      if (x && typeof x === "object") { let c = false; const o: any = {}; for (const [k, y] of Object.entries(x)) { const z = all(y); if (z !== y) c = true; o[k] = z; } return c ? o : x; }
       return x;
     };
-    return walk(v);
+    // An object with some of its own fields left as they are.
+    const except = (x: any, keep: string[]) => {
+      let c = false;
+      const o: any = {};
+      for (const [k, y] of Object.entries(x)) { const z = keep.includes(k) ? y : all(y); if (z !== y) c = true; o[k] = z; }
+      return c ? o : x;
+    };
+    const block = (b: any): any => {
+      if (!b || typeof b !== "object" || Array.isArray(b)) return all(b);
+      switch (b.type) {
+        case "image": case "document": return except(b, ["data"]);
+        case "thinking": return b.signature || b.opaque ? b : except(b, []);
+        case "redacted_thinking": return except(b, ["data"]);
+        case "tool_use": return except(b, ["signature"]);
+        case "tool_result": {
+          const o = except(b, ["content"]);
+          const content = Array.isArray(b.content) ? b.content.map(block) : all(b.content);
+          const moved = Array.isArray(b.content) ? content.some((y: any, k: number) => y !== b.content[k]) : content !== b.content;
+          return o === b && !moved ? b : { ...o, content: moved ? content : b.content };
+        }
+        default: return all(b);
+      }
+    };
+    if (!Array.isArray(messages)) return all(messages);
+    let changed = false;
+    const out = (messages as any[]).map((m) => {
+      if (!m || typeof m !== "object" || !Array.isArray(m.content)) { const z = all(m); if (z !== m) changed = true; return z; }
+      const content = m.content.map(block);
+      const same = content.every((y: any, k: number) => y === m.content[k]);
+      if (same) return m;
+      changed = true;
+      return { ...m, content };
+    });
+    return (changed ? out : messages) as T;
   }
 
   // A tool input bound for another machine: each placeholder of this
