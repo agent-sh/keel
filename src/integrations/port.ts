@@ -28,9 +28,13 @@ import { collect } from "../core/proc.ts";
 import { HARNESSES, modelFor, type Imports } from "./import/service.ts";
 import type { Found, Harness } from "./import/types.ts";
 import type { Store } from "../core/store.ts";
+import type { RuleKind } from "../safety/policy.ts";
+import { Database } from "bun:sqlite";
+import { claudeAllow, parseRule, rustRule, type Mapped } from "./port-permissions.ts";
+import { keelDb } from "./import/keel.ts";
 
-export type Area = "instructions" | "memory" | "skills" | "plugins" | "mcp" | "hooks" | "sessions" | "settings";
-export const AREAS: Area[] = ["instructions", "memory", "skills", "plugins", "mcp", "hooks", "sessions", "settings"];
+export type Area = "instructions" | "memory" | "skills" | "plugins" | "mcp" | "hooks" | "permissions" | "sessions" | "settings";
+export const AREAS: Area[] = ["instructions", "memory", "skills", "plugins", "mcp", "hooks", "permissions", "sessions", "settings"];
 
 // new: an apply brings it; update: it is in Keel and the source changed;
 // done: already in Keel (or Keel reads it itself); skip: not brought, with the reason.
@@ -46,6 +50,8 @@ export type PortDeps = {
   workspace: string;
   // The daemon's MCP manager (it connects what is added); without one the config file is written.
   mcp?: { importFrom(source: string, name: string): string | null };
+  // The gate's standing rules: what a scope holds, and adding one (permissions).
+  grants?: { has(kind: RuleKind, pattern: string, scope: string): boolean; add(kind: RuleKind, pattern: string, scope: string): void };
   emit?: (session: any) => void;
 };
 
@@ -580,13 +586,62 @@ function planSettings(items: Planned[]) {
       run: async () => (writeAtomic(mine, readFileSync(drive, "utf8")), `copied to ${tilde(mine)}`) });
   }
   if (existsSync(join(rc, "plugins.toml"))) items.push({ id: "settings:keel-plugins", area: "settings", source: "Keel (Rust)", title: "plugins.toml (provider plugins)", state: "done", reason: existsSync(join(configDir(), "plugins.toml")) ? "Keel has its own plugins.toml" : "Keel reads it while it has none of its own", pick: false });
-  if (existsSync(join(rc, "gate.json"))) items.push({ id: "settings:keel-gate", area: "settings", source: "Keel (Rust)", title: "gate.json (permission rules)", state: "skip", reason: "Keel's gate keeps its own rules; set them in Settings > Permissions", pick: false });
   const H = portHome();
   let s: any = {};
   try { s = readJson(join(H, ".claude", "settings.json")); } catch {}
   if (s.statusLine) items.push({ id: "settings:claude-statusline", area: "settings", source: "Claude Code", title: "Status line", detail: String(s.statusLine.command ?? "").slice(0, 120), state: "skip", reason: "it reads Claude Code's own state; Keel shows model, context and spend in its header", pick: false });
-  const allow = s.permissions?.allow?.length ?? 0, deny = s.permissions?.deny?.length ?? 0;
-  if (allow || deny) items.push({ id: "settings:claude-permissions", area: "settings", source: "Claude Code", title: `Permission rules (${allow} allow, ${deny} deny)`, state: "skip", reason: "they gate Claude Code's tools by its names; Keel's gate keeps its own rules", pick: false });
+}
+
+// ---- permission rules ------------------------------------------------------------------
+// Claude Code's user rules (they hold in every folder: scope /) and the Rust
+// Keel's stored answers (their own folder), as Keel's gate rules (port-permissions.ts).
+function planPermissions(items: Planned[], deps: PortDeps) {
+  const H = portHome();
+  const rc = rustConfig();
+  const add = (id: string, source: string, title: string, m: Mapped, scope: string) => {
+    const base = { id, area: "permissions" as const, source, title };
+    if ("skip" in m) return items.push({ ...base, state: "skip", reason: m.skip, pick: false });
+    if ("done" in m) return items.push({ ...base, state: "done", reason: m.done, pick: false });
+    const shown = `${m.kind} ${m.pattern}${scope === "/" ? ", in every folder" : `, in ${tilde(scope)}`}`;
+    if (deps.grants?.has(m.kind, m.pattern, scope)) return items.push({ ...base, detail: shown, state: "done", pick: false });
+    items.push({ ...base, detail: shown, state: "new", pick: true, run: async () => {
+      if (!deps.grants) throw new Error("the permission gate is not running");
+      deps.grants.add(m.kind, m.pattern, scope);
+      return `allowed: ${shown}`;
+    } });
+  };
+  for (const file of ["settings.json", "settings.local.json"]) {
+    let p: any;
+    try { p = readJson(join(H, ".claude", file)).permissions; } catch { continue; }
+    if (!p) continue;
+    const list = (k: string): string[] => (Array.isArray(p[k]) ? p[k].filter((x: unknown) => typeof x === "string") : []);
+    // A tool the owner denies or asks for in part: its allow rules stay out, since Keel could not keep the exception.
+    const held = new Set([...list("deny"), ...list("ask")].map((r) => parseRule(r)?.tool ?? r));
+    for (const kind of ["deny", "ask"] as const) for (const r of list(kind))
+      add(`permissions:claude:${file}:${kind}:${hash(r)}`, "Claude Code", `${kind} ${r}`, { skip: kind === "deny" ? "Keel's rules only allow: a call no rule allows asks, and its own checks ask for risky ones whatever the rules say" : "Keel's rules only allow: a call no rule allows asks already" }, "/");
+    for (const r of list("allow")) {
+      const tool = parseRule(r)?.tool ?? r;
+      const m: Mapped = held.has(tool) || [...held].some((h) => h.endsWith("*") && tool.startsWith(h.slice(0, -1)))
+        ? { skip: `${tool} also has deny or ask rules there, which Keel could not keep` } : claudeAllow(r);
+      add(`permissions:claude:${file}:allow:${hash(r)}`, "Claude Code", r, m, "/");
+    }
+  }
+  // The Rust Keel: its stored "always" answers, and what gate.json sets.
+  if (existsSync(keelDb())) {
+    let rows: { kind: string; pattern: string; scope: string }[] = [];
+    try {
+      const db = new Database(keelDb(), { readonly: true });
+      try { rows = db.query<{ kind: string; pattern: string; scope: string }, []>("SELECT kind, pattern, scope FROM permission_rules ORDER BY created_ms").all(); } finally { db.close(); }
+    } catch (e) { if (!/no such table/.test((e as Error).message)) throw e; }
+    for (const r of rows) {
+      const m = rustRule(r.kind, r.pattern);
+      add(`permissions:keel:${hash(`${r.scope}\u0000${r.kind}\u0000${r.pattern}`)}`, "Keel (Rust)", `${r.kind} ${r.pattern}`, "kind" in m && m.kind === "edit" && !m.pattern ? { kind: "edit", pattern: r.scope } : m, r.scope);
+    }
+  }
+  let g: any = null;
+  try { g = readJson(join(rc, "gate.json")); } catch {}
+  if (g?.default_mode) items.push({ id: "permissions:keel-mode", area: "permissions", source: "Keel (Rust)", title: `Default mode ${g.default_mode}`, state: "skip", pick: false, reason: "a mode, not a rule: a new session's mode stays what Settings > Permissions sets" });
+  if (g?.reviewer) items.push({ id: "permissions:keel-reviewer", area: "permissions", source: "Keel (Rust)", title: `Reviewer ${g.reviewer.provider ?? ""} ${g.reviewer.model ?? ""}`.trim(), state: "skip", pick: false, reason: "a model of the Rust Keel's providers: choose Keel's reviewer in Settings > Permissions" });
 }
 
 // ---- the plan and the apply ------------------------------------------------------------
@@ -602,6 +657,7 @@ export async function planned(deps: PortDeps, opts: { days?: number; max?: numbe
   await guard("skills", () => planSkills(items, hooks));
   await guard("mcp", () => planMcp(items, deps));
   await guard("hooks", () => planHooks(items, hooks));
+  await guard("permissions", () => planPermissions(items, deps));
   await guard("sessions", () => planSessions(items, deps, { days: opts.days ?? SESSION_DAYS, max: opts.max ?? SESSION_MAX }));
   await guard("settings", () => planSettings(items));
   return items;

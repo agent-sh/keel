@@ -3,6 +3,7 @@
 import type { RouteModule } from "../app.ts";
 import { AREAS, apply, plan, type Area } from "../../integrations/port.ts";
 import { sharedImports } from "../../integrations/import/service.ts";
+import { gate } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -10,7 +11,7 @@ export const portRoutes: RouteModule = (deps) => {
   const { store, providers, bus, errors } = deps;
   const imports = sharedImports(store);
   const mcp = () => (globalThis as any).__keelMcp;
-  const portDeps = () => ({ store, imports, providers, workspace: deps.workspace, mcp: mcp(), emit: (s: any) => s && bus.emit({ t: "session", session: s }) });
+  const portDeps = () => ({ store, imports, providers, workspace: deps.workspace, mcp: mcp(), grants: gate && { has: gate.hasStanding.bind(gate), add: gate.addStanding.bind(gate) }, emit: (s: any) => s && bus.emit({ t: "session", session: s }) });
   let running: Promise<unknown> | null = null;
   const limits = (u: URLSearchParams | Record<string, unknown>) => {
     const get = (k: string) => (u instanceof URLSearchParams ? u.get(k) : u[k]);

@@ -173,6 +173,16 @@ export class Gate {
     return rule;
   }
 
+  // A standing rule for a folder and all below it, not tied to a session (keel port brings these).
+  hasStanding(kind: RuleKind, pattern: string, scope: string): boolean {
+    return !!this.store.db.query("SELECT 1 FROM perm_rules WHERE kind = ? AND pattern = ? AND scope = ? AND lifetime = 'always'").get(kind, pattern.trim(), scope);
+  }
+  addStanding(kind: RuleKind, pattern: string, scope: string): void {
+    if (this.hasStanding(kind, pattern, scope)) return;
+    this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created) VALUES (?, ?, ?, ?, 'always', NULL, ?)").run(crypto.randomUUID(), kind, pattern.trim(), scope, Date.now());
+    this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
+  }
+
   // Revoked in this daemon: each can be put back once, exactly as it was (the Undo of a revoke).
   private revoked = new Map<string, Rule>();
   restore(id: string): Rule | null {

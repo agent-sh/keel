@@ -17,6 +17,7 @@ const AREA: Record<string, { label: string; hint: string }> = {
   plugins: { label: "Plugins", hint: "Claude Code plugins that are turned on: their skills, commands, agents and servers." },
   mcp: { label: "MCP servers", hint: "Added to Keel's servers; the values of env entries are copied, never shown." },
   hooks: { label: "Hooks", hint: "Added to Keel's own hooks file; they run in every session." },
+  permissions: { label: "Permission rules", hint: "Allow rules whose meaning Keel's gate holds the same way; Keel's own checks still ask for risky commands. Deny and ask rules, and allows they carve exceptions from, stay out." },
   sessions: { label: "Sessions", hint: "Read-only copies. The Rust Keel's all; the others' recent ones, the rest stay in Import." },
   settings: { label: "Settings", hint: "What else the other tools keep." },
 };

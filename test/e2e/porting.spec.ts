@@ -56,6 +56,9 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
       Notification: [{ hooks: [{ type: "command", command: "notify-send hi" }] }],
     },
     statusLine: { type: "command", command: "bash ~/.claude/statusline.sh" },
+    // Mapped: a prefix and an exact command; already so: a read; left out: a compound
+    // command, and an edit allow the deny carves an exception from.
+    permissions: { allow: [`Bash(port-${stamp} run *)`, `Bash(port-${stamp} --version)`, "Read(//srv/**)", "Bash(cat a | wc -l)", "Edit(//srv/app/**)"], deny: ["Edit(//srv/app/secret/**)"] },
   }));
   put("guard.sh", `#!/bin/sh\n# port-guard-${stamp}\nexit 0\n`);
   put(".claude/projects/-work/memory/MEMORY.md", "- [Note](note.md)\n");
@@ -88,6 +91,15 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
     await expect(panel.locator(`[data-port-item="mcp:codex:port-${stamp}"]`)).toContainText("New");
     await expect(row("memory:claude")).toContainText("2 files in 1 project");
     await expect(row("settings:claude-statusline")).toContainText("Left out");
+    const perm = (rule: string) => panel.locator('[data-port-area="permissions"]').locator("..").locator("[data-port-item]", { hasText: rule });
+    await expect(perm(`Bash(port-${stamp} run *)`)).toContainText(`shell port-${stamp} run *, in every folder`);
+    await expect(perm(`Bash(port-${stamp} run *)`)).toContainText("New");
+    await expect(perm("Read(//srv/**)")).toContainText("Here");
+    await expect(perm("Bash(cat a | wc -l)")).toContainText("Left out");
+    await expect(perm("Edit(//srv/app/**)")).toContainText("also has deny or ask rules");
+    await expect(perm("deny Edit(//srv/app/secret/**)")).toContainText("Left out");
+    await panel.locator('[data-port-area="permissions"]').scrollIntoViewIfNeeded();
+    await shoot(page, "port-01b-permissions");
     await shoot(page, "port-01-plan");
 
     // Sessions are their own spec's; this one brings everything else it picks.
@@ -108,6 +120,8 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
     expect(skills).toEqual(expect.arrayContaining([`demo:hello-${stamp}`, "demo:greet", `codex-${stamp}`]));
     expect(skills).not.toContain("imagegen");
     expect(readFileSync(join(config, "hooks.json"), "utf8")).toContain(join(H, "guard.sh"));
+    const grants = (await (await request.get("/api/permissions/grants")).json()).grants.filter((g: any) => g.pattern.includes(`port-${stamp}`));
+    expect(grants.map((g: any) => [g.kind, g.pattern, g.scope]).sort()).toEqual([["shell", `port-${stamp} --version`, "/"], ["shell", `port-${stamp} run *`, "/"]]);
     const servers = (await (await request.get("/api/mcp/servers")).json()).servers.map((s: any) => s.name);
     expect(servers).toContain(`port-${stamp}`);
 
@@ -127,6 +141,7 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
   } finally {
     for (const [p, text] of keep) text === null ? rmSync(p, { force: true }) : writeFileSync(p, text);
     await request.delete(`/api/mcp/servers/port-${stamp}`).catch(() => {});
+    for (const g of (await (await request.get("/api/permissions/grants")).json()).grants) if (g.pattern.includes(`port-${stamp}`)) await request.delete(`/api/permissions/grants/${g.id}`).catch(() => {});
     for (const p of mine) rmSync(p, { recursive: true, force: true });
   }
 });
