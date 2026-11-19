@@ -7,6 +7,7 @@ import "./lib/builtins.ts";
 import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
+import { AdminBand } from "./components/AdminBand.tsx";
 import "./lib/integrations-ui.ts";
 import { useDirection } from "./lib/direction.ts";
 import { installKeymap } from "./lib/keys.ts";
@@ -96,6 +97,7 @@ export function App() {
       </div>
       <Overlays />
       <ConfirmHost />
+      <AdminBand />
     </Boundary>
   );
 }

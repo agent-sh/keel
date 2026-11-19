@@ -1,6 +1,7 @@
 // Daemon administration: settings, storage and cleanup, backups, drain and
 // restart, keep-awake, status, and the problem report.
 //
+// GET   /api/bootstrap                     build id, pid, draining, folders, settings
 // GET   /api/settings                      { settings }
 // PATCH /api/settings                      a JSON merge patch -> { settings }; 400 leaves nothing changed
 // GET   /api/storage?refresh=1             sizes by kind and by session
@@ -11,7 +12,8 @@
 // POST  /api/drain                         { timeout_seconds?, restart? } -> { ok, running, restart }
 // GET   /api/awake | POST { until_ms }     keep-awake state, a timed hold
 // POST  /api/report                        { session_id?, note?, dry_run? } -> { includes, path?, summary }
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
@@ -40,6 +42,13 @@ export function redact(v: unknown): unknown {
     return x;
   };
   return walk(v);
+}
+
+function buildId(): string {
+  const parts = [process.execPath, process.argv[1] ?? ""].map((p) => {
+    try { const st = statSync(p); return `${p}:${st.size}:${st.mtimeMs}`; } catch { return p; }
+  });
+  return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 12);
 }
 
 export const adminRoutes: RouteModule = (deps) => {
@@ -74,6 +83,22 @@ export const adminRoutes: RouteModule = (deps) => {
   });
 
   return {
+    // What a page needs first about this daemon. `build_id` changes with every
+    // new binary (or script): a page that saw another one offers a reload.
+    "/api/bootstrap": {
+      GET: () => json({
+        server_name: "keel",
+        build_id: buildId(),
+        pid: process.pid,
+        started_ms: daemon.started,
+        draining: daemon.draining,
+        home: homedir(),
+        default_cwd: deps.workspace,
+        recent_cwds: store.db.query<{ workspace: string }, []>("SELECT workspace FROM sessions WHERE parent_id IS NULL GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT 20").all().map((r) => r.workspace),
+        settings: settings(),
+      }),
+    },
+
     "/api/settings": {
       GET: () => json({ settings: settings() }),
       PATCH: async (req: Request) => {
