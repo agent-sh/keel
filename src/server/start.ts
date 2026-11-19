@@ -41,11 +41,13 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
   const g = globalThis as { __keelEngine?: Engine };
   // A hot reload builds a new engine in the same process: the old one parks its turns first.
-  if (g.__keelEngine) {
-    await g.__keelEngine.drain(0);
+  // It is replaced first, so a turn the old one would start meanwhile starts here.
+  const old = g.__keelEngine;
+  g.__keelEngine = engine;
+  if (old) {
+    await old.drain(0);
     endStreams();
   }
-  g.__keelEngine = engine;
   process.on("exit", () => providers.plugins.killAll());
   const server = serve(
     { store, bus, engine, providers, errors, workspace: resolve(opts.workspace ?? process.cwd()) },

@@ -415,7 +415,16 @@ export class Engine {
     this.emitQueue(id);
   }
 
+  // A turn another engine handed over (see start).
+  adopt(id: string) {
+    if (!this.running.has(id) && !this.draining) this.start(id);
+  }
+
   private start(id: string) {
+    // An engine a dev hot reload replaced runs no new turn (a child's task, a
+    // queued prompt, a report that wakes a parent): the engine now in charge does.
+    const successor = (globalThis as { __keelEngine?: Engine }).__keelEngine;
+    if (this.draining && successor && successor !== this) return successor.adopt(id);
     const abort = new AbortController();
     const done = this.loop(id, abort.signal)
       .catch((e) => {
