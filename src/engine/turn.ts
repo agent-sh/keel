@@ -665,6 +665,7 @@ export class Engine {
           continue;
         }
         const uses = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use" && b !== cut);
+        ctx.room = Math.max(0, st.info.context - (u.input + u.cache_read + u.cache_write + u.output));
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = budget > 0 && steps >= budget;

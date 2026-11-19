@@ -7,6 +7,9 @@ export type ToolContext = {
   cwd: string;
   signal: AbortSignal;
   spillDir: string;
+  // Tokens left in the model's context window after its last request (set by
+  // the engine before each round of calls): what a large read may fill.
+  room?: number;
   // Files the model has read this session, with their mtime then: Edit/Write
   // refuse to overwrite a file the model never saw or that changed since.
   seen: Map<string, number>;

@@ -101,10 +101,11 @@ const Read: Tool = {
     offset: { type: "integer", description: "The line number to start reading from" },
     limit: { type: "integer", description: "The number of lines to read" },
     pages: { type: "string", description: "Page range for PDF files, e.g. \"1-5\"" },
+    allow_large: { type: "boolean", description: "Read a text file, or a line range of one, over the usual size limits, up to what still fits in your context. Only when you need all of it." },
   }, ["file_path"]),
   async run(input, ctx) {
     const r = await readFile(abs(String(input.file_path ?? ""), ctx), ctx, {
-      offset: Number(input.offset) || undefined, limit: Number(input.limit) || (input.offset ? undefined : 2000), pages: input.pages,
+      offset: Number(input.offset) || undefined, limit: Number(input.limit) || (input.offset || input.allow_large ? undefined : 2000), pages: input.pages, large: !!input.allow_large,
     });
     return { content: r.content, is_error: r.error };
   },

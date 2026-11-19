@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { notFound } from "./missing.ts";
 import { abs, editFile, globFiles, guardOverwrite, mtime, numbered, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
+import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
@@ -25,12 +26,15 @@ const run_shell_command: Tool = {
     command: { type: "string", description: "Exact bash command to execute as `bash -c <command>`" },
     description: { type: "string", description: "Brief description of the command for the user." },
     dir_path: { type: "string", description: "Optional: the absolute path of the directory to run the command in." },
-    is_background: { type: "boolean", description: "Whether to run the command in the background." },
+    is_background: { type: "boolean", description: "Set to true if this command should be run in the background (e.g. for long-running servers or watchers). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background." },
+    delay_ms: { type: "integer", description: "Optional. Delay in milliseconds to wait after starting the process in the background. Useful to allow the process to start and generate initial output before returning." },
   }, ["command"]),
   async run(input, ctx) {
+    // A background start with a delay runs in front for that long, then moves behind.
+    const delay = input.is_background ? Math.max(0, Number(input.delay_ms) || 0) : 0;
     const r = await runShell(ctx, {
       command: String(input.command ?? ""), description: input.description, cwd: input.dir_path ? abs(input.dir_path, ctx) : undefined,
-      timeoutMs: 300_000, background: !!input.is_background, onTimeout: "background",
+      timeoutMs: delay || 300_000, background: !!input.is_background && !delay, onTimeout: "background",
     });
     if (r.state === "running") {
       return ok(`Command moved to the background.\nBackground PIDs: ${r.job.pid}\nOutput file: ${r.job.log}${r.output.trim() ? `\nOutput so far: ${headTail(r.output, 2000)}` : ""}`);
@@ -218,12 +222,12 @@ const google_web_search: Tool = {
 const web_fetch: Tool = {
   name: "web_fetch",
   readOnly: true,
-  description: "Fetches up to 5 URLs named in the prompt (http/https) and returns their content as markdown.",
+  description: "Fetches up to 20 URLs named in the prompt (http/https) and answers the prompt from their content.",
   input_schema: obj({
-    prompt: { type: "string", description: "A prompt that includes the URL(s) (up to 5) to fetch and what to look for." },
+    prompt: { type: "string", description: "A prompt that includes the URL(s) (up to 20) to fetch and what to look for." },
   }, ["prompt"]),
   async run(input, ctx) {
-    const urls = [...new Set(String(input.prompt ?? "").match(/https?:\/\/[^\s<>"')\]]+/g) ?? [])].slice(0, 5);
+    const urls = [...new Set(String(input.prompt ?? "").match(/https?:\/\/[^\s<>"')\]]+/g) ?? [])].slice(0, 20);
     if (!urls.length) return fail("The prompt must contain at least one URL starting with http:// or https://.");
     const parts = await Promise.all(urls.map(async (u) => {
       const r = await fetchFor(u, String(input.prompt), ctx).catch((e) => ({ text: String(e.message), error: true }));
@@ -244,11 +248,11 @@ const ask_user: Tool = {
       items: obj({
         question: { type: "string", description: "The complete question to ask the user." },
         header: { type: "string", description: "Very short label (max 16 chars)." },
-        type: { type: "string", enum: ["choice", "text", "yesno"] },
+        type: { type: "string", enum: ["choice", "text", "yesno"], description: "Question type (default choice)." },
         options: { type: "array", items: obj({ label: { type: "string" }, description: { type: "string" } }, ["label", "description"]) },
         multiSelect: { type: "boolean" },
         placeholder: { type: "string" },
-      }, ["question", "header"]),
+      }, ["question", "header", "type"]),
     },
   }, ["questions"]),
   async run(input, ctx) {
@@ -261,8 +265,43 @@ const ask_user: Tool = {
   },
 };
 
+// Gemini CLI's background process tools (tools/shellBackgroundTools.ts).
+const list_background_processes: Tool = {
+  name: "list_background_processes",
+  readOnly: true,
+  description: "Lists all active and recently completed background shell processes orchestrating by the agent.",
+  input_schema: { type: "object", properties: {} },
+  async run(_input, ctx) {
+    const js = jobsOf(ctx.sessionId).filter((j) => j.background || j.ended === undefined);
+    if (!js.length) return ok("No background processes found.");
+    return ok(js.map((j) => `- [PID ${j.pid}] ${running(j) ? "RUNNING" : "EXITED"}: \`${j.command}\`${j.exitCode != null ? ` (Exit Code: ${j.exitCode})` : ""}${j.signal ? ` (Signal: ${j.signal})` : ""}`).join("\n"));
+  },
+};
+
+const read_background_output: Tool = {
+  name: "read_background_output",
+  readOnly: true,
+  description: "Reads the output log of a background shell process. Support reading tail snapshot.",
+  input_schema: obj({
+    pid: { type: "integer", description: "The process ID (PID) of the background process to inspect." },
+    lines: { type: "integer", minimum: 1, description: "Optional. Number of lines to read from the end of the log. Defaults to 100." },
+    delay_ms: { type: "integer", description: "Optional. Delay in milliseconds to wait before reading the output. Useful to allow the process to start and generate initial output." },
+  }, ["pid"]),
+  async run(input, ctx) {
+    const j = jobsOf(ctx.sessionId).find((x) => x.pid === Number(input.pid));
+    if (!j) return fail(`Access denied. Background process ID ${input.pid} not found in this session's history.`);
+    if (Number(input.delay_ms) > 0) await waitJob(j, Number(input.delay_ms), ctx.signal);
+    let text: string;
+    try { text = await Bun.file(j.log).text(); } catch { return ok(`No output log found for process ID ${j.pid}. It might not have produced output or was cleaned up.`); }
+    if (!text) return ok("Log is empty.");
+    const all = text.replace(/\n$/, "").split("\n");
+    const n = Math.max(1, Number(input.lines) || 100);
+    return ok(`${n < all.length ? `Showing last ${n} of ${all.length} lines:` : "Full Log Output:"}\n${all.slice(-n).join("\n")}`);
+  },
+};
+
 export const geminiTools: Tool[] = [
-  run_shell_command, read_file, write_file, replace, glob, grep_search, list_directory, write_todos,
+  run_shell_command, list_background_processes, read_background_output, read_file, write_file, replace, glob, grep_search, list_directory, write_todos,
   google_web_search, web_fetch, ask_user,
   skillTool("activate_skill", "name", null, "Activates a skill listed in the system prompt by name and returns its instructions."),
 ];

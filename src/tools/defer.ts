@@ -17,10 +17,12 @@ import { fail, type Tool, type ToolOutput } from "./types.ts";
 export const TOOL_SEARCH = "ToolSearch";
 
 // Built-ins Claude Code defers today (Monitor, NotebookEdit, SendMessage,
-// TaskStop, WebFetch, the schedule tools) plus Keel's own rarely used ones.
+// TaskStop, WebFetch, the schedule tools), Glob and Grep (Claude Code on Linux
+// offers neither: its models search with the shell; 3 Grep and no Glob calls in
+// 30 Claude bench runs), plus Keel's own rarely used ones.
 // Every other tool of the family stays in the prompt.
 export const DEFERRED_BUILTINS = new Set([
-  "NotebookEdit", "TaskStop", "WebFetch", "WebSearch",
+  "Glob", "Grep", "NotebookEdit", "TaskStop", "WebFetch", "WebSearch",
   "Monitor", "SendMessage", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "PushNotification",
   "request_secret", "advisor",
   "keel__machines_list", "keel__run_on", "keel__sessions_list", "keel__session_send", "keel__send_files",

@@ -62,3 +62,17 @@ test("a straight-quote edit takes the exact match first and never guesses betwee
   expect((applyEdit("say “old”\nsay “old”\n", 'say "old"', 'say "new"') as { error: string }).error).toContain("matches 2 places (lines 1, 2)");
   expect((applyEdit("say “old”\nsay “old”\n", 'say "old"', 'say "new"', true) as { text: string }).text).toBe("say “new”\nsay “new”\n");
 });
+
+// Claude Code's allow_large: a read past one page and the whole-file limit,
+// sized to the context the model has left.
+test("a large read fills the room left in the context, not one page", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "/var/tmp", "large-"));
+  const p = join(dir, "big.txt");
+  writeFileSync(p, Array.from({ length: 20_000 }, (_, i) => `line ${i} ${"x".repeat(5)}`).join("\n"));
+  const ctx: any = { cwd: dir, seen: new Map(), room: 200_000 };
+  expect((await readFile(p, ctx)).error).toBe(true); // over 256 KB: refused whole
+  const r = await readFile(p, ctx, { large: true });
+  expect(r.partial).toBeFalsy();
+  expect(String(r.content)).toContain("20000\tline 19999");
+  expect((await readFile(p, { ...ctx, room: 20_000 }, { large: true })).error).toBe(true); // more than the room
+});

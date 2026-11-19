@@ -25,7 +25,7 @@ export type ReadResult = { content: string | (TextBlock | ImageBlock)[]; error?:
 
 // Lines `offset`.. of a text file, numbered from 1 (`N<tab>line`), cut to one
 // page; the result says where to continue.
-export function numbered(text: string, offset = 1, limit?: number, number = true): { body: string; partial: boolean; total: number } {
+export function numbered(text: string, offset = 1, limit?: number, number = true, maxChars = READ_CHARS): { body: string; partial: boolean; total: number } {
   const lines = text.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   const total = lines.length;
@@ -38,7 +38,7 @@ export function numbered(text: string, offset = 1, limit?: number, number = true
     let l = lines[i - 1]!;
     if (l.length > LINE_CAP) l = l.slice(0, LINE_CAP) + ` [line cut at ${LINE_CAP} of ${l.length} chars]`;
     const row = number ? `${i}\t${l}` : l; // compact: the padding cost ~5% of a read
-    if (size + row.length > READ_CHARS && out.length) break;
+    if (size + row.length > maxChars && out.length) break;
     out.push(row);
     size += row.length + 1;
     last = i;
@@ -49,7 +49,9 @@ export function numbered(text: string, offset = 1, limit?: number, number = true
   return { body, partial, total };
 }
 
-export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string } = {}): Promise<ReadResult> {
+// `large` (Claude Code's allow_large): a text read sized to the context left
+// (ctx.room) instead of one page and the whole-file limit.
+export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean } = {}): Promise<ReadResult> {
   let st;
   try { st = statSync(p); } catch { return { content: notFound(p, ctx.cwd), error: true }; }
   if (st.isDirectory()) return { content: `${p} is a directory. List it with the shell (ls).`, error: true };
@@ -63,13 +65,18 @@ export async function readFile(p: string, ctx: ToolContext, o: { offset?: number
   if (ext === ".pdf") return readPdf(p, ctx, o.pages);
   if (ext === ".ipynb") return readNotebook(p, ctx);
   if (BINARY.has(ext)) return { content: `${p} is a binary file (${ext}); read it with a script or tool for that format.`, error: true };
-  if (!o.offset && !o.limit && st.size > WHOLE_FILE_BYTES) {
+  // About four characters a token; a quarter of the room stays for the work after the read.
+  const roomChars = o.large && ctx.room ? Math.floor(ctx.room * 0.75) * 4 : 0;
+  if (o.large && st.size > roomChars) {
+    return { content: `${p} is ${(st.size / 1024).toFixed(0)} KB, more than the context left can take (about ${ctx.room ?? 0} tokens). Read a range with offset and limit, or search it.`, error: true };
+  }
+  if (!o.large && !o.offset && !o.limit && st.size > WHOLE_FILE_BYTES) {
     return { content: `${p} is ${(st.size / 1024).toFixed(0)} KB, over the ${WHOLE_FILE_BYTES / 1024} KB whole-file limit. Read a part with offset and limit, or search it.`, error: true };
   }
   const { text } = decodeText(new Uint8Array(await f.arrayBuffer()));
   ctx.seen.set(p, st.mtimeMs);
   if (!text) return { content: `${p} exists but is empty.` };
-  const r = numbered(text, o.offset, o.limit);
+  const r = numbered(text, o.offset, o.limit, true, o.large ? roomChars : READ_CHARS);
   if (o.offset && o.offset > r.total) return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true };
   return { content: r.body, partial: r.partial };
 }
