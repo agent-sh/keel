@@ -7,7 +7,7 @@ import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, running, stopJob } from "../tools/jobs.ts";
-import { admit } from "./admission.ts";
+import { admit, originCheck } from "./admission.ts";
 import { Live } from "./live.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
@@ -249,6 +249,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     fetch(req, srv) {
       const url = new URL(req.url);
       if (url.pathname === "/ws") {
+        const refused = originCheck(req);
+        if (refused) return refused;
         if (srv.upgrade(req)) return;
         return bad("websocket upgrade failed");
       }
