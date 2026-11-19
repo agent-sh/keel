@@ -151,9 +151,17 @@ export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined):
 // Origin "null" and must still load. Only the Host check applies there.
 const PORTAL = /^\/(fleet-)?portal\//;
 
+// An OAuth redirect comes back as a top-level GET from the authorization
+// server's site. Its callback checks the `state` it handed out, which a page
+// elsewhere cannot know, so for that one navigation only the Host is checked.
+const OAUTH_CALLBACKS = new Set(["/api/mcp/oauth/callback"]);
+const oauthReturn = (req: Request, path: string) =>
+  req.method === "GET" && OAUTH_CALLBACKS.has(path) && req.headers.get("sec-fetch-mode") === "navigate";
+
 export function admit(req: Request, srv?: Bun.Server<unknown>): Response | undefined {
   const path = new URL(req.url).pathname;
-  const guard = PORTAL.test(path) ? (allowedHost(req.headers.get("host")) ? undefined : refuse("host not allowed")) : originCheck(req);
+  const hostOnly = PORTAL.test(path) || oauthReturn(req, path);
+  const guard = hostOnly ? (allowedHost(req.headers.get("host")) ? undefined : refuse("host not allowed")) : originCheck(req);
   if (guard) return guard;
   const who = callerCheck(req, srv);
   if (who) return who;

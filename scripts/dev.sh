@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Dev daemon on Bedrock with a scratch state dir. Usage: scripts/dev.sh [port]
+# (KEEL_BIN=dist/keel runs the built binary instead of the hot-reloading source).
 set -euo pipefail
 PORT="${1:-47961}"
 DEV="${KEEL_DEV_DIR:-$HOME/.cache/keel-work/bun/dev}"
@@ -33,6 +34,10 @@ fi
 export KEEL_PHONE_SOCKET="${KEEL_PHONE_SOCKET:-$DEV/phone/phone.sock}"
 mkdir -p "$(dirname "$KEEL_PHONE_SOCKET")"
 cd "$(dirname "$0")/.."
+# KEEL_BIN runs a built binary (bun scripts/build.ts) with the same scratch setup.
+if [ -n "${KEEL_BIN:-}" ]; then
+  exec "$KEEL_BIN" serve --bind "127.0.0.1:$PORT" --state-dir "$DEV/state" --workspace "$DEV/ws"
+fi
 # Lanes add dependencies; a stale node_modules breaks the bundle at load.
 bun install --silent
 # Imported stylesheets reload too (the bundler watches only the entry stylesheet).
