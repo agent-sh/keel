@@ -40,6 +40,12 @@ test("first run", async ({ page, request }) => {
   await expect(page.getByTestId("new-composer")).toBeVisible();
   await expect(page.getByTestId("first-steps")).toHaveCount(0);
 
+  // A link to a session this daemon does not have (deleted, or from another machine) says so.
+  await page.goto("/s/0000aaaa-gone-link");
+  await expect(page.getByTestId("session-missing")).toBeVisible();
+  await page.getByRole("button", { name: "Start a new session" }).click();
+  await expect(page.getByTestId("new-composer")).toBeVisible();
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

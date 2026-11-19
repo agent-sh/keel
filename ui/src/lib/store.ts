@@ -73,7 +73,7 @@ export const getState = () => state;
 export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(apiPath(path), { ...init, headers: { "content-type": "application/json", ...init?.headers } });
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status });
   return body as T;
 }
 
