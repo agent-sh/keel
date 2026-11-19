@@ -89,9 +89,41 @@ test("foreign reasoning is dropped and ids are portable on every wire", () => {
   expect(s).toContain("skip_thought_signature_validator");
   expect(gem.contents.map((c: any) => c.role)).toEqual(["user", "model", "user", "model", "user"]);
   const ids = project(history, { origin: "x" }).flatMap((m) => m.content.map((b: any) => b.id ?? b.tool_use_id).filter(Boolean));
-  expect(ids).toEqual(["toolu_1", "toolu_1", "call_odd_id", "call_odd_id"]);
+  expect(ids[0]).toBe("toolu_1");
+  expect(ids[1]).toBe("toolu_1");
+  expect(ids[2]).toMatch(/^call_odd_id_[a-z0-9]+$/);
+  expect(ids[3]).toBe(ids[2]);
   // The same history projects to the same bytes: the cached prefix holds.
   expect(JSON.stringify(responsesBody(r, { ...ctx, origin: "chatgpt:gpt" }, "codex"))).toBe(gpt);
+});
+
+// Two calls whose ids clean to the same text stay two calls, each result
+// naming its own tool, in either result order.
+test("ids that clean alike stay distinct on the Gemini wire", () => {
+  for (const order of [0, 1]) {
+    const results = [
+      { type: "tool_result", tool_use_id: "call.1", content: "A" },
+      { type: "tool_result", tool_use_id: "call_1", content: "B" },
+    ] as any[];
+    if (order) results.reverse();
+    const h: Message[] = [
+      { role: "user", content: [{ type: "text", text: "go" }] },
+      { role: "assistant", content: [
+        { type: "tool_use", id: "call.1", name: "read_alpha", input: {} },
+        { type: "tool_use", id: "call_1", name: "read_beta", input: {} },
+      ] },
+      { role: "user", content: results },
+    ];
+    const gem = geminiBody({ ...req, messages: h }, { ...ctx, origin: "gemini:g" });
+    const calls = gem.contents[1].parts.map((p: any) => p.functionCall);
+    expect(new Set(calls.map((c: any) => c.id)).size).toBe(2);
+    const byId = new Map(calls.map((c: any) => [c.id, c.name]));
+    for (const p of gem.contents[2].parts) {
+      const r = p.functionResponse;
+      expect(r.name).toBe(byId.get(r.id));
+      expect(r.name).toBe(r.response.output === "A" ? "read_alpha" : "read_beta");
+    }
+  }
 });
 
 test("a call is priced per part; an unstated cache read rate is unknown, not free", () => {

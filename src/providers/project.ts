@@ -20,8 +20,9 @@ export type ProjectOpts = {
 
 export function portableId(id: string): string {
   const clean = id.replace(/[^A-Za-z0-9_-]/g, "_");
-  if (clean.length <= 64 && clean) return clean;
-  // Long ids keep a stable short hash so two long ids never collide.
+  if (clean === id && clean.length <= 64 && clean) return clean;
+  // An id that had to change keeps a stable short hash of the original, so two
+  // ids that clean to the same text (call.1 and call_1) stay two ids.
   const h = Bun.hash(id).toString(36);
   return (clean.slice(0, 63 - h.length) || "call") + "_" + h;
 }
