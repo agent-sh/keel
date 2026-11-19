@@ -27,6 +27,8 @@ export async function pump(pipe: Pipe, onChunk: (c: Uint8Array) => void, where =
     throw Object.assign(e instanceof Error ? e : new Error(String(e)), { where });
   } finally {
     try { r.releaseLock(); } catch {}
+    // Bun swaps in a new rejected `closed` on release without marking it handled.
+    r.closed.catch(() => {});
   }
 }
 
