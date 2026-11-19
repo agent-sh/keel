@@ -597,7 +597,7 @@ export function mobileApi(ctx: MobileCtx) {
         jobs: loops.list().map((l) => ({
           id: l.id, name: l.name, schedule: l.schedule_text, enabled: l.enabled, prompt: l.prompt, chat_id: l.session_id,
           last_status: l.last_status ?? null, paused_reason: l.disabled_reason ?? null, next: l.next_ms ? secs(l.next_ms) : null,
-          runs: loops.runs(l.id, 5).map((r) => ({ id: r.id, ts: secs(r.started_ms ?? r.due_ms), ok: r.ok ?? null, detail: r.detail ?? r.skip_reason ?? null })),
+          runs: loops.runs(l.id, 5).map((r) => ({ id: r.id, ts: secs(r.started_ms ?? r.due_ms), ok: r.ok ?? null, outcome: r.skip_reason ? "skipped" : r.outcome ?? null, detail: r.detail ?? r.skip_reason ?? null })),
         })),
         now: secs(Date.now()),
       })),

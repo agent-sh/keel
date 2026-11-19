@@ -36,3 +36,26 @@ test("/loop reads an interval, a trailing every-clause, or self-pacing", () => {
   expect(parseLoopCommand("/looping")).toBeUndefined();
   expect(parseLoopCommand("hello")).toBeUndefined();
 });
+
+test("a calendar schedule keeps its zone, and its times always move forward", () => {
+  const z = Date.UTC(2026, 10, 23); // Monday 00:00 UTC
+  const f = parseCron("30 9 * * 1-5");
+  // The same three instants wherever the daemon runs: the zone travels with the loop.
+  expect(nextRuns("30 9 * * 1-5", z, 3, "Asia/Jerusalem")).toEqual([Date.UTC(2026, 10, 23, 7, 30), Date.UTC(2026, 10, 24, 7, 30), Date.UTC(2026, 10, 25, 7, 30)]);
+  expect(nextCron(f, z, "UTC")).toBe(Date.UTC(2026, 10, 23, 9, 30));
+  // The repeated autumn hour (New York, 2026-11-01): from the second 01:20 a
+  // daily 01:30 is the next day's, never the earlier 01:30 already past.
+  const ny = "America/New_York";
+  const second0120 = Date.UTC(2026, 10, 1, 6, 20); // 01:20 EST
+  expect(nextCron(parseCron("30 1 * * *"), second0120, ny)).toBe(Date.UTC(2026, 10, 2, 6, 30));
+  expect(nextCron(parseCron("30 1 * * *"), Date.UTC(2026, 10, 1, 5, 20), ny)).toBe(Date.UTC(2026, 10, 1, 5, 30)); // first 01:20: today, once
+  // Every minute keeps counting through the repeated hour.
+  expect(nextCron(parseCron("* * * * *"), Date.UTC(2026, 10, 1, 6, 45, 20), ny)).toBe(Date.UTC(2026, 10, 1, 6, 46));
+  // The skipped spring hour: 02:30 runs at the change, 03:00 EDT.
+  expect(nextCron(parseCron("30 2 * * *"), Date.UTC(2026, 2, 8, 6, 55), ny)).toBe(Date.UTC(2026, 2, 8, 7, 0));
+  // Strictly increasing across both changes.
+  for (const [expr, from] of [["*/20 * * * *", Date.UTC(2026, 10, 1, 4)], ["0,30 0-3 * * *", Date.UTC(2026, 10, 1, 3)], ["30 2 * * *", Date.UTC(2026, 2, 7)]] as const) {
+    let t = from;
+    for (const x of nextRuns(expr, from, 12, ny)) { expect(x).toBeGreaterThan(t); t = x; }
+  }
+});

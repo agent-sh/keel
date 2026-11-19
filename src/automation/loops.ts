@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { D, alertHook, capture, deliver, emit, familyOf, inert } from "./core.ts";
-import { nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
+import { D, alertHook, capture, deliver, emit, familyOf, inert, withdraw } from "./core.ts";
+import { checkZone, localZone, nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
 import * as activity from "./activity.ts";
 
 // Loops: a prompt that runs again in its session on an interval, a calendar
@@ -32,6 +32,7 @@ export type LoopRecord = {
   next_runs?: number[];
   signed?: boolean;
   min_interval?: number | null;
+  tz?: string | null; // a calendar schedule's time zone (IANA): its times travel with it
 };
 
 export type RunRecord = {
@@ -41,7 +42,10 @@ export type RunRecord = {
   due_ms: number;
   started_ms?: number | null;
   ended_ms?: number | null;
-  ok?: boolean | null;
+  ok?: boolean | null; // true only for a run that finished (outcome ok)
+  // ok: finished; failed: an error; incomplete: declined, or out of steps or
+  // output; stopped: the owner stopped the turn.
+  outcome?: "ok" | "failed" | "incomplete" | "stopped" | null;
   detail?: string | null;
   first_seq?: number | null;
   last_seq?: number | null;
@@ -118,6 +122,12 @@ CREATE TABLE IF NOT EXISTS webhook_seen (loop_id TEXT NOT NULL, msg_id TEXT NOT 
   // it leaves the store only in the answer that made it.
   if (!store.columnExists("loops", "hook_secret")) store.migrate("ALTER TABLE loops ADD COLUMN hook_secret TEXT");
   if (!store.columnExists("loops", "min_interval")) store.migrate("ALTER TABLE loops ADD COLUMN min_interval INTEGER");
+  if (!store.columnExists("loop_runs", "outcome")) store.migrate("ALTER TABLE loop_runs ADD COLUMN outcome TEXT");
+  if (!store.columnExists("loops", "tz")) {
+    // A calendar loop made before zones were kept followed this machine's clock: it keeps that zone.
+    store.migrate("ALTER TABLE loops ADD COLUMN tz TEXT");
+    db().query("UPDATE loops SET tz = ? WHERE kind = 'cron'").run(localZone());
+  }
   db().query("DELETE FROM webhook_seen WHERE ts < ?").run(Date.now() - SEEN_KEEP);
 }
 
@@ -129,14 +139,17 @@ function toRec(r: Row): LoopRecord {
   void hook_hash; void fallback_used; void webhook_pending; void last_hook_ms;
   const rec: LoopRecord = { ...rest, enabled: !!r.enabled };
   if (r.kind === "webhook") rec.signed = !!hook_secret;
-  if (r.kind === "cron") rec.next_runs = nextRuns(r.schedule, Date.now(), 3);
+  if (r.kind === "cron") rec.next_runs = nextRuns(r.schedule, Date.now(), 3, r.tz ?? undefined);
   return rec;
 }
 type RunRow = Omit<RunRecord, "ok" | "usage"> & { ok: number | null; usage: string | null; stop: number };
 const toRun = (r: RunRow): RunRecord => {
   const { stop, ...rest } = r;
   void stop;
-  return { ...rest, ok: r.ok === null ? null : !!r.ok, usage: r.usage ? JSON.parse(r.usage) : null };
+  // A run recorded before outcomes were kept: ok meant "not an error".
+  const legacy = r.ok === null ? null : !r.ok ? "failed" : r.detail === "interrupted" ? "stopped" : r.detail && /^(refusal|max_steps|max_tokens)$/.test(r.detail) ? "incomplete" : "ok";
+  const outcome = (r.outcome ?? legacy) as RunRecord["outcome"];
+  return { ...rest, outcome, ok: outcome === null ? null : outcome === "ok", usage: r.usage ? JSON.parse(r.usage) : null };
 };
 
 const db = () => D().store.db;
@@ -148,6 +161,8 @@ export const runs = (loopId: string, limit = 100) =>
   db().query<RunRow, [string, number]>("SELECT * FROM loop_runs WHERE loop_id = ? ORDER BY due_ms DESC LIMIT ?").all(loopId, limit).map(toRun);
 const openRun = (sessionId: string) =>
   db().query<RunRow, [string]>("SELECT * FROM loop_runs WHERE session_id = ? AND started_ms IS NOT NULL AND ended_ms IS NULL ORDER BY started_ms DESC LIMIT 1").get(sessionId);
+const openRuns = (sessionId: string) =>
+  db().query<RunRow, [string]>("SELECT * FROM loop_runs WHERE session_id = ? AND started_ms IS NOT NULL AND ended_ms IS NULL ORDER BY started_ms").all(sessionId);
 const queuedRun = (loopId: string) =>
   db().query<RunRow, [string]>("SELECT * FROM loop_runs WHERE loop_id = ? AND started_ms IS NULL AND ended_ms IS NULL AND skip_reason IS NULL LIMIT 1").get(loopId);
 export const runOpenIn = (sessionId: string) => !!openRun(sessionId);
@@ -179,12 +194,12 @@ function patchRun(id: string, p: Record<string, unknown>) {
 
 // When the next run is due. A 5-minute interval runs 15 s early: a run exactly
 // five minutes after the last would find the provider's 5-minute cache expired.
-function nextDue(l: Pick<LoopRecord, "kind" | "schedule">, from: number): number | null {
+function nextDue(l: Pick<LoopRecord, "kind" | "schedule" | "tz">, from: number): number | null {
   if (l.kind === "interval") {
     const sec = parseSchedule(l.schedule).kind === "interval" ? (parseSchedule(l.schedule) as any).seconds : 0;
     return from + (sec === 300 ? 285_000 : sec * 1000);
   }
-  if (l.kind === "cron") return nextCron(parseCron(l.schedule), from) ?? null;
+  if (l.kind === "cron") return nextCron(parseCron(l.schedule), from, l.tz ?? undefined) ?? null;
   return null;
 }
 
@@ -192,6 +207,7 @@ export type CreateInput = {
   session_id: string; name?: string; prompt?: string; schedule: string; max_runs?: number | null; until_ms?: number | null;
   created_by?: "owner" | "model"; min_delay_seconds?: number; max_delay_seconds?: number; first_delay_seconds?: number;
   signed?: boolean; min_interval_seconds?: number;
+  tz?: string; // a calendar schedule's zone; this machine's when not given
 };
 
 const newSecret = () => `whsec_${randomBytes(32).toString("base64")}`;
@@ -224,7 +240,8 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
   const maxD = Math.max(minD, Math.min(Number(input.max_delay_seconds ?? 3600), YEAR));
   const id = Bun.randomUUIDv7().slice(-8);
   const schedule = sch.kind === "cron" ? sch.expr : input.schedule.trim().toLowerCase();
-  const first = sch.kind === "auto" ? now + Math.max(0, input.first_delay_seconds ?? 0) * 1000 : sch.kind === "webhook" ? null : nextDue({ kind: sch.kind, schedule }, now);
+  const tz = sch.kind === "cron" ? (input.tz ? checkZone(input.tz) : localZone()) : null;
+  const first = sch.kind === "auto" ? now + Math.max(0, input.first_delay_seconds ?? 0) * 1000 : sch.kind === "webhook" ? null : nextDue({ kind: sch.kind, schedule, tz }, now);
   let hookKey: string | undefined;
   let hash: string | null = null;
   let secret: string | null = null;
@@ -234,15 +251,15 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
     if (input.signed) secret = newSecret();
   }
   const name = (input.name ?? prompt.split("\n")[0]!).slice(0, 80);
-  db().query(`INSERT INTO loops (id, session_id, name, prompt, schedule, kind, schedule_text, created, created_by, max_runs, until_ms, next_ms, min_delay, max_delay, hook_hash, hook_secret, min_interval)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, input.session_id, name, prompt, schedule, sch.kind, sch.text, now, by, maxRuns, Number.isFinite(until as number) ? until : null, first, minD, maxD, hash, secret, minInterval);
+  db().query(`INSERT INTO loops (id, session_id, name, prompt, schedule, kind, schedule_text, created, created_by, max_runs, until_ms, next_ms, min_delay, max_delay, hook_hash, hook_secret, min_interval, tz)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, input.session_id, name, prompt, schedule, sch.kind, sch.text, now, by, maxRuns, Number.isFinite(until as number) ? until : null, first, minD, maxD, hash, secret, minInterval, tz);
   const loop = get(id)!;
   emit("loop", loop);
   return { loop, hook_key: hookKey, hook_secret: secret ?? undefined };
 }
 
-export type UpdateInput = Partial<{ enabled: boolean; name: string; prompt: string; schedule: string; max_runs: number | null; until_ms: number | null }>;
+export type UpdateInput = Partial<{ enabled: boolean; name: string; prompt: string; schedule: string; max_runs: number | null; until_ms: number | null; tz: string }>;
 
 export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owner"): LoopRecord {
   const l = get(id);
@@ -250,13 +267,14 @@ export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owne
   const out: Record<string, unknown> = {};
   if (p.name !== undefined) { if (!p.name.trim()) throw new Error("the name cannot be empty"); out.name = p.name.trim().slice(0, 80); }
   if (p.prompt !== undefined) out.prompt = p.prompt.trim() || DEFAULT_PROMPT;
-  if (p.schedule !== undefined) {
-    const sch = parseSchedule(p.schedule);
+  if (p.schedule !== undefined || p.tz !== undefined) {
+    const sch = parseSchedule(p.schedule ?? l.schedule);
     if ((sch.kind === "webhook") !== (l.kind === "webhook")) throw new Error("a loop cannot change to or from a webhook loop");
-    out.schedule = sch.kind === "cron" ? sch.expr : p.schedule.trim().toLowerCase();
+    out.schedule = sch.kind === "cron" ? sch.expr : (p.schedule ?? l.schedule).trim().toLowerCase();
     out.kind = sch.kind;
     out.schedule_text = sch.text;
-    out.next_ms = sch.kind === "auto" ? Date.now() + l.min_delay * 1000 : sch.kind === "webhook" ? null : nextDue({ kind: sch.kind, schedule: out.schedule as string }, Date.now());
+    out.tz = sch.kind === "cron" ? (p.tz ? checkZone(p.tz) : l.tz ?? localZone()) : null;
+    out.next_ms = sch.kind === "auto" ? Date.now() + l.min_delay * 1000 : sch.kind === "webhook" ? null : nextDue({ kind: sch.kind, schedule: out.schedule as string, tz: out.tz as string | null }, Date.now());
   }
   if (p.max_runs !== undefined) out.max_runs = p.max_runs;
   if (p.until_ms !== undefined) {
@@ -268,14 +286,26 @@ export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owne
     if (p.enabled) {
       out.fails = 0;
       out.disabled_reason = null;
-      if (l.kind !== "webhook" && !l.next_ms) out.next_ms = l.kind === "auto" ? Date.now() + l.min_delay * 1000 : nextDue(l, Date.now());
-    } else out.disabled_reason = "paused";
+      // A slot missed while paused is the owner's choice, not downtime: no catch-up for it.
+      if (l.kind !== "webhook" && out.next_ms === undefined && (!l.next_ms || (!l.enabled && l.next_ms <= Date.now())))
+        out.next_ms = l.kind === "auto" ? Date.now() + l.min_delay * 1000 : nextDue(l, Date.now());
+    } else {
+      out.disabled_reason = "paused";
+      // Its prompt still waiting for the session's turn to end does not go either.
+      if (withdraw(l.session_id, (m) => m.kind === "loop" && m.loop_id === id)) {
+        db().query("UPDATE loop_runs SET ended_ms = ?, skip_reason = 'paused before the session was free' WHERE loop_id = ? AND started_ms IS NULL AND ended_ms IS NULL").run(Date.now(), id);
+      }
+    }
   }
   return patch(id, out)!;
 }
 
 export function remove(id: string): boolean {
-  if (!row(id)) return false;
+  const r = row(id);
+  if (!r) return false;
+  // A prompt of its waiting for the session's turn to end is not sent (a run
+  // already under way is the session's own turn and goes on).
+  withdraw(r.session_id, (m) => m.kind === "loop" && m.loop_id === id);
   db().query("DELETE FROM loops WHERE id = ?").run(id);
   emit("loop", { id, deleted: true });
   return true;
@@ -365,12 +395,18 @@ export function scheduleNext(sessionId: string, input: { delay_seconds?: number;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(Number.isFinite(n) ? n : lo, lo), hi);
 
-// The run in this session ended with its turn.
+const INCOMPLETE: Record<string, string> = { refusal: "the model declined", max_steps: "it ran out of its step budget", max_tokens: "its reply hit the output limit" };
+const outcomeOf = (reason: string): NonNullable<RunRecord["outcome"]> =>
+  reason === "error" || reason === "restart" ? "failed" : reason === "interrupted" ? "stopped" : INCOMPLETE[reason] ? "incomplete" : "ok";
+
+// The runs in this session ended with its turn: every run whose prompt came
+// in that turn (two loops due together share one turn), each with the turn's
+// outcome and its one usage.
 export function onTurnEnd(sessionId: string, reason: string) {
-  const r = openRun(sessionId);
-  if (!r) return;
-  const l = get(r.loop_id);
-  const evs = D().store.events(sessionId, r.first_seq ?? 0);
+  const open = openRuns(sessionId);
+  if (!open.length) return;
+  const first = Math.min(...open.map((r) => r.first_seq ?? 0));
+  const evs = D().store.events(sessionId, first);
   const usage = { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0 };
   let err = "";
   for (const e of evs) {
@@ -380,12 +416,24 @@ export function onTurnEnd(sessionId: string, reason: string) {
     }
     if (e.kind === "error") err = e.data.message;
   }
-  const ok = reason !== "error";
+  const outcome = outcomeOf(reason);
+  const detail = err || (INCOMPLETE[reason] ? `${reason}: ${INCOMPLETE[reason]}` : reason);
   const now = Date.now();
-  patchRun(r.id, { ended_ms: now, ok, detail: err || reason, last_seq: evs.at(-1)?.seq ?? r.first_seq, usage });
-  if (!l) return;
-  const fails = ok ? 0 : l.fails + 1;
-  const out: Record<string, unknown> = { fails, last_status: ok ? (reason === "interrupted" ? "stopped" : "ok") : "failed" };
+  for (const r of open) {
+    const shared = open.length > 1 ? `One turn ran ${open.length} loops' prompts; its usage is shared, not each one's.` : undefined;
+    patchRun(r.id, { ended_ms: now, ok: outcome === "ok", outcome, detail, last_seq: evs.at(-1)?.seq ?? r.first_seq, usage, note: shared ? [r.note, shared].filter(Boolean).join(" ") : undefined });
+    const l = get(r.loop_id);
+    if (l) settleLoop(l, r, outcome, err || detail, now);
+  }
+}
+
+// A loop after one of its runs: only a finished run clears the failure count;
+// a failed or unfinished one adds to it (three in a row pause the loop) and
+// alerts; a run the owner stopped does neither.
+function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["outcome"]>, why: string, now: number) {
+  const bad = outcome === "failed" || outcome === "incomplete";
+  const fails = outcome === "ok" ? 0 : bad ? l.fails + 1 : l.fails;
+  const out: Record<string, unknown> = { fails, last_status: outcome === "ok" ? "ok" : outcome === "stopped" ? "stopped" : outcome };
   if (l.kind === "auto") {
     const run = db().query<{ next_delay_seconds: number | null; stop: number }, [string]>("SELECT next_delay_seconds, stop FROM loop_runs WHERE id = ?").get(r.id)!;
     if (run.stop) Object.assign(out, { enabled: false, next_ms: null, disabled_reason: "the model ended the loop" });
@@ -396,15 +444,17 @@ export function onTurnEnd(sessionId: string, reason: string) {
       patchRun(r.id, { next_delay_seconds: AUTO_DEFAULT, delay_reason: "the run named no delay: one fallback run" });
     } else Object.assign(out, { enabled: false, next_ms: null, disabled_reason: "two runs in a row named no next delay" });
   }
-  if (fails >= FAIL_PAUSE) Object.assign(out, { enabled: false, disabled_reason: `paused after ${fails} failed runs in a row` });
+  if (fails >= FAIL_PAUSE) Object.assign(out, { enabled: false, disabled_reason: `paused after ${fails} runs in a row that failed or did not finish` });
   const next = patch(l.id, out)!;
-  activity.record("loop", ok ? "ok" : "failed", sessionId, `Loop "${l.name}" run ${ok ? "ended" : `failed: ${err || reason}`}`, { loop_id: l.id, run_id: r.id });
-  if (!ok) alertHook.raise?.("loop_failed", sessionId, `Loop failed: ${l.name}`, `${err || reason}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
+  const said = outcome === "ok" ? "ended" : outcome === "stopped" ? "was stopped" : outcome === "incomplete" ? `did not finish: ${why}` : `failed: ${why}`;
+  activity.record("loop", outcome === "ok" ? "ok" : outcome, l.session_id, `Loop "${l.name}" run ${said}`, { loop_id: l.id, run_id: r.id });
+  if (bad) alertHook.raise?.("loop_failed", l.session_id, `Loop ${outcome === "failed" ? "failed" : "did not finish"}: ${l.name}`, `${why}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
   if (l.max_runs && next.runs >= l.max_runs && next.enabled) patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` });
   // A webhook request that waited for this run goes now.
   if (l.kind === "webhook") drainWebhook(l.id);
 }
 
+const STARTED = Date.now();
 let ticking = false;
 export function tick() {
   if (ticking) return;
@@ -417,7 +467,10 @@ export function tick() {
         if (l.until_ms && now >= l.until_ms) { patch(l.id, { enabled: false, next_ms: null, disabled_reason: "expired" }); continue; }
         if (l.max_runs && l.runs >= l.max_runs) { patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` }); continue; }
         const late = now - l.next_ms! > 60_000;
-        const note = late ? `Catch-up for ${new Date(l.next_ms!).toLocaleString()}: the daemon was down or the machine asleep; times missed meanwhile were not run.` : undefined;
+        // Why it is late, only as far as the daemon knows it: it was not running
+        // at the due time, or it was (then the machine slept or the tick was held).
+        const why = l.next_ms! < STARTED ? "the daemon was not running then" : "the daemon was running, so the machine likely slept";
+        const note = late ? `Catch-up for ${new Date(l.next_ms!).toLocaleString()}, ${Math.round((now - l.next_ms!) / 60_000)} min late (${why}); times missed meanwhile were not run.` : undefined;
         // Next slot from now: a run longer than the interval skips the slots it
         // covered. The new next time and the slot's run row commit together, so a
         // crash between them cannot lose a slot without a trace.
@@ -522,7 +575,7 @@ function drainWebhook(id: string) {
 
 // After a restart, a run left open never ended: close it so the loop goes on.
 export function recover() {
-  db().query("UPDATE loop_runs SET ended_ms = ?, ok = 0, detail = 'the daemon stopped during the run' WHERE ended_ms IS NULL AND started_ms IS NOT NULL").run(Date.now());
+  db().query("UPDATE loop_runs SET ended_ms = ?, ok = 0, outcome = 'failed', detail = 'the daemon stopped during the run' WHERE ended_ms IS NULL AND started_ms IS NOT NULL").run(Date.now());
   db().query("UPDATE loop_runs SET ended_ms = ?, skip_reason = 'the daemon stopped before the session was free' WHERE ended_ms IS NULL AND started_ms IS NULL").run(Date.now());
   for (const l of list()) {
     if (l.enabled && l.kind === "auto" && !l.next_ms) patch(l.id, { next_ms: Date.now() + l.min_delay * 1000 });

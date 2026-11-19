@@ -1,5 +1,5 @@
 // Schedules a Loop can have, parsed and stepped without any clock of its own.
-// Calendar times are the machine's local time, as crontab(5) reads them.
+// Calendar times are read in the loop's time zone (see nextCron).
 
 export type Schedule =
   | { kind: "interval"; seconds: number; text: string }
@@ -107,31 +107,91 @@ export function parseCron(expr: string): Fields {
   };
 }
 
-// The first matching minute strictly after `after`, within about a year.
-export function nextCron(f: Fields, after: number): number | undefined {
-  const d = new Date(after);
-  d.setSeconds(0, 0);
-  d.setMinutes(d.getMinutes() + 1);
+// Calendar times are read in a named zone (IANA), the loop's own, so a loop
+// keeps its times when the daemon moves to a machine in another zone.
+export const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+export function checkZone(tz: string): string {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return tz;
+  } catch {
+    throw new Error(`"${tz}" is not a time zone: use an IANA name such as Europe/Paris or UTC`);
+  }
+}
+
+const formats = new Map<string, Intl.DateTimeFormat>();
+type Wall = { y: number; mo: number; d: number; h: number; mi: number; dow: number };
+function wall(t: number, tz: string): Wall {
+  let f = formats.get(tz);
+  if (!f) formats.set(tz, (f = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", weekday: "short" })));
+  const p: Record<string, string> = {};
+  for (const x of f.formatToParts(t)) p[x.type] = x.value;
+  return { y: +p.year!, mo: +p.month!, d: +p.day!, h: +p.hour! % 24, mi: +p.minute!, dow: DAYS.indexOf(p.weekday!.toLowerCase().slice(0, 3)) };
+}
+const wallUtc = (w: Wall) => Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi);
+
+// The instant a wall time names in `tz`. A time the autumn change repeats is
+// its first occurrence; a time the spring change skips is the first instant
+// after the gap (02:30 becomes 03:00), as cron runs a skipped job at the change.
+function resolve(y: number, mo: number, d: number, h: number, mi: number, tz: string): number {
+  const target = Date.UTC(y, mo - 1, d, h, mi);
+  const off = (t: number) => wallUtc(wall(t, tz)) - Math.floor(t / 60_000) * 60_000;
+  const before = target - off(target - 43_200_000), after = target - off(target + 43_200_000);
+  const hits = [before, after].filter((c) => wallUtc(wall(c, tz)) === target);
+  if (hits.length) return Math.min(...hits);
+  let lo = Math.min(before, after), hi = Math.max(before, after);
+  while (hi - lo > 60_000) {
+    const mid = Math.floor((lo + hi) / 120_000) * 60_000;
+    if (wallUtc(wall(mid, tz)) < target) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}
+
+// crontab(5): when both day fields are restricted, either one matching is enough.
+const dayOk = (f: Fields, dom: number, dow: number) => {
+  const domOk = f.dom.has(dom), dowOk = f.dow.has(dow);
+  return f.domAny && f.dowAny ? true : f.domAny ? dowOk : f.dowAny ? domOk : domOk || dowOk;
+};
+
+// The first matching minute strictly after `after`, within about a year, in
+// `tz` (the machine's zone when not given). Every hour of the day named (`*`):
+// each minute that passes on the clock, so the repeated autumn hour runs twice
+// like any hour. Named hours: once a day per wall time (see resolve).
+export function nextCron(f: Fields, after: number, tz = localZone()): number | undefined {
   const limit = after + YEAR * 1000 + 86400_000;
-  while (d.getTime() < limit) {
-    if (!f.mon.has(d.getMonth() + 1)) { d.setMonth(d.getMonth() + 1, 1); d.setHours(0, 0, 0, 0); continue; }
-    const domOk = f.dom.has(d.getDate()), dowOk = f.dow.has(d.getDay());
-    // crontab(5): when both day fields are restricted, either one matching is enough.
-    const dayOk = f.domAny && f.dowAny ? true : f.domAny ? dowOk : f.dowAny ? domOk : domOk || dowOk;
-    if (!dayOk) { d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); continue; }
-    if (!f.hour.has(d.getHours())) { d.setHours(d.getHours() + 1, 0, 0, 0); continue; }
-    if (!f.min.has(d.getMinutes())) { d.setMinutes(d.getMinutes() + 1, 0, 0); continue; }
-    return d.getTime();
+  const mins = [...f.min].sort((a, b) => a - b);
+  if (f.hour.size === 24) {
+    let t = Math.floor(after / 60_000) * 60_000 + 60_000;
+    while (t < limit) {
+      const w = wall(t, tz);
+      if (!f.mon.has(w.mo) || !dayOk(f, w.d, w.dow)) { t = resolve(w.y, w.mo, w.d + 1, 0, 0, tz); continue; }
+      if (f.min.has(w.mi)) return t;
+      const m = mins.find((x) => x > w.mi);
+      t += ((m ?? 60) - w.mi) * 60_000;
+    }
+    return undefined;
+  }
+  const hours = [...f.hour].sort((a, b) => a - b);
+  const w0 = wall(after, tz);
+  for (let day = 0; day <= 400; day++) {
+    const date = new Date(Date.UTC(w0.y, w0.mo - 1, w0.d + day));
+    const y = date.getUTCFullYear(), mo = date.getUTCMonth() + 1, d = date.getUTCDate();
+    if (!f.mon.has(mo) || !dayOk(f, d, date.getUTCDay())) continue;
+    for (const h of hours) for (const m of mins) {
+      const t = resolve(y, mo, d, h, m, tz);
+      if (t > after) return t < limit ? t : undefined;
+    }
   }
   return undefined;
 }
 
-export function nextRuns(expr: string, after: number, n = 3): number[] {
+export function nextRuns(expr: string, after: number, n = 3, tz?: string): number[] {
   const f = parseCron(expr);
   const out: number[] = [];
   let t = after;
   while (out.length < n) {
-    const x = nextCron(f, t);
+    const x = nextCron(f, t, tz);
     if (!x) break;
     out.push(x);
     t = x;

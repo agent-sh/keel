@@ -46,6 +46,8 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
   await page.getByTestId("new-loop-prompt").fill("Summarize yesterday's commits in this repository.");
   await page.getByRole("button", { name: "Create loop" }).click();
   await expect(page.getByTestId("loop-history")).toContainText("weekdays at 09:30");
+  // Its times are in a named zone kept with it, shown beside them.
+  await expect(page.getByTestId("loop-zone")).toHaveText(/\(\w+(\/[\w+-]+)*\)/);
   await shoot(page, "loops-05-calendar");
 
   // Clean up: the loops end with the test.

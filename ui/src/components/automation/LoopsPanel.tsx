@@ -1,5 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Check, CircleAlert, CircleCheck, CircleSlash, Copy, ExternalLink, KeyRound, Pause, Play, Plus, Repeat, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Copy, ExternalLink, KeyRound, Pause, Play, Plus, Repeat, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunRecord } from "../../lib/automation.ts";
 import { reportError, useStore, failed } from "../../lib/store.ts";
@@ -9,8 +9,13 @@ import { Empty, IconButton } from "./bits.tsx";
 function RunIcon({ r }: { r: RunRecord }) {
   if (r.skip_reason) return <CircleSlash className="size-3.5 shrink-0 text-faint" />;
   if (!r.ended_ms) return <span className="grid size-3.5 place-items-center"><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /></span>;
-  return r.ok ? <CircleCheck className="size-3.5 shrink-0 text-ok" /> : <CircleAlert className="size-3.5 shrink-0 text-danger" />;
+  if (r.outcome === "ok") return <CircleCheck className="size-3.5 shrink-0 text-ok" aria-label="Finished" />;
+  if (r.outcome === "stopped") return <CircleSlash className="size-3.5 shrink-0 text-muted" aria-label="Stopped" />;
+  if (r.outcome === "incomplete") return <CircleDashed className="size-3.5 shrink-0 text-warn" aria-label="Did not finish" />;
+  return <CircleAlert className="size-3.5 shrink-0 text-danger" aria-label="Failed" />;
 }
+
+const OUTCOME: Record<string, string> = { ok: "finished", failed: "failed", incomplete: "did not finish", stopped: "stopped" };
 
 function CopyLine({ label, value, testid }: { label: string; value: string; testid: string }) {
   const [done, setDone] = useState(false);
@@ -92,7 +97,9 @@ function History({ loop }: { loop: LoopRecord }) {
         </div>
         <p className="mt-1 text-caption text-muted">
           {loop.schedule_text}
-          {loop.kind === "cron" && loop.next_runs?.length ? ` · next ${loop.next_runs.map((t) => new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })).join(", ")}` : ""}
+          {/* Times in the loop's own zone: they hold wherever the daemon runs. */}
+          {loop.kind === "cron" && loop.tz ? <span data-testid="loop-zone"> ({loop.tz})</span> : null}
+          {loop.kind === "cron" && loop.next_runs?.length ? ` · next ${loop.next_runs.map((t) => new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", timeZone: loop.tz ?? undefined })).join(", ")}` : ""}
           {loop.max_runs ? ` · at most ${loop.max_runs} runs` : ""}
           {loop.until_ms ? ` · until ${new Date(loop.until_ms).toLocaleDateString()}` : ""}
         </p>
@@ -108,7 +115,7 @@ function History({ loop }: { loop: LoopRecord }) {
               <div className="flex items-baseline gap-2">
                 <span>{new Date(r.started_ms ?? r.due_ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
                 <span className="text-caption text-faint">
-                  {r.skip_reason ? "not run" : r.ended_ms && r.started_ms ? `${((r.ended_ms - r.started_ms) / 1000).toFixed(1)}s` : r.started_ms ? "running" : "waiting for the session"}
+                  {r.skip_reason ? "not run" : r.ended_ms && r.started_ms ? `${r.outcome ? `${OUTCOME[r.outcome]} · ` : ""}${((r.ended_ms - r.started_ms) / 1000).toFixed(1)}s` : r.started_ms ? "running" : "waiting for the session"}
                 </span>
                 {r.usage && r.usage.calls > 0 && (
                   <span className="ml-auto text-micro text-faint tabular-nums">
@@ -116,9 +123,9 @@ function History({ loop }: { loop: LoopRecord }) {
                   </span>
                 )}
               </div>
-              {(r.skip_reason || r.note || (r.ok === false && r.detail) || r.delay_reason) && (
-                <p className={cn("text-caption", r.ok === false ? "text-danger" : "text-faint")}>
-                  {[r.skip_reason, r.ok === false ? r.detail : "", r.note, r.next_delay_seconds ? `next in ${Math.round(r.next_delay_seconds / 60)}m${r.delay_reason ? `: ${r.delay_reason}` : ""}` : ""].filter(Boolean).join(" · ")}
+              {(r.skip_reason || r.note || (r.outcome && r.outcome !== "ok" && r.detail) || r.delay_reason) && (
+                <p className={cn("text-caption", r.outcome === "failed" ? "text-danger" : r.outcome === "incomplete" ? "text-warn" : "text-faint")} data-testid="loop-run-detail">
+                  {[r.skip_reason, r.outcome && r.outcome !== "ok" ? r.detail : "", r.note, r.next_delay_seconds ? `next in ${Math.round(r.next_delay_seconds / 60)}m${r.delay_reason ? `: ${r.delay_reason}` : ""}` : ""].filter(Boolean).join(" · ")}
                 </p>
               )}
             </div>
