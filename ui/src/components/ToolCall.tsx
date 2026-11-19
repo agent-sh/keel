@@ -1,4 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
+import { Ansi } from "./Ansi.tsx";
 import {
   Check, ChevronRight, Circle, CircleDot, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
   ListChecks, MessageCircleQuestion, NotebookPen, Plug, Search, Sparkles, SquareTerminal, Square, Wrench, X,
@@ -9,7 +10,7 @@ import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { actions, failed } from "../lib/store.ts";
 import {
-  patchFiles, planItems, questions, resultImages, resultText, shellBody, splitNested, shellStatus, shortPath, stripAnsi, toolKind,
+  patchFiles, planItems, questions, resultImages, resultText, shellBody, splitNested, shellStatus, shortPath, toolKind,
   type PlanItem, type ToolKind,
 } from "../lib/tools.ts";
 import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
@@ -146,7 +147,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
 
 function Terminal({ name, input, out, error }: { name: string; input: any; out: string; error: boolean }) {
   const cmd = input.cmd ?? input.command;
-  const body = stripAnsi(shellBody(name, out)).trimEnd();
+  // Output keeps the program's colors, as in a terminal (a test run's red and green).
+  const body = shellBody(name, out).trimEnd();
   return (
     <div className="m-2.5 overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
       {cmd && (
@@ -155,7 +157,7 @@ function Terminal({ name, input, out, error }: { name: string; input: any; out: 
         </pre>
       )}
       {name === "write_stdin" && input.chars && <pre className="border-b border-line px-2.5 py-1.5 text-accent-ink">{JSON.stringify(input.chars)}</pre>}
-      {body && <pre className={cn("max-h-80 overflow-auto px-2.5 py-2 whitespace-pre-wrap break-all", error ? "text-danger" : "text-muted")}>{body}</pre>}
+      {body && <pre className={cn("max-h-80 overflow-auto px-2.5 py-2 whitespace-pre-wrap break-all", error ? "text-danger" : "text-muted")}><Ansi text={body} /></pre>}
     </div>
   );
 }

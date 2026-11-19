@@ -234,6 +234,27 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
 
     // A file of the session's folder: lines of a text file as JSON, or with
     // raw=1 an image itself, sandboxed, so the page and the phone can show it.
+    // Which of the paths a reply names are files of the session's folder, each
+    // with its path from the folder: the page links only those.
+    "/api/sessions/:id/files/exist": {
+      POST: async (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (s.machine) return json({ files: {} });
+        const b = ((await req.json().catch(() => null)) ?? {}) as any;
+        if (!Array.isArray(b.paths)) return bad("paths is a list");
+        let root: string;
+        try { root = realpathSync(s.workspace); } catch { return json({ files: {} }); }
+        const files: Record<string, string> = {};
+        for (const p of b.paths.slice(0, 500)) {
+          if (typeof p !== "string") continue;
+          const real = fileOf(s, p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+          if (typeof real === "string") files[p] = relative(root, real);
+        }
+        return json({ files });
+      },
+    },
+
     "/api/sessions/:id/file": {
       GET: async (req: any) => {
         const s = store.session(req.params.id);

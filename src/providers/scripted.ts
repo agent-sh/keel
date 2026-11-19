@@ -162,6 +162,18 @@ export class ScriptedProvider implements Provider {
         if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");
         if (last?.role === "user" && (last.content as any[]).some((b) => b.type === "tool_result")) return reply("Finished after the tool.");
         return reply("Running a long command.", "tool_use", [{ type: "tool_use", id: `long-${msgs.length}`, name: "Bash", input: { command: "sleep 30; echo slept" } }]);
+      case "render": {
+        // A reply that uses what the transcript renders: a table, code that
+        // finishes while the rest streams, math, a file link. Slow enough to
+        // read the draft while it streams.
+        const text = RENDER_REPLY;
+        for (const part of text.match(/.{1,24}/gs) ?? []) {
+          onDelta({ kind: "text", index: 0, text: part });
+          await Bun.sleep(40);
+        }
+        usage.output = tokens(text);
+        return { blocks: [{ type: "text", text }], usage, stop: "end_turn", model: req.model };
+      }
       case "grow":
         // About a thousand tokens a turn: the context crosses the preparing share, then the limit.
         return reply(`Growing. ${"dolor sit amet ".repeat(280)}`.trim());
@@ -186,3 +198,27 @@ function callsAfter(text: string): { name: unknown; input?: unknown }[] {
   }
   return [];
 }
+
+const RENDER_REPLY = `## The parser, moved
+
+The change is in \`notes/plan.md:2\` and **keeps the public surface**. It runs in $O(n)$ time.
+
+\`\`\`ts
+export function parse(input: string): string[] {
+  return input.split("\\n").filter(Boolean);
+}
+\`\`\`
+
+| File | Change |
+| --- | ---: |
+| \`src/parse.ts\` | +42 |
+| \`src/store.ts\` | -40 |
+
+$$
+T(n) = 2T\\left(\\frac{n}{2}\\right) + O(n)
+$$
+
+The prices stay text: $5 and $10, and so does $HOME.
+
+${"The rest of the note says what to check before the merge, line by line, so the reply keeps streaming for a while. ".repeat(6)}`;
+

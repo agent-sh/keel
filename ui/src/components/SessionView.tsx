@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { setBaseTitle } from "./Attention.tsx";
 import { FolderX, WifiOff } from "lucide-react";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
@@ -46,7 +47,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
       else reportError(e, { at: "open session" });
     });
   }, [id, unreached === id && connected]);
-  useEffect(() => { if (focus) document.title = session?.title ? `${session.title} - Keel` : "Keel"; }, [session?.title, focus]);
+  useEffect(() => { if (focus) setBaseTitle(session?.title ? `${session.title} - Keel` : "Keel"); }, [session?.title, focus]);
   if (!session && (missing === id || gone)) {
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">

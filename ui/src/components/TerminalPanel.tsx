@@ -3,8 +3,9 @@
 // with their output streaming in, and the owner's stop, copy and re-run. A
 // command line at the foot runs the owner's own command in the session's folder.
 import { Check, ChevronRight, Copy, Play, RotateCw, Square, SquareTerminal } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { parseAnsi, stripAnsiText } from "../../../src/core/ansi.ts";
+import { useEffect, useRef, useState } from "react";
+import { stripAnsiText } from "../../../src/core/ansi.ts";
+import { Ansi } from "./Ansi.tsx";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
@@ -33,20 +34,6 @@ function ending(e: Entry) {
   return e.state === "failed" ? "failed" : "done";
 }
 
-export function Ansi({ text }: { text: string }) {
-  const segs = useMemo(() => parseAnsi(text), [text]);
-  return (
-    <>
-      {segs.map((s, i) =>
-        s.fg || s.bg || s.bold || s.dim || s.italic || s.underline ? (
-          <span key={i} style={{ color: s.fg, backgroundColor: s.bg }} className={cn(s.bold && "font-semibold", s.dim && "opacity-70", s.italic && "italic", s.underline && "underline")}>{s.text}</span>
-        ) : (
-          s.text
-        ),
-      )}
-    </>
-  );
-}
 
 // The output of one command: what the list carried, then what a running one
 // prints from there on.

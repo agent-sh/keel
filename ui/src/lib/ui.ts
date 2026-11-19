@@ -33,6 +33,8 @@ type UIState = {
   // A message opened from search on another branch: shown without moving the
   // session's branch until the owner chooses to continue from it.
   preview: { session: string; event: string } | null;
+  // A file a reply linked, to show in the session's Files panel at its lines.
+  fileAt: { session: string; path: string; line?: number; end?: number; n: number } | null;
 };
 
 function parse(): Route {
@@ -75,6 +77,7 @@ let state: UIState = {
   focusEvent: new URLSearchParams(location.search).get("e"),
   focusCall: null,
   preview: null,
+  fileAt: null,
 };
 const subs = new Set<() => void>();
 const subscribe = (f: () => void) => {

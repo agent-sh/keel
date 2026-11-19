@@ -1,9 +1,9 @@
 import { AtSign, ChevronLeft, File as FileIcon, Folder, Search } from "lucide-react";
 import { IMAGE, OpenInEditor, rawFile } from "./OpenInEditor.tsx";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError } from "../lib/store.ts";
-import { seedComposer } from "../lib/ui.ts";
+import { seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 
 type Hit = { path: string; dir: boolean };
@@ -21,8 +21,15 @@ const langOf = (p: string) => {
   return LANG[ext] ?? ext;
 };
 
-function CodeView({ file }: { file: Opened }) {
+function CodeView({ file, line, end }: { file: Opened; line?: number; end?: number }) {
   const [html, setHtml] = useState<string | null>(null);
+  const band = useRef<HTMLDivElement>(null);
+  // A linked line is shown near the top of the view, its lines marked.
+  useEffect(() => {
+    const el = band.current;
+    const sc = el?.closest<HTMLElement>("[data-file-scroll]");
+    if (el && sc) sc.scrollTop = Math.max(0, el.offsetTop - 96);
+  }, [line, file]);
   const lines = useMemo(() => (file.text ?? "").split("\n"), [file.text]);
   useEffect(() => {
     setHtml(null);
@@ -30,14 +37,18 @@ function CodeView({ file }: { file: Opened }) {
     import("../lib/highlight.ts").then((m) => setHtml(m.highlightHtml(file.text!, langOf(file.path)))).catch(reportError);
   }, [file]);
   return (
-    <div className="flex min-h-full w-max min-w-full font-mono text-[12.5px] leading-[1.65]">
+    <div className="relative flex min-h-full w-max min-w-full font-mono text-[12.5px] leading-[1.65]">
+      {line && line <= lines.length && (
+        <div ref={band} data-testid="file-line" aria-hidden="true" className="pointer-events-none absolute inset-x-0 bg-accent-soft"
+          style={{ top: `calc(12px + ${line - 1} * 1.65em)`, height: `calc(${Math.max(1, Math.min(end ?? line, lines.length) - line + 1)} * 1.65em)` }} />
+      )}
       <div aria-hidden="true" className="sticky left-0 select-none border-r border-line bg-panel px-3 py-3 text-right text-faint tabular-nums">
         {lines.map((_, i) => <div key={i}>{i + 1}</div>)}
       </div>
       {html ? (
-        <pre className="flex-1 px-4 py-3" dangerouslySetInnerHTML={{ __html: html }} />
+        <pre className="relative flex-1 px-4 py-3" dangerouslySetInnerHTML={{ __html: html }} />
       ) : (
-        <pre className="flex-1 px-4 py-3">{file.text}</pre>
+        <pre className="relative flex-1 px-4 py-3">{file.text}</pre>
       )}
     </div>
   );
@@ -49,6 +60,16 @@ export function FilesPanel({ session }: { session: Session }) {
   const [hits, setHits] = useState<Hit[]>([]);
   const [total, setTotal] = useState(0);
   const [open, setOpen] = useState<Opened | null>(null);
+  const [at, setAt] = useState<{ line?: number; end?: number }>({});
+  // A file a reply linked opens here at its lines.
+  const linked = useUI((s) => (s.fileAt?.session === session.id ? s.fileAt : null));
+  useEffect(() => {
+    if (!linked) return;
+    setUI({ fileAt: null });
+    api<Opened>(`/api/fs/file?root=${encodeURIComponent(session.workspace)}&path=${encodeURIComponent(linked.path)}`)
+      .then((f) => { setOpen(f); setAt({ line: linked.line, end: linked.end }); })
+      .catch(reportError);
+  }, [linked?.n]);
 
   useEffect(() => {
     const ctl = new AbortController();
@@ -63,7 +84,7 @@ export function FilesPanel({ session }: { session: Session }) {
 
   const show = (h: Hit) => {
     if (h.dir) return setQ(h.path);
-    api<Opened>(`/api/fs/file?root=${encodeURIComponent(session.workspace)}&path=${encodeURIComponent(h.path)}`).then(setOpen).catch(reportError);
+    api<Opened>(`/api/fs/file?root=${encodeURIComponent(session.workspace)}&path=${encodeURIComponent(h.path)}`).then((f) => { setOpen(f); setAt({}); }).catch(reportError);
   };
   const mention = (path: string) => {
     const draft = localStorage.getItem(`keel.draft.${session.id}`) ?? "";
@@ -83,10 +104,10 @@ export function FilesPanel({ session }: { session: Session }) {
           </button>
           {!session.machine && <OpenInEditor sessionId={session.id} path={open.path} />}
         </div>
-        <div className="min-h-0 flex-1 overflow-auto bg-raised">
+        <div className="min-h-0 flex-1 overflow-auto bg-raised" data-file-scroll>
           {open.binary && IMAGE.test(open.path) && !session.machine
             ? <img src={rawFile(session.id, open.path)} alt={open.path} data-testid="file-image" className="m-4 max-w-[calc(100%-2rem)] rounded-md border border-line" />
-            : open.binary ? <p className="p-6 text-ui text-faint">A binary file, {Math.round(open.size / 1024)} KB.</p> : <CodeView file={open} />}
+            : open.binary ? <p className="p-6 text-ui text-faint">A binary file, {Math.round(open.size / 1024)} KB.</p> : <CodeView file={open} line={at.line} end={at.end} />}
           {open.truncated && <p className="border-t border-line p-3 text-caption text-faint">Showing the first 512 KB of {Math.round(open.size / 1024)} KB.</p>}
         </div>
       </div>
