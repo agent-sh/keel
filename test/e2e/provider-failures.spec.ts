@@ -99,6 +99,8 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await page.getByPlaceholder("Search models").fill("Scripted backup");
   await page.getByRole("option", { name: /Scripted backup/ }).first().click();
   await card.getByRole("button", { name: "Retry on it" }).click();
+  // The retry is a model switch like the picker's: the warm cache is warned about first.
+  await page.getByTestId("confirm").getByRole("button", { name: "Switch" }).click();
   await expect(texts.last()).toHaveText("The backup model took the request.", { timeout: 15_000 });
   await expect(page.getByTestId("turn-end")).toHaveCount(10);
 
