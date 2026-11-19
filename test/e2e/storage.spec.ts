@@ -61,14 +61,19 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
   expect((await (await request.get(`/api/sessions/${w.id}/checkpoints`)).json()).turns.length).toBeGreaterThan(0);
   await page.reload();
-  await expect(panel.getByTestId("checkpoint-folder").first()).toBeVisible();
-  const row = panel.getByTestId("storage-session").filter({ hasText: "Wrote a file" });
-  await row.getByTestId("session-checkpoints").click();
+  // Any session's checkpoints can be dropped from its folder, however small the
+  // session is next to the others (a busy daemon has many larger ones).
+  const folder = panel.getByTestId("checkpoint-folder").filter({ has: page.getByTitle(w.workspace, { exact: true }) });
+  await folder.getByRole("button").first().click();
+  const row = folder.locator(`[data-testid="checkpoint-session"][data-id="${w.id}"]`);
+  await row.scrollIntoViewIfNeeded();
+  await shoot(page, "storage-04-checkpoint-sessions");
+  await row.getByTestId("checkpoint-drop").click();
   await page.getByTestId("confirm").getByRole("button", { name: "Drop" }).click();
   await expect(panel.getByTestId("checkpoints-done")).toContainText("Dropped");
   expect((await (await request.get(`/api/sessions/${w.id}/checkpoints`)).json()).turns.length).toBe(0);
   await panel.getByTestId("checkpoints-done").scrollIntoViewIfNeeded();
-  await shoot(page, "storage-04-checkpoints");
+  await shoot(page, "storage-05-checkpoints-dropped");
 
   await request.patch("/api/settings", { data: { archive: { delete_archived_days: null } } });
   for (const id of [old2.id, w.id]) await request.delete(`/api/sessions/${id}`);

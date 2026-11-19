@@ -48,6 +48,7 @@ async function du(paths: string[]): Promise<Map<string, number>> {
 }
 
 export type StorageReport = Awaited<ReturnType<Storage["measure"]>>;
+type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 
 export class Storage {
   private last?: StorageReport;
@@ -72,19 +73,29 @@ export class Storage {
     const spillDirs = rows.map((r) => join(this.dir, "spill", r.id));
     const cps = this.checkpointRows();
     const shadowDirs = [...new Set(cps.map((c) => c.shadow))];
-    const sizes = await du([...Object.values(DIRS).map((d) => join(this.dir, d)), ...spillDirs, ...shadowDirs]);
+    // Two du runs: du counts a file once per run, so a folder measured after
+    // its parent in the same run would read as empty.
+    const [top, inner] = await Promise.all([du(Object.values(DIRS).map((d) => join(this.dir, d))), du([...spillDirs, ...shadowDirs])]);
+    const sizes = new Map([...top, ...inner]);
     // A folder's checkpoints live in one shadow repository; a session's part is
     // its share of that folder's checkpoints (an estimate: they share objects).
     const perShadow = new Map<string, number>();
     for (const c of cps) perShadow.set(c.shadow, (perShadow.get(c.shadow) ?? 0) + c.n);
     const cpOf = new Map(cps.map((c) => [c.session_id, { count: c.n, bytes: Math.round(((sizes.get(c.shadow) ?? 0) * c.n) / (perShadow.get(c.shadow) || 1)) }]));
-    const folders = new Map<string, { workspace: string; bytes: number; checkpoints: number; sessions: number }>();
+    // Every session with checkpoints is listed under its folder, so any of them
+    // can be dropped, not only the largest sessions.
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const folders = new Map<string, { workspace: string; bytes: number; checkpoints: number; sessions: number; list: CheckpointSession[] }>();
     for (const c of cps) {
-      const f = folders.get(c.shadow) ?? { workspace: c.workspace, bytes: sizes.get(c.shadow) ?? 0, checkpoints: 0, sessions: 0 };
+      if (c.gone) continue;
+      const f = folders.get(c.shadow) ?? { workspace: c.workspace, bytes: sizes.get(c.shadow) ?? 0, checkpoints: 0, sessions: 0, list: [] };
       f.checkpoints += c.n;
       f.sessions++;
+      const r = byId.get(c.session_id);
+      f.list.push({ id: c.session_id, title: r?.title ?? "", archived: !!r?.archived, subagent: !!r?.parent_id, checkpoints: c.n, checkpoint_bytes: cpOf.get(c.session_id)?.bytes ?? 0, updated_ms: r?.updated ?? 0 });
       folders.set(c.shadow, f);
     }
+    for (const f of folders.values()) f.list.sort((a, b) => b.updated_ms - a.updated_ms);
     const dbBytes = ["keel.db", "keel.db-wal", "keel.db-shm"].reduce((n, f) => n + (existsSync(join(this.dir, f)) ? statSync(join(this.dir, f)).size : 0), 0);
     const group = (pred: (r: (typeof rows)[number]) => boolean) => {
       const list = rows.filter(pred);
@@ -105,7 +116,7 @@ export class Storage {
       attachments_bytes: Math.round(rows.reduce((n, r) => n + r.attach, 0) * 0.75), // base64 in the store
       ...dirs,
       leftovers: { count: leftovers.length, bytes: [...leftoverSizes.values()].reduce((n, b) => n + b, 0) },
-      checkpoint_folders: [...folders.values()].sort((a, b) => b.bytes - a.bytes),
+      checkpoint_folders: [...folders.values()].sort((a, b) => b.bytes - a.bytes).map(({ list, ...f }) => ({ ...f, session_list: list })),
       orphan_checkpoints: cps.filter((c) => c.gone).reduce((n, c) => n + c.n, 0),
       by_session: rows
         .map((r) => {
@@ -160,7 +171,10 @@ export class Storage {
         return r.stdout.toString();
       };
       const old = git(["for-each-ref", "--format=%(refname)", "refs/keel/keep/"]).split("\n").filter(Boolean);
-      const refs = [...old.map((r) => `delete ${r}`), ...trees.map((t) => `update refs/keel/keep/${t.id} ${t.tree}`)];
+      // One command per ref: git refuses a delete and an update of the same ref
+      // (a ref kept by an earlier drop) in one transaction.
+      const keep = new Map(trees.map((t) => [`refs/keel/keep/${t.id}`, t.tree]));
+      const refs = [...old.filter((r) => !keep.has(r)).map((r) => `delete ${r}`), ...[...keep].map(([r, tree]) => `update ${r} ${tree}`)];
       if (refs.length) git(["update-ref", "--stdin"], refs.join("\n") + "\n");
       git(["-c", "gc.reflogExpire=now", "-c", "gc.reflogExpireUnreachable=now", "gc", "--quiet", "--prune=1.hour.ago"]);
       freed += Math.max(0, size0 - ((await du([dir])).get(dir) ?? 0));

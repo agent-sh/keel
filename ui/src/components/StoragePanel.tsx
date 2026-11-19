@@ -15,9 +15,10 @@ type Report = {
   spilled_output_bytes: number; checkpoints_bytes: number; worktrees_bytes: number; reports_bytes: number; backups_bytes: number; plugins_bytes: number;
   leftovers: { count: number; bytes: number };
   by_session: { id: string; title: string; archived: boolean; subagent: boolean; transcript_bytes: number; spill_bytes: number; checkpoints: number; checkpoint_bytes: number; bytes: number; updated_ms: number }[];
-  checkpoint_folders: { workspace: string; bytes: number; checkpoints: number; sessions: number }[];
+  checkpoint_folders: { workspace: string; bytes: number; checkpoints: number; sessions: number; session_list: CheckpointSession[] }[];
   orphan_checkpoints: number;
 };
+type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 type Backup = { name: string; path: string; created_ms: number; reason: string; sessions: number; events: number; bytes: number };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number };
 
@@ -84,6 +85,7 @@ export function StoragePanel() {
   const [found, setFound] = useState<{ days: number; sessions: Candidate[]; bytes: number } | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [cpDone, setCpDone] = useState<string | null>(null);
+  const [openFolder, setOpenFolder] = useState<string | null>(null);
   const [backups, setBackups] = useState<Backup[]>([]);
   const [settings, patch] = useSettings();
 
@@ -231,10 +233,34 @@ export function StoragePanel() {
         {cpDone && <p className="pt-3 text-ui text-muted" data-testid="checkpoints-done">{cpDone}</p>}
         {r.checkpoint_folders.length === 0 && <p className="py-4 text-ui text-faint">No checkpoints yet.</p>}
         {r.checkpoint_folders.map((f) => (
-          <div key={f.workspace} className="flex h-10 items-center gap-3 border-b border-line/60 text-ui last:border-0" data-testid="checkpoint-folder">
-            <span className="min-w-0 flex-1 truncate font-mono text-caption" title={f.workspace}>{f.workspace}</span>
-            <span className="text-caption tabular-nums text-faint">{f.sessions} sessions, {f.checkpoints} checkpoints</span>
-            <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(f.bytes)}</span>
+          <div key={f.workspace} className="border-b border-line/60 last:border-0" data-testid="checkpoint-folder">
+            <button
+              type="button"
+              aria-expanded={openFolder === f.workspace}
+              onClick={() => setOpenFolder(openFolder === f.workspace ? null : f.workspace)}
+              className="flex h-10 w-full items-center gap-3 text-left text-ui hover:bg-hover"
+            >
+              <span aria-hidden className={cn("w-3 text-caption text-faint transition-transform", openFolder === f.workspace && "rotate-90")}>›</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-caption" title={f.workspace}>{f.workspace}</span>
+              <span className="text-caption tabular-nums text-faint">{f.sessions} sessions, {f.checkpoints} checkpoints</span>
+              <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(f.bytes)}</span>
+            </button>
+            {openFolder === f.workspace && (
+              <div className="mb-2 max-h-80 overflow-y-auto rounded-md border border-line bg-sunken/40" data-testid="checkpoint-sessions">
+                {f.session_list.map((s) => (
+                  <div key={s.id} className="flex h-9 items-center gap-3 border-b border-line/60 px-3 text-ui last:border-0" data-testid="checkpoint-session" data-id={s.id}>
+                    <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
+                    {s.archived && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>}
+                    {s.subagent && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">subagent</span>}
+                    <span className="text-caption tabular-nums text-faint">{s.checkpoints} checkpoints, about {fmtBytes(s.checkpoint_bytes)}</span>
+                    <span className="w-16 text-right text-caption tabular-nums text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span>
+                    <button type="button" data-testid="checkpoint-drop" className="h-7 rounded-md border border-line-strong bg-raised px-2 text-caption font-medium hover:bg-hover" onClick={() => dropCheckpoints({ sessions: [s.id] }, `of ${s.title || "this session"}`).catch(reportError)}>
+                      Drop
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </Card>
