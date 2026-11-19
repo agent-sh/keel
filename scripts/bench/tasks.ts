@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { TICKETS } from "./tracker-mcp.ts";
 
 export type Check = { ok: boolean; why: string };
 export type Task = {
@@ -12,6 +13,8 @@ export type Task = {
   prompt: string;
   files: Record<string, string>;
   check: (dir: string, reply: string) => Check;
+  // MCP servers the task needs (the bench configures them only when such a task runs).
+  mcp?: Record<string, { command: string; args: string[] }>;
 };
 
 const run = (dir: string, cmd: string[]) => {
@@ -429,4 +432,55 @@ if __name__ == "__main__":
   },
 };
 
-export const TASKS: Task[] = [explain, bugfix, feature, rename];
+// A fan-out read: twelve modules, the answer is a list drawn from all of them.
+// The shape programmatic tool calling is for (many reads, a small result).
+const AUDIT_MODULES = ["billing", "cart", "catalog", "coupons", "customers", "inventory", "orders", "payments", "reviews", "search", "shipping", "taxes"];
+const auditFiles: Record<string, string> = { "shop/__init__.py": "" };
+const undocumented: string[] = [];
+AUDIT_MODULES.forEach((m, i) => {
+  const fns = ["load", "save", "validate", "summarize", "export"].map((f) => `${f}_${m}`);
+  const body = fns.map((f, j) => {
+    // A deterministic mix: about a third of the functions have no docstring.
+    const doc = (i * 5 + j) % 3 !== 0;
+    if (!doc) undocumented.push(`shop/${m}.py:${f}`);
+    const lines = [`def ${f}(items, limit=100):`];
+    if (doc) lines.push(`    """${f.replace(/_/g, " ")} for the ${m} module."""`);
+    lines.push(`    out = []`, `    for it in items[:limit]:`, `        if it is None:`, `            continue`, `        out.append(it)`, `    return out`);
+    return lines.join("\n");
+  });
+  auditFiles[`shop/${m}.py`] = `"""The ${m} module."""\n\nimport json\n\n\n${body.join("\n\n\n")}\n`;
+});
+
+const audit: Task = {
+  id: "audit",
+  kind: "fan-out read",
+  prompt: "List every function in the shop package that has no docstring, one per line as `shop/<module>.py:<function>`, then the total count. Do not change any file.",
+  files: { ...auditFiles, "README.md": "# shop\n\nA small shop backend.\n" },
+  check(dir, reply) {
+    const missing = undocumented.filter((u) => !reply.includes(u));
+    if (missing.length) return { ok: false, why: `missed ${missing.length}: ${missing.slice(0, 3).join(", ")}` };
+    const extra = (reply.match(/shop\/\w+\.py:\w+/g) ?? []).filter((x) => !undocumented.includes(x));
+    if (extra.length) return { ok: false, why: `listed documented ${extra.slice(0, 3).join(", ")}` };
+    return { ok: true, why: `all ${undocumented.length} listed` };
+  },
+};
+
+// A fan-out over MCP calls the shell cannot make: the list has ids only, the
+// answer needs assignee and priority from each ticket (40 calls, ~2 KB each).
+const trackerWant = TICKETS.filter((t) => t.status === "open" && t.assignee === "ada" && t.priority === "high").map((t) => t.id);
+const tracker: Task = {
+  id: "tracker",
+  kind: "mcp fan-out",
+  prompt: "The tracker MCP server holds our tickets. Find every open ticket assigned to ada with priority high. Reply with their ids, one per line, then the count.",
+  files: { "README.md": "# support\\n\\nTickets live in the tracker MCP server.\\n" },
+  mcp: { tracker: { command: "bun", args: [join(import.meta.dir, "tracker-mcp.ts")] } },
+  check(_dir, reply) {
+    const got = reply.match(/T-\d+/g) ?? [];
+    const missing = trackerWant.filter((id) => !got.includes(id));
+    const extra = [...new Set(got)].filter((id) => !trackerWant.includes(id));
+    if (missing.length || extra.length) return { ok: false, why: `missing ${missing.join(",") || "none"}, extra ${extra.join(",") || "none"}` };
+    return { ok: true, why: `all ${trackerWant.length} found` };
+  },
+};
+
+export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker];

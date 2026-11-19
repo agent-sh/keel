@@ -1,6 +1,7 @@
 import { automationRoutes } from "../../automation/index.ts";
 import type { RouteModule } from "../app.ts";
 import { checkpointRoutes } from "./checkpoints.ts";
+import { codeModeRoutes } from "./codemode.ts";
 import { draftRoutes } from "./drafts.ts";
 import { errorRoutes } from "./errors.ts";
 import { adminRoutes } from "./admin.ts";
@@ -38,6 +39,7 @@ import { marksRoutes } from "./marks.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
+  codeModeRoutes, // refuses run_code for a session on another machine before the gate asks about it
   permissionRoutes, // first: its beforeTool gate decides before the others run
   planRoutes,
   trustRoutes, // protected files are watched around calls the gate let through

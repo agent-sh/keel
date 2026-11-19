@@ -34,7 +34,7 @@ export type Job = {
   exited: Promise<void>;
 };
 
-const UNREAD_CAP = 1 << 20;
+export const UNREAD_CAP = 1 << 20;
 const size = (p: string) => { try { return statSync(p).size; } catch { return 0; } };
 const metaPath = (log: string) => log.replace(/\.log$/, ".json");
 const exitPath = (log: string) => `${log}.exit`;

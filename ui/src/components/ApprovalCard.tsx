@@ -87,6 +87,7 @@ function Card({ a, first }: { a: Approval; first: boolean }) {
         </span>
         <span className="text-ui font-medium">{TITLE[a.kind]}</span>
         <span className="font-mono text-caption text-faint">{a.tool}</span>
+        {a.call_id.includes("~") && <span className="rounded-full bg-sunken px-1.5 py-px text-micro text-muted" data-testid="approval-from-code">from a program</span>}
         {a.risk === "high" && (
           <span className="ml-auto rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger" data-testid="approval-risk">
             {a.why ? `High risk: ${a.why}` : "High risk"}

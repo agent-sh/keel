@@ -18,6 +18,12 @@ export function registerShared(...tools: Tool[]) {
   for (const t of tools) if (!shared.some((s) => s.name === t.name)) shared.push(t);
 }
 
+// For a measurement without a shared tool (the token benchmark's --without).
+export function unregisterShared(name: string) {
+  const i = shared.findIndex((t) => t.name === name);
+  if (i >= 0) shared.splice(i, 1);
+}
+
 // Stable order (family tools, then shared sorted by name) so the tools prefix
 // of the request never changes between turns and stays cached.
 export function toolsFor(family: ModelInfo["family"]): Tool[] {

@@ -529,7 +529,8 @@ export class Engine {
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
     if (!tool) return { type: "tool_result", tool_use_id: u.id, content: `No tool named ${u.name}.`, is_error: true };
-    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id } };
+    const callTool = (name: string, input: any, id: string) => this.runTool(session, tools, { type: "tool_use", id, name, input }, ctx);
+    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id, callTool } };
     // An interrupt answers at once, whether or not a gate or the tool honors the signal.
     const stopped = new Promise<null>((r) => ctx.signal.addEventListener("abort", () => r(null), { once: true }));
     let result: ToolResultBlock;
