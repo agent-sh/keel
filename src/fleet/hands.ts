@@ -29,7 +29,7 @@ export function namedSecrets<T extends Record<string, unknown>>(input: T, shell:
 // own tools) stays with the session's daemon.
 export const WORKSPACE_TOOLS = new Set([
   "Bash", "TaskStop", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep",
-  "exec_command", "write_stdin", "apply_patch",
+  "exec_command", "write_stdin", "apply_patch", "view_image",
   "run_shell_command", "read_file", "write_file", "replace", "glob", "grep_search", "list_directory",
 ]);
 

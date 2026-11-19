@@ -1,6 +1,7 @@
 // The tool profile GPT models are trained on: the Codex tool set on
 // openai/codex main (exec_command and write_stdin over a real PTY,
 // apply_patch in the V4A grammar, update_plan, request_user_input).
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, type Question } from "./interact.ts";
@@ -170,8 +171,31 @@ const request_user_input: Tool = {
   },
 };
 
+// Codex's view_image: a local image into the context, for a model that
+// inspects screenshots, plots or diagrams already on disk. A relative path is
+// the shell's folder's.
+const view_image: Tool = {
+  name: "view_image",
+  readOnly: true,
+  description: "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
+  input_schema: obj({ path: { type: "string", description: "Local filesystem path to an image file." } }, ["path"]),
+  async run(input, ctx) {
+    const raw = String(input?.path ?? "").trim();
+    if (!raw) return fail("view_image needs a path");
+    const p = resolve(shellCwd(ctx), raw);
+    let st;
+    try { st = statSync(p); } catch { return fail(`unable to locate image at \`${p}\``); }
+    if (!st.isFile()) return fail(`image path \`${p}\` is not a file`);
+    const type = Bun.file(p).type;
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) return fail(`\`${p}\` is not a PNG, JPEG, GIF or WebP image (${type})`);
+    if (st.size > 20 * 1024 * 1024) return fail(`\`${p}\` is ${(st.size / 1048576).toFixed(0)} MB; resize it (e.g. magick) and view the copy`);
+    ctx.seen.set(p, st.mtimeMs);
+    return { content: [{ type: "image", media_type: type, data: Buffer.from(await Bun.file(p).arrayBuffer()).toString("base64") }] };
+  },
+};
+
 export const gptTools: Tool[] = [
-  exec_command, write_stdin, applyPatchTool, update_plan, request_user_input,
+  exec_command, write_stdin, applyPatchTool, update_plan, request_user_input, view_image,
   skillTool("skill", "name", "arguments"),
 ];
 
