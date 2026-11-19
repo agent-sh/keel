@@ -56,13 +56,14 @@ test("passkeys for remote approvals", async ({ page, browser, request }) => {
     // A high-risk card answered from the device: the passkey is asked, then the call runs.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Run exactly this one Bash command and nothing else: git clean -fdx\nThen reply ok." } });
     await phone.goto(`${REMOTE}/s/${session.id}`);
-    const card = phone.getByTestId("approval");
-    await expect(card).toHaveAttribute("data-risk", "high", { timeout: 60_000 });
+    // The high-risk card (a model may also run a harmless command first, with its own low card).
+    const card = phone.locator('[data-testid="approval"][data-risk="high"]');
+    await expect(card).toBeVisible({ timeout: 60_000 });
     await shoot(phone, "passkeys-03-card");
     await card.getByTestId("allow-once").click();
     await expect(card).toHaveCount(0, { timeout: 30_000 });
     const all = (await (await request.get(`/api/sessions/${session.id}/approvals?all`)).json()).approvals;
-    expect(all.at(-1).state).toBe("allowed");
+    expect(all.find((a: any) => a.risk === "high")?.state).toBe("allowed");
     const ok = await (await request.get(`/api/owner-presence`)).json();
     expect(ok.passkeys.find((p: any) => p.rp_id === "device.localhost").used).toBeTruthy();
   } finally {
