@@ -28,8 +28,9 @@ export function* codexFiles(home = codexHome()): Generator<{ path: string; size:
 // Text Codex puts in a user message that the owner did not type.
 const injected = (t: string) => /^\s*(<environment_context>|<user_instructions>|<permissions instructions>|<skills_instructions>|# AGENTS\.md instructions|<turn_aborted>|<subagent_notification>)/.test(t);
 
+const TEXT_PARTS = new Set(["input_text", "output_text", "text"]);
 const textOf = (content: any) =>
-  (Array.isArray(content) ? content : []).filter((p: any) => p?.type === "input_text" || p?.type === "output_text" || p?.type === "text").map((p: any) => p.text ?? "").join("\n");
+  (Array.isArray(content) ? content : []).filter((p: any) => TEXT_PARTS.has(p?.type)).map((p: any) => p.text ?? "").join("\n");
 
 export function codexFound(path: string, size: number, mtime: number): Found | null {
   const { head, tail } = headTail(path, 64 * 1024);
@@ -108,6 +109,8 @@ export async function readCodex(path: string): Promise<Read> {
   // A native tool search, kept as a note for the model: its query, then the
   // tools its answer loaded (by call id).
   const searches = new Map<string, { data: any }>();
+  // Prompt media the file only refers to (an uploaded file id, a link).
+  const missing: string[] = [];
   let model = found.model;
   const lines = readLines(await Bun.file(path).text());
   for (const r of lines.records) {
@@ -133,11 +136,11 @@ export async function readCodex(path: string): Promise<Read> {
           if (injected(text)) { if (/^\s*<turn_aborted>/.test(text)) b.interrupted(); skip("Codex's own context in a user message (environment, instructions, notices)"); break; }
           // A note Keel wrote for the model: read back as a note, never as the owner's words.
           if (text.startsWith(`${NOTE_OPEN}\n`) && text.trimEnd().endsWith(NOTE_CLOSE)) { b.note(text.slice(NOTE_OPEN.length + 1, text.trimEnd().length - NOTE_CLOSE.length).replace(/\n$/, ""), ts, true); break; }
-          const images = (p.content ?? []).filter((c: any) => c?.type === "input_image" && typeof c.image_url === "string" && c.image_url.startsWith("data:")).map((c: any) => {
-            const [, mime, data] = c.image_url.match(/^data:([^;]+);base64,(.*)$/) ?? [];
-            return { type: "image", source: { type: "base64", media_type: mime, data } };
-          });
-          b.user(text, ts, images);
+          // Media the file holds comes byte for byte; a reference to media it does not hold is reported.
+          const media = resultText((Array.isArray(p.content) ? p.content : []).filter((c: any) => c?.type && !TEXT_PARTS.has(c.type)));
+          const parts = Array.isArray(media) ? media : media ? [{ type: "text", text: media }] : [];
+          for (const m of parts) if (m.type === "text") missing.push(m.text);
+          b.user(text, ts, parts.filter((m) => m.type === "image"));
         } else if (p.role === "assistant" && text.trim()) b.assistant([{ type: "text", text }], ts, model);
         else if (p.role === "assistant" && p.encrypted_content) b.assistant([{ type: "text", text: UNAVAILABLE }], ts, model);
         else if (p.role === "assistant") skip("an empty assistant message");
@@ -183,10 +186,13 @@ export async function readCodex(path: string): Promise<Read> {
       case "function_call_output":
       case "custom_tool_call_output":
       case "local_shell_call_output": {
-        const out = typeof p.output === "string" ? p.output : Array.isArray(p.output) ? resultText(p.output) : p.output?.content ?? JSON.stringify(p.output ?? "");
-        // Codex keeps no failure flag in the file: Keel's own writer labels a failed result.
-        const failed = typeof out === "string" && out.startsWith(`${FAILED_LABEL}\n`);
-        b.result({ tool_use_id: p.call_id, content: failed ? out.slice(FAILED_LABEL.length + 1) : out, is_error: failed || undefined }, ts);
+        let out = typeof p.output === "string" ? p.output : Array.isArray(p.output) ? resultText(p.output) : p.output?.content ?? JSON.stringify(p.output ?? "");
+        // Codex keeps no failure flag in the file: Keel's own writer labels a failed result
+        // (a first line of the text, or a first text item before content items).
+        let failed = typeof out === "string" && out.startsWith(`${FAILED_LABEL}\n`);
+        if (failed) out = (out as string).slice(FAILED_LABEL.length + 1);
+        else if (Array.isArray(out) && out[0]?.type === "text" && out[0].text === FAILED_LABEL) { failed = true; out = out.slice(1); }
+        b.result({ tool_use_id: p.call_id, content: out, is_error: failed || undefined }, ts);
         break;
       }
       case "reasoning":
@@ -198,6 +204,7 @@ export async function readCodex(path: string): Promise<Read> {
   }
   notes.push(...damageNotes(lines));
   for (const [why, n] of skips) notes.push(`${n} skipped: ${why}.`);
+  if (missing.length) notes.push(`Prompt media the file does not hold, not imported: ${missing.join(", ")}.`);
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} reasoning item${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: encrypted for the model that wrote them.`);
   return { found, events: b.events, counts: b.counts, notes };
 }

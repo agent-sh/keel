@@ -205,8 +205,13 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
       }
     } else if (e.kind === "tool_result") {
       for (const r of e.data.results ?? []) {
+        // A result with images goes as Codex's content items, the bytes kept; text alone as a string.
+        const images = Array.isArray(r.content) && r.content.some((b: any) => b.type === "image");
         const text = textOf(r.content);
-        line(e.ts, "response_item", { type: custom.has(r.tool_use_id) ? "custom_tool_call_output" : "function_call_output", call_id: r.tool_use_id, output: r.is_error ? `${FAILED_LABEL}\n${text}` : text });
+        const output = images
+          ? [...(r.is_error ? [{ type: "input_text", text: FAILED_LABEL }] : []), ...r.content.map((b: any) => (b.type === "image" ? { type: "input_image", image_url: `data:${b.media_type};base64,${b.data}` } : { type: "input_text", text: b.type === "text" ? b.text : `[${b.type}]` }))]
+          : r.is_error ? `${FAILED_LABEL}\n${text}` : text;
+        line(e.ts, "response_item", { type: custom.has(r.tool_use_id) ? "custom_tool_call_output" : "function_call_output", call_id: r.tool_use_id, output });
       }
     }
   }

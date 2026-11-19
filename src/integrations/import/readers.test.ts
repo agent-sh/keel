@@ -79,7 +79,7 @@ test("a Hermes call left without a result is closed as failed; its notices are n
   expect(r.events.some((e) => e.kind === "note" && e.data.text === "background job finished")).toBe(true);
 });
 
-test("a Codex rollout keeps namespaced tools apart and its discovery, agent and declared-tool items as history", async () => {
+test("a Codex rollout keeps namespaced tools apart, its discovery, agent and declared-tool items as history, and media byte for byte", async () => {
   const call = (id: string, name: string, namespace?: string, custom = false) => custom
     ? [{ type: "custom_tool_call", call_id: id, name, namespace, input: "patch" }, { type: "custom_tool_call_output", call_id: id, output: "ok" }]
     : [{ type: "function_call", call_id: id, name, namespace, arguments: "{}" }, { type: "function_call_output", call_id: id, output: "ok" }];
@@ -109,6 +109,18 @@ test("a Codex rollout keeps namespaced tools apart and its discovery, agent and 
   const declared = await read("declared", [{ type: "additional_tools", role: "developer", tools: fns }, { type: "web_search_call", status: "completed" }]);
   expect(declared.said).toContain("mcp__alpha__lookup");
   expect(declared.notes).toEqual(["1 skipped: items of a kind Keel does not import (web_search_call)."]);
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQcGgAAAFkAOHHE8n2AAAAAElFTkSuQmCC";
+  const image = { type: "input_image", image_url: `data:image/png;base64,${png}` };
+  const pixel = { type: "image", media_type: "image/png", data: png };
+  const prompt = await read("prompt-image", [{ type: "message", role: "user", content: [{ type: "input_text", text: "see" }, image, { type: "input_image", file_id: "file-1" }] }]);
+  expect(prompt.events.find((e) => e.data.text === "see")?.data.images).toEqual([pixel]);
+  expect(prompt.notes.join()).toContain("image file file-1");
+  const viewed = await read("result-image", [
+    { type: "function_call", call_id: "v", name: "view_image", arguments: "{}" },
+    { type: "function_call_output", call_id: "v", output: [image, { type: "input_text", text: "viewed" }, { type: "input_audio", file_id: "aud-1" }, { type: "encrypted_content", encrypted_content: "x" }] },
+  ]);
+  expect(viewed.counts.media).toBe(1);
+  expect(viewed.events.find((e) => e.kind === "tool_result")?.data.results).toEqual([{ type: "tool_result", tool_use_id: "v", content: [pixel, { type: "text", text: "viewed" }, { type: "text", text: "[unavailable: audio file aud-1]" }, { type: "text", text: "[unavailable: encrypted content]" }], is_error: undefined }]);
   // Imported definitions are history: notes carry them, and no result loads a tool (a tool_reference).
   for (const r of [search, declared]) expect(JSON.stringify(r.events)).not.toContain("tool_reference");
 });

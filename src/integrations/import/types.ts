@@ -86,6 +86,7 @@ export class Builder {
   result(r: { tool_use_id: string; content: any; is_error?: boolean }, ts: number) {
     const prev = this.last("tool_result");
     const block = { type: "tool_result", tool_use_id: r.tool_use_id, content: r.content, is_error: r.is_error || undefined };
+    if (Array.isArray(r.content)) this.counts.media += r.content.filter((c: any) => c?.type === "image").length;
     if (prev) prev.data.results.push(block);
     else this.events.push({ kind: "tool_result", data: { results: [block] }, ts });
   }
@@ -94,7 +95,23 @@ export class Builder {
   }
 }
 
-// Text of a tool result in any of the shapes harnesses write.
+// What a source holds that cannot be read here (a file id, a remote link,
+// encrypted content): named, never invented.
+export const unavailable = (what: string) => ({ type: "text", text: `[unavailable: ${what}]` });
+
+// An image as Keel stores one (bytes and type), from Anthropic's base64
+// source or a Responses input_image data URL; a reference to bytes the file
+// does not hold is named as unavailable.
+function imageOf(p: any): any {
+  if (p.source?.type === "base64") return { type: "image", media_type: p.source.media_type, data: p.source.data };
+  if (p.type === "image" && typeof p.data === "string") return p;
+  const url = typeof p.image_url === "string" ? p.image_url : p.image_url?.url;
+  const [, media_type, data] = (typeof url === "string" && url.match(/^data:([^;,]+);base64,(.*)$/)) || [];
+  if (media_type && data) return { type: "image", media_type, data };
+  return unavailable(p.file_id ? `image file ${p.file_id}` : p.source?.url || url ? `image at ${p.source?.url ?? url}` : "image");
+}
+
+// Text and images of a tool result in any of the shapes harnesses write.
 export function resultText(c: any): string | any[] {
   if (typeof c === "string") return c;
   if (Array.isArray(c)) {
@@ -102,7 +119,11 @@ export function resultText(c: any): string | any[] {
     for (const p of c) {
       if (typeof p === "string") out.push({ type: "text", text: p });
       else if (p?.type === "text" || p?.type === "input_text" || p?.type === "output_text") out.push({ type: "text", text: p.text ?? "" });
-      else if (p?.type === "image" && p.source) out.push(p);
+      else if (p?.type === "image" || p?.type === "input_image") out.push(imageOf(p));
+      else if (p?.type === "input_audio") out.push(unavailable(p.file_id ? `audio file ${p.file_id}` : "audio"));
+      else if (p?.type === "input_file") out.push(unavailable(`file ${p.filename ?? p.file_id ?? ""}`.trim()));
+      else if (p?.type === "encrypted_content") out.push(unavailable("encrypted content"));
+      else if (p?.type) out.push(unavailable(`${p.type} content`));
     }
     return out.length === 1 && out[0].type === "text" ? out[0].text : out;
   }
