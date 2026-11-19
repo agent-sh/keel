@@ -1,7 +1,7 @@
 import { Combobox } from "@base-ui/react/combobox";
 import { Check, Eye, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-react";
 import { TriggerLabel, triggerClass } from "./ModelPicker.tsx";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { buildGroups, buildItems, countLabel, hiddenReason, providerOrder, type Group, type Item } from "../lib/picker.ts";
@@ -58,21 +58,50 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
   const showProvider = (i: Item, andModel: boolean) =>
     actions.choose(andModel ? { show_provider: i.provider, provider: i.provider, show: [i.model] } : { show_provider: i.provider }).catch(reportError);
   const show = (i: Item) => (i.hidden === "model" ? actions.choose({ provider: i.provider, show: [i.model] }).catch(reportError) : showProvider(i, i.hidden === "both"));
-  const current = () => (highlighted.current ? byId.get(highlighted.current) : undefined);
+  const current = () => (held ? (held.gone ? undefined : byId.get(held.id)) : highlighted.current ? byId.get(highlighted.current) : undefined);
+
+  // A listing that changes under an open menu (a refresh, a hide) keeps the
+  // highlight on the model, not on its row: Base UI keeps the row index and
+  // reports whichever model now sits there, so that report is ignored, the
+  // menu marks the held model itself, and Enter and the shortcuts act on it.
+  // If the model left the listing, nothing is highlighted and nothing acts
+  // until the owner moves with a key or the pointer.
+  const [held, setHeld] = useState<{ id: string; gone: boolean } | null>(null);
+  const renderedAll = useRef(all);
+  renderedAll.current = all;
+  const seenAll = useRef(all);
+  useLayoutEffect(() => {
+    if (seenAll.current === all) return;
+    seenAll.current = all;
+    const id = held?.id ?? highlighted.current;
+    if (!open || !id) return;
+    const gone = !byId.has(id);
+    setHeld({ id, gone });
+    if (gone) setHint("The highlighted model left the listing. Nothing is highlighted: move with the arrows to choose.");
+  }, [all]);
+  const release = () => { if (held) setHeld(null); };
+  const choose = (i: Item) => { notePick(i.value); onChange(i.value); setOpen(false); setQuery(""); };
 
   return (
     <Combobox.Root
       open={open}
-      onOpenChange={(o) => { setOpen(o); setHint(null); if (!o) setQuery(""); }}
+      onOpenChange={(o) => { setOpen(o); setHint(null); setHeld(null); if (!o) setQuery(""); }}
       items={groups}
       filteredItems={groups}
       filter={null}
       autoHighlight
       inputValue={query}
-      onInputValueChange={(v, d) => { if (d.reason !== "item-press") setQuery(v); }}
+      onInputValueChange={(v, d) => { if (d.reason !== "item-press") { release(); setQuery(v); } }}
       value={selected}
       onValueChange={(v: Item | null) => { if (!v) return; notePick(v.value); onChange(v.value); }}
-      onItemHighlighted={(v: Item | undefined) => { highlighted.current = v?.value; setHint(null); }}
+      onItemHighlighted={(v: Item | undefined, d) => {
+        // The row index Base UI kept across a listing change: not the owner's move.
+        if (d.reason === "none" && renderedAll.current !== seenAll.current) return;
+        if (held && d.reason === "none") return;
+        highlighted.current = v?.value;
+        release();
+        setHint(null);
+      }}
       isItemEqualToValue={(a: Item, b: Item) => a.value === b.value}
       itemToStringLabel={(i: Item) => i.label}
     >
@@ -95,6 +124,13 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                 placeholder="Search models"
                 className="h-10 w-full bg-transparent px-3 text-ui outline-none placeholder:text-faint"
                 onKeyDown={(e) => {
+                  if (held && e.key === "Enter") {
+                    e.preventDefault();
+                    (e as any).preventBaseUIHandler?.();
+                    const i = current();
+                    if (i) choose(i);
+                    return;
+                  }
                   if (!(e.ctrlKey || e.metaKey) || (e.key !== "f" && e.key !== "h")) return;
                   e.preventDefault();
                   const i = current();
@@ -109,6 +145,8 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                 type="button"
                 title="Read the provider listings again"
                 aria-label="Read the provider listings again"
+                data-testid="refresh-models"
+                onPointerDown={(e) => e.preventDefault()}
                 onClick={() => actions.loadModels(true).catch(reportError)}
                 className="mr-1.5 grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg"
               >
@@ -153,11 +191,12 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                         value={item}
                         data-testid="model-option"
                         aria-label={item.aria}
+                        data-held={held && !held.gone && held.id === item.value ? "" : undefined}
                         data-model={item.value}
                         data-provider={item.provider}
                         className={cn(
                           "group/row grid h-8 cursor-default grid-cols-[1rem_1fr_auto] items-center gap-2 rounded-md px-2 text-ui select-none outline-none",
-                          "data-highlighted:bg-hover",
+                          held ? "data-held:bg-hover" : "data-highlighted:bg-hover",
                           item.hidden && "text-muted",
                         )}
                       >

@@ -116,6 +116,45 @@ test("model picker: counts, exact ids, the default, recent picks, two hide rules
   await expect(popup.locator('[data-group="recent"] [data-testid="model-option"]').first()).toHaveAttribute("data-model", "scripted:stand-in-backup");
   await page.keyboard.press("Escape");
 
+  // A refresh that reorders the listing under the highlight: Enter takes the
+  // model that was highlighted, not the one that moved into its row. One that
+  // left the listing is not replaced: Enter does nothing until a key moves.
+  const reorder = (drop?: string) => page.route("**/api/models?refresh", async (route) => {
+    const body = await (await route.fetch()).json();
+    body.models = body.models.reverse().filter((m: any) => m.id !== drop);
+    await route.fulfill({ json: body });
+  });
+  await page.getByTestId("model-picker").click();
+  await search.fill("Scripted");
+  await search.press("ArrowDown");
+  await search.press("ArrowUp");
+  const lit = popup.locator('[data-testid="model-option"][data-highlighted]');
+  const was = await lit.getAttribute("data-model");
+  await reorder();
+  await Promise.all([page.waitForResponse("**/api/models?refresh"), page.getByTestId("refresh-models").click()]);
+  await expect(lit).not.toHaveAttribute("data-model", was!);
+  await expect(popup.locator("[data-held]")).toHaveAttribute("data-model", was!);
+  await search.press("Enter");
+  const wasName = models.find((m: any) => m.id === was).name;
+  await expect(page.getByTestId("model-picker")).toContainText(wasName);
+  await page.unroute("**/api/models?refresh");
+
+  await page.getByTestId("model-picker").click();
+  await search.fill("Scripted");
+  const gone = await lit.getAttribute("data-model");
+  await reorder(gone!);
+  await Promise.all([page.waitForResponse("**/api/models?refresh"), page.getByTestId("refresh-models").click()]);
+  await expect(page.getByTestId("picker-hint")).toContainText("left the listing");
+  await expect(popup.locator("[data-held]")).toHaveCount(0);
+  await search.press("Enter");
+  await expect(popup).toBeVisible();
+  await expect(page.getByTestId("model-picker")).toContainText(wasName);
+  await search.press("ArrowDown");
+  await expect(page.getByTestId("picker-hint")).toHaveCount(0);
+  await page.unroute("**/api/models?refresh");
+  await page.keyboard.press("Escape");
+  await page.reload();
+
   // Hidden by itself and by its provider: the row says both; showing the
   // provider leaves it hidden, Show both brings it back.
   await request.post("/api/providers/choices", { data: { provider: "scripted", hide: ["stand-in-text"] } });
