@@ -3,7 +3,7 @@
 import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { Bad, Checkpoints } from "../../safety/checkpoints.ts";
-import { contains } from "../../core/paths.ts";
+import { overlaps } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -36,7 +36,7 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
   // A restore while a turn runs in this workspace (this session or another)
   // would race the tools.
   const busy = (id: string, workspace: string) =>
-    store.sessions().some((o) => engine.isRunning(o.id) && (o.id === id || contains(o.workspace, workspace) || contains(workspace, o.workspace)));
+    store.sessions().some((o) => engine.isRunning(o.id) && (o.id === id || overlaps(o.workspace, workspace)));
 
   return {
     "/api/sessions/:id/checkpoints": {

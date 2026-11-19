@@ -14,6 +14,13 @@ export function contains(root: string, p: string): boolean {
   return r === "" || (!isAbsolute(r) && r !== ".." && !r.startsWith(".." + sep));
 }
 
+// Two folders that share files: one holds the other, compared where their
+// links land (a link to a folder is that folder, however it is spelled).
+export function overlaps(a: string, b: string): boolean {
+  const ra = realOf(a), rb = realOf(b);
+  return contains(ra, rb) || contains(rb, ra);
+}
+
 // A path with its links resolved through the deepest part that exists: where a
 // write to it lands, even when the file itself does not exist yet. A dangling
 // link is followed too (a write through it creates the file it names).
