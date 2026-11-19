@@ -1,9 +1,10 @@
-// Settings > Providers: every provider with its listing state, the plugins,
-// the default model and the Grok plan sign-in.
-import { ExternalLink, LogIn, RefreshCw, ShieldCheck } from "lucide-react";
+// Settings > Providers: every provider with its listing state, the default
+// model and the Grok plan sign-in; the plugins are linked to their own page.
+import { ChevronRight, ExternalLink, LogIn, Puzzle, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { actions, api, reportError, useStore, type ProvidersReport } from "../lib/store.ts";
+import { actions, api, reportError, useStore, type ProvidersReport, failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
+import { navigate } from "../lib/ui.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 import { ProblemNote, WindowMeter } from "./Limits.tsx";
@@ -34,7 +35,7 @@ function GrokSignIn() {
   useEffect(() => {
     if (s?.state !== "pending") return;
     const t = setInterval(async () => {
-      const next = await actions.grokSignInState().catch(() => null);
+      const next = await actions.grokSignInState().catch((e) => (reportError(e, { at: "sign-in state" }), null));
       if (next && next.state !== "pending") { setS(next); actions.loadProviders(true).catch(reportError); }
     }, 3000);
     return () => clearInterval(t);
@@ -58,58 +59,13 @@ function GrokSignIn() {
         disabled={busy}
         onClick={async () => {
           setBusy(true);
-          try { setS(await actions.grokSignIn()); } catch (e) { setS({ state: "failed", error: (e as Error).message }); } finally { setBusy(false); }
+          try { setS(await actions.grokSignIn()); } catch (e) { setS({ state: "failed", error: failed(e, { at: "ProvidersPanel" }) }); } finally { setBusy(false); }
         }}
         className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-2.5 text-ui font-medium hover:bg-hover disabled:opacity-50"
       >
         <LogIn className="size-3.5" /> Sign in
       </button>
       {s?.state === "failed" && <span className="text-caption text-danger">{s.error}</span>}
-    </div>
-  );
-}
-
-type CheckRow = { fixture: string; result: "pass" | "fail" | "n/a"; ms: number; detail: string };
-
-// The conformance check of protocol v1 (`keel plugin check <id>`): fake
-// credentials, a fake vendor, every fixture of the spec.
-export function PluginCheck({ id }: { id: string }) {
-  const [busy, setBusy] = useState(false);
-  const [r, setR] = useState<{ rows: CheckRow[]; summary: { passed: number; failed: number; not_applicable: number } } | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const run = async () => {
-    setBusy(true); setErr(null);
-    try { setR(await api(`/api/plugins/${id}/check`, { method: "POST" })); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
-  };
-  const bad = r?.rows.filter((x) => x.result !== "pass") ?? [];
-  return (
-    <div className="mt-2" data-testid="plugin-check">
-      <div className="flex items-center gap-2">
-        <button type="button" onClick={run} disabled={busy} data-testid="plugin-check-run"
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-2.5 text-ui font-medium hover:bg-hover disabled:opacity-50">
-          <ShieldCheck className={cn("size-3.5", busy && "animate-pulse")} /> {busy ? "Checking" : "Run the conformance check"}
-        </button>
-        {r && (
-          <span className={cn("text-caption tabular-nums", r.summary.failed ? "text-danger" : "text-ok")} data-testid="plugin-check-summary">
-            {r.summary.passed} passed, {r.summary.failed} failed{r.summary.not_applicable ? `, ${r.summary.not_applicable} n/a` : ""}
-          </span>
-        )}
-        {err && <span className="text-caption text-danger">{err}</span>}
-      </div>
-      {r && (
-        <details className="mt-1.5 text-caption" open={bad.length > 0}>
-          <summary className="cursor-default text-faint hover:text-muted">{r.rows.length} fixtures</summary>
-          <div className="mt-1 grid grid-cols-[auto_auto_1fr] gap-x-3 gap-y-0.5">
-            {r.rows.map((x) => (
-              <div key={x.fixture} className="contents" data-testid="plugin-check-row" data-result={x.result}>
-                <span className="font-mono text-micro text-muted">{x.fixture}</span>
-                <span className={cn("text-micro", x.result === "pass" ? "text-ok" : x.result === "fail" ? "text-danger" : "text-faint")}>{x.result}</span>
-                <span className="truncate text-micro text-faint" title={x.detail}>{x.detail}</span>
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
     </div>
   );
 }
@@ -187,28 +143,15 @@ export function ProvidersSettings() {
       {idle.length > 0 && heading("Not set up")}
       {idle.length > 0 && <Card>{idle.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
       {!!report?.plugins.length && (
-        <>
-          {heading("Plugins, protocol v1")}
-          <Card>
-            {report.plugins.map((pl) => (
-              <div key={pl.id} className="flex gap-3 border-b border-line py-3 last:border-0" data-testid="plugin-row" data-plugin={pl.id}>
-                <Dot tone={pl.state === "ready" ? "ok" : pl.state === "stopped" ? "off" : "warn"} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-base font-medium">{pl.name ?? pl.id}</span>
-                    {pl.version && <span className="text-caption text-faint">{pl.version}</span>}
-                    <span className="ml-auto text-caption text-muted">{pl.state.replace("_", " ")}</span>
-                  </div>
-                  {pl.reason && <div className="text-caption text-faint">{pl.reason}</div>}
-                  {pl.violations.count > 0 && <div className="text-caption text-warn">{pl.violations.count} protocol violations, the last: {pl.violations.last}</div>}
-                  {pl.stderr_tail && <pre className="mt-1 max-h-24 overflow-auto rounded-md bg-code p-2 font-mono text-micro text-muted whitespace-pre-wrap">{pl.stderr_tail}</pre>}
-                  <PluginCheck id={pl.id} />
-                </div>
-              </div>
-            ))}
-          </Card>
-          {report.plugins_file && <p className="mt-2 text-micro text-faint">from {report.plugins_file}</p>}
-        </>
+        // The plugins themselves (state, check, plugins.toml) are on their own page.
+        <button type="button" className="mt-4 flex w-full items-center gap-3 rounded-md border border-line bg-raised px-4 py-3 text-left hover:bg-hover" data-testid="providers-plugins-link" onClick={() => navigate({ name: "settings", section: "plugins" })}>
+          <Puzzle className="size-4 shrink-0 text-faint" aria-hidden="true" />
+          <span className="min-w-0 flex-1 text-ui">
+            <span className="text-fg">{report.plugins.length} provider plugin{report.plugins.length === 1 ? "" : "s"}</span>
+            <span className="text-muted">, {report.plugins.filter((x) => x.state === "ready").length} ready. Their state, the conformance check and plugins.toml are in Plugins.</span>
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-faint" aria-hidden="true" />
+        </button>
       )}
     </div>
   );

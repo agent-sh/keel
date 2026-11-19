@@ -1,11 +1,12 @@
 // Settings > Plugins: the provider plugins Keel runs (protocol v1) with their
 // state, providers and conformance check, the servers Keel bundles, and
 // plugins.toml itself.
+import { ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
-import { api, reportError } from "../../lib/store.ts";
+import { api, failed, reportError } from "../../lib/store.ts";
+import { cn } from "../../lib/utils.ts";
 import { navigate } from "../../lib/ui.ts";
-import { PluginCheck } from "../ProvidersPanel.tsx";
 import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, type Group, type Mark } from "./kit.tsx";
 import { mcpMark } from "./Mcp.tsx";
 
@@ -108,6 +109,51 @@ export default function Plugins() {
           </>
         ) : <Blank title="Reading the plugins" />}
       </Ledger>
+    </div>
+  );
+}
+
+type CheckRow = { fixture: string; result: "pass" | "fail" | "n/a"; ms: number; detail: string };
+
+// The conformance check of protocol v1 (`keel plugin check <id>`): fake
+// credentials, a fake vendor, every fixture of the spec.
+function PluginCheck({ id }: { id: string }) {
+  const [busy, setBusy] = useState(false);
+  const [r, setR] = useState<{ rows: CheckRow[]; summary: { passed: number; failed: number; not_applicable: number } } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true); setErr(null);
+    try { setR(await api(`/api/plugins/${id}/check`, { method: "POST" })); } catch (e) { setErr(failed(e, { at: "plugin check" })); } finally { setBusy(false); }
+  };
+  const bad = r?.rows.filter((x) => x.result !== "pass") ?? [];
+  return (
+    <div className="mt-2" data-testid="plugin-check">
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={run} disabled={busy} data-testid="plugin-check-run"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-2.5 text-ui font-medium hover:bg-hover disabled:opacity-50">
+          <ShieldCheck className={cn("size-3.5", busy && "animate-pulse")} /> {busy ? "Checking" : "Run the conformance check"}
+        </button>
+        {r && (
+          <span className={cn("text-caption tabular-nums", r.summary.failed ? "text-danger" : "text-ok")} data-testid="plugin-check-summary">
+            {r.summary.passed} passed, {r.summary.failed} failed{r.summary.not_applicable ? `, ${r.summary.not_applicable} n/a` : ""}
+          </span>
+        )}
+        {err && <span className="text-caption text-danger">{err}</span>}
+      </div>
+      {r && (
+        <details className="mt-1.5 text-caption" open={bad.length > 0}>
+          <summary className="cursor-default text-faint hover:text-muted">{r.rows.length} fixtures</summary>
+          <div className="mt-1 grid grid-cols-[auto_auto_1fr] gap-x-3 gap-y-0.5">
+            {r.rows.map((x) => (
+              <div key={x.fixture} className="contents" data-testid="plugin-check-row" data-result={x.result}>
+                <span className="font-mono text-micro text-muted">{x.fixture}</span>
+                <span className={cn("text-micro", x.result === "pass" ? "text-ok" : x.result === "fail" ? "text-danger" : "text-faint")}>{x.result}</span>
+                <span className="truncate text-micro text-faint" title={x.detail}>{x.detail}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
