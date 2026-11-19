@@ -241,6 +241,30 @@ test("a wait result holding an earlier report does not ack a newer one", async (
   expect(sends.filter((x) => x.id === parent.id && x.text.includes("report K"))).toHaveLength(1);
 });
 
+// The parent is busy with the child's first report queued; the child is sent
+// a second task and reports again before the queue goes out. Each report is
+// its own: both reach the parent, in order, and sending the first never marks
+// the second delivered. Also with the queue flushed before the second task,
+// and with the same words twice.
+for (const [name, flushFirst, second] of [["a newer report", false, "report M"], ["flushed first", true, "report M"], ["the same words", false, "report L"]] as const) {
+  test(`queued reports of two tasks both reach the parent (${name})`, async () => {
+    busy.add(parent.id);
+    sends.length = 0;
+    const a = await spawn();
+    end(a, "end_turn", "report L");
+    await settled();
+    if (flushFirst) { busy.delete(parent.id); flush(parent.id); busy.add(parent.id); }
+    await agents.send(a.id, "task two");
+    end(a, "end_turn", second);
+    await settled();
+    busy.delete(parent.id);
+    flush(parent.id);
+    const got = sends.filter((x) => x.id === parent.id).map((x) => x.text).join("\n").split(`agent_id="${a.id}"`).slice(1).map((t) => t.split("</subagent_result>")[0]!.trim().split("\n").at(-1));
+    expect(got).toEqual(["report L", second]);
+    expect(agents.get(a.id)!.handback).toBeFalsy();
+  });
+}
+
 // Call ids are unique only within a session: two parents whose waits share
 // one each get their own report marked delivered.
 test("waits with the same call id in two sessions each mark their own report delivered", async () => {

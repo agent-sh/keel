@@ -603,7 +603,9 @@ function waitHolds(a: AgentRecord): boolean {
 function handback(a: AgentRecord) {
   const parent = D().store.session(a.parent_id);
   if (!parent || parent.archived) return;
-  if (isPending(a.parent_id, (m) => m.kind === "subagent" && m.agent_id === a.id)) return; // already on its way
+  // Queued per report: a later task's report is queued too, after the earlier one.
+  const report = reportId(a);
+  if (isPending(a.parent_id, (m) => m.kind === "subagent" && m.report_id === report)) return; // already on its way
   // Said with each report while others run: models set timers to wait for the rest.
   const left = list(a.parent_id).filter((o) => o.id !== a.id && !isEnded(o) && o.type !== "reviewer").length;
   let still = left ? `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.` : "";
@@ -617,9 +619,10 @@ function handback(a: AgentRecord) {
     for (const w of timers) waits.cancel(w.id, a.parent_id);
     if (timers.length) still = `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.map((w) => w.id).join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.`;
   }
-  deliver(a.parent_id, `${HANDBACK_PREFACE}\n${reportBlock(a)}${still}`, { kind: "subagent", agent_id: a.id, status: a.status }, {
+  deliver(a.parent_id, `${HANDBACK_PREFACE}\n${reportBlock(a)}${still}`, { kind: "subagent", agent_id: a.id, report_id: report, status: a.status }, {
     coalesceMs: 300,
-    onSent: () => update(a.id, { handback: false }),
+    // Sending this report settles this report only, never a newer one.
+    onSent: () => { const now = get(a.id); if (now && reportId(now) === report) update(a.id, { handback: false }); },
   });
 }
 
@@ -770,7 +773,7 @@ export function ackWaited(parentId: string, reports: { id: string; report: strin
   for (const r of reports) {
     const a = get(r.id);
     if (!a || !isEnded(a) || reportId(a) !== r.report) continue; // a later report is still owed
-    withdraw(parentId, (m) => m.kind === "subagent" && m.agent_id === a.id);
+    withdraw(parentId, (m) => m.kind === "subagent" && m.report_id === r.report);
     if (a.handback) update(a.id, { handback: false });
   }
 }
