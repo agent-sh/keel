@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
@@ -30,8 +30,12 @@ function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
 }
 const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
 
+const made: string[] = [];
+test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
+
 test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
   const state = join(ROOT, `restart-${Date.now()}`);
+  made.push(state);
   mkdirSync(state, { recursive: true });
   let d = await daemon(state);
   try {

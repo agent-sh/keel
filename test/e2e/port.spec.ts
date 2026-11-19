@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
@@ -11,8 +11,12 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
 const freePort = () => new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
 
+const made: string[] = [];
+test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
+
 function start(state: string, port: number) {
   mkdirSync(state, { recursive: true });
+  made.push(state);
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", state], { stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   proc.stdout!.on("data", (d) => (out += d));
