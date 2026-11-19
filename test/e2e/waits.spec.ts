@@ -16,6 +16,8 @@ test("waits and monitors wake the session", async ({ page, request }) => {
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
   await page.getByTestId("background-button").click();
   await expect(page.getByTestId("bg-wait")).toContainText("Timer");
+  // A timer fires at its time: it never says it gives up.
+  await expect(page.getByTestId("bg-wait")).toContainText("fires on the next check");
   await shoot(page, "waits-01-parked");
   await page.keyboard.press("Escape");
   const calls = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "assistant").length;

@@ -4,7 +4,9 @@
 // the turn before sent is marked: that prefix was not reused (an expired cache,
 // a changed prefix); a write that only extends a fully reused prefix is not.
 import type { Session, StoredEvent, Usage } from "../../../src/core/types.ts";
-import { useStore } from "../lib/store.ts";
+import { useEffect, useState } from "react";
+import { useAuto } from "../lib/automation.ts";
+import { api, reportError, useStore } from "../lib/store.ts";
 import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
 
 type Turn = { n: number; prompt: string; ts: number; ms?: number; requests: Usage[]; total: Usage; cold: boolean; reused?: { read: number; before: number } };
@@ -76,8 +78,24 @@ export function SessionUsage({ session }: { session: Session }) {
   const cached = all ? Math.round((100 * total.cache_read) / all) : 0;
   const max = Math.max(1, ...turns.map((t) => sent(t.total)));
   const requests = turns.reduce((n, t) => n + t.requests.length, 0);
+  // What the agents this session started spent: the task's cost is both.
+  // Re-read when one of them ends; their requests, not their reports, count.
+  const kids = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === session.id).map((a) => `${a.id}:${a.status}`).join(","));
+  const [delegated, setDelegated] = useState<{ calls: number; cost_usd?: number } | null>(null);
+  useEffect(() => {
+    if (!kids) return setDelegated(null);
+    api<{ total: { calls: number; cost_usd?: number } }>(`/api/usage?group=session&children_of=${encodeURIComponent(session.id)}`).then((r) => setDelegated(r.total)).catch(reportError);
+  }, [session.id, kids]);
+  const money = (c?: number) => (c !== undefined ? fmtCost(c) : "not priced");
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="session-usage">
+      {delegated && (
+        <div className="grid grid-cols-3 gap-2" data-testid="usage-task">
+          <Tile testid="usage-direct" label="This session" value={money(total.cost)} sub={`${requests} requests`} />
+          <Tile testid="usage-delegated" label="Its agents" value={money(delegated.cost_usd)} sub={`${delegated.calls} requests, ${kids.split(",").length} agent${kids.split(",").length > 1 ? "s" : ""}`} />
+          <Tile testid="usage-total" label="Task total" value={total.cost !== undefined && delegated.cost_usd !== undefined ? fmtCost(total.cost + delegated.cost_usd) : "not priced"} />
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Tile testid="usage-sent" label="Sent" value={fmtTokens(all)} sub={`${cached}% read from cache`} />
         <Tile label="Written to cache" value={fmtTokens(total.cache_write)} sub={`${fmtTokens(total.input)} paid in full`} />

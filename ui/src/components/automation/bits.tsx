@@ -1,4 +1,4 @@
-import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, CircleSlash, Clock, Gauge, Hand, MessageCircleQuestion, Repeat, Square } from "lucide-react";
+import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Clock, Gauge, Hand, MessageCircleQuestion, Repeat, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentRecord, Alert } from "../../lib/automation.ts";
 import { cn } from "../../lib/utils.ts";
@@ -10,12 +10,24 @@ export function AgentStatus({ status, className }: { status: AgentRecord["status
   if (status === "waiting") return <Clock className={cn(c, "text-warn")} />;
   if (status === "completed") return <CircleCheck className={cn(c, "text-ok")} />;
   if (status === "failed") return <CircleAlert className={cn(c, "text-danger")} />;
+  if (status === "incomplete") return <CircleDashed className={cn(c, "text-warn")} />;
   return <CircleSlash className={cn(c, "text-faint")} />;
 }
 
 export const STATUS_LABEL: Record<AgentRecord["status"], string> = {
-  running: "Running", waiting: "Waiting", completed: "Done", failed: "Failed", stopped: "Stopped",
+  running: "Running", waiting: "Waiting", completed: "Done", incomplete: "Did not finish", failed: "Failed", stopped: "Stopped",
 };
+
+// Who stopped an agent, and why one did not finish, as the owner reads it.
+export const STOPPED_BY: Record<string, string> = {
+  owner: "You stopped this agent", parent: "Its parent agent stopped it", parent_turn: "Stopped with its parent's turn",
+  time_limit: "Its time limit passed", parent_archived: "Its parent session was archived",
+};
+export const ENDED: Record<string, string> = {
+  refusal: "The model declined; the report is partial", max_tokens: "Output limit reached; the report is partial", max_steps: "Step budget spent; the report is partial",
+};
+export const agentWhy = (a: { status: string; stopped_by?: string | null; end_reason?: string | null }) =>
+  a.status === "stopped" ? (a.stopped_by ? STOPPED_BY[a.stopped_by] : undefined) : a.status === "incomplete" ? (a.end_reason ? ENDED[a.end_reason] : undefined) : undefined;
 
 const ALERT_ICON: Record<Alert["kind"], typeof Bell> = {
   approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock,

@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Activity, ExternalLink, Pause, Play, Repeat, Timer, Trash2, X } from "lucide-react";
 import { useMemo } from "react";
 import { auto, inMs, isLive, openSession, useAuto, type LoopRecord, type WaitRecord } from "../../lib/automation.ts";
-import { reportError } from "../../lib/store.ts";
+import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { AgentStatus, Empty, IconButton, SectionTitle, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
@@ -10,9 +10,9 @@ export function waitLabel(w: WaitRecord): string {
   const s: any = w.spec;
   switch (w.kind) {
     case "timer": return `Timer ${new Date(s.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
-    case "file": return `File ${s.path}${s.contains ? ` contains "${s.contains}"` : ""}`;
+    case "file": return s.contains ? `File contains "${s.contains}" · ${s.path}` : `File exists · ${s.path}`;
     case "log": return `Log ${s.path} /${s.match}/`;
-    case "http": return `HTTP ${s.url}${s.status ? ` = ${s.status}` : ""}`;
+    case "http": return `HTTP ${s.status ?? "2xx/3xx"} · ${s.url}`;
     case "process": return `Process ${s.pid}`;
     case "monitor": return `Monitor ${s.command}`;
     case "websocket": return `Socket ${s.url}${s.match ? ` /${s.match}/` : ""}`;
@@ -46,6 +46,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
   const allAgents = useAuto((s) => s.agents);
   const allWaits = useAuto((s) => s.waits);
   const allLoops = useAuto((s) => s.loops);
+  const sessions = useStore((s) => s.sessions);
   const agents = useMemo(() => Object.values(allAgents).filter((a) => a.parent_id === sessionId).sort((a, b) => b.created - a.created), [allAgents, sessionId]);
   const waits = useMemo(() => Object.values(allWaits).filter((w) => w.session_id === sessionId && w.status === "active"), [allWaits, sessionId]);
   const loops = useMemo(() => Object.values(allLoops).filter((l) => l.session_id === sessionId), [allLoops, sessionId]);
@@ -87,7 +88,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
               >
                 <AgentStatus status={a.status} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate">{a.title}</div>
+                  <div className="truncate" data-testid="bg-agent-title">{sessions[a.session_id]?.title || a.title}</div>
                   <div className="truncate text-micro text-faint">{STATUS_LABEL[a.status]} · {a.type} · {ago(a.created)}</div>
                 </div>
                 {isLive(a) && <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(a).catch(reportError)} testid="bg-agent-stop"><StopIcon /></IconButton>}
@@ -101,7 +102,9 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-mono text-caption">{waitLabel(w)}</div>
                   <div className="truncate text-micro text-faint">
-                    {w.note || "no note"} · {w.kind === "monitor" || w.kind === "websocket" ? `${w.events} events · ` : ""}gives up {inMs(w.deadline)}{w.last_error ? ` · ${w.last_error}` : ""}
+                    {w.note || "no note"} · {w.kind === "monitor" || w.kind === "websocket" ? `${w.events} events · ` : ""}
+                    {/* A timer fires at its time (on the next check), it does not give up. */}
+                    {w.kind === "timer" ? `due ${inMs((w.spec as any).at_ms)}, fires on the next check` : `gives up ${inMs(w.deadline)}`}{w.last_error ? ` · ${w.last_error}` : ""}
                   </div>
                 </div>
                 <IconButton title="Cancel" danger onClick={() => auto.cancelWait(w.id).catch(reportError)}><X className="size-3.5" /></IconButton>

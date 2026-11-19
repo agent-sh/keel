@@ -69,8 +69,9 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
     await expect(card.getByTestId("agent-call-status")).toHaveText("Running in background");
   }
   await card.getByTestId("agent-call-stop").click();
-  await expect(card.getByTestId("agent-call-status")).toHaveText("Stopped", { timeout: 30_000 });
-  await expect(page.getByTestId("agent-report").last()).toContainText("Stopped", { timeout: 60_000 });
+  // Who stopped it travels with it: the card and the report the parent got say it was the owner.
+  await expect(card.getByTestId("agent-call-status")).toHaveText("Stopped · You stopped this agent", { timeout: 30_000 });
+  await expect(page.getByTestId("agent-report-status").last()).toContainText("Stopped · You stopped this agent", { timeout: 60_000 });
   await shoot(page, "agents-06-stopped");
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;

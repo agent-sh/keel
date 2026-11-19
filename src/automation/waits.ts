@@ -97,8 +97,22 @@ export function activeFor(sessionId: string): number {
   return D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM waits WHERE status = 'active' AND session_id = ?").get(sessionId)!.n;
 }
 
-// Probe state that is not worth a column: log offsets, monitor tails.
-const live = new Map<string, { offset?: number; lastProbe?: number; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
+// Probe state that is not worth a column: log cursors, monitor tails. A log
+// wait's cursor (the first unread byte, the file's identity, a line being
+// skipped) is also kept in the row, so a restart reads on from where it was.
+type LogCursor = { offset: number; ident?: string; skip?: boolean; skipped?: number };
+const live = new Map<string, { offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
+const LOG_READ = 4 << 20; // a probe reads at most this much of a log
+const LINE_MAX = 64 * 1024; // a monitor matches lines up to this long; a longer one is cut there
+const DISPLAY = 2000; // characters of one line shown in an event
+
+const identOf = (path: string) => {
+  const st = statSync(path);
+  return { size: st.size, ident: `${st.dev}:${st.ino}` };
+};
+function saveCursor(id: string, c: LogCursor) {
+  D().store.db.query("UPDATE waits SET state = json_set(COALESCE(state, '{}'), '$.cursor', json(?)) WHERE id = ?").run(JSON.stringify(c), id);
+}
 
 function resolvePath(p: string, cwd: string) {
   return isAbsolute(p) ? p : resolve(cwd, p);
@@ -211,7 +225,9 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
     .run(rec.id, sessionId, rec.kind, JSON.stringify(spec), rec.note, now, deadline);
   const st: any = {};
   if (spec.kind === "log") {
-    try { st.offset = statSync(spec.path).size; } catch { st.offset = 0; }
+    // Lines already in the file when the wait starts are not what it waits for.
+    try { const f = identOf(spec.path); st.offset = f.size; st.ident = f.ident; } catch { st.offset = 0; }
+    saveCursor(rec.id, { offset: st.offset, ident: st.ident });
   }
   live.set(rec.id, st);
   if (spec.kind === "monitor") startMonitor(rec);
@@ -220,16 +236,17 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   return get(rec.id)!;
 }
 
-function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true) {
+function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true): boolean {
   const w = get(id);
-  if (!w || w.status !== "active") return;
+  if (!w || w.status !== "active") return false;
   const st = live.get(id);
   if (st?.proc) {
     try { process.kill(-st.proc.pid, "SIGTERM"); } catch {}
   }
   if (st?.ws) try { st.ws.close(1000); } catch {}
   live.delete(id);
-  D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ? WHERE id = ?").run(status, outcome.slice(0, 4000), Date.now(), id);
+  // The status changes only from active, in the same statement that reads it.
+  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ? WHERE id = ? AND status = 'active'").run(status, outcome.slice(0, 4000), Date.now(), id).changes) return false;
   const rec = get(id)!;
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id });
@@ -237,14 +254,26 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
     const body = `${w.note ? w.note + "\n" : ""}${outcome}`;
     deliver(w.session_id, `<wait_fired id="${w.id}" kind="${w.kind}" outcome="${status}">\n${inert(body, "wait_fired")}\n</wait_fired>`, { kind: "wait", wait_id: w.id, outcome: status });
   }
+  return true;
 }
 
-export function cancel(id: string, sessionId?: string): boolean {
+// What a cancel did: "cancelled" (it stopped the wait before it ended), or the
+// status the wait already had (a wake that already fired is not taken back).
+// Undefined when there is no such wait.
+export function cancel(id: string, sessionId?: string): "cancelled" | "already_cancelled" | "fired" | "timeout" | "ended" | undefined {
   const w = get(id);
-  if (!w || (sessionId && w.session_id !== sessionId)) return false;
+  if (!w || (sessionId && w.session_id !== sessionId)) return undefined;
   // Cancelling is the owner's or the model's own act: nothing to wake for.
-  settle(id, "cancelled", "Cancelled.", false);
-  return true;
+  if (settle(id, "cancelled", "Cancelled.", false)) return "cancelled";
+  const st = get(id)!.status;
+  return st === "cancelled" ? "already_cancelled" : (st as "fired" | "timeout" | "ended");
+}
+
+export function cancelText(id: string, r: ReturnType<typeof cancel>): string {
+  if (r === "cancelled") return `Cancelled ${id} before it ended.`;
+  if (r === "fired") return `${id} had already fired; cancelling did not stop that wake.`;
+  if (r === "already_cancelled") return `${id} was already cancelled.`;
+  return r ? `${id} had already ended (${r}); nothing to cancel.` : `No wait ${id} in this session.`;
 }
 
 export function cancelForSession(sessionId: string) {
@@ -276,24 +305,44 @@ async function probe(w: WaitRecord): Promise<string | undefined> {
       return i >= 0 ? `${s.path} contains "${s.contains}".` : undefined;
     }
     case "log": {
-      const st = live.get(w.id) ?? {};
+      const st = live.get(w.id) ?? { offset: 0 };
       live.set(w.id, st);
-      let size: number;
-      try { size = statSync(s.path).size; } catch { return undefined; }
-      if (size < (st.offset ?? 0)) st.offset = 0; // rotated or truncated
-      if (size === st.offset) return undefined;
+      let f: { size: number; ident: string };
+      try { f = identOf(s.path); } catch { return undefined; }
+      // Another file at the path (rotated, renamed over it) is read from its
+      // start; the same file shorter than the cursor was truncated.
+      if ((st.ident && st.ident !== f.ident) || f.size < (st.offset ?? 0)) { st.offset = 0; st.skip = false; }
+      const moved = st.ident !== f.ident;
+      st.ident = f.ident;
+      if (f.size === st.offset) { if (moved) saveCursor(w.id, cursor(st)); return undefined; }
       const fd = openSync(s.path, "r");
       try {
-        const len = Math.min(size - (st.offset ?? 0), 4 << 20);
+        const len = Math.min(f.size - (st.offset ?? 0), LOG_READ);
         const buf = Buffer.alloc(len);
         readSync(fd, buf, 0, len, st.offset ?? 0);
-        const text = buf.toString("utf8");
-        const cut = text.lastIndexOf("\n");
-        if (cut < 0) return undefined; // wait for the line to end
-        st.offset = (st.offset ?? 0) + Buffer.byteLength(text.slice(0, cut + 1));
+        let from = 0;
+        if (st.skip) {
+          // The rest of a line too long to read whole: up to its newline.
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { st.offset! += len; saveCursor(w.id, cursor(st)); return undefined; }
+          from = nl + 1;
+          st.skip = false;
+        }
+        const cut = buf.lastIndexOf(0x0a);
+        if (cut < from) {
+          // No line ends in a full read: the line is longer than a read. It is
+          // skipped (and said so) and the next complete line is matched.
+          if (len === LOG_READ) { st.offset! += len; st.skip = true; st.skipped = (st.skipped ?? 0) + 1; setError(w.id, `skipped ${st.skipped} line${st.skipped > 1 ? "s" : ""} over 4 MiB`); }
+          else if (from) st.offset! += from;
+          saveCursor(w.id, cursor(st));
+          return undefined;
+        }
+        const text = buf.subarray(from, cut).toString("utf8");
+        st.offset! += cut + 1;
+        saveCursor(w.id, cursor(st));
         const re = new RegExp(s.match);
-        const hit = text.slice(0, cut).split(/\r?\n/).find((l) => re.test(l));
-        return hit !== undefined ? `Matched in ${s.path}:\n${hit.slice(0, 2000)}` : undefined;
+        const hit = text.split(/\r?\n/).find((l) => re.test(l));
+        return hit !== undefined ? `Matched in ${s.path}:\n${hit.slice(0, DISPLAY)}` : undefined;
       } finally {
         closeSync(fd);
       }
@@ -323,21 +372,32 @@ async function probe(w: WaitRecord): Promise<string | undefined> {
   }
 }
 
+const cursor = (st: { offset?: number; ident?: string; skip?: boolean; skipped?: number }): LogCursor => ({ offset: st.offset ?? 0, ident: st.ident, skip: st.skip, skipped: st.skipped });
+
+// What of a long line an event shows: the part around the match (or its
+// start), and how much was left out.
+export function shown(line: string, re?: RegExp): string {
+  if (line.length <= DISPLAY) return line;
+  const at = re ? Math.max(0, (line.search(re) ?? 0) - DISPLAY / 4) : 0;
+  const from = Math.min(at, line.length - DISPLAY);
+  return `${from ? "[...] " : ""}${line.slice(from, from + DISPLAY)}${from + DISPLAY < line.length ? " [...]" : ""} (${DISPLAY} of ${line.length} characters)`;
+}
+
 // Feeds a monitor's lines into its batch: a matching line waits up to
-// coalesce_ms for the next before the batch is delivered.
+// coalesce_ms for the next before the batch is delivered. The match is on the
+// whole line (or socket message); only what is shown is cut. `cut`: the line
+// went past LINE_MAX and was cut there.
 function lineSink(id: string, s: { match?: string; coalesce_ms?: number }) {
   const st = live.get(id)!;
   const re = s.match ? new RegExp(s.match) : undefined;
-  return (line: string) => {
+  return (line: string, cut = false) => {
     if (!line.trim()) return;
-    // A line over 2,000 characters is delivered in pieces.
-    for (const piece of line.match(/[\s\S]{1,2000}/g)!) {
-      st.tail!.push(piece);
-      if (st.tail!.length > 20) st.tail!.shift();
-      if (re && !re.test(piece)) continue;
-      st.batch!.push(piece);
-      st.flushAt ??= Date.now() + (s.coalesce_ms ?? 500);
-    }
+    const text = shown(line, re) + (cut ? ` (the line went on past ${LINE_MAX / 1024} KiB; matched up to there)` : "");
+    st.tail!.push(text);
+    if (st.tail!.length > 20) st.tail!.shift();
+    if (re && !re.test(line)) return;
+    st.batch!.push(text);
+    st.flushAt ??= Date.now() + (s.coalesce_ms ?? 500);
   };
 }
 
@@ -434,7 +494,7 @@ function startMonitor(w: WaitRecord) {
       const parts = buf.split(/\r\n|\n|\r/);
       buf = parts.pop()!;
       for (const p of parts) onLine(p);
-      if (buf.length > 2000) { onLine(buf); buf = ""; }
+      if (buf.length > LINE_MAX) { onLine(buf, true); buf = ""; }
     }, "monitor").catch(() => {}); // the pipe closed with the process; what it wrote is already read
     if (buf) onLine(buf);
   };
@@ -509,7 +569,13 @@ export async function tick() {
 export function recover() {
   for (const w of list(undefined, 0)) {
     if (w.status !== "active") continue;
-    if (w.kind === "log") live.set(w.id, { offset: (() => { try { return statSync((w.spec as any).path).size; } catch { return 0; } })() });
+    if (w.kind === "log") {
+      // On from the saved cursor: a line written while the daemon was down is
+      // still new to the wait. A wait saved before cursors were kept reads on from the end.
+      const row = D().store.db.query<{ state: string | null }, [string]>("SELECT state FROM waits WHERE id = ?").get(w.id);
+      const c: LogCursor | undefined = row?.state ? JSON.parse(row.state).cursor : undefined;
+      live.set(w.id, c ? { ...c } : (() => { try { const f = identOf((w.spec as any).path); return { offset: f.size, ident: f.ident }; } catch { return { offset: 0 }; } })());
+    }
     if (!isMonitor(w.kind)) continue;
     const row = D().store.db.query<{ state: string | null }, [string]>("SELECT state FROM waits WHERE id = ?").get(w.id);
     const st = row?.state ? JSON.parse(row.state) : {};

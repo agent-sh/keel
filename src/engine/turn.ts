@@ -322,7 +322,8 @@ export class Engine {
       this.emitQueue(id);
       return { queued: q, steer: q.steer };
     }
-    this.release(id);
+    // Input that is not the owner's (a report, a wake) never releases a held queue.
+    if (!opts.meta) this.release(id);
     const ev = this.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
     // The title comes from the owner's first words, not from a timer's or a report's envelope.
     // A prompt of only attachments (no words) is named by its files, or Image.
@@ -598,7 +599,7 @@ export class Engine {
           if (cut) results.push({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           this.append(id, "tool_result", { results });
-          for (const h of allHooks()) await Promise.resolve(h.stepDone?.(session)).catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
+          for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
         }
         if (res.stop === "max_tokens") {
@@ -627,7 +628,7 @@ export class Engine {
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
         if (contextTokens(events).used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
       }
-      for (const h of allHooks()) await Promise.resolve(h.turnEnd?.(session, reason)).catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
+      for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
   }
 
@@ -679,7 +680,8 @@ export class Engine {
       const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
       return t0 === undefined ? failed : ran(failed, "error");
     }
-    for (const h of allHooks()) await Promise.resolve(h.afterTool?.(session, call, result)).catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
+    // A hook that throws at once is caught like one that rejects.
+    for (const h of allHooks()) await (async () => h.afterTool?.(session, call, result))().catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
     return result;
   }
 

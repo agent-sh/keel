@@ -144,7 +144,7 @@ export const auto = {
   patchGoal: (sid: string, body: Record<string, unknown>) => api<{ goal: Goal }>(`/api/sessions/${sid}/goal`, { method: "PATCH", body: JSON.stringify(body) }),
   clearGoal: (sid: string) => api(`/api/sessions/${sid}/goal`, { method: "DELETE" }),
   addTask: (sid: string, text: string) => api(`/api/sessions/${sid}/tasks`, { method: "POST", body: JSON.stringify({ text }) }),
-  editTask: (sid: string, id: string, body: Partial<Pick<Task, "text" | "status">>) => api(`/api/sessions/${sid}/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  editTask: (sid: string, id: string, body: Partial<Pick<Task, "text" | "status">> & { was?: string }) => api(`/api/sessions/${sid}/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   removeTask: (sid: string, id: string) => api(`/api/sessions/${sid}/tasks/${id}`, { method: "DELETE" }),
   // The new session is on the daemon that owns the source session.
   startTask: (sid: string, id: string) =>
@@ -258,6 +258,11 @@ export function placeName(sessions: Record<string, { title?: string } | undefine
   const kid = sessions[child]?.title || fallback?.child_title || `agent ${child.slice(-6)}`;
   return parent ? `${parent} › ${kid}` : kid;
 }
+
+// The session a bare /advisor came from: Settings > Agents then sets its advisor first.
+let advisorFrom: { id: string; title: string } | null = null;
+export const advisorSession = () => advisorFrom;
+export const setAdvisorSession = (s: { id: string; title: string } | null) => void (advisorFrom = s);
 
 export const isLive = (a: AgentRecord) => a.status === "running" || a.status === "waiting";
 

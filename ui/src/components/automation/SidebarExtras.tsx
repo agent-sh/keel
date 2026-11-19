@@ -18,21 +18,28 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
   const kids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
+  // Unfinished children open the list; the summary says how many run and how many wait.
   const live = kids.filter(isLive).length;
-  const holdsCurrent = kids.some((k) => k.session_id === current);
+  const running = kids.filter((k) => k.status === "running").length;
+  const waiting = kids.filter((k) => k.status === "waiting").length;
+  const viewing = kids.find((k) => k.session_id === current);
   const [open, setOpen] = useState<boolean | null>(null);
   if (!kids.length) return null;
-  const expanded = open ?? (live > 0 || holdsCurrent || current === parentId);
+  const expanded = open ?? (live > 0 || !!viewing || current === parentId);
   return (
     <div className="ml-3 border-l border-line pl-2" data-testid="session-children">
       <button
         type="button"
+        aria-expanded={expanded}
+        data-testid="children-toggle"
         onClick={() => setOpen(!expanded)}
-        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-caption text-faint hover:text-muted"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-caption text-faint hover:text-muted"
       >
-        <ChevronRight className={cn("size-3 transition-transform", expanded && "rotate-90")} />
-        {kids.length} agent{kids.length > 1 ? "s" : ""}
-        {live > 0 && <span className="text-accent">· {live} running</span>}
+        <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
+        <span className="shrink-0">{kids.length} agent{kids.length > 1 ? "s" : ""}</span>
+        {running > 0 && <span className="shrink-0 text-accent">· {running} running</span>}
+        {waiting > 0 && <span className="shrink-0 text-warn">· {waiting} waiting</span>}
+        {!expanded && viewing && <span className="min-w-0 truncate text-fg" data-testid="children-viewing">· viewing {sessions[viewing.session_id]?.title || viewing.title}</span>}
       </button>
       {expanded && kids.map((a) => (
         <div

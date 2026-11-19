@@ -9,35 +9,58 @@ import { resultText } from "../../lib/tools.ts";
 import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
 import { Markdown } from "../Markdown.tsx";
-import { AgentStatus, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
+import { AgentStatus, agentWhy, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
 export const SYSTEM_INPUT = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal"]);
 
-type Report = { id: string; title: string; status: AgentRecord["status"]; text: string };
+type Report = { id: string; title: string; status: AgentRecord["status"]; text: string; why?: string };
+
+// The daemon escapes only a frame's own tag inside it (core.ts inert): only
+// that is undone here, so a report's own "&lt;" stays as it was written.
+const unframe = (text: string, tag: string) => text.replace(new RegExp(`&lt;(\\s*/?\\s*${tag})`, "gi"), "<$1");
+const attrOf = (attrs: string, name: string) => attrs.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1];
 
 function reports(text: string): Report[] {
   const out: Report[] = [];
-  const re = /<subagent_result agent_id="([^"]*)" title="([^"]*)" status="([^"]*)">\n?([\s\S]*?)\n?<\/subagent_result>/g;
-  for (const m of text.matchAll(re)) out.push({ id: m[1]!, title: m[2]!, status: m[3] as Report["status"], text: m[4]!.replace(/&lt;/g, "<") });
+  const re = /<subagent_result agent_id="([^"]*)" title="([^"]*)" status="([^"]*)"([^>]*)>\n?([\s\S]*?)\n?<\/subagent_result>/g;
+  for (const m of text.matchAll(re)) {
+    const status = m[3] as Report["status"];
+    out.push({ id: m[1]!, title: m[2]!, status, text: unframe(m[5]!, "subagent_result"), why: agentWhy({ status, stopped_by: attrOf(m[4]!, "stopped_by"), end_reason: attrOf(m[4]!, "ended") }) });
+  }
   return out;
 }
 
+// Each wake with its own header: a monitor's note (or short id) beside its batch number.
 function wakes(text: string) {
   const out: { label: string; body: string }[] = [];
-  const re = /<wait_fired id="[^"]*" kind="([^"]*)" outcome="([^"]*)">\n?([\s\S]*?)\n?<\/wait_fired>|<monitor_event id="[^"]*" batch="(\d+)"[^>]*>\n?([\s\S]*?)<\/monitor_event>/g;
+  const re = /<wait_fired id="[^"]*" kind="([^"]*)" outcome="([^"]*)">\n?([\s\S]*?)\n?<\/wait_fired>|<monitor_event id="([^"]*)" batch="(\d+)"([^>]*)>\n?([\s\S]*?)<\/monitor_event>/g;
   for (const m of text.matchAll(re)) {
-    if (m[4]) out.push({ label: `monitor event ${m[4]}`, body: m[5]!.replace(/&lt;/g, "<").trimEnd() });
-    else out.push({ label: m[2] === "fired" ? `${m[1]} fired` : m[2] === "timeout" ? `${m[1]} timed out` : `${m[1]} ${m[2]}`, body: m[3]!.replace(/&lt;/g, "<") });
+    if (m[5]) out.push({ label: `${attrOf(m[6]!, "note") || `monitor ${m[4]!.slice(-6)}`} · batch ${m[5]}`, body: unframe(m[7]!, "monitor_event").trimEnd() });
+    else out.push({ label: m[2] === "fired" ? `${m[1]} fired` : m[2] === "timeout" ? `${m[1]} timed out` : `${m[1]} ${m[2]}`, body: unframe(m[3]!, "wait_fired") });
   }
   return out;
+}
+
+// What a wait waits for, then where: the condition comes first so two waits
+// on the same target read differently.
+export function waitWhat(k: any): string {
+  switch (k.kind) {
+    case "timer": return k.seconds !== undefined ? `timer ${k.seconds}s` : "timer";
+    case "file": return k.contains !== undefined ? `contains "${k.contains}" · ${k.path}` : `exists · ${k.path}`;
+    case "log": return `line /${k.match}/ · ${k.path}`;
+    case "http": return `HTTP ${k.status ?? "2xx/3xx"} · ${k.url}`;
+    case "process": return `process ${k.pid} ends`;
+    case "pr_checks": return `checks done · ${k.repo}#${k.pr_number}`;
+    default: return `${k.kind ?? "wait"} ${k.path ?? k.url ?? k.pid ?? ""}`.trim();
+  }
 }
 
 // One line for the automation tools' cards.
 export function toolSummary(name: string, input: any): string | undefined {
   switch (name) {
     case "WaitFor": case "wait_for":
-      return input.kind === "timer" ? `timer ${input.seconds ?? ""}s${input.note ? ` · ${input.note}` : ""}` : `${input.kind} ${input.path ?? input.url ?? input.pid ?? ""}${input.match ? ` /${input.match}/` : ""}`;
+      return `${waitWhat(input)}${input.note ? ` · ${input.note}` : ""}`;
     case "Monitor": case "monitor":
       return `${input.description ? `${input.description} · ` : ""}${input.command ?? ""}`;
     case "ScheduleWakeup": case "schedule_wakeup":
@@ -82,31 +105,36 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   const rs = useMemo(() => reports(text), [text]);
   const ws = useMemo(() => wakes(text), [text]);
 
-  if (rs.length && (kind === "subagent" || kind === "wake")) {
-    return (
-      <div className="flex flex-col gap-2 animate-in" data-testid="agent-reports">
-        {rs.map((r) => (
-          <Collapsible.Root key={r.id} className="group/rep rounded-lg border border-line bg-raised shadow-1" data-testid="agent-report">
-            <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-ui outline-none">
-              <CornerDownRight className="size-3.5 shrink-0 text-faint" />
-              <AgentStatus status={r.status} />
-              <span className="font-medium">{r.title}</span>
-              <span className="text-caption text-faint">reported · {STATUS_LABEL[r.status] ?? r.status}</span>
-              <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/rep:rotate-90" />
-            </Collapsible.Trigger>
-            <Collapsible.Panel className="overflow-hidden border-t border-line px-4 py-3 text-ui"><Markdown text={r.text} /></Collapsible.Panel>
-          </Collapsible.Root>
-        ))}
+  // One input can carry agents' reports and wakes together: every part shows.
+  const reportCards = rs.length > 0 && (kind === "subagent" || kind === "wake") && (
+    <div className="flex flex-col gap-2 animate-in" data-testid="agent-reports">
+      {rs.map((r) => (
+        <Collapsible.Root key={r.id} className="group/rep rounded-lg border border-line bg-raised shadow-1" data-testid="agent-report" data-status={r.status}>
+          <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-ui outline-none">
+            <CornerDownRight className="size-3.5 shrink-0 text-faint" />
+            <AgentStatus status={r.status} />
+            <span className="font-medium">{r.title}</span>
+            <span className="min-w-0 truncate text-caption text-faint" data-testid="agent-report-status">reported · {STATUS_LABEL[r.status] ?? r.status}{r.why ? ` · ${r.why}` : ""}</span>
+            <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/rep:rotate-90" />
+          </Collapsible.Trigger>
+          <Collapsible.Panel className="overflow-hidden border-t border-line px-4 py-3 text-ui"><Markdown text={r.text} /></Collapsible.Panel>
+        </Collapsible.Root>
+      ))}
+    </div>
+  );
+  const wakeCard = (kind === "wait" || (kind === "wake" && ws.length > 0)) && (
+    <Shell icon={kind === "wait" && e.data.outcome === "event" ? Radio : Timer} label={`Woken: ${ws.map((w) => w.label).join(", ") || "a wait ended"}`} testid="wake-notice">
+      <div className="mx-3 mb-3 flex max-h-60 flex-col gap-2 overflow-auto rounded-lg bg-code p-2.5 font-mono text-caption text-muted">
+        {ws.length ? ws.map((w, i) => (
+          <div key={i} data-testid="wake-part">
+            <div className="text-faint">{w.label}</div>
+            <pre className="whitespace-pre-wrap">{w.body}</pre>
+          </div>
+        )) : <pre className="whitespace-pre-wrap">{text}</pre>}
       </div>
-    );
-  }
-  if (kind === "wait" || (kind === "wake" && ws.length)) {
-    return (
-      <Shell icon={kind === "wait" && e.data.outcome === "event" ? Radio : Timer} label={`Woken: ${ws.map((w) => w.label).join(", ") || "a wait ended"}`} testid="wake-notice">
-        <pre className="mx-3 mb-3 max-h-60 overflow-auto rounded-lg bg-code p-2.5 font-mono text-caption text-muted whitespace-pre-wrap">{ws.map((w) => w.body).join("\n\n") || text}</pre>
-      </Shell>
-    );
-  }
+    </Shell>
+  );
+  if (reportCards || wakeCard) return <div className="flex flex-col gap-2">{reportCards}{wakeCard}</div>;
   if (kind === "loop") {
     return (
       <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice">
@@ -124,7 +152,9 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   }
   if (kind === "task") {
     const parentId = sessions[e.session_id]?.parent_id;
-    const task = text.includes("Task:\n") ? text.slice(text.lastIndexOf("Task:\n") + 6) : text;
+    // The parent's words start at task_at; an older record without it shows the whole text.
+    const at = e.data.task_at;
+    const task = typeof at === "number" && at >= 0 && at <= text.length ? text.slice(at) : text;
     return (
       <div className="animate-in rounded-lg border border-line bg-raised shadow-1 px-4 py-3" data-testid="task-notice">
         <div className="flex items-center gap-2 text-caption text-muted">
@@ -153,12 +183,13 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
   const out = resultText(result);
   const agents = useAuto((s) => s.agents);
   const title = String(input.description ?? input.message ?? input.prompt ?? "").split("\n")[0]!.slice(0, 80);
+  // The child this call started: the one its result names, or the one recorded
+  // with this call's id. Never a guess by title: two agents can share one.
   const agent = useMemo(() => {
     const id = out.match(/agent[_ ](?:id=")?([0-9a-f]{12})|"agent_id":"([0-9a-f]{12})"/);
-    const byId = id ? agents[id[1] ?? id[2]!] : undefined;
-    if (byId) return byId;
-    return Object.values(agents).filter((a) => a.title === title).sort((a, b) => b.created - a.created)[0];
-  }, [agents, out, title]);
+    if (id) return agents[id[1] ?? id[2]!];
+    return Object.values(agents).find((a) => a.call_id === use.id);
+  }, [agents, out, use.id]);
   const type = input.subagent_type ?? input.agent_type ?? "general-purpose";
   const report = agent && !isLive(agent) ? agent.result : undefined;
 
@@ -184,7 +215,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
           {agent ? (
             <>
               <AgentStatus status={agent.status} />
-              <span className="text-micro text-faint" data-testid="agent-call-status">{STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}</span>
+              <span className="text-micro text-faint" data-testid="agent-call-status" title={agentWhy(agent)}>{STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}{agentWhy(agent) ? ` · ${agentWhy(agent)}` : ""}</span>
               {isLive(agent) && <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(agent).catch(reportError)} testid="agent-call-stop"><StopIcon /></IconButton>}
               {!isLive(agent) && agent.branch && !agent.machine && (
                 <IconButton title="Review this agent's work" onClick={() => auto.reviewAgent(agent).then(() => savePref("panel", "review")).catch(reportError)} testid="agent-call-review"><ScanSearch className="size-3.5" /></IconButton>

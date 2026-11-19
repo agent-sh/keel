@@ -59,6 +59,38 @@ test("goals and the shared task list", async ({ page, request }) => {
   await hello.getByTestId("task-start").click();
   await expect(page).not.toHaveURL(new RegExp(`/s/${session.id}$`));
   await expect(page.getByTestId("composer")).toBeVisible();
+  const dest = page.url().split("/s/")[1];
+
+  // Taken out once: the row keeps its words and opens that session; a retry
+  // answers with it instead of starting the task again.
+  await page.goto(`/s/${session.id}`);
+  await expect(hello).toContainText("Say hello");
+  await expect(hello).not.toContainText("in its own session");
+  await expect(hello.getByTestId("task-open")).toBeVisible();
+  const helloId = (await (await request.get(`/api/sessions/${session.id}/tasks`)).json()).tasks.find((t: any) => t.text === "Say hello").id;
+  const again = await request.post(`/api/sessions/${session.id}/tasks/${helloId}/start`);
+  expect(await again.json()).toMatchObject({ session_id: dest, existing: true });
+
+  // A rename from elsewhere is what the editor opens with, and leaving it
+  // without typing sends nothing.
+  const review = (await (await request.post(`/api/sessions/${session.id}/tasks`, { data: { text: "Review A" } })).json()).task;
+  await expect(page.getByTestId("task-row").filter({ hasText: "Review A" })).toHaveCount(1);
+  await request.patch(`/api/sessions/${session.id}/tasks/${review.id}`, { data: { text: "Review B" } });
+  const row = page.getByTestId("task-row").filter({ hasText: "Review B" });
+  await expect(row).toHaveCount(1);
+  const edits: string[] = [];
+  page.on("request", (r) => { if (r.method() === "PATCH" && r.url().includes(`/tasks/${review.id}`)) edits.push(r.postData() ?? ""); });
+  await row.getByTestId("task-text").dblclick();
+  await expect(row.getByTestId("task-edit")).toHaveValue("Review B");
+  await row.getByTestId("task-edit").blur();
+  await expect(row.getByTestId("task-text")).toHaveText("Review B");
+  expect(edits).toEqual([]);
+  // A task cancelled meanwhile is not started from a stale button.
+  await request.patch(`/api/sessions/${session.id}/tasks/${review.id}`, { data: { status: "cancelled" } });
+  const stale = await request.post(`/api/sessions/${session.id}/tasks/${review.id}/start`);
+  expect(stale.status()).toBe(409);
+  expect((await (await request.get(`/api/sessions/${session.id}/tasks`)).json()).tasks.find((t: any) => t.id === review.id)).toMatchObject({ status: "cancelled", dest_session: null });
+  await shoot(page, "goals-04-taken-out");
 
   await request.delete(`/api/sessions/${session.id}/goal`);
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;

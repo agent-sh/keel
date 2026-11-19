@@ -26,7 +26,7 @@ const attempt = async (f: () => Promise<Response> | Response) => {
   try {
     return await f();
   } catch (e: any) {
-    return bad(e.message, e.status ?? 400);
+    return json({ error: e.message, ...(e.current ? { current: e.current } : {}) }, e.status ?? 400);
   }
 };
 
@@ -72,8 +72,9 @@ function init(deps: Deps) {
       }
       return undefined;
     },
-    afterTool: (s, call) => {
-      if (goals.isPlanTool(call.tool.name)) goals.fromPlanTool(s.id, call.tool.name, call.input);
+    afterTool: (s, call, result) => {
+      // A plan the tool refused is not the plan: the saved list stays as it was.
+      if (goals.isPlanTool(call.tool.name) && !result.is_error) goals.fromPlanTool(s.id, call.tool.name, call.input);
       if (QUESTION_TOOLS.has(call.tool.name)) {
         alerts.openQuestions.delete(s.id);
         alerts.readWhere("call_id", call.id);
@@ -91,9 +92,23 @@ function init(deps: Deps) {
         if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`);
         alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more });
         goals.tellModel(s.id);
-        if (!child && !more) goals.afterTurn(s.id, reason).catch((e) => capture(e, { at: "goal" }));
+        if (!child) goals.afterTurn(s.id, reason, { judge: !more }).catch((e) => capture(e, { at: "goal" }));
       });
     },
+  });
+
+  // Archiving a session cancels its waits and stops its agents at once (not at
+  // a later sweep, so a quick restore cannot keep one); restoring it hands it
+  // the reports its agents finished meanwhile and resumes nothing else.
+  const archived = new Set(deps.store.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE archived = 1").all().map((r) => r.id));
+  deps.bus.on((f) => {
+    if (f.t !== "session" || f.deleted) return;
+    const s = f.session;
+    if (s.archived && !archived.has(s.id)) {
+      archived.add(s.id);
+      waits.cancelForSession(s.id);
+      agents.stopChildrenOf(s.id);
+    } else if (!s.archived && archived.delete(s.id)) agents.deliverOwed(s.id);
   });
 
   // Approval cards become alerts (a child's under its parent); an answered
@@ -221,7 +236,7 @@ export const automationRoutes: RouteModule = (deps) => {
         const a = agents.get(req.params.agent_id);
         if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent");
         const was = a.status;
-        agents.stop(a.id, "stopped by the owner");
+        agents.stop(a.id, "owner");
         return json({ ok: true, stopped: was === "running" || was === "waiting" });
       },
     },
@@ -267,7 +282,10 @@ export const automationRoutes: RouteModule = (deps) => {
       }),
     },
     "/api/waits/:id": {
-      DELETE: (req: any) => (waits.cancel(req.params.id) ? json({ ok: true }) : bad("no such wait", 404)),
+      DELETE: (req: any) => {
+        const r = waits.cancel(req.params.id);
+        return r ? json({ ok: true, result: r, cancelled: r === "cancelled" }) : bad("no such wait", 404);
+      },
     },
 
     // --- loops
@@ -396,13 +414,17 @@ export const automationRoutes: RouteModule = (deps) => {
       PATCH: (req: any) => attempt(async () => json({ task: goals.editTask(req.params.id, req.params.tid, await body(req)) })),
       DELETE: (req: any) => (goals.removeTask(req.params.id, req.params.tid) ? json({ ok: true }) : bad("no such task", 404)),
     },
-    // A task taken out into a session of its own, on this session's model and folder.
+    // A task taken out into a session of its own, on this session's model and
+    // folder. Once: a retry answers with the session it already has. A task
+    // that was completed or cancelled meanwhile is not started (reopen it first).
     "/api/sessions/:id/tasks/:tid/start": {
       POST: (req: any) => attempt(async () => {
         const s = session(req.params.id);
         if (!s) return bad("no such session", 404);
         const t = goals.tasks(s.id).find((x) => x.id === req.params.tid);
         if (!t) return bad("no such task", 404);
+        if (t.dest_session && session(t.dest_session)) return json({ session_id: t.dest_session, existing: true });
+        if (t.status === "completed" || t.status === "cancelled") return json({ error: `the task is ${t.status === "completed" ? "done" : "cancelled"}; reopen it to start it`, status: t.status }, 409);
         let n = store.createSession({ model: s.model, workspace: s.workspace, title: t.text.slice(0, 80) });
         // Its folder is a folder of the machine the source's tools run on: the
         // new session's tools run there too, from its first prompt.
@@ -410,9 +432,9 @@ export const automationRoutes: RouteModule = (deps) => {
           store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(s.machine, n.id);
           n = store.session(n.id)!;
         }
+        goals.editTask(s.id, t.id, { status: "in_progress", dest_session: n.id });
         deps.bus.emit({ t: "session", session: n });
-        deps.engine.send(n.id, `${t.text}\n\n(A task taken from the session "${s.title || "untitled"}".)`, { meta: { kind: "task_start", from_session: s.id } });
-        goals.editTask(s.id, t.id, { status: "in_progress", text: `${t.text} (in its own session)` });
+        deps.engine.send(n.id, `${t.text}\n\n(A task taken from the session "${s.title || "untitled"}".)`, { meta: { kind: "task_start", from_session: s.id, task_id: t.id } });
         return json({ session_id: n.id }, 201);
       }),
     },

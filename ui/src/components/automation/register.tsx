@@ -1,6 +1,6 @@
 import { BellRing, Bot, ListChecks } from "lucide-react";
 import { lazy } from "react";
-import { auto } from "../../lib/automation.ts";
+import { auto, setAdvisorSession } from "../../lib/automation.ts";
 import { panels, settingsSections, slash } from "../../lib/extend.ts";
 import { actions, getState } from "../../lib/store.ts";
 import { getUI, navigate, savePref } from "../../lib/ui.ts";
@@ -40,7 +40,8 @@ slash.add({
   hint: "[model | off | default]",
   run: async (arg, { session }) => {
     const a = arg.trim();
-    if (!a || !session) return navigate({ name: "settings", section: "agents" });
+    // Bare: the page opens on this session's own choice (this session, the default, off).
+    if (!a || !session) { setAdvisorSession(session ? { id: session.id, title: session.title || "this session" } : null); return navigate({ name: "settings", section: "agents" }); }
     if (a === "off" || a === "default") return void (await auto.setSessionAdvisor(session.id, a === "off" ? "off" : null));
     const w = a.toLowerCase();
     const ms = getState().models.filter((m) => !m.hidden);

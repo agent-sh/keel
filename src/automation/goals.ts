@@ -24,9 +24,12 @@ export type Goal = {
   session_id: string; objective: string; status: GoalStatus; status_reason?: string | null;
   token_budget?: number | null; max_turns?: number | null; tokens_used: number; turns: number; idle_turns: number;
   started_ms: number; updated_ms: number; last_verdict?: string | null; last_reason?: string | null; judge_model?: string | null; judged_by?: string | null;
+  rev?: number; // a new goal or a changed objective: a check of the old one never decides this one
 };
 export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
-export type Task = { id: string; session_id: string; text: string; status: TaskStatus; by: "model" | "owner"; pos: number; updated_ms: number };
+// dest_session: the session the task was taken out into, once it was.
+// owner_ms: when the owner last changed the row.
+export type Task = { id: string; session_id: string; text: string; status: TaskStatus; by: "model" | "owner"; pos: number; updated_ms: number; dest_session?: string | null; owner_ms?: number | null };
 
 const OBJECTIVE_MAX = 4000;
 const STALL_TURNS = 2;
@@ -46,6 +49,10 @@ CREATE TABLE IF NOT EXISTS session_tasks (
 );
 CREATE INDEX IF NOT EXISTS session_tasks_session ON session_tasks(session_id, pos);
 CREATE TABLE IF NOT EXISTS task_lists (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, owner_changed INTEGER NOT NULL DEFAULT 0);`);
+  const { store } = D();
+  for (const [t, col, type] of [["session_tasks", "dest_session", "TEXT"], ["session_tasks", "owner_ms", "INTEGER"], ["task_lists", "seen_ms", "INTEGER NOT NULL DEFAULT 0"], ["task_lists", "removed", "TEXT"]] as const) {
+    if (!store.columnExists(t, col)) store.migrate(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
+  }
 }
 
 const db = () => D().store.db;
@@ -86,7 +93,7 @@ export async function set(sessionId: string, input: { objective: string; token_b
   const now = Date.now();
   const g = save({
     session_id: sessionId, objective, status: "pursuing", token_budget: checkBudget(input.token_budget, "token_budget"), max_turns: checkBudget(input.max_turns, "max_turns"),
-    tokens_used: 0, turns: 0, idle_turns: 0, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null,
+    tokens_used: 0, turns: 0, idle_turns: 0, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, rev: (cur?.rev ?? 0) + 1,
   });
   activity.record("turn", "goal", sessionId, `Goal set: ${objective.slice(0, 200)}`);
   deliver(sessionId, `${objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation and decides whether it is met, so show the evidence: run the test, print the file.)`, { kind: "goal", goal: "start" });
@@ -99,6 +106,7 @@ export function patch(sessionId: string, p: { status?: "paused" | "pursuing"; ob
   if (p.objective !== undefined) {
     const o = String(p.objective).trim();
     if (!o || o.length > OBJECTIVE_MAX) throw new Error(`the objective is 1 to ${OBJECTIVE_MAX} characters`);
+    if (o !== g.objective) g.rev = (g.rev ?? 0) + 1;
     g.objective = o;
   }
   if (p.token_budget !== undefined) g.token_budget = checkBudget(p.token_budget, "token_budget");
@@ -110,6 +118,7 @@ export function patch(sessionId: string, p: { status?: "paused" | "pursuing"; ob
   } else if (p.status === "pursuing") {
     if (!open(g)) throw Object.assign(new Error(`the goal is ${g.status}`), { status: 409 });
     if (spent(g)) throw Object.assign(new Error("its budget is spent: raise it first"), { status: 409 });
+    if (D().store.session(sessionId)?.archived) throw Object.assign(new Error("the session is archived: restore it, then resume the goal"), { status: 409 });
     g.status = "pursuing";
     g.status_reason = null;
     g.idle_turns = 0;
@@ -137,35 +146,39 @@ const JUDGE = (objective: string) =>
   'Reply with only JSON: {"verdict": "met" | "not_met" | "impossible", "reason": "<one or two sentences: what is missing, or the evidence>"}.' +
   `\n\nThe goal:\n${objective}`;
 
-// What the turn that just ended spent and whether it used a tool.
+const sum = (u: any = {}) => (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
+
+// What the turn that just ended spent (its turn-end receipt) and whether it
+// used a tool, over the whole turn: a message the owner steered in mid-turn
+// is part of it, not its start.
 function turnFacts(sessionId: string): { tokens: number; tools: boolean } {
   const evs = D().store.events(sessionId);
-  let tokens = 0;
+  const end = evs.findLastIndex((e) => e.kind === "turn_end");
+  if (end < 0) return { tokens: 0, tools: false };
   let tools = false;
-  for (let i = evs.length - 1; i >= 0; i--) {
+  for (let i = end - 1; i >= 0 && evs[i]!.kind !== "turn_start"; i--) {
     const e = evs[i]!;
-    if (e.kind === "user") break;
-    if (e.kind === "assistant") {
-      const u = e.data.usage ?? {};
-      tokens += (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
-      if ((e.data.blocks as any[]).some((b) => b.type === "tool_use")) tools = true;
-    }
+    if (e.kind === "assistant" && (e.data.blocks as any[]).some((b) => b.type === "tool_use")) tools = true;
   }
-  return { tokens, tools };
+  return { tokens: sum(evs[end]!.data.usage), tools };
 }
 
 const judging = new Set<string>();
 
-// After a turn of a session with an active goal, once nothing else is lined up.
-export async function afterTurn(sessionId: string, reason: string) {
+// After each turn of a session with an active goal: the turn is counted and a
+// stop pauses the goal at once; the check waits (`judge` false) while more
+// work is lined up (an agent's report, a wait), as Claude Code defers it.
+export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean } = {}) {
   const g = get(sessionId);
   if (!active(g) || judging.has(sessionId)) return;
+  const rev = g!.rev ?? 0;
   const facts = turnFacts(sessionId);
   g!.turns++;
   g!.tokens_used += facts.tokens;
   g!.idle_turns = facts.tools ? 0 : g!.idle_turns + 1;
   if (reason === "error" || reason === "max_tokens") return void save({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
   if (reason === "interrupted") return void save({ ...g!, status: "paused", status_reason: "the turn was stopped" });
+  if (opts.judge === false) return void save(g!);
   judging.add(sessionId);
   try {
     const s = D().store.session(sessionId);
@@ -176,7 +189,7 @@ export async function afterTurn(sessionId: string, reason: string) {
     const got = extractJson(text);
     const v = "error" in got || check(VERDICT_SCHEMA, got.value) ? { verdict: "not_met", reason: `the judge gave no verdict: ${text.slice(0, 200)}` } : (got.value as { verdict: string; reason: string });
     const now = get(sessionId);
-    if (!active(now)) return; // paused or cleared while it judged
+    if (!active(now) || (now!.rev ?? 0) !== rev) return; // paused, cleared or replaced while it judged
     const u = res.usage as any;
     const judgeTokens = (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
     const next: Goal = { ...now!, turns: g!.turns, tokens_used: g!.tokens_used + judgeTokens, idle_turns: g!.idle_turns, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id };
@@ -190,7 +203,7 @@ export async function afterTurn(sessionId: string, reason: string) {
   } catch (e) {
     capture(e, { at: "goal check", session: sessionId });
     const now = get(sessionId);
-    if (now) save({ ...now, status: "paused", status_reason: `the judge could not answer: ${(e as Error).message}` });
+    if (now && (now.rev ?? 0) === rev) save({ ...now, status: "paused", status_reason: `the judge could not answer: ${(e as Error).message}` });
   } finally {
     judging.delete(sessionId);
   }
@@ -207,31 +220,61 @@ function changed(sessionId: string) {
 
 const STATUS_OF: Record<string, TaskStatus> = { pending: "pending", in_progress: "in_progress", completed: "completed", cancelled: "cancelled" };
 
-// The model's plan tool wrote the whole list.
+type ListState = { owner_changed: number; seen_ms: number; removed: string | null };
+const listState = (sessionId: string) =>
+  db().query<ListState, [string]>("SELECT owner_changed, seen_ms, removed FROM task_lists WHERE session_id = ?").get(sessionId) ?? { owner_changed: 0, seen_ms: 0, removed: null };
+
+// The model's plan tool wrote the whole list (only a call the tool accepted).
+// Rows keep their ids, matched by text in order (two items of the same text
+// are two rows). The owner's changes the model has not been told of yet win:
+// an item the owner ticked, edited, added or removed stays as the owner left
+// it, and the model is still told.
 export function fromPlanTool(sessionId: string, tool: string, input: any) {
   if (!PLAN_TOOLS.has(tool)) return;
+  const raw = tool === "update_plan" ? input?.plan : input?.todos;
+  if (!Array.isArray(raw)) return;
   const items: { text: string; status: string }[] =
-    tool === "update_plan" ? (input?.plan ?? []).map((p: any) => ({ text: p.step, status: p.status }))
-      : tool === "write_todos" ? (input?.todos ?? []).map((t: any) => ({ text: t.description, status: t.status }))
-        : (input?.todos ?? []).map((t: any) => ({ text: t.content, status: t.status }));
+    tool === "update_plan" ? raw.map((p: any) => ({ text: p?.step, status: p?.status }))
+      : tool === "write_todos" ? raw.map((t: any) => ({ text: t?.description, status: t?.status }))
+        : raw.map((t: any) => ({ text: t?.content, status: t?.status }));
   const now = Date.now();
   db().transaction(() => {
-    const before = new Map(tasks(sessionId).map((t) => [t.text, t]));
-    for (const i of items) i.text = String(i.text ?? "").replace(/\s*\((?:added by the owner|owner)\)\s*$/i, "");
+    const st = listState(sessionId);
+    const unseen = (t: Task) => !!st.owner_changed && (t.owner_ms ?? 0) > st.seen_ms;
+    const removed = new Set<string>(st.owner_changed && st.removed ? JSON.parse(st.removed) : []);
+    const prior = tasks(sessionId);
+    const byText = new Map<string, Task[]>();
+    for (const t of prior) (byText.get(t.text) ?? byText.set(t.text, []).get(t.text)!).push(t);
+    const used = new Set<string>();
+    const rows: { id: string; text: string; status: string; by: string; dest: string | null; owner_ms: number | null }[] = [];
+    for (const i of items) {
+      const text = String(i.text ?? "").replace(/\s*\((?:added by the owner|owner)\)\s*$/i, "").trim().slice(0, 500);
+      if (!text) continue;
+      const old = byText.get(text)?.find((t) => !used.has(t.id));
+      if (!old && removed.has(text)) continue; // the owner took it out
+      if (old) used.add(old.id);
+      const keep = old && unseen(old);
+      rows.push({
+        id: old?.id ?? Bun.randomUUIDv7(), text: keep ? old!.text : text, status: keep ? old!.status : STATUS_OF[i.status] ?? "pending",
+        by: old?.by ?? "model", dest: old?.dest_session ?? null, owner_ms: old?.owner_ms ?? null,
+      });
+    }
+    // A row the owner added or changed that the model's list lacks stays where it was.
+    for (const t of prior) if (!used.has(t.id) && unseen(t)) rows.splice(Math.min(t.pos, rows.length), 0, { id: t.id, text: t.text, status: t.status, by: t.by, dest: t.dest_session ?? null, owner_ms: t.owner_ms ?? null });
     db().query("DELETE FROM session_tasks WHERE session_id = ?").run(sessionId);
-    items.filter((i) => String(i.text ?? "").trim()).forEach((i, n) => {
-      const old = before.get(i.text);
-      db().query("INSERT INTO session_tasks (id, session_id, text, status, by, pos, updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(old?.id ?? Bun.randomUUIDv7(), sessionId, String(i.text).slice(0, 500), STATUS_OF[i.status] ?? "pending", old?.by ?? "model", n, now);
-    });
-    // The model has the list as it stands now.
-    db().query("INSERT INTO task_lists (session_id, owner_changed) VALUES (?, 0) ON CONFLICT(session_id) DO UPDATE SET owner_changed = 0").run(sessionId);
+    rows.forEach((r, n) => db().query("INSERT INTO session_tasks (id, session_id, text, status, by, pos, updated_ms, dest_session, owner_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(r.id, sessionId, r.text, r.status, r.by, n, now, r.dest, r.owner_ms));
+    // With nothing of the owner's pending, the model has the list as it stands now.
+    if (!st.owner_changed) db().query("INSERT INTO task_lists (session_id, owner_changed, seen_ms) VALUES (?, 0, ?) ON CONFLICT(session_id) DO UPDATE SET owner_changed = 0, seen_ms = excluded.seen_ms").run(sessionId, now);
   })();
   changed(sessionId);
 }
 
-function ownerChanged(sessionId: string) {
-  db().query("INSERT INTO task_lists (session_id, owner_changed) VALUES (?, 1) ON CONFLICT(session_id) DO UPDATE SET owner_changed = 1").run(sessionId);
+function ownerChanged(sessionId: string, removedText?: string) {
+  const st = listState(sessionId);
+  const removed: string[] = st.owner_changed && st.removed ? JSON.parse(st.removed) : [];
+  if (removedText) removed.push(removedText);
+  db().query("INSERT INTO task_lists (session_id, owner_changed, removed) VALUES (?, 1, ?) ON CONFLICT(session_id) DO UPDATE SET owner_changed = 1, removed = excluded.removed").run(sessionId, removed.length ? JSON.stringify(removed) : null);
   changed(sessionId);
   if (!D().engine.isRunning(sessionId)) tellModel(sessionId);
 }
@@ -241,25 +284,31 @@ export function addTask(sessionId: string, text: string): Task {
   if (!t) throw new Error("the task is empty");
   const pos = (db().query<{ p: number | null }, [string]>("SELECT MAX(pos) AS p FROM session_tasks WHERE session_id = ?").get(sessionId)?.p ?? -1) + 1;
   const id = Bun.randomUUIDv7();
-  db().query("INSERT INTO session_tasks (id, session_id, text, status, by, pos, updated_ms) VALUES (?, ?, ?, 'pending', 'owner', ?, ?)").run(id, sessionId, t, pos, Date.now());
+  db().query("INSERT INTO session_tasks (id, session_id, text, status, by, pos, updated_ms, owner_ms) VALUES (?, ?, ?, 'pending', 'owner', ?, ?, ?)").run(id, sessionId, t, pos, Date.now(), Date.now());
   ownerChanged(sessionId);
   return tasks(sessionId).find((x) => x.id === id)!;
 }
 
-export function editTask(sessionId: string, id: string, p: { text?: string; status?: TaskStatus }): Task {
+// `was`: the text the editor started from; when the row's text changed since
+// (another page, the model), the edit is refused rather than undoing that change.
+export function editTask(sessionId: string, id: string, p: { text?: string; status?: TaskStatus; was?: string; dest_session?: string }): Task {
   const t = tasks(sessionId).find((x) => x.id === id);
   if (!t) throw Object.assign(new Error("no such task"), { status: 404 });
   if (p.status !== undefined && !STATUS_OF[p.status]) throw new Error("status is pending, in_progress, completed or cancelled");
+  if (p.was !== undefined && p.was !== t.text) throw Object.assign(new Error(`the task changed meanwhile; it now reads: ${t.text}`), { status: 409, current: t });
   const text = p.text !== undefined ? p.text.trim().slice(0, 500) : t.text;
   if (!text) throw new Error("the task is empty");
-  db().query("UPDATE session_tasks SET text = ?, status = ?, updated_ms = ? WHERE id = ?").run(text, p.status ?? t.status, Date.now(), id);
+  if (text === t.text && (p.status ?? t.status) === t.status && p.dest_session === undefined) return t;
+  const now = Date.now();
+  db().query("UPDATE session_tasks SET text = ?, status = ?, updated_ms = ?, owner_ms = ?, dest_session = COALESCE(?, dest_session) WHERE id = ?").run(text, p.status ?? t.status, now, now, p.dest_session ?? null, id);
   ownerChanged(sessionId);
   return tasks(sessionId).find((x) => x.id === id)!;
 }
 
 export function removeTask(sessionId: string, id: string): boolean {
+  const t = tasks(sessionId).find((x) => x.id === id);
   const n = db().query("DELETE FROM session_tasks WHERE session_id = ? AND id = ?").run(sessionId, id).changes;
-  if (n) ownerChanged(sessionId);
+  if (n) ownerChanged(sessionId, t?.text);
   return n > 0;
 }
 
@@ -274,7 +323,7 @@ export function tellModel(sessionId: string) {
   const text = `[owner] The owner changed the shared task list. It now reads:\n${list.map((t) => `${MARK[t.status]} ${t.text}`).join("\n") || "(empty)"}\nKeep it with your plan tool from here, with these items as they are written.`;
   const ev = D().store.append(sessionId, "note", { kind: "tasks", text, model: true });
   D().bus.emit({ t: "event", event: ev });
-  db().query("UPDATE task_lists SET owner_changed = 0 WHERE session_id = ?").run(sessionId);
+  db().query("UPDATE task_lists SET owner_changed = 0, seen_ms = ?, removed = NULL WHERE session_id = ?").run(Date.now(), sessionId);
 }
 
 export const isPlanTool = (name: string) => PLAN_TOOLS.has(name);

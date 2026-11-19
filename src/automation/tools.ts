@@ -85,7 +85,7 @@ const Agent: Tool = {
   },
   target: (input) => onMachine(input, input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: input.subagent_type, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: input.subagent_type, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report arrives as a message when it finishes; do other work or end your turn.`);
     if (a.status === "waiting") return ok(`Agent ${a.id} is waiting on a scheduled wait and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
     return a.status === "completed" ? ok(agents.reportBlock(a)) : fail(agents.reportBlock(a));
@@ -123,10 +123,10 @@ export function extendTaskStop() {
   t.run = (input, ctx) => guard(async () => {
     const id = String(input.task_id ?? input.shell_id ?? "");
     const w = waits.get(id);
-    if (w?.session_id === ctx.sessionId) return waits.cancel(id, ctx.sessionId) ? ok(`Cancelled ${id}.`) : fail(`No active wait ${id}.`);
+    if (w?.session_id === ctx.sessionId) return ok(waits.cancelText(id, waits.cancel(id, ctx.sessionId)));
     const a = agents.list(ctx.sessionId).find((x) => x.id === id || x.session_id === id);
     if (!a) return orig(input, ctx);
-    const r = agents.stop(a.id)!;
+    const r = agents.stop(a.id, "parent")!;
     return ok(`Stopping ${a.id}; it was ${a.status}.${r.result ? `\n\nSo far:\n${r.result}` : ""}`);
   });
 }
@@ -154,7 +154,7 @@ const spawn_agent: Tool = {
   },
   target: (input) => onMachine(input, input.message ?? input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
     return ok(JSON.stringify({ agent_id: a.id, nickname: a.title }));
   }),
 };
@@ -183,7 +183,7 @@ const wait_agent: Tool = {
   name: "wait_agent",
   families: OTHERS,
   readOnly: true,
-  description: "Wait for agents to reach a final status and return their final messages. Results returned here are not delivered again. Call it sparingly, only when your next step is blocked on the result.",
+  description: "Wait for agents to reach a final status and return their final messages. Returns as soon as any target is final (with every other one already final); timed_out is true only when none is. Results returned here are not delivered again. Call it sparingly, only when your next step is blocked on the result.",
   input_schema: {
     type: "object",
     properties: {
@@ -195,8 +195,16 @@ const wait_agent: Tool = {
     const t = Math.min(Math.max(Number(input.timeout_ms ?? 300_000), 1000), 3_600_000);
     const res = await agents.waitAll(ctx.sessionId, input.targets, t, ctx.signal);
     const status: Record<string, unknown> = {};
-    for (const a of res) status[a.id] = agents.isEnded(a) ? (a.status === "completed" ? { completed: a.result } : a.status === "failed" ? { errored: a.result } : { completed: `[${a.status}] ${a.result ?? ""}` }) : a.status;
-    return ok(JSON.stringify({ status, timed_out: res.some((a) => !agents.isEnded(a)) }));
+    // Only a finished answer is completed: a stopped agent is interrupted (with
+    // who stopped it), one that ran out of steps or output, or declined, is incomplete.
+    for (const a of res) {
+      status[a.id] = !agents.isEnded(a) ? a.status
+        : a.status === "completed" ? { completed: a.result }
+          : a.status === "failed" ? { errored: a.result }
+            : a.status === "stopped" ? { interrupted: { by: a.stopped_by ?? null, report: a.result } }
+              : { incomplete: { reason: a.end_reason ?? null, report: a.result } };
+    }
+    return ok(JSON.stringify({ status, timed_out: res.length > 0 && !res.some((a) => agents.isEnded(a)) }));
   }),
 };
 
@@ -208,7 +216,7 @@ const close_agent: Tool = {
   input_schema: { type: "object", properties: { target: { type: "string", description: "Agent id to close (from spawn_agent)." } }, required: ["target"] },
   run: (input, ctx) => guard(() => {
     const a = agents.resolveTarget(ctx.sessionId, String(input.target));
-    agents.stop(a.id);
+    agents.stop(a.id, "parent");
     return ok(JSON.stringify({ previous_status: a.status }));
   }),
 };
@@ -262,7 +270,11 @@ const cancel_wait: Tool = {
   readOnly: true,
   description: "Cancel a wait or monitor of this session by its id.",
   input_schema: { type: "object", properties: { wait_id: { type: "string" } }, required: ["wait_id"] },
-  run: (input, ctx) => guard(() => (waits.cancel(String(input.wait_id), ctx.sessionId) ? ok("Cancelled.") : fail(`No wait ${input.wait_id} in this session.`))),
+  run: (input, ctx) => guard(() => {
+    const id = String(input.wait_id);
+    const r = waits.cancel(id, ctx.sessionId);
+    return r ? ok(waits.cancelText(id, r)) : fail(`No wait ${id} in this session.`);
+  }),
 };
 
 const monitorSchema = {

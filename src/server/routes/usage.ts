@@ -1,4 +1,4 @@
-// GET /api/usage?group=model|session|day|provider&session_id=&since_ms=&until_ms=&tz=&tz_offset_minutes=&sort=&limit=
+// GET /api/usage?group=model|session|day|provider&session_id=&children_of=&since_ms=&until_ms=&tz=&tz_offset_minutes=&sort=&limit=
 // Tokens and cost of every model request, grouped, read from the telemetry
 // ledger (one row per request attempt: turn steps, summaries, side answers
 // and advisor consults alike; a fork's copied history is not a new request).
@@ -11,6 +11,7 @@
 // Days are civil dates in `tz` (an IANA zone) when given, else at the fixed
 // `tz_offset_minutes` (0: UTC). `sort` orders non-day groups: total tokens
 // (default), fresh (input without cache plus output) or cost.
+// children_of: the requests of the agents a session started (its delegated spend).
 import type { RouteModule } from "../app.ts";
 
 const GROUPS = new Set(["model", "session", "day", "provider"]);
@@ -56,6 +57,7 @@ export const usageRoutes: RouteModule = ({ store }) => ({
       const where = ["1 = 1"];
       const args: (string | number)[] = [];
       if (q.get("session_id")) { where.push("session_id = ?"); args.push(q.get("session_id")!); }
+      if (q.get("children_of")) { where.push("session_id IN (SELECT id FROM sessions WHERE parent_id = ?)"); args.push(q.get("children_of")!); }
       if (since !== undefined) { where.push("ts >= ?"); args.push(since); }
       if (until !== undefined) { where.push("ts < ?"); args.push(until); }
       const rows = store.db

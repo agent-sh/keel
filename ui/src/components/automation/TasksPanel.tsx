@@ -78,39 +78,68 @@ function GoalCard({ g, sid }: { g: Goal; sid: string }) {
 }
 
 function TaskRow({ t, sid }: { t: Task; sid: string }) {
+  // The draft starts from the text as it is when editing starts (not when the
+  // row first showed), and an edit names that text: a rename that landed
+  // meanwhile is never undone by leaving the editor.
   const [text, setText] = useState(t.text);
+  const [base, setBase] = useState(t.text);
   const [editing, setEditing] = useState(false);
+  const [conflict, setConflict] = useState<string | null>(null);
   const act = (p: Promise<unknown>) => p.catch(reportError);
   const done = t.status === "completed" || t.status === "cancelled";
+  const begin = () => { setText(t.text); setBase(t.text); setConflict(null); setEditing(true); };
+  const save = (mine: string, was: string) => act(auto.editTask(sid, t.id, { text: mine, was }).then(() => setConflict(null)));
+  const leave = () => {
+    setEditing(false);
+    const mine = text.trim();
+    if (!mine || mine === base) return; // nothing typed: nothing sent
+    if (t.text !== base) setConflict(mine); // it changed meanwhile: the owner chooses
+    else save(mine, base);
+  };
   return (
-    <div className="group flex items-start gap-2 rounded-md px-3 py-1.5 hover:bg-hover" data-testid="task-row" data-status={t.status}>
-      <Checkbox.Root
-        checked={t.status === "completed"}
-        onCheckedChange={(on) => act(auto.editTask(sid, t.id, { status: on ? "completed" : "pending" }))}
-        aria-label={`Done: ${t.text}`}
-        data-testid="task-check"
-        className="mt-0.5 grid size-4 shrink-0 place-items-center rounded border border-line-strong bg-bg outline-none data-[checked]:border-accent data-[checked]:bg-accent"
-      >
-        <Checkbox.Indicator><Check className="size-3 text-accent-fg" /></Checkbox.Indicator>
-      </Checkbox.Root>
-      {t.status === "in_progress" && <CircleDot className="mt-0.5 size-4 shrink-0 text-brass" aria-label="In progress" />}
-      {editing ? (
-        <input
-          autoFocus
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={() => { setEditing(false); if (text.trim() && text !== t.text) act(auto.editTask(sid, t.id, { text })); }}
-          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { setText(t.text); setEditing(false); } }}
-          className="min-w-0 flex-1 rounded border border-line bg-bg px-1.5 text-ui outline-none"
-        />
-      ) : (
-        <span onDoubleClick={() => setEditing(true)} className={cn("min-w-0 flex-1 text-ui", done && "text-faint line-through", t.status === "in_progress" && "font-medium")}>{t.text}</span>
+    <div className="group flex flex-col rounded-md px-3 py-1.5 hover:bg-hover" data-testid="task-row" data-status={t.status}>
+      <div className="flex items-start gap-2">
+        <Checkbox.Root
+          checked={t.status === "completed"}
+          onCheckedChange={(on) => act(auto.editTask(sid, t.id, { status: on ? "completed" : "pending" }))}
+          aria-label={`Done: ${t.text}`}
+          data-testid="task-check"
+          className="mt-0.5 grid size-4 shrink-0 place-items-center rounded border border-line-strong bg-bg outline-none data-[checked]:border-accent data-[checked]:bg-accent"
+        >
+          <Checkbox.Indicator><Check className="size-3 text-accent-fg" /></Checkbox.Indicator>
+        </Checkbox.Root>
+        {t.status === "in_progress" && <CircleDot className="mt-0.5 size-4 shrink-0 text-brass" aria-label="In progress" />}
+        {editing ? (
+          <input
+            autoFocus
+            data-testid="task-edit"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={leave}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { setText(base); setEditing(false); } }}
+            className="min-w-0 flex-1 rounded border border-line bg-bg px-1.5 text-ui outline-none"
+          />
+        ) : (
+          <span data-testid="task-text" onDoubleClick={begin} className={cn("min-w-0 flex-1 text-ui", done && "text-faint line-through", t.status === "in_progress" && "font-medium")}>{t.text}</span>
+        )}
+        {t.by === "owner" && <span className="mt-0.5 shrink-0 rounded bg-panel px-1 text-micro text-faint">you</span>}
+        <span className={cn("shrink-0 items-center", t.dest_session ? "flex" : "hidden group-hover:flex")}>
+          {t.dest_session ? (
+            <IconButton title="Open its session" onClick={() => openSession(t.dest_session!)} testid="task-open"><ExternalLink className="size-3.5" /></IconButton>
+          ) : !done && (
+            <IconButton title="Do it in a session of its own" onClick={() => auto.startTask(sid, t.id).then((r) => openSession(r.session_id)).catch(reportError)} testid="task-start"><ExternalLink className="size-3.5" /></IconButton>
+          )}
+          <IconButton title="Remove" danger onClick={() => act(auto.removeTask(sid, t.id))} testid="task-remove"><Trash2 className="size-3.5" /></IconButton>
+        </span>
+      </div>
+      {editing && t.text !== base && <p className="mt-1 pl-6 text-caption text-warn" data-testid="task-changed">Changed meanwhile: it now reads "{t.text}".</p>}
+      {conflict !== null && (
+        <div className="mt-1 flex flex-wrap items-center gap-2 pl-6 text-caption" data-testid="task-conflict">
+          <span className="text-warn">It was changed to "{t.text}" while you edited.</span>
+          <button type="button" className={button} onClick={() => save(conflict, t.text)} data-testid="task-keep-mine">Use "{conflict}"</button>
+          <button type="button" className={button} onClick={() => setConflict(null)} data-testid="task-keep-theirs">Keep it</button>
+        </div>
       )}
-      {t.by === "owner" && <span className="mt-0.5 shrink-0 rounded bg-panel px-1 text-micro text-faint">you</span>}
-      <span className="hidden shrink-0 items-center group-hover:flex">
-        {!done && <IconButton title="Do it in a session of its own" onClick={() => auto.startTask(sid, t.id).then((r) => openSession(r.session_id)).catch(reportError)} testid="task-start"><ExternalLink className="size-3.5" /></IconButton>}
-        <IconButton title="Remove" danger onClick={() => act(auto.removeTask(sid, t.id))} testid="task-remove"><Trash2 className="size-3.5" /></IconButton>
-      </span>
     </div>
   );
 }

@@ -74,6 +74,19 @@ export function dropPending(sessionId: string) {
   pending.delete(sessionId);
 }
 
+// Takes back inputs not sent yet (a report a wait already returned, the prompt
+// of a loop that was deleted); the rest still goes. Returns how many went.
+export function withdraw(sessionId: string, which: (meta: Record<string, unknown>) => boolean): number {
+  const list = pending.get(sessionId);
+  if (!list) return 0;
+  const keep = list.filter((p) => !which(p.meta));
+  if (keep.length) pending.set(sessionId, keep);
+  else pending.delete(sessionId);
+  return list.length - keep.length;
+}
+
+export const isPending = (sessionId: string, which: (meta: Record<string, unknown>) => boolean) => !!pending.get(sessionId)?.some((p) => which(p.meta));
+
 export function flush(sessionId: string) {
   const list = pending.get(sessionId);
   if (!list?.length) return;
