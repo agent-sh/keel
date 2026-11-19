@@ -7,7 +7,7 @@ import { navigate } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { ActivityList } from "./ActivityList.tsx";
-import { ALERT_LABEL, AlertIcon, Empty } from "./bits.tsx";
+import { ALERT_LABEL, ALERT_STATE, AlertIcon, Empty } from "./bits.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 
 const tabCls = "h-7 rounded-md px-2.5 text-caption text-muted outline-none hover:text-fg data-[active]:bg-raised data-[active]:text-fg data-[active]:shadow-2 focus-visible:ring-2 focus-visible:ring-accent/30";
@@ -39,6 +39,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
             tabIndex={0}
             data-testid="inbox-item"
             data-unread={!a.read || undefined}
+            data-watch={ALERT_STATE[a.kind]}
             onClick={() => {
               if (a.session_id) {
                 auto.read({ session_id: a.session_id }).catch(reportError);
@@ -47,9 +48,9 @@ function Inbox({ onClose }: { onClose: () => void }) {
               } else auto.read({ ids: [a.id] }).catch(reportError);
             }}
             onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLElement).click()}
-            className="group flex cursor-default gap-3 rounded-lg px-2.5 py-2 outline-none hover:bg-hover"
+            className="k-alert group flex cursor-default gap-3 rounded-lg px-2.5 py-2 outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <AlertIcon kind={a.kind} />
+            <AlertIcon kind={a.kind} read={a.read} />
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
                 <span className={cn("min-w-0 flex-1 truncate text-ui", !a.read ? "font-semibold" : "text-muted")}>
@@ -58,7 +59,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
                 <span className="shrink-0 text-micro text-faint tabular-nums">{ago(a.ts)}</span>
               </div>
               <div className="flex items-center gap-1 text-caption text-faint">
-                <span>{ALERT_LABEL[a.kind]}</span>
+                <span className="k-alert-word">{ALERT_LABEL[a.kind]}</span>
                 {a.data?.snoozed ? <><Dot className="size-3" /><span>snoozed</span></> : null}
                 {a.data?.held ? <><Dot className="size-3" /><span>held by the snooze</span></> : null}
                 {a.channels?.length ? <><Dot className="size-3" /><span>sent to {a.channels.join(", ")}</span></> : null}
@@ -66,7 +67,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
               <p className={cn("mt-0.5 line-clamp-2 text-caption leading-snug", a.read ? "text-faint" : "text-muted")}>{a.body}</p>
             </div>
             {!a.read ? (
-              <span className="mt-1.5 size-2 shrink-0 rounded-full bg-accent" />
+              <span className="k-alert-dot" aria-label="Unread" />
             ) : (
               <button
                 type="button"

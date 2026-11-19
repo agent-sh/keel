@@ -2,6 +2,7 @@ import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, CircleSlash, Clock, Ga
 import type { ReactNode } from "react";
 import type { AgentRecord, Alert } from "../../lib/automation.ts";
 import { cn } from "../../lib/utils.ts";
+import type { Watch } from "../../lib/watch.ts";
 
 export function AgentStatus({ status, className }: { status: AgentRecord["status"]; className?: string }) {
   const c = cn("size-3.5 shrink-0", className);
@@ -23,10 +24,15 @@ export const ALERT_LABEL: Record<Alert["kind"], string> = {
   approval: "Approval", question: "Question", finished: "Finished", failed: "Failed", limit: "Usage limit", loop_failed: "Loop failed", agent: "From the agent", snooze_over: "Snooze over",
 };
 
-export function AlertIcon({ kind }: { kind: Alert["kind"] }) {
+// What each alert kind means in the Bridge's state colors: violet needs you,
+// amber is work (an agent speaking, a limit closing in), red failed, sea green done.
+export const ALERT_STATE: Record<Alert["kind"], Watch> = {
+  approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle",
+};
+
+export function AlertIcon({ kind, read }: { kind: Alert["kind"]; read?: boolean }) {
   const Icon = ALERT_ICON[kind] ?? Bell;
-  const tone = kind === "failed" || kind === "loop_failed" ? "bg-danger-soft text-danger" : kind === "finished" ? "bg-panel text-ok" : kind === "limit" ? "bg-panel text-warn" : "bg-accent-soft text-accent";
-  return <span className={cn("grid size-7 shrink-0 place-items-center rounded-lg", tone)}><Icon className="size-3.5" /></span>;
+  return <span className="k-alert-icon" data-watch={ALERT_STATE[kind] ?? "idle"} data-read={read || undefined} data-testid="alert-icon"><Icon /></span>;
 }
 
 export function IconButton({ title, onClick, children, danger, testid }: { title: string; onClick: () => void; children: ReactNode; danger?: boolean; testid?: string }) {

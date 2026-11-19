@@ -400,3 +400,29 @@ div:has(> [data-testid="turn-end"]) { height: auto; min-height: 28px; flex-wrap:
 [data-testid="trusted-files"] { color: var(--muted); }
 /* Approvals a subagent waits on, in the parent's station: the same violet. */
 [data-testid="child-approvals"] > * { border-radius: 5px; }
+
+/* ---------- Alerts: the inbox speaks in the state colors ---------- */
+.k-alert-icon, .k-alert, .k-inbox-count { --k-st: var(--st-idle); }
+:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="need"] { --k-st: var(--st-need); }
+:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="work"] { --k-st: var(--st-work); }
+:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="fail"] { --k-st: var(--st-fail); }
+:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="done"] { --k-st: var(--st-done); }
+.k-alert-icon {
+  display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; border-radius: 6px;
+  color: var(--k-st); background: color-mix(in oklch, var(--k-st) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--k-st) 30%, transparent);
+}
+.k-alert-icon svg { width: 14px; height: 14px; }
+/* Read: the color stays as a tint, the tile goes quiet. */
+.k-alert-icon[data-read] { background: transparent; box-shadow: inset 0 0 0 1px var(--line); color: color-mix(in oklch, var(--k-st) 70%, var(--faint)); }
+.k-alert { position: relative; }
+.k-alert[data-unread]::before { content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 2px; border-radius: 1px; background: var(--k-st); }
+.k-alert[data-unread] .k-alert-word { color: var(--k-st); font-family: var(--font-inst); font-stretch: 75%; font-weight: 700; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.k-alert-dot { flex-shrink: 0; width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: var(--k-st); }
+.k-alert[data-watch="need"] .k-alert-dot { border-radius: 1px; transform: rotate(45deg) scale(0.86); }
+.k-alert[data-watch="fail"] .k-alert-dot { border-radius: 1px; }
+.k-inbox-count {
+  min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px;
+  font: 700 10px/16px var(--font-inst); font-stretch: 75%; color: var(--accent-fg); background: var(--k-st);
+}
+.k-inbox-count[data-watch="idle"] { background: var(--accent); }

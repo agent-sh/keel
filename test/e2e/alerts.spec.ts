@@ -66,6 +66,21 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await page.getByTestId("mark-all-read").click();
   await expect(page.getByTestId("inbox-item").first()).not.toHaveAttribute("data-unread", "true");
 
+  // Each kind speaks in its state color: violet needs you, amber an agent
+  // speaking, red failed; the count takes the most urgent unread one.
+  for (const kind of ["agent", "failed", "approval"]) await request.post("/api/alerts/test", { data: { kind } });
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("inbox-count")).toHaveAttribute("data-watch", "need");
+  await page.getByTestId("inbox-button").click();
+  const icons = page.getByTestId("inbox-item").getByTestId("alert-icon");
+  await expect(icons.nth(0)).toHaveAttribute("data-watch", "need");
+  await expect(icons.nth(1)).toHaveAttribute("data-watch", "fail");
+  await expect(icons.nth(2)).toHaveAttribute("data-watch", "work");
+  await expect(icons.nth(3)).toHaveAttribute("data-watch", "done");
+  await expect(icons.nth(3)).toHaveAttribute("data-read", "true");
+  await shoot(page, "alerts-05-states");
+  await page.getByTestId("mark-all-read").click();
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

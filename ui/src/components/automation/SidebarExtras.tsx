@@ -3,7 +3,7 @@ import { lazy, Suspense, useMemo, useState } from "react";
 import { auto, isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
 import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentStatus, IconButton, StopIcon } from "./bits.tsx";
+import { AgentStatus, ALERT_STATE, IconButton, StopIcon } from "./bits.tsx";
 
 // The panels load the first time they open.
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
@@ -95,6 +95,11 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
   const unread = useAuto((s) => s.unread.total);
   const loops = useAuto((s) => Object.values(s.loops).filter((l) => l.enabled).length);
   const held = useAuto((s) => !!s.snoozes["*"]);
+  // The count takes the color of the most urgent unread alert.
+  const top = useAuto((s) => {
+    const ws = new Set(s.alerts.filter((a) => !a.read).map((a) => ALERT_STATE[a.kind]));
+    return (["need", "fail", "work", "done"] as const).find((w) => ws.has(w)) ?? "idle";
+  });
   return (
     <>
       <button
@@ -105,7 +110,7 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         className={cn("relative flex items-center gap-1.5 rounded-md px-2 py-1 text-caption hover:bg-raised", unread ? "text-fg" : "text-faint")}
       >
         {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
-        {unread > 0 && <span data-testid="inbox-count" className="rounded-full bg-accent px-1.5 text-micro font-semibold leading-4 text-accent-fg tabular-nums">{unread}</span>}
+        {unread > 0 && <span data-testid="inbox-count" data-watch={top} className="k-inbox-count tabular-nums">{unread}</span>}
       </button>
       <button
         type="button"
