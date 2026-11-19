@@ -70,14 +70,21 @@ function ownerEntries(lineage: StoredEvent[]): Entry[] {
       at.push(i);
     }
   });
-  // Newest first within the text budget, then oldest first.
+  // Newest first within the text budget, then oldest first. The message that
+  // crosses the budget keeps a marked excerpt (its start and end) with its
+  // images and files, as Codex cuts the message at its remaining allowance.
   const kept: Entry[] = [];
   let bytes = 0;
   for (let i = all.length - 1; i >= 0; i--) {
     const b = Buffer.byteLength(all[i]!.text);
-    if (bytes + b > OWNER_WORDS_BYTES) break;
-    bytes += b;
-    kept.unshift({ ...all[i]! });
+    if (bytes + b <= OWNER_WORDS_BYTES) {
+      bytes += b;
+      kept.unshift({ ...all[i]! });
+      continue;
+    }
+    const part = excerpt(all[i]!.text, OWNER_WORDS_BYTES - bytes);
+    if (part !== null) kept.unshift({ ...all[i]!, text: part });
+    break;
   }
   let media = 0;
   for (let i = kept.length - 1; i >= 0; i--) {
@@ -88,6 +95,33 @@ function ownerEntries(lineage: StoredEvent[]): Entry[] {
     });
   }
   return kept;
+}
+
+// The start and the end of a text within `budget` UTF-8 bytes, with a note
+// in the middle naming what was left out; null when not even the note fits.
+export function excerpt(text: string, budget: number): string | null {
+  const total = Buffer.byteLength(text);
+  const note = (n: number) => `\n[... ${n} bytes of this message were left out of the compacted context ...]\n`;
+  const room = budget - Buffer.byteLength(note(total));
+  if (room < 64) return null;
+  const chars = [...text];
+  let head = "";
+  let headBytes = 0;
+  for (const c of chars) {
+    const n = Buffer.byteLength(c);
+    if (headBytes + n > room / 2) break;
+    head += c;
+    headBytes += n;
+  }
+  let tail = "";
+  let tailBytes = 0;
+  for (let i = chars.length - 1; i >= 0; i--) {
+    const n = Buffer.byteLength(chars[i]!);
+    if (headBytes + tailBytes + n > room) break;
+    tail = chars[i] + tail;
+    tailBytes += n;
+  }
+  return head + note(total - headBytes - tailBytes) + tail;
 }
 
 export function ownerWords(lineage: StoredEvent[]): string[] {
