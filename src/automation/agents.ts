@@ -668,7 +668,8 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   stopping.set(id, by);
   const { engine } = D();
   dropPending(a.session_id);
-  if (engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
+  // The child's own turn records the same actor as its record and report.
+  if (engine.isRunning(a.session_id)) engine.interrupt(a.session_id, by);
   else onTurnEnd(a.session_id, "interrupted");
   return get(id);
 }

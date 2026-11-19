@@ -26,10 +26,11 @@ const dir = mkdtempSync(join(tmpdir(), "keel-agents-"));
 const store = new Store(join(dir, "state"));
 const busy = new Set<string>();
 const sends: { id: string; text: string }[] = [];
+const interrupted: { id: string; by?: string }[] = [];
 const engine = {
   isRunning: (id: string) => busy.has(id),
   send: (id: string, text: string, o: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...o?.meta }) }),
-  interrupt: async (id: string) => { busy.delete(id); agents.onTurnEnd(id, "interrupted"); },
+  interrupt: async (id: string, by?: string) => { interrupted.push({ id, by }); busy.delete(id); agents.onTurnEnd(id, "interrupted"); },
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),
   idle: async () => {},
 };
@@ -58,6 +59,14 @@ test("who stopped an agent is kept, and a second stop does not change it", async
   agents.stop(a.id, "parent");
   expect(agents.get(a.id)).toMatchObject({ status: "stopped", stopped_by: "owner" });
   expect(agents.reportBlock(agents.get(a.id)!)).toContain('stopped_by="owner"');
+});
+
+test("a running agent the owner stops has its own turn say the owner stopped it", async () => {
+  const a = await spawn();
+  busy.add(a.session_id);
+  agents.stop(a.id, "owner");
+  await settled();
+  expect(interrupted.filter((x) => x.id === a.session_id).map((x) => x.by)).toEqual(["owner"]);
 });
 
 test("a turn that declined or ran out of steps is not a completed agent", async () => {
