@@ -18,7 +18,10 @@ export function daemonApi(base: string): DaemonApi {
     frames: (on) =>
       new Promise((resolve, reject) => {
         const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
-        ws.onopen = () => resolve(() => ws.close());
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ op: "resume", cursors: {} })); // events from now on
+          resolve(() => ws.close());
+        };
         ws.onerror = () => reject(new Error(`cannot reach the Keel daemon at ${base}`));
         ws.onmessage = (m) => { try { on(JSON.parse(String(m.data))); } catch {} };
         ws.onclose = () => process.exit(0); // the daemon went away: the editor sees the agent end

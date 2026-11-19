@@ -19,10 +19,16 @@ export class Bus {
     return () => this.listeners.delete(l);
   }
 
-  emit(f: Frame) {
+  // A frame as listeners would get it (a replay of stored events goes through the same filters).
+  filter(f: Frame): Frame {
     for (const g of this.filters) {
       try { f = g(f); } catch {}
     }
+    return f;
+  }
+
+  emit(f: Frame) {
+    f = this.filter(f);
     for (const l of this.listeners) {
       try {
         l(f);

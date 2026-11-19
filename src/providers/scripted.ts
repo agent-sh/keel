@@ -120,6 +120,11 @@ export class ScriptedProvider implements Provider {
       case "overflow":
         if (!compacted) throw new ProviderError("context", "Scripted: prompt is too long: 9000 tokens > 8000 maximum", 400);
         return reply("Answered after compacting to fit.");
+      case "deaf":
+        // A stream that does not honor the stop for 12 s (a driver or hook that
+        // ignores its signal): a delete waits that long for the turn to end.
+        await Bun.sleep(12_000);
+        return reply("Answered after not listening.");
       case "slow":
         await Bun.sleep(3_000); // no bytes for a while
         return reply("Answered after a slow start.");

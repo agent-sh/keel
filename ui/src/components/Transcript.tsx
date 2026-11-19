@@ -376,7 +376,7 @@ function Live({ sessionId, working, asking, since }: { sessionId: string; workin
   const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
   return (
     <>
-      {hasDraft && <div className="flex flex-col gap-3"><Draft draft={draft} /></div>}
+      {hasDraft && <div className="flex flex-col gap-3" data-testid="draft"><Draft draft={draft} /></div>}
       <Status sessionId={sessionId} />
       {working && !hasDraft && !asking && <Working since={since} sessionId={sessionId} />}
       <Announcer sessionId={sessionId} working={working} />

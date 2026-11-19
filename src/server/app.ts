@@ -7,6 +7,7 @@ import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, running, stopJob } from "../tools/jobs.ts";
 import { admit } from "./admission.ts";
+import { Live } from "./live.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
 
@@ -24,6 +25,9 @@ const socketKind = (ws: Bun.ServerWebSocket<any>) => (ws.data && typeof ws.data 
 export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string };
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+// Bun's default idle timeout, and the point where a handler counts as slow.
+const IDLE_S = 10;
+const SLOW_MS = 8_000;
 const bad = (message: string, status = 400) => json({ error: message }, status);
 
 // Two modules that define the same route: the later one would silently win (a
@@ -43,16 +47,20 @@ function clashFree(entries: [string, any][], strict: boolean, errors: ErrorTrack
 
 export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }, modules: RouteModule[] = []) {
   const { store, bus, engine, providers, errors } = deps;
-  // Every tab subscribes to one topic; Bun's publish writes a frame to all of
-  // them natively, serialized once.
-  bus.on((f) => {
-    server.publish("all", JSON.stringify(f));
-  });
+  // Bun's publish writes a frame to every subscribed tab natively, serialized once.
+  const live = new Live(store, bus, (topic, data) => server.publish(topic, data));
 
   const session = (id: string) => store.session(id);
 
   const wrap = (h: (req: Request & { params: any }, srv: Bun.Server<unknown>) => Promise<Response> | Response) =>
     async (req: any, srv: any) => {
+      // Bun closes a connection whose request has had no bytes for its idle
+      // timeout (10 s), even while the handler still works: a DELETE waiting
+      // for a turn to wind down, a compaction, a drain ended as a connection
+      // reset. A handler still running at 8 s turns that off for its request;
+      // the idle timeout comes back for the keep-alive wait after it answers.
+      let slow = false;
+      const timer = setTimeout(() => { slow = true; srv.timeout(req, 0); }, SLOW_MS);
       try {
         const refused = admit(req);
         if (refused) return refused;
@@ -62,12 +70,16 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         if (typeof st === "number" && st >= 400 && st < 500) return json({ error: (e as Error).message }, st);
         const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
         return json({ error: rec.message, error_id: rec.id }, 500);
+      } finally {
+        clearTimeout(timer);
+        if (slow) srv.timeout(req, IDLE_S);
       }
     };
 
   const server = Bun.serve({
     hostname: opts.hostname,
     port: opts.port,
+    idleTimeout: IDLE_S,
     development: opts.development ? { hmr: true, console: true } : false,
     routes: {
       "/": index,
@@ -199,9 +211,14 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     },
 
     websocket: {
-      open(ws) { const h = socketKind(ws); if (h) h.open?.(ws); else ws.subscribe("all"); },
-      message(ws, m) { socketKind(ws)?.message?.(ws, m); },
+      open(ws) { const h = socketKind(ws); if (h) h.open?.(ws); else live.open(ws); },
+      message(ws, m) { const h = socketKind(ws); if (h) h.message?.(ws, m); else live.message(ws, m); },
       close(ws, code, reason) { socketKind(ws)?.close?.(ws, code, reason); },
+      // Pings while quiet; a client silent for 40 s is gone. One that stops
+      // reading is closed instead of buffered without end: a page resumes on reconnect.
+      idleTimeout: 40,
+      backpressureLimit: 16 * 1024 * 1024,
+      closeOnBackpressureLimit: true,
     },
   });
   return server;

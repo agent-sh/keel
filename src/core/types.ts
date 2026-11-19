@@ -128,6 +128,18 @@ export type Frame =
   // routes it by `name` to the module's own client state.
   | { t: "feature"; name: string; session_id?: string; data: any };
 
+// What only the WebSocket sends (never on the bus): the greeting, the end of a
+// replay, the reply a running turn has streamed so far, a ping's answer.
+export type DraftBlocks = Record<number, { kind: "text" | "thinking" | "tool_input"; text: string; name?: string }>;
+export type SocketFrame =
+  | { t: "hello"; pid: number; started_ms: number }
+  | { t: "replayed"; cursors: Record<string, number> }
+  | { t: "draft"; session_id: string; blocks: DraftBlocks }
+  | { t: "pong"; nonce?: number };
+// What a client sends: catch up on these sessions after `seq` (events wait
+// for the first resume), or ask for a pong.
+export type ClientFrame = { op: "resume"; cursors: Record<string, number> } | { op: "ping"; nonce?: number };
+
 // One kind of failure: `ts` is its last time, `count` how often it happened
 // since `first_ts`; `session_id` and `turn_event` (the turn_start event) are
 // where it last happened; `resolved_ts` is set when the owner marked it fixed.

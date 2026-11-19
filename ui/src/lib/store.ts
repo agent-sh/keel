@@ -2,7 +2,7 @@
 // errors, fed by REST on load and by the WebSocket after. Components read it
 // with useStore(selector).
 import { useSyncExternalStore } from "react";
-import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
+import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
 
@@ -132,11 +132,22 @@ export const actions = {
   grokSignIn: () => api<any>("/api/providers/grok/sign-in", { method: "POST" }),
   grokSignInState: () => api<any>("/api/providers/grok/sign-in"),
   async loadSession(id: string) {
-    const r = await api<{ session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus }>(`/api/sessions/${id}`);
+    // Events that arrive while the snapshot is on its way are kept and merged:
+    // the snapshot may be older or newer than any of them.
+    if (!state.events[id]) loading.set(id, loading.get(id) ?? []);
+    let r: { session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus };
+    try {
+      r = await api(`/api/sessions/${id}`);
+    } catch (e) {
+      loading.delete(id);
+      throw e;
+    }
+    const early = loading.get(id) ?? [];
+    loading.delete(id);
     const loc = localize(id, r.session, r.events);
     set({
       sessions: { ...state.sessions, [id]: loc.session },
-      events: { ...state.events, [id]: loc.events! },
+      events: { ...state.events, [id]: mergeEvents(mergeEvents(state.events[id] ?? [], loc.events!), early) },
       queues: { ...state.queues, [id]: { queue: r.queue, held: r.held } },
       status: r.status ? { ...state.status, [id]: r.status } : state.status,
     });
@@ -236,8 +247,8 @@ export function apply(f: Frame) {
     // A finished turn may have moved a window (its answers' headers, a plan's use).
     if (e.kind === "turn_end") limitsSoon();
     const list = state.events[e.session_id];
-    if (!list) return; // not loaded; loading it later reads it from the store
-    if (list.length && list[list.length - 1]!.seq >= e.seq) return;
+    if (!list) return void loading.get(e.session_id)?.push(e); // not loaded; loading it later reads it from the store
+    if (list.length && list[list.length - 1]!.seq >= e.seq) return; // a replay of what is here
     // The new event is the head of its session (the store appends at the head).
     const s = state.sessions[e.session_id];
     if (s) state = { ...state, sessions: { ...state.sessions, [s.id]: { ...s, head: e.id } } };
@@ -267,16 +278,41 @@ function limitsSoon() {
   limitsTimer = setTimeout(() => actions.loadLimits().catch(() => {}), 1500);
 }
 
+// Snapshots on their way, with the events that came meanwhile.
+const loading = new Map<string, StoredEvent[]>();
+
+// Events in seq order, each once.
+export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
+  if (!b.length) return a;
+  const last = a.at(-1)?.seq ?? 0;
+  if (b[0]!.seq > last) return [...a, ...b];
+  const by = new Map(a.map((e) => [e.seq, e]));
+  for (const e of b) by.set(e.seq, e);
+  return [...by.values()].sort((x, y) => x.seq - y.seq);
+}
+
+// The live feed. On every (re)connect the page names the last seq it holds of
+// each loaded session; the daemon replays what came after, and the reply a
+// running turn has streamed so far, then sends live (see src/server/live.ts).
+// A ping every 20 s proves the socket still delivers; no pong in 10 s and it
+// is closed and opened again.
 let retry = 500;
+let socket: WebSocket | undefined;
 export function connect() {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  const ws = (socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`));
+  let pinger: ReturnType<typeof setInterval> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   ws.onopen = () => {
     retry = 500;
     set({ connected: true });
-    // Catch up on whatever happened while disconnected.
+    const cursors = Object.fromEntries(Object.entries(state.events).filter(([id]) => !splitId(id)).map(([id, list]) => [id, list.at(-1)?.seq ?? 0]));
+    // A draft from before the drop may be stale (a retry restarts it): the replay sends the current one.
+    set({ drafts: Object.fromEntries(Object.entries(state.drafts).filter(([id]) => !(id in cursors))) });
+    ws.send(JSON.stringify({ op: "resume", cursors }));
     actions.loadSessions();
-    // Several sessions' events can be held (the bridge shows many); one deleted meanwhile is dropped.
-    for (const id of Object.keys(state.events)) {
+    // Queue and status of the open sessions moved meanwhile (their events come by the
+    // replay); one deleted meanwhile is dropped.
+    for (const id of Object.keys(cursors)) {
       actions.loadSession(id).catch((e) => {
         if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
         const { [id]: _, ...events } = state.events;
@@ -284,9 +320,21 @@ export function connect() {
       });
     }
     for (const l of features) l.reconnect?.();
+    pinger = setInterval(() => {
+      ws.send(JSON.stringify({ op: "ping", nonce: Date.now() }));
+      deadline ??= setTimeout(() => ws.close(), 10_000);
+    }, 20_000);
   };
-  ws.onmessage = (m) => apply(JSON.parse(m.data));
+  ws.onmessage = (m) => {
+    const f = JSON.parse(m.data) as Frame | SocketFrame;
+    if (f.t === "pong") { clearTimeout(deadline); deadline = undefined; }
+    else if (f.t === "draft") set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } });
+    else if (f.t !== "hello" && f.t !== "replayed") apply(f);
+  };
   ws.onclose = () => {
+    clearInterval(pinger);
+    clearTimeout(deadline);
+    if (socket !== ws) return;
     set({ connected: false });
     setTimeout(connect, (retry = Math.min(retry * 2, 8000)));
   };
