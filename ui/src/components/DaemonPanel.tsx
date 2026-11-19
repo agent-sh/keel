@@ -76,7 +76,7 @@ export function DaemonPanel() {
 
       {settings && aw && (
         <Card>
-          <SettingRow label="Keep the machine awake" hint="Holds off sleep and idle suspend while a turn runs, through logind. The lock ends with the daemon, however it stops.">
+          <SettingRow label="Keep the machine awake" hint="Holds off sleep and idle suspend while a turn runs or a loop is due within 15 minutes, through logind. The lock ends with the daemon, however it stops.">
             <Segmented label="Keep awake" value={settings.keep_awake.mode} onChange={(v) => patch({ keep_awake: { mode: v } }).catch(reportError)} options={[{ value: "turns", label: "While turns run" }, { value: "never", label: "Never" }]} />
           </SettingRow>
           <SettingRow

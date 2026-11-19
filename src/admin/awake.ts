@@ -25,6 +25,14 @@ function onBattery(): boolean {
 
 const which = (bin: string) => (process.env.PATH ?? "").split(":").some((d) => d && existsSync(`${d}/${bin}`));
 
+// Other modules add reasons to stay awake (a loop whose next run is near) and
+// hear when a hold ends (the activity list). `recheck` asks again when a reason
+// may have changed without a session frame.
+export const awakeReasons: (() => string | undefined)[] = [];
+export const awakeHolds: { ended?: (since: number, ms: number, reason: string) => void } = {};
+let current: Awake | undefined;
+export const recheckAwake = () => current?.update();
+
 export class Awake {
   private proc?: Subprocess<"pipe", "ignore", "pipe">;
   private working = new Set<string>();
@@ -37,7 +45,10 @@ export class Awake {
   readonly available = process.platform === "linux" && which("systemd-inhibit") && existsSync("/run/dbus/system_bus_socket");
   draining = false;
 
+  private firstReason?: string;
+
   constructor(private bus: Bus, private capture: (e: unknown, ctx?: unknown) => void) {
+    current = this;
     bus.on((f) => {
       if (f.t !== "session") return;
       if (f.session.phase === "working") this.working.add(f.session.id);
@@ -60,6 +71,10 @@ export class Awake {
     if (settings().keep_awake.mode === "never") return undefined;
     if (this.working.size) return `${this.working.size} turn${this.working.size > 1 ? "s" : ""} running`;
     if (this.draining) return "finishing turns before a restart";
+    for (const r of awakeReasons) {
+      const why = r();
+      if (why) return why;
+    }
     return undefined;
   }
 
@@ -79,6 +94,7 @@ export class Awake {
     this.proc = p;
     this.reason = why;
     this.since ??= Date.now();
+    this.firstReason ??= why;
     this.locked = false;
     // logind answers at once; a lock still held after half a second was handed out.
     setTimeout(() => { if (this.proc === p && p.exitCode === null) { this.locked = true; this.emit(); } }, 500);
@@ -103,6 +119,10 @@ export class Awake {
     if (!this.want()) this.refused = undefined; // the reason went: the next one asks again
     if (!this.proc) { if (this.since) { this.since = undefined; this.emit(); } return; }
     const p = this.proc;
+    if (this.since) {
+      try { awakeHolds.ended?.(this.since, Date.now() - this.since, this.firstReason ?? this.reason ?? ""); } catch (e) { this.capture(e, { at: "keep-awake hold ended" }); }
+    }
+    this.firstReason = undefined;
     this.proc = undefined;
     this.locked = false;
     this.since = undefined;

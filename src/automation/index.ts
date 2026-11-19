@@ -1,3 +1,4 @@
+import { awakeHolds, awakeReasons, recheckAwake } from "../admin/awake.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
@@ -7,7 +8,7 @@ import * as goals from "./goals.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as snooze from "./snooze.ts";
-import { afterTurn, capture, hasPending, setDeps } from "./core.ts";
+import { afterTurn, capture, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop } from "./tools.ts";
@@ -28,6 +29,12 @@ const attempt = async (f: () => Promise<Response> | Response) => {
 };
 
 const g = globalThis as any;
+let ticks = 0;
+const LOOP_HORIZON = 15 * 60_000;
+function loopsDue(): string | undefined {
+  const n = D().store.db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM loops WHERE enabled = 1 AND next_ms IS NOT NULL AND next_ms <= ?").get(Date.now() + LOOP_HORIZON)?.n ?? 0;
+  return n ? `${n} loop${n > 1 ? "s" : ""} due within 15 minutes` : undefined;
+}
 const TURN_WORDS: Record<string, string> = { end_turn: "finished", error: "failed", interrupted: "stopped", max_tokens: "cut off at the output limit" };
 const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_user"]);
 
@@ -88,6 +95,8 @@ function init(deps: Deps) {
   // Approval cards become alerts (a child's under its parent); an answered
   // card's alert is read.
   deps.bus.on((f) => {
+    // A loop made, changed or removed may change whether to stay awake.
+    if (f.t === "feature" && f.name === "automation" && (f.data as { kind: string }).kind === "loop") recheckAwake();
     // A message the owner typed ends a snooze.
     if (f.t === "event" && f.event.kind === "user" && !f.event.data.kind && f.event.data.origin !== "queued") {
       const s = deps.store.session(f.event.session_id);
@@ -103,6 +112,14 @@ function init(deps: Deps) {
       activity.record("approval", a.state, a.session_id, `${a.tool}: ${a.summary}`.slice(0, 300) + ` (${a.state})`, { approval_id: a.id });
     }
   });
+
+  // Keep awake (the admin lane's lock): also while a loop's next run is near,
+  // so a sleeping machine does not miss it; each hold is an activity row.
+  awakeReasons.splice(0, awakeReasons.length, loopsDue);
+  awakeHolds.ended = (_since, ms, reason) => {
+    const mins = Math.round(ms / 60_000);
+    activity.record("awake", "hold", null, `Kept the machine awake for ${mins < 1 ? "under a minute" : `${mins} min`} (${reason || "working"})`, { ms });
+  };
 
   if (!g.__keelAutomationRecovered) {
     g.__keelAutomationRecovered = true;
@@ -123,6 +140,7 @@ function init(deps: Deps) {
       loops.tick();
       agents.tick();
       alerts.tickSnoozes();
+      if (++ticks % 30 === 0) recheckAwake();
       sweepArchived(deps);
     } catch (e) {
       capture(e, { at: "tick" });
