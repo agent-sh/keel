@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { peerProblem } from "./peer.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { openPanel, shoot } from "./shots.ts";
@@ -15,8 +16,8 @@ const STAND_IN = "scripted:stand-in";
 const script = (calls: unknown[]) => `script:calls ${JSON.stringify(calls)}`;
 
 test("agents on another machine: spawn there, send files, the gate per machine", async ({ page, request }) => {
-  const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
-  test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;

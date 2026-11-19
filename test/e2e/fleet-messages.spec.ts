@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { peerProblem } from "./peer.ts";
 import { mkdirSync } from "node:fs";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -10,8 +11,8 @@ const PEER = process.env.KEEL_PEER_URL ?? "http://127.0.0.1:47975";
 const ROOT = process.env.KEEL_PEER_ROOT ?? `${process.env.HOME}/.cache/keel-work/bun/dev-fleet-b/root`;
 
 test("fleet messages: across machines, and held for the owner", async ({ page, request }) => {
-  const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
-  test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   mkdirSync(ROOT, { recursive: true });
   let { machines } = await (await request.get("/api/fleet/machines")).json();

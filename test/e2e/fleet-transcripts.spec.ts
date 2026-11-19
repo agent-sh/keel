@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { peerProblem } from "./peer.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
@@ -28,8 +29,8 @@ function claudeSession(root: string, cwd: string, id: string, fruit: string) {
 }
 
 test("fleet transcripts: another machine's sessions, imported to go on there", async ({ page, request }) => {
-  const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
-  test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
   test.skip(!STORE, "needs the other daemon's scratch Claude Code store (KEEL_PEER_CLAUDE_DIR)");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const tag = Date.now().toString(36);

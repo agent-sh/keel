@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
+import { peerProblem } from "./peer.ts";
 import { mkdirSync } from "node:fs";
 import { HAIKU, remoteHeaders, shoot } from "./shots.ts";
 
@@ -24,8 +25,8 @@ async function authenticator(page: Page) {
 // would for a remote device of its own, the desk passes, a forged standing
 // counts as remote, and the device's passkey (enrolled here) lets it through.
 test("fleet forwarder keeps the caller's presence standing", async ({ page, browser, request }) => {
-  const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
-  test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // Start clean: no old record of that daemon, nor sessions placed on one.
   const old = (await (await request.get("/api/fleet/machines")).json()).machines.filter((m: any) => m.daemon_url === PEER).map((m: any) => m.id);

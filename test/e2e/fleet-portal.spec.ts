@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { peerProblem } from "./peer.ts";
 import { execFileSync } from "node:child_process";
 import { writeSite } from "./fixtures/dev-site.ts";
 import { HAIKU, shoot, openPanel } from "./shots.ts";
@@ -62,8 +63,8 @@ test("portal: the session's dev server in the preview, assets and fetch inside, 
 });
 
 test("portal: a session of another daemon, previewed through it, socket included", async ({ page, request }) => {
-  const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
-  test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   site();
   const { machines } = await (await request.get("/api/fleet/machines")).json();
