@@ -2,6 +2,7 @@
 // shared Messages wire codec. Bedrock takes the same body (model in the path,
 // the API version in the body) and streams it in AWS event-stream frames.
 import { sigv4, type AwsCreds } from "./aws.ts";
+import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
@@ -45,6 +46,14 @@ export class AnthropicProvider implements Provider {
 
   available() {
     return this.auth !== null;
+  }
+
+  identity() {
+    const e = this.env, a = this.auth;
+    // A Bedrock bearer key is short-lived and rotates; the region names the account's listing.
+    const who = a?.kind === "bearer" ? (this.id === "bedrock" ? "bearer" : a.token) : a?.kind === "api-key" ? a.key : a?.kind === "sigv4" ? a.creds.accessKeyId : a?.kind ?? "";
+    const where = this.id === "bedrock" ? `${e.ANTHROPIC_BEDROCK_BASE_URL ?? ""}|${this.region}` : e.ANTHROPIC_BASE_URL ?? "";
+    return fingerprint(this.id, where, who);
   }
 
   readonly family = "claude" as const;

@@ -53,3 +53,13 @@ export function forget(src: KeySource) {
 
 export const shown = (src: KeySource) =>
   src.env && process.env[src.env] ? `$${src.env}` : src.cred ? `keyring ${src.cred}` : "no key";
+
+// A one-way fingerprint of what identifies an account and endpoint: the
+// endpoint, the key source, and an environment key's value (a keyring entry is
+// named, not read, so this never costs a keyring read).
+export function fingerprint(...parts: (string | undefined)[]): string {
+  return new Bun.CryptoHasher("sha256").update(parts.map((p) => p ?? "").join("\0")).digest("hex").slice(0, 16);
+}
+
+export const sourceIdentity = (src: KeySource) =>
+  src.env && process.env[src.env] ? `env:${src.env}:${process.env[src.env]!.trim()}` : src.cred ? `cred:${src.cred}` : "";

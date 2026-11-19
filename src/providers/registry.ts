@@ -26,7 +26,7 @@ const SECTION: Record<string, string> = {
   bedrock: "amazon-bedrock", anthropic: "anthropic", openai: "openai", chatgpt: "openai", gemini: "google", grok: "xai",
 };
 
-export type Listing = { state: "ok" | "failed" | "saved" | "never"; fetched?: number; error?: string; models: ListedModel[] };
+export type Listing = { state: "ok" | "failed" | "saved" | "never"; fetched?: number; error?: string; models: ListedModel[]; identity?: string };
 // The owner's picks: the default, models hidden per provider, whole providers
 // hidden from the picker, and favorites (full ids, in the owner's order).
 export type Choices = { default?: string; hidden: Record<string, string[]>; hidden_providers?: string[]; pinned?: string[] };
@@ -47,6 +47,10 @@ export class Providers {
   private builtins: Provider[];
   private listings = new Map<string, Listing>();
   private refreshedAt = 0;
+  // Per provider: the newest refresh started, and the newest whose answer was
+  // applied. A slower, older answer never replaces a newer one.
+  private started = new Map<string, number>();
+  private applied = new Map<string, number>();
   private pending: Promise<void> | null = null;
   private fixed: Provider[] | null;
   readonly limits = new Limits();
@@ -145,22 +149,29 @@ export class Providers {
     try {
       if (!existsSync(this.savedFile)) return;
       const d = JSON.parse(readFileSync(this.savedFile, "utf8"));
-      for (const [id, l] of Object.entries<any>(d)) this.listings.set(id, { state: l.error && !l.models?.length ? "failed" : "saved", fetched: l.fetched, error: l.error, models: l.models ?? [] });
+      for (const [id, l] of Object.entries<any>(d)) this.listings.set(id, { state: l.error && !l.models?.length ? "failed" : "saved", fetched: l.fetched, error: l.error, models: l.models ?? [], identity: l.identity });
     } catch (e) {
       this.capture(e, { at: "reading model-listings.json" });
     }
   }
 
   private persist() {
-    const out: Record<string, { fetched?: number; error?: string; models: ListedModel[] }> = {};
-    for (const [id, l] of this.listings) if (l.models.length || l.error) out[id] = { fetched: l.fetched, error: l.error, models: l.models };
+    const out: Record<string, { fetched?: number; error?: string; models: ListedModel[]; identity?: string }> = {};
+    for (const [id, l] of this.listings) if (l.models.length || l.error) out[id] = { fetched: l.fetched, error: l.error, models: l.models, identity: l.identity };
     const tmp = `${this.savedFile}.tmp`;
     writeFileSync(tmp, JSON.stringify(out));
     renameSync(tmp, this.savedFile);
   }
 
+  // The provider's listing, when it was made for the account and endpoint the
+  // provider has now: a list saved under another key, sign-in or base URL is
+  // not offered as this one's last known list.
   listing(id: string): Listing {
-    return this.listings.get(id) ?? { state: "never", models: [] };
+    const l = this.listings.get(id);
+    if (!l) return { state: "never", models: [] };
+    const now = this.get(id)?.identity?.();
+    if (l.identity && now && l.identity !== now) return { state: "never", models: [] };
+    return l;
   }
 
   // Asks every available provider (or the one named) for its listing again.
@@ -170,14 +181,23 @@ export class Providers {
     if (!this.fixed) await this.plugins.settled();
     const targets = this.all().filter((p) => (!only || p.id === only) && p.available());
     await Promise.all(targets.map(async (p) => {
-      const prev = this.listings.get(p.id);
+      const seq = (this.started.get(p.id) ?? 0) + 1;
+      this.started.set(p.id, seq);
+      const identity = p.identity?.();
       try {
         const models = p instanceof CompatProvider && p.cfg.listing === false ? this.fromSection(p) : await p.list();
-        this.listings.set(p.id, { state: "ok", fetched: Date.now(), models });
+        if ((this.applied.get(p.id) ?? 0) > seq) return;
+        this.applied.set(p.id, seq);
+        this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
         this.cleared(p.id, "listing");
       } catch (e) {
+        // A newer answer already landed: this older failure says nothing about it.
+        if ((this.applied.get(p.id) ?? 0) > seq) return;
+        this.applied.set(p.id, seq);
         const error = (e as Error).message;
-        this.listings.set(p.id, { state: "failed", fetched: prev?.fetched, error, models: prev?.models ?? [] });
+        // The last good list as it is now (not as it was when this refresh began).
+        const prev = this.listing(p.id);
+        this.listings.set(p.id, { state: "failed", fetched: prev.fetched, error, models: prev.models, identity: prev.identity ?? identity });
         // Recorded once: the same failure on every refresh is one error.
         if (prev?.error !== error) this.capture(e, { provider: p.id, at: "listing" });
         this.note(p.id, e, "listing");
@@ -223,8 +243,9 @@ export class Providers {
     if (!force && runMode.client && [...this.listings.values()].some((l) => l.models.length)) return this.current();
     if (force || Date.now() - this.refreshedAt > LISTING_MAX_AGE) {
       this.pending ??= this.refresh().finally(() => (this.pending = null));
-      // A first read waits; later reads answer from the last lists meanwhile.
-      if (force || !this.refreshedAt) await this.pending;
+      // A read waits only when no saved list can answer meanwhile (a first
+      // start); else it answers from the last lists, marked saved.
+      if (force || (!this.refreshedAt && !this.all().some((p) => p.available() && this.listing(p.id).models.length))) await this.pending;
     }
     return this.current();
   }

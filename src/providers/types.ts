@@ -141,6 +141,9 @@ export interface Provider {
   readonly wire?: Wire;
   readonly family: Family; // the default for models whose id says nothing
   available(): boolean;
+  // Which account and endpoint a listing comes from, as a one-way fingerprint
+  // (never a credential): a saved listing is offered only to the same identity.
+  identity?(): string;
   status?(): ProviderStatus;
   list(): Promise<ListedModel[]>;
   stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult>;

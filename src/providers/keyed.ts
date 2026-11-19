@@ -1,7 +1,7 @@
 // Drivers that authenticate with an API key: the OpenAI API (Responses), the
 // Gemini API, and every OpenAI-compatible endpoint (/chat/completions).
 import type { EndpointConfig } from "./config.ts";
-import { configured, forget, key, shown, type KeySource } from "./creds.ts";
+import { configured, fingerprint, forget, key, shown, sourceIdentity, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { familyOf, notChat } from "./family.ts";
 import { getJson, ProviderError } from "./http.ts";
@@ -18,8 +18,14 @@ abstract class KeyedProvider implements Provider {
   abstract readonly family: Family;
   protected abstract src: KeySource;
 
+  protected abstract readonly base: string;
+
   available() {
     return configured(this.src);
+  }
+
+  identity() {
+    return fingerprint(this.id, this.base, sourceIdentity(this.src));
   }
 
   status(): ProviderStatus {
@@ -42,7 +48,7 @@ export class OpenAIProvider extends KeyedProvider {
   readonly wire = "openai_responses" as const;
   readonly family = "gpt" as const;
   protected src = { env: "OPENAI_API_KEY", cred: "openai-api-key" };
-  private base = (process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
+  protected readonly base = (process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
 
   async list(): Promise<ListedModel[]> {
     const k = await this.key();
@@ -70,7 +76,7 @@ export class GeminiProvider extends KeyedProvider {
   readonly wire = "gemini_generate_content" as const;
   readonly family = "gemini" as const;
   protected src = { env: process.env.GEMINI_API_KEY ? "GEMINI_API_KEY" : "GOOGLE_API_KEY", cred: "gemini-api-key" };
-  private base = (process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com").replace(/\/$/, "");
+  protected readonly base = (process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com").replace(/\/$/, "");
   private thinks = new Map<string, boolean>();
 
   async list(): Promise<ListedModel[]> {
@@ -110,7 +116,7 @@ export class CompatProvider extends KeyedProvider {
   readonly wire = "chat_completions" as const;
   readonly family = "other" as const;
   protected src: KeySource;
-  private base: string;
+  protected readonly base: string;
 
   constructor(readonly cfg: EndpointConfig) {
     super();

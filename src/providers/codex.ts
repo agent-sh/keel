@@ -10,6 +10,7 @@
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson, ProviderError, scrub } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
@@ -58,6 +59,10 @@ export class CodexProvider implements Provider {
 
   available() {
     return existsSync(this.file) && !!this.read()?.tokens?.access_token;
+  }
+
+  identity() {
+    return fingerprint(this.id, this.base, this.read()?.tokens?.account_id);
   }
 
   status(): ProviderStatus {

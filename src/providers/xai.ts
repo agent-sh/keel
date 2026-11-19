@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "./config.ts";
+import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson, ProviderError, scrub } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
@@ -92,6 +93,14 @@ export class XaiProvider implements Provider {
 
   available() {
     return !!this.grant();
+  }
+
+  // The signed-in account (the id token's subject), not the rotating tokens.
+  identity() {
+    const g = this.grant();
+    let sub = "";
+    try { sub = JSON.parse(Buffer.from(g!.id_token!.split(".")[1]!, "base64url").toString()).sub ?? ""; } catch {}
+    return fingerprint(this.id, process.env.KEEL_XAI_PLAN_BASE_URL, sub);
   }
 
   status(): ProviderStatus {
