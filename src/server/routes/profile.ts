@@ -5,6 +5,7 @@
 import { commitSwitch } from "../switch.ts";
 import { readFileSync, statSync } from "node:fs";
 import { instructionPaths } from "../../engine/turn.ts";
+import { loadedPaths } from "../../engine/nested.ts";
 import type { RouteModule } from "../app.ts";
 import { speedOffer } from "../../providers/registry.ts";
 import type { ModelInfo } from "../../providers/types.ts";
@@ -13,11 +14,12 @@ import { toolsFor } from "../../tools/registry.ts";
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const INSTRUCTION_LIMIT = 40_000; // what the system prompt includes of one file (engine/turn.ts)
 
-// The instruction files the prompt reads (engine/turn.ts), with their sizes.
-function instructions(cwd: string) {
+// The instruction files the prompt reads (engine/turn.ts), with their sizes,
+// then the nested ones the work has loaded since (engine/nested.ts).
+function instructions(cwd: string, nested: Iterable<string> = []) {
   const files: { path: string; scope: string; bytes: number; included_bytes: number; truncated: boolean }[] = [];
   const warnings: string[] = [];
-  for (const { path, scope } of instructionPaths(cwd)) {
+  for (const { path, scope } of [...instructionPaths(cwd), ...[...nested].map((path) => ({ path, scope: "nested" }))]) {
     try {
       const bytes = statSync(path).size;
       const included = Buffer.byteLength(readFileSync(path, "utf8").slice(0, INSTRUCTION_LIMIT));
@@ -52,7 +54,7 @@ export const profileRoutes: RouteModule = ({ store, bus, providers }) => {
       reasoning: { choice: s.settings.effort && info?.efforts.includes(s.settings.effort) ? s.settings.effort : undefined, options: info?.efforts.length ? { kind: "levels", levels: info.efforts } : { kind: info ? "none" : "unknown" } },
       speed: { choice: offer?.id ?? "standard", options: [{ speed: "standard", label: "Standard", available: true }, ...(info?.speeds ?? []).map((o) => ({ speed: o.id, label: o.label, available: true, note: o.note, price: o.price }))] },
       ...(info ? toolProfile(info) : { tool_profile: null, eager_tools: [] }),
-      instructions: instructions(s.workspace),
+      instructions: instructions(s.workspace, s.machine ? [] : loadedPaths(store, s.id)),
     };
   };
 

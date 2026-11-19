@@ -42,6 +42,18 @@ export function resultText(r?: ToolResultBlock): string {
   return r.content.map((c) => (c.type === "text" ? c.text : "")).filter(Boolean).join("\n");
 }
 
+// Instruction files the daemon appended to a call's result when the work
+// reached their folder (src/engine/nested.ts): taken out of the output and
+// shown as what they are.
+export function splitNested(text: string): { text: string; nested: { path: string; body: string }[] } {
+  const nested: { path: string; body: string }[] = [];
+  const rest = text.replace(/\n*<nested-instructions path="([^"]+)">\n([\s\S]*?)\n<\/nested-instructions>/g, (_m, path: string, body: string) => {
+    nested.push({ path, body });
+    return "";
+  });
+  return { text: nested.length ? rest.trimEnd() : text, nested };
+}
+
 export const resultImages = (r?: ToolResultBlock) =>
   !r || typeof r.content === "string" ? [] : r.content.filter((c): c is { type: "image"; media_type: string; data: string } => c.type === "image");
 

@@ -15,6 +15,7 @@ import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { secretRoutes } from "./secrets.ts";
 import { trustRoutes } from "./trust.ts";
+import { nestedRoutes } from "./nested.ts";
 import { planRoutes } from "./plan.ts";
 import { providersRoutes } from "./providers.ts";
 import { profileRoutes } from "./profile.ts";
@@ -48,6 +49,7 @@ export const routeModules: RouteModule[] = [
   permissionRoutes, // first: its beforeTool gate decides before the others run
   planRoutes,
   trustRoutes, // protected files are watched around calls the gate let through
+  nestedRoutes, // after trust: nested instruction files go through its filter
   checkpointRoutes,
   workspaceRoutes,
   pwaRoutes,

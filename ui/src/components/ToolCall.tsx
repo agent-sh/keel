@@ -9,7 +9,7 @@ import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { actions, failed } from "../lib/store.ts";
 import {
-  patchFiles, planItems, questions, resultImages, resultText, shellBody, shellStatus, shortPath, stripAnsi, toolKind,
+  patchFiles, planItems, questions, resultImages, resultText, shellBody, splitNested, shellStatus, shortPath, stripAnsi, toolKind,
   type PlanItem, type ToolKind,
 } from "../lib/tools.ts";
 import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
@@ -76,7 +76,7 @@ export function ToolCall({ use, result, live, sessionId, cwd, waiting }: Props) 
 
 function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props & { kind: ToolKind; input: any }) {
   const Icon = ICONS[kind];
-  const out = resultText(result);
+  const { text: out, nested } = useMemo(() => splitNested(resultText(result)), [result]);
   const images = resultImages(result);
   const state = !result ? "running" : result.is_error ? "error" : "ok";
   const diff = useMemo(() => editDiff(kind, input), [kind, input]);
@@ -106,6 +106,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
           {diff && (diff.added > 0 || diff.removed > 0) && (
             <span className="font-mono"><span className="text-ok">+{diff.added}</span> <span className="text-danger">-{diff.removed}</span></span>
           )}
+          {nested.length > 0 && <span className="rounded-full bg-sunken px-1.5 py-px text-muted" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
           {shell.background && <span className="rounded-full bg-accent-soft px-1.5 py-px text-accent-ink" data-testid="tool-background">background</span>}
           {shell.session && <span className="rounded-full bg-accent-soft px-1.5 py-px text-accent-ink">session {shell.session}</span>}
           {state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
@@ -126,6 +127,12 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
             result?.is_error ? "text-danger" : "text-muted",
           )}>{out}</pre>
         )}
+        {nested.map((n) => (
+          <details key={n.path} className="mx-2.5 mb-2.5 rounded-md border border-line bg-sunken" data-testid="nested-instructions">
+            <summary className="cursor-pointer px-2.5 py-1.5 text-caption text-muted">Instructions loaded: <span className="font-mono">{shortPath(n.path, cwd)}</span></summary>
+            <pre className="max-h-64 overflow-auto border-t border-line p-2.5 font-mono text-caption leading-relaxed whitespace-pre-wrap break-words text-muted">{n.body}</pre>
+          </details>
+        ))}
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2 px-3 pb-3">
             {images.map((im, i) => <img key={i} src={`data:${im.media_type};base64,${im.data}`} className="max-h-64 rounded-lg border border-line" alt="" />)}

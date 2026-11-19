@@ -70,8 +70,9 @@ export function ProfilePanel({ session }: { session: Session }) {
           {p.instructions.files.length ? (
             <ul className="flex flex-col gap-1">
               {p.instructions.files.map((f) => (
-                <li key={f.path} className="flex items-baseline gap-2">
+                <li key={f.path} className="flex items-baseline gap-2" data-scope={f.scope}>
                   <span className="min-w-0 truncate font-mono text-caption" title={f.path}>{f.path}</span>
+                  {f.scope === "nested" && <span className="shrink-0 text-micro text-faint" title="Loaded when the work reached its folder">on reach</span>}
                   <span className={cn("shrink-0 text-micro tabular-nums", f.truncated ? "text-warn" : "text-faint")}>{(f.bytes / 1024).toFixed(1)} KB{f.truncated ? ", cut" : ""}</span>
                 </li>
               ))}
