@@ -3,14 +3,17 @@
 // "hooks": [{ "type": "command", "command", "timeout"?, "onFailure"? }] }] } }.
 // The owner's file (~/.config/keel-bun/hooks.json) always runs; a
 // repository's .keel/hooks.json runs only once the owner pinned exactly that
-// content (a changed file runs nothing until pinned again).
+// content and the content of every file under .keel/ its commands run (a
+// changed file or script runs nothing until pinned again). A pin belongs to
+// the repository (its git common dir), so its worktrees keep it.
 //
 // What a hook can do: block a call or a prompt, send a call to the owner, add
 // context for the model (with the call's result; after the prompt), keep a turn
 // going (Stop). What it cannot: allow anything.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { contains } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
@@ -20,7 +23,8 @@ export type HookEvent = (typeof EVENTS)[number];
 type Handler = { type: "command"; command: string; timeout?: number; onFailure?: "block" | "continue" };
 type Group = { matcher?: string; hooks: Handler[] };
 
-export type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; groups: Partial<Record<HookEvent, Group[]>> };
+// `covers`: the files under .keel/ the pin covers besides hooks.json (what its commands run).
+export type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers: string[]; groups: Partial<Record<HookEvent, Group[]>> };
 
 export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "keel-bun", "hooks.json");
 
@@ -32,6 +36,65 @@ export function projectRoot(cwd: string): string {
     if (existsSync(join(d, ".git")) || existsSync(join(d, ".keel"))) return d;
     if (dirname(d) === d) return cwd;
   }
+}
+
+// The files under <root>/.keel/ that hook commands name (a script, or a folder
+// of them): each named file, the rest of the folder it sits in when that is a
+// folder of .keel/ (what it sources), and every file under a named folder.
+const COVER_MAX = 500;
+export function coveredFiles(root: string, groups: Partial<Record<HookEvent, Group[]>>): string[] {
+  const keel = join(root, ".keel");
+  const out = new Set<string>();
+  const walk = (d: string) => {
+    let names: string[] = [];
+    try { names = readdirSync(d); } catch { return; }
+    for (const n of names) {
+      if (out.size >= COVER_MAX) return;
+      const p = join(d, n);
+      try { if (statSync(p).isDirectory()) walk(p); else out.add(p); } catch {}
+    }
+  };
+  for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
+    for (const m of h.command.matchAll(/\.keel\/([\w./@+-]+)/g)) {
+      const p = resolve(keel, m[1]!.replace(/\/+$/, ""));
+      if (!contains(keel, p) || p === keel || p === join(keel, "hooks.json")) continue;
+      let st;
+      try { st = statSync(p); } catch { out.add(p); continue; } // a missing script is covered as missing
+      if (st.isDirectory()) walk(p);
+      else {
+        out.add(p);
+        if (dirname(p) !== keel) walk(dirname(p));
+      }
+    }
+  }
+  out.delete(join(keel, "hooks.json"));
+  return [...out].sort();
+}
+
+// The digest a pin holds: hooks.json alone when its commands run no file of
+// .keel/, else with each covered file's path and content.
+function pinDigest(text: string, root: string, files: string[]): string {
+  if (!files.length) return sha(text);
+  const h = new Bun.CryptoHasher("sha256").update(text);
+  for (const f of files) {
+    let body = "\u0000missing";
+    try { body = sha(readFileSync(f, "utf8")); } catch {}
+    h.update(`\u0000${relative(root, f)}\u0000${body}`);
+  }
+  return h.digest("hex");
+}
+
+// A repository's pins are kept for its git common dir (a worktree's are its
+// main checkout's), else for the folder.
+const pinKeys = new Map<string, string>();
+export function pinKey(root: string): string {
+  const hit = pinKeys.get(root);
+  if (hit) return hit;
+  const r = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore" });
+  const out = r.success ? r.stdout.toString().trim() : "";
+  const key = out ? (out.endsWith("/.git") ? dirname(out) : out) : root;
+  pinKeys.set(root, key);
+  return key;
 }
 
 export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Group[]>>; problems: string[] } {
@@ -77,7 +140,7 @@ export class Hooks {
   }
 
   private pinned(root: string) {
-    return this.store.db.query<{ sha256: string }, [string]>("SELECT sha256 FROM hook_pins WHERE root = ?").get(root)?.sha256;
+    return this.store.db.query<{ sha256: string }, [string]>("SELECT sha256 FROM hook_pins WHERE root = ?").get(pinKey(root))?.sha256;
   }
 
   sources(cwd: string): Source[] {
@@ -85,17 +148,19 @@ export class Hooks {
     const read = (path: string, scope: "owner" | "project") => {
       if (!existsSync(path)) return;
       let text = "";
-      try { text = readFileSync(path, "utf8"); } catch (e) { out.push({ path, scope, root: projectRoot(cwd), text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], groups: {} }); return; }
+      try { text = readFileSync(path, "utf8"); } catch (e) { out.push({ path, scope, root: projectRoot(cwd), text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }); return; }
       const { groups, problems } = parseHooks(text);
-      const digest = sha(text);
+      const root = projectRoot(cwd);
+      const files = scope === "project" ? coveredFiles(root, groups) : [];
+      const digest = pinDigest(text, root, files);
       let active = true;
       if (scope === "project") {
         const pin = this.pinned(projectRoot(cwd));
         if (!pin) { active = false; problems.unshift("not pinned: the owner reads the file and pins it before it runs"); }
-        else if (pin !== digest) { active = false; problems.unshift("changed since it was pinned: pin it again to run it"); }
+        else if (pin !== digest) { active = false; problems.unshift(`changed since it was pinned${files.length ? " (the file or a script it runs)" : ""}: pin it again to run it`); }
       }
       const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
-      out.push({ path, scope, root: projectRoot(cwd), text: text.slice(0, 20_000), sha256: digest, active, events, problems, groups });
+      out.push({ path, scope, root, text: text.slice(0, 20_000), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups });
     };
     read(ownerHooksPath(), "owner");
     read(join(projectRoot(cwd), ".keel", "hooks.json"), "project");
@@ -106,7 +171,7 @@ export class Hooks {
     const project = this.sources(cwd).find((s) => s.scope === "project");
     if (!project) return "this folder has no .keel/hooks.json";
     if (project.sha256 !== digest) return "the file is no longer the one that was shown: read it again";
-    this.store.db.query("INSERT INTO hook_pins (root, sha256, created) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET sha256 = excluded.sha256, created = excluded.created").run(projectRoot(cwd), digest, Date.now());
+    this.store.db.query("INSERT INTO hook_pins (root, sha256, created) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET sha256 = excluded.sha256, created = excluded.created").run(pinKey(projectRoot(cwd)), digest, Date.now());
     return null;
   }
 

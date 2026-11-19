@@ -86,7 +86,7 @@ export function IntegrationsSettings() {
   );
 }
 
-type HookSource = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[] };
+type HookSource = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers?: string[] };
 
 // Settings: hook files. The owner's runs; a repository's runs once pinned after reading it.
 export function HooksSettings() {
@@ -123,6 +123,11 @@ export function HooksSettings() {
             {Object.entries(s.events).map(([e, n]) => <span key={e} className="rounded-md border border-line px-1.5 py-px font-mono text-micro text-muted">{e} · {n}</span>)}
             {!Object.keys(s.events).length && <span className="text-caption text-faint">No handlers</span>}
           </div>
+          {!!s.covers?.length && (
+            <p className="border-t border-line py-2.5 text-caption text-muted" data-testid="hook-covers">
+              The pin also covers what it runs: {s.covers.map((f, i) => <span key={f}>{i ? ", " : ""}<code className="font-mono text-micro">{f}</code></span>)}
+            </p>
+          )}
           {s.problems.length > 0 && (
             <ul className="space-y-0.5 border-t border-line py-2.5" data-testid="hook-problems">
               {s.problems.map((p) => <li key={p} className="text-caption text-muted">{p}</li>)}
