@@ -60,6 +60,11 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
     await expect(page.getByTestId("task-notice")).toBeVisible();
     const child = page.url().split("/s/")[1]!;
     await expect(page.getByTestId("stop")).toHaveText("Stop this agent");
+    // The head's line is the agent's task (or what it does now), never the harness's preamble.
+    // Read once, as the page opens: the agent has usually not called a tool yet.
+    const line = (await page.getByTestId("station-head").locator(".k-station-line").textContent()) ?? "";
+    expect(line).not.toContain("subagent of a Keel session");
+    expect(line).toContain("sleep 120");
     if (where === "page") { await shoot(page, "agents-05b-child-running"); await page.getByTestId("transcript").click(); }
     else await page.getByTestId("composer").focus();
     await page.keyboard.press("Escape");

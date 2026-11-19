@@ -116,14 +116,23 @@ export function lastLine(events: StoredEvent[] | undefined, cwd?: string): strin
       }
     }
     if (e.kind === "user" && ownWords(e)) return clean(e.data.text);
+    // A subagent's first message is the harness's preamble around its task:
+    // the line is the parent's words only (they start at task_at).
+    if (e.kind === "user" && e.data.kind === "task") return clean(taskWords(e));
   }
   return "";
 }
 
+const taskWords = (e: StoredEvent) => {
+  const text = String(e.data.text ?? ""), at = e.data.task_at;
+  return typeof at === "number" && at >= 0 && at <= text.length ? text.slice(at) : "";
+};
+
 // What the owner wrote (typed, steered, queued, spoken or sent from the CLI). Messages
-// the harness delivers (a wait firing, a subagent's report, a hook) carry meta and are not his.
+// the harness delivers (a wait firing, a subagent's task or report, a hook) carry a
+// kind or an origin of their own (engine.send spreads its meta into the event) and are not his.
 const OWNER = new Set([undefined, "steer", "queued", "voice", "cli"]);
-const ownWords = (e: StoredEvent) => !e.data.meta && OWNER.has(e.data.origin) && !/^\s*(<[a-z_]+[\s>]|\[harness\])/i.test(String(e.data.text ?? ""));
+const ownWords = (e: StoredEvent) => !e.data.kind && !e.data.meta && OWNER.has(e.data.origin) && !/^\s*(<[a-z_]+[\s>]|\[harness\])/i.test(String(e.data.text ?? ""));
 // One readable line: no tags, no markdown marks.
 const clean = (t: string) => String(t).replace(/<\/?[a-z_][^>]*>/gi, " ").replace(/[*`#_]/g, "").replace(/\s+/g, " ").trim();
 
