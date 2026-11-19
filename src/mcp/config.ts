@@ -2,11 +2,12 @@
 // configs hold (sources.ts reads them) that the owner imports in one step.
 // Import copies and keeps the copy in step with its source; the source file
 // is never written.
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import type { OAuthConfig } from "./oauth.ts";
-import { endpoint, readSources, type SourceServer } from "./sources.ts";
+import { endpoint, identity, readSources, type SourceServer } from "./sources.ts";
 
 export type McpServerConfig = {
   command?: string;
@@ -101,18 +102,26 @@ export function expand(s: string, env: Record<string, string | undefined> = proc
   return s.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_, k, d) => env[k] ?? d ?? "");
 }
 
-export type ImportableServer = SourceServer & { endpoint: string; configured: boolean };
+// `group`: the endpoint and account as one opaque key (the same server set up
+// in several agents is one row). `other_account`: a Keel server at the same
+// endpoint under another account (its name).
+export type ImportableServer = SourceServer & { endpoint: string; group: string; configured: boolean; other_account?: string };
 
 // The same server is often set up in several agents (under one name or
-// another): configured means Keel already has a server at that endpoint.
+// another): configured means Keel already has a server at that endpoint with
+// the same account (environment and headers).
 export function importable(cwd: string, configured: Record<string, McpServerConfig>, failed?: { file: string; error: string }[]): ImportableServer[] {
-  const have = new Set(Object.values(configured).map(endpoint));
+  const have = new Set(Object.values(configured).map(identity));
+  const byEndpoint = new Map(Object.entries(configured).map(([n, c]) => [endpoint(c), n]));
   return readSources(cwd, failed).flatMap((s) => {
     if (RESERVED.has(s.name.toLowerCase())) return [];
     const config = s.config;
     // The Chrome bridge is built in: another agent's entry for it is already here.
     const bundled = /agent-chrome-bridge|chrome-bridge/.test([config.command, ...(config.args ?? [])].join(" "));
     const ep = endpoint(config);
-    return [{ ...s, endpoint: ep, configured: bundled || have.has(ep) || (s.name in configured && endpoint(configured[s.name]!) === ep) }];
+    const id = identity(config);
+    const done = bundled || have.has(id) || (s.name in configured && identity(configured[s.name]!) === id);
+    const other = !done ? byEndpoint.get(ep) : undefined;
+    return [{ ...s, endpoint: ep, group: createHash("sha256").update(id).digest("hex").slice(0, 16), configured: done, ...(other ? { other_account: other } : {}) }];
   });
 }

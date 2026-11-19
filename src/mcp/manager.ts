@@ -611,14 +611,14 @@ export class McpManager {
   }
 
   // Everything the other agents hold that Keel does not, in one step: one
-  // copy per endpoint, from the first agent that has it (this folder's own
+  // copy per endpoint and account, from the first agent that has it (this folder's own
   // files stay a per-server choice, since Keel's mcp.json serves every folder).
   importAll(): { imported: string[]; skipped: { name: string; source: string; why: string }[] } {
     const imported: string[] = [], skipped: { name: string; source: string; why: string }[] = [];
     const seen = new Set<string>();
     for (const i of this.importable()) {
-      if (i.configured || i.project || seen.has(i.endpoint)) continue;
-      seen.add(i.endpoint);
+      if (i.configured || i.project || seen.has(i.group)) continue;
+      seen.add(i.group);
       const err = this.importFrom(i.source, i.name);
       if (err) skipped.push({ name: i.name, source: i.label, why: err });
       else imported.push(i.name);

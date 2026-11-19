@@ -386,12 +386,12 @@ function AddServer({ onAdded }: { onAdded: (servers: McpServerState[], name: str
 }
 
 // The same server is often set up in several agents, under one name or
-// another: one row per endpoint, with the agents (and names) that hold it.
+// another: one row per endpoint and account, with the agents (and names) that hold it.
 type Row = { first: ImportableServer; holders: { label: string; name: string }[]; configured: boolean };
 function importRows(items: ImportableServer[]): Row[] {
   const rows = new Map<string, Row>();
   for (const i of items) {
-    const k = `${i.project ? "p" : "u"}\u0000${i.endpoint}`;
+    const k = `${i.project ? "p" : "u"}\u0000${i.group}`;
     const r = rows.get(k);
     if (r) { r.holders.push({ label: i.label, name: i.name }); r.configured ||= i.configured; }
     else rows.set(k, { first: i, holders: [{ label: i.label, name: i.name }], configured: i.configured });
@@ -416,6 +416,7 @@ function ImportList({ rows, taken, onImport }: { rows: Row[]; taken: Set<string>
             <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" title={target(i)}>{tilde(target(i))}</span>
             {[...new Set(holders.map((h) => h.label))].map((l) => <span key={l} className="k-chip">{l}</span>)}
             {i.config.enabled === false && <span className="k-chip" title="Turned off there; imported off">off</span>}
+            {!configured && i.other_account && <span className="shrink-0 text-caption text-muted" data-testid="mcp-other-account" title={`Keel's ${i.other_account} reaches the same server with other credentials or environment`}>same server, another account</span>}
             {configured ? <span className="w-24 shrink-0 text-right text-caption text-faint">In Keel</span> : (
               <button type="button" data-testid="mcp-import" title={as ? `Keel has a server named ${i.name}: this one comes in as ${as}` : undefined} onClick={() => onImport(i, as)} className="k-btn w-24 justify-center"><Download /> {as ? "As new" : "Import"}</button>
             )}

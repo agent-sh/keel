@@ -22,7 +22,7 @@ import { expandImports } from "../engine/turn.ts";
 import { carriedPlugins, discoverSkills, frontmatter, pluginDir, skillsConfig, writeSkillsConfig, type SkillRoot } from "../tools/skills.ts";
 import { EVENTS, ownerHooksPath, parseHooks } from "./hooks.ts";
 import { importable, readConfig, writeConfig, type McpServerConfig } from "../mcp/config.ts";
-import { endpoint, importHome } from "../mcp/sources.ts";
+import { identity, importHome } from "../mcp/sources.ts";
 import { findBin } from "./tacit.ts";
 import { collect } from "../core/proc.ts";
 import { HARNESSES, modelFor, type Imports } from "./import/service.ts";
@@ -430,8 +430,8 @@ function planMcp(items: Planned[], deps: PortDeps) {
   const all = importable(portHome(), mine, failed).filter((s) => !s.project);
   for (const f of failed) items.push({ id: `mcp:error:${f.file}`, area: "mcp", source: "MCP", title: tilde(f.file), state: "error", reason: f.error, pick: false });
   const seen = new Map<string, string>(); // name -> label it is brought from
-  const sameAs = new Map<string, string>(); // endpoint -> name
-  for (const [name, c] of Object.entries(mine)) sameAs.set(endpoint(c), name);
+  const sameAs = new Map<string, string>(); // endpoint and account -> name
+  for (const [name, c] of Object.entries(mine)) sameAs.set(identity(c), name);
   for (const c of all) {
     const env = Object.keys(c.config.env ?? {});
     const item = { id: `mcp:${c.source}:${c.name}`, area: "mcp" as const, source: c.label, title: c.name, detail: [c.endpoint.slice(0, 120), env.length ? `env ${env.join(", ")}` : ""].filter(Boolean).join("; ") };
@@ -439,13 +439,14 @@ function planMcp(items: Planned[], deps: PortDeps) {
     if (why) { items.push({ ...item, state: "skip", reason: why, pick: false }); continue; }
     const own = env.find((k) => /^(CODEX|CLAUDE|HERMES)_/.test(k));
     if (own) { items.push({ ...item, state: "skip", reason: `it is wired to that agent itself (${own})`, pick: false }); continue; }
-    if (c.configured || mine[c.name]) { items.push({ ...item, state: "done", reason: mine[c.name] && endpoint(mine[c.name]!) !== c.endpoint ? "Keel has a server of that name (kept as it is)" : undefined, pick: false }); seen.set(c.name, "Keel"); continue; }
+    const id = identity(c.config);
+    if (c.configured || mine[c.name]) { items.push({ ...item, state: "done", reason: mine[c.name] && identity(mine[c.name]!) !== id ? "Keel has a server of that name (kept as it is)" : undefined, pick: false }); seen.set(c.name, "Keel"); continue; }
     if (seen.has(c.name)) { items.push({ ...item, state: "skip", reason: `same name as the server brought from ${seen.get(c.name)}`, pick: false }); continue; }
-    if (sameAs.has(c.endpoint)) { items.push({ ...item, state: "skip", reason: `the same server as ${sameAs.get(c.endpoint)}`, pick: false }); continue; }
+    if (sameAs.has(id)) { items.push({ ...item, state: "skip", reason: `the same server as ${sameAs.get(id)}`, pick: false }); continue; }
     seen.set(c.name, c.label);
-    sameAs.set(c.endpoint, c.name);
+    sameAs.set(id, c.name);
     items.push({
-      ...item, state: "new", pick: true,
+      ...item, state: "new", pick: true, ...(c.other_account ? { reason: `same server as ${c.other_account}, another account` } : {}),
       run: async () => {
         if (deps.mcp) { const err = deps.mcp.importFrom(c.source, c.name); if (err) throw new Error(err); }
         else { const cfg = readConfig(); if (!cfg.servers[c.name]) { cfg.servers[c.name] = { ...c.config, sync: { source: c.source, name: c.name } }; writeConfig(cfg); } }

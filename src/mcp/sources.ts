@@ -3,6 +3,7 @@
 // plugins), Claude Desktop, Codex, Gemini CLI, Antigravity, Cursor, OpenCode,
 // Hermes and Zed. Each reader maps its harness's shape onto Keel's one shape;
 // nothing here writes to another agent's file.
+import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -214,22 +215,40 @@ export function sourceFiles(cwd: string): string[] {
   ];
 }
 
-// What a server is, whatever it is called: the URL, or the program's file
+// Where a server is, whatever it is called: the URL, or the program's file
 // name and its arguments (one agent names /usr/bin/node, another node). A URL
-// is compared as RFC 3986 says: scheme and host in any case, the default port
-// left out, the path (less a trailing slash) and the query exactly.
+// is compared as RFC 3986 says: scheme and host in any case and the default
+// port left out; the path and query stay exact, a trailing slash included.
 export function endpoint(c: McpServerConfig): string {
   if (c.url) {
     try {
       const u = new URL(c.url.trim());
       const auth = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
-      return `${u.protocol}//${auth}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}${u.hash}`;
+      return `${u.protocol}//${auth}${u.host}${u.pathname}${u.search}${u.hash}`;
     } catch {
-      return c.url.trim().replace(/\/+$/, "");
+      return c.url.trim();
     }
   }
   return [basename(c.command ?? ""), ...(c.args ?? [])].join(" ");
 }
+
+// Who the server acts as: its environment, headers and the credentials it
+// names. Kept private: a keyed hash (the key lives only in this process), so
+// a low-entropy value such as an account letter cannot be read back from it.
+const KEY = randomBytes(32);
+export function account(c: McpServerConfig): string {
+  const lower = (h?: Record<string, string>) => h && Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
+  const sorted = (o: Record<string, unknown>) => JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+  const parts = {
+    env: c.env && sorted(c.env), env_vars: c.env_vars && [...c.env_vars].sort(), headers: c.headers && sorted(lower(c.headers)!),
+    headers_env: c.headers_env && sorted(lower(c.headers_env)!), bearer_env: c.bearer_env, headers_helper: c.headers_helper, oauth: c.oauth?.client_id,
+  };
+  return createHmac("sha256", KEY).update(sorted(parts)).digest("hex").slice(0, 16);
+}
+
+// What makes two configs the same server: the endpoint and the account. The
+// same endpoint under another account is another server.
+export const identity = (c: McpServerConfig) => `${endpoint(c)}\u0000${account(c)}`;
 
 // The part of a config the source decides. The owner's own choices in Keel
 // (on or off, which tools are reads, what it follows) are not the source's.
