@@ -1,4 +1,3 @@
-import { markSeen } from "../lib/board.ts";
 import { Component, lazy, Suspense, useEffect, type ReactNode } from "react";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { Composer } from "./Composer.tsx";
@@ -41,7 +40,6 @@ export class Boundary extends Component<{ children: ReactNode }, { error: Error 
 export function SessionView({ id, header, panel = true, focus = true }: { id: string; header?: ReactNode; panel?: boolean; focus?: boolean }) {
   const session = useStore((s) => s.sessions[id]);
   useEffect(() => { actions.loadSession(id).catch(reportError); }, [id]);
-  useEffect(() => { if (session) markSeen(id, Math.max(Date.now(), session.updated)); }, [id, session?.updated]); // the board's "new" mark
   useEffect(() => { if (focus) document.title = session?.title ? `${session.title} - Keel` : "Keel"; }, [session?.title, focus]);
   if (!session) {
     return (
@@ -72,6 +70,7 @@ export function SessionView({ id, header, panel = true, focus = true }: { id: st
                 onSend={(t, images) => actions.send(session.id, t, { images })}
                 onQueue={(t, images) => actions.send(session.id, t, { mode: "queue", images })}
                 onStop={() => actions.interrupt(session.id).catch(reportError)}
+                focus={focus}
                 autoFocus={focus && matchMedia("(min-width: 768px)").matches}
               />
             </div>

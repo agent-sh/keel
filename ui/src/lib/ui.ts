@@ -5,8 +5,7 @@ import { useSyncExternalStore } from "react";
 export type Route =
   | { name: "new" }
   | { name: "session"; id: string }
-  | { name: "settings"; section: string }
-  | { name: "board" };
+  | { name: "settings"; section: string };
 
 export type ThemePref = "light" | "dark" | "system";
 
@@ -23,7 +22,9 @@ type UIState = {
   enterSends: boolean;
   newWorkspace: string; // the folder the start box creates a session in ("" = daemon default)
   newModel: string;
-  composerSeed: { text: string; n: number } | null; // text pushed into the composer (edit, a slash command)
+  // Text pushed into a message box (a file mention, a starter): `session` names the
+  // session's box, absent for the start box. Several boxes can be on screen.
+  composerSeed: { text: string; n: number; session?: string } | null;
   panel: string | null; // the open tab of the side panel
   focusEvent: string | null; // a message to scroll to once its session is shown (?e=)
 };
@@ -37,7 +38,6 @@ function parse(): Route {
   if (p === "/" && h) return { name: "session", id: h[1]! };
   const st = p.match(/^\/settings(?:\/([\w-]+))?/);
   if (st) return { name: "settings", section: st[1] ?? "general" };
-  if (p === "/board") return { name: "board" };
   return { name: "new" };
 }
 
@@ -84,7 +84,7 @@ export function useUI<T>(sel: (s: UIState) => T): T {
 }
 
 export function navigate(r: Route, replace = false) {
-  const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : r.name === "board" ? "/board" : "/";
+  const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : "/";
   if (url !== location.pathname || location.hash) (replace ? history.replaceState : history.pushState).call(history, null, "", url);
   setUI({ route: r, ...(isPhone() ? { sidebar: false } : {}) });
 }
@@ -118,4 +118,5 @@ export function setTheme(t: ThemePref) {
 export const reapplyTheme = applyTheme;
 export const isDark = () => document.documentElement.classList.contains("dark");
 export const phone = isPhone;
-export const seedComposer = (text: string) => setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1 } });
+export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined) =>
+  setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1, session } });

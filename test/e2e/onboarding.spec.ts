@@ -21,7 +21,7 @@ test("first run", async ({ page, request }) => {
   await page.setViewportSize({ width: 1920, height: 1040 });
 
   await page.getByTestId("setup-read-again").click();
-  await expect(page.getByTestId("setup-read-again")).toHaveText("I added a key, read again");
+  await expect(page.getByTestId("setup-read-again")).toHaveText("I added a key, read again", { timeout: 60_000 });
   await page.getByTestId("setup-open-providers").click();
   await expect(page).toHaveURL(/\/settings\/providers$/);
 

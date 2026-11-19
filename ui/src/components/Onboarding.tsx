@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { INIT_PROMPT, reviewPrompt } from "../lib/builtins.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
-import { navigate, setUI } from "../lib/ui.ts";
+import { navigate, seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 
 // First run, part one: no provider lists a model, so nothing can start yet.
@@ -73,7 +73,7 @@ export function FirstSteps() {
           <button
             key={s.label}
             type="button"
-            onClick={() => setUI({ composerSeed: { text: s.text, n: Date.now() } })}
+            onClick={() => seedComposer(s.text, undefined)}
             className={cn("h-8 rounded-md border border-line px-3 text-ui text-muted hover:bg-hover hover:text-fg")}
             data-testid="starter"
           >
@@ -84,7 +84,6 @@ export function FirstSteps() {
       <ul className="mt-6 flex flex-col gap-1.5 text-caption text-muted">
         <li>Each session works in one folder, the one above the box. Paste a screenshot or mention a file with @.</li>
         <li>While it works, Enter steers it and Tab queues the next message. Edits and commands ask first; the mode next to the session title changes that.</li>
-        <li>The board shows every session by what it needs from you.</li>
       </ul>
     </section>
   );

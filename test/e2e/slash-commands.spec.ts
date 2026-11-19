@@ -7,7 +7,7 @@ import { HAIKU, shoot } from "./shots.ts";
 // Feature: the message box's built-in commands that used to say "not
 // available yet". /permissions sets a mode by name or opens the menu, /review
 // asks the model to review the folder's uncommitted changes, /init has it
-// write an AGENTS.md, /agents opens the board, /export opens the export sheet.
+// write an AGENTS.md, /agents shows every session, /export opens the export sheet.
 test("slash commands", async ({ page, request }) => {
   test.setTimeout(300_000);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
@@ -53,7 +53,7 @@ test("slash commands", async ({ page, request }) => {
   await page.keyboard.press("Escape");
 
   await run("/agents");
-  await expect(page).toHaveURL(/\/board$/);
+  await expect(page.getByTestId("sidebar")).toBeVisible();
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

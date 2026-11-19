@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, Bug, Columns3, Folder, Server, Moon, PanelLeftClose, Plus, Search, Settings, Sun, SunMoon } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Folder, Server, Moon, PanelLeftClose, Plus, Search, Settings, Sun, SunMoon } from "lucide-react";
 import { useSafety } from "../lib/safety.ts";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
@@ -106,22 +106,6 @@ export function NeedsYou({ sessionId }: { sessionId: string }) {
   );
 }
 
-// The board, with how many sessions wait on an approval.
-function BoardButton({ active }: { active: boolean }) {
-  const waiting = useSafety((st) => Object.values(st.approvals).filter((l) => l.length > 0).length);
-  return (
-    <button
-      type="button"
-      data-testid="open-board"
-      onClick={() => navigate({ name: "board" })}
-      className={cn("flex h-8 items-center gap-2 rounded-md px-2.5 text-ui text-muted hover:bg-hover hover:text-fg", active && "bg-raised text-fg shadow-1 hover:bg-raised")}
-    >
-      <Columns3 className="size-4" /> Board
-      {waiting > 0 && <span className="ml-auto rounded-full bg-accent-soft px-1.5 text-micro font-medium text-accent-ink" title={`${waiting} session${waiting === 1 ? "" : "s"} waiting on an approval`}>{waiting}</span>}
-    </button>
-  );
-}
-
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
   const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts).length);
@@ -183,7 +167,6 @@ export function Sidebar() {
           <Search className="size-4" /> Search and commands
           <Kbd keys="mod+k" className="ml-auto" />
         </button>
-        <BoardButton active={route.name === "board"} />
       </div>
 
       <div role="tablist" aria-label="Session list" className="mx-2.5 mb-1 flex gap-0.5 rounded-md bg-sunken p-0.5">

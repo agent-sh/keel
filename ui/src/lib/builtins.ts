@@ -43,7 +43,6 @@ registerCommand(
   { id: "panel-close", label: "Close the side panel", group: "View", keys: "mod+\\", inInput: true, when: () => !!getUI().panel, run: () => savePref("panel", null) },
   { id: "palette", label: "Search sessions and commands", group: "General", keys: "mod+k", inInput: true, run: () => setUI({ palette: !getUI().palette }) },
   { id: "shortcuts", label: "Keyboard shortcuts", group: "General", keys: "mod+/", inInput: true, run: () => setUI({ shortcuts: !getUI().shortcuts }) },
-  { id: "board", label: "Board: sessions by what they need", group: "Sessions", words: "kanban overview working done needs attention", run: () => navigate({ name: "board" }) },
   { id: "new-session", label: "New session", group: "Sessions", keys: "mod+shift+o", inInput: true, words: "start create", run: () => newIn() },
   { id: "new-here", label: "New session in this folder", group: "Sessions", words: "clear fresh", when: () => !!current(), run: () => newIn(current()!.workspace) },
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
@@ -113,7 +112,7 @@ slash.add(
       await safety.setPerm(session!.id, { mode: mode.id });
     },
   },
-  { id: "agents", label: "Show every session and agent by what it needs", run: () => navigate({ name: "board" }) },
+  { id: "agents", label: "Show every session and its agents, by folder", run: () => savePref("sidebar", true) },
 );
 // A placeholder never replaces a command a lane registered (import order varies).
 for (const p of [

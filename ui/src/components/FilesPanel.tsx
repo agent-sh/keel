@@ -66,7 +66,7 @@ export function FilesPanel({ session }: { session: Session }) {
   };
   const mention = (path: string) => {
     const draft = localStorage.getItem(`keel.draft.${session.id}`) ?? "";
-    seedComposer(`${draft}${draft && !draft.endsWith(" ") ? " " : ""}@${path} `);
+    seedComposer(`${draft}${draft && !draft.endsWith(" ") ? " " : ""}@${path} `, session.id);
   };
 
   if (open) {

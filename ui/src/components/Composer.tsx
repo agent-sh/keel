@@ -28,7 +28,7 @@ function useSlashItems() {
 }
 
 export function Composer({
-  session, onSend, onQueue, onStop, working, model, onModel, workspace, autoFocus,
+  session, onSend, onQueue, onStop, working, model, onModel, workspace, autoFocus, focus = true,
 }: {
   session?: Session;
   onSend: (text: string, images: ImageBlock[]) => Promise<unknown> | void;
@@ -41,6 +41,8 @@ export function Composer({
   onModel: (id: string) => void;
   workspace?: string; // the folder @-mentions search
   autoFocus?: boolean;
+  // The station that has the keys (several message boxes can be on screen): only it answers Alt+M.
+  focus?: boolean;
 }) {
   const [text, setText] = useState(() => localStorage.getItem(draftKey(session?.id)) ?? "");
   const [images, setImages] = useState<Attachment[]>([]);
@@ -53,7 +55,13 @@ export function Composer({
   const fileInput = useRef<HTMLInputElement>(null);
   const enterSends = useUI((s) => s.enterSends);
   const modelSignal = useUI((s) => s.modelMenu);
-  const seed = useUI((s) => s.composerSeed);
+  const [pickerSignal, setPickerSignal] = useState(0);
+  const lastSignal = useRef(modelSignal);
+  useEffect(() => {
+    if (modelSignal !== lastSignal.current && focus) setPickerSignal((n) => n + 1);
+    lastSignal.current = modelSignal;
+  }, [modelSignal]);
+  const seed = useUI((s) => (s.composerSeed && s.composerSeed.session === session?.id ? s.composerSeed : null)); // only this box's
   const connected = useStore((s) => s.connected);
   const slashItems = useSlashItems();
 
@@ -386,7 +394,7 @@ export function Composer({
           <ImagePlus className="size-4" />
         </button>
         <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
-        <ModelPicker value={model} onChange={onModel} openSignal={modelSignal} />
+        <ModelPicker value={model} onChange={onModel} openSignal={pickerSignal} />
         {sid && <EffortPicker sessionId={sid} />}
         {sid && <SpeedPicker sessionId={sid} />}
         {model && <LimitChip model={model} />}
