@@ -53,7 +53,7 @@ under `~/.cache/keel-work/bun/research/`.
 ```bash
 bun install
 scripts/dev.sh <port>          # dev daemon with hot reload on Bedrock, scratch state of its own
-                               # (scripts/css-watch.ts reloads imported stylesheets; a daemon
+                               # (scripts/dev-watch.ts reloads imported stylesheets and files a rebase brought back; a daemon
                                #  that restarted itself has no watcher: run dev.sh again)
 bunx tsc --noEmit -p .          # typecheck
 KEEL_URL=http://127.0.0.1:<port> bunx playwright test   # e2e against that dev daemon (required)

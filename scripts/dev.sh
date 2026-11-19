@@ -53,6 +53,7 @@ if [ -n "${KEEL_BIN:-}" ]; then
 fi
 # Lanes add dependencies; a stale node_modules breaks the bundle at load.
 bun install --silent
-# Imported stylesheets reload too (the bundler watches only the entry stylesheet).
-bun scripts/css-watch.ts "$$" &
+# Imported stylesheets reload too, and a source file that went missing and came back
+# (see scripts/dev-watch.ts).
+bun scripts/dev-watch.ts "$$" &
 exec bun --hot src/main.ts serve --dev --bind "127.0.0.1:$PORT" --state-dir "$DEV/state" --workspace "$DEV/ws"
