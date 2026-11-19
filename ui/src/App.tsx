@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
-import { Boundary } from "./components/SessionView.tsx";
+import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import "./lib/builtins.ts";
 import "./lib/tools-ui.ts";
