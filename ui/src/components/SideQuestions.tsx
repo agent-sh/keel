@@ -16,15 +16,17 @@ export function SideQuestions({ session }: { session: Session }) {
   const pending = use((s) => s.pending[session.id]);
   const current = use((s) => s.current[session.id]);
   const error = use((s) => s.error[session.id]);
+  const failedQ = use((s) => s.failed[session.id]);
+  const branched = use((s) => s.branched[session.id]);
   const [text, setText] = useState("");
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { if (!threads) side.load(session.id).catch(reportError); }, [session.id]);
   useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [threads, pending]);
   const ask = () => {
     const q = text.trim();
-    if (!q || pending) return;
+    if (!q) return;
     setText("");
-    side.ask(session.id, q).catch(reportError);
+    side.ask(session.id, q).catch(reportError); // asked while one is answered: it waits its turn
   };
   const shown = threads ?? [];
   return (
@@ -65,13 +67,24 @@ export function SideQuestions({ session }: { session: Session }) {
             ))}
           </section>
         ))}
-        {pending && (
-          <div className="flex flex-col gap-2" data-testid="side-pending">
-            <div className="self-end max-w-[85%] rounded-xl rounded-br-sm bg-accent-soft px-3.5 py-2 text-ui whitespace-pre-wrap">{pending}</div>
-            <p className="text-ui text-muted animate-pulse-dot">Answering</p>
+        {branched && <p className="pb-3 text-caption text-faint" data-testid="side-branched">The conversation is on another branch now, so this started a new thread. The earlier one stays above.</p>}
+        {pending?.map((q, i) => (
+          <div key={`${i}:${q}`} className="flex flex-col gap-2 pb-4" data-testid="side-pending">
+            <div className="self-end max-w-[85%] rounded-xl rounded-br-sm bg-accent-soft px-3.5 py-2 text-ui whitespace-pre-wrap">{q}</div>
+            <p className={cn("text-ui text-muted", i === 0 && "animate-pulse-dot")}>{i === 0 ? "Answering" : "Waits for the answer before it"}</p>
+          </div>
+        ))}
+        {failedQ && (
+          <div className="flex flex-col gap-2" data-testid="side-failed">
+            <div className="self-end max-w-[85%] rounded-xl rounded-br-sm border border-danger/30 px-3.5 py-2 text-ui whitespace-pre-wrap text-muted">{failedQ}</div>
+            <div className="flex items-center gap-2 self-end text-caption">
+              <span className="text-danger">{error ? `Not answered: ${error}` : "Not answered."}</span>
+              <button type="button" data-testid="side-retry" onClick={() => side.ask(session.id, failedQ).catch(reportError)} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Retry</button>
+              <button type="button" data-testid="side-edit" onClick={() => { if (!text.trim()) setText(failedQ); side.dismissFailed(session.id); }} className="h-7 rounded-md px-2 text-muted hover:bg-hover hover:text-fg">Edit</button>
+            </div>
           </div>
         )}
-        {error && <p className="text-caption text-danger">{error}</p>}
+        {error && !failedQ && <p className="text-caption text-danger">{error}</p>}
         <div ref={end} />
       </div>
       <div className="border-t border-line p-3">

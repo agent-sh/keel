@@ -12,13 +12,18 @@ export type SideThread = { id: string; created_ms: number; exchanges: SideExchan
 export type SideState = {
   threads: Record<string, SideThread[]>;
   current: Record<string, string | undefined>; // the thread a follow-up continues
-  pending: Record<string, string | undefined>; // the question being answered
+  pending: Record<string, string[] | undefined>; // questions on their way, in the order asked
   error: Record<string, string | undefined>;
+  failed: Record<string, string | undefined>; // the words of a question that got no answer, kept to retry or edit
+  branched: Record<string, true | undefined>; // the last follow-up started a new thread after a branch switch
 };
 
 // Clears per session: an answer asked before the newest clear is dropped.
 const cleared = new Map<string, number>();
-let st: SideState = { threads: {}, current: {}, pending: {}, error: {} };
+let st: SideState = { threads: {}, current: {}, pending: {}, error: {}, failed: {}, branched: {} };
+// One question at a time per session, in the order asked (the slash command
+// and the panel alike): a follow-up's context holds the answer before it.
+const chain = new Map<string, Promise<unknown>>();
 const subs = new Set<() => void>();
 const set = (p: Partial<SideState>) => { st = { ...st, ...p }; subs.forEach((f) => f()); };
 
@@ -29,32 +34,48 @@ export const side = {
     const { threads } = await api<{ threads: SideThread[] }>(`/api/sessions/${id}/side`);
     set({ threads: { ...st.threads, [id]: threads }, current: { ...st.current, [id]: st.current[id] ?? threads.at(-1)?.id } });
   },
-  async ask(id: string, question: string) {
+  ask(id: string, question: string): Promise<void> {
     const at = cleared.get(id) ?? 0;
-    set({ pending: { ...st.pending, [id]: question }, error: { ...st.error, [id]: undefined } });
-    try {
-      const r = await api<{ thread_id: string; exchange: SideExchange }>(`/api/sessions/${id}/side`, {
-        method: "POST", body: JSON.stringify({ question, thread_id: st.current[id] }),
-      });
-      if ((cleared.get(id) ?? 0) !== at) return; // cleared meanwhile: its answer is forgotten too
-      const list = [...(st.threads[id] ?? [])];
-      const t = list.find((x) => x.id === r.thread_id);
-      if (t) list[list.indexOf(t)] = { ...t, exchanges: [...t.exchanges, r.exchange] };
-      else list.push({ id: r.thread_id, created_ms: r.exchange.ts, exchanges: [r.exchange] });
-      set({ threads: { ...st.threads, [id]: list }, current: { ...st.current, [id]: r.thread_id } });
-    } catch (e) {
-      if ((cleared.get(id) ?? 0) !== at || (e as { body?: { cleared?: boolean } }).body?.cleared) return;
-      set({ error: { ...st.error, [id]: (e as Error).message } });
-      throw e;
-    } finally {
-      if ((cleared.get(id) ?? 0) === at) set({ pending: { ...st.pending, [id]: undefined } });
-    }
+    set({ pending: { ...st.pending, [id]: [...(st.pending[id] ?? []), question] }, error: { ...st.error, [id]: undefined }, failed: { ...st.failed, [id]: undefined } });
+    const run = async () => {
+      if ((cleared.get(id) ?? 0) !== at) return;
+      // The thread as it is when this question goes (after the one before it landed).
+      const asked = st.current[id];
+      try {
+        const r = await api<{ thread_id: string; branched?: boolean; exchange: SideExchange }>(`/api/sessions/${id}/side`, {
+          method: "POST", body: JSON.stringify({ question, thread_id: asked }),
+        });
+        if ((cleared.get(id) ?? 0) !== at) return; // cleared meanwhile: its answer is forgotten too
+        const list = [...(st.threads[id] ?? [])];
+        const t = list.find((x) => x.id === r.thread_id);
+        if (t) list[list.indexOf(t)] = { ...t, exchanges: [...t.exchanges, r.exchange] };
+        else list.push({ id: r.thread_id, created_ms: r.exchange.ts, exchanges: [r.exchange] });
+        // The answer goes to its thread; the thread a follow-up continues moves
+        // only if the owner did not pick another meanwhile (New thread).
+        const still = st.current[id] === asked;
+        set({ threads: { ...st.threads, [id]: list }, current: still ? { ...st.current, [id]: r.thread_id } : st.current, branched: { ...st.branched, [id]: r.branched || undefined } });
+      } catch (e) {
+        if ((cleared.get(id) ?? 0) !== at || (e as { body?: { cleared?: boolean } }).body?.cleared) return;
+        set({ error: { ...st.error, [id]: (e as Error).message }, failed: { ...st.failed, [id]: question } });
+        throw e;
+      } finally {
+        if ((cleared.get(id) ?? 0) === at) {
+          const left = [...(st.pending[id] ?? [])];
+          left.splice(left.indexOf(question), 1);
+          set({ pending: { ...st.pending, [id]: left.length ? left : undefined } });
+        }
+      }
+    };
+    const p = (chain.get(id) ?? Promise.resolve()).catch(() => {}).then(run);
+    chain.set(id, p);
+    return p;
   },
-  newThread: (id: string) => set({ current: { ...st.current, [id]: undefined } }),
+  newThread: (id: string) => set({ current: { ...st.current, [id]: undefined }, branched: { ...st.branched, [id]: undefined } }),
+  dismissFailed: (id: string) => set({ failed: { ...st.failed, [id]: undefined }, error: { ...st.error, [id]: undefined } }),
   async clear(id: string) {
     await api(`/api/sessions/${id}/side`, { method: "DELETE" });
     cleared.set(id, (cleared.get(id) ?? 0) + 1);
-    set({ threads: { ...st.threads, [id]: [] }, current: { ...st.current, [id]: undefined }, pending: { ...st.pending, [id]: undefined } });
+    set({ threads: { ...st.threads, [id]: [] }, current: { ...st.current, [id]: undefined }, pending: { ...st.pending, [id]: undefined }, failed: { ...st.failed, [id]: undefined }, branched: { ...st.branched, [id]: undefined } });
   },
 };
 

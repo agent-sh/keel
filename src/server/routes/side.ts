@@ -3,6 +3,7 @@
 // still writing), on the session's own request prefix, with no tool run.
 // Nothing enters the conversation. A thread replays its newest exchanges with
 // each question, so follow-ups see the earlier ones (Claude Code keeps 20).
+import { lineage } from "../../core/tree.ts";
 import type { Message } from "../../core/types.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -23,7 +24,8 @@ CREATE TABLE IF NOT EXISTS side_exchanges (
 CREATE INDEX IF NOT EXISTS side_exchanges_session ON side_exchanges(session_id, id);
 `;
 
-type Exchange = { id: number; thread_id: string; question: string; answer: string; ts: number; model: string; usage: any; ran_tools: boolean };
+// `head`: the conversation's head the exchange was answered from.
+type Exchange = { id: number; thread_id: string; question: string; answer: string; ts: number; model: string; usage: any; ran_tools: boolean; head?: string | null };
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -33,6 +35,7 @@ const asked = (q: string) =>
 
 export const sideRoutes: RouteModule = ({ store, engine, errors }) => {
   store.migrate(SCHEMA);
+  if (!store.columnExists("side_exchanges", "head")) store.migrate("ALTER TABLE side_exchanges ADD COLUMN head TEXT");
   const rows = (sid: string): Exchange[] =>
     store.db.query<any, [string]>("SELECT * FROM side_exchanges WHERE session_id = ? ORDER BY id").all(sid)
       .map((r) => ({ ...r, usage: JSON.parse(r.usage), ran_tools: !!r.ran_tools }));
@@ -63,7 +66,13 @@ export const sideRoutes: RouteModule = ({ store, engine, errors }) => {
         const b = (await req.json().catch(() => ({}))) as any;
         const question = String(b.question ?? "").trim();
         if (!question) return json({ error: "the question is empty" }, 400);
-        const known = b.thread_id && rows(s.id).some((x) => x.thread_id === b.thread_id);
+        // A follow-up goes on its thread while the conversation goes on along the
+        // same branch; after a switch to another branch, the thread's answers came
+        // from words this branch does not have, so the question starts a new one.
+        const line = new Set(lineage(store.events(s.id), s.head).map((e) => e.id));
+        const prior = b.thread_id ? rows(s.id).filter((x) => x.thread_id === b.thread_id) : [];
+        const sameBranch = prior.every((x) => !x.head || line.has(x.head));
+        const known = prior.length > 0 && sameBranch;
         const thread = known ? String(b.thread_id) : crypto.randomUUID();
         const before = known ? rows(s.id).filter((x) => x.thread_id === thread).slice(-SIDE_EXCHANGES_KEPT) : [];
         const extra: Message[] = [];
@@ -95,11 +104,11 @@ export const sideRoutes: RouteModule = ({ store, engine, errors }) => {
         if (res.stop === "refusal") answer ||= "The model declined this question.";
         const ts = Date.now();
         const id = store.db.query<{ id: number }, any[]>(
-          "INSERT INTO side_exchanges (session_id, thread_id, question, answer, ts, model, usage, ran_tools) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-        ).get(s.id, thread, question, answer, ts, res.model_id, JSON.stringify(res.usage), ranTools ? 1 : 0)!.id;
+          "INSERT INTO side_exchanges (session_id, thread_id, question, answer, ts, model, usage, ran_tools, head) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        ).get(s.id, thread, question, answer, ts, res.model_id, JSON.stringify(res.usage), ranTools ? 1 : 0, s.head ?? null)!.id;
         // Keep the newest exchanges of the session; older ones are not replayed anyway.
         store.db.run("DELETE FROM side_exchanges WHERE session_id = ? AND id NOT IN (SELECT id FROM side_exchanges WHERE session_id = ? ORDER BY id DESC LIMIT 100)", [s.id, s.id]);
-        return json({ thread_id: thread, exchange: { id, thread_id: thread, question, answer, ts, model: res.model_id, usage: res.usage, ran_tools: ranTools } }, 201);
+        return json({ thread_id: thread, branched: prior.length > 0 && !sameBranch, exchange: { id, thread_id: thread, question, answer, ts, model: res.model_id, usage: res.usage, ran_tools: ranTools, head: s.head ?? null } }, 201);
       },
     },
   };
