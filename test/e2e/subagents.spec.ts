@@ -124,6 +124,7 @@ test("an agent's page stops the whole agent; a held Escape stops nothing", async
   const child = [{ name: "wait_for", input: { kind: "timer", seconds: 600, note: "check back" } }, { name: "Bash", input: { command: "sleep 40" } }];
   const calls = [{ name: "spawn_agent", input: { message: `Timer helper\nscript:calls ${JSON.stringify(child)}` } }, { name: "Bash", input: { command: "sleep 40" } }];
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  try {
   const agent = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents[0];
   await expect.poll(async () => (await agent())?.session_id, { timeout: 30_000 }).toBeTruthy();
   const a = await agent();
@@ -151,6 +152,9 @@ test("an agent's page stops the whole agent; a held Escape stops nothing", async
   await expect.poll(async () => (await agent()).status, { timeout: 30_000 }).toBe("stopped");
   expect((await agent()).stopped_by).toBe("owner");
   expect((await timer()).status).toBe("cancelled");
-  await request.post(`/api/sessions/${session.id}/interrupt`);
-  await request.delete(`/api/sessions/${session.id}`);
+  } finally {
+    // Gone whatever happened: its agent would show in the next spec's session list.
+    await request.post(`/api/sessions/${session.id}/interrupt`);
+    await request.delete(`/api/sessions/${session.id}`);
+  }
 });
