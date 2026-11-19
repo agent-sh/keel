@@ -67,8 +67,9 @@ function wrap(t: CatalogTool): Deferred {
     name, description: t.description, input_schema: t.input_schema, defer: true, readOnly: !!t.readOnly, catalog: t.qualified,
     // Judged and granted as the catalog tool, the name mcp_call uses too.
     async target(input) {
-      if (input && typeof input === "object") judged.set(input, judgedOf(t));
-      return { name: t.qualified, readOnly: !!t.readOnly, input, source: t.source, cls: t.judge ? await t.judge(input) : undefined };
+      const j = judgedOf(t);
+      if (input && typeof input === "object") judged.set(input, j);
+      return { name: t.qualified, readOnly: !!t.readOnly, input, source: t.source, shape: j.shape, cls: t.judge ? await t.judge(input) : undefined };
     },
     async run(input, ctx): Promise<ToolOutput> {
       const now = (await catalogTools()).find((x) => x.qualified === t.qualified);

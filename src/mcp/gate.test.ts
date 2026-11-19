@@ -125,3 +125,43 @@ test("a server's source binding follows its endpoint, program and credentials, n
   expect(b({ url: "https://a.example/mcp", headers: { Authorization: "y" } })).not.toBe(b({ url: "https://a.example/mcp", headers: { Authorization: "x" } }));
   expect(b({ url: "https://a.example/mcp" })).not.toBe(b({ url: "https://b.example/mcp" }));
 });
+
+// A retry the owner let through after the reviewer refused a call is for that
+// call on that source in that shape: the same server read again keeps it, a
+// changed endpoint, account or schema gets judged anew.
+test("a reviewer retry covers the refused call's source and shape only", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Gate } = await import("../safety/gate.ts");
+  const { withCatalog } = await import("../tools/defer.ts");
+  const { binding } = await import("./sources.ts");
+  const out: Record<string, { judged: number; let: boolean }> = {};
+  for (const change of ["same", "endpoint", "account", "schema"] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "keel-mcp-retry-"));
+    const store = new Store(join(dir, "state")), g = new Gate(store, new Bus());
+    const s = store.createSession({ workspace: dir, model: "fixture", title: "retry" });
+    g.setPerm(s.id, { mode: "reviewer" });
+    let judged = 0;
+    g.judge = async () => (judged++, { allow: false, risk: "medium", reason: "needs the owner", model: "inert" } as any);
+    const put = (changed: boolean) => {
+      const c = { url: `https://fixture.invalid/${changed && change === "endpoint" ? "B" : "A"}`, headers: { "X-Account": changed && change === "account" ? "B" : "A" } };
+      const source = binding(c, new Uint8Array(32).fill(7));
+      const make = () => ({ server: "fixture", name: "act", qualified: "fixture__act", mcp: true, source, description: "Synthetic operation", readOnly: false, input_schema: { type: "object", properties: { value: { type: changed && change === "schema" ? "string" : "number" } } }, run: async () => ({ content: "ok" }) });
+      registerCatalog({ name: "fixture", tools: async () => [make()], known: () => [make()] });
+    };
+    const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, seen: new Map(), spillDir: dir };
+    const tool = async () => (await withCatalog([], "claude", [])).find((t) => t.name === "mcp__fixture__act")!;
+    try {
+      put(false);
+      expect("deny" in (await g.check(s, { id: "1", tool: await tool(), input: { value: 1 }, ctx } as any))).toBe(true);
+      g.allowRetry(s.id, g.blocked(s.id)[0]!.id);
+      put(true);
+      const second = await g.check(s, { id: "2", tool: await tool(), input: { value: 1 }, ctx } as any);
+      out[change] = { judged, let: !("deny" in second) };
+    } finally {
+      unregisterCatalog("fixture");
+      store.db.close();
+    }
+  }
+  expect(out).toEqual({ same: { judged: 1, let: true }, endpoint: { judged: 2, let: false }, account: { judged: 2, let: false }, schema: { judged: 2, let: false } });
+});

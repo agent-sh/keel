@@ -268,7 +268,8 @@ export class Gate {
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
     // action, and anything it cannot judge, still goes to the owner.
     if (this.perm(session.id).mode === "reviewer" && d.ask.risk === "low") {
-      const key = new Bun.CryptoHasher("sha256").update(`${name}\u0000${cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary}`).digest("hex").slice(0, 32);
+      // The refused call as judged: its tool on that source in that shape, and its input.
+      const key = new Bun.CryptoHasher("sha256").update(JSON.stringify([name, target?.source ?? null, target?.shape ?? null, cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary])).digest("hex").slice(0, 32);
       if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
       const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
