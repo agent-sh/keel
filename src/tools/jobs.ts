@@ -32,6 +32,7 @@ export type Job = {
   callId?: string;       // the tool call that started it
   by?: "owner";          // the owner ran it from the terminal pane
   pid: number;
+  boot?: string;         // its process's start time, read when it started (Linux)
   readOff: number;       // bytes of the log already handed to the model
   taken?: number;        // bytes the last read covered (more than it showed when it was cut)
   decoder: TextDecoder;
@@ -151,6 +152,7 @@ export function startJob(o: StartOpts): Job {
     } finally { closeSync(fd); }
   }
   // A PTY's record is history only: it never outlives its daemon to be adopted.
+  job.boot = procStart(job.proc.pid);
   writeMeta(log, { ...meta(job, job.proc.pid), ...(o.pty ? { pty: true, reported: true } : {}) });
   job.pid = job.proc.pid;
   const proc = job.proc;
@@ -177,7 +179,7 @@ export type Meta = {
 };
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
-  started: j.started, background: j.background, pid, boot: procStart(pid), call_id: j.callId, by: j.by, read_off: j.readOff,
+  started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, read_off: j.readOff,
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
 function writeMeta(log: string, m: Meta) {
@@ -188,8 +190,10 @@ function patchMeta(log: string, patch: Partial<Meta>) {
 }
 
 // The start time of a process (Linux), so a reused pid is not taken for the job.
+// `procfs.stat` is the read (a test stands in for it).
+export const procfs = { stat: (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8") };
 function procStart(pid: number): string | undefined {
-  try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()!.split(" ")[19]; } catch { return undefined; }
+  try { return procfs.stat(pid).split(") ").pop()!.split(" ")[19]; } catch { return undefined; }
 }
 function alive(m: Meta): boolean {
   try { process.kill(m.pid, 0); } catch (e: any) { if (e?.code !== "EPERM") return false; }
@@ -240,7 +244,7 @@ export function adoptJobs(spillRoot: string): number {
       const shown = concealDeep(m, m.sessionId);
       if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
       const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
-        pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
+        pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
         callId: m.call_id, by: m.by };
       if (m.reported || m.pty) {
         // History: a PTY never outlives its daemon; one with no end ended with it.
@@ -334,15 +338,35 @@ export function writeJob(j: Job, chars: string): boolean {
   return true;
 }
 
-// Stop the whole process group: TERM, then KILL if it lingers.
+// Stop the whole process group: TERM, then KILL if it lingers. Each signal
+// goes only while the group's leader is still the process the job started as
+// (its start time, read right before the signal): a pid reused since then, or
+// a leader that can no longer be read, gets nothing and the job ends as gone.
+// Bun has no pidfd API, so the read and the signal are back to back instead.
 export async function stopJob(j: Job, reason = "was stopped"): Promise<void> {
   if (!running(j)) return;
   j.stopReason = reason;
   const pid = j.pid;
-  const kill = (sig: NodeJS.Signals) => { try { process.kill(-pid, sig); } catch { try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {} } };
+  const same = () => !j.boot || procStart(pid) === j.boot;
+  const kill = (sig: NodeJS.Signals) => {
+    if (!same()) return gone(j);
+    try { process.kill(-pid, sig); } catch {
+      if (!same()) return gone(j);
+      try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {}
+    }
+  };
   kill("SIGTERM");
   if (!(await waitJob(j, 2000))) kill("SIGKILL");
   await waitJob(j, 2000);
+}
+
+// A job whose process is no longer the one it started as: ended, nothing signalled.
+function gone(j: Job) {
+  if (!running(j)) return;
+  j.stopReason = `${j.stopReason ?? "was stopped"}: its process is gone`;
+  finish(j, null, null);
+  const a = adopted.get(j.id);
+  if (a) { adopted.delete(j.id); a.resolve(); }
 }
 
 export const jobsOf = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId);

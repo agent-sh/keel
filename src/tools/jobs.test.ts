@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, running, startJob, takeUnread, waitJob } from "./jobs.ts";
+import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, waitJob } from "./jobs.ts";
 
 // A daemon that starts background commands and exits (a restart); this
 // process plays the next daemon.
@@ -80,4 +80,48 @@ test("a read past the cap keeps the start and the end, and says what it left out
   expect(out.endsWith("LAST-LINE")).toBe(true);
   expect(out).toContain(`bytes not shown here; the whole output is in ${j.log}`);
   expect(j.taken).toBe(2_000_019);
+});
+
+// A stop signals the job's process only while it is still the one the job
+// started as: its start time is read right before each signal. A pid reused
+// after adoption (or before it) gets nothing, and the job ends as gone.
+// A synthetic pid and a kill spy: nothing is signalled for real.
+test("a stop signals only the process the job started as", async () => {
+  const pid = 987654321;
+  const stat = (start: string) => { const f = Array(50).fill("0"); f[19] = start; return `${pid} (fixture) ${f.join(" ")}`; };
+  const real = { kill: process.kill, stat: procfs.stat };
+  for (const [name, atAdopt, atStop, signals] of [
+    ["matched", "100", "100", ["SIGTERM"]],
+    ["changed after adoption", "100", "200", []],
+    ["changed before adoption", "200", "200", []],
+  ] as const) {
+    const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-stop-"));
+    const dir = join(root, "spill", `s-${name}`, "jobs");
+    mkdirSync(dir, { recursive: true });
+    const id = `fixture-${name.replace(/ /g, "-")}`;
+    writeFileSync(join(dir, `${id}.log`), "");
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, num: 900, sessionId: `s-${name}`, command: "nothing runs", cwd: root, started: Date.now(), background: true, pid, boot: "100" }));
+    let start: string = atAdopt;
+    let alive = true;
+    const sent: string[] = [];
+    procfs.stat = (p: number) => { if (p !== pid || !alive) throw new Error("no such process"); return stat(start); };
+    process.kill = ((p: number, s: any = 0) => {
+      if (Math.abs(p) !== pid) return real.kill(p, s);
+      if (s === 0) { if (!alive) throw Object.assign(new Error("gone"), { code: "ESRCH" }); return true; }
+      sent.push(String(s));
+      alive = false;
+      return true;
+    }) as typeof process.kill;
+    try {
+      adoptJobs(join(root, "spill"));
+      const job = jobsOf(`s-${name}`)[0]!;
+      start = atStop;
+      await stopJob(job, "was stopped");
+      expect([name, sent]).toEqual([name, [...signals]]);
+      expect(running(job)).toBe(false);
+    } finally {
+      process.kill = real.kill;
+      procfs.stat = real.stat;
+    }
+  }
 });
