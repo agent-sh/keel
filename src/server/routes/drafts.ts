@@ -54,7 +54,8 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
 
   return {
     "/api/sessions/:id/draft": {
-      GET: (req: any) => (session(req) ? json(draft(req.params.id)) : bad("no such session", 404)),
+      // An archived session's page still reads its draft; writing needs a live session.
+      GET: (req: any) => (store.session(req.params.id) ? json(draft(req.params.id)) : bad("no such session", 404)),
       // { text?, images?: [{ id?, name?, mime, data (base64) }], attachments?: ids to keep, origin? }
       // Text replaces the draft's text ("" empties it). Images are added.
       // `attachments` drops every file of the draft not listed.
