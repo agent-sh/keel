@@ -51,7 +51,7 @@ export const hookRoutes: RouteModule = (deps) => {
       const target = call.tool.target ? await call.tool.target(call.input) : null;
       const name = target?.name ?? call.tool.name;
       const input = target ? target.input : call.input;
-      const r = await hooks.run("PreToolUse", s, { tool_name: name, tool_input: input, tool_use_id: call.id }, namesOf(name, input));
+      const r = await hooks.run("PreToolUse", s, { tool_name: name, tool_input: input, tool_use_id: call.id }, namesOf(name, input, call.tool.name));
       if (r.block) return { deny: `A hook blocked this call: ${r.block}` };
       if (r.ask) {
         if (!gate) return { deny: `A hook asks the owner about this call (${r.ask}), and no one can be asked here.` };
@@ -64,7 +64,7 @@ export const hookRoutes: RouteModule = (deps) => {
       const target = call.tool.target ? await call.tool.target(call.input) : null;
       const name = target?.name ?? call.tool.name;
       const input = target ? target.input : call.input;
-      const r = await hooks.run("PostToolUse", s, { tool_name: name, tool_input: input, tool_use_id: call.id, tool_response: result.content }, namesOf(name, input));
+      const r = await hooks.run("PostToolUse", s, { tool_name: name, tool_input: input, tool_use_id: call.id, tool_response: result.content }, namesOf(name, input, call.tool.name));
       const lines = [...(after.get(call.id) ?? []), ...r.context, ...(r.block ? [`A hook says: ${r.block}`] : [])];
       after.delete(call.id);
       if (!lines.length) return;

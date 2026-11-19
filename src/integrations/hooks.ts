@@ -122,11 +122,18 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
   return { groups, problems };
 }
 
-// A tool's own name and the names other harnesses give it, for matchers.
-export function namesOf(tool: string, input: any): string[] {
+// A tool's own name and the names other harnesses give it, for hook matchers
+// and agents' disallowed tools. `via` is the tool that dispatched it (mcp_call
+// runs a catalog tool by its full name; Claude Code calls that mcp__<name>).
+// A tool that runs a command (a monitor of one, a program, a command on
+// another machine) also answers to Bash.
+export function namesOf(tool: string, input: any, via?: string): string[] {
   const out = [tool];
   const t = tacitToolCall(tool, input);
   if (t) out.push(t.tool_name);
+  if (via && via !== tool) out.push(via);
+  if (via === "mcp_call" && !tool.startsWith("mcp__")) out.push(`mcp__${tool}`);
+  if (/^(run_code|keel__run_on)$/.test(tool) || (/^monitor$/i.test(tool) && input?.command)) out.push("Bash");
   if (/^(edit|replace|multi_edit|multiedit|apply_patch)$/i.test(tool)) out.push("Edit");
   if (/^(write|write_file)$/i.test(tool)) out.push("Write");
   return [...new Set(out)];

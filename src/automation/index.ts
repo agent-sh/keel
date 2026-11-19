@@ -14,6 +14,7 @@ import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop } from "./tools.ts";
 import * as waits from "./waits.ts";
 import { runMode } from "../core/runmode.ts";
+import { namesOf } from "../integrations/hooks.ts";
 
 // Subagents, waits, loops and alerts: tables, tools, turn hooks, the scheduler
 // and the HTTP routes, joined to the daemon from this one module.
@@ -57,8 +58,10 @@ function init(deps: Deps) {
       const custom = agents.definitions(s.workspace).filter((d) => d.source !== "built-in");
       return custom.length ? `Agent types you can start besides the built-ins:\n${custom.map((d) => `- ${d.name}: ${d.description}`).join("\n")}` : "";
     },
-    beforeTool: (s, call) => {
-      const why = agents.gate(s.id, call.tool.name, call.input);
+    beforeTool: async (s, call) => {
+      const target = call.tool.target && agents.byChild(s.id) ? await call.tool.target(call.input) : null;
+      const name = target?.name ?? call.tool.name;
+      const why = agents.gate(s.id, call.tool.name, call.input, namesOf(name, target ? target.input : call.input, call.tool.name));
       if (why) return { deny: why };
       // A question the model asks the owner is an alert until it is answered.
       if (QUESTION_TOOLS.has(call.tool.name)) {

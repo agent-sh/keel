@@ -624,7 +624,8 @@ export function resolveTarget(parentId: string, target: string): AgentRecord {
 // the cached prefix is shared.
 // The permission gate's read-only mode holds a read-only agent (it knows which
 // commands change nothing); this adds the definition's own tool lists.
-export function gate(sessionId: string, toolName: string, input?: any): string | undefined {
+// `names`: every name the call answers to (namesOf); the first is the tool it runs.
+export function gate(sessionId: string, toolName: string, input?: any, names: string[] = [toolName]): string | undefined {
   const a = byChild(sessionId);
   if (!a) return undefined;
   if (a.worktree) {
@@ -633,8 +634,12 @@ export function gate(sessionId: string, toolName: string, input?: any): string |
   }
   const def = defOf(a.id);
   if (!def) return undefined;
-  if (def.tools && !def.tools.some((t) => t.toLowerCase() === toolName.toLowerCase())) return `${toolName} is not in this agent's tools (${def.tools.join(", ")}).`;
-  if (def.disallowed?.some((t) => t.toLowerCase() === toolName.toLowerCase())) return `${toolName} is not allowed for this agent.`;
+  const is = (list: string[], n: string) => list.some((t) => t.toLowerCase() === n.toLowerCase());
+  // A dispatched tool (mcp_call) is in the list when the dispatcher, or the tool it runs by either of its names, is.
+  const own = [toolName, names[0]!, ...names.filter((n) => n.startsWith("mcp__"))];
+  if (def.tools && !own.some((n) => is(def.tools!, n))) return `${toolName} is not in this agent's tools (${def.tools.join(", ")}).`;
+  const hit = names.find((n) => def.disallowed && is(def.disallowed, n));
+  if (hit) return `${names[0]} is not allowed for this agent${hit !== names[0] ? ` (${hit} is not)` : ""}.`;
   return undefined;
 }
 

