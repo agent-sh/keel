@@ -666,11 +666,12 @@ export function onTurnEnd(sessionId: string, reason: string) {
   const by = stopping.get(a.id) ?? (reason === "interrupted" ? "owner" : undefined);
   stopping.delete(a.id);
   const status: AgentStatus = by ? "stopped" : reason === "error" ? "failed" : INCOMPLETE.has(reason) ? "incomplete" : "completed";
-  settling.add(a.id);
-  finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id));
+  settling.set(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
 }
 
-const settling = new Set<string>();
+// Agents whose ended turn is being settled (a work agent's worktree is read
+// first): a message meanwhile waits for it, then continues the agent.
+const settling = new Map<string, Promise<unknown>>();
 const SCHEMA_TRIES = 2;
 
 // The last round's final message: what a structured report is read from.
@@ -758,6 +759,10 @@ export async function send(id: string, message: string, interrupt = false): Prom
   const parent = store.session(a.parent_id);
   if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title)).wt);
   const text = `Message from the session that started you:\n${message}`;
+  // Its turn ended and its report is being settled: it is finished, not
+  // running. Steering it now would start a turn its record says is done.
+  const ending = settling.get(id);
+  if (ending) { await ending; return send(id, message, interrupt); }
   if (a.status === "running" || a.status === "waiting") {
     if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
     deliver(a.session_id, text, { kind: "steer", agent_id: id });

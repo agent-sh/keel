@@ -320,6 +320,32 @@ test("a wait result settles the report it holds while a newer one is owed", asyn
   expect(sends.filter((x) => x.id === parent.id && x.text.includes(`agent_id="${a.id}"`))).toEqual([]);
 });
 
+// A message to an agent whose turn just ended, while its report is still
+// being settled (a work agent's worktree is checked first): the message
+// continues it as a new task, so the agent is running, not "done" while its
+// session works, and that task's report reaches the parent too.
+test("a message sent while an agent's report settles continues it", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "keel-agents-repo-"));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
+  Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start"], { cwd: repo });
+  const p = store.createSession({ model: "m:x", workspace: repo, title: "work parent" });
+  store.append(p.id, "assistant", { blocks: [] });
+  busy.add(p.id);
+  const a = await agents.spawn(p.id, { prompt: "do it", isolation: "worktree", background: true });
+  expect(agents.get(a.id)!.worktree).toBeTruthy();
+  end(a, "end_turn", "report R"); // settling starts: the worktree is read
+  await agents.send(a.id, "one more thing");
+  await Bun.sleep(300);
+  expect(agents.get(a.id)!.status).toBe("running");
+  end(a, "end_turn", "report S");
+  await Bun.sleep(300);
+  busy.delete(p.id);
+  sends.length = 0;
+  flush(p.id);
+  const to = sends.filter((x) => x.id === p.id).map((x) => x.text).join("\n");
+  expect([to.includes("report R"), to.includes("report S")]).toEqual([true, true]);
+});
+
 // Call ids are unique only within a session: two parents whose waits share
 // one each get their own report marked delivered.
 test("waits with the same call id in two sessions each mark their own report delivered", async () => {
