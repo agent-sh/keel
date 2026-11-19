@@ -431,7 +431,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const c = content.current;
     if (!c) return;
     const ro = new ResizeObserver(() => {
-      const el = scroller.current!;
+      // A size change queued before the transcript left the page lands after it: nothing to measure.
+      const el = scroller.current;
+      if (!el) return;
       // The message box keeps the column's edges: it gets the scroll bar's width as padding.
       document.documentElement.style.setProperty("--sbw", `${el.offsetWidth - el.clientWidth}px`);
       if (stick.current) el.scrollTop = el.scrollHeight;
@@ -522,7 +524,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.
-              const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
+              const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
               return <Divider key={e.id} testid="note"><span>{text}</span></Divider>;
             }
             if (e.kind === "turn_end") {

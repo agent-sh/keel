@@ -2,10 +2,11 @@ import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
+import { loadMcpPrompts } from "../lib/tools-ui.ts";
 import { toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { fuzzy } from "../lib/keys.ts";
 import { dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
-import { onFeature, reportError, reportUnlessGone, useStore } from "../lib/store.ts";
+import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { cn } from "../lib/utils.ts";
@@ -173,8 +174,8 @@ export function Composer({
   // The menu under the caret: "/" at the start, "@" after a space.
   const detect = (value: string, caret: number) => {
     const before = value.slice(0, caret);
-    const sm = before.match(/^\/([\w-]*)$/);
-    if (sm) return setMenu({ kind: "slash", query: sm[1]!, start: 0 });
+    const sm = before.match(/^\/([\w:.-]*)$/);
+    if (sm) { loadMcpPrompts(); return setMenu({ kind: "slash", query: sm[1]!, start: 0 }); }
     const fm = before.match(/(^|\s)@([^\s@]*)$/);
     if (fm && workspace) return setMenu({ kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 });
     setMenu(null);
@@ -195,6 +196,7 @@ export function Composer({
   const ctx = { session, setText };
   const runSlash = async (item: SlashItem, arg: string) => {
     if (!item.run) return setNotice(`/${item.id} is not available yet.`);
+    setNotice(null);
     setText("");
     setMenu(null);
     try { await item.run(arg, ctx); } catch (e) {
@@ -253,7 +255,7 @@ export function Composer({
   const submit = async (queue = false) => {
     const t = text.trim();
     if (!t && !images.length) return;
-    const cmd = t.match(/^\/([\w-]+)(?:\s+([\s\S]*))?$/);
+    const cmd = t.match(/^\/([\w:.-]+)(?:\s+([\s\S]*))?$/);
     if (cmd && !images.length) {
       const item = slashItems.find((i) => i.id === cmd[1]);
       if (item) return runSlash(item, (cmd[2] ?? "").trim());
@@ -275,7 +277,7 @@ export function Composer({
       // Nothing was sent: the text and images come back, unless something new was typed.
       setText((cur) => cur || t);
       setImages((cur) => (cur.length ? cur : sent));
-      setNotice(String((e as Error).message));
+      setNotice(failed(e, { at: "send" }));
     } finally {
       ref.current?.focus();
     }

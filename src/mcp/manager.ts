@@ -525,9 +525,23 @@ export class McpManager {
   async getPrompt(name: string, prompt: string, args: Record<string, string>, signal?: AbortSignal): Promise<string> {
     const c = await this.ensure(name, 15_000);
     const r = await c.getPrompt(prompt, args, signal);
-    return (r?.messages ?? [])
-      .map((m: any) => `${m.role}: ${m.content?.type === "text" ? m.content.text : m.content?.type === "resource" ? m.content.resource?.text ?? "" : `[${m.content?.type}]`}`)
-      .join("\n");
+    const msgs: any[] = r?.messages ?? [];
+    const text = (m: any) => (m.content?.type === "text" ? m.content.text : m.content?.type === "resource" ? m.content.resource?.text ?? "" : `[${m.content?.type}]`);
+    // All the owner's words: the text itself; a conversation keeps who says what.
+    if (msgs.every((m) => m.role === "user")) return msgs.map(text).join("\n\n");
+    return msgs.map((m) => `${m.role}: ${text(m)}`).join("\n");
+  }
+
+  // Every prompt of the connected servers that offer prompts, for the slash
+  // menu. A server that fails to list is left out (its own state shows why).
+  async allPrompts(signal?: AbortSignal): Promise<{ server: string; name: string; description: string; arguments: { name: string; description?: string; required?: boolean }[] }[]> {
+    const out = await Promise.all(this.ready().map(async (server) => {
+      const c = this.entries.get(server)?.client;
+      if (!c?.capabilities.prompts) return [];
+      const list = await c.listPrompts(signal).catch((e) => (this.errors.capture("tool", e, { server, at: "mcp prompts/list" }), [] as any[]));
+      return list.map((p: any) => ({ server, name: String(p.name), description: String(p.description ?? ""), arguments: Array.isArray(p.arguments) ? p.arguments : [] }));
+    }));
+    return out.flat();
   }
 
   ready(): string[] {

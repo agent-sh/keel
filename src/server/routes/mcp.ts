@@ -204,6 +204,43 @@ export const mcpRoutes: RouteModule = (deps) => {
         try { return json({ prompts: await m.prompts(req.params.name) }); } catch (e) { return bad((e as Error).message, 409); }
       },
     },
+    // Every connected server's prompts, for the slash menu (/server:prompt).
+    "/api/mcp/prompts": {
+      GET: async (req: Request) => json({ prompts: await m.allPrompts(req.signal) }),
+    },
+    // The owner runs a prompt as a command (/server:prompt args, Claude Code's
+    // form; /mcp__server__prompt too). Words after it fill the prompt's
+    // arguments in order, the last one taking the rest. What the server
+    // returns reaches the model as a stored note just before the message; the
+    // transcript shows the command.
+    "/api/sessions/:id/mcp-prompt": {
+      POST: async (req: any) => {
+        const s = deps.store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const b = await body(req);
+        const server = String(b.server ?? ""), name = String(b.prompt ?? "");
+        const k = known(server);
+        if (k) return k;
+        try {
+          const p = (await m.prompts(server)).find((x: any) => x.name === name);
+          if (!p) return bad(`${server} has no prompt named ${name}`, 404);
+          const params: { name: string; required?: boolean }[] = Array.isArray(p.arguments) ? p.arguments : [];
+          const words = String(b.args ?? "").trim().split(/\s+/).filter(Boolean);
+          const args: Record<string, string> = {};
+          params.forEach((a, i) => {
+            const v = i === params.length - 1 ? words.slice(i).join(" ") : words[i];
+            if (v) args[a.name] = v;
+          });
+          const missing = params.filter((a) => a.required && !args[a.name]).map((a) => a.name);
+          if (missing.length) return json({ error: `/${server}:${name} needs ${missing.map((x) => `<${x}>`).join(" ")}`, usage: true }, 400);
+          const text = await m.getPrompt(server, name, args, req.signal);
+          const note = deps.store.append(s.id, "note", { text: `<mcp-prompt server="${server}" name="${name}">\n${text}\n</mcp-prompt>`, model: true, mcp_prompt: `${server}:${name}` });
+          deps.bus.emit({ t: "event", event: note });
+          const ev = deps.engine.send(s.id, `/${server}:${name}${words.length ? ` ${words.join(" ")}` : ""}`);
+          return json({ event: ev }, 201);
+        } catch (e) { return bad((e as Error).message, 409); }
+      },
+    },
     "/api/mcp/servers/:name/prompts/:prompt": {
       POST: async (req: any) => {
         const k = known(req.params.name);

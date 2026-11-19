@@ -46,7 +46,7 @@ test("mcp servers", async ({ page, request }) => {
   await expect(row.getByTestId("mcp-content-text")).toContainText("The echo server repeats what it is given.");
   await row.getByLabel("greet who").fill("the owner");
   await row.locator('[data-testid="mcp-prompt"][data-name="greet"]').getByTestId("mcp-prompt-get").click();
-  await expect(row.getByTestId("mcp-content-text")).toContainText("user: Say hello to the owner.");
+  await expect(row.getByTestId("mcp-content-text")).toContainText("Say hello to the owner.");
   await shoot(page, "mcp-02b-contents");
   await row.getByTestId("mcp-contents-toggle").click();
 
@@ -74,6 +74,30 @@ test("mcp servers", async ({ page, request }) => {
   await expect(page.getByTestId("assistant-text").last()).toContainText("echo: pelican");
   await calls.filter({ hasText: "mcp_call" }).first().click();
   await shoot(page, "mcp-04-chat");
+
+  // The server's prompts are slash commands, as Claude Code lists them
+  // (/server:prompt); the words after it fill the prompt's arguments, and what
+  // the server returns reaches the model as a note before the message.
+  const sp = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "MCP prompt" } })).json()).session;
+  await page.goto(`/s/${sp.id}`);
+  await page.getByTestId("composer").fill("/echo:");
+  const menu = page.getByTestId("slash-menu");
+  await expect(menu).toContainText("/echo:greet");
+  await expect(menu).toContainText("<who>");
+  await shoot(page, "mcp-05-prompt-menu");
+  // Picked from the menu, it waits for its argument; sent without one, it says what it needs.
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("composer")).toHaveValue("/echo:greet ");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("composer-notice")).toContainText("needs <who>");
+  await page.getByTestId("composer").fill("/mcp__echo__greet the owner");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 30_000 });
+  const evs = (await (await request.get(`/api/sessions/${sp.id}`)).json()).events;
+  expect(evs.find((e: any) => e.kind === "note" && e.data?.mcp_prompt === "echo:greet")?.data.text).toContain("Say hello to the owner.");
+  await shoot(page, "mcp-06-prompt-run");
+  await request.delete(`/api/sessions/${sp.id}`);
 
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
