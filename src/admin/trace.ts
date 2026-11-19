@@ -5,6 +5,7 @@
 // and the failure. A failed request also keeps the request itself, gzipped, so
 // it can be sent again (replay). The trace id is the turn's turn_start event
 // id, so an error that names its turn names its trace. Kept SPAN_DAYS days.
+import { conceal } from "../core/conceal.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
@@ -157,6 +158,11 @@ export class Tracer {
     // A span still running when the daemon stopped did not end on its own.
     store.db.run("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, start_ms) WHERE status = 'running'");
     this.prune();
+    // Failure text an older build kept as it was: anything that reads as a secret becomes a placeholder.
+    for (const r of store.db.query<{ span_id: string; error: string }, []>("SELECT span_id, error FROM spans WHERE error IS NOT NULL").all()) {
+      const shown = conceal(r.error);
+      if (shown !== r.error) store.db.run("UPDATE spans SET error = ? WHERE span_id = ?", [shown, r.span_id]);
+    }
     // The error row a failed span became: linked both ways.
     bus.on((f) => {
       if (f.t === "error" && f.error.span_id) store.db.run("UPDATE spans SET error_id = ? WHERE span_id = ?", [f.error.id, f.error.span_id]);
@@ -282,7 +288,7 @@ export class Tracer {
     if (packed) this.kept.set(req, o.span);
     this.finish(o.span, {
       status: aborted ? "interrupted" : "error",
-      error: aborted ? null : errorText(err).slice(0, 4000),
+      error: aborted ? null : conceal(errorText(err).slice(0, 4000)),
       error_type: type,
       attrs: { ...this.wireAttrs(req, o), ...(e?.status ? { http_status: e.status } : {}), ...(e?.kind ? { error_kind: e.kind } : {}), ...(e?.retryAfterMs ? { retry_after_ms: e.retryAfterMs } : {}), ...(prior && !aborted ? { request_in: prior } : {}) },
       request: packed,
@@ -298,7 +304,7 @@ export class Tracer {
     const inputJson = JSON.stringify(input ?? {});
     this.store.db.run(
       "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
-      [span, parent?.trace ?? hex(16), parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? content.slice(0, 1000) : null,
+      [span, parent?.trace ?? hex(16), parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? conceal(content.slice(0, 1000), s.id) : null,
         ran.outcome === "error" ? "tool_error" : null,
         JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: inputJson.length, result_bytes: content.length, ...(turn ? { turn_event: turn.id } : {}) })],
     );

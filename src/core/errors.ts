@@ -12,7 +12,7 @@ export class ErrorTracker {
     const span_id = typeof (err as any)?.span_id === "string" ? (err as any).span_id : undefined;
     const rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, span_id });
     this.bus.emit({ t: "error", error: rec });
-    console.error(`[${source}] ${e.message}`);
+    console.error(`[${source}] ${rec.message}`);
     return rec;
   }
 

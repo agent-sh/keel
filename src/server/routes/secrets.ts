@@ -2,6 +2,7 @@
 // what is stored and sent to the UI is redacted, a tool call that names a
 // placeholder runs with the value, and the model can ask the owner for a
 // secret by name (request_secret), which its commands then get as a variable.
+import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { nameError, vault } from "../../safety/secrets.ts";
 import { registerEnv } from "../../tools/jobs.ts";
@@ -57,6 +58,10 @@ const RequestSecret: Tool = {
   },
 };
 
+// Files written outside the Store (job sidecars and logs, spill files, trace
+// rows) keep placeholders too. Set at load, before any route adopts old jobs.
+setConcealer({ text: (s, sessionId) => vault.redact(s, sessionId, "output"), pairs: () => vault.pairs() });
+
 let emitRequest: (r: SecretRequest, state: "open" | "closed") => void = () => {};
 
 export const secretRoutes: RouteModule = (deps: Deps) => {
@@ -90,11 +95,11 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
       "Secrets: text like [secret:1a2b3c4d] or [value of $NAME] stands for a secret kept out of the conversation. Write it as it is where the value is needed: a tool input that contains it runs with the real value, and output shows the placeholder again. Named ones are also in your commands' environment as $NAME. To get a secret, use request_secret; never ask for one in the chat.",
     // The system prompt (instruction files) is sent redacted too.
     beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output") }),
-    // A call that names a placeholder runs with the value. Runs after the
-    // gate, so cards show the placeholder.
-    beforeTool(s, call) {
+    // A call that names a placeholder runs with the value. Only the tool sees
+    // it: cards, other hooks, traces and records keep the placeholder.
+    execInput(s, call) {
       const { value, used } = vault.reveal(call.input, s.id);
-      if (used.length) return { input: value };
+      if (used.length) return value;
     },
   });
 

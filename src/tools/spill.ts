@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { conceal } from "../core/conceal.ts";
 
 // Token efficiency: a tool output past the cap goes to a file; the model gets
 // the head, the tail and the path, and can Read or Grep the rest on demand.
@@ -8,6 +9,8 @@ export const OUTPUT_CAP = 30_000;
 export async function spill(text: string, dir: string, label: string): Promise<string> {
   if (text.length <= OUTPUT_CAP) return text;
   mkdirSync(dir, { recursive: true });
+  // The file keeps placeholders, as the stored result does.
+  text = conceal(text);
   const path = join(dir, `${Date.now()}-${label.replace(/[^\w.-]/g, "_").slice(0, 40)}.txt`);
   await Bun.write(path, text);
   const head = text.slice(0, OUTPUT_CAP * 0.6);

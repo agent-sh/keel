@@ -373,8 +373,10 @@ export class Store {
   // One row per kind of failure: the same source and message (numbers and ids
   // folded) bumps the row's count and time instead of adding one. A resolved
   // row that happens again opens again.
-  recordError(e: Omit<ErrorRecord, "id" | "ts">): ErrorRecord {
+  recordError(raw: Omit<ErrorRecord, "id" | "ts">): ErrorRecord {
     const ts = Date.now();
+    // Kept like events: a secret in a failure's text is its placeholder.
+    const e = { ...raw, message: this.redact(null, "error", raw.message), stack: raw.stack && this.redact(null, "error", raw.stack), context: raw.context && this.redact(null, "error", raw.context) };
     const fp = `${e.source}\u0000${fingerprint(e.message)}`;
     const session_id = e.session_id ?? sessionOf(e.context);
     const live = session_id ? this.session(session_id) : undefined;

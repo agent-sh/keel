@@ -726,9 +726,11 @@ export class Engine {
         if (g.input !== undefined) call.input = g.input;
         if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
       }
+      let input = call.input;
+      for (const h of allHooks()) { const x = h.execInput?.(session, call); if (x !== undefined) input = x; }
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       t0 = Date.now();
-      const run = call.ctx.dispatch ? call.ctx.dispatch(tool, call.input, call.ctx) : tool.run(call.input, call.ctx);
+      const run = call.ctx.dispatch ? call.ctx.dispatch(tool, input, call.ctx) : tool.run(input, call.ctx);
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);

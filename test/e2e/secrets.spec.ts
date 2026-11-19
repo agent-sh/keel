@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -37,10 +37,10 @@ test("secrets stay out of history and still work", async ({ page, request }) => 
   await shoot(page, "secrets-01-found");
 
   // Name it: the next command reads it from the environment.
-  await found.getByTestId("secret-name").fill("GITHUB_TOKEN");
+  await found.getByTestId("secret-name").fill("E2E_FIXTURE");
   await found.getByTestId("secret-save-name").click();
   await expect(found).toHaveCount(0);
-  await page.getByTestId("composer").fill('Run exactly this one Bash command and nothing else: printf %s "$GITHUB_TOKEN" | sha256sum\nThen reply ok.');
+  await page.getByTestId("composer").fill('Run exactly this one Bash command and nothing else: printf %s "$E2E_FIXTURE" | sha256sum\nThen reply ok.');
   await page.keyboard.press("Enter");
   await turnsDone(request, session.id, 2);
   expect(await output(request, session.id)).toContain(sha(token));
@@ -63,6 +63,23 @@ test("secrets stay out of history and still work", async ({ page, request }) => 
   await expect(page.getByTestId("session-header")).not.toContainText(token.slice(0, 12));
   expect(raw).not.toContain(given);
   expect(raw).toContain("[secret:");
+
+  // Nor in the commands' records and logs (the first command had the value put in
+  // for its placeholder and printed it), what the job and terminal routes return,
+  // or any file of the daemon's state: the database, sidecars, logs, traces.
+  const { jobs } = await (await request.get(`/api/sessions/${session.id}/jobs`)).json();
+  expect(jobs.length).toBeGreaterThan(0);
+  const routes = [JSON.stringify(jobs), JSON.stringify(await (await request.get(`/api/sessions/${session.id}/terminal`)).json())];
+  for (const j of jobs) {
+    routes.push(JSON.stringify(await (await request.get(`/api/sessions/${session.id}/jobs/${j.id}/log`)).json()));
+    routes.push(JSON.stringify(await (await request.get(`/api/sessions/${session.id}/terminal/${j.id}/log`)).json()));
+  }
+  expect(routes.join("\n")).toContain("[secret:");
+  for (const r of routes) { expect(r).not.toContain(token); expect(r).not.toContain(given); }
+  const { state_dir } = await (await request.get("/api/daemon")).json();
+  const walk = (d: string): string[] => readdirSync(d).flatMap((f) => { const p = join(d, f); const st = statSync(p); return st.isDirectory() ? walk(p) : st.isFile() ? [p] : []; });
+  const leaks = walk(state_dir).filter((f) => { const b = readFileSync(f); return b.includes(token) || b.includes(given); });
+  expect(leaks).toEqual([]);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

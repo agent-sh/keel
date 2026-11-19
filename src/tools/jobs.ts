@@ -11,6 +11,7 @@
 import type { Subprocess } from "bun";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { conceal, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
 
 export type Job = {
@@ -79,6 +80,13 @@ export function cleanTerm(s: string): string {
     .join("\n");
 }
 
+// The output filter (see startJob): it outlives a stop signal to the group
+// until its input closes, so what the command printed last is written too.
+const FILTER_JS = `const sc = (${streamConcealer.toString()})(JSON.parse(process.env.KEEL_CONCEAL)); delete process.env.KEEL_CONCEAL;
+for (const s of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(s, () => {});
+process.stdin.on("data", (c) => process.stdout.write(sc.push(c)));
+process.stdin.on("end", () => process.stdout.write(sc.end()));`;
+
 export type StartOpts = {
   sessionId: string;
   command: string;
@@ -104,20 +112,33 @@ export function startJob(o: StartOpts): Job {
   const bare = o.argv ?? ["bash", "-c", o.command];
   const argv = o.wrap ? o.wrap(bare) : bare;
   const env = o.env ?? toolEnv(o.sessionId);
-  const job = { id, num, sessionId: o.sessionId, command: o.command, description: o.description, cwd: o.cwd, pty: !!o.pty,
+  // What is kept and shown is the command with placeholders: a value the
+  // secret hook put in only reaches the process.
+  const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description, cwd: o.cwd, pty: !!o.pty,
     log, started: Date.now(), background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by } as Job;
+  // Known secret values never reach the log: its output is filtered on the way in.
+  const pairs = secretPairs();
   if (o.pty) {
+    const sc = pairs.length ? streamConcealer(pairs) : null;
     job.proc = Bun.spawn(argv, {
       cwd: o.cwd, env: { ...env, TERM: "xterm-256color" },
-      terminal: { cols: 200, rows: 50, data: (_t, d) => { try { appendFileSync(log, d); } catch {} } },
+      terminal: { cols: 200, rows: 50, data: (_t, d) => { try { appendFileSync(log, sc ? sc.push(d) : d); } catch {} } },
     });
+    if (sc) void job.proc.exited.then(() => { try { appendFileSync(log, sc.end()); } catch {} });
   } else {
     // The wrapper sits outside any sandbox wrap: it writes the exit code next
-    // to the log, where a later daemon finds it.
+    // to the log, where a later daemon finds it. With secrets known, the
+    // output goes through a filter process of the same group, so it outlives
+    // a daemon restart as the command does; the values reach it in its
+    // environment only, and the command never sees that variable.
     const fd = openSync(log, "a");
+    const script = pairs.length
+      ? 'p=$KEEL_CONCEAL; b=$KEEL_CONCEAL_BIN; f=$KEEL_CONCEAL_JS; unset KEEL_CONCEAL KEEL_CONCEAL_BIN KEEL_CONCEAL_JS; "$@" 2>&1 | KEEL_CONCEAL="$p" BUN_BE_BUN=1 "$b" -e "$f"; c=${PIPESTATUS[0]}; echo $c > "$0"; exit $c'
+      : '"$@"; c=$?; echo $c > "$0"; exit $c';
+    const wrapEnv = pairs.length ? { ...env, KEEL_CONCEAL: JSON.stringify(pairs), KEEL_CONCEAL_BIN: process.execPath, KEEL_CONCEAL_JS: FILTER_JS } : env;
     try {
-      job.proc = Bun.spawn(["bash", "-c", '"$@"; c=$?; echo $c > "$0"; exit $c', exitPath(log), ...argv], {
-        cwd: o.cwd, env, stdin: "ignore", stdout: fd, stderr: fd, detached: true,
+      job.proc = Bun.spawn(["bash", "-c", script, exitPath(log), ...argv], {
+        cwd: o.cwd, env: wrapEnv, stdin: "ignore", stdout: fd, stderr: fd, detached: true,
       });
     } finally { closeSync(fd); }
   }
@@ -206,6 +227,9 @@ export function adoptJobs(spillRoot: string): number {
       counter = Math.max(counter, m.num ?? 0);
       if (jobs.has(m.id)) continue;
       const log = join(dir, `${m.id}.log`);
+      // A sidecar an older daemon wrote with a value in its command: rewritten with the placeholder.
+      const shown = conceal(m.command ?? "", m.sessionId);
+      if (shown !== m.command) { m.command = shown; patchMeta(log, { command: shown }); }
       const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
         pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
         callId: m.call_id, by: m.by };
@@ -353,7 +377,7 @@ export function lastLine(log: string): string | undefined {
     const buf = Buffer.alloc(n);
     readSync(fd, buf, 0, n, size - n);
     const line = cleanTerm(buf.toString("utf8")).split("\n").map((l) => l.trim()).filter(Boolean).pop();
-    return line?.slice(0, 300);
+    return line && conceal(line).slice(0, 300);
   } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
 }
 

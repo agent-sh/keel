@@ -30,6 +30,10 @@ export type TurnHooks = {
   // Before each tool call, in registration order; may wait (an approval). The
   // first deny wins and the call does not run. Watch call.ctx.signal.
   beforeTool?: (s: Session, call: ToolCall) => ToolGate | Promise<ToolGate>;
+  // The input the tool runs with when it differs from the one shown and
+  // recorded (a secret's value in place of its placeholder). Asked after every
+  // beforeTool passed; call.input keeps what the model wrote.
+  execInput?: (s: Session, call: ToolCall) => any;
   // After each call that ran, with its result (checkpoints, audit).
   afterTool?: (s: Session, call: ToolCall, result: ToolResultBlock) => void | Promise<void>;
   // For measuring only: every call that was dispatched, however it ended,

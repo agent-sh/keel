@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts";
+import { conceal } from "../../core/conceal.ts";
 import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
 import type { RouteModule } from "../app.ts";
@@ -66,7 +67,7 @@ export const toolRoutes: RouteModule = (deps) => {
         const f = Bun.file(j.log);
         const size = f.size;
         const tail = await f.slice(Math.max(0, size - 64 * 1024)).text();
-        return json({ job: jobView(j), tail, truncated: size > 64 * 1024 });
+        return json({ job: jobView(j), tail: conceal(tail, j.sessionId), truncated: size > 64 * 1024 });
       },
     },
     // The owner runs a skill (/name args): its body reaches the model as a

@@ -4,6 +4,7 @@
 // The same functions answer for a session placed here by another daemon.
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
+import { conceal } from "../core/conceal.ts";
 import { findJob, jobsOf, lastLine, type Meta, running, startJob, stopJob, toolEnv, waitJob } from "./jobs.ts";
 
 export type TermJob = {
@@ -58,10 +59,10 @@ export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
     const t = slice(log, 0, TAIL);
     const code = m.ended !== undefined ? m.exit_code : exitOf(log);
     out.set(m.id, {
-      id: m.id, call_id: m.call_id, by: m.by, command: m.command, description: m.description, cwd: m.cwd, started: m.started,
+      id: m.id, call_id: m.call_id, by: m.by, command: conceal(m.command, sessionId), description: m.description, cwd: m.cwd, started: m.started,
       ended: m.ended, exit_code: code, signal: m.signal, stop_reason: m.stop_reason, background: m.background,
       // A record with no end and no live job here: its daemon went before it ended.
-      running: false, pty: !!m.pty, bytes: t.size, last: lastLine(log), tail: t.text, tail_from: t.from, log_missing: !existsSync(log) || undefined,
+      running: false, pty: !!m.pty, bytes: t.size, last: lastLine(log), tail: conceal(t.text, sessionId), tail_from: t.from, log_missing: !existsSync(log) || undefined,
     });
   }
   for (const j of jobsOf(sessionId)) {
@@ -69,7 +70,7 @@ export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
     out.set(j.id, {
       id: j.id, call_id: j.callId, by: j.by, command: j.command, description: j.description, cwd: j.cwd, started: j.started,
       ended: j.ended, exit_code: j.exitCode, signal: j.signal, stop_reason: j.stopReason, background: j.background,
-      running: running(j), pty: j.pty, bytes: t.size, last: lastLine(j.log), tail: t.text, tail_from: t.from, log_missing: !existsSync(j.log) || undefined,
+      running: running(j), pty: j.pty, bytes: t.size, last: lastLine(j.log), tail: conceal(t.text, sessionId), tail_from: t.from, log_missing: !existsSync(j.log) || undefined,
     });
   }
   return [...out.values()].sort((a, b) => a.started - b.started).slice(-LISTED);
@@ -84,7 +85,8 @@ export function readJobLog(spillRoot: string, sessionId: string, jobId: string, 
   const log = live?.log ?? join(jobsDir(spillRoot, sessionId), `${jobId}.log`);
   const known = !!live || existsSync(join(jobsDir(spillRoot, sessionId), `${jobId}.json`));
   if (!existsSync(log)) return known ? { text: "", from: 0, to: 0, size: 0, running: live ? running(live) : false, missing: true } : null;
-  return { ...range(log, Number.isFinite(from) && from > 0 ? from : 0, LOG_READ), running: live ? running(live) : false };
+  const r = range(log, Number.isFinite(from) && from > 0 ? from : 0, LOG_READ);
+  return { ...r, text: conceal(r.text, sessionId), running: live ? running(live) : false };
 }
 
 function range(path: string, from: number, max: number): { text: string; from: number; to: number; size: number } {

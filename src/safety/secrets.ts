@@ -221,6 +221,11 @@ export class Vault {
     return { value: walk(v), used };
   }
 
+  // Every known value with its placeholder (a stream filter replaces them).
+  pairs(): [string, string][] {
+    return [...this.byValue.values()].map((e) => [e.value, this.placeholder(e)]);
+  }
+
   // Named secrets of the session, for the environment of its commands.
   env(sessionId: string): Record<string, string> {
     const env: Record<string, string> = {};
