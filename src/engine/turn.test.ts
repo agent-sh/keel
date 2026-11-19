@@ -60,3 +60,28 @@ test("the owner's images and files stay with their message through a compaction"
   // A later compaction keeps them again, from the first one's record.
   expect(ownerMedia([...line, cp])).toEqual([[img], [file]]);
 });
+
+// One instruction source read through two paths (a linked AGENTS.md, a file
+// two folders import) is in the prompt once; a file that cannot be read says so.
+test("instruction files: each source once, an unreadable one named", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, chmodSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { instructionFiles, instructionPaths } = await import("./turn.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? `${process.env.HOME}/.cache/tmp`, "inst-"));
+  try {
+    writeFileSync(join(root, "shared.md"), "SHARED-RULE\n");
+    mkdirSync(join(root, "a/b/c"), { recursive: true });
+    writeFileSync(join(root, "a/AGENTS.md"), "OUTER\n@../shared.md\n");
+    writeFileSync(join(root, "a/b/AGENTS.md"), "INNER\n@../../shared.md\n");
+    symlinkSync("../AGENTS.md", join(root, "a/b/c/AGENTS.md"));
+    const text = instructionFiles(join(root, "a/b/c"));
+    expect(text.match(/SHARED-RULE/g)?.length).toBe(1);
+    expect(text.match(/INNER/g)?.length).toBe(1);
+    expect(instructionPaths(join(root, "a/b/c")).filter((p) => p.path.startsWith(root)).length).toBe(2);
+    chmodSync(join(root, "a/AGENTS.md"), 0);
+    expect(instructionFiles(join(root, "a/b"))).toContain(`# ${join(root, "a/AGENTS.md")}\n\n(This file could not be read`);
+  } finally {
+    chmodSync(join(root, "a/AGENTS.md"), 0o644);
+    rmSync(join(root, ""), { recursive: true, force: true });
+  }
+});

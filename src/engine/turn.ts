@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
@@ -92,31 +92,37 @@ export const instructionFilter: { file?: (path: string, text: string) => string 
 // The instruction files a session in `cwd` loads, outermost first: the
 // owner's own (<config>/AGENTS.md, for every folder), then the AGENTS.md
 // (else CLAUDE.md) of each folder from the root down to `cwd`.
+// A file linked from two places is one source: it is listed once, where it is
+// met first from the root down (the owner's own file before a folder's).
+const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 export function instructionPaths(cwd: string): { path: string; scope: "owner" | "parent" | "folder" }[] {
-  const out: { path: string; scope: "owner" | "parent" | "folder" }[] = [];
+  const found: { path: string; scope: "owner" | "parent" | "folder" }[] = [];
   const seen = new Set<string>();
   for (let dir = cwd; !seen.has(dir); dir = dirname(dir)) {
     seen.add(dir);
     const name = ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
-    if (name) out.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
+    if (name) found.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
     if (dirname(dir) === dir) break;
   }
   const own = join(configDir(), "AGENTS.md");
-  if (existsSync(own) && !out.some((f) => f.path === own)) out.unshift({ path: own, scope: "owner" });
-  return out;
+  if (existsSync(own)) found.unshift({ path: own, scope: "owner" });
+  const ids = new Set<string>();
+  return found.filter((f) => !ids.has(real(f.path)) && !!ids.add(real(f.path)));
 }
 
 // A `@path` line of a file outside a repository brings that file in (up to
 // 4 hops), as Claude Code reads its memory files. A repository's files keep
 // the line as text: what they would import is not under their trust pin.
-export function expandImports(text: string, from: string, depth = 0, seen = new Set([from])): string {
+// `seen` holds the real paths already in the prompt: a file two others import
+// comes in once, and the later line stays as the reference it is.
+export function expandImports(text: string, from: string, depth = 0, seen = new Set([real(from)])): string {
   if (depth >= 4) return text;
   return text.replace(/^@(\S+)[ \t]*$/gm, (line, ref: string) => {
     const p = ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : resolve(dirname(from), ref);
-    if (seen.has(p) || rootOf(dirname(p))) return line;
+    if (seen.has(real(p)) || rootOf(dirname(p))) return line;
     try {
       const t = readFileSync(p, "utf8");
-      seen.add(p);
+      seen.add(real(p));
       return expandImports(t, p, depth + 1, seen).trimEnd();
     } catch {
       return line;
@@ -126,13 +132,20 @@ export function expandImports(text: string, from: string, depth = 0, seen = new 
 
 export function instructionFiles(cwd: string): string {
   const parts: string[] = [];
-  for (const { path: p } of instructionPaths(cwd)) {
+  const files = instructionPaths(cwd);
+  const seen = new Set(files.map((f) => real(f.path)));
+  for (const { path: p } of files) {
+    let read: string;
     try {
-      const read = readFileSync(p, "utf8");
-      const raw = rootOf(dirname(p)) ? read : expandImports(read, p);
-      const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
-      if (text !== null) parts.push(`# ${p}\n\n${text.slice(0, 40_000)}`);
-    } catch {}
+      read = readFileSync(p, "utf8");
+    } catch (e) {
+      // Not left out silently: the model knows a source is missing, not removed.
+      parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
+      continue;
+    }
+    const raw = rootOf(dirname(p)) ? read : expandImports(read, p, 0, seen);
+    const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
+    if (text !== null) parts.push(`# ${p}\n\n${text.slice(0, 40_000)}`);
   }
   return parts.join("\n\n");
 }
