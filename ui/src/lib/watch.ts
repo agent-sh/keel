@@ -103,14 +103,21 @@ export function lastLine(events: StoredEvent[] | undefined, cwd?: string): strin
       const blocks = e.data.blocks as any[];
       for (let j = blocks.length - 1; j >= 0; j--) {
         const b = blocks[j];
-        if (b.type === "text" && b.text.trim()) return b.text.trim().split("\n")[0]!.replace(/[*`#_]/g, "");
+        if (b.type === "text" && clean(b.text)) return clean(b.text.trim().split("\n")[0]!) || clean(b.text);
         if (b.type === "tool_use") return toolLine(b.name, b.input ?? {}, cwd);
       }
     }
-    if (e.kind === "user" && e.data.origin !== "harness") return e.data.text;
+    if (e.kind === "user" && ownWords(e)) return clean(e.data.text);
   }
   return "";
 }
+
+// What the owner wrote (typed, steered, queued, spoken or sent from the CLI). Messages
+// the harness delivers (a wait firing, a subagent's report, a hook) carry meta and are not his.
+const OWNER = new Set([undefined, "steer", "queued", "voice", "cli"]);
+const ownWords = (e: StoredEvent) => !e.data.meta && OWNER.has(e.data.origin) && !/^\s*(<[a-z_]+[\s>]|\[harness\])/i.test(String(e.data.text ?? ""));
+// One readable line: no tags, no markdown marks.
+const clean = (t: string) => String(t).replace(/<\/?[a-z_][^>]*>/gi, " ").replace(/[*`#_]/g, "").replace(/\s+/g, " ").trim();
 
 export type Span = { start: number; end: number | null; reason?: string };
 export type Tick = { ts: number; kind: ToolKind; error: boolean };
