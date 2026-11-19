@@ -75,10 +75,23 @@ function entry(id: string, m: any): CatalogEntry {
   };
 }
 
+// What the catalog says about a provider itself: where its API is, the
+// variable its key is usually in, and the SDK package that speaks it (which
+// names the wire). Settings > Providers offers these as starting points.
+export type CatalogProvider = { id: string; name: string; api?: string; env?: string[]; npm?: string; doc?: string; models: number };
+
+function providerOf(id: string, p: any): CatalogProvider {
+  return { id, name: p.name ?? id, api: p.api || undefined, env: Array.isArray(p.env) ? p.env : undefined, npm: p.npm, doc: p.doc, models: Object.keys(p.models ?? {}).length };
+}
+
 // The full document to its sections, first-party providers first so their
 // entry wins over resellers' (section order is kept in the saved copy).
 type Sections = Record<string, Record<string, CatalogEntry>>;
-const SHAPE = String(Bun.hash(entry.toString() + priceOf.toString() + speedsOf.toString()));
+const SHAPE = String(Bun.hash(entry.toString() + priceOf.toString() + speedsOf.toString() + providerOf.toString()));
+
+function compactProviders(doc: Record<string, any>): CatalogProvider[] {
+  return Object.entries(doc).map(([id, p]) => providerOf(id, p));
+}
 
 function compact(doc: Record<string, { models?: Record<string, any> }>): Sections {
   const out: Sections = {};
@@ -96,6 +109,7 @@ function compact(doc: Record<string, { models?: Record<string, any> }>): Section
 export class Catalog {
   private byId = new Map<string, CatalogEntry>();
   private byProvider = new Map<string, Map<string, CatalogEntry>>();
+  private meta: CatalogProvider[] = [];
   private loaded = 0;
 
   constructor(private cacheDir: string) {}
@@ -108,26 +122,30 @@ export class Catalog {
     if (Date.now() - this.loaded < MAX_AGE && this.byId.size) return;
     const file = Bun.file(join(this.cacheDir, "models-dev.compact.json"));
     const full = join(this.cacheDir, "models-dev.json"); // the earlier full copy, read once if nothing else is there
-    let saved: { shape?: string; sections?: Sections } | null = null;
+    let saved: { shape?: string; sections?: Sections; providers?: CatalogProvider[] } | null = null;
     if (await file.exists()) try { saved = JSON.parse(await file.text()); } catch {}
     // A copy made by another version of entry() lacks its fields: fetch again.
     const fresh = saved?.shape === SHAPE && Date.now() - file.lastModified < MAX_AGE;
     let sections: Sections | null = fresh ? saved!.sections ?? null : null;
+    let providers: CatalogProvider[] | null = fresh ? saved!.providers ?? null : null;
     if (!sections) {
+      const read = (doc: any) => { sections = compact(doc); providers = compactProviders(doc); };
       try {
         const r = await fetch(URL_, { signal: AbortSignal.timeout(15_000) });
-        if (r.ok) sections = compact(JSON.parse(await r.text()));
+        if (r.ok) read(JSON.parse(await r.text()));
       } catch {}
       if (!sections && !saved && existsSync(full)) {
-        try { sections = compact(JSON.parse(readFileSync(full, "utf8"))); } catch {}
+        try { read(JSON.parse(readFileSync(full, "utf8"))); } catch {}
       }
       if (sections) {
-        await Bun.write(file, JSON.stringify({ shape: SHAPE, sections }));
+        await Bun.write(file, JSON.stringify({ shape: SHAPE, sections, providers }));
         rmSync(full, { force: true });
       }
     }
     sections ??= saved?.sections ?? null;
+    providers ??= saved?.providers ?? null;
     if (!sections) return;
+    this.meta = providers ?? [];
     this.byId.clear();
     this.byProvider.clear();
     for (const [pid, models] of Object.entries(sections)) {
@@ -140,6 +158,11 @@ export class Catalog {
       this.byProvider.set(pid, section);
     }
     this.loaded = fresh ? file.lastModified : Date.now();
+  }
+
+  // The catalog's providers, for adding one by hand.
+  providers(): CatalogProvider[] {
+    return this.meta;
   }
 
   section(pid: string): CatalogEntry[] {

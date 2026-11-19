@@ -125,6 +125,11 @@ export const anthropicWire: WireCodec = {
             if (ev.delta?.stop_reason) stop = ev.delta.stop_reason;
             if (ev.delta?.stop_details) stopDetails = ev.delta.stop_details;
             if (ev.usage?.output_tokens !== undefined) usage.output = ev.usage.output_tokens;
+            // The counts here are cumulative; Anthropic-compatible servers
+            // (Z.ai, gateways) send the input only here, zero at message_start.
+            if (ev.usage?.input_tokens) usage.input = Math.max(usage.input, ev.usage.input_tokens);
+            if (ev.usage?.cache_read_input_tokens) usage.cache_read = Math.max(usage.cache_read, ev.usage.cache_read_input_tokens);
+            if (ev.usage?.cache_creation_input_tokens) usage.cache_write = Math.max(usage.cache_write, ev.usage.cache_creation_input_tokens);
             break;
           case "message_stop":
             finished = true;

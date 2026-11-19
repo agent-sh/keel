@@ -9,7 +9,9 @@ import { Catalog } from "./catalog.ts";
 import { CodexProvider } from "./codex.ts";
 import { endpoints } from "./config.ts";
 import { familyOf } from "./family.ts";
-import { CompatProvider, GeminiProvider, OpenAIProvider } from "./keyed.ts";
+import { EndpointProvider } from "./endpoint.ts";
+import { GeminiProvider, OpenAIProvider } from "./keyed.ts";
+import { Probes } from "./probe.ts";
 import { Plugins } from "./plugins/index.ts";
 import { priceOf } from "./pricing.ts";
 import { ProviderError } from "./http.ts";
@@ -57,9 +59,12 @@ export class Providers {
   readonly limits = new Limits();
   private usageAt = new Map<string, number>();
   private problems = new Map<string, Problem>();
+  readonly probes: Probes;
+  private badFiles = new Set<string>();
 
   constructor(readonly stateDir: string, private opts: Opts = {}) {
     this.catalog = new Catalog(stateDir);
+    this.probes = new Probes(stateDir, (e) => this.capture(e, { at: "provider-probes.json" }));
     this.fixed = opts.providers ?? null;
     this.builtins = [
       new AnthropicProvider("bedrock"),
@@ -137,7 +142,13 @@ export class Providers {
 
   all(): Provider[] {
     if (this.fixed) return this.fixed;
-    return [...this.builtins, ...endpoints().map((e) => new CompatProvider(e)), ...this.plugins.providers()];
+    const own = endpoints((file, e) => {
+      // A file that does not parse is said once, not on every read.
+      if (this.badFiles.has(file)) return;
+      this.badFiles.add(file);
+      this.capture(e, { at: "reading an endpoint file", file });
+    });
+    return [...this.builtins, ...own.map((e) => new EndpointProvider(e)), ...this.plugins.providers()];
   }
 
   get(id: string) {
@@ -188,7 +199,7 @@ export class Providers {
       this.started.set(p.id, seq);
       const identity = p.identity?.();
       try {
-        const models = p instanceof CompatProvider && p.cfg.listing === false ? this.fromSection(p) : await p.list();
+        const models = p instanceof EndpointProvider && p.cfg.listing === false ? this.fromSection(p) : await p.list();
         if ((this.applied.get(p.id) ?? 0) > seq) return;
         this.applied.set(p.id, seq);
         this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
@@ -211,35 +222,50 @@ export class Providers {
   }
 
   // An endpoint without a listing offers the models of its catalog section.
-  private fromSection(p: CompatProvider): ListedModel[] {
+  private fromSection(p: EndpointProvider): ListedModel[] {
     return this.catalog.section(p.cfg.catalog!).filter((c) => c.tools !== false).map((c) => ({
       model: c.id, family: familyOf(c.id), billing: p.cfg.billing === "subscription" ? { kind: "subscription", plan: p.label } : { kind: "per_token" },
     }));
   }
 
   private join(p: Provider, m: ListedModel): ModelInfo {
-    const section = p instanceof CompatProvider ? p.cfg.catalog : SECTION[p.id];
+    const ep = p instanceof EndpointProvider ? p : undefined;
+    const section = ep ? ep.cfg.catalog : SECTION[p.id];
     const c = this.catalog.lookup(m.model, section);
     const own = this.catalog.own(m.model, section);
-    const billing = m.billing?.kind ?? (p instanceof CompatProvider && p.cfg.billing === "subscription" ? "subscription" : "per_token");
+    const billing = m.billing?.kind ?? (ep?.cfg.billing === "subscription" ? "subscription" : "per_token");
+    // What the owner states about the model, then what a probe found.
+    const said = ep?.cfg.model?.[m.model] ?? {};
+    const probed = this.probes.get(`${p.id}:${m.model}`, p.identity?.())?.found ?? {};
+    const known_from: NonNullable<ModelInfo["known_from"]> = {};
+    const cap = (k: "tools" | "images" | "reasoning" | "caching", listed: boolean | undefined, catalog: boolean | undefined) => {
+      const v: [boolean | undefined, "owner" | "probe" | "listing" | "catalog"][] = [[said[k], "owner"], [probed[k]?.value, "probe"], [listed, "listing"], [catalog, "catalog"]];
+      const hit = v.find(([x]) => x !== undefined);
+      if (hit) known_from[k] = hit[1];
+      return hit?.[0];
+    };
     return {
       id: `${p.id}:${m.model}`,
       provider: p.id,
       model: m.model,
-      name: m.name ?? c?.name ?? m.model,
+      name: said.name ?? m.name ?? c?.name ?? m.model,
       family: m.family ?? familyOf(m.model, p.family),
-      context: m.context ?? c?.context ?? 128_000,
-      ...(m.context ?? c?.context ? {} : { context_assumed: true as const }),
-      output: m.output ?? c?.output ?? 0,
+      context: said.context ?? m.context ?? c?.context ?? 128_000,
+      ...(said.context ?? m.context ?? c?.context ? {} : { context_assumed: true as const }),
+      output: said.output ?? m.output ?? c?.output ?? 0,
       efforts: m.efforts ?? c?.efforts ?? [],
       release: c?.release,
-      price: billing === "per_token" ? m.price ?? c?.price : undefined,
+      price: billing === "per_token" ? said.price ?? m.price ?? ep?.price ?? c?.price : undefined,
       billing,
       // A capability is the listing's or the route's own catalog entry. An entry
       // of another provider (the bare-id fallback) may say the model reads
       // images, never that this route does not: an unknown route sends them.
-      images: m.images ?? (own ? own.images : c?.images || undefined),
+      images: cap("images", m.images, own ? own.images : c?.images || undefined),
       pdf: m.pdf ?? (own ? own.pdf : c?.pdf || undefined),
+      tools: cap("tools", m.tools, own ? own.tools : c?.tools || undefined),
+      reasoning: cap("reasoning", m.reasoning, own ? own.reasoning : c?.reasoning || undefined),
+      caching: cap("caching", undefined, undefined),
+      ...(Object.keys(known_from).length ? { known_from } : {}),
       // The listing's own offers win; else the route's catalog section's.
       speeds: m.speeds ?? own?.speeds,
     };

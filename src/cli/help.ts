@@ -18,6 +18,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["import", "sessions of other harnesses: list, preview, import"],
     ["port", "bring your setup from Claude Code, Codex, Hermes and the Rust Keel"],
     ["models", "the models the providers list"],
+    ["providers", "the providers; add, test and probe an endpoint or a local server"],
   ]],
   ["Daemon", [
     ["serve", "run the daemon (the agent loop, the API and the workbench)"],

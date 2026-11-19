@@ -20,6 +20,7 @@ import { nestedRoutes } from "./nested.ts";
 import { repeatRoutes } from "./repeat.ts";
 import { planRoutes } from "./plan.ts";
 import { providersRoutes } from "./providers.ts";
+import { providerSetupRoutes } from "./provider-setup.ts";
 import { profileRoutes } from "./profile.ts";
 import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
@@ -65,6 +66,7 @@ export const routeModules: RouteModule[] = [
   searchRoutes,
   providersRoutes,
   acpRoutes, // after permissions: the gate judges what an ACP agent asks for
+  providerSetupRoutes,
   profileRoutes,
   worktreeRoutes,
   reviewRoutes,

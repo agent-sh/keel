@@ -1,13 +1,10 @@
-// Drivers that authenticate with an API key: the OpenAI API (Responses), the
-// Gemini API, and every OpenAI-compatible endpoint (/chat/completions).
-import type { EndpointConfig } from "./config.ts";
+// Drivers that authenticate with an API key: the OpenAI API (Responses) and
+// the Gemini API. Configured endpoints are endpoint.ts.
 import { configured, fingerprint, forget, key, shown, sourceIdentity, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
-import { familyOf, notChat } from "./family.ts";
+import { notChat } from "./family.ts";
 import { getJson, ProviderError } from "./http.ts";
-import { fromOpenRouterKey, type WindowReading } from "./limits.ts";
 import type { Delta, Family, ListedModel, Provider, ProviderRequest, ProviderResult, ProviderStatus, Wire } from "./types.ts";
-import { chatWire } from "./wires/chat.ts";
 import { geminiWire } from "./wires/gemini.ts";
 import { responsesWire } from "./wires/responses.ts";
 
@@ -105,94 +102,6 @@ export class GeminiProvider extends KeyedProvider {
       label: this.label,
       url: `${this.base}/v1beta/models/${encodeURIComponent(req.model)}:streamGenerateContent?alt=sse`,
       headers: { "x-goog-api-key": k }, secrets: [k],
-    }, req));
-  }
-}
-
-// One OpenAI-compatible endpoint; its id is the provider id.
-export class CompatProvider extends KeyedProvider {
-  readonly id: string;
-  readonly label: string;
-  readonly wire = "chat_completions" as const;
-  readonly family = "other" as const;
-  protected src: KeySource;
-  protected readonly base: string;
-
-  constructor(readonly cfg: EndpointConfig) {
-    super();
-    this.id = cfg.id;
-    this.label = cfg.label ?? cfg.id;
-    this.src = { env: cfg.key_env, cred: cfg.key_cred };
-    this.base = cfg.base_url.replace(/\/$/, "");
-  }
-
-  override status(): ProviderStatus {
-    return { ...super.status(), kind: "endpoint", detail: `${this.base} (${shown(this.src)})` };
-  }
-
-  private headers(k: string, sessionKey?: string): Record<string, string> {
-    const h: Record<string, string> = { authorization: `Bearer ${k}`, ...this.cfg.headers };
-    if (sessionKey && this.cfg.session_header) h[this.cfg.session_header] = sessionKey;
-    return h;
-  }
-
-  // OpenRouter states a key's limit and spend at /key.
-  async usage(): Promise<WindowReading[]> {
-    if (!/(^|\.)openrouter\.ai$/.test(new URL(this.base).hostname)) return [];
-    const k = await this.key();
-    return fromOpenRouterKey(await getJson(this.label, `${this.base}/key`, this.headers(k), [k]));
-  }
-
-  async list(): Promise<ListedModel[]> {
-    const k = await this.key();
-    const billing = this.cfg.billing === "subscription" ? { kind: "subscription" as const, plan: this.label } : { kind: "per_token" as const };
-    let d: any;
-    try {
-      d = await getJson(this.label, `${this.base}/models`, this.headers(k), [k]);
-    } catch (e) {
-      // An endpoint with no listing offers the models its configuration names.
-      if (this.cfg.models?.length) return this.cfg.models.map((model) => ({ model, family: familyOf(model), billing }));
-      throw e;
-    }
-    const rows: any[] = d.data ?? d.models ?? [];
-    return rows
-      .filter((m) => m?.id && !notChat(m.id))
-      // OpenRouter says which models take tools; the agent loop needs them.
-      .filter((m) => !Array.isArray(m.supported_parameters) || m.supported_parameters.includes("tools"))
-      .map((m): ListedModel => {
-        const p = m.pricing;
-        const per = (x: any) => (x === undefined || x === null || isNaN(Number(x)) ? undefined : Number(x) * 1e6);
-        const price = p && per(p.prompt) !== undefined && per(p.completion) !== undefined && (Number(p.prompt) >= 0)
-          ? { input: per(p.prompt)!, output: per(p.completion)!, cache_read: per(p.input_cache_read), cache_write: per(p.input_cache_write) }
-          : undefined;
-        return {
-          model: m.id,
-          name: m.name,
-          context: m.context_length ?? m.context_window ?? m.max_model_len,
-          output: m.top_provider?.max_completion_tokens ?? undefined,
-          family: familyOf(m.id),
-          price,
-          billing,
-          images: m.architecture?.input_modalities?.includes?.("image"),
-        };
-      });
-  }
-
-  async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {
-    const k = await this.key();
-    const extra = { ...this.cfg.extra_body };
-    // OpenRouter caches Claude prompts only with an explicit mark.
-    if (this.cfg.effort_field === "reasoning" && /anthropic\/|claude/.test(req.model) && !extra.cache_control) extra.cache_control = { type: "ephemeral" };
-    const codec = chatWire({
-      effortField: this.cfg.effort_field ?? "reasoning_effort",
-      replayReasoning: this.cfg.replay_reasoning,
-      extraBody: extra,
-      sendMaxTokens: true,
-    });
-    const ctx = ctxFor(this.id, req, req.efforts ?? []);
-    return runEvents(codec, req, ctx, onDelta, httpEvents({
-      label: this.label, url: `${this.base}/chat/completions`, headers: this.headers(k, req.sessionKey), secrets: [k], idleMs: this.cfg.stream_idle_timeout_ms,
-      onAuthFailure: async () => { forget(this.src); return null; },
     }, req));
   }
 }

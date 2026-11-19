@@ -162,3 +162,16 @@ test("a call is priced per part; an unstated cache read rate is unknown, not fre
   expect(priceOf({ ...u, cache_read: 1_000_000 }, { input: 1, output: 5, cache_read: 0.1 })).toBeCloseTo(6.1);
   expect(priceOf(u, undefined)).toBeUndefined();
 });
+
+// Anthropic-compatible servers (Z.ai) put the input count only in message_delta.
+test("the Messages reader takes input counts sent at message_delta", () => {
+  const p = anthropicWire.parser(req, ctx, () => {});
+  const ev = (data: any) => p.event({ event: data.type, data: JSON.stringify(data) });
+  ev({ type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 0 } } });
+  ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+  ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } });
+  ev({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 19, output_tokens: 3, cache_read_input_tokens: 4 } });
+  ev({ type: "message_stop" });
+  const u = p.result().usage;
+  expect([u.input, u.cache_read, u.output]).toEqual([19, 4, 3]);
+});

@@ -109,6 +109,8 @@ export type ListedModel = {
   billing?: Billing;
   images?: boolean;
   pdf?: boolean; // reads PDF documents (the catalog's input modalities)
+  tools?: boolean;     // takes tool definitions (the listing's word)
+  reasoning?: boolean; // thinks before it answers
   speeds?: SpeedOffer[];
 };
 
@@ -127,6 +129,14 @@ export type ModelInfo = {
   billing: Billing["kind"];
   images?: boolean;
   pdf?: boolean; // reads PDF documents (the catalog's input modalities)
+  // What is known of the model's tool calls, thinking and prompt cache: the
+  // owner's statement, else a probe of the endpoint, else its listing, else
+  // the route's catalog entry. Absent: not known.
+  tools?: boolean;
+  reasoning?: boolean;
+  caching?: boolean;
+  // Where each known capability came from.
+  known_from?: Partial<Record<"tools" | "images" | "reasoning" | "caching", "owner" | "probe" | "listing" | "catalog">>;
   speeds?: SpeedOffer[];
 };
 
@@ -139,6 +149,10 @@ export type ProviderStatus = {
   detail?: string;     // why not available, or where the credential comes from
   account?: string;
   sign_in?: { command?: string; route?: string; note?: string };
+  // An endpoint's configuration: a preset, providers.toml, or its own file
+  // under endpoints/ (the one Settings and `keel providers` edit).
+  source?: "preset" | "providers.toml" | "endpoints";
+  server?: string;     // the server kind an endpoint's metadata names (Ollama, vLLM, llama.cpp)
 };
 
 export interface Provider {

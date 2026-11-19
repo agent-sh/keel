@@ -8,13 +8,14 @@ import { portCmd } from "./port.ts";
 import { loginCommands } from "./login.ts";
 import { mobileCommands } from "./mobile.ts";
 import { pluginCommands } from "./plugin.ts";
+import { providerCommands } from "./providers.ts";
 import { rulesCmd } from "./rules.ts";
 import { run } from "./run.ts";
 import { sessionCommands } from "./sessions.ts";
 
 export type Command = (argv: string[]) => Promise<number>;
 export const commands: Record<string, Command> = {
-  ...mobileCommands, ...acpCommands, ...adminCommands, ...pluginCommands, ...sessionCommands, ...loginCommands,
+  ...mobileCommands, ...acpCommands, ...adminCommands, ...pluginCommands, ...sessionCommands, ...loginCommands, ...providerCommands,
   run,
   rules: rulesCmd,
   debug,

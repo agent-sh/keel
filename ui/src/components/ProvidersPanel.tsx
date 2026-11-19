@@ -1,11 +1,13 @@
 // Settings > Providers: every provider with its listing state, the default
 // model and the Grok plan sign-in; the plugins are linked to their own page.
-import { ChevronRight, ExternalLink, LogIn, Puzzle, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, LogIn, Pencil, Plus, Puzzle, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { actions, api, reportError, useStore, type ProvidersReport, failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { navigate } from "../lib/ui.ts";
+import { AddProviderHost, openAddProvider } from "./AddProvider.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { ProviderModels } from "./ProviderModels.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 import { ProblemNote, WindowMeter } from "./Limits.tsx";
 
@@ -72,6 +74,9 @@ function GrokSignIn() {
 
 function ProviderRow({ p }: { p: Row }) {
   const l = p.listing;
+  const [open, setOpen] = useState(false);
+  // An endpoint written by Keel, or a preset (an edit writes its own file over it).
+  const editable = p.kind === "endpoint" && (p.source === "endpoints" || p.source === "preset");
   const all = useStore((s) => s.providers?.windows);
   const windows = useMemo(() => all?.filter((w) => w.provider === p.id) ?? [], [all, p.id]);
   // A refused credential found by the listing is said once, as the problem.
@@ -83,9 +88,17 @@ function ProviderRow({ p }: { p: Row }) {
         <div className="flex items-baseline gap-2">
           <span className="truncate text-base font-medium">{p.label}</span>
           <span className="rounded-xs bg-sunken px-1.5 text-micro uppercase tracking-wide text-faint">{WIRE[p.wire] ?? p.wire}</span>
-          {p.kind !== "builtin" && <span className="text-micro text-faint">{p.kind}</span>}
-          <span className="ml-auto shrink-0 text-caption tabular-nums text-muted">
-            {p.available ? `${l.models} model${l.models === 1 ? "" : "s"}` : "not set up"}
+          {p.kind !== "builtin" && <span className="text-micro text-faint">{p.server ?? p.kind}</span>}
+          {p.source === "providers.toml" && <span className="text-micro text-faint">providers.toml</span>}
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-caption tabular-nums text-muted">
+            {p.available && l.models > 0 ? (
+              <button type="button" data-testid="provider-models-toggle" aria-expanded={open} onClick={() => setOpen(!open)} className="inline-flex items-center gap-0.5 rounded-md px-1.5 hover:bg-hover hover:text-fg">
+                {l.models} model{l.models === 1 ? "" : "s"} {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
+            ) : p.available ? "0 models" : "not set up"}
+            {editable && (
+              <button type="button" data-testid="provider-edit" aria-label={`Edit ${p.label}`} onClick={() => openAddProvider(p.id)} className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><Pencil className="size-3.5" /></button>
+            )}
           </span>
         </div>
         {p.detail && <div className="truncate text-caption text-faint" title={p.detail}>{p.detail}{p.account ? ` · ${p.account}` : ""}</div>}
@@ -100,6 +113,7 @@ function ProviderRow({ p }: { p: Row }) {
         {p.available && windows.length > 0 && <div className="mt-1.5" data-testid="provider-windows">{windows.map((w) => <WindowMeter key={w.id} w={w} />)}</div>}
         {p.sign_in?.command && !p.available && <div className="mt-1 text-caption text-muted">Run <code className="rounded-xs bg-code px-1 font-mono">{p.sign_in.command}</code> in a terminal, then refresh.</div>}
         {p.id === "grok" && !p.available && <GrokSignIn />}
+        {open && <ProviderModels provider={p.id} editable={editable} />}
       </div>
     </div>
   );
@@ -121,9 +135,20 @@ export function ProvidersSettings() {
 
   return (
     <div data-testid="providers-panel">
+      <AddProviderHost />
       <Card>
         <SettingRow label="New sessions start on" hint="Every model comes from its provider's own listing.">
           <ModelPicker value={report?.choices.default ?? defaultModel} onChange={(id) => actions.setDefaultModel(id).catch(reportError)} />
+        </SettingRow>
+        <SettingRow label="Add a provider" hint="Any OpenAI, Anthropic or Gemini compatible endpoint, a server on this machine, an aggregator. The key stays in a variable or the keyring.">
+          <button
+            type="button"
+            data-testid="providers-add"
+            onClick={() => openAddProvider()}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover"
+          >
+            <Plus className="size-3.5" /> Add a provider
+          </button>
         </SettingRow>
         <SettingRow label="Listings" hint="A provider whose listing fails keeps its last good list.">
           <button

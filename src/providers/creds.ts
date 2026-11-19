@@ -19,17 +19,50 @@ function credGet(): string {
   return existsSync(local) ? local : "cred-get";
 }
 
-// The key, or null when no source holds one.
+// Keys the owner saved through Keel live in the system keyring (Secret
+// Service, macOS Keychain, Windows Credential Manager) under this service.
+export const keyringService = () => process.env.KEEL_KEYRING_SERVICE || "keel-bun";
+
+async function ownKeyring(name: string): Promise<string | null> {
+  try {
+    return (await Bun.secrets.get({ service: keyringService(), name }))?.trim() || null;
+  } catch {
+    return null; // no keyring on this machine (a headless box): the next source answers
+  }
+}
+
+// Saves a key to the system keyring; the value is never written anywhere else.
+export async function saveKey(name: string, value: string) {
+  await Bun.secrets.set({ service: keyringService(), name, value });
+  cache.delete(name);
+  missing.delete(name);
+}
+
+export async function deleteKey(name: string): Promise<boolean> {
+  cache.delete(name);
+  try { return await Bun.secrets.delete({ service: keyringService(), name }); } catch { return false; }
+}
+
+// The cred-get helper, when this machine has one (another store behind one command).
+async function helper(name: string): Promise<string> {
+  const bin = credGet();
+  if (bin === "cred-get" && !Bun.which("cred-get")) return "";
+  const p = Bun.spawn([bin, name], { stdin: "ignore", stdout: "pipe", stderr: "ignore", cwd: homedir() });
+  const timer = setTimeout(() => p.kill(), 20_000);
+  const out = (await readText(p.stdout)).split("\n")[0]!.trim();
+  clearTimeout(timer);
+  await p.exited;
+  return out;
+}
+
+// The key, or null when no source holds one: the variable, else the keyring
+// entry (Keel's own keyring service, then the cred-get helper).
 export async function key(src: KeySource): Promise<string | null> {
   if (src.env && process.env[src.env]) return process.env[src.env]!.trim();
   if (!src.cred) return null;
   const hit = cache.get(src.cred);
   if (hit && Date.now() - hit.at < TTL) return hit.value;
-  const p = Bun.spawn([credGet(), src.cred], { stdin: "ignore", stdout: "pipe", stderr: "ignore", cwd: homedir() });
-  const timer = setTimeout(() => p.kill(), 20_000);
-  const out = (await readText(p.stdout)).split("\n")[0]!.trim();
-  clearTimeout(timer);
-  await p.exited;
+  const out = (await ownKeyring(src.cred)) ?? (await helper(src.cred));
   if (!out) {
     missing.set(src.cred, Date.now());
     return null;
