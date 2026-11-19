@@ -152,7 +152,7 @@ export class TakeOver {
     const r = await this.imports.import(src, { mode: o.mode ?? (prior ? "update" : undefined), model, workspace, title: o.title });
     if (r.action === "created") this.d.bus.emit({ t: "session", session: r.session });
     else if (r.action === "updated") this.emitSince(r.session.id, seq);
-    return { action: r.action, session: r.session, imported_events: r.imported_events, counts: r.read.counts, notes: r.read.notes };
+    return { action: r.action, session: r.session, imported_events: r.imported_events, counts: r.read?.counts, notes: r.read?.notes ?? [] };
   }
 
   // The owner's take-over (also the model's, once the owner said yes).
@@ -370,8 +370,9 @@ export class TakeOver {
   }
 
   // The sessions the agent view runs now, with what an import and a take-over of each take.
-  async running(): Promise<{ sessions: (Row & { harness: Harness | null; transcript_path: string | null; imported?: string })[]; not_listed?: string[] }> {
-    if (!this.drive.configured()) return { sessions: [], not_listed: ["no agent view is set: name its program in Settings, Sessions elsewhere"] };
+  // `unset`: no agent view is configured, so nothing is listed (not "none run").
+  async running(): Promise<{ sessions: (Row & { harness: Harness | null; transcript_path: string | null; imported?: string })[]; not_listed?: string[]; unset?: true }> {
+    if (!this.drive.configured()) return { sessions: [], not_listed: ["no agent view is set: name its program in Settings, Sessions elsewhere"], unset: true };
     let raws: av.Raw[];
     try {
       raws = await this.drive.raws();

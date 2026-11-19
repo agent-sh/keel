@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -10,6 +10,23 @@ function growClaude(path: string, cwd: string, id: string) {
   appendFileSync(path, JSON.stringify({ ...base, type: "user", uuid: "u9", parentUuid: "a3", message: { role: "user", content: "And its colour?" } }) + "\n");
   appendFileSync(path, JSON.stringify({ ...base, type: "assistant", uuid: "a9", parentUuid: "u9", message: { id: "msg_9", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "Yellow." }] } }) + "\n");
 }
+
+// The Claude Code session rewinds and goes on another branch (after the tool result).
+function rewindClaude(path: string, cwd: string, id: string) {
+  const base = { cwd, sessionId: id, version: "2.1.300", isSidechain: false, userType: "external", entrypoint: "cli", timestamp: new Date().toISOString() };
+  appendFileSync(path, JSON.stringify({ ...base, type: "assistant", uuid: "r1", parentUuid: "u2", message: { id: "msg_r", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "Another answer." }] } }) + "\n");
+  appendFileSync(path, JSON.stringify({ ...base, type: "user", uuid: "r2", parentUuid: "r1", message: { role: "user", content: "Go on from there." } }) + "\n");
+}
+
+// A Claude Code transcript of the given records (chained in order).
+function claudeFile(dir: string, cwd: string, id: string, recs: any[]) {
+  mkdirSync(dir, { recursive: true });
+  let parent: string | null = null;
+  const path = join(dir, `${id}.jsonl`);
+  writeFileSync(path, recs.map((r, i) => { const uuid = `${id}-${i}`; const x = { cwd, sessionId: id, version: "2.1.300", isSidechain: false, userType: "external", entrypoint: "cli", timestamp: new Date().toISOString(), uuid, parentUuid: parent, ...r }; parent = uuid; return JSON.stringify(x); }).join("\n") + "\n");
+  return path;
+}
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 // Feature: import of other harnesses' sessions and export. The sheet lists
 // Claude Code, Codex and Rust Keel sessions from their stores, previews one,
@@ -80,6 +97,41 @@ test("import and export", async ({ page, request }) => {
   await expect(preview.getByTestId("import-update")).toHaveCount(0);
   await preview.getByTestId("import-new").click();
   await expect(page.getByTestId("transcript").getByText("Yellow.")).toBeVisible();
+  const second = page.url().split("/s/")[1]!;
+  mine.add(second);
+
+  // Two copies now: the preview names each; Open opens the copy the row
+  // shows, and opens it with the original moved away.
+  const claudeId = `c0ffee00-0000-4000-8000-${tag.padStart(12, "0")}`;
+  const openSheet = async () => {
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("Import sessions");
+    await expect(page.getByRole("option", { name: "Import sessions" })).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(sheet).toBeVisible();
+  };
+  await openSheet();
+  await page.getByTestId("import-search").fill(tag);
+  await rows.first().click();
+  await expect(preview.getByTestId("import-copy")).toHaveCount(2);
+  await shoot(page, "import-06-copies");
+  renameSync(made.claude, `${made.claude}.moved`);
+  await preview.getByTestId("import-open").click();
+  await expect(page).toHaveURL(new RegExp(`/s/${second}$`));
+  const opened = await request.post("/api/import", { data: { harness: "claude", id: claudeId, mode: "open", session_id: id } });
+  expect((await opened.json()).session.id).toBe(id);
+  renameSync(`${made.claude}.moved`, made.claude);
+
+  // The original rewinds and goes on another branch: neither an update nor a
+  // batch update appends its new turns after what the copy holds.
+  rewindClaude(made.claude, cwd, claudeId);
+  const held = (await (await request.get(`/api/sessions/${second}`)).json()).events.length;
+  const upd = await request.post("/api/import", { data: { harness: "claude", id: claudeId, path: made.claude, mode: "update" } });
+  expect(upd.status()).toBe(409);
+  expect((await upd.json()).error).toContain("another branch");
+  const bu = await (await request.post("/api/import/batch", { data: { mode: "update", items: [{ harness: "claude", id: claudeId, path: made.claude }] } })).json();
+  expect(bu.results[0]).toMatchObject({ ok: false, status: 409 });
+  expect((await (await request.get(`/api/sessions/${second}`)).json()).events.length).toBe(held);
 
   // Codex, the Rust Keel and Antigravity, from their own stores.
   const others: [string, string, string][] = [["codex", "Pick a code word", "The code word is bramble."], ["keel", "Harbour Kythira", "The harbour is Kythira."]];
@@ -132,6 +184,40 @@ test("import and export", async ({ page, request }) => {
   // What was written reads back as a Claude Code session.
   const listed = await (await request.get(`/api/import/sessions?harness=claude&q=${tag}&refresh=1`)).json();
   expect(listed.total).toBe(2);
+
+  // Import all: what the shown list holds, counted and confirmed first. A
+  // question of only an image and one whose prompt sits between long tool
+  // outputs are listed; one whose file went away before the import is named
+  // with its reason, and Retry failed sends only it.
+  const bulkCwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `bulk-${tag}`);
+  mkdirSync(bulkCwd, { recursive: true });
+  const bulkDir = join(store("claude"), bulkCwd.replace(/[^A-Za-z0-9]/g, "-"));
+  const long = "x".repeat(70_000);
+  const result = (n: number) => ({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `t${n}`, content: long }] } });
+  claudeFile(bulkDir, bulkCwd, `b0000000-0000-4000-8000-${tag.padStart(12, "0")}`, [{ type: "user", message: { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: PNG } }] } }, { type: "assistant", message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "Analysis complete." }], stop_reason: "end_turn" } }]);
+  claudeFile(bulkDir, bulkCwd, `b1000000-0000-4000-8000-${tag.padStart(12, "0")}`, [result(0), { type: "user", message: { role: "user", content: "The middle prompt" } }, result(1)]);
+  const goner = claudeFile(bulkDir, bulkCwd, `b2000000-0000-4000-8000-${tag.padStart(12, "0")}`, [{ type: "user", message: { role: "user", content: "Soon gone" } }]);
+  await page.goto("/");
+  await openSheet();
+  await page.getByTestId("import-tab-claude").click();
+  await page.getByTestId("import-search").fill(`bulk-${tag}`);
+  await expect(rows).toHaveCount(3, { timeout: 15_000 });
+  await expect(sheet.getByTestId("import-list")).toContainText("Image prompt");
+  await expect(sheet.getByTestId("import-list")).toContainText("The middle prompt");
+  await sheet.getByTestId("import-all").click();
+  await expect(sheet.getByTestId("import-all-confirm")).toContainText("Import 3 new copies");
+  rmSync(goner);
+  await sheet.getByTestId("import-all-go").click();
+  await expect(sheet.getByTestId("import-total")).toHaveText("Imported 2; 1 not imported");
+  await expect(sheet.getByTestId("import-fail")).toHaveCount(1);
+  await expect(sheet.getByTestId("import-fail")).toContainText("Soon gone");
+  await expect(sheet.getByTestId("import-fail")).toContainText("moved or was removed");
+  await shoot(page, "import-05-bulk-failed");
+  claudeFile(bulkDir, bulkCwd, `b2000000-0000-4000-8000-${tag.padStart(12, "0")}`, [{ type: "user", message: { role: "user", content: "Soon gone" } }]);
+  await sheet.getByTestId("import-retry-failed").click();
+  await expect(sheet.getByTestId("import-total")).toHaveText("Imported 1");
+  await expect(sheet.getByTestId("import-imported")).toHaveCount(3);
+  await page.keyboard.press("Escape");
 
   // A batch opens what was imported before and says which item it could not find.
   const batch = await (await request.post("/api/import/batch", { data: { items: [{ harness: "keel", id: `keel-${tag}` }, { harness: "codex", id: "no-such-rollout" }] } })).json();

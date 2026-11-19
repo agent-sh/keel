@@ -28,7 +28,15 @@ CREATE INDEX IF NOT EXISTS import_links_src ON import_links(harness, source_id);
 CREATE TABLE IF NOT EXISTS import_live (session_id TEXT PRIMARY KEY, drive_id TEXT NOT NULL, since_ms INTEGER NOT NULL);
 `;
 
-export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number };
+export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null };
+
+// What the copy holds of its source, so an update can tell the source went on
+// (the same events, more after them) from a source that rewound or switched
+// branch (earlier events changed), whose later events must not be appended.
+export const digestOf = (events: { kind: string; data: any }[]) => String(Bun.hash(JSON.stringify(events.map((e) => [e.kind, e.data]))));
+
+// An update or an open refused for a reason the owner can act on.
+const refuse = (message: string) => Object.assign(new Error(message), { status: 409 });
 
 export type ListQuery = { harness?: Harness; q?: string; cwd?: string; show?: string; sort?: "updated" | "size" | "title"; limit?: number; cursor?: number };
 
@@ -61,6 +69,7 @@ export class Imports {
 
   constructor(private store: Store) {
     store.migrate(SCHEMA);
+    if (!store.columnExists("import_links", "digest")) store.db.exec("ALTER TABLE import_links ADD COLUMN digest TEXT");
   }
 
   // Walk the file stores; read only new or changed files. Yields to the event
@@ -181,9 +190,11 @@ export class Imports {
   }
 
   // A transcript named by its path (the drive list knows sessions by their file).
+  // A harness the caller names is checked the same way whether the file was
+  // indexed or not: a file of another harness is not read as this one.
   byPath(path: string, harness?: Harness): Found | undefined {
-    const hit = this.store.db.query<{ found: string | null }, [string]>("SELECT found FROM import_index WHERE path = ?").get(path);
-    if (hit?.found) return JSON.parse(hit.found);
+    const hit = this.store.db.query<{ harness: string; found: string | null }, [string]>("SELECT harness, found FROM import_index WHERE path = ?").get(path);
+    if (hit?.found) return !harness || hit.harness === harness ? JSON.parse(hit.found) : undefined;
     if (harness === "agy" || path.endsWith("/.system_generated/logs/transcript_full.jsonl")) return this.all("agy").find((f) => f.path === path);
     let st;
     try { st = statSync(path); } catch { return undefined; }
@@ -216,9 +227,13 @@ export class Imports {
     this.store.db.query("DELETE FROM import_live WHERE session_id = ?").run(sessionId);
   }
 
-  links(harness: Harness, id: string): Link[] {
+  // The copies of a source, newest first. Two transcripts can carry the same
+  // session id (a copied or moved folder): given the source's file, a copy of
+  // another file with that id is not one of its copies while that file is
+  // still there.
+  links(harness: Harness, id: string, path?: string): Link[] {
     return this.store.db.query<Link, [string, string]>("SELECT * FROM import_links WHERE harness = ? AND source_id = ? ORDER BY imported_ms DESC").all(harness, id)
-      .filter((l) => this.store.session(l.session_id));
+      .filter((l) => this.store.session(l.session_id) && (!path || l.source_path === path || !sourceStat({ harness, path: l.source_path } as Found)));
   }
 
   link(sessionId: string): Link | undefined {
@@ -226,7 +241,7 @@ export class Imports {
   }
 
   private importedAs(f: Found) {
-    const l = this.links(f.harness, f.id)[0];
+    const l = this.links(f.harness, f.id, f.path)[0];
     if (!l) return undefined;
     const st = sourceStat(f);
     return { session_id: l.session_id, synced_ms: l.synced_ms, grew: !!st && (st.size !== l.source_size || st.mtime !== l.source_mtime), went_on: this.wentOn(l.session_id) };
@@ -242,20 +257,34 @@ export class Imports {
   // since an earlier import appended to that session.
   // `from`: a transcript another machine read (its daemon sent what it read);
   // the link names that machine, and the session's tools run there.
-  async import(f: Found, o: { mode?: "new" | "update" | "open"; model: string; workspace: string; title?: string; from?: { machine: string; read: Read } }): Promise<{ action: "created" | "updated" | "opened"; session: Session; imported_events: number; read: Read }> {
+  // Open never reads the source (the copy stands on its own); `session_id`
+  // names which copy when there are several.
+  async import(f: Found, o: { mode?: "new" | "update" | "open"; model: string; workspace: string; title?: string; session_id?: string; from?: { machine: string; read: Read } }): Promise<{ action: "created" | "updated" | "opened"; session: Session; imported_events: number; read?: Read }> {
+    const copies = o.from ? this.links(f.harness, f.id) : this.links(f.harness, f.id, f.path);
+    const prior = o.session_id ? copies.find((l) => l.session_id === o.session_id) : copies[0];
+    if (o.session_id && !prior) throw refuse(`${o.session_id} is not a copy of ${f.id}`);
+    if (prior && o.mode === "open") return { action: "opened", session: this.store.session(prior.session_id)!, imported_events: 0 };
     const r = o.from?.read ?? (await this.read(f));
+    // The file read now must be the session the listing named: a file replaced
+    // by another session since is not copied under the first one's name.
+    if (r.found.id !== f.id) throw refuse(`the file now holds another session (${r.found.id}), not ${f.id}: look at the list again`);
     const st = (o.from ? undefined : sourceStat(f)) ?? { size: f.size_bytes, mtime: f.updated_ms };
-    const prior = this.links(f.harness, f.id)[0];
-    if (prior && (o.mode === "open" || o.mode === "update")) {
+    if (prior && o.mode === "update") {
       const s = this.store.session(prior.session_id)!;
-      if (o.mode === "open" || r.events.length <= prior.items) return { action: "opened", session: s, imported_events: 0, read: r };
+      // Only a source that kept what was copied and went on is updated; one
+      // that rewound or switched branch would splice two conversations.
+      if (!prior.digest) throw Object.assign(refuse("this copy was made before Keel kept a record of what it copied, so an update cannot be checked: open the copy, or make a new one"), { session_id: s.id });
+      if (prior.digest !== digestOf(r.events.slice(0, prior.items)))
+        throw Object.assign(refuse("the original changed what was copied before (it rewound or went on another branch), so its later turns are not appended: open the copy, or make a new one"), { session_id: s.id });
+      if (r.events.length === prior.items) return { action: "opened", session: s, imported_events: 0, read: r };
       const more = r.events.slice(prior.items);
       for (const e of more) this.store.append(s.id, e.kind, e.data);
-      this.store.db.query("UPDATE import_links SET items = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, st.size, st.mtime, Date.now(), s.id);
+      this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), s.id);
       return { action: "updated", session: this.store.session(s.id)!, imported_events: more.length, read: r };
     }
     const label = HARNESSES.find((h) => h.harness === f.harness)!.label;
-    const s = this.store.createSession({ title: o.title ?? f.title, model: o.model, workspace: o.workspace });
+    const found = r.found;
+    const s = this.store.createSession({ title: o.title ?? found.title, model: o.model, workspace: o.workspace });
     if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
     for (const e of r.events) this.store.append(s.id, e.kind, e.data);
     const counts = r.counts;
@@ -263,8 +292,8 @@ export class Imports {
     this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });
     const now = Date.now();
     this.store.db
-      .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, source_size, source_mtime, imported_ms, synced_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, st.size, st.mtime, now, now);
+      .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, digest, source_size, source_mtime, imported_ms, synced_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, digestOf(r.events), st.size, st.mtime, now, now);
     return { action: "created", session: this.store.session(s.id)!, imported_events: r.events.length, read: r };
   }
 }

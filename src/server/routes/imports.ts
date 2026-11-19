@@ -43,6 +43,10 @@ export const importRoutes: RouteModule = (deps) => {
   // The source's model when this daemon lists it, else the default one.
   const modelFor = (f: Found) => pickModel(providers, f);
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
+  // Where a copy goes on: the folder chosen, else the source's own even when
+  // it is gone (the session then says so and is moved by the owner, never
+  // bound silently to another folder), else the daemon's.
+  const workspaceOf = (f: Found, chosen?: string) => chosen || f.cwd || deps.workspace;
 
   // A session the drive list shows (by its id there): imported from the
   // transcript the agent view names. A read-only copy; the original runs on.
@@ -61,8 +65,13 @@ export const importRoutes: RouteModule = (deps) => {
     if (b.path) {
       if (typeof b.path !== "string" || !b.path.startsWith("/")) return bad("path must be absolute");
       if (b.harness && !isHarness(b.harness)) return bad(`unknown harness ${b.harness}`);
-      if (!existsSync(b.path)) return bad(`no file at ${b.path}`, 404);
-      return imports.byPath(b.path, b.harness) ?? bad("no reader recognises this file", 409);
+      if (!existsSync(b.path)) return bad("its file moved or was removed since the list was read: look at the list again", 404);
+      const f = imports.byPath(b.path, b.harness);
+      if (!f) return bad(b.harness ? `no ${b.harness} reader recognises this file` : "no reader recognises this file", 409);
+      // The row the list showed is the file and the session id together: the
+      // same id in another file is another transcript.
+      if (b.id && f.id !== b.id) return bad(`the file at ${b.path} now holds another session (${f.id}): look at the list again`, 409);
+      return f;
     }
     if (!isHarness(b.harness)) return bad(b.harness ? `unknown harness ${b.harness}` : "give harness and id, or path");
     if (typeof b.id !== "string" || !b.id) return bad("give the session's id");
@@ -227,30 +236,43 @@ export const importRoutes: RouteModule = (deps) => {
           counts: r.counts,
           notes: r.notes,
           tail: tail(r.events),
-          links: imports.links(f.harness, f.id).map((l) => ({ session_id: l.session_id, imported_ms: l.imported_ms, synced_ms: l.synced_ms })),
+          // Every copy, with its own title and last activity: Open names one of them.
+          links: imports.links(f.harness, f.id, f.path).map((l) => { const c = store.session(l.session_id)!; return { session_id: l.session_id, title: c.title, updated_ms: c.updated, imported_ms: l.imported_ms, synced_ms: l.synced_ms }; }),
         });
       },
     },
     "/api/import": {
       POST: async (req: Request) => {
         const b = await body(req);
+        if (b.mode && !["new", "update", "open"].includes(b.mode)) return bad(`unknown mode ${b.mode}`);
+        // Open names the copy: it opens whether or not the original can still be read.
+        if (b.mode === "open" && typeof b.session_id === "string") {
+          const l = imports.link(b.session_id);
+          const s = l && store.session(l.session_id);
+          if (!l || !s || (b.harness && l.harness !== b.harness) || (b.id && l.source_id !== b.id)) return bad("no such copy", 404);
+          return json({ action: "opened", session: s, imported_events: 0 });
+        }
         const f = await target(b);
         if (f instanceof Response) return f;
-        if (b.mode && !["new", "update", "open"].includes(b.mode)) return bad(`unknown mode ${b.mode}`);
-        const prior = imports.links(f.harness, f.id)[0];
+        const prior = imports.links(f.harness, f.id, f.path)[0];
         if (prior && !b.mode) return json({ error: "this session was imported before: open it, update it, or make a new copy", session_id: prior.session_id }, 409);
         if (!prior && (b.mode === "update" || b.mode === "open")) return bad("this session was never imported", 404);
         // The original's later turns would land after the copy's own.
         if (prior && b.mode === "update" && takeover?.wentOn(prior.session_id)) return json({ error: "the Keel session went on since it was copied, so it is not updated: open it, or make a new copy", session_id: prior.session_id }, 409);
-        const model = b.model || (await modelFor(f));
-        if (!model) return bad("no model is available: no provider has credentials", 409);
+        const model = b.mode === "open" ? "" : b.model || (await modelFor(f));
+        if (!model && b.mode !== "open") return bad("no model is available: no provider has credentials", 409);
         if (b.cwd && !isDir(b.cwd)) return bad(`not a directory: ${b.cwd}`);
-        const workspace = b.cwd || (isDir(f.cwd) ? f.cwd! : deps.workspace);
-        const r = await imports.import(f, { mode: b.mode, model, workspace, title: b.title });
+        let r;
+        try {
+          r = await imports.import(f, { mode: b.mode, model, workspace: workspaceOf(f, b.cwd), title: b.title });
+        } catch (e) {
+          if ((e as any)?.status === 409) return json({ error: (e as Error).message, session_id: (e as any).session_id }, 409);
+          throw e;
+        }
         bus.emit({ t: "session", session: r.session });
         // A copy of a session that still runs is told so, once the agent view's list is read.
         if (r.action !== "opened") takeover?.noteLiveLater(r.session.id);
-        return json({ action: r.action, session: r.session, imported_events: r.imported_events, counts: r.read.counts, notes: r.read.notes }, r.action === "created" ? 201 : 200);
+        return json({ action: r.action, session: r.session, imported_events: r.imported_events, counts: r.read?.counts, notes: r.read?.notes ?? [] }, r.action === "created" ? 201 : 200);
       },
     },
     // Many at once, one after another; one that fails does not stop the others,
@@ -269,18 +291,24 @@ export const importRoutes: RouteModule = (deps) => {
             counts.failed = (counts.failed ?? 0) + 1;
             continue;
           }
+          const fail = (status: number, error: string, more: Record<string, unknown> = {}) => {
+            results.push({ harness: f.harness, id: f.id, path: f.path, title: f.title, ok: false, status, error, ...more });
+            counts.failed = (counts.failed ?? 0) + 1;
+          };
           try {
-            const prior = imports.links(f.harness, f.id)[0];
+            const prior = imports.links(f.harness, f.id, f.path)[0];
             const mode = prior ? (b.mode === "new" ? "new" : b.mode === "update" ? "update" : "open") : "new";
-            const model = b.model ?? (await modelFor(f));
-            if (!model) throw new Error("no model is available: no provider has credentials");
-            const r = await imports.import(f, { mode: prior ? mode : undefined, model, workspace: isDir(f.cwd) ? f.cwd! : deps.workspace });
+            // The same rule as one import: a copy that went on is not updated.
+            if (prior && mode === "update" && takeover?.wentOn(prior.session_id)) { fail(409, "the Keel session went on since it was copied, so it is not updated: open it, or make a new copy", { session_id: prior.session_id, reason: "went_on" }); continue; }
+            const model = mode === "open" && prior ? "" : b.model ?? (await modelFor(f));
+            if (!model && !(mode === "open" && prior)) { fail(409, "no model is available: no provider has credentials", { reason: "no_model" }); continue; }
+            const r = await imports.import(f, { mode: prior ? mode : undefined, model, workspace: workspaceOf(f) });
             if (r.action === "created") bus.emit({ t: "session", session: r.session });
-            results.push({ harness: f.harness, id: f.id, ok: true, action: r.action, session_id: r.session.id, imported_events: r.imported_events });
+            results.push({ harness: f.harness, id: f.id, title: f.title, ok: true, action: r.action, session_id: r.session.id, imported_events: r.imported_events });
             counts[r.action] = (counts[r.action] ?? 0) + 1;
           } catch (e) {
-            results.push({ harness: f.harness, id: f.id, ok: false, status: 500, error: (e as Error).message });
-            counts.failed = (counts.failed ?? 0) + 1;
+            if ((e as any)?.status === 409) { fail(409, (e as Error).message, (e as any).session_id ? { session_id: (e as any).session_id } : {}); continue; }
+            fail(500, (e as Error).message);
             deps.errors.capture("server", e, { at: "import batch", harness: f.harness, id: f.id });
           }
         }

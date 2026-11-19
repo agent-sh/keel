@@ -20,8 +20,12 @@ type Preview = {
   counts: { prompts: number; assistant_messages: number; tool_calls: number; thoughts_dropped: number; skipped: number; media: number };
   notes: string[];
   tail: { role: string; text: string }[];
-  links: { session_id: string; imported_ms: number }[];
+  links: { session_id: string; title: string; updated_ms: number; imported_ms: number }[];
 };
+
+// What names the row on the daemon: the file and the session id together (two
+// transcripts may carry one id), or the id alone for stores of many sessions.
+const ident = (row: Row) => (row.harness === "keel" ? { harness: row.harness, id: row.id } : { harness: row.harness, id: row.id, path: row.path });
 
 let open = false;
 const subs = new Set<() => void>();
@@ -54,15 +58,24 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
   const [p, setP] = useState<Preview | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  // Only the answer for the row shown now counts: a slower answer for the row
+  // picked before is dropped, and Import waits for this row's own preview.
   useEffect(() => {
+    let live = true;
     setP(null);
     setErr("");
-    api<Preview>(`${paths(from).preview}?harness=${row.harness}&id=${encodeURIComponent(row.id)}`).then(setP, (e) => setErr(e.message));
-  }, [row.harness, row.id, from]);
-  const go = async (mode?: "new" | "update" | "open") => {
+    const u = new URLSearchParams(Object.entries(from ? { harness: row.harness, id: row.id } : ident(row)) as [string, string][]);
+    api<Preview>(`${paths(from).preview}?${u}`).then((r) => { if (live) setP(r); }, (e) => { if (live) setErr(e.message); });
+    return () => { live = false; };
+  }, [row.harness, row.id, row.path, from]);
+  const shown = p && p.session.id === row.id && (from || row.harness === "keel" || p.session.path === row.path) ? p : null;
+  // A copy opens by its own id, the one the preview on screen names (a copy
+  // made after it was read does not take its place); the original is not read.
+  const open = (id: string) => { onDone(); navigate({ name: "session", id }); };
+  const go = async (mode?: "new" | "update") => {
     setBusy(true);
     try {
-      const r = await api<{ session: { id: string } }>(paths(from).import, { method: "POST", body: JSON.stringify({ harness: row.harness, id: row.id, mode }) });
+      const r = await api<{ session: { id: string } }>(paths(from).import, { method: "POST", body: JSON.stringify({ ...(from ? { harness: row.harness, id: row.id } : ident(row)), mode }) });
       onDone();
       navigate({ name: "session", id: r.session.id });
     } catch (e) {
@@ -77,15 +90,15 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
       <div className="border-b border-line px-5 py-4">
         <div className="text-base font-semibold leading-snug">{row.title}</div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-faint">
-          <span className="inline-flex items-center gap-1"><FolderOpen className="size-3.5" />{home(row.cwd) || "no folder"}{p && !p.session.cwd_exists && row.cwd ? " (gone)" : ""}</span>
+          <span className="inline-flex items-center gap-1"><FolderOpen className="size-3.5" />{home(row.cwd) || "no folder"}{shown && !shown.session.cwd_exists && row.cwd ? " (gone: the copy keeps it until you move the session)" : ""}</span>
           {row.model && <span className="font-mono">{row.model}</span>}
           <span>{ago(row.updated_ms)}</span>
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {err && <p className="mb-3 rounded-md bg-danger-soft px-3 py-2 text-caption text-danger" data-testid="import-error">{err}</p>}
-        {!p && !err && <p className="text-ui text-faint">Reading the session</p>}
-        {p && (
+        {!shown && !err && <p className="text-ui text-faint">Reading the session</p>}
+        {shown && (() => { const p = shown; return (
           <>
             <div className="flex gap-6" data-testid="import-counts">
               <Stat n={p.counts.prompts} label="prompts" />
@@ -106,8 +119,22 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
                 </div>
               ))}
             </div>
+            {p.links.length > 1 && (
+              <>
+                <div className="mt-5 text-caption font-medium uppercase tracking-wide text-faint">{p.links.length} copies here</div>
+                <div className="mt-2 divide-y divide-line rounded-lg border border-line" data-testid="import-copies">
+                  {p.links.map((l) => (
+                    <button key={l.session_id} type="button" onClick={() => open(l.session_id)} data-testid="import-copy" data-id={l.session_id} className="flex w-full items-center gap-3 px-3 py-2 text-left text-ui hover:bg-hover">
+                      <span className="min-w-0 flex-1 truncate">{l.title}</span>
+                      <span className="shrink-0 text-micro text-faint tabular-nums">copied {ago(l.imported_ms)} · active {ago(l.updated_ms)}</span>
+                      <span className="shrink-0 text-caption text-accent">Open</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </>
-        )}
+        ); })()}
       </div>
       <div className="flex items-center gap-2 border-t border-line px-5 py-3">
         <span className="min-w-0 flex-1 text-caption text-faint">
@@ -117,10 +144,10 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
           <>
             <button type="button" disabled={busy} onClick={() => go("new")} data-testid="import-new" className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">New copy</button>
             {done.grew && !done.went_on && <button type="button" disabled={busy} onClick={() => go("update")} data-testid="import-update" className="h-8 rounded-lg border border-line-strong px-3 text-ui font-medium hover:bg-hover">Update</button>}
-            <button type="button" disabled={busy} onClick={() => go("open")} data-testid="import-open" className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90">Open</button>
+            <button type="button" disabled={busy} onClick={() => open(shown?.links[0]?.session_id ?? done.session_id)} data-testid="import-open" className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90">Open</button>
           </>
         ) : (
-          <button type="button" disabled={busy || !p} onClick={() => go()} data-testid="import-go" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+          <button type="button" disabled={busy || !shown} onClick={() => go()} data-testid="import-go" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
             <ArrowDownToLine className="size-4" /> Import
           </button>
         )}
@@ -129,16 +156,28 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
   );
 }
 
+type Item = { harness: Harness; id: string; path?: string; title: string };
+type Fail = { item: Item; error: string; reason?: string };
+
 type RunningRow = { id: string; name: string; kind: string; state: string; cwd: string; harness: Harness | null; transcript_path: string | null; imported?: string };
 
 // The sessions the agent view runs now: copy one, or take it over (it ends
-// where it runs and goes on here).
+// where it runs and goes on here). Nothing running shows nothing; a list that
+// could not be read, or an agent view not set, says so (the stored
+// transcripts below stay usable either way).
 function Running({ onDone }: { onDone: () => void }) {
   const [rows, setRows] = useState<RunningRow[]>([]);
+  const [why, setWhy] = useState<{ text: string; unset?: boolean } | null>(null);
   const [err, setErr] = useState("");
-  useEffect(() => { api<{ sessions: RunningRow[] }>("/api/import/running").then((r) => setRows(r.sessions), () => setRows([])); }, []);
-  const usable = rows.filter((r) => r.harness && r.transcript_path);
-  if (!usable.length) return null;
+  const list = useCallback(() => {
+    api<{ sessions: RunningRow[]; not_listed?: string[]; unset?: true }>("/api/import/running").then((r) => {
+      setRows(r.sessions);
+      setWhy(r.not_listed?.length ? { text: r.not_listed.join("; "), unset: r.unset } : null);
+    }, (e) => { setRows([]); setWhy({ text: failed(e, { at: "ImportSheet running" }) }); });
+  }, []);
+  useEffect(list, [list]);
+  const shown = rows.filter((r) => r.harness);
+  if (!shown.length && !why) return null;
   const go = async (p: Promise<{ session: { id: string } } | null>) => {
     setErr("");
     try {
@@ -153,14 +192,23 @@ function Running({ onDone }: { onDone: () => void }) {
   return (
     <div className="border-b border-line" data-testid="import-running">
       <div className="px-3 pt-2 pb-1 text-micro font-medium uppercase tracking-wide text-faint">Running now</div>
-      {usable.map((r) => (
+      {why && (
+        <div className="flex items-center gap-2 px-3 pb-2 text-caption text-muted" data-testid="import-running-unlisted">
+          <span className="size-1.5 shrink-0 rounded-full bg-warn" />
+          <span className="min-w-0 flex-1">{why.unset ? "Running sessions are listed once the agent view is set." : `Could not list running sessions: ${why.text}`}</span>
+          {why.unset
+            ? <button type="button" onClick={() => { onDone(); navigate({ name: "settings", section: "elsewhere" }); }} className="h-6 shrink-0 rounded-md px-2 text-caption text-accent hover:bg-accent-soft">Set it</button>
+            : <button type="button" onClick={list} data-testid="import-running-retry" className="h-6 shrink-0 rounded-md px-2 text-caption text-accent hover:bg-accent-soft">Retry</button>}
+        </div>
+      )}
+      {shown.map((r) => (
         <div key={r.id} data-testid="import-running-row" data-id={r.id} className="flex items-center gap-2 px-3 py-1.5">
           <span className="size-1.5 shrink-0 rounded-full bg-ok" />
-          <span className="min-w-0 flex-1 truncate text-ui">{r.name || r.id}<span className="ml-1.5 text-micro text-faint">{TOOL[r.kind] ?? r.kind} · {r.state}</span></span>
-          <button type="button" title="Import a copy; the original keeps running" onClick={() => go(api("/api/import", { method: "POST", body: JSON.stringify({ outside: r.id, mode: r.imported ? "open" : undefined }) }))}
-            className="h-6 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg">{r.imported ? "Open copy" : "Copy"}</button>
-          <button type="button" data-testid="import-takeover" onClick={() => go(takeOver(r.id, r.name || r.id, TOOL[r.kind] ?? r.kind))}
-            className="h-6 shrink-0 rounded-md border border-line-strong px-2 text-caption font-medium hover:bg-hover">Take over</button>
+          <span className="min-w-0 flex-1 truncate text-ui">{r.name || r.id}<span className="ml-1.5 text-micro text-faint">{TOOL[r.kind] ?? r.kind} · {r.state}{!r.transcript_path ? " · no transcript here" : ""}</span></span>
+          <button type="button" disabled={!r.transcript_path} title={r.transcript_path ? "Import a copy; the original keeps running" : "The agent view names no transcript of it on this machine, so there is nothing to copy"} onClick={() => go(api("/api/import", { method: "POST", body: JSON.stringify({ outside: r.id, mode: r.imported ? "open" : undefined }) }))}
+            className="h-6 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent">{r.imported ? "Open copy" : "Copy"}</button>
+          <button type="button" data-testid="import-takeover" disabled={!r.transcript_path} onClick={() => go(takeOver(r.id, r.name || r.id, TOOL[r.kind] ?? r.kind))}
+            className="h-6 shrink-0 rounded-md border border-line-strong px-2 text-caption font-medium hover:bg-hover disabled:opacity-40">Take over</button>
         </div>
       ))}
       {err && <p className="mx-3 mb-2 rounded-md bg-danger-soft px-2 py-1 text-caption text-danger" data-testid="import-running-error">{err}</p>}
@@ -180,30 +228,47 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [building, setBuilding] = useState(false);
   const seq = useRef(0);
   const [bulk, setBulk] = useState("");
+  // The filter the shown rows and count came from.
+  const [shownFor, setShownFor] = useState<{ q: string; all: boolean }>({ q: "", all: false });
   const [from, setFrom] = useState("");
   const machines = useFleet((s) => s.machines);
   const linked = useMemo(() => machines.filter((m) => m.source !== "local" && m.enabled && m.daemon?.state === "linked" && m.workspace_root), [machines]);
 
-  // Every session the filter shows, imported 200 at a time; ones imported before are left as they are.
-  const importAll = async () => {
+  // Every session the shown list holds (the filter that produced it, never
+  // one typed since), counted across its pages and confirmed before the first
+  // copy; then imported 200 at a time. Ones imported before stay as they are;
+  // a failed one is named with its reason and can be tried again alone.
+  const [confirm, setConfirm] = useState<Item[] | null>(null);
+  const [fails, setFails] = useState<Fail[]>([]);
+  const collect = async () => {
     const u = new URLSearchParams({ harness, limit: "500" });
-    if (q.trim()) u.set("q", q.trim());
-    if (all) u.set("show", "all");
-    const items: { harness: Harness; id: string }[] = [];
+    if (shownFor.q) u.set("q", shownFor.q);
+    if (shownFor.all) u.set("show", "all");
+    const items: Item[] = [];
     for (let cursor: number | undefined = 0; cursor !== undefined; ) {
       u.set("cursor", String(cursor));
       const r: { sessions: Row[]; next_cursor?: number } = await api(`/api/import/sessions?${u}`);
-      for (const x of r.sessions) if (!x.imported) items.push({ harness: x.harness, id: x.id });
+      for (const x of r.sessions) if (!x.imported) items.push({ ...ident(x), title: x.title });
       cursor = r.next_cursor;
     }
-    let done = 0, failed = 0;
+    if (items.length) setConfirm(items);
+    else setBulk("Every session this list shows was imported before");
+  };
+  const importAll = async (items: Item[]) => {
+    setConfirm(null);
+    setFails([]);
+    let done = 0;
+    const missed: Fail[] = [];
     for (let i = 0; i < items.length; i += 200) {
-      setBulk(`Importing ${done} of ${items.length}`);
-      const r = await api<{ counts: Record<string, number> }>("/api/import/batch", { method: "POST", body: JSON.stringify({ items: items.slice(i, i + 200) }) });
-      done += (r.counts.created ?? 0) + (r.counts.opened ?? 0);
-      failed += r.counts.failed ?? 0;
+      setBulk(`Importing ${done + missed.length} of ${items.length}`);
+      const r = await api<{ results: any[] }>("/api/import/batch", { method: "POST", body: JSON.stringify({ items: items.slice(i, i + 200).map(({ title: _, ...x }) => x) }) });
+      r.results.forEach((x, k) => {
+        if (x.ok) done++;
+        else missed.push({ item: items[i + k]!, error: x.error ?? `failed (${x.status})`, reason: x.reason });
+      });
     }
-    setBulk(`Imported ${done}${failed ? `, ${failed} could not be read` : ""}`);
+    setFails(missed);
+    setBulk(`Imported ${done}${missed.length ? `; ${missed.length} not imported` : ""}`);
     load(0);
   };
 
@@ -221,6 +286,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
       setNext(r.next_cursor);
       setBuilding(r.index.building);
       setRows((prev) => (cursor ? [...(prev ?? []), ...r.sessions] : r.sessions));
+      if (!cursor) setShownFor({ q: q.trim(), all });
     } catch (e) {
       reportError(e);
     }
@@ -237,7 +303,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     const t = setTimeout(() => load(0), 1500);
     return () => clearTimeout(t);
   }, [open, building, load]);
-  useEffect(() => { setSel(null); setRows(null); }, [harness, from]);
+  useEffect(() => { setSel(null); setRows(null); setConfirm(null); setFails([]); setBulk(""); }, [harness, from]);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -295,12 +361,34 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               {!from && <Running onDone={() => onOpenChange(false)} />}
               <div className="flex items-center gap-2 px-3 py-1.5 text-micro text-faint tabular-nums">
                 <span className="min-w-0 flex-1 truncate" data-testid="import-total">{bulk || (rows ? `${total.toLocaleString()} session${total === 1 ? "" : "s"}${building ? " · reading the store" : ""}` : "Reading")}</span>
-                {rows && total > 0 && !building && !from && (
-                  <button type="button" data-testid="import-all" disabled={bulk.startsWith("Importing")} onClick={() => importAll().catch((e) => { setBulk(""); reportError(e); })} className="shrink-0 rounded-sm px-1.5 py-0.5 text-accent hover:bg-accent-soft disabled:opacity-50" title="Import every session this list shows; ones imported before stay as they are">
+                {rows && total > 0 && !building && !from && !confirm && (
+                  <button type="button" data-testid="import-all" disabled={bulk.startsWith("Importing") || shownFor.q !== q.trim() || shownFor.all !== all} onClick={() => collect().catch((e) => { setBulk(""); reportError(e); })} className="shrink-0 rounded-sm px-1.5 py-0.5 text-accent hover:bg-accent-soft disabled:opacity-50" title="Import every session this list shows; ones imported before stay as they are">
                     Import all
                   </button>
                 )}
               </div>
+              {confirm && (
+                <div className="mx-3 mb-2 flex items-center gap-2 rounded-md border border-line bg-raised px-3 py-2 text-caption" data-testid="import-all-confirm">
+                  <span className="min-w-0 flex-1">Import {confirm.length.toLocaleString()} new {confirm.length === 1 ? "copy" : "copies"}{shownFor.q ? ` matching "${shownFor.q}"` : ""}?</span>
+                  <button type="button" onClick={() => setConfirm(null)} className="h-6 rounded-md px-2 text-muted hover:bg-hover hover:text-fg">Cancel</button>
+                  <button type="button" data-testid="import-all-go" onClick={() => importAll(confirm).catch((e) => { setBulk(""); reportError(e); })} className="h-6 rounded-md bg-accent px-2 font-medium text-accent-fg hover:opacity-90">Import</button>
+                </div>
+              )}
+              {fails.length > 0 && (
+                <div className="mx-3 mb-2 rounded-md border border-line border-l-[3px] border-l-st-fail bg-raised text-caption" data-testid="import-fails">
+                  <ul className="max-h-40 divide-y divide-line overflow-y-auto">
+                    {fails.map((f) => (
+                      <li key={f.item.harness + f.item.id + (f.item.path ?? "")} className="px-3 py-1.5" data-testid="import-fail">
+                        <div className="truncate font-medium text-fg">{f.item.title || f.item.id}</div>
+                        <div className="text-muted">{f.error}{f.reason === "no_model" && <button type="button" onClick={() => { onOpenChange(false); navigate({ name: "settings", section: "providers" }); }} className="ml-1 text-accent hover:underline">Set up a provider</button>}</div>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex justify-end border-t border-line px-2 py-1">
+                    <button type="button" data-testid="import-retry-failed" disabled={bulk.startsWith("Importing")} onClick={() => importAll(fails.map((f) => f.item)).catch((e) => { setBulk(""); reportError(e); })} className="h-6 rounded-md px-2 text-accent hover:bg-accent-soft disabled:opacity-50">Retry failed</button>
+                  </div>
+                </div>
+              )}
               <div className="min-h-0 flex-1 overflow-y-auto" data-testid="import-list">
                 {rows?.map((r) => (
                   <button
