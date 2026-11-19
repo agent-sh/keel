@@ -7,6 +7,8 @@ import { cn, fmtTokens } from "../lib/utils.ts";
 import { buildGroups, buildItems, countLabel, hiddenReason, providerOrder, type Group, type Item } from "../lib/picker.ts";
 import { notePick, recentPicks } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
+import { loadPeerModels, usePeerModels } from "../lib/peer-models.ts";
+import { machineName } from "../lib/fleet.ts";
 
 // The lists themselves are built in lib/picker.ts. With no query: favorites,
 // recent picks, then one group per provider (the default model's provider,
@@ -14,7 +16,8 @@ import { Kbd } from "./Kbd.tsx";
 // query searches every model, an exact route id first and the hidden ones
 // last so they can be shown again. Nothing here names a model. A chunk of its
 // own (Combobox is large): ModelPicker shows the same trigger until it loads.
-export function ModelMenu({ value, onChange, compact, openSignal }: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number }) {
+// `machine`: the session is another daemon's; its listing is the one offered.
+export function ModelMenu({ value, onChange, compact, openSignal, machine }: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string }) {
   const [open, setOpen] = useState(!!openSignal);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -23,11 +26,14 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
   const highlighted = useRef<string | undefined>(undefined);
   const [hint, setHint] = useState<string | null>(null);
   useEffect(() => { if (openSignal) setOpen(true); }, [openSignal]);
-  const models = useStore((s) => s.models);
+  const local = useStore((s) => s.models);
+  const peer = usePeerModels(machine);
+  const models = machine ? peer?.models ?? [] : local;
   const sessions = useStore((s) => s.sessions);
   const def = useStore((s) => s.defaultModel);
   const pinned = useStore((s) => s.pinned);
-  const labels = useStore((s) => s.providerLabels);
+  const localLabels = useStore((s) => s.providerLabels);
+  const labels = machine ? peer?.labels ?? {} : localLabels;
   const problems = useStore((s) => s.limits?.problems);
   useEffect(() => { if (open) actions.loadLimits().catch((e) => reportError(e, { at: "limits" })); }, [open]);
 
@@ -147,13 +153,20 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                 aria-label="Read the provider listings again"
                 data-testid="refresh-models"
                 onPointerDown={(e) => e.preventDefault()}
-                onClick={() => actions.loadModels(true).catch(reportError)}
+                onClick={() => (machine ? loadPeerModels(machine, true) : actions.loadModels(true).catch(reportError))}
                 className="mr-1.5 grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg"
               >
                 <RefreshCw className="size-3.5" />
               </button>
             </div>
             {hint && <div className="border-b border-line px-3 py-1.5 text-caption text-warn" role="status" data-testid="picker-hint">{hint}</div>}
+            {machine && (
+              <div data-testid="peer-catalog" className={cn("border-b border-line px-3 py-1.5 text-caption", peer?.error ? "text-warn" : "text-faint")}>
+                {peer?.error
+                  ? `${machineName(machine)}'s listing cannot be read now (${peer.error})${peer.models ? "; the last one it gave is shown" : ""}.`
+                  : peer?.models ? `Models ${machineName(machine)} lists: the session runs there.` : `Reading ${machineName(machine)}'s models.`}
+              </div>
+            )}
             <Combobox.Empty>
               <div className="px-3 py-4 text-ui text-muted">No model matches.</div>
             </Combobox.Empty>

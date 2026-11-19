@@ -60,6 +60,13 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await page.getByLabel("Fold the list").click();
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await expect(page.getByTestId("session-title")).toHaveText("Started on the other machine");
+    // Its model is the other daemon's: the picker names it and offers that daemon's listing.
+    await expect(page.getByTestId("model-picker")).not.toContainText(/Choose a model|No models/);
+    await page.getByTestId("model-picker").click();
+    await expect(page.getByTestId("peer-catalog")).toContainText("Models devbox lists");
+    await expect(page.getByTestId("model-option").first()).toBeVisible();
+    await shoot(page, "fleet-02a-peer-models");
+    await page.keyboard.press("Escape");
     // Driven through the link: the turn runs on the other daemon, its frames come back over the relay.
     await page.getByTestId("composer").fill("Reply with the single word: pong");
     await page.keyboard.press("Enter");

@@ -1,6 +1,7 @@
 import { ChevronsUpDown } from "lucide-react";
 import { lazy, Suspense, useRef, useState } from "react";
 import { useStore } from "../lib/store.ts";
+import { usePeerModels } from "../lib/peer-models.ts";
 import { cn } from "../lib/utils.ts";
 
 const ModelMenu = lazy(() => import("./ModelMenu.tsx").then((m) => ({ default: m.ModelMenu })));
@@ -28,11 +29,15 @@ export function TriggerLabel({ label, any, value }: { label?: string; any: boole
 // The model picker. Its menu (a Combobox) is a separate chunk that loads right
 // after the page; until then the same trigger stands in, and a click on it
 // opens the menu once it is there. `openSignal` opens it when it changes.
-export function ModelPicker(props: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number }) {
+// `machine`: the session is that daemon's, and its listing is the one offered.
+export function ModelPicker(props: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string }) {
   const atMount = useRef(props.openSignal ?? 0);
   const [clicked, setClicked] = useState(0);
-  const label = useStore((s) => s.models.find((m) => m.id === props.value)?.name);
-  const any = useStore((s) => s.models.length > 0);
+  const peer = usePeerModels(props.machine);
+  const localLabel = useStore((s) => s.models.find((m) => m.id === props.value)?.name);
+  const localAny = useStore((s) => s.models.length > 0);
+  const label = props.machine ? peer?.models?.find((m) => m.id === props.value)?.name : localLabel;
+  const any = props.machine ? !!peer?.models?.length : localAny;
   const signal = (props.openSignal ?? 0) !== atMount.current ? props.openSignal! : clicked;
   return (
     <Suspense
