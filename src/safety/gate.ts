@@ -69,6 +69,7 @@ export class Gate {
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
+  private cancelledAtBoot = new Set<string>(); // session + call id of the cards a restart cancelled
   // Reviewer mode's judge (set by the permission routes, which hold the providers).
   judge: (a: ReviewAsk) => Promise<Verdict> = async () => ({ unavailable: "no reviewer is set up" });
 
@@ -76,11 +77,16 @@ export class Gate {
     store.migrate(SCHEMA);
     if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
     const db = store.db;
-    // Restart: no turn waits on an old card.
+    // Restart: no turn waits on an old card. Its call never ran (waitedAtRestart).
     for (const r of db.query<{ id: string; data: string }, []>("SELECT id, data FROM approvals WHERE state = 'pending'").all()) {
       const a = { ...(JSON.parse(r.data) as Approval), state: "cancelled" as const, reason: "the daemon restarted", resolved: Date.now() };
       db.query("UPDATE approvals SET state = 'cancelled', data = ? WHERE id = ?").run(JSON.stringify(a), r.id);
+      this.cancelledAtBoot.add(`${a.session_id}\u0000${a.call_id}`);
     }
+  }
+
+  waitedAtRestart(sessionId: string, callId: string): boolean {
+    return this.cancelledAtBoot.has(`${sessionId}\u0000${callId}`);
   }
 
   setSandboxCheck(f: (s: Session, p: SessionPerm) => boolean) {

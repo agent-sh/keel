@@ -30,6 +30,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   if (!sb.available && g.defaultSandbox() !== "off") deps.errors.capture("server", new Error(`sandbox unavailable: ${sb.reason}`), { at: "startup" });
   registerHooks({
     beforeTool: (s, call) => g.beforeTool(s, call),
+    waitedAtRestart: (sid, callId) => g.waitedAtRestart(sid, callId),
   });
 
   const presenceCall = async (f: () => Promise<Response>) => {

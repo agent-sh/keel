@@ -1,6 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
@@ -11,8 +12,11 @@ import { shoot } from "./shots.ts";
 // its own daemons on a scratch state folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
-function daemon(state: string, extra: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", state], {
+// `bin`: run that compiled binary instead of the source; `bind`: a fixed address
+// (a page reconnects by itself only to the address it was loaded from).
+function daemon(state: string, extra: Record<string, string> = {}, opts: { bin?: string; bind?: string } = {}): Promise<{ proc: ChildProcess; url: string }> {
+  const args = ["serve", "--bind", opts.bind ?? "127.0.0.1:0", "--state-dir", state, "--workspace", state];
+  const proc = spawn(opts.bin ?? "bun", opts.bin ? args : ["src/main.ts", ...args], {
     env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", ...extra },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -154,6 +158,85 @@ test("a held queue survives a restart", async ({ page }) => {
     const sent = ((await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "user" && e.data.origin === "queued").map((e) => e.data.text);
     expect(sent).toEqual(["first, corrected", "second"]);
     expect((await call(`/api/sessions/${sid}/queue`, undefined, "GET")).held).toBe(false);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
+// The compiled binary, killed while the page holds an approval card: the
+// reconnected page drops the old card and answering it is refused (409, with
+// how it ended); the cut turn continues and asks again on a new card that
+// settles once; the command waiting on the old card never runs.
+test("an approval pending at a crash is closed, and the continued turn asks again", async ({ page }) => {
+  const state = join(ROOT, `restart-approval-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const bin = join(state, "keel");
+  const built = spawnSync("bun", ["scripts/build.ts", bin], { encoding: "utf8" });
+  expect(built.status, built.stderr).toBe(0);
+  const port = await new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
+  const at = { bin, bind: `127.0.0.1:${port}` };
+  let d = await daemon(state, {}, at);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in" });
+    const sid = session.id;
+    await call(`/api/sessions/${sid}/permissions`, { mode: "ask" }, "PUT");
+    const mark = (n: number) => ({ name: "Bash", input: { command: `echo ran-${n} >> ${join(state, "ran.txt")}` } });
+    const ran = () => (existsSync(join(state, "ran.txt")) ? readFileSync(join(state, "ran.txt"), "utf8") : "");
+
+    await page.goto(`${d.url}/s/${sid}`);
+    await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([mark(1), mark(2)])}`);
+    await page.getByTestId("composer").press("Enter");
+    const card = page.getByTestId("approval");
+    await expect(card).toHaveCount(1, { timeout: 15_000 });
+    await expect(card.getByTestId("approval-summary")).toContainText("ran-1");
+    const old = (await card.getAttribute("data-approval-id"))!;
+
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    expect(ran()).toBe("");
+    d = await daemon(state, {}, at);
+
+    // The same page, reconnected by itself: the old card is gone and the turn asks again.
+    await expect(page.locator(`[data-approval-id="${old}"]`)).toHaveCount(0, { timeout: 30_000 });
+    await expect(card).toHaveCount(1, { timeout: 30_000 });
+    await expect(card.getByTestId("approval-summary")).toContainText("ran-2");
+    const fresh = (await card.getAttribute("data-approval-id"))!;
+    expect(fresh).not.toBe(old);
+    await shoot(page, "restart-04-approval-after-crash");
+    const stale = await call(`/api/sessions/${sid}/approvals/${old}`, { choice: "once" });
+    expect([stale.status, stale.error]).toEqual([409, "cancelled: the daemon restarted"]);
+    expect(ran()).toBe("");
+
+    await card.getByTestId("allow-once").click();
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 2 calls", { timeout: 15_000 });
+    await expect(card).toHaveCount(0);
+    const again = await call(`/api/sessions/${sid}/approvals/${fresh}`, { choice: "once" });
+    expect([again.status, again.error]).toEqual([409, "already allowed (once)"]);
+    expect(ran()).toBe("ran-2\n");
+
+    // Recorded once each: the cut turn's end, the call it cut, the continued turn.
+    const ev = (await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[];
+    expect(new Set(ev.map((e) => e.id)).size).toBe(ev.length);
+    expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
+    expect(ev.filter((e) => e.kind === "user").map((e) => e.data.origin ?? "owner")).toEqual(["owner", "restart"]);
+    const results = ev.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
+    const uses = ev.filter((e) => e.kind === "assistant").flatMap((e) => e.data.blocks).filter((b: any) => b.type === "tool_use");
+    expect(uses).toHaveLength(2);
+    expect(results.map((r: any) => r.tool_use_id)).toEqual(uses.map((u: any) => u.id));
+    expect(results[0].is_error).toBe(true);
+    expect(results[0].content).toContain("did not run");
+    const cards = (await call(`/api/sessions/${sid}/approvals?all`, undefined, "GET")).approvals as any[];
+    expect(cards.map((a) => [a.id, a.state]).sort()).toEqual([[old, "cancelled"], [fresh, "allowed"]].sort());
+
+    // Nothing but this machine's provider listings reached the Errors panel.
+    const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
+    expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+    await page.getByTestId("errors-button").click();
+    await expect(page.getByTestId("errors-panel").getByTestId("error-row")).toHaveCount(errs.length);
   } finally {
     d.proc.kill("SIGKILL");
   }

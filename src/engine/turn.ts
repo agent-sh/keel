@@ -29,7 +29,11 @@ import { RETRY, RETRY_WAIT_MAX_MS, backoffMs, errorText, retryable, sleep } from
 export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
 // A question cut by a restart did nothing: no answer was recorded.
 export const QUESTION_CUT = "No answer was recorded before the daemon restarted: the question expired. Ask it again if the decision still matters.";
-const cutText = (tool: string) => (asksOwner(tool) ? QUESTION_CUT : RESTART_CUT);
+// A call cut while it waited for the owner's approval never ran.
+export const APPROVAL_CUT = "The daemon restarted while this call waited for the owner's approval: it did not run. Call it again if it is still needed.";
+const CUT = new Set([RESTART_CUT, QUESTION_CUT, APPROVAL_CUT]);
+const cutText = (session: string, u: { id: string; name: string }) =>
+  asksOwner(u.name) ? QUESTION_CUT : allHooks().some((h) => h.waitedAtRestart?.(session, u.id)) ? APPROVAL_CUT : RESTART_CUT;
 
 // What the model is told about a tool call cut by the output limit.
 export const CUT_CALL = "Not run: this call was cut at the output limit, so its input may be incomplete. Send it again whole if it is still needed.";
@@ -742,7 +746,7 @@ export class Engine {
     // Built when the stop comes: a stop for a daemon restart says so.
     const interrupted = (): ToolResultBlock => ({
       type: "tool_result", tool_use_id: u.id, is_error: true,
-      content: this.parking.has(ctx.sessionId) ? cutText(u.name) : "Interrupted by the user while this tool ran.",
+      content: this.parking.has(ctx.sessionId) ? cutText(ctx.sessionId, u) : "Interrupted by the user while this tool ran.",
     });
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
@@ -952,7 +956,7 @@ export class Engine {
       if (lastStart < 0 || line.slice(lastStart).some((e) => e.kind === "turn_end")) continue;
       const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
       const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id)) : []));
-      if (cut.length) this.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(u.name), is_error: true })) });
+      if (cut.length) this.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(id, u), is_error: true })) });
       this.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true });
     }
     // Each session on its own: a provider still starting holds only its sessions.
@@ -971,7 +975,7 @@ export class Engine {
         this.append(s.id, "note", { kind: "restart", text: "The daemon restarted again during the continued turn. Continue when you want it to go on." });
         return;
       }
-      const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => r.content === RESTART_CUT || r.content === QUESTION_CUT) : [])).length;
+      const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => CUT.has(r.content)) : [])).length;
       try {
         await waitModel(s.model);
       } catch (e) {

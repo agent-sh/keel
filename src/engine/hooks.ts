@@ -44,6 +44,9 @@ export type TurnHooks = {
   // tool that asked for a fresh context gets its checkpoint here).
   stepDone?: (s: Session) => void | Promise<void>;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
+  // At startup: true for a call the last daemon left waiting on the owner (an
+  // approval it never got): the call never ran, and the model is told so.
+  waitedAtRestart?: (sessionId: string, callId: string) => boolean;
   // Before a compaction summarises the history (a memory tool reads it whole first).
   beforeCompact?: (s: Session) => void | Promise<void>;
   // A session another agent answers (an ACP agent): its runner takes the whole
