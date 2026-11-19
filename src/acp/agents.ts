@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
+import { readFolders } from "./confine.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 
 export const REGISTRY_URL = () => process.env.KEEL_ACP_REGISTRY ?? "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
@@ -24,6 +25,7 @@ export type AcpAgent = {
   run?: AgentCommand;    // how to start it here; absent: not installed
   add?: AgentCommand;    // a registry agent offered through npx or uvx
   website?: string;
+  folders?: string[];    // the owner's writable folders for it (confine.ts); absent: the guess
 };
 
 type Registry = { version?: string; agents: any[] };
@@ -105,7 +107,9 @@ export class AcpAgents {
   list(): AcpAgent[] {
     let custom: Record<string, CustomAgent> = {};
     try { custom = readCustom(); } catch (e) { this.error = `${agentsPath()}: ${(e as Error).message}`; }
-    return joinAgents(this.reg, custom, (b) => Bun.which(b));
+    let folders: Record<string, string[]> = {};
+    try { folders = readFolders(); } catch (e) { this.error = `${(e as Error).message}`; }
+    return joinAgents(this.reg, custom, (b) => Bun.which(b)).map((a) => (folders[a.id] ? { ...a, folders: folders[a.id] } : a));
   }
 
   get(id: string): AcpAgent | undefined {

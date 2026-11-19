@@ -7,11 +7,39 @@ import { navigate } from "../lib/ui.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type Cmd = { command: string; args: string[] };
-type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; model: string; run?: Cmd; add?: Cmd; website?: string; sandbox?: { confined: boolean; note: string } };
+type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; model: string; run?: Cmd; add?: Cmd; website?: string; sandbox?: { confined: boolean; note: string }; folders?: { list: string[]; own: boolean } };
 type Listing = { agents: Agent[]; error?: string; running: { session: string; agent: string }[] };
 
 const line = (c?: Cmd) => (c ? [c.command.replace(/^\/home\/[^/]+/, "~"), ...c.args].join(" ") : "");
 const btn = "h-7 shrink-0 rounded-md border border-line px-2.5 text-caption font-medium text-fg hover:bg-hover disabled:opacity-40";
+
+// The folders the agent's own process may write in the sandbox: a guess by its
+// name until the owner sets the list. A change counts from its next start.
+function AgentFolders({ agent, busy, save }: { agent: Agent; busy: boolean; save: (folders: string[] | null) => void }) {
+  const [add, setAdd] = useState("");
+  const list = agent.folders!.list;
+  return (
+    <span className="mt-2 block" data-testid="acp-agent-folders" data-own={String(agent.folders!.own)}>
+      <span className="block text-caption text-faint">
+        {agent.folders!.own ? "Writable folders, as you set them (from its next start)" : "Writable folders, guessed from its name"}
+      </span>
+      <span className="mt-1 flex flex-wrap gap-1.5">
+        {list.length === 0 && <span className="text-caption text-faint">None</span>}
+        {list.map((f) => (
+          <span key={f} className="inline-flex items-center gap-1 rounded-md border border-line bg-sunken py-0.5 pl-2 pr-1 font-mono text-caption text-muted" data-testid="acp-agent-folder">
+            {f}
+            <button type="button" aria-label={`Remove ${f}`} className="rounded px-1 text-faint hover:bg-hover hover:text-fg disabled:opacity-40" disabled={busy} onClick={() => save(list.filter((x) => x !== f))}>×</button>
+          </span>
+        ))}
+      </span>
+      <form className="mt-1.5 flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (add.trim()) { save([...list, add.trim()]); setAdd(""); } }}>
+        <input aria-label={`A folder ${agent.name} may write`} placeholder="~/.agent-data or /full/path" value={add} onChange={(e) => setAdd(e.target.value)} className="h-7 w-72 rounded-md border border-line bg-sunken px-2 font-mono text-caption" data-testid="acp-folder-add-path" />
+        <button type="submit" className={btn} disabled={busy || !add.trim()} data-testid="acp-folder-add">Add folder</button>
+        {agent.folders!.own && <button type="button" className={btn} disabled={busy} onClick={() => save(null)} data-testid="acp-folder-reset">Use the guess</button>}
+      </form>
+    </span>
+  );
+}
 
 export function AcpAgentsSettings() {
   const [l, setL] = useState<Listing | null>(null);
@@ -40,6 +68,7 @@ export function AcpAgentsSettings() {
           <SettingRow key={a.id} label={a.name} hint={<>
             <span className="block font-mono text-caption" data-testid="acp-agent-command">{line(a.run)}</span>
             {a.sandbox && <span className={a.sandbox.confined ? "block text-caption text-muted" : "block text-caption text-warn"} data-testid="acp-agent-sandbox" data-confined={String(a.sandbox.confined)}>{a.sandbox.note}</span>}
+            {a.folders && <AgentFolders agent={a} busy={busy} save={(folders) => act(() => api<Listing>(`/api/acp/agents/${a.id}/folders`, { method: "PUT", body: JSON.stringify({ folders }) }))} />}
           </>}>
             <div className="flex items-center gap-2" data-testid={`acp-agent-${a.id}`}>
               <span className="text-caption text-faint">{a.source === "custom" ? "Yours" : "Registry"}</span>

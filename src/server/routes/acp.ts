@@ -2,7 +2,8 @@
 // joined with what is installed, and the owner's own entries), adding and
 // removing an entry, and the turn hook that hands an `acp:` session's turns to
 // its agent. Permission requests and file access of the agent go through the gate.
-import { confineAgent } from "../../acp/confine.ts";
+import { agentFolders, checkFolder, confineAgent, readFolders, writeFolders } from "../../acp/confine.ts";
+import { homedir } from "node:os";
 import { allHooks, registerHooks, type TurnHooks } from "../../engine/hooks.ts";
 import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { AcpProvider, readCustom, writeCustom } from "../../acp/agents.ts";
@@ -58,7 +59,9 @@ export const acpRoutes: RouteModule = (deps) => {
   const listing = () => json({
     // How a new session's agent would run (the default sandbox): the card says it plainly.
     agents: provider.agents.list().map((a) => ({ ...a, installed: !!a.run, model: `acp:${a.id}`, run: a.run ? { command: a.run.command, args: a.run.args } : undefined,
-      ...(a.run ? { sandbox: (({ confined, note }) => ({ confined, note }))(confineAgent(a, permOf(), deps.workspace, false)) } : {}) })),
+      ...(a.run ? { sandbox: (({ confined, note }) => ({ confined, note }))(confineAgent(a, permOf(), deps.workspace, false)),
+        // The folders it may write: the owner's list, else the guess by its name.
+        folders: { list: a.folders ?? agentFolders(a, false).map((f) => (f.startsWith(homedir() + "/") ? `~${f.slice(homedir().length)}` : f)), own: !!a.folders } } : {}) })),
     error: provider.agents.error,
     running: runner.running(),
   });
@@ -85,6 +88,30 @@ export const acpRoutes: RouteModule = (deps) => {
         }
         writeCustom(custom);
         await deps.providers.refresh("acp");
+        return listing();
+      },
+    },
+    // The owner's writable folders for one agent; null goes back to the guess. Used from its next start.
+    "/api/acp/agents/:id/folders": {
+      PUT: async (req: any) => {
+        const guard = needs(req);
+        if (guard) return guard;
+        const id = req.params.id;
+        if (!provider.agents.list().some((a) => a.id === id)) return bad(`no agent named ${id}`, 404);
+        const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
+        const all = readFolders();
+        if (b.folders === null) delete all[id];
+        else {
+          if (!Array.isArray(b.folders) || b.folders.length > 64) return bad("folders is a list of up to 64 paths, or null for the guess");
+          const out: string[] = [];
+          for (const f of b.folders) {
+            const c = checkFolder(String(f));
+            if (c.error !== undefined) return bad(c.error);
+            if (!out.includes(c.path)) out.push(c.path);
+          }
+          all[id] = out;
+        }
+        writeFolders(all);
         return listing();
       },
     },

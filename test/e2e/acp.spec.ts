@@ -204,5 +204,31 @@ test("acp client", async ({ page, request }) => {
   const moved = await request.patch(`/api/sessions/${id}`, { data: { model: HAIKU } });
   expect(moved.status()).toBe(409);
   expect((await moved.json()).error).toContain("keeps its own history");
+
+  // The folders the agent may write are set on its folderCard: a guess by its name
+  // until the owner gives the list, which its next start uses.
+  const own = join(process.env.HOME!, ".cache/keel-work/bun", `acp-folder-${Date.now()}`);
+  for (const f of ["/", "~", "relative/x"]) expect((await request.put("/api/acp/agents/standin/folders", { data: { folders: [f] } })).status()).toBe(400);
+  await page.goto("/settings/acp-agents");
+  const folderCard = page.locator(".k-setting").filter({ has: page.getByTestId("acp-agent-standin") }).getByTestId("acp-agent-folders");
+  await expect(folderCard).toHaveAttribute("data-own", "false");
+  await folderCard.getByTestId("acp-folder-add-path").fill(own.replace(process.env.HOME!, "~"));
+  await folderCard.getByTestId("acp-folder-add").click();
+  await expect(folderCard).toHaveAttribute("data-own", "true");
+  await expect(folderCard.getByTestId("acp-agent-folder").filter({ hasText: `acp-folder-` })).toBeVisible();
+  await shoot(page, "acp-14-folders");
+  await page.getByTestId("acp-agent-standin").getByTestId("acp-agent-start").click();
+  await expect(page).toHaveURL(/\/s\//);
+  const id2 = page.url().split("/s/")[1]!.split(/[?#]/)[0]!;
+  await request.put(`/api/sessions/${id2}/permissions`, { data: { mode: "ask", sandbox: "workspace-write" } });
+  await page.getByTestId("composer").fill(`escape ${own}/written.txt`);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("assistant-text").last()).toContainText("I wrote outside the folder.", { timeout: 30_000 });
+  expect(readFileSync(join(own, "written.txt"), "utf8")).toBe("outside");
+  // Back to the guess.
+  await page.goto("/settings/acp-agents");
+  await folderCard.getByTestId("acp-folder-reset").click();
+  await expect(folderCard).toHaveAttribute("data-own", "false");
+  rmSync(own, { recursive: true, force: true });
   await request.delete("/api/acp/agents/standin");
 });
