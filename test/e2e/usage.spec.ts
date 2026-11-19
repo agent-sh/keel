@@ -30,6 +30,9 @@ test("usage dashboard", async ({ page, request }) => {
   await expect(panel).toBeVisible();
   await expect(panel.getByTestId("tile-ttft")).not.toContainText("none");
   await expect(panel.getByTestId("tile-cache")).toContainText("%");
+  // A model step through its retries, beside one attempt.
+  await expect(panel.getByTestId("tile-step")).toContainText("one attempt");
+  await expect(panel.getByTestId("tile-step")).not.toContainText("none;");
   await expect(panel.getByTestId("cache-breaks")).not.toBeEmpty();
   await expect(panel.getByTestId("usage-models")).toContainText("Haiku");
   await shoot(page, "usage-01-dashboard");

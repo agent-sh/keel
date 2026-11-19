@@ -13,7 +13,8 @@ import { CompactionsView, CompareView, ErrorsView, TokensView } from "./UsageVie
 type Stats = {
   calls: number; errors: number; interrupted: number; error_rate: number;
   latency_p50: number | null; latency_p95: number | null; ttft_p50: number | null; ttft_p95: number | null;
-  output_tokens_per_s: number | null; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number;
+  output_tokens_per_s: number | null; speed_sample: { calls: number; output_tokens: number }; first_text_p50: number | null;
+  step_latency_p50: number | null; step_latency_p95: number | null; retried_steps: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number;
   cache_hit_ratio: number | null; priced_cost_usd: number; unpriced_calls: number; cost_usd: number | null;
   tool_calls: number; tool_errors: number; tool_error_rate: number;
 };
@@ -21,7 +22,7 @@ type Report = {
   since_ms: number; until_ms: number; bucket_ms: number; total: Stats;
   series: (Stats & { t_ms: number })[];
   by_model: (Stats & { model: string })[];
-  tools: { tool: string; tool_calls: number; tool_errors: number; tool_error_rate: number; p50_ms: number | null; p95_ms: number | null; total_ms: number }[];
+  tools: { tool: string; tool_calls: number; tool_errors: number; tool_error_rate: number; p50_ms: number | null; p95_ms: number | null; timed: number; total_ms: number | null }[];
   error_kinds: { message: string; count: number; last_ms: number }[];
   breaks: { cause: string; count: number; last_ms: number | null; uncached_tokens: number }[];
   spend: { day: Spend; month: Spend };
@@ -95,6 +96,12 @@ export type Range = keyof typeof RANGES;
 
 export const fmtMs = (v: number | null | undefined) => (v == null ? "none" : v < 1000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(v < 10_000 ? 2 : 1)} s`);
 export const fmtPct = (v: number | null | undefined) => (v == null ? "none" : `${(v * 100).toFixed(v > 0 && v < 0.1 ? 1 : 0)}%`);
+// A spend that some calls are missing from (no known price, or usage that never
+// arrived) is a lower bound, or unknown when nothing in it was priced.
+type Cost = { priced_cost_usd: number; unpriced_calls: number; incomplete_calls?: number; calls?: number; total_tokens?: number };
+export const fmtSpend = (c: Cost) => (c.unpriced_calls || c.incomplete_calls ? (c.priced_cost_usd ? `${fmtUsd(c.priced_cost_usd)}+` : "unknown") : fmtUsd(c.priced_cost_usd));
+const PURPOSE: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor", consult: "Consults" };
+type Order = "calls" | "tokens" | "spend";
 export const fmtUsd = (v: number) => (v === 0 ? "$0" : v < 0.01 ? `$${v.toFixed(4)}` : v < 100 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`);
 
 export function Tile({ label, value, sub, tone, testid }: { label: string; value: ReactNode; sub?: ReactNode; tone?: "danger"; testid?: string }) {
@@ -107,12 +114,13 @@ export function Tile({ label, value, sub, tone, testid }: { label: string; value
   );
 }
 
-export function Panel({ title, hint, children, testid }: { title: string; hint?: string; children: ReactNode; testid?: string }) {
+export function Panel({ title, hint, children, testid, aside }: { title: string; hint?: string; children: ReactNode; testid?: string; aside?: ReactNode }) {
   return (
     <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid={testid}>
       <div className="mb-3 flex items-baseline gap-2">
         <h3 className="shrink-0 text-base font-medium">{title}</h3>
-        {hint && <span className="text-caption text-faint">{hint}</span>}
+        {hint && <span className="min-w-0 truncate text-caption text-faint">{hint}</span>}
+        {aside && <div className="ml-auto shrink-0 self-center">{aside}</div>}
       </div>
       {children}
     </section>
@@ -179,7 +187,9 @@ function Overview({ range }: { range: Range }) {
     return api<{ settings: any }>("/api/settings", { method: "PATCH", body: JSON.stringify({ budget: { [key]: v } }) })
       .then((x) => { if (budgetSeq.current[key] === n) setBudget((b) => (b ? { ...b, [key]: x.settings.budget[key] } : x.settings.budget)); });
   };
-  const [cost, setCost] = useState<Record<string, { cost_usd?: number; priced_cost_usd: number; unpriced_calls: number }> | null>(null);
+  const [cost, setCost] = useState<Record<string, Cost> | null>(null);
+  const [usage, setUsage] = useState<{ total: Cost; by_purpose: (Cost & { purpose: string })[] } | null>(null);
+  const [order, setOrder] = useState<Order>("calls");
   const [costFailed, setCostFailed] = useState<number | null>(null);
   const models = useStore((s) => s.models);
   const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
@@ -197,8 +207,8 @@ function Overview({ range }: { range: Range }) {
       api<Report>(`/api/telemetry?since_ms=${since}`)
         .then((t) => { if (live && n > got.t) { got.t = n; setR(t); } })
         .catch(reportError);
-      api<any>(`/api/usage?group=model&since_ms=${since}`)
-        .then((u) => { if (live && n > got.u) { got.u = n; setCost(Object.fromEntries(u.buckets.map((b: any) => [b.key, b]))); setCostFailed(null); } })
+      api<any>(`/api/usage?group=model&since_ms=${since}&limit=200`)
+        .then((u) => { if (live && n > got.u) { got.u = n; setCost(Object.fromEntries(u.buckets.map((b: any) => [b.key, b]))); setUsage(u); setCostFailed(null); } })
         .catch((e) => { if (live && n > got.u) setCostFailed(Date.now()); reportError(e); });
     };
     load();
@@ -209,18 +219,19 @@ function Overview({ range }: { range: Range }) {
   const series = useMemo(() => r?.series ?? [], [r]);
   if (!r) return <div className="text-ui text-faint">Reading the measurements.</div>;
   const t = r.total;
-  const costShown = t.unpriced_calls ? (t.priced_cost_usd ? `${fmtUsd(t.priced_cost_usd)}+` : "unknown") : fmtUsd(t.priced_cost_usd);
+  const costShown = fmtSpend({ priced_cost_usd: t.priced_cost_usd, unpriced_calls: t.unpriced_calls, incomplete_calls: usage?.total.incomplete_calls });
   const prompt = t.input_tokens + t.cache_read_tokens + t.cache_write_tokens;
 
   return (
     <div className="flex flex-col gap-4" data-testid="usage-overview">
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <Tile testid="tile-spend" label="Spend" value={costShown} sub={t.unpriced_calls ? `${t.unpriced_calls} calls have no known price` : `${t.calls} model calls`} />
+        <Tile testid="tile-spend" label="Spend" value={costShown} sub={[t.unpriced_calls && `${t.unpriced_calls} without a known price`, usage?.total.incomplete_calls && `${usage.total.incomplete_calls} ended before their usage`].filter(Boolean).join(", ") || `${t.calls} model calls`} />
         <Tile label="Tokens" value={fmtTokens(prompt + t.output_tokens)} sub={`${fmtTokens(prompt)} in, ${fmtTokens(t.output_tokens)} out`} />
         <Tile testid="tile-cache" label="Cache hit rate" value={fmtPct(t.cache_hit_ratio)} sub={`${fmtTokens(t.cache_read_tokens)} read from cache`} />
-        <Tile testid="tile-ttft" label="First token, median" value={fmtMs(t.ttft_p50)} sub={`95th percentile ${fmtMs(t.ttft_p95)}`} />
-        <Tile label="Request time, median" value={fmtMs(t.latency_p50)} sub={t.output_tokens_per_s ? `${Math.round(t.output_tokens_per_s)} tokens/s while streaming` : `95th percentile ${fmtMs(t.latency_p95)}`} />
+        <Tile testid="tile-ttft" label="First token, median" value={fmtMs(t.ttft_p50)} sub={`first text ${fmtMs(t.first_text_p50)}, 95th ${fmtMs(t.ttft_p95)}`} />
+        <Tile testid="tile-step" label="Model step, median" value={fmtMs(t.step_latency_p50)}
+          sub={`95th ${fmtMs(t.step_latency_p95)}; one attempt ${fmtMs(t.latency_p50)}${t.retried_steps ? `, ${t.retried_steps} retried` : ""}`} />
         <Tile
           testid="tile-errors"
           label="Failed requests"
@@ -251,7 +262,8 @@ function Overview({ range }: { range: Range }) {
         </div>
       </Panel>
 
-      <Panel title="Response time" hint="median per bucket" testid="chart-latency">
+      <Panel title="Response time" testid="chart-latency"
+        hint={`median attempt per bucket${t.output_tokens_per_s ? `; output ${Math.round(t.output_tokens_per_s)} tokens/s over ${t.speed_sample.calls} of ${t.calls} requests (${fmtTokens(t.speed_sample.output_tokens)} of ${fmtTokens(t.output_tokens)} tokens)` : ""}`}>
         <TimeChart
           label="Time to first token and request time over time"
           data={series.map((p) => ({ t: p.t_ms, values: [p.ttft_p50, p.latency_p50] }))}
@@ -270,16 +282,17 @@ function Overview({ range }: { range: Range }) {
         />
       </Panel>
 
-      <Panel title="By model" hint={costFailed && cost ? `spend as of the last price lookup; it failed ${ago(costFailed)} ago` : undefined} testid="usage-models">
+      <Panel title="By model" hint={costFailed && cost ? `spend as of the last price lookup; it failed ${ago(costFailed)} ago` : undefined} testid="usage-models"
+        aside={<Segmented<Order> label="Order by" value={order} onChange={setOrder} options={[{ value: "calls", label: "Requests" }, { value: "tokens", label: "Tokens" }, { value: "spend", label: "Spend" }]} />}>
         {r.by_model.length ? (
           <Table
             head={["Model", "Calls", "Cache hit", "First token", "Tokens/s", "Failed", "Spend"]}
-            rows={r.by_model.map((m) => {
+            rows={[...r.by_model].sort((a, b) => (order === "calls" ? b.calls - a.calls : order === "tokens" ? (cost?.[b.model]?.total_tokens ?? 0) - (cost?.[a.model]?.total_tokens ?? 0) : (cost?.[b.model]?.priced_cost_usd ?? 0) - (cost?.[a.model]?.priced_cost_usd ?? 0))).map((m) => {
               const c = cost?.[m.model];
               return [
                 <span title={m.model}>{name(m.model)}</span>, m.calls, fmtPct(m.cache_hit_ratio), fmtMs(m.ttft_p50),
                 m.output_tokens_per_s ? Math.round(m.output_tokens_per_s) : "none", m.errors ? <span className="text-danger">{m.errors}</span> : 0,
-                !cost ? (costFailed ? <span className="text-faint" title="the price lookup failed">unavailable</span> : "") : c ? (c.unpriced_calls ? (c.priced_cost_usd ? `${fmtUsd(c.priced_cost_usd)}+` : "unknown") : fmtUsd(c.priced_cost_usd)) : "none",
+                !cost ? (costFailed ? <span className="text-faint" title="the price lookup failed">unavailable</span> : "") : c ? fmtSpend(c) : "none",
               ];
             })}
           />
@@ -295,11 +308,19 @@ function Overview({ range }: { range: Range }) {
             rows={r.tools.map((x) => [
               <span className="font-mono text-caption">{x.tool}</span>, x.tool_calls,
               x.tool_errors ? <span className={x.tool_error_rate >= 0.15 ? "text-danger" : undefined}>{fmtPct(x.tool_error_rate)}</span> : "0%",
-              fmtMs(x.p50_ms), fmtMs(x.p95_ms), fmtMs(x.total_ms),
+              fmtMs(x.p50_ms), fmtMs(x.p95_ms),
+              x.total_ms == null ? <span className="text-faint">not measured</span> : x.timed < x.tool_calls ? <span title={`${x.tool_calls - x.timed} calls have no duration`}>{fmtMs(x.total_ms)} <span className="text-faint">({x.timed} of {x.tool_calls})</span></span> : fmtMs(x.total_ms),
             ])}
           />
         ) : <p className="text-ui text-faint">No tool calls in this range.</p>}
       </Panel>
+
+      {usage && usage.by_purpose.length > 1 && (
+        <Panel title="By purpose" hint="every request: turns, and the ones beside them" testid="usage-purposes">
+          <Table head={["Purpose", "Requests", "Tokens", "Spend"]}
+            rows={[...usage.by_purpose].sort((a, b) => (b.calls ?? 0) - (a.calls ?? 0)).map((p) => [PURPOSE[p.purpose] ?? p.purpose, p.calls ?? 0, fmtTokens(p.total_tokens ?? 0), fmtSpend(p)])} />
+        </Panel>
+      )}
 
       {budget && (
         <Panel title="Spend limits" hint="a turn stops before a request once the limit is reached; calls without a known price are not counted" testid="usage-budget">

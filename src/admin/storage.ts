@@ -289,7 +289,10 @@ export class Storage {
   // writes) and the JSON settings files, checked by opening the copy before it
   // counts: integrity, and the same sessions and events as the source.
   backup(reason: string) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    // Two backups in the same millisecond get distinct names (-1, -2, ...).
+    const base = `keel-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    let stamp = base.slice(5);
+    for (let n = 1; existsSync(join(this.backupRoot, `keel-${stamp}`)) || existsSync(join(this.backupRoot, `.keel-${stamp}.partial`)); n++) stamp = `${base.slice(5)}-${n}`;
     const tmp = join(this.backupRoot, `.keel-${stamp}.partial`);
     const final = join(this.backupRoot, `keel-${stamp}`);
     mkdirSync(tmp, { recursive: true });
@@ -364,15 +367,18 @@ export class Storage {
           return { name, path, created_ms: stampMs(name), reason: "", sessions: null, events: null, bytes: null, unreadable: `manifest.json cannot be read: ${(e as Error).message}` };
         }
       })
-      .sort((a, b) => (b.created_ms ?? 0) - (a.created_ms ?? 0));
+      // By the folder's own stamp (when the backup began, the same clock for a
+      // readable manifest and a damaged one), then its -N suffix.
+      .sort((a, b) => (stampMs(b.name) ?? b.created_ms ?? 0) - (stampMs(a.name) ?? a.created_ms ?? 0) || order(b.name) - order(a.name));
   }
 }
 
 type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string };
 
-// keel-2026-11-19T10-00-00-000Z -> its time, or null.
+// keel-2026-11-19T10-00-00-000Z[-N] -> its time, or null; and its N.
+const order = (name: string) => Number(/Z-(\d+)$/.exec(name)?.[1] ?? 0);
 const stampMs = (name: string) => {
-  const m = /^keel-(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z$/.exec(name);
+  const m = /^keel-(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z(?:-\d+)?$/.exec(name);
   const t = m ? Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`) : NaN;
   return Number.isNaN(t) ? null : t;
 };
