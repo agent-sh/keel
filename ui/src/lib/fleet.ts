@@ -4,9 +4,9 @@
 import { useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { asRemote, relayed, splitId } from "./fleet-ids.ts";
-import { api, apply, getState, onFeature, reportError } from "./store.ts";
+import { actions, api, apply, getState, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
-export type Facts = { hostname: string; os: string; arch: string; cpus: number; load1: number; mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[]; sandbox: boolean; keel_version: string; root?: string };
+export type Facts = { hostname: string; os: string; arch: string; cpus: number; load1: number; mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[]; sandbox: boolean; keel_version: string; root?: string; measured_ms?: number };
 export type Machine = {
   id: string; name: string; source: "local" | "daemon" | "ssh"; enabled: boolean; state: string; reason?: string; checked_ms?: number;
   auto_connect?: boolean; messages?: "allow" | "hold"; queue?: { running: number; waiting: number; limit?: number }; facts?: Facts;
@@ -53,7 +53,12 @@ export const fleet = {
   },
   // One view across machines: the other daemons' sessions join the main store.
   async loadView() {
+    // Answers can come back out of order: one asked before the last applied
+    // one is older news (a stale list must not bring back a row a newer one dropped).
+    const mine = ++viewAsked;
     const r = await api<{ machines: FleetMachineView[] }>("/api/fleet");
+    if (mine < viewApplied) return;
+    viewApplied = mine;
     set({ view: r.machines });
     const cur = getState().sessions;
     const next: Record<string, Session> = Object.fromEntries(Object.entries(cur).filter(([id]) => !splitId(id)));
@@ -103,6 +108,8 @@ export const fleet = {
   saveRules: (rules: Rule[]) => api<{ rules: Rule[] }>("/api/fleet/placement", { method: "POST", body: JSON.stringify({ rules }) }).then((r) => set({ rules: r.rules })),
 };
 
+let viewAsked = 0;
+let viewApplied = 0;
 let viewTimer: Timer | undefined;
 const reloadView = () => { clearTimeout(viewTimer); viewTimer = setTimeout(() => fleet.loadView().catch(reportError), 150); };
 let machinesTimer: Timer | undefined;
@@ -114,7 +121,13 @@ onFeature({
       const fr = relayed(f.data.machine, f.data.frame);
       if (fr) apply(fr);
     } else if (f.name === "fleet_machines") reloadMachines();
-    else if (f.name === "fleet_sessions") reloadView();
+    else if (f.name === "fleet_sessions") {
+      reloadView();
+      // The link to that machine came back: transcripts of its sessions open
+      // here catch up on what was said meanwhile (merged by event id).
+      const machine = (f.data as { machine?: string } | undefined)?.machine;
+      for (const id of Object.keys(getState().events)) if (machine && splitId(id)?.machine === machine) actions.loadSession(id).catch(reportUnlessGone);
+    }
     else if (f.name === "fleet_step" && f.session_id) {
       set({ steps: { ...state.steps, [f.session_id]: { ...state.steps[f.session_id], [f.data.call_id]: { machine: f.data.machine, name: f.data.name } } } });
     }

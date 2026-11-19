@@ -258,7 +258,7 @@ export class Fleet {
       const facts = await linkJson<Facts>(p, `/api/fleet/facts${m.workspace_root ? `?root=${encodeURIComponent(m.workspace_root)}` : ""}`);
       const q = this.queues.get(id);
       const busy = (q?.waiting.length ?? 0) > 0 || facts.load1 >= facts.cpus;
-      this.set(id, { state: busy ? "busy" : "ready", reason: null, checked_ms: Date.now(), facts: JSON.stringify(facts) });
+      this.set(id, { state: busy ? "busy" : "ready", reason: null, checked_ms: Date.now(), facts: JSON.stringify({ ...facts, measured_ms: Date.now() }) });
       this.links.set(id, { state: "linked", daemon_id: who.daemon_id, server_name: who.server_name, version: who.version });
       this.ensureRelay(id);
     } catch (e) {
@@ -350,8 +350,13 @@ export class Fleet {
       relay.stale = false;
       const link = this.links.get(id);
       this.links.set(id, { state: "linked", daemon_id: link?.daemon_id, server_name: link?.server_name, version: link?.version });
+      // The stream proves the link, not spare capacity: a machine that was
+      // offline is measured again before it counts as ready or busy.
       const m = this.row(id);
-      if (m?.state === "offline") this.set(id, { state: "ready", reason: null });
+      if (m?.state === "offline") {
+        this.set(id, { state: "starting", reason: null });
+        void this.check(id);
+      }
       this.emitMachines();
       this.bus.emit({ t: "feature", name: "fleet_sessions", data: { machine: id } });
       return;

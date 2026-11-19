@@ -44,6 +44,7 @@ export type Facts = {
   hostname: string; os: string; arch: string; cpus: number; load1: number;
   mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[];
   sandbox: boolean; keel_version: string; root?: string;
+  measured_ms?: number; // when this daemon took the reading (a failed check later keeps it)
 };
 
 export type MachineRow = {

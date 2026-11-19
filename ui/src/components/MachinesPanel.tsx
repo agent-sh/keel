@@ -40,6 +40,7 @@ function FactsLine({ m }: { m: Machine }) {
       <span className="flex items-center gap-2 text-muted tabular-nums">
         <span className="h-1.5 w-24 overflow-hidden rounded-full bg-sunken"><span className={cn("block h-full rounded-full", load > 0.85 ? "bg-danger" : load > 0.6 ? "bg-brass" : "bg-ok")} style={{ width: `${Math.max(4, load * 100)}%` }} /></span>
         {f.load1} on {f.cpus} cores · {gb(f.mem_available_mb)} free of {gb(f.mem_total_mb)}
+        {f.measured_ms && <span className="text-faint" title={when(f.measured_ms)} data-testid="machine-measured">· measured {ago(f.measured_ms)}</span>}
       </span>
       <span className="text-faint">Tools</span>
       <span className="flex flex-wrap gap-1">{f.tools.map((t) => <span key={t} className="rounded-sm bg-sunken px-1.5 font-mono text-micro text-muted">{t}</span>)}</span>
