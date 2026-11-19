@@ -8,7 +8,7 @@ import type { WaitRecord } from "../../../src/automation/waits.ts";
 import type { Activity } from "../../../src/automation/activity.ts";
 import type { Snooze } from "../../../src/automation/snooze.ts";
 import type { Goal, Task } from "../../../src/automation/goals.ts";
-import { actions, api, onFeature, reportError } from "./store.ts";
+import { actions, api, newer, onFeature, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 
@@ -60,11 +60,26 @@ function applyInbox(unread: Unread, alerts?: Alert[]): boolean {
 // Each page reports its own presence: the daemon judges "watching" per page.
 const PAGE = Math.random().toString(36).slice(2, 12);
 
+// A snapshot's records merged with what the page has: per record, the newer of
+// the two by the bus rev (a record a frame changed after the snapshot was read
+// keeps the frame's state, a record the snapshot no longer has and no newer
+// frame kept goes). `rev` undefined (an older daemon): the snapshot wins, as before.
+function merge<T>(kind: string, cur: Record<string, T>, snap: Record<string, T>, rev: number | undefined): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const id of new Set([...Object.keys(cur), ...Object.keys(snap)])) {
+    const take = newer(`${kind}:${id}`, rev, true);
+    const v = take ? snap[id] : cur[id];
+    if (v !== undefined) out[id] = v;
+  }
+  return out;
+}
+
 export const auto = {
   async load() {
     const r = await api<any>("/api/automation");
     set({
-      agents: byId(r.agents), waits: byId(r.waits), loops: byId(r.loops), settings: r.settings, channels: r.channels,
+      agents: merge("agent", state.agents, byId(r.agents), r.rev), waits: merge("wait", state.waits, byId(r.waits), r.rev), loops: merge("loop", state.loops, byId(r.loops), r.rev),
+      settings: r.settings, channels: r.channels,
       snoozes: Object.fromEntries((r.snoozes as Snooze[]).map((x) => [x.session_id, x])),
     });
     applyInbox(r.unread, r.alerts);
@@ -138,8 +153,11 @@ export const auto = {
   },
   activitySessions: () => api<{ sessions: { session_id: string; last: number }[] }>("/api/activity/sessions"),
   async loadSessionPlan(sid: string) {
-    const [g, t] = await Promise.all([api<{ goal: Goal | null }>(`/api/sessions/${sid}/goal`), api<{ tasks: Task[] }>(`/api/sessions/${sid}/tasks`)]);
-    set({ goals: { ...state.goals, [sid]: g.goal }, tasks: { ...state.tasks, [sid]: t.tasks } });
+    const [g, t] = await Promise.all([api<{ goal: Goal | null; rev?: number }>(`/api/sessions/${sid}/goal`), api<{ tasks: Task[]; rev?: number }>(`/api/sessions/${sid}/tasks`)]);
+    set({
+      goals: newer(`goal:${sid}`, g.rev, true) ? { ...state.goals, [sid]: g.goal } : state.goals,
+      tasks: newer(`tasks:${sid}`, t.rev, true) ? { ...state.tasks, [sid]: t.tasks } : state.tasks,
+    });
   },
   setGoal: (sid: string, body: { objective: string; max_turns?: number | null; token_budget?: number | null; replace?: boolean }) =>
     api<{ goal: Goal }>(`/api/sessions/${sid}/goal`, { method: "PUT", body: JSON.stringify(body) }),
@@ -174,9 +192,11 @@ onFeature({
   frame: (f) => {
     if (f.name !== "automation") return;
     const { kind, data: d } = f.data as { kind: string; data: any };
-    if (kind === "agent") set({ agents: { ...state.agents, [d.id]: d } });
-    else if (kind === "wait") set({ waits: { ...state.waits, [d.id]: d } });
+    // Records are ordered by the bus rev: a frame older than what a snapshot already showed is dropped.
+    if (kind === "agent") { if (newer(`agent:${d.id}`, f.rev)) set({ agents: { ...state.agents, [d.id]: d } }); }
+    else if (kind === "wait") { if (newer(`wait:${d.id}`, f.rev)) set({ waits: { ...state.waits, [d.id]: d } }); }
     else if (kind === "loop") {
+      if (!newer(`loop:${d.id}`, f.rev)) return;
       if (d.deleted) {
         const { [d.id]: _, ...rest } = state.loops;
         set({ loops: rest });
@@ -191,8 +211,8 @@ onFeature({
     else if (kind === "snooze") {
       const { [d.session_id]: _, ...rest } = state.snoozes;
       set({ snoozes: d.snooze ? { ...rest, [d.session_id]: d.snooze } : rest });
-    } else if (kind === "goal") set({ goals: { ...state.goals, [d.session_id]: d.cleared ? null : d } });
-    else if (kind === "tasks") set({ tasks: { ...state.tasks, [d.session_id]: d.tasks } });
+    } else if (kind === "goal") { if (newer(`goal:${d.session_id}`, f.rev)) set({ goals: { ...state.goals, [d.session_id]: d.cleared ? null : d } }); }
+    else if (kind === "tasks") { if (newer(`tasks:${d.session_id}`, f.rev)) set({ tasks: { ...state.tasks, [d.session_id]: d.tasks } }); }
     else if (kind === "activity") set({ activityTick: state.activityTick + 1, lastActivity: d });
   },
   reconnect: () => void auto.load().catch(reportError),

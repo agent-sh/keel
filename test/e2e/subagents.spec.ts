@@ -190,3 +190,48 @@ test("two reports of one agent in one input show as two cards", async ({ page, r
   await shoot(page, "agents-09-two-reports-one-agent");
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// An automation snapshot read before a newer agent change (a slow load or
+// reconnect) never puts the older state back on the card: records are
+// ordered by the bus rev.
+test("a late automation snapshot never brings back an older agent state", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Late snapshot" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const calls = [{ name: "spawn_agent", input: { message: "Long helper\nscript:long-tool" } }];
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  const agent = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents[0];
+  await expect.poll(async () => (await agent())?.status, { timeout: 30_000 }).toBe("running");
+  const a = await agent();
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  let read = () => {};
+  const readDone = new Promise<void>((r) => (read = r));
+  let changed = false;
+  await page.route("**/api/automation", async (route) => {
+    const res = await route.fetch();
+    if (!changed) { read(); await held; } // read while the agent ran, delivered after the stop
+    await route.fulfill({ response: res });
+  });
+  await page.goto(`/s/${session.id}`);
+  await readDone;
+  await request.post(`/api/sessions/${session.id}/agents/${a.id}/stop`);
+  changed = true;
+  const status = page.getByTestId("agent-call").first().getByTestId("agent-call-status");
+  await expect(status).toContainText("Stopped", { timeout: 15_000 });
+  // Every text the card shows from here on: a later frame would hide a brief regression.
+  await status.evaluate((el) => {
+    const seen: string[] = ((window as any).__seen = []);
+    new MutationObserver(() => seen.push(el.textContent ?? "")).observe(el, { childList: true, characterData: true, subtree: true });
+  });
+  const late = page.waitForResponse((r) => r.url().endsWith("/api/automation"));
+  release();
+  await late;
+  await page.waitForTimeout(500);
+  await expect(status).toContainText("Stopped");
+  expect((await page.evaluate(() => (window as any).__seen as string[])).filter((t) => !t.includes("Stopped"))).toEqual([]);
+  await page.unroute("**/api/automation");
+  await request.delete(`/api/sessions/${session.id}`);
+});

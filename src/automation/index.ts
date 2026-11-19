@@ -225,6 +225,7 @@ export const automationRoutes: RouteModule = (deps) => {
           settings: alerts.settings(),
           channels: alerts.channelList(),
           snoozes: snooze.all(),
+          rev: deps.bus.rev(), // the bus frame this read reflects: a page orders it against frames
         });
       },
     },
@@ -416,13 +417,13 @@ export const automationRoutes: RouteModule = (deps) => {
     },
     // --- goal and the shared task list
     "/api/sessions/:id/goal": {
-      GET: (req: any) => (session(req.params.id) ? json({ goal: goals.get(req.params.id) ?? null }) : bad("no such session", 404)),
+      GET: (req: any) => (session(req.params.id) ? json({ goal: goals.get(req.params.id) ?? null, rev: deps.bus.rev() }) : bad("no such session", 404)),
       PUT: (req: any) => attempt(async () => json({ goal: await goals.set(req.params.id, await body(req)) })),
       PATCH: (req: any) => attempt(async () => json({ goal: await goals.patch(req.params.id, await body(req)) })),
       DELETE: (req: any) => (session(req.params.id) ? json({ ok: true, cleared: goals.clear(req.params.id) }) : bad("no such session", 404)),
     },
     "/api/sessions/:id/tasks": {
-      GET: (req: any) => (session(req.params.id) ? json({ tasks: goals.tasks(req.params.id) }) : bad("no such session", 404)),
+      GET: (req: any) => (session(req.params.id) ? json({ tasks: goals.tasks(req.params.id), rev: deps.bus.rev() }) : bad("no such session", 404)),
       POST: (req: any) => attempt(async () => {
         if (!session(req.params.id)) return bad("no such session", 404);
         return json({ task: goals.addTask(req.params.id, String((await body(req)).text ?? "")) }, 201);
