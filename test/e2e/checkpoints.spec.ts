@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 const turnsDone = async (request: APIRequestContext, id: string, n: number) =>
   expect.poll(async () => {
@@ -34,7 +34,7 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\nthree\n");
 
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("panel-toggle-changes").click();
+  await openPanel(page, "changes");
   const panel = page.getByTestId("changes-panel");
   await expect(panel.getByTestId("diff-file")).toHaveCount(4);
   await expect(panel.locator('[data-path="keep.txt"]')).toContainText("outside");

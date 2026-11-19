@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 // Feature: the portal. A dev server the session starts shows up in the
 // Preview panel; opened, it runs in a sandboxed frame through the portal
@@ -48,7 +48,7 @@ test("portal: the session's dev server in the preview, assets and fetch inside, 
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
 
-    await page.getByTestId("panel-toggle-preview").click();
+    await openPanel(page, "preview");
     const port = page.locator(`[data-testid="preview-port"][data-port="${PORT}"]`);
     await expect(port).toBeVisible({ timeout: 15_000 });
     await port.click();
@@ -95,7 +95,7 @@ test("portal: a session of another daemon, previewed through it, socket included
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
 
-    await page.getByTestId("panel-toggle-preview").click();
+    await openPanel(page, "preview");
     const port = page.locator(`[data-testid="preview-port"][data-port="${PORT}"]`);
     await expect(port).toBeVisible({ timeout: 15_000 });
     await port.click();

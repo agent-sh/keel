@@ -9,7 +9,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { getStations, pickStations, stations, useStations } from "../lib/stations.ts";
 import { useStore } from "../lib/store.ts";
-import { getUI, navigate, savePref, useUI } from "../lib/ui.ts";
+import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { lastLine, useWatch, WATCH_LABEL, type Watch } from "../lib/watch.ts";
 import { elapsed, folderOf, Mark, modelOf, useLive, useNow } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
@@ -104,7 +104,9 @@ function Station({ s, helm, pinned, shown }: { s: Session; helm: boolean; pinned
       data-testid="station"
       aria-label={`${s.title || "New session"}, ${WATCH_LABEL[w]}`}
       onPointerDownCapture={() => { if (!helm) navigate({ name: "session", id: s.id }); }}
-      onFocusCapture={() => { if (!helm) navigate({ name: "session", id: s.id }); }}
+      // Keyboard: tabbing into a station takes the helm. Focus moved by code (an
+      // approval card taking the keys in another station) does not.
+      onKeyUpCapture={(e) => { if (!helm && e.key === "Tab") navigate({ name: "session", id: s.id }); }}
     >
       <div className="k-band" aria-hidden="true" />
       <Boundary>
@@ -163,7 +165,9 @@ export function Bridge() {
   const railW = sidebar && !phone ? 280 : RAIL;
   // Room on a wide screen is what fits; on a phone it is the stations you
   // swipe between: the helm and what needs you or works.
-  const room = phone ? 6 : Math.max(1, Math.floor((width - railW) / STATION)) - (fresh ? 1 : 0);
+  // An open side panel widens the helm by about one station.
+  const panelOpen = useUI((s) => !!s.panel) && !!helm;
+  const room = phone ? 6 : Math.max(1, Math.floor((width - railW) / STATION) - (fresh ? 1 : 0) - (panelOpen ? 1 : 0));
   const picked = useMemo(() => pickStations(list, watches, helm, Math.max(room, helm ? 1 : 0), st), [list, watches, helm, room, st]);
   const focus = st.focus;
   const shown = focus ? picked.filter((s) => s.id === helm) : picked;
@@ -173,6 +177,20 @@ export function Bridge() {
   const all = shown;
   shownNow = picked.map((s) => s.id);
   useEffect(() => stations.setShown(all.map((s) => s.id)));
+
+  // The side panel is remembered per station: coming back to one brings its panel back.
+  const panel = useUI((s) => s.panel);
+  useEffect(() => {
+    if (!helm) return;
+    const m = JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string | null>;
+    if (helm in m && m[helm] !== getUI().panel) setUI({ panel: m[helm] ?? null });
+  }, [helm]);
+  useEffect(() => {
+    if (!helm) return;
+    const m = JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string | null>;
+    m[helm] = panel;
+    localStorage.setItem("keel.stationPanel", JSON.stringify(m));
+  }, [panel]);
 
   // Phone: the page in view is the helm.
   const track = useRef<HTMLElement>(null);

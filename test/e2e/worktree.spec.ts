@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 
@@ -58,7 +58,7 @@ test("worktree session and branch review", async ({ page, request }) => {
   await page.keyboard.press("Escape");
 
   // Branch review: comment on the new line and send it to the model.
-  await page.getByTestId("panel-toggle-review").click();
+  await openPanel(page, "review");
   const file = page.getByTestId("branch-review").getByTestId("diff-file").filter({ hasText: "notes.md" });
   await expect(file).toBeVisible();
   const added = file.locator("tr").filter({ hasText: "second line" });

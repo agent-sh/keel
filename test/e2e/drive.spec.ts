@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 // Feature: sessions elsewhere. A stand-in agent view lists four stand-in
 // sessions (Claude Code and Codex, live and ended, one waiting on a prompt).
@@ -57,7 +57,7 @@ test("sessions elsewhere: list, read, send, held while a prompt is open", async 
   try {
     // List, grouped by what each needs.
     await page.goto(`/s/${session.id}`);
-    await page.getByTestId("panel-toggle-elsewhere").click();
+    await openPanel(page, "elsewhere");
     const panel = page.getByTestId("elsewhere-panel");
     await expect(panel.getByTestId("elsewhere-row")).toHaveCount(4);
     await expect(panel.getByTestId("elsewhere-group-waiting")).toContainText("deploy-check");

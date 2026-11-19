@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 // Feature: the session's Tokens panel lists every turn with what it sent
 // (read from cache, written, full price), its output and cost, and the
@@ -15,7 +15,7 @@ test("tokens panel per turn", async ({ page, request }) => {
     await expect(page.getByTestId("turn-end")).toHaveCount(i + 1, { timeout: 90_000 });
   }
 
-  await page.getByTestId("panel-toggle-usage").click();
+  await openPanel(page, "usage");
   const panel = page.getByTestId("session-usage");
   await expect(panel.getByTestId("usage-turn")).toHaveCount(2);
   await expect(panel.getByTestId("usage-turn").nth(1)).toContainText("two");

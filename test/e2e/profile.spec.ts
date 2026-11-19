@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 // Feature: the session profile. The Profile tab shows the session's model and
 // route, its reasoning and speed against what the model offers, the tools its
@@ -14,7 +14,7 @@ test("profile: the panel, and a model pick with reasoning and speed", async ({ p
   expect(prof.eager_tools.length).toBeGreaterThan(3);
 
   await page.goto(`/s/${s.id}`);
-  await page.getByTestId("panel-toggle-profile").click();
+  await openPanel(page, "profile");
   const panel = page.getByTestId("profile-panel");
   await expect(panel.getByTestId("profile-model")).toContainText(prof.model.name);
   await expect(panel.getByTestId("profile-tools")).toContainText(prof.tool_profile.edit_grammar);

@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 const events = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
@@ -34,7 +34,7 @@ test("independent review with findings", async ({ page, request }) => {
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "read-only" } });
 
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("panel-toggle-review").click();
+  await openPanel(page, "review");
   const reviewer = page.getByTestId("reviewer");
   await expect(reviewer).toBeVisible();
   await shoot(page, "review-01-start");

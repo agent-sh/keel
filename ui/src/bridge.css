@@ -234,3 +234,31 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-tick-kids [data-testid="child-session"]::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
 @media (max-width: 767px) { .k-station-meta { display: none; } .k-station-tools { margin-left: auto; } }
+
+/* ---------- Side panels ---------- */
+.k-side { border-top: 3px solid var(--fg); }
+.k-side-head { display: flex; align-items: center; gap: 8px; height: 48px; flex-shrink: 0; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); }
+.k-side-icon { display: grid; color: var(--muted); }
+.k-side-icon svg { width: 16px; height: 16px; }
+.k-side-title { font-family: var(--font-inst); font-stretch: 87.5%; font-weight: 600; font-size: 16px; letter-spacing: -0.02em; }
+.k-panels-btn span { font-size: 13px; }
+
+/* The Panels picker: search on top, grouped rows, a pin keeps one at hand. */
+.k-picker { width: 300px; max-height: min(70vh, 520px); display: flex; flex-direction: column; overflow: hidden; border-radius: 6px; border: 1px solid var(--line-strong); border-top: 3px solid var(--fg); background: var(--raised); box-shadow: var(--shadow-3); }
+.k-picker-search { display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 12px; border-bottom: 1px solid var(--line); color: var(--faint); }
+.k-picker-search input { flex: 1; min-width: 0; background: transparent; outline: none; font-size: 14px; color: var(--fg); }
+.k-picker-search input::placeholder { color: var(--faint); }
+.k-picker-list { overflow-y: auto; padding: 4px 6px 8px; }
+.k-picker-group { padding: 10px 8px 4px; font-family: var(--font-inst); font-stretch: 75%; font-weight: 700; font-size: 11.5px; color: var(--faint); }
+.k-picker-row { display: flex; align-items: center; border-radius: 4px; }
+.k-picker-row:hover, .k-picker-row:focus-within { background: var(--hover); }
+.k-picker-row[aria-current] { box-shadow: inset 3px 0 0 var(--fg); }
+.k-picker-pick { flex: 1; display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; text-align: left; font-size: 13.5px; color: var(--fg); }
+.k-picker-pick svg { width: 16px; height: 16px; color: var(--muted); }
+.k-picker-keep { display: grid; place-items: center; width: 28px; height: 28px; margin-right: 2px; border-radius: 3px; color: var(--faint); opacity: 0; }
+.k-picker-row:hover .k-picker-keep, .k-picker-keep:focus-visible, .k-picker-keep[aria-pressed="true"] { opacity: 1; }
+.k-picker-keep[aria-pressed="true"] { color: var(--fg); }
+.k-picker-empty { padding: 14px 10px; font-size: 13px; color: var(--faint); }
+/* The helm with a side panel open keeps a working transcript beside it. */
+@media (min-width: 768px) { .k-station[data-helm]:has([data-testid="side-panel"]) { min-width: calc(540px + min(44vw, 40rem)); flex-grow: 2.4; } }
+.k-panels-btn { display: inline-flex; align-items: center; white-space: nowrap; }

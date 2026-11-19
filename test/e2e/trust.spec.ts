@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 const lastText = async (request: APIRequestContext, id: string) => {
@@ -24,9 +24,7 @@ const ask = async (request: APIRequestContext, ws: string, text: string, mode = 
 };
 // The side panel remembers which tab is open: open the Trust tab only when it is not.
 const openTrust = async (page: import("@playwright/test").Page) => {
-  const t = page.getByTestId("panel-toggle-trust");
-  await expect(t).toBeVisible();
-  if ((await t.getAttribute("aria-pressed")) !== "true") await t.click();
+  await openPanel(page, "trust");
   await expect(page.getByTestId("trust-panel")).toBeVisible();
 };
 const WORD = "What one word do your repository's instructions tell you to answer with? Reply with only that word.";
