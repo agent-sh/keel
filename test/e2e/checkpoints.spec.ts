@@ -71,10 +71,15 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\n");
   expect(existsSync(join(ws, "b.txt"))).toBe(true);
 
-  // Rewind to before turn 1: the owner's keep.txt is kept by default.
+  // Rewind to before turn 1: the owner's keep.txt is kept by default, and
+  // long.txt, which the owner edited elsewhere since, loses only the turn's
+  // change (a three-way merge keeps the owner's line).
+  const original = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+  writeFileSync(join(ws, "long.txt"), readFileSync(join(ws, "long.txt"), "utf8").replace("line 15\n", "owner 15\n"));
   await panel.getByTestId("turn-checkpoint").last().getByTestId("rewind-turn").click();
   const confirm = page.getByTestId("rewind-confirm");
   await expect(confirm).toContainText("keep.txt");
+  await expect(confirm.getByTestId("rewind-list")).toContainText("the turn's change taken back, the later edit kept");
   await expect(page.getByTestId("include-outside")).not.toBeChecked();
   await shoot(page, "ckpt-03-confirm");
   await page.getByTestId("rewind-go").click();
@@ -82,6 +87,7 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\n");
   expect(existsSync(join(ws, "b.txt"))).toBe(false);
   expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("base\nowner edit\n");
+  expect(readFileSync(join(ws, "long.txt"), "utf8")).toBe(original.map((l) => (l === "line 15" ? "owner 15" : l)).join("\n") + "\n");
   await shoot(page, "ckpt-04-rewound");
 
   // The owner edits a.txt by hand after the rewind; undoing the rewind brings

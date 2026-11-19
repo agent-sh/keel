@@ -268,4 +268,32 @@ export class Shadow {
       return { restored: paths.filter((p) => !errs.has(p)), failed: [...errs].map(([path, error]) => ({ path, error })) };
     });
   }
+
+  // A three-way merge of one file: the change base..other applied to the file
+  // as it is now (git merge-file). null when it cannot apply as text (no
+  // change between base and other, a side missing, a binary file); clean false
+  // when the two overlap. Nothing is written.
+  merge3(path: string, base: string, other: string): Promise<{ clean: boolean; text: string } | null> {
+    return this.lock(async () => {
+      const cur = join(this.workspace, path);
+      try { if (!lstatSync(cur).isFile()) return null; } catch { return null; }
+      const sha = async (tree: string) => (await this.git(["ls-tree", "-z", tree, "--", path])).split("\0")[0]?.split(/\s/)[2] ?? "";
+      const [b, o] = [await sha(base), await sha(other)];
+      if (!b || !o || b === o) return null;
+      const tmp = join(this.dir, `keel-merge-${crypto.randomUUID()}`);
+      mkdirSync(tmp);
+      try {
+        const [bt, ot] = [await this.git(["cat-file", "blob", b]), await this.git(["cat-file", "blob", o])];
+        if (bt.includes("\0") || ot.includes("\0")) return null;
+        writeFileSync(join(tmp, "base"), bt);
+        writeFileSync(join(tmp, "other"), ot);
+        const p = Bun.spawn(["git", "merge-file", "-p", "--quiet", cur, join(tmp, "base"), join(tmp, "other")], { stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 30_000 });
+        const [text, , code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+        if (code < 0 || code > 127) return null;
+        return { clean: code === 0, text };
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  }
 }

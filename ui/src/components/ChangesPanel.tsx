@@ -10,7 +10,7 @@ import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
 type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
 type Diff = { files: FileChange[]; diff: string; truncated: boolean; partial?: string; scope: "tree" | "written"; incomplete?: boolean };
 type RewindResult = {
-  files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; removes: string[]; uncaptured: string[];
+  files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; merged: string[]; conflicts: string[]; removes: string[]; uncaptured: string[];
   versions: Record<string, string>; incomplete: boolean; undo: string | null; scope: string;
 };
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -91,7 +91,7 @@ export function ChangesPanel({ session }: { session: Session }) {
   // What the owner confirms is what the preview showed, at the versions it showed.
   const confirm = (p: Pending) => run({
     ...p.body, include_outside: includeOutside,
-    confirm: { paths: [...p.preview.files, ...(includeOutside ? p.preview.skipped : [])], versions: p.preview.versions },
+    confirm: { paths: [...p.preview.files, ...p.preview.merged, ...(includeOutside ? p.preview.skipped : [])], versions: p.preview.versions },
   });
   const fileDiff = (q: string) => async (path: string) => (await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?${q}&path=${encodeURIComponent(path)}`)).diff;
 
@@ -126,6 +126,7 @@ export function ChangesPanel({ session }: { session: Session }) {
               <>
                 <span className={cn(done!.failed.length > 0 && "text-danger")}>
                   {done!.failed.length ? `Restored ${done!.files.length} of ${done!.files.length + done!.failed.length} files` : `Restored ${plural(done!.files.length, "file")}`}
+                  {done!.merged.length ? ` (in ${done!.merged.length} only the session's change, around later edits)` : ""}
                   {done!.skipped.length ? `, kept ${done!.skipped.length} changed outside the session` : ""}
                   {done!.uncaptured.length ? `, kept ${done!.uncaptured.length} too large to have been captured` : ""}.
                   {done!.failed.length > 0 && <span className="block text-caption" data-testid="rewind-failed">Not restored: {done!.failed.map((f) => `${f.path} (${f.error})`).join("; ")}</span>}
@@ -229,7 +230,10 @@ export function ChangesPanel({ session }: { session: Session }) {
             {pending && (
               <ul className="mt-3 max-h-56 overflow-y-auto rounded-lg bg-code p-2 font-mono text-caption" data-testid="rewind-list">
                 {pending.preview.files.map((f) => <PreviewRow key={f} path={f} remove={pending.preview.removes.includes(f)} />)}
-                {pending.preview.skipped.map((f) => <PreviewRow key={f} path={f} remove={pending.preview.removes.includes(f)} outside off={!includeOutside} />)}
+                {pending.preview.merged.map((f) => <PreviewRow key={f} path={f} remove={false} outside merged={!includeOutside} />)}
+                {pending.preview.skipped.map((f) => (
+                  <PreviewRow key={f} path={f} remove={pending.preview.removes.includes(f)} outside off={!includeOutside} conflict={pending.preview.conflicts.includes(f)} />
+                ))}
                 {pending.preview.uncaptured.map((f) => (
                   <li key={f} className="flex items-center gap-2 text-faint" data-testid="rewind-uncaptured">
                     <FileDiff className="size-3.5 shrink-0" /><span className="min-w-0 truncate">{f}</span>
@@ -265,13 +269,13 @@ export function ChangesPanel({ session }: { session: Session }) {
 }
 
 // One path in the restore preview: what happens to it.
-function PreviewRow({ path, remove, outside, off }: { path: string; remove: boolean; outside?: boolean; off?: boolean }) {
+function PreviewRow({ path, remove, outside, off, merged, conflict }: { path: string; remove: boolean; outside?: boolean; off?: boolean; merged?: boolean; conflict?: boolean }) {
   return (
     <li className={cn("flex items-center gap-2", off && "text-faint")}>
       <FileDiff className={cn("size-3.5 shrink-0", outside ? "text-warn" : "text-accent")} />
       <span className={cn("min-w-0 truncate", off && "line-through")}>{path}</span>
       <span className={cn("ml-auto shrink-0 font-sans text-micro", remove ? "text-danger" : "text-faint")}>
-        {off ? "kept: changed outside" : remove ? "removed: not there before" : "restored"}
+        {merged ? "the turn's change taken back, the later edit kept" : off ? (conflict ? "kept: a later edit overlaps the turn's change" : "kept: changed outside") : remove ? "removed: not there before" : "restored"}
       </span>
     </li>
   );

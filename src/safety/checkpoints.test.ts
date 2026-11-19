@@ -170,3 +170,19 @@ test("history stays readable after the session moves to another folder and back"
   await expect(t.c.rewind(t.s, { turn: t1, preview: true })).rejects.toThrow(/cannot be put back here/);
   expect(readFileSync(join(a, "note.txt"), "utf8")).toBe("beta\n");
 });
+
+test("undoing a turn takes back its change around a later edit, and names an overlap", async () => {
+  const lines = (first: string, last = "5") => `${first}\n2\n3\n4\n${last}\n`;
+  const t = setup({ "A": lines("1"), "B": lines("1") });
+  const t1 = await t.turn(() => { t.write("A", lines("turn")); t.write("B", lines("turn")); });
+  t.write("A", lines("turn", "owner")); // another hunk of A
+  t.write("B", lines("owner"));         // the same hunk of B
+  t.write("C", "new\n");
+  const p = await t.c.rewind(t.s, { turn: t1, preview: true });
+  expect([p.files, p.merged, p.conflicts, p.skipped.sort()]).toEqual([[], ["A"], ["B"], ["B", "C"]]);
+  const r = await t.c.rewind(t.s, { turn: t1, confirm: { paths: [...p.files, ...p.merged], versions: p.versions } });
+  expect(r.merged).toEqual(["A"]);
+  expect(t.read("A")).toBe(lines("1", "owner"));
+  expect(t.read("B")).toBe(lines("owner"));
+  expect(t.read("C")).toBe("new\n");
+});

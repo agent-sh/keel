@@ -3,7 +3,7 @@
 // ("end"). A turn's diff is start..end; a rewind puts files back as they were
 // at a turn's start, and skips files changed outside the session's turns
 // since (the owner's or another session's edits) unless told otherwise.
-import { lstatSync, mkdirSync, readdirSync, rmSync, statfsSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -32,8 +32,10 @@ export type Checkpoint = {
 // elsewhere: the turn ran in another folder (the session moved since); its
 // diff still reads, a rewind to it is refused. unavailable: its diff could not be read.
 export type TurnSummary = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
+// merged: files changed outside the session whose turn change is taken back
+// around that edit (a clean three-way merge); conflicts: ones where the two overlap (kept as they are).
 export type RewindResult = {
-  files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[];
+  files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; merged: string[]; conflicts: string[];
   removes: string[]; uncaptured: string[]; versions: Record<string, string>; incomplete: boolean; undo: string | null; scope: "tree" | "written";
 };
 
@@ -331,7 +333,10 @@ export class Checkpoints {
       const d = await this.shadow(ws).diff(start.tree, to, only(start.paths));
       return { ...d, files: d.files.map((f) => (end?.outside?.includes(f.path) ? { ...f, outside: true } : f)), scope: start.paths ? "written" : "tree", ...(incomplete ? { incomplete } : {}) };
     }
-    const from = q.from ?? here.find((c) => c.at === "start" && c.tree)?.turn;
+    // The session diff is since a turn in this folder: one from before a move
+    // to it reads from this folder's first turn after it.
+    const away = (t: number) => !here.some((c) => c.at === "start" && c.turn === t);
+    const from = q.from !== undefined && !away(q.from) ? q.from : here.find((c) => c.at === "start" && c.tree && c.turn >= (q.from ?? 0))?.turn;
     if (from === undefined) return { files: [], diff: "", truncated: false, scope: sh.mode };
     const { target, paths } = await this.targetAt(s, from);
     const now = await this.now(s);
@@ -377,22 +382,36 @@ export class Checkpoints {
   // Paths changed outside the session's own work since the start of turn
   // `turn`: in the gaps between a turn's end (or a rewind's result) and the
   // next turn's start (or the next rewind), between a turn's own calls, and
-  // since the last of them.
-  private async outside(s: Session, turn: number, nowTree: string): Promise<Set<string>> {
+  // since the last of them. Each maps to the row its first gap starts at (the
+  // session's last version before the outside edit), null for an edit made
+  // between a turn's calls.
+  private async outside(s: Session, turn: number, nowTree: string): Promise<Map<string, Checkpoint | null>> {
     const all = this.here(s).filter((c) => c.tree);
     const from = all.find((c) => c.at === "start" && c.turn >= turn)?.created ?? 0;
     const cps = all.filter((c) => c.created >= from);
     const sh = this.shadow(s.workspace);
-    const out = new Set<string>();
+    const out = new Map<string, Checkpoint | null>();
     for (let i = 0; i < cps.length; i++) {
       const a = cps[i]!;
-      for (const p of a.at === "end" ? a.outside ?? [] : []) out.add(p);
+      for (const p of a.at === "end" ? a.outside ?? [] : []) if (!out.has(p)) out.set(p, null);
       if (a.at !== "end" && a.at !== "after") continue;
       const b = cps.slice(i + 1).find((c) => c.at === "start" || c.at === "undo");
       const both = a.paths && b?.paths ? a.paths.filter((p) => b.paths!.includes(p)) : a.paths ?? undefined;
-      for (const p of await sh.changed(a.tree, b?.tree ?? nowTree, both)) out.add(p);
+      for (const p of await sh.changed(a.tree, b?.tree ?? nowTree, both)) if (!out.has(p)) out.set(p, a);
     }
     return out;
+  }
+
+  // Did the session itself change `path` after row `gap` (a later turn, or a restore)?
+  private async touchedAfter(s: Session, gap: Checkpoint, path: string, nowTree: string): Promise<boolean> {
+    const rows = this.here(s).filter((c) => c.tree && c.created > gap.created);
+    const sh = this.shadow(s.workspace);
+    for (const a of rows) {
+      if (a.at !== "start" && a.at !== "undo") continue;
+      const b = a.at === "start" ? rows.find((c) => c.at === "end" && c.turn === a.turn) : rows.find((c) => c.at === "after" && c.of_id === a.id);
+      if ((await sh.changed(a.tree, b?.tree ?? nowTree, [path])).length) return true;
+    }
+    return false;
   }
 
   // A note for the model after files were put back: the conversation still
@@ -437,7 +456,7 @@ export class Checkpoints {
     const after = await this.now(s);
     this.save(s, { turn: undo.turn, at: "after", tree: after.tree, paths: after.paths, of_id: undo.id });
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { rewind: true } });
-    const r: RewindResult = { files: [o.path], failed: [], skipped: [], outside: [], removes: [], uncaptured: [], versions: {}, incomplete: false, undo: undo.id, scope: sh.mode };
+    const r: RewindResult = { files: [o.path], failed: [], skipped: [], outside: [], merged: [], conflicts: [], removes: [], uncaptured: [], versions: {}, incomplete: false, undo: undo.id, scope: sh.mode };
     this.tell(s, `took back one hunk of ${o.path}`, r);
     return r;
   }
@@ -489,21 +508,34 @@ export class Checkpoints {
     // A file the snapshot left out (over the size cap) was there, not absent: never removed.
     const uncaptured = files.filter((f) => !inTarget.get(f) && skippedAt.has(f));
     files = files.filter((f) => !uncaptured.includes(f));
-    const outsideSet = outsideFrom !== null ? await this.outside(s, outsideFrom, now.tree)
-      : undoOf ? new Set(await sh.changed(undoOf.after.tree, now.tree, files.length ? files : undefined))
-      : new Set(files);
+    const outsideSet: Map<string, Checkpoint | null> = outsideFrom !== null ? await this.outside(s, outsideFrom, now.tree)
+      : new Map((undoOf ? await sh.changed(undoOf.after.tree, now.tree, files.length ? files : undefined) : files).map((f) => [f, null]));
     const outside = files.filter((f) => outsideSet.has(f));
     let restore = opts.includeOutside ? files : files.filter((f) => !outsideSet.has(f));
     const skipped = opts.includeOutside ? [] : outside;
+    // "Undo this turn" around an outside edit: the session's own change to that
+    // file is taken back and the edit stays, when the two do not overlap.
+    const merges = new Map<string, string>();
+    const conflicts: string[] = [];
+    if (outsideFrom !== null && !opts.includeOutside) {
+      for (const f of outside) {
+        const gap = outsideSet.get(f);
+        if (!gap || !inTarget.get(f) || (await this.touchedAfter(s, gap, f, now.tree))) continue;
+        const m = await sh.merge3(f, gap.tree, target);
+        if (m?.clean) merges.set(f, m.text);
+        else if (m) conflicts.push(f);
+      }
+    }
     const versions = Object.fromEntries(await sh.blobs(now.tree, files));
     const removes = files.filter((f) => !inTarget.get(f));
     const scope = scopePaths ? "written" as const : "tree" as const;
-    if (opts.preview) return { files: restore, failed: [], skipped, outside, removes, uncaptured, versions, incomplete, undo: null, scope };
+    if (opts.preview) return { files: restore, failed: [], skipped: skipped.filter((f) => !merges.has(f)), outside, merged: [...merges.keys()], conflicts, removes, uncaptured, versions, incomplete, undo: null, scope };
     if (opts.confirm) {
       const seen = new Set(opts.confirm.paths);
       const stale = files.filter((f) => seen.has(f) && versions[f] !== (opts.confirm!.versions[f] ?? ""));
       if (stale.length) throw new Bad(`changed since the preview: ${stale.slice(0, 10).join(", ")}; look at it again`, 409);
       restore = restore.filter((f) => seen.has(f));
+      for (const f of [...merges.keys()]) if (!seen.has(f)) merges.delete(f);
     }
     const undo = this.save(s, { turn: this.currentTurn(s.id), at: "undo", tree: now.tree, paths: now.paths, skipped: now.skipped });
     let res: Awaited<ReturnType<Shadow["restore"]>>;
@@ -513,11 +545,15 @@ export class Checkpoints {
       this.drop(undo.id);
       throw new Error(`nothing was restored, every file is as it was: ${(e as Error).message.slice(0, 300)}`);
     }
+    const merged: string[] = [];
+    for (const [f, text] of merges) {
+      try { writeFileSync(join(s.workspace, f), text); merged.push(f); } catch (e) { res.failed.push({ path: f, error: (e as Error).message.slice(0, 300) }); }
+    }
     const after = await this.now(s);
     this.save(s, { turn: undo.turn, at: "after", tree: after.tree, paths: after.paths, of_id: undo.id });
     if (res.failed.length) this.errors.capture("server", new Error(`rewind: ${res.failed.length} of ${restore.length} files could not be restored`), { at: "rewind", session: s.id, failed: res.failed });
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { rewind: true } });
-    const r: RewindResult = { files: res.restored, failed: res.failed, skipped: opts.includeOutside ? [] : outside.filter((f) => !restore.includes(f)), outside, removes: removes.filter((f) => res.restored.includes(f)), uncaptured, versions: {}, incomplete, undo: undo.id, scope };
+    const r: RewindResult = { files: [...res.restored, ...merged], failed: res.failed, skipped: opts.includeOutside ? [] : outside.filter((f) => !restore.includes(f) && !merged.includes(f)), outside, merged, conflicts, removes: removes.filter((f) => res.restored.includes(f)), uncaptured, versions: {}, incomplete, undo: undo.id, scope };
     const turnText = outsideFrom !== null ? this.promptOf(s.id, outsideFrom).split("\n")[0]!.slice(0, 80) : "";
     this.tell(s, undoOf || incomplete ? "undid an earlier file restore" : `put files back as they were before the turn that began with "${turnText}"`, r);
     return r;
