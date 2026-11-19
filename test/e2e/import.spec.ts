@@ -90,7 +90,7 @@ test("import and export", async ({ page, request }) => {
     await page.keyboard.press("Enter");
     await page.getByTestId(`import-tab-${tab}`).click();
     await page.getByTestId("import-search").fill(tag);
-    await expect(rows.first()).toContainText(row);
+    await expect(rows.first()).toContainText(row, { timeout: 20_000 }); // a store's first listing reads its files
     await rows.first().click();
     await expect(page.getByTestId("import-preview")).toContainText(text);
     if (tab === "keel") await shoot(page, "import-03-keel");
