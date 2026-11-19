@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: session marks. Pin (the station and the list), tags (the list and
