@@ -77,7 +77,12 @@ function sizeOf(dir: string): number {
 
 // mark: the workspace right after the turn's last call that could change
 // files; outside: what changed between those calls (not the session's work).
-type Live = { turn: number; start: Promise<Checkpoint>; written: Set<string>; dirty: boolean; mark: Promise<string | null> | null; outside: Set<string> };
+// calls (tree mode): each call still running. `writes`: the files it names
+// (null for a shell or other call, which may write anything); `pre`: the
+// workspace as it began; `may`: every file it or a call beside it may write;
+// `blind` once a shell call ran beside it (nothing in its window can be told apart).
+type Running = { writes: Set<string> | null; pre: Promise<string | null> | null; may: Set<string>; blind: boolean };
+type Live = { turn: number; start: Promise<Checkpoint>; written: Set<string>; dirty: boolean; mark: Promise<string | null> | null; outside: Set<string>; calls: Map<string, Running> };
 
 export class Checkpoints {
   private shadows = new Map<string, Shadow>();
@@ -157,23 +162,29 @@ export class Checkpoints {
       const start = sh.snapshot(first).then((tree) => this.save(s, { turn, at: "start", tree, paths: sh.mode === "written" ? first : null, skipped: this.skippedOf(sh) }));
       // A snapshot that fails never stops the tool: the turn just has no checkpoint.
       start.catch((e) => this.errors.capture("server", e, { at: "checkpoint", session: s.id, workspace: s.workspace }));
-      live = { turn, start, written, dirty: false, mark: null, outside: new Set() };
+      live = { turn, start, written, dirty: false, mark: null, outside: new Set(), calls: new Map() };
       this.live.set(s.id, live);
+      if (sh.mode === "tree") this.track(live, s, call, cls, start.then((c) => c.tree, () => null));
       await start.catch(() => {});
       return;
     }
     const cp = await live.start.catch(() => null);
     if (!cp) return;
     // What changed since the turn's last call ended was not this session's tools.
-    if (sh.mode === "tree" && live.mark) {
+    if (sh.mode === "tree") {
       const mark = live.mark;
       live.mark = null;
+      let now: Promise<string | null> | null = null;
       try {
-        const m = await mark;
-        if (m) for (const p of await sh.changed(m, await sh.snapshot())) live.outside.add(p);
+        const m = mark && (await mark);
+        if (m) {
+          now = sh.snapshot();
+          for (const p of await sh.changed(m, (await now)!)) live.outside.add(p);
+        }
       } catch (e) {
         this.errors.capture("server", e, { at: "checkpoint between calls", session: s.id });
       }
+      this.track(live, s, call, cls, cls.kind === "edit" ? (now ?? sh.snapshot()).catch(() => null) : null);
     }
     if (sh.mode !== "written" || cls.kind !== "edit") return;
     const add = rel(s.workspace, cls.paths).filter((p) => !live!.written.has(p));
@@ -207,7 +218,31 @@ export class Checkpoints {
       return null;
     });
     live.mark = mark;
-    await mark;
+    const run = live.calls.get(call.id);
+    live.calls.delete(call.id);
+    // A file edit tool writes only the files it names: anything else that
+    // changed while it ran is someone else's edit. A shell command can write
+    // anything, so what changes while one runs stays the session's work.
+    try {
+      const [pre, post] = await Promise.all([run && !run.blind ? run.pre : null, mark]);
+      if (pre && post) for (const p of await sh.changed(pre, post)) if (!run!.may.has(p)) live.outside.add(p);
+    } catch (e) {
+      this.errors.capture("server", e, { at: "checkpoint during call", session: s.id });
+    }
+  }
+
+  // A call starting (tree mode): what each call already running may see
+  // written beside it, and what this one may.
+  private track(live: Live, s: Session, call: ToolCall, cls: ReturnType<typeof classifyCall>, pre: Promise<string | null> | null) {
+    const writes = cls.kind === "edit" ? new Set(rel(s.workspace, cls.paths)) : null;
+    const run: Running = { writes, pre: writes ? pre : null, may: new Set(writes), blind: false };
+    for (const o of live.calls.values()) {
+      if (writes) for (const p of writes) o.may.add(p);
+      else o.blind = true;
+      if (o.writes) for (const p of o.writes) run.may.add(p);
+      else run.blind = true;
+    }
+    live.calls.set(call.id, run);
   }
 
   // turnEnd: the end snapshot of a turn that ran something that can change files.

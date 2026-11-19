@@ -86,6 +86,23 @@ test("an edit between two calls of a turn is outside work, as after the turn", a
   }
 });
 
+test("an edit landing while a file edit tool runs is outside work; while a shell command runs it is the session's", async () => {
+  for (const shell of [false, true]) {
+    const t = setup({ "A": "0\n", "B": "0\n" });
+    t.store.append(t.s.id, "user", { text: "edit A" });
+    t.store.append(t.s.id, "turn_start", {});
+    const call = shell ? { id: "sh", tool: { name: "Bash", readOnly: false, kind: "shell" }, input: { command: "x" }, ctx: { cwd: t.ws } } as any
+      : { id: "ed", tool: { name: "Edit", readOnly: false, kind: "edit" }, input: { file_path: join(t.ws, "A") }, ctx: { cwd: t.ws } } as any;
+    await t.c.before(t.s, call);
+    t.write("A", "1\n");
+    t.write("B", "1\n"); // the owner's editor saves while the call runs
+    await t.c.after(t.s, call);
+    await t.c.end(t.s);
+    const p = await t.c.rewind(t.s, { turn: Math.max(...t.c.list(t.s.id).map((x) => x.turn)), preview: true });
+    expect([p.files, p.skipped]).toEqual(shell ? [["A", "B"], []] : [["A"], ["B"]]);
+  }
+});
+
 test("a confirmed restore takes only what the preview showed, at the version it showed", async () => {
   const t = setup({ "turn.txt": "0\n", "A": "0\n", "B": "0\n" });
   const t1 = await t.turn(() => t.write("turn.txt", "1\n"));
