@@ -146,6 +146,12 @@ export class ScriptedProvider implements Provider {
       case "slow":
         await Bun.sleep(3_000); // no bytes for a while
         return reply("Answered after a slow start.");
+      case "quiet":
+        // The provider answers at once, then only keeps the connection alive
+        // (a thinking model that shows nothing) for a while.
+        req.onHeaders?.(new Headers());
+        await Bun.sleep(3_000);
+        return reply("Answered after a quiet start.");
       case "long-tool":
         // A tool that runs long enough for a restart to cut it.
         if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");

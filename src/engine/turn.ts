@@ -446,10 +446,17 @@ export class Engine {
     for (let attempt = 0; ; attempt++) {
       partial.clear();
       this.measure((h) => h.requestSent?.(session, req));
-      if (!quiet) this.status(id, { kind: "model", since: Date.now(), model: st.info.name });
+      const since = Date.now();
+      if (!quiet) this.status(id, { kind: "model", since, model: st.info.name });
       let first = true;
+      // The provider answered but the model has said nothing yet: shown as
+      // connected, so a long silence reads as the model's, not the network's.
+      const onHeaders = (h: Headers) => {
+        req.onHeaders?.(h);
+        if (first && !quiet && !signal.aborted) this.status(id, { kind: "model", since, model: st.info.name, connected: Date.now() });
+      };
       try {
-        const res = await st.provider.stream(req, (d) => {
+        const res = await st.provider.stream({ ...req, onHeaders }, (d) => {
           if (first && !quiet) { first = false; this.status(id, { kind: "idle" }); }
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;

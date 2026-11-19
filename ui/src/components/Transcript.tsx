@@ -319,7 +319,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
   const s = from ? Math.max(0, Math.round((Date.now() - from) / 1000)) : 0;
-  const what = approving ? "Waiting for your approval" : st?.kind === "model" ? `Waiting on ${st.model}` : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
+  const what = approving ? "Waiting for your approval" : st?.kind === "model" ? (st.connected ? `Connected to ${st.model}, no output yet` : `Waiting on ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
   return (
     <div className="flex items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">

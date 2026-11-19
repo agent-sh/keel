@@ -359,12 +359,12 @@ export class Providers {
         const onHeaders = (h: Headers) => {
           const r = fromHeaders(h);
           if (r.length) this.limits.record(p.id, r);
+          req.onHeaders?.(h);
         };
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
-            onHeaders,
-            ...req, efforts: info.efforts, maxTokens: info.output || undefined,
+            ...req, onHeaders, efforts: info.efforts, maxTokens: info.output || undefined,
             extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
           }, onDelta);
