@@ -42,7 +42,7 @@ test("model picker: favorites, hiding, folded groups, search", async ({ page, re
   await expect(hidden).toBeVisible();
   await shoot(page, "picker-02-search-hidden");
   await hidden.hover();
-  await Promise.all([page.waitForResponse("**/api/providers/choices"), hidden.getByTestId("hide-model").click()]);
+  await Promise.all([page.waitForResponse("**/api/providers/choices"), hidden.getByTestId("show-model").click()]);
   await expect(popup.locator(`[data-group="hidden"] [data-model="${other.id}"]`)).toHaveCount(0);
 
   // A large provider is folded; Show all opens it.
@@ -67,4 +67,78 @@ test("model picker: favorites, hiding, folded groups, search", async ({ page, re
   await request.post("/api/providers/choices", { data: { unpin: [other.id], provider: other.provider, show: [other.model] } });
   const after = (await (await request.get("/api/providers")).json()).choices;
   expect(after.pinned ?? []).toEqual(before.pinned ?? []);
+});
+
+// The picker's words agree with what it shows and does: the count says what
+// is offered or what matched, an exact route id finds that route first, the
+// default's Hide is refused in place (pointer and keyboard), Recent follows
+// the owner's picks, and a model hidden by both rules says so and offers
+// both ways back. Runs on the scripted stand-ins.
+test("model picker: counts, exact ids, the default, recent picks, two hide rules", async ({ page, request }) => {
+  const { models, default: def } = await (await request.get("/api/models")).json();
+  const ids = models.map((m: any) => m.id);
+  test.skip(!ids.includes("scripted:stand-in-text"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.skip(def.startsWith("scripted:"), "the default is a scripted model");
+  await request.post("/api/providers/choices", { data: { show_provider: "scripted", provider: "scripted", show: ["stand-in-text"] } });
+  const visible = (await (await request.get("/api/models")).json()).models.filter((m: any) => !m.hidden).length;
+
+  await page.goto("/");
+  await page.evaluate(() => localStorage.removeItem("keel.recentModels"));
+  await page.reload();
+  const popup = page.getByTestId("model-popup");
+  const search = page.getByPlaceholder("Search models");
+  const count = page.getByTestId("model-count");
+  await page.getByTestId("model-picker").click();
+  await expect(count).toHaveText(`${visible} available`);
+  await search.fill("zzzz-no-such-model");
+  await expect(count).toHaveText("No matches");
+
+  // The exact id a session's settings show: that route, first, alone in its group.
+  await search.fill("scripted:stand-in");
+  await expect(popup.locator('[data-group="exact"] [data-testid="model-option"]')).toHaveAttribute("data-model", "scripted:stand-in");
+  await expect(count).toHaveText(/^\d+ matches$/);
+
+  // The default: no Hide on its row, and Ctrl+H says why without asking the daemon.
+  await search.fill(def);
+  const defRow = popup.locator(`[data-group="exact"] [data-model="${def}"]`);
+  await expect(defRow).toBeVisible();
+  await expect(defRow.getByTestId("hide-model")).toHaveCount(0);
+  let posted = 0;
+  page.on("request", (r) => { if (r.url().includes("/api/providers/choices")) posted++; });
+  await search.press("Control+h");
+  await expect(page.getByTestId("picker-hint")).toHaveText("Choose another default before hiding this model.");
+  expect(posted).toBe(0);
+
+  // A pick goes to the front of Recent.
+  await search.fill("Scripted backup");
+  await page.getByRole("option", { name: /Scripted backup/ }).first().click();
+  await page.getByTestId("model-picker").click();
+  await expect(popup.locator('[data-group="recent"] [data-testid="model-option"]').first()).toHaveAttribute("data-model", "scripted:stand-in-backup");
+  await page.keyboard.press("Escape");
+
+  // Hidden by itself and by its provider: the row says both; showing the
+  // provider leaves it hidden, Show both brings it back.
+  await request.post("/api/providers/choices", { data: { provider: "scripted", hide: ["stand-in-text"] } });
+  await request.post("/api/providers/choices", { data: { hide_provider: "scripted" } });
+  await page.reload();
+  await page.getByTestId("model-picker").click();
+  await search.fill("Scripted text only");
+  const row = popup.locator('[data-group="hidden"] [data-model="scripted:stand-in-text"]');
+  await expect(row.getByTestId("hidden-reason")).toHaveText("Provider and model hidden");
+  await expect(count).toHaveText("1 hidden match");
+  await shoot(page, "picker-03-hidden-both");
+  await row.hover();
+  await Promise.all([page.waitForResponse("**/api/providers/choices"), row.getByTestId("show-provider").click()]);
+  await expect(row.getByTestId("hidden-reason")).toHaveText("Hidden");
+  await expect(popup.locator('[data-group="hidden"] [data-model="scripted:stand-in-backup"]')).toHaveCount(0);
+  await request.post("/api/providers/choices", { data: { hide_provider: "scripted" } });
+  await page.reload();
+  await page.getByTestId("model-picker").click();
+  await search.fill("Scripted text only");
+  await row.hover();
+  await Promise.all([page.waitForResponse("**/api/providers/choices"), row.getByTestId("show-both").click()]);
+  await expect(popup.locator('[data-group="hidden"] [data-model="scripted:stand-in-text"]')).toHaveCount(0);
+  await expect(popup.locator('[data-model="scripted:stand-in-text"]').first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await request.post("/api/providers/choices", { data: { show_provider: "scripted", provider: "scripted", show: ["stand-in-text"] } });
 });

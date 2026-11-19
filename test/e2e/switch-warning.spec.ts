@@ -41,6 +41,36 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
 
+  // A message sent while the switch is still being checked waits for it: nothing
+  // leaves on the old model, and Cancel leaves the text in the box.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route("**/switch-warning**", async (route) => { await held; await route.continue(); });
+  await pickModel(page, "Scripted backup");
+  await composer.fill("Send me on the new model.");
+  await composer.press("Enter");
+  await expect(page.getByTestId("composer-notice")).toContainText("not confirmed yet");
+  await expect(composer).toHaveValue("Send me on the new model.");
+  release();
+  await expect(confirm).toContainText("Switch to Scripted backup?");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await page.unroute("**/switch-warning**");
+  await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+  await expect(composer).toHaveValue("Send me on the new model.");
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "user")).toHaveLength(1);
+  await composer.fill("");
+
+  // /model asks the same question, and a name several routes share is not guessed.
+  await composer.fill("/model Scripted backup");
+  await composer.press("Enter");
+  await expect(confirm).toContainText("Switch to Scripted backup?");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+  await composer.fill("/model Scripted");
+  await composer.press("Enter");
+  await expect(page.getByTestId("composer-notice")).toContainText("Give the full id");
+  await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+
   // The effort is part of the cached prompt on this wire: asked; Cancel keeps it.
   await page.getByTestId("effort-picker").click();
   await page.getByRole("menuitem", { name: "high" }).click();

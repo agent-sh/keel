@@ -1,107 +1,69 @@
 import { Combobox } from "@base-ui/react/combobox";
-import { Check, Eye, EyeOff, Image, RefreshCw, Star } from "lucide-react";
+import { Check, Eye, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-react";
 import { TriggerLabel, triggerClass } from "./ModelPicker.tsx";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { actions, reportError, useStore, type ListedModel } from "../lib/store.ts";
+import { actions, reportError, useStore } from "../lib/store.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
+import { buildGroups, buildItems, countLabel, hiddenReason, providerOrder, type Group, type Item } from "../lib/picker.ts";
+import { notePick, recentPicks } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
 
-type Item = {
-  value: string; label: string; model: string; provider: string; providerLabel: string;
-  context: number; vision?: boolean; plan: boolean; hidden?: "model" | "provider"; key: string; hay: string;
-};
-type Group = { value: string; label: string; provider?: string; plan?: boolean; total: number; items: Item[] };
-
-// A provider group shows this many models until it is opened or searched.
-const CAP = 6;
-const RECENT = 5;
-
-// Models as their providers list them. With no query: favorites, recent
-// models, then one group per provider (the default model's provider, then the
-// plan providers, then the rest), each folded to its newest few. A query
-// searches every model, the hidden ones last so they can be shown again.
-// Nothing here names a model. A chunk of its own (Combobox is large):
-// ModelPicker shows the same trigger until it loads.
+// The lists themselves are built in lib/picker.ts. With no query: favorites,
+// recent picks, then one group per provider (the default model's provider,
+// then the plan providers, then the rest), each folded to its newest few. A
+// query searches every model, an exact route id first and the hidden ones
+// last so they can be shown again. Nothing here names a model. A chunk of its
+// own (Combobox is large): ModelPicker shows the same trigger until it loads.
 export function ModelMenu({ value, onChange, compact, openSignal }: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number }) {
   const [open, setOpen] = useState(!!openSignal);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const highlighted = useRef<Item | undefined>(undefined);
+  // The highlighted row by id: after a refresh reorders or drops rows, a
+  // shortcut acts on that model or on nothing, never on the row that took its place.
+  const highlighted = useRef<string | undefined>(undefined);
+  const [hint, setHint] = useState<string | null>(null);
   useEffect(() => { if (openSignal) setOpen(true); }, [openSignal]);
   const models = useStore((s) => s.models);
   const sessions = useStore((s) => s.sessions);
   const def = useStore((s) => s.defaultModel);
   const pinned = useStore((s) => s.pinned);
   const labels = useStore((s) => s.providerLabels);
-  const hiddenProviders = useStore((s) => s.providers?.choices.hidden_providers);
   const problems = useStore((s) => s.limits?.problems);
   useEffect(() => { if (open) actions.loadLimits().catch((e) => reportError(e, { at: "limits" })); }, [open]);
 
   // Built once per listing change; a keystroke only filters these.
-  const { all, byId, order } = useMemo(() => {
-    const offProviders = new Set(hiddenProviders ?? []);
-    const item = (m: ListedModel): Item => {
-      const providerLabel = labels[m.provider] ?? m.provider;
-      return {
-        value: m.id, label: m.name, model: m.model, provider: m.provider, providerLabel,
-        context: m.context, vision: m.images, plan: m.billing === "subscription",
-        hidden: m.hidden ? (offProviders.has(m.provider) ? "provider" : "model") : undefined,
-        key: m.id, hay: `${m.name} ${m.model} ${providerLabel} ${m.provider}`.toLowerCase(),
-      };
-    };
-    const all = models.map(item);
-    const byId = new Map(all.map((i) => [i.value, i]));
-    // Provider order: the default's provider, then plans, then by name.
-    const plan = new Set(all.filter((i) => i.plan).map((i) => i.provider));
-    const defP = byId.get(def)?.provider;
-    const order = [...new Set(all.map((i) => i.provider))].sort((a, b) =>
-      Number(b === defP) - Number(a === defP) || Number(plan.has(b)) - Number(plan.has(a)) || (labels[a] ?? a).localeCompare(labels[b] ?? b));
-    return { all, byId, order };
-  }, [models, labels, def, hiddenProviders]);
+  const { all, byId, labelOf, order } = useMemo(() => {
+    const b = buildItems(models, labels);
+    return { ...b, order: providerOrder(b.all, def, b.labelOf) };
+  }, [models, labels, def]);
+  // Recent: the owner's own picks, else the models sessions were started on.
+  const recent = useMemo(() => {
+    const picks = recentPicks();
+    return picks.length ? picks : Object.values(sessions).sort((a, b) => b.created - a.created).map((s) => s.model);
+  }, [sessions, open]);
 
-  const groups = useMemo((): Group[] => {
-    const q = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const hit = (i: Item) => q.every((t) => i.hay.includes(t));
-    const pins = pinned.map((id) => byId.get(id)).filter((i): i is Item => !!i);
-    const pinSet = new Set(pinned);
-    const out: Group[] = [];
-    const add = (value: string, label: string, items: Item[], extra: Partial<Group> = {}) => items.length && out.push({ value, label, items, total: items.length, ...extra });
-    const perProvider = (pool: Item[], fold: boolean) => {
-      const by = new Map<string, Item[]>();
-      for (const i of pool) (by.get(i.provider) ?? by.set(i.provider, []).get(i.provider)!).push(i);
-      for (const p of order) {
-        const list = by.get(p);
-        if (!list) continue;
-        const folded = fold && !expanded.has(p) && list.length > CAP + 2;
-        out.push({ value: p, label: labels[p] ?? p, provider: p, plan: list.some((i) => i.plan), total: list.length, items: folded ? list.slice(0, CAP) : list });
-      }
-    };
-    if (!q.length) {
-      add("favorites", "Favorites", pins.filter((i) => !i.hidden));
-      const recent = [...new Set(Object.values(sessions).sort((a, b) => b.updated - a.updated).map((s) => s.model))]
-        .map((id) => byId.get(id)).filter((i): i is Item => !!i && !i.hidden && !pinSet.has(i.value)).slice(0, RECENT);
-      add("recent", "Recent", recent);
-      perProvider(all.filter((i) => !i.hidden), true);
-    } else {
-      const found = all.filter(hit);
-      add("favorites", "Favorites", pins.filter((i) => !i.hidden && hit(i)));
-      perProvider(found.filter((i) => !i.hidden && !pinSet.has(i.value)), false);
-      add("hidden", "Hidden", found.filter((i) => i.hidden));
-    }
-    return out;
-  }, [query, all, byId, order, pinned, sessions, expanded, labels]);
-
-  const count = useMemo(() => all.filter((i) => !i.hidden).length, [all]);
+  const groups = useMemo(
+    () => buildGroups({ query, all, byId, order, pinned, recent, expanded, labelOf }),
+    [query, all, byId, order, pinned, recent, expanded, labelOf],
+  );
+  const count = useMemo(() => countLabel(query, all, groups), [query, all, groups]);
   const selected = byId.get(value) ?? null;
 
   const togglePin = (i: Item) => actions.choose(pinned.includes(i.value) ? { unpin: [i.value] } : { pin: [i.value] }).catch(reportError);
-  const toggleHide = (i: Item) =>
-    actions.choose(i.hidden === "provider" ? { show_provider: i.provider } : { provider: i.provider, [i.hidden ? "show" : "hide"]: [i.model] }).catch(reportError);
+  // Hide asks nothing of the daemon for the default: its row has no Hide either.
+  const hide = (i: Item) => {
+    if (i.value === def) return setHint("Choose another default before hiding this model.");
+    actions.choose({ provider: i.provider, hide: [i.model] }).catch(reportError);
+  };
+  const showProvider = (i: Item, andModel: boolean) =>
+    actions.choose(andModel ? { show_provider: i.provider, provider: i.provider, show: [i.model] } : { show_provider: i.provider }).catch(reportError);
+  const show = (i: Item) => (i.hidden === "model" ? actions.choose({ provider: i.provider, show: [i.model] }).catch(reportError) : showProvider(i, i.hidden === "both"));
+  const current = () => (highlighted.current ? byId.get(highlighted.current) : undefined);
 
   return (
     <Combobox.Root
       open={open}
-      onOpenChange={(o) => { setOpen(o); if (!o) setQuery(""); }}
+      onOpenChange={(o) => { setOpen(o); setHint(null); if (!o) setQuery(""); }}
       items={groups}
       filteredItems={groups}
       filter={null}
@@ -109,13 +71,13 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
       inputValue={query}
       onInputValueChange={(v, d) => { if (d.reason !== "item-press") setQuery(v); }}
       value={selected}
-      onValueChange={(v: Item | null) => v && onChange(v.value)}
-      onItemHighlighted={(v: Item | undefined) => (highlighted.current = v)}
+      onValueChange={(v: Item | null) => { if (!v) return; notePick(v.value); onChange(v.value); }}
+      onItemHighlighted={(v: Item | undefined) => { highlighted.current = v?.value; setHint(null); }}
       isItemEqualToValue={(a: Item, b: Item) => a.value === b.value}
       itemToStringLabel={(i: Item) => i.label}
     >
       <Combobox.Trigger data-testid="model-picker" className={triggerClass(compact)}>
-        <TriggerLabel label={selected?.label} any={all.length > 0} value={value} />
+        <TriggerLabel label={selected ? (all.some((o) => o.label === selected.label && o.value !== selected.value) ? `${selected.label} · ${selected.providerLabel}` : selected.label) : undefined} any={all.length > 0} value={value} />
       </Combobox.Trigger>
       <Combobox.Portal>
         <Combobox.Positioner align="start" sideOffset={6} className="z-50 outline-none">
@@ -133,13 +95,16 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                 placeholder="Search models"
                 className="h-10 w-full bg-transparent px-3 text-ui outline-none placeholder:text-faint"
                 onKeyDown={(e) => {
-                  const i = highlighted.current;
-                  if (!i || !(e.ctrlKey || e.metaKey)) return;
-                  if (e.key === "f") { e.preventDefault(); togglePin(i); }
-                  if (e.key === "h") { e.preventDefault(); toggleHide(i); }
+                  if (!(e.ctrlKey || e.metaKey) || (e.key !== "f" && e.key !== "h")) return;
+                  e.preventDefault();
+                  const i = current();
+                  if (!i) return;
+                  if (e.key === "f") togglePin(i);
+                  else if (i.hidden) show(i);
+                  else hide(i);
                 }}
               />
-              <span className="shrink-0 pr-1 text-micro tabular-nums text-faint" title="Models shown (hidden ones are found by search)">{count}</span>
+              <span className="shrink-0 whitespace-nowrap pr-1 text-micro tabular-nums text-faint" data-testid="model-count" role="status">{count}</span>
               <button
                 type="button"
                 title="Read the provider listings again"
@@ -150,6 +115,7 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                 <RefreshCw className="size-3.5" />
               </button>
             </div>
+            {hint && <div className="border-b border-line px-3 py-1.5 text-caption text-warn" role="status" data-testid="picker-hint">{hint}</div>}
             <Combobox.Empty>
               <div className="px-3 py-4 text-ui text-muted">No model matches.</div>
             </Combobox.Empty>
@@ -186,6 +152,7 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                         key={`${group.value}:${item.key}`}
                         value={item}
                         data-testid="model-option"
+                        aria-label={item.aria}
                         data-model={item.value}
                         data-provider={item.provider}
                         className={cn(
@@ -198,31 +165,33 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                           <Check className="size-3.5" />
                         </Combobox.ItemIndicator>
                         <span className="col-start-2 flex min-w-0 items-center gap-1.5">
-                          <span className="truncate">{item.label}</span>
+                          <span className={cn("truncate", item.hidden && "shrink-0 max-w-[55%]")}>{item.label}</span>
                           {item.value === def && <span className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
-                          {!group.provider && <span className="shrink-0 truncate text-micro text-faint">{item.providerLabel}</span>}
+                          {!group.provider && !item.hidden && <span className="shrink-0 truncate text-micro text-faint">{item.providerLabel}</span>}
+                          {item.hidden && <span className="min-w-0 truncate text-micro text-faint" title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>
                         <span className="col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint">
-                          <RowAction
+                          {!item.hidden && <RowAction
                             label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
                             on={pinned.includes(item.value)}
                             testid="pin-model"
                             onPress={() => togglePin(item)}
                           >
                             <Star className={cn("size-3", pinned.includes(item.value) && "fill-current text-brass")} />
-                          </RowAction>
-                          {item.value !== def && (
-                            <RowAction
-                              label={item.hidden === "provider" ? `Show ${item.providerLabel} again` : item.hidden ? "Show again" : "Hide"}
-                              on={!!item.hidden}
-                              testid="hide-model"
-                              onPress={() => toggleHide(item)}
-                            >
-                              {item.hidden ? <Eye className="size-3" /> : <EyeOff className="size-3" />}
+                          </RowAction>}
+                          {!item.hidden && item.value !== def && (
+                            <RowAction label="Hide" on={false} testid="hide-model" onPress={() => hide(item)}>
+                              <EyeOff className="size-3" />
                             </RowAction>
                           )}
-                          {item.vision && <Image className="ml-0.5 size-3" aria-label="Reads images" />}
-                          <span className="w-8 text-right" title="Context window">{item.context ? fmtTokens(item.context) : ""}</span>
+                          {item.hidden === "model" && <TextAction testid="show-model" label="Show" onPress={() => show(item)} />}
+                          {(item.hidden === "provider" || item.hidden === "both") && (
+                            <TextAction testid="show-provider" label="Show provider" title={item.hidden === "both" ? `Show ${item.providerLabel} again; this model stays hidden` : `Show ${item.providerLabel} again`} onPress={() => showProvider(item, false)} />
+                          )}
+                          {item.hidden === "both" && <TextAction testid="show-both" label="Show both" title={`Show ${item.providerLabel} and this model`} onPress={() => showProvider(item, true)} />}
+                          {!item.hidden && item.vision === true && <Image className="ml-0.5 size-3" aria-label="Reads images" />}
+                          {!item.hidden && item.vision === false && <ImageOff className="ml-0.5 size-3" aria-label="Does not read images" />}
+                          {!item.hidden && <span className="w-8 text-right" title="Context window">{item.context ? fmtTokens(item.context) : ""}</span>}
                         </span>
                       </Combobox.Item>
                     )}
@@ -270,6 +239,23 @@ function RowAction({ label, on, testid, onPress, children }: { label: string; on
       )}
     >
       {children}
+    </span>
+  );
+}
+
+// A worded action inside an option, for the choices an icon cannot tell apart.
+function TextAction({ label, title, testid, onPress }: { label: string; title?: string; testid: string; onPress: () => void }) {
+  return (
+    <span
+      role="button"
+      tabIndex={-1}
+      title={title ?? label}
+      data-testid={testid}
+      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
+      className="shrink-0 rounded-xs px-1.5 py-0.5 text-micro text-accent-ink hover:bg-line"
+    >
+      {label}
     </span>
   );
 }

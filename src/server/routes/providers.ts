@@ -7,6 +7,11 @@ import { Check } from "../../providers/plugins/check.ts";
 import { readPlugins } from "../../providers/plugins/config.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+// Whether a full model id is hidden under these choices (its own rule or its provider's).
+const hiddenIn = (c: { hidden: Record<string, string[]>; hidden_providers?: string[] }, id: string) => {
+  const p = id.slice(0, id.indexOf(":")), m = id.slice(id.indexOf(":") + 1);
+  return !!c.hidden_providers?.includes(p) || !!c.hidden[p]?.includes(m);
+};
 
 export const providersRoutes: RouteModule = ({ providers, store }) => {
   // The session's speed, read before each request so a change applies from
@@ -67,11 +72,16 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
           if (!models.some((m) => m.id === b.default)) return json({ error: `no provider lists ${b.default}` }, 400);
           c.default = b.default;
         }
+        // The default the owner or the configuration names stays in the
+        // picker: it cannot be hidden, and a hidden model is shown again
+        // before it becomes the default. A fallback default is never hidden
+        // (defaultModel passes over hidden models), so it needs no guard.
+        const named = await providers.namedDefault(c);
         if (b.hide || b.show) {
           if (!b.provider) return json({ error: "a list change names its provider" }, 400);
           const hidden = new Set(c.hidden[b.provider] ?? []);
           for (const id of b.hide ?? []) {
-            if (`${b.provider}:${id}` === c.default) return json({ error: "the default model cannot be hidden" }, 400);
+            if (`${b.provider}:${id}` === named) return json({ error: "the default model cannot be hidden: choose another default first" }, 400);
             hidden.add(id);
           }
           for (const id of b.show ?? []) hidden.delete(id);
@@ -90,12 +100,14 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
         if (typeof b.hide_provider === "string" || typeof b.show_provider === "string") {
           const off = new Set(c.hidden_providers ?? []);
           if (b.hide_provider) {
-            if (c.default?.startsWith(`${b.hide_provider}:`)) return json({ error: "the default model's provider cannot be hidden" }, 400);
+            if (named?.startsWith(`${b.hide_provider}:`)) return json({ error: "the default model's provider cannot be hidden: choose another default first" }, 400);
             off.add(b.hide_provider);
           }
           if (b.show_provider) off.delete(b.show_provider);
           c.hidden_providers = [...off];
         }
+        if (typeof b.default === "string" && hiddenIn(c, b.default))
+          return json({ error: `${b.default} is hidden: show it again before making it the default` }, 400);
         providers.setChoices(c);
         return json(await report());
       },

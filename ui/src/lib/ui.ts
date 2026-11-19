@@ -121,3 +121,14 @@ export const isDark = () => document.documentElement.classList.contains("dark");
 export const phone = isPhone;
 export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined) =>
   setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1, session } });
+
+// Models the owner picked, newest first: the picker's Recent group. A pick
+// is recorded when made, so renaming or touching a session moves nothing.
+const RECENT_KEY = "keel.recentModels";
+export function recentPicks(): string[] {
+  try { const v = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+export function notePick(id: string) {
+  if (!id) return;
+  localStorage.setItem(RECENT_KEY, JSON.stringify([id, ...recentPicks().filter((x) => x !== id)].slice(0, 20)));
+}

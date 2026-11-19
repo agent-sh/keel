@@ -255,10 +255,22 @@ export class Providers {
 
   // Every listed model, the ones the owner hid marked (the picker finds
   // them by search, so they can be shown again).
-  marked(models: ModelInfo[]): (ModelInfo & { hidden?: true })[] {
+  // `hidden_by` says which rule hides it: the model, its provider, or both.
+  marked(models: ModelInfo[]): (ModelInfo & { hidden?: true; hidden_by?: "model" | "provider" | "both" })[] {
     const c = this.choices();
     const off = new Set(c.hidden_providers ?? []);
-    return models.map((m) => (off.has(m.provider) || c.hidden[m.provider]?.includes(m.model) ? { ...m, hidden: true } : m));
+    return models.map((m) => {
+      const p = off.has(m.provider), own = !!c.hidden[m.provider]?.includes(m.model);
+      return p || own ? { ...m, hidden: true, hidden_by: p && own ? "both" : p ? "provider" : "model" } : m;
+    });
+  }
+
+  // The default the owner or the configuration names; a fallback pick is not one.
+  async namedDefault(c = this.choices()): Promise<string | undefined> {
+    const want = (c.default ?? process.env.KEEL_DEFAULT_MODEL ?? process.env.ANTHROPIC_DEFAULT_MODEL)?.replace(/\[[^\]]*\]$/, "");
+    if (!want) return undefined;
+    const models = await this.models();
+    return models.find((m) => m.id === want || m.model === want || m.model.endsWith(`.${want}`))?.id;
   }
 
   setChoices(c: Choices) {
@@ -274,10 +286,12 @@ export class Providers {
       const hit = models.find((m) => m.id === want || m.model === want || m.model.endsWith(`.${want}`));
       if (hit) return hit.id;
     }
-    // Else the newest model of the first provider that is set up, in the
-    // order the providers are listed (the built-in routes first).
+    // Else the newest model the owner has not hidden of the first provider
+    // that is set up, in the order the providers are listed (the built-in
+    // routes first): a new session never starts on a model taken out of the picker.
+    const shown = this.marked(models).filter((m) => !m.hidden);
     for (const p of this.all()) {
-      const own = models.filter((m) => m.provider === p.id);
+      const own = shown.filter((m) => m.provider === p.id);
       if (own.length) return own[0]!.id;
     }
     return "";

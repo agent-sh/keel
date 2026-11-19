@@ -8,6 +8,9 @@ import { Card, SettingRow } from "../Settings.tsx";
 export default function AgentSettings() {
   const [model, setModel] = useState<string | null | undefined>(undefined);
   const name = useStore((s) => s.models.find((m) => m.id === model)?.name);
+  // A saved advisor the listing no longer has: the preference stays, and the
+  // page says it cannot be consulted now (a consultation would refuse it).
+  const unlisted = useStore((s) => s.loaded.models && !!model && !s.models.some((m) => m.id === model));
   useEffect(() => void auto.advisor().then((r) => setModel(r.model)).catch(reportError), []);
   if (model === undefined) return null;
   const save = (m: string | null) => auto.setAdvisor(m).then((r) => setModel(r.model)).catch(reportError);
@@ -27,7 +30,9 @@ export default function AgentSettings() {
             )}
           </div>
         </SettingRow>
-        <div className="pb-4 text-caption text-muted" data-testid="advisor-current">{model ? `Advisor: ${name ?? model}` : "No advisor: the advisor tool tells the model to go on by itself."}</div>
+        <div className="pb-4 text-caption text-muted" data-testid="advisor-current">{unlisted
+          ? <span className="text-warn">Saved advisor unavailable: {model} is not in its provider's listing now. Choose another or None; it comes back if it is listed again.</span>
+          : model ? `Advisor: ${name ?? model}` : "No advisor: the advisor tool tells the model to go on by itself."}</div>
       </Card>
     </div>
   );

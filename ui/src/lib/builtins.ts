@@ -6,7 +6,9 @@ import { panels, slash } from "./extend.ts";
 import { fuzzy, registerCommand } from "./keys.ts";
 import { getSafetyModes, safety } from "./safety.ts";
 import { actions, getState, reportError } from "./store.ts";
-import { getUI, navigate, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
+import { getUI, navigate, notePick, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
+import { resolveModelArg } from "./picker.ts";
+import { switchSession } from "./switch.ts";
 
 const current = () => {
   const r = getUI().route;
@@ -69,10 +71,15 @@ slash.add(
     hint: "[name]",
     run: (arg, { session }) => {
       if (!arg) return setUI({ modelMenu: getUI().modelMenu + 1 });
-      const best = getState().models.map((m) => ({ m, s: fuzzy(arg, `${m.name} ${m.id}`) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s)[0];
-      if (!best) throw usage(`No listed model matches "${arg}".`);
-      if (session) return actions.patch(session.id, { model: best.m.id }).then(() => {});
-      setUI({ newModel: best.m.id });
+      // An exact route id picks that route; a name two routes share is asked
+      // about, never settled by the listing's order. The switch goes through
+      // the same cache warning as the picker.
+      const r = resolveModelArg(arg, getState().models, fuzzy);
+      if ("none" in r) throw usage(`No listed model matches "${arg}".`);
+      if ("tie" in r) throw usage(`"${arg}" matches ${r.tie.join(", ")}. Give the full id.`);
+      notePick(r.id);
+      if (session) return switchSession(session.id, { model: r.id }).then(() => {});
+      setUI({ newModel: r.id });
     },
   },
   { id: "clear", label: "Start fresh in this folder", run: (_a, { session }) => newIn(session?.workspace) },

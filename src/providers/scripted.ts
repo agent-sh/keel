@@ -39,6 +39,8 @@ export class ScriptedProvider implements Provider {
     return [
       { model: "stand-in", name: "Scripted stand-in", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
       { model: "stand-in-backup", name: "Scripted backup", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
+      // Says it reads no images: the composer holds a new screenshot for it.
+      { model: "stand-in-text", name: "Scripted text only", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, images: false },
     ];
   }
 

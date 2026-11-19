@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
@@ -25,6 +25,12 @@ export function StartBox() {
   useEffect(() => { api("/api/workspaces").then((r) => setFallback(r.recent[0]?.path ?? r.default)).catch(reportError); }, []);
   const workspace = chosen || fallback;
   const model = newModel || defaultModel;
+  // Saving another default ends a pick made against the old one.
+  const lastDefault = useRef(defaultModel);
+  useEffect(() => {
+    if (lastDefault.current && defaultModel !== lastDefault.current) setUI({ newModel: "" });
+    lastDefault.current = defaultModel;
+  }, [defaultModel]);
   const inWorktree = useStartInWorktree();
   const machine = useNewMachine();
   const loaded = useStore((s) => s.loaded);
@@ -61,6 +67,9 @@ export function StartBox() {
                   : inWorktree && (await isGitFolder(workspace))
                   ? await createInWorktree(t, model || undefined, workspace || undefined, images)
                   : await actions.create(t, model || undefined, workspace || undefined, images);
+                // The pick was for this conversation: the next New starts on the default
+                // again. A failed create keeps it for the retry.
+                setUI({ newModel: "" });
                 navigate({ name: "session", id: s.id });
               }}
             />

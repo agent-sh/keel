@@ -170,8 +170,14 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (body.title !== undefined && !String(body.title).trim()) return bad("the title cannot be empty");
           if (body.model && body.model !== s.model) {
             const { info } = await providers.resolve(body.model);
-            const from = (await providers.models()).find((m) => m.id === s.model)?.name ?? s.model;
-            bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "model", text: `Model changed from ${from} to ${info.name}.` }) });
+            const was = (await providers.models()).find((m) => m.id === s.model);
+            // Two routes may list one name: then each end says its provider.
+            const label = (id: string) => providers.statuses().find((p) => p.id === id.slice(0, id.indexOf(":")))?.label ?? id.slice(0, id.indexOf(":"));
+            const same = was?.name === info.name;
+            const apart = label(s.model) !== label(body.model);
+            const end = (name: string | undefined, id: string) => (!name ? id : same ? `${name} (${apart ? label(id) : id})` : name);
+            const text = `Model changed from ${end(was?.name, s.model)} to ${end(info.name, body.model)}.`;
+            bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "model", text, from: s.model, to: body.model }) });
           }
           let settings = s.settings;
           if (body.settings) {

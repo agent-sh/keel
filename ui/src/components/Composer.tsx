@@ -41,7 +41,9 @@ export function Composer({
   onStop?: () => void;
   working?: boolean;
   model: string;
-  onModel: (id: string) => void;
+  // A switch that asks first (the cache warning) returns its promise: until it
+  // settles nothing is sent, so a message never leaves on the model being left.
+  onModel: (id: string) => unknown;
   workspace?: string; // the folder @-mentions search
   autoFocus?: boolean;
   // The station that has the keys (several message boxes can be on screen): only it answers Alt+M.
@@ -72,6 +74,14 @@ export function Composer({
   const connected = useStore((s) => s.connected);
   const synced = useStore((s) => s.synced);
   const slashItems = useSlashItems();
+  const [switching, setSwitching] = useState(false);
+  const pickModel = (id: string) => {
+    const r = onModel(id);
+    if (!(r instanceof Promise)) return;
+    setSwitching(true);
+    r.finally(() => setSwitching(false));
+  };
+  const info = useStore((s) => s.models.find((m) => m.id === model));
 
   // Each session keeps its own unsent text.
   useEffect(() => {
@@ -271,6 +281,11 @@ export function Composer({
       if (item) return runSlash(item, (cmd[2] ?? "").trim());
     }
     if (offBranch) return setNotice("You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.");
+    if (switching) return setNotice("The model switch is not confirmed yet: nothing was sent.");
+    // A new screenshot for a model that says it reads none: nothing starts until
+    // the owner switches model or removes the image to send the text alone.
+    // Images already in the history are not this check's (the turn notes them).
+    if (info?.images === false && images.some((a) => !a.file)) return setNotice("Not sent: switch model, or remove the screenshot to send the text alone.");
     // The box clears at once (the next prompt can be typed while this one is on
     // its way); a failed send puts the text back if the box is still empty.
     const sent = images;
@@ -371,6 +386,7 @@ export function Composer({
           ))}
         </div>
       )}
+      {images.length > 0 && info && <Capability name={info.name} images={info.images} pdf={info.pdf} shots={images.some((a) => !a.file)} pdfs={images.some((a) => a.file?.media_type === "application/pdf")} />}
 
       <textarea
         ref={ref}
@@ -417,7 +433,7 @@ export function Composer({
           <Paperclip className="size-4" />
         </button>
         <input ref={fileInput} type="file" multiple hidden data-testid="attach-input" onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
-        <ModelPicker value={model} onChange={onModel} openSignal={pickerSignal} />
+        <ModelPicker value={model} onChange={pickModel} openSignal={pickerSignal} />
         {sid && <EffortPicker sessionId={sid} />}
         {sid && <SpeedPicker sessionId={sid} />}
         {session && <FallbackChip session={session} />}
@@ -469,5 +485,27 @@ export function Composer({
       </div>
     </div>
     </>
+  );
+}
+
+// What the chosen model does with what is attached, before Send: a model that
+// says yes, one that says no, and one whose listing says nothing are three
+// different answers.
+function Capability({ name, images, pdf, shots, pdfs }: { name: string; images?: boolean; pdf?: boolean; shots: boolean; pdfs: boolean }) {
+  const lines: { text: string; warn: boolean }[] = [];
+  if (shots) {
+    lines.push(images === true ? { text: "Reads images", warn: false }
+      : images === false ? { text: `Screenshot will not be sent: ${name} does not read images`, warn: true }
+      : { text: "Image support unverified; the screenshot will be sent", warn: false });
+  }
+  if (pdfs) {
+    lines.push(pdf === true ? { text: "Reads PDFs", warn: false }
+      : pdf === false ? { text: `${name} does not read PDFs: the file goes as a saved path`, warn: true }
+      : { text: "PDF support unverified; the file goes as a saved path, not inline", warn: false });
+  }
+  return (
+    <div className="flex flex-wrap gap-x-3 px-4 pt-1.5 text-caption" data-testid="attach-capability" role="status">
+      {lines.map((l) => <span key={l.text} className={l.warn ? "text-warn" : "text-faint"}>{l.text}</span>)}
+    </div>
   );
 }

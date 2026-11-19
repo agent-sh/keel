@@ -88,3 +88,36 @@ test("text, PDF and other files attached to a prompt", async ({ page, request })
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// What the chosen model does with an attachment is said before Send: a model
+// that reads no images holds a new screenshot (nothing starts, the draft
+// stays); one whose listing says nothing sends it and says that is unverified.
+test("attachments: the model's image and PDF support before Send", async ({ page, request }) => {
+  const ids = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!ids.includes("scripted:stand-in-text"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in-text", title: "Text-only model" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("attach-input").setInputFiles([
+    { name: "shot.png", mimeType: "image/png", buffer: png(200, 40, 40) },
+    { name: "brief.pdf", mimeType: "application/pdf", buffer: pdf("Brief") },
+  ]);
+  const line = page.getByTestId("attach-capability");
+  await expect(line).toContainText("Screenshot will not be sent: Scripted text only does not read images");
+  await expect(line).toContainText("PDF support unverified; the file goes as a saved path, not inline");
+  const composer = page.getByTestId("composer");
+  await composer.fill("What does this show?");
+  await composer.press("Enter");
+  await expect(page.getByTestId("composer-notice")).toContainText("remove the screenshot to send the text alone");
+  await expect(composer).toHaveValue("What does this show?");
+  await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
+  await shoot(page, "attach-03-text-only-held");
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "user")).toHaveLength(0);
+
+  // On a model whose listing says nothing about images: sent, and said to be unverified.
+  await page.getByTestId("model-picker").click();
+  await page.getByPlaceholder("Search models").fill("scripted:stand-in");
+  await page.locator('[data-group="exact"] [data-testid="model-option"]').click();
+  await expect(line).toContainText("Image support unverified; the screenshot will be sent");
+  await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
+  await request.delete(`/api/sessions/${session.id}`);
+});

@@ -15,7 +15,7 @@ export type ProvidersReport = {
 };
 
 // A listed model as the picker gets it: `hidden` when the owner hid it or its provider.
-export type ListedModel = ModelInfo & { hidden?: true };
+export type ListedModel = ModelInfo & { hidden?: true; hidden_by?: "model" | "provider" | "both" };
 export type LimitWindow = {
   provider: string; id: string; label: string; used_percent?: number; remaining?: number; limit?: number;
   unit?: "requests" | "tokens" | "usd"; resets_at_ms?: number; spent_usd?: number; overage_enabled?: boolean; note?: string; observed_ms: number;
@@ -110,13 +110,17 @@ export const actions = {
   // Favorites and hidden models: applied here at once, then saved.
   async choose(change: ChoiceChange) {
     const pinned = state.pinned.filter((id) => !change.unpin?.includes(id)).concat((change.pin ?? []).filter((id) => !state.pinned.includes(id)));
-    const off = (m: ListedModel) =>
-      change.hide_provider === m.provider || (change.provider === m.provider && change.hide?.includes(m.model))
-        ? true
-        : change.show_provider === m.provider || (change.provider === m.provider && change.show?.includes(m.model))
-          ? false
-          : !!m.hidden;
-    set({ pinned, models: state.models.map((m) => { const h = off(m); return h === !!m.hidden ? m : h ? { ...m, hidden: true } : (({ hidden: _, ...rest }) => rest)(m); }) });
+    // The two rules apart: showing a provider leaves a model hidden on its own hidden.
+    const by = (m: ListedModel) => {
+      let p = m.hidden_by === "provider" || m.hidden_by === "both";
+      let own = m.hidden_by === "model" || m.hidden_by === "both";
+      if (change.hide_provider === m.provider) p = true;
+      if (change.show_provider === m.provider) p = false;
+      if (change.provider === m.provider && change.hide?.includes(m.model)) own = true;
+      if (change.provider === m.provider && change.show?.includes(m.model)) own = false;
+      return p && own ? "both" : p ? "provider" : own ? "model" : undefined;
+    };
+    set({ pinned, models: state.models.map((m) => { const h = by(m); if (h === m.hidden_by) return m; const { hidden: _, hidden_by: __, ...rest } = m; return h ? { ...rest, hidden: true, hidden_by: h } : rest; }) });
     try {
       const r = await api<ProvidersReport>("/api/providers/choices", { method: "POST", body: JSON.stringify(change) });
       set({ providers: r });

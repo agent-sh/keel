@@ -11,6 +11,7 @@ import { getUI, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens, fmtWait } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { switchSession } from "../lib/switch.ts";
 import { ToolCall } from "./ToolCall.tsx";
 import { InputNotice, SYSTEM_INPUT } from "./automation/TranscriptExtras.tsx";
 import { isPeerMessage, PeerMessage } from "./FleetMessages.tsx";
@@ -193,7 +194,15 @@ function Refusal({ e, s, handled }: { e: StoredEvent; s: Session; handled?: bool
         <button
           type="button"
           disabled={!pick || pick === s.model}
-          onClick={() => actions.patch(s.id, { model: pick, ...(keep ? { settings: { fallback: pick } } : {}) }).then(() => actions.resume(s.id)).catch(reportError)}
+          onClick={() =>
+            // The picker's switch (with its cache warning): Cancel leaves the model and does not resume.
+            switchSession(s.id, { model: pick })
+              .then(async (ok) => {
+                if (!ok) return;
+                if (keep) await actions.patch(s.id, { settings: { fallback: pick } });
+                await actions.resume(s.id);
+              })
+              .catch(reportError)}
           className="h-8 rounded-md bg-accent px-3 font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40"
         >
           Retry on it
