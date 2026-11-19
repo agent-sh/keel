@@ -130,7 +130,8 @@ export class OtlpExporter {
   constructor(private resource: Record<string, unknown>, private headers: Record<string, string>, private onFail: (e: Error) => void) {}
 
   configure(ep: { url: string; from: "setting" | "env" } | null) {
-    if (ep?.url !== this.state.endpoint) Object.assign(this.state, { endpoint: ep?.url ?? null, from: ep?.from ?? null, last_error: null, failures: 0 });
+    // The counts are the current endpoint's: another endpoint starts from none.
+    if (ep?.url !== this.state.endpoint) Object.assign(this.state, { endpoint: ep?.url ?? null, from: ep?.from ?? null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null });
     this.backoffUntil = 0;
     if (!ep) { this.queue = []; this.state.queued = 0; }
   }

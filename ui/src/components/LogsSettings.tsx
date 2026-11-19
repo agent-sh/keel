@@ -27,22 +27,23 @@ function Exporter() {
   const save = (v: string | null) => patch({ observe: { otlp_endpoint: v } }).then(() => { setDraft(null); setErr(""); load(); }).catch((e) => setErr(e.message));
   return (
     <Card>
-      <SettingRow
-        label="Send traces"
-        hint="Each turn, model request and tool call as OpenTelemetry spans with the GenAI names (OTLP/HTTP JSON). Shapes, timings, tokens and failures only: never prompts, replies or tool input. Empty uses OTEL_EXPORTER_OTLP_ENDPOINT when the daemon has it."
-      >
-        <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); save(value.trim() || null).catch(reportError); }}>
+      <div className="flex flex-col gap-3 border-b border-line py-4">
+        <div>
+          <div className="text-base font-medium">Send traces</div>
+          <div className="mt-0.5 text-ui text-muted">Each turn, model request and tool call as OpenTelemetry spans with the GenAI names (OTLP/HTTP JSON) to Phoenix, Langfuse, Jaeger or any collector. Shapes, timings, tokens and failures only: never prompts, replies or tool input. Empty uses OTEL_EXPORTER_OTLP_ENDPOINT when the daemon has it.</div>
+        </div>
+        <form className="flex min-w-0 items-center gap-2" onSubmit={(e) => { e.preventDefault(); save(value.trim() || null).catch(reportError); }}>
           <input
             value={value}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="http://localhost:6006/v1/traces"
             aria-label="OTLP traces endpoint"
             data-testid="otlp-endpoint"
-            className="h-8 w-80 rounded-md border border-line bg-sunken px-2.5 font-mono text-caption outline-none focus:border-ring"
+            className="h-8 min-w-0 max-w-xl flex-1 rounded-md border border-line bg-sunken px-2.5 font-mono text-caption outline-none focus:border-ring"
           />
           <button type="submit" className={btn} disabled={draft === null || draft.trim() === saved} data-testid="otlp-save">Save</button>
         </form>
-      </SettingRow>
+      </div>
       <SettingRow label="Export" hint={err || st.last_error || (st.endpoint ? `To ${st.endpoint}${st.from === "env" ? " (from the environment)" : ""}.` : "Off.")}>
         <span className={cn("text-ui tabular-nums", st.last_error ? "text-danger" : "text-muted")} data-testid="otlp-state">
           {st.endpoint ? `${st.sent} sent${st.queued ? `, ${st.queued} waiting` : ""}${st.dropped ? `, ${st.dropped} dropped` : ""}${st.last_ok_ms ? `, last ${when(st.last_ok_ms)}` : ""}` : "Off"}
