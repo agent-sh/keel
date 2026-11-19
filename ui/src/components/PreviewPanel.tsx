@@ -5,6 +5,7 @@ import { Crosshair, ExternalLink, Globe, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
+import { machineName } from "../lib/fleet.ts";
 import { api, reportError } from "../lib/store.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
@@ -16,10 +17,12 @@ export function PreviewPanel({ session }: { session: Session }) {
   const [shown, setShown] = useState<number | null>(null);
   const [n, setN] = useState(0);
   const frame = useRef<HTMLIFrameElement>(null);
-  const remote = !!splitId(session.id);
-  const load = () => api<{ ports: Port[] }>(`/api/sessions/${session.id}/portal`).then((r) => setPorts(r.ports)).catch(reportError);
+  // A session of another daemon: its daemon lists the ports (through the
+  // forwarder), and the page opens them through this daemon's remote portal.
+  const remote = splitId(session.id);
+  const local = (p: Port): Port => (remote && p.url ? { ...p, url: p.url.replace(/^\/portal\//, `/fleet-portal/${remote.machine}/`) } : p);
+  const load = () => api<{ ports: Port[] }>(`/api/sessions/${session.id}/portal`).then((r) => setPorts(r.ports.map(local))).catch(reportError);
   useEffect(() => {
-    if (remote) return;
     load();
     const t = setInterval(load, 5000); // a dev server the session starts shows up within seconds
     return () => clearInterval(t);
@@ -28,7 +31,7 @@ export function PreviewPanel({ session }: { session: Session }) {
     const on = (e: MessageEvent) => {
       if (e.source !== frame.current?.contentWindow || !e.data || typeof e.data !== "object") return;
       // The dev server's own address, not the portal's (its key stays out of the conversation).
-      const where = String(e.data.url ?? "").replace(/^https?:\/\/[^/]+\/portal\/[^/]+\/(\d+)\/[^/]+/, "http://127.0.0.1:$1");
+      const where = String(e.data.url ?? "").replace(/^https?:\/\/[^/]+\/(?:portal|fleet-portal\/[^/]+)\/[^/]+\/(\d+)\/[^/]+/, "http://127.0.0.1:$1") + (remote ? ` on ${machineName(remote.machine)}` : "");
       if (e.data.type === "keel_point") seedComposer(`In the preview (${where}), the element \`${e.data.selector}\`${e.data.text ? ` ("${String(e.data.text).slice(0, 120)}")` : ""}: `);
       if (e.data.type === "keel_point_exit") toggle(shown!, true, false);
     };
@@ -38,11 +41,10 @@ export function PreviewPanel({ session }: { session: Session }) {
   const toggle = async (port: number, open: boolean, point = false) => {
     const r = await api<{ ports: Port[] }>(`/api/sessions/${session.id}/portal`, { method: "POST", body: JSON.stringify({ port, open, point }) }).catch((e) => (reportError(e), null));
     if (!r) return;
-    setPorts(r.ports);
+    setPorts(r.ports.map(local));
     setShown(open ? port : null);
     setN((x) => x + 1);
   };
-  if (remote) return <p className="p-4 text-ui text-faint">The preview opens on the daemon the session lives on.</p>;
   const cur = ports?.find((p) => p.port === shown && p.open);
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="preview-panel">

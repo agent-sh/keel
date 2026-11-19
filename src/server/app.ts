@@ -13,6 +13,14 @@ import { speedOffer } from "../providers/registry.ts";
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
 
+// A module that upgrades a request to its own WebSocket (the portal's dev
+// server sockets) passes `data: { kind }` to `srv.upgrade` and registers the
+// kind here; every other socket is a page's frame stream.
+export type SocketHandler = { open?(ws: Bun.ServerWebSocket<any>): void; message?(ws: Bun.ServerWebSocket<any>, m: string | Buffer): void; close?(ws: Bun.ServerWebSocket<any>, code: number, reason: string): void };
+const socketKinds = new Map<string, SocketHandler>();
+export const registerSocket = (kind: string, h: SocketHandler) => void socketKinds.set(kind, h);
+const socketKind = (ws: Bun.ServerWebSocket<any>) => (ws.data && typeof ws.data === "object" ? socketKinds.get((ws.data as any).kind) : undefined);
+
 export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string };
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -176,8 +184,9 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     },
 
     websocket: {
-      open(ws) { ws.subscribe("all"); },
-      message() {},
+      open(ws) { const h = socketKind(ws); if (h) h.open?.(ws); else ws.subscribe("all"); },
+      message(ws, m) { socketKind(ws)?.message?.(ws, m); },
+      close(ws, code, reason) { socketKind(ws)?.close?.(ws, code, reason); },
     },
   });
   return server;

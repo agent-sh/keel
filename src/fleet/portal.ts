@@ -101,12 +101,14 @@ export function rewriteCode(text: string, prefix: string): string {
     .replace(/(url\(\s*["']?)\/(?!\/)/g, `$1${prefix}/`);
 }
 
-// What the page's own scripts ask for by a root-relative or same-host URL.
+// What the page's own scripts ask for by a root-relative or same-host URL,
+// sockets (a dev server's hot reload) included.
 const shim = (prefix: string) => `(function(){var P=${JSON.stringify(prefix)};
 function fix(u){try{if(typeof u!=="string")u=String(u);if(u.startsWith("//"))return u;if(u.startsWith("/")&&!u.startsWith(P+"/"))return P+u;var x=new URL(u,location.href);if(x.host===location.host&&!x.pathname.startsWith(P+"/"))return P+x.pathname+x.search+x.hash;}catch(e){}return u}
 var f=window.fetch;window.fetch=function(i,o){return f.call(this,typeof i==="string"||i instanceof URL?fix(i):new Request(fix(i.url),i),o)};
 var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){arguments[1]=fix(u);return xo.apply(this,arguments)};
 if(window.EventSource){var E=window.EventSource;window.EventSource=function(u,c){return new E(fix(u),c)}}
+if(window.WebSocket){var W=window.WebSocket;var WS=function(u,p){var x=new URL(String(u),location.href);if(x.host===location.host&&!x.pathname.startsWith(P+"/"))x.pathname=P+x.pathname;return p===undefined?new W(x.href):new W(x.href,p)};WS.prototype=W.prototype;["CONNECTING","OPEN","CLOSING","CLOSED"].forEach(function(k){WS[k]=W[k]});window.WebSocket=WS}
 ["src","href","action","poster","data"].forEach(function(a){[HTMLScriptElement,HTMLLinkElement,HTMLImageElement,HTMLAnchorElement,HTMLFormElement,HTMLIFrameElement,HTMLSourceElement,HTMLVideoElement,HTMLObjectElement].forEach(function(C){var d=Object.getOwnPropertyDescriptor(C.prototype,a);if(d&&d.set){Object.defineProperty(C.prototype,a,{get:d.get,set:function(v){d.set.call(this,fix(v))},configurable:true})}})});
 var sa=Element.prototype.setAttribute;Element.prototype.setAttribute=function(n,v){if(/^(src|href|action|poster|data)$/i.test(n))v=fix(v);return sa.call(this,n,v)};
 new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(function(n){if(n.nodeType===1)["src","href","action"].forEach(function(a){var v=n.getAttribute&&n.getAttribute(a);if(v&&v.startsWith("/")&&!v.startsWith(P+"/"))sa.call(n,a,P+v)})})})}).observe(document.documentElement,{childList:true,subtree:true});

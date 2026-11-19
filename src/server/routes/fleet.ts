@@ -9,10 +9,11 @@ import { instructionFiles } from "../../engine/turn.ts";
 import { localFacts } from "../../fleet/facts.ts";
 import { Fleet } from "../../fleet/fleet.ts";
 import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
-import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proven } from "../../fleet/link.ts";
+import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven } from "../../fleet/link.ts";
 import { remoteRun } from "../../fleet/remote.ts";
 import { Handoffs, MoveError } from "../../fleet/handoff.ts";
-import { forgetOwnership, portalOf, portalPath, redirectTo, rewriteCode, rewriteHtml, sessionPorts, setOpen } from "../../fleet/portal.ts";
+import { forgetOwnership, portalOf, portalPath, sessionPorts, setOpen } from "../../fleet/portal.ts";
+import { bridge, isUpgrade, present, sameText, upHeaders, upstream } from "../../fleet/portal-proxy.ts";
 import { validate as validatePlacement } from "../../fleet/placement.ts";
 import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
@@ -113,37 +114,51 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
 
   // Not open, a wrong key and an unknown session are the same 404; a port whose
   // owner is gone is 502. Never follows a redirect; the page is sandboxed.
-  const portal = async (req: Request) => {
-    const u = new URL(req.url);
-    const [, , sid = "", portS = "", key = "", ...rest] = u.pathname.split("/");
+  const portalTarget = (path: string) => {
+    const [sid = "", portS = "", key = "", ...rest] = path.split("/");
     const port = Number(portS);
     const o = portalOf(sid, port);
-    if (!o || o.key !== key) return bad("not found", 404);
-    if (!(sessionPorts().get(sid) ?? []).some((p) => p.port === port)) return bad("no process of the session listens there any more", 502);
-    const prefix = portalPath(sid, port, key);
-    const h = new Headers(req.headers);
-    for (const k of ["authorization", "origin", "referer", "host", "accept-encoding", "connection"]) h.delete(k);
+    if (!o || o.key !== key) return { error: bad("not found", 404) };
+    if (!(sessionPorts().get(sid) ?? []).some((p) => p.port === port)) return { error: bad("no process of the session listens there any more", 502) };
+    return { sid, port, key, point: o.point, rest: rest.join("/") };
+  };
+  const portal = async (req: Request, srv: Bun.Server<unknown>) => {
+    const u = new URL(req.url);
+    const t = portalTarget(u.pathname.slice("/portal/".length));
+    if ("error" in t) return t.error;
+    if (isUpgrade(req)) return bridge(req, srv, `ws://127.0.0.1:${t.port}/${t.rest}${u.search}`);
+    let r: Response;
+    try { r = await upstream(req, t.port, `${t.rest}${u.search}`); } catch (e) { return bad(`the dev server does not answer: ${(e as Error).message}`, 502); }
+    return present(r, t.port, portalPath(t.sid, t.port, t.key), t.point);
+  };
+
+  // The portal of a session on another daemon: that daemon reaches its dev
+  // server, this one rewrites for its own prefix and holds the page's socket.
+  const remotePortal = async (req: Request, srv: Bun.Server<unknown>) => {
+    const u = new URL(req.url);
+    const [, , mid = "", sid = "", portS = "", key = "", ...rest] = u.pathname.split("/");
+    const port = Number(portS);
+    if (!f.row(mid) || !/^[\w-]+$/.test(sid) || !Number.isInteger(port) || !/^\w+$/.test(key)) return bad("not found", 404);
+    const far = `/api/fleet/portal/${sid}/${port}/${key}/${rest.join("/")}${u.search}`;
+    let p;
+    try { p = await f.peer(mid); } catch (e) { if (!(e instanceof LinkError)) throw e; return bad((e as Error).message, 502); }
+    if (isUpgrade(req)) {
+      const nonce = Bun.randomUUIDv7();
+      const want = proof(p.key, nonce, p.daemonId);
+      return bridge(req, srv, p.url.replace(/^http/, "ws") + far, {
+        headers: { "x-keel-link": `${p.myId} ${p.key}`, "x-keel-nonce": nonce },
+        verify: (first) => { try { return sameText(String(JSON.parse(first).keel_proof ?? ""), want); } catch { return false; } },
+      });
+    }
     let r: Response;
     try {
-      r = await fetch(`http://127.0.0.1:${port}/${rest.join("/")}${u.search}`, {
-        method: req.method, headers: h, redirect: "manual",
-        body: ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer(),
-      });
+      r = await linkFetch(p, far, { method: req.method, headers: upHeaders(req), body: ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer(), timeout: 60_000 });
     } catch (e) {
-      return bad(`the dev server does not answer: ${(e as Error).message}`, 502);
+      if (!(e instanceof LinkError)) throw e;
+      return bad((e as Error).message, 502);
     }
-    const out = new Headers();
-    r.headers.forEach((v, k) => { if (!["x-frame-options", "content-security-policy", "content-length", "content-encoding", "transfer-encoding", "location", "access-control-allow-origin"].includes(k)) out.append(k, v); });
-    out.set("content-security-policy", "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads; frame-ancestors 'self'");
-    out.set("x-content-type-options", "nosniff");
-    out.set("access-control-allow-origin", "*"); // the sandboxed page's own origin is opaque
-    const loc = r.headers.get("location");
-    if (loc) { const to = redirectTo(loc, port, prefix); if (to) out.set("location", to); }
-    const type = r.headers.get("content-type") ?? "";
-    if (/text\/html/.test(type)) out.set("cache-control", "no-store"); // the injected scripts depend on the picker being on
-    if (/text\/html/.test(type)) return new Response(rewriteHtml(await r.text(), prefix, o.point), { status: r.status, headers: out });
-    if (/javascript|ecmascript|text\/css/.test(type)) return new Response(rewriteCode(await r.text(), prefix), { status: r.status, headers: out });
-    return new Response(r.body, { status: r.status, headers: out });
+    if (r.headers.get("x-keel-portal") !== "1") return new Response(r.body, { status: r.status, headers: { "content-type": r.headers.get("content-type") ?? "application/json" } });
+    return present(r, port, `/fleet-portal/${mid}/${sid}/${port}/${key}`, r.headers.get("x-keel-portal-point") === "1");
   };
 
   const paired = (req: Request) => callerOf(req, f.keyOf);
@@ -468,7 +483,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       },
     },
     "/portal/:session/:port/:key": (req: any) => Response.redirect(`${new URL(req.url).pathname}/`, 308),
-    "/portal/:session/:port/:key/*": (req: any) => portal(req),
+    "/portal/:session/:port/:key/*": (req: any, srv: any) => portal(req, srv),
+    "/fleet-portal/:machine/:session/:port/:key": (req: any) => Response.redirect(`${new URL(req.url).pathname}/`, 308),
+    "/fleet-portal/:machine/:session/:port/:key/*": (req: any, srv: any) => remotePortal(req, srv),
 
     "/api/sessions/:id/fleet": {
       GET: (req: any) => {
@@ -576,6 +593,25 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           return { code, out: (out + err).slice(-200_000) };
         });
       }),
+    },
+
+    // The portal of one of this daemon's sessions, for a paired daemon that
+    // shows it: the dev server's answer as it is (the caller rewrites it), and
+    // its socket, whose first frame proves the pairing.
+    "/api/fleet/portal/*": async (req: any, srv: any) => {
+      const c = paired(req);
+      if (!c) return proven(bad("not a paired daemon", 403), null, f.id);
+      const u = new URL(req.url);
+      const t = portalTarget(u.pathname.slice("/api/fleet/portal/".length));
+      if ("error" in t) return proven(t.error!, c, f.id);
+      if (isUpgrade(req)) return bridge(req, srv, `ws://127.0.0.1:${t.port}/${t.rest}${u.search}`, { hello: JSON.stringify({ keel_proof: proof(c.key, c.nonce, f.id) }) });
+      let r: Response;
+      try { r = await upstream(req, t.port, `${t.rest}${u.search}`); } catch (e) { return proven(bad(`the dev server does not answer: ${(e as Error).message}`, 502), c, f.id); }
+      const h = new Headers(r.headers);
+      h.set("x-keel-portal", "1");
+      h.set("x-keel-portal-point", t.point ? "1" : "0");
+      h.delete("content-length"); h.delete("content-encoding"); h.delete("transfer-encoding");
+      return proven(new Response(r.body, { status: r.status, headers: h }), c, f.id);
     },
 
     // A file into or out of the granted directory (a handoff's git bundle).

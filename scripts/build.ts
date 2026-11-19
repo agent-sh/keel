@@ -3,9 +3,11 @@ import tailwind from "bun-plugin-tailwind";
 
 const t0 = performance.now();
 const out = process.argv[2] ?? "dist/keel";
+// Another platform's binary: bun-linux-x64, bun-darwin-arm64, ...
+const target = process.argv[3] as Bun.Build.Target | undefined;
 const res = await Bun.build({
   entrypoints: ["src/main.ts"],
-  compile: { outfile: out },
+  compile: target ? { outfile: out, target } : { outfile: out },
   minify: true,
   sourcemap: "none",
   plugins: [tailwind],
