@@ -9,6 +9,7 @@ import * as activity from "./activity.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { Worktrees } from "../worktree/manager.ts";
 import { contains } from "../core/paths.ts";
+import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. One level deep. The child gets
@@ -233,16 +234,19 @@ async function pickModel(parent: Session, want?: string): Promise<string> {
 
 // --- permissions ---------------------------------------------------------------
 
-// A child never runs in a wider mode than its parent; a read-only definition
-// runs in the read-only mode. Sandbox and network are the parent's.
-const WIDTH = ["read-only", "ask", "auto-edits", "full-auto"];
-function inheritPermissions(parentId: string, childId: string, def: AgentDef) {
+// A child never runs in a mode that asks less than its parent's (plan and
+// reviewer ranked with the rest); a read-only definition runs in the
+// read-only mode. Sandbox and network are the parent's.
+function modeOfChild(parentId: string, def: AgentDef): Mode | null {
   const g = perm.gate;
-  if (!g) return;
+  if (!g) return null;
+  return childMode(g.perm(parentId).mode, def.readOnly ? "read-only" : def.permissionMode);
+}
+function inheritPermissions(parentId: string, childId: string, mode: Mode | null) {
+  const g = perm.gate;
+  if (!g || !mode) return;
   const p = g.perm(parentId);
-  const want = def.readOnly ? "read-only" : (def.permissionMode ?? p.mode);
-  const mode = WIDTH.indexOf(want) >= 0 && WIDTH.indexOf(want) < WIDTH.indexOf(p.mode) ? want : p.mode;
-  g.setPerm(childId, { mode: mode as typeof p.mode, sandbox: p.sandbox, network: p.network });
+  g.setPerm(childId, { mode, sandbox: p.sandbox, network: p.network });
 }
 
 // --- spawn, settle, report ---------------------------------------------------
@@ -340,11 +344,15 @@ async function stagger(parentId: string, model: string, childId: string, signal?
   return 0;
 }
 
+// A work agent gets a worktree of its own unless its definition reads only,
+// isolation says none, or it runs in a mode that writes nothing.
+export const wantsWorktree = (def: Pick<AgentDef, "isolation" | "readOnly">, input: Pick<SpawnInput, "isolation">, mode: Mode | null) =>
+  (input.isolation ?? def.isolation ?? (def.readOnly ? "none" : "worktree")) === "worktree" && !def.readOnly && !(mode && writesNothing(mode));
+
 // The repository a work agent gets its own worktree of, or null to share the
 // parent's folder (a read-only agent, isolation "none", or no repository).
-async function isolate(parent: Session, def: AgentDef, input: SpawnInput, title: string, key: string) {
-  const want = input.isolation ?? def.isolation ?? (def.readOnly ? "none" : "worktree");
-  if (want !== "worktree" || def.readOnly) return null;
+async function isolate(parent: Session, def: AgentDef, input: SpawnInput, title: string, key: string, mode: Mode | null) {
+  if (!wantsWorktree(def, input, mode)) return null;
   if (!(await wts().repoOf(parent.workspace))) return null;
   return wts().create(key, parent.workspace, title);
 }
@@ -371,16 +379,17 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   await D().providers.resolve(model);
   const title = (input.title || input.prompt.split("\n")[0]!).slice(0, 80);
   const id = Bun.randomUUIDv7().slice(-12);
-  const wantWorktree = (input.isolation ?? def.isolation ?? (def.readOnly ? "none" : "worktree")) === "worktree" && !def.readOnly;
+  const mode = modeOfChild(parentId, def);
+  const wantWorktree = wantsWorktree(def, input, mode);
   const placed = input.machine || parent.machine
     ? await (remote ?? { place: async () => { throw new Error("the fleet is not running: no agent can start on another machine"); } })
       .place(parent, { machine: input.machine, cwd: input.cwd, worktree: wantWorktree, key: id, title })
     : null;
-  const iso = placed ? null : await isolate(parent, def, input, title, id);
+  const iso = placed ? null : await isolate(parent, def, input, title, id, mode);
   const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title });
   store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
   if (iso) wts().adopt(child.id, iso.wt);
-  inheritPermissions(parentId, child.id, def);
+  inheritPermissions(parentId, child.id, mode);
   bus.emit({ t: "session", session: store.session(child.id)! });
 
   if (input.fork) {

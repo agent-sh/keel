@@ -16,6 +16,15 @@ export const MODES = [
 export type Mode = (typeof MODES)[number]["id"];
 export const isMode = (m: unknown): m is Mode => MODES.some((x) => x.id === m);
 
+// How much a mode lets run without asking the owner, one ranking for every
+// place that compares modes (a remote device loosening one, a child agent).
+const LOOSENESS: Record<Mode, number> = { "read-only": 0, plan: 0, ask: 1, reviewer: 2, "auto-edits": 3, "full-auto": 4 };
+export const asksLess = (mode: string, than: string) => (isMode(mode) ? LOOSENESS[mode] : 0) > (isMode(than) ? LOOSENESS[than] : 0);
+// A child runs in the mode it wants unless that asks less than its parent's.
+export const childMode = (parent: Mode, want?: string): Mode => (isMode(want) && !asksLess(want, parent) ? want : parent);
+// Modes in which nothing is written (a child gets no worktree of its own).
+export const writesNothing = (m: Mode) => m === "read-only" || m === "plan";
+
 export type RuleKind = "shell" | "edit" | "tool";
 export type Rule = { id: string; kind: RuleKind; pattern: string; scope: string; lifetime: "always" | "session"; session_id?: string | null; created: number };
 export type Suggest = { kind: RuleKind; pattern: string };

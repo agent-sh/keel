@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classify, decide, type Facts, type Mode, type Rule } from "./policy.ts";
+import { childMode, classify, decide, type Facts, type Mode, type Rule } from "./policy.ts";
 
 const ws = "/w/repo";
 const rule = (kind: Rule["kind"], pattern: string): Rule => ({ id: pattern, kind, pattern, scope: ws, lifetime: "always", created: 0 });
@@ -57,4 +57,16 @@ test("leaving the sandbox asks once in every mode", () => {
 test("control calls run in every mode", () => {
   expect(kind(decide({ kind: "control" }, facts("read-only")))).toBe("allow");
   expect(kind(decide({ kind: "control" }, facts("ask")))).toBe("allow");
+});
+
+test("a child never runs in a mode that asks less than its parent's", () => {
+  expect(childMode("reviewer", "read-only")).toBe("read-only"); // a read-only agent under a reviewer parent
+  expect(childMode("plan", "full-auto")).toBe("plan");
+  expect(childMode("plan", "ask")).toBe("plan");
+  expect(childMode("reviewer", "full-auto")).toBe("reviewer");
+  expect(childMode("ask", "reviewer")).toBe("ask");
+  expect(childMode("full-auto", "plan")).toBe("plan");
+  expect(childMode("full-auto", "reviewer")).toBe("reviewer");
+  expect(childMode("auto-edits", undefined)).toBe("auto-edits");
+  expect(childMode("ask", "nonsense")).toBe("ask");
 });

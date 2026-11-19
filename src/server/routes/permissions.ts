@@ -3,7 +3,7 @@
 import { deliver } from "../../automation/core.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { Gate, type SandboxProfile } from "../../safety/gate.ts";
-import { isMode, MODES } from "../../safety/policy.ts";
+import { asksLess, isMode, MODES } from "../../safety/policy.ts";
 import { makeJudge } from "../../safety/judge.ts";
 import { isLocal, Presence } from "../../safety/presence.ts";
 import { sandboxStatus } from "../../safety/sandbox.ts";
@@ -17,8 +17,7 @@ export let gate: Gate | undefined;
 export let presence: Presence | undefined;
 
 // A mode that asks less than another (a remote device needs the owner's passkey to loosen one).
-const LOOSE: Record<string, number> = { "read-only": 0, plan: 0, ask: 1, reviewer: 2, "auto-edits": 3, "full-auto": 4 };
-export const asksLess = (mode: string, than: string) => (LOOSE[mode] ?? 0) > (LOOSE[than] ?? 0);
+export { asksLess };
 
 export const permissionRoutes: RouteModule = (deps: Deps) => {
   const { store } = deps;
@@ -79,7 +78,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         if (b.sandbox !== undefined && !PROFILES.includes(b.sandbox)) return bad(`unknown sandbox profile: ${b.sandbox}`);
         if (b.sandbox && b.sandbox !== "off" && !sandboxStatus().available) return bad(`the sandbox is unavailable: ${sandboxStatus().reason}`, 409);
         const cur = g.perm(s.id);
-        const looser = (b.mode !== undefined && LOOSE[b.mode]! > LOOSE[cur.mode]!) || (b.sandbox === "off" && cur.sandbox !== "off") || (b.network === true && !cur.network);
+        const looser = (b.mode !== undefined && asksLess(b.mode, cur.mode)) || (b.sandbox === "off" && cur.sandbox !== "off") || (b.network === true && !cur.network);
         const guard = looser ? needs(req, `perm:${s.id}`) : null;
         if (guard) return guard;
         const patch: any = {};
