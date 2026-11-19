@@ -237,7 +237,7 @@ function Checkpoint({ e, s }: { e: StoredEvent; s: Session }) {
         <Divider>
           <span className="flex items-center gap-1.5 hover:text-fg">
             <Layers className="size-3.5" />
-            {e.data.ahead ? "Context compacted with a summary prepared ahead; the newest steps stay as they were" : e.data.auto ? "Context compacted automatically" : "Context compacted"}
+            {e.data.label ? e.data.label : e.data.ahead ? "Context compacted with a summary prepared ahead; the newest steps stay as they were" : e.data.auto ? "Context compacted automatically" : "Context compacted"}
             {e.data.tokens_before ? `, ${fmtTokens(e.data.tokens_before)} tokens into a summary` : ""}
             <ChevronDown className="size-3 -rotate-90 transition-transform group-open/cp:rotate-0" />
           </span>
@@ -274,7 +274,7 @@ function AssistantBlocks({ blocks, results, s }: { blocks: AssistantBlock[]; res
   return (
     <>
       {blocks.map((b, i) => {
-        if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} /></div> : null;
+        if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} sessionId={s.machine ? undefined : s.id} /></div> : null;
         // A thought may carry only opaque state for replay (an encrypted item): nothing to show.
         if (b.type === "thinking") return b.thinking.trim() ? <Thinking key={i} text={b.thinking} /> : null;
         if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results.get(b.id)} sessionId={s.id} cwd={s.workspace} waiting={s.phase === "working"} />;
@@ -518,9 +518,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             }
             // Memory and hook notes fold into the turn's notes on its footer: quiet at six stations.
             if (e.kind === "note" && (e.data.hook || e.data.memory)) { notes.push(e); return null; }
+            if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.
-              const text = e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
+              const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
               return <Divider key={e.id} testid="note"><span>{text}</span></Divider>;
             }
             if (e.kind === "turn_end") {

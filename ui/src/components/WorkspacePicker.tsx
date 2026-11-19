@@ -18,6 +18,12 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
   const [typed, setTyped] = useState("");
 
   useEffect(() => { api("/api/workspaces").then(setInfo).catch(reportError); }, [open]);
+  // The repositories under the repo roots and of past sessions (GET /api/fs/repos).
+  const [repos, setRepos] = useState<{ name: string; path: string; linked_worktree: boolean }[]>([]);
+  useEffect(() => { if (open) api<{ repos: typeof repos }>("/api/fs/repos").then((r) => setRepos(r.repos)).catch(reportError); }, [open]);
+  const recentPaths = new Set(info?.recent.map((r) => r.path));
+  const q = typed.trim().toLowerCase();
+  const repoList = repos.filter((r) => !recentPaths.has(r.path) && (!q || r.path.toLowerCase().includes(q)));
   const shown = value || info?.default || "";
   const home = info?.home ?? "";
 
@@ -51,6 +57,20 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
                     </span>
                   </button>
                 ))}
+                {repoList.length > 0 && (
+                  <>
+                    <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-micro font-medium text-faint"><FolderGit2 className="size-3" /> Repositories</div>
+                    <div className="max-h-56 overflow-y-auto" data-testid="repo-list">
+                      {repoList.map((r) => (
+                        <button key={r.path} type="button" onClick={() => pick(r.path)} className={cn("flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover", r.path === shown && "bg-hover")}>
+                          <FolderGit2 className="size-4 shrink-0 text-faint" />
+                          <span className="truncate text-ui">{r.name}</span>
+                          <span className="ml-auto truncate text-micro text-faint">{r.linked_worktree ? "worktree " : ""}{tilde(r.path.slice(0, r.path.lastIndexOf("/")), home)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
                 <div className="my-1 h-px bg-line" />
                 <button type="button" data-testid="browse-folders" onClick={() => go(shown || home)} className="flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-ui text-muted hover:bg-hover hover:text-fg">
                   <Folder className="size-4 text-faint" /> Browse folders
@@ -86,7 +106,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
               <input
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
-                placeholder="Type a path, Enter to open it"
+                placeholder="Type a path, Enter to open it; filters the repositories"
                 className="h-8 w-full rounded-sm bg-sunken px-2.5 font-mono text-caption outline-none placeholder:font-sans placeholder:text-faint"
               />
             </form>

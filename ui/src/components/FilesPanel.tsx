@@ -1,4 +1,5 @@
 import { AtSign, ChevronLeft, File as FileIcon, Folder, Search } from "lucide-react";
+import { IMAGE, OpenInEditor, rawFile } from "./OpenInEditor.tsx";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError } from "../lib/store.ts";
@@ -80,9 +81,12 @@ export function FilesPanel({ session }: { session: Session }) {
           <button type="button" onClick={() => mention(open.path)} className="flex h-7 shrink-0 items-center gap-1 rounded-sm px-2 text-caption text-muted hover:bg-hover hover:text-fg">
             <AtSign className="size-3.5" /> Mention
           </button>
+          {!session.machine && <OpenInEditor sessionId={session.id} path={open.path} />}
         </div>
         <div className="min-h-0 flex-1 overflow-auto bg-raised">
-          {open.binary ? <p className="p-6 text-ui text-faint">A binary file, {Math.round(open.size / 1024)} KB.</p> : <CodeView file={open} />}
+          {open.binary && IMAGE.test(open.path) && !session.machine
+            ? <img src={rawFile(session.id, open.path)} alt={open.path} data-testid="file-image" className="m-4 max-w-[calc(100%-2rem)] rounded-md border border-line" />
+            : open.binary ? <p className="p-6 text-ui text-faint">A binary file, {Math.round(open.size / 1024)} KB.</p> : <CodeView file={open} />}
           {open.truncated && <p className="border-t border-line p-3 text-caption text-faint">Showing the first 512 KB of {Math.round(open.size / 1024)} KB.</p>}
         </div>
       </div>

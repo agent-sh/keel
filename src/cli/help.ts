@@ -6,6 +6,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["send", "text or files to a session, or into its draft; --wait prints the reply"],
     ["attach", "follow a session in this terminal and type into it"],
     ["approve", "answer an open approval card or question"],
+    ["rules", "the standing permission rules: list, revoke, check a sample"],
     ["stop", "interrupt a session's running turn"],
   ]],
   ["Sessions", [

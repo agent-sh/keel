@@ -3,9 +3,11 @@
 // shared tokens; the look belongs to the design of the workbench.
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { archive, marks, pin, setDone, setMaxSteps, setTags, type Marks } from "../lib/sessops.ts";
-import { reportError } from "../lib/store.ts";
-import { cn } from "../lib/utils.ts";
+import { archive, cloneSession, marks, moveSession, pin, setDone, setMaxSteps, setSkillMode, setTags, writeRecap, type Marks } from "../lib/sessops.ts";
+import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { api, onFeature, reportError } from "../lib/store.ts";
+import { navigate, seedComposer } from "../lib/ui.ts";
+import { ago, cn, fmtCost } from "../lib/utils.ts";
 
 export function Section({ title, children, testid }: { title: string; children: React.ReactNode; testid?: string }) {
   return (
@@ -123,8 +125,98 @@ function Messages({ s }: { s: Session }) {
   );
 }
 
-// Sections other parts of this lane add (recap, skill mode, folder).
-export const extraSections: { id: string; order: number; component: React.ComponentType<{ session: Session }> }[] = [];
+type Digest = { recap?: string; next_prompt?: string; ts_ms: number; recap_seq: number; cost_usd?: number };
+
+// The recap: written on demand on the session's own cached prefix, shown here,
+// never part of what the model reads.
+function Recap({ s }: { s: Session }) {
+  const [d, setD] = useState<Digest | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api<{ digest: Digest | null }>(`/api/sessions/${s.id}/recap`).then((r) => setD(r.digest), reportError);
+    return onFeature({ frame: (f) => { if (f.name === "recap" && f.session_id === s.id) setD(f.data); } });
+  }, [s.id]);
+  const write = () => {
+    setBusy(true);
+    writeRecap(s.id).then((r) => setD(r), reportError).finally(() => setBusy(false));
+  };
+  return (
+    <Section title="Recap" testid="recap">
+      {d?.recap ? (
+        <div className="py-1">
+          <p className="text-ui" data-testid="recap-text">{d.recap}</p>
+          <p className="mt-1 text-caption text-faint">Written {ago(d.ts_ms) === "now" ? "just now" : `${ago(d.ts_ms)} ago`}{d.cost_usd !== undefined ? `, ${fmtCost(d.cost_usd)}` : ""}</p>
+          {d.next_prompt && (
+            <div className="mt-2 flex items-center gap-2 rounded-md bg-sunken px-2 py-1.5">
+              <span className="min-w-0 flex-1 text-caption text-muted"><span className="font-medium text-fg">Next: </span>{d.next_prompt}</span>
+              <button type="button" className={button} data-testid="recap-use" onClick={() => seedComposer(d.next_prompt!, s.id)}>Use</button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="py-1 text-caption text-faint">{d ? "The model wrote no recap." : "Where the session stands, in a sentence or two, for when you come back."}</p>
+      )}
+      <div className="flex justify-end py-1.5">
+        <button type="button" className={button} disabled={busy || !s.head} onClick={write} data-testid="recap-write">{busy ? "Writing" : d ? "Write again" : "Write a recap"}</button>
+      </div>
+    </Section>
+  );
+}
+
+// Where the session works: move it (the conversation goes on there), or clone
+// it into another folder or a worktree of its own.
+function Place({ s }: { s: Session }) {
+  const [to, setTo] = useState("");
+  const [copy, setCopy] = useState(false);
+  const [git, setGit] = useState(false);
+  const [wt, setWt] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  const run = (f: () => Promise<string | void>) => {
+    setBusy(true);
+    setSaid(null);
+    f().then((m) => m && setSaid(m), (e) => { setSaid((e as Error).message); if (![400, 409].includes((e as { status?: number }).status ?? 0)) reportError(e, { at: "session folder" }); }).finally(() => setBusy(false));
+  };
+  const target = to || s.workspace;
+  return (
+    <Section title="Folder" testid="place">
+      <p className="truncate py-1 font-mono text-caption text-muted" title={s.workspace}>{s.workspace}</p>
+      <div className="flex flex-wrap items-center gap-2 py-1.5">
+        <WorkspacePicker value={target} onChange={setTo} />
+        <label className="flex items-center gap-1.5 text-caption text-muted"><input type="checkbox" checked={copy} onChange={(e) => setCopy(e.target.checked)} data-testid="move-copy" /> Copy its files</label>
+        <label className="flex items-center gap-1.5 text-caption text-muted"><input type="checkbox" checked={git} onChange={(e) => setGit(e.target.checked)} data-testid="move-git" /> Make it a git repository</label>
+      </div>
+      <div className="flex flex-wrap justify-end gap-2 py-1.5">
+        <label className="mr-auto flex items-center gap-1.5 text-caption text-muted"><input type="checkbox" checked={wt} onChange={(e) => setWt(e.target.checked)} data-testid="clone-worktree" /> Clone into a new worktree</label>
+        <button type="button" className={button} data-testid="clone-session" disabled={busy || s.phase === "working"}
+          onClick={() => run(async () => { const r = await cloneSession(s.id, { cwd: to || undefined, worktree: wt ? {} : undefined }); navigate({ name: "session", id: r.session.id }); })}>Clone</button>
+        <button type="button" className={button} data-testid="move-session" disabled={busy || s.phase === "working" || (!to && !git) || (to === s.workspace && !git)}
+          onClick={() => run(async () => { const r = await moveSession(s.id, { cwd: to && to !== s.workspace ? to : undefined, copy_files: copy || undefined, init_git: git || undefined }); setTo(""); return r.files_copied ? `Moved, ${r.files_copied} files copied.` : "Done."; })}>{to && to !== s.workspace ? "Move here" : "Apply"}</button>
+      </div>
+      {said && <p className="pb-1.5 text-caption text-muted" role="status" data-testid="place-said">{said}</p>}
+    </Section>
+  );
+}
+
+// One skill the owner may invoke, kept on for every turn until turned off.
+function SkillMode({ s }: { s: Session }) {
+  const [skills, setSkills] = useState<{ name: string; description: string }[] | null>(null);
+  useEffect(() => { api<{ skills: { name: string; description: string }[] }>(`/api/sessions/${s.id}/skill-mode`).then((r) => setSkills(r.skills), reportError); }, [s.id, s.workspace]);
+  const mode = s.settings.skill_mode ?? "";
+  const pick = skills?.find((k) => k.name === mode);
+  return (
+    <Section title="Skill mode" testid="skill-mode">
+      <Line label="Standing skill" hint={pick ? pick.description.slice(0, 140) : "A skill whose instructions hold on every turn. It reaches the model as a message, so the cached prompt stays."}>
+        <select value={mode} aria-label="Skill mode" data-testid="skill-mode-select" disabled={!skills}
+          onChange={(e) => setSkillMode(s.id, e.target.value || null).catch(reportError)} className={cn(field, "max-w-40")}>
+          <option value="">Off</option>
+          {(skills ?? []).map((k) => <option key={k.name} value={k.name}>{k.name}</option>)}
+          {mode && skills && !pick && <option value={mode}>{mode} (not found)</option>}
+        </select>
+      </Line>
+    </Section>
+  );
+}
 
 export function SessionPanel({ session: s }: { session: Session }) {
   return (
@@ -146,7 +238,9 @@ export function SessionPanel({ session: s }: { session: Session }) {
           <Messages s={s} />
         </Section>
       )}
-      {[...extraSections].sort((a, b) => a.order - b.order).map((x) => <x.component key={x.id} session={s} />)}
+      <Recap s={s} />
+      {!s.machine && <Place s={s} />}
+      <SkillMode s={s} />
       <Section title="Archive">
         <Line label={s.archived ? "Archived" : "Put it away"} hint={s.archived ? "Restore it to work in it again." : "Stops its turn and background commands; it stays searchable."}>
           <button type="button" className={button} data-testid="panel-archive" onClick={() => archive(s, !s.archived).catch(reportError)}>{s.archived ? "Restore" : "Archive"}</button>

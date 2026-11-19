@@ -19,8 +19,11 @@ md.use({
       return `<a href="${safe.replace(/"/g, "%22")}"${t} target="_blank" rel="noreferrer">${this.parser.parseInline(tokens)}</a>`;
     },
     image({ href, text }) {
-      // Remote images are not fetched: a link stands in for them.
-      return /^https?:/i.test(href) ? `<a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(text || href)}</a>` : esc(text);
+      // Remote images are not fetched: a link stands in for them. An image file
+      // of the session's folder is shown from it (the page fills in the address).
+      if (/^https?:/i.test(href)) return `<a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(text || href)}</a>`;
+      const p = href.replace(/^file:\/\//, "");
+      return /\.(png|jpe?g|gif|webp)$/i.test(p) && !/^[a-z][a-z0-9+.-]*:/i.test(p) ? `<img data-local="${esc(p)}" alt="${esc(text)}" class="max-w-full rounded-md border border-line">` : esc(text);
     },
     code({ text, lang }) {
       const l = (lang ?? "").trim().split(/\s/)[0] ?? "";
@@ -32,9 +35,20 @@ md.use({
 let hl: Promise<typeof import("../lib/highlight.ts")> | null = null;
 const loadHl = () => (hl ??= import("../lib/highlight.ts"));
 
-export const Markdown = memo(function Markdown({ text, live }: { text: string; live?: boolean }) {
+export const Markdown = memo(function Markdown({ text, live, sessionId }: { text: string; live?: boolean; sessionId?: string }) {
   const html = useMemo(() => md.parse(text, { async: false }) as string, [text]);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Images of the session's folder: served raw by the daemon; without a
+  // session, or when the file is not there, the alt text stands.
+  useEffect(() => {
+    ref.current?.querySelectorAll<HTMLImageElement>("img[data-local]:not([src])").forEach((img) => {
+      const alt = () => img.replaceWith(document.createTextNode(img.alt));
+      if (!sessionId) return alt();
+      img.onerror = alt;
+      img.src = `/api/sessions/${sessionId}/file?raw=1&path=${encodeURIComponent(img.dataset.local!)}`;
+    });
+  }, [html, sessionId]);
 
   // Highlight once the text stops changing (a streaming reply is highlighted when it ends).
   useEffect(() => {

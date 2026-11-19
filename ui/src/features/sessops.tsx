@@ -1,10 +1,11 @@
 // Session marks and conversation operations in the workbench: the Session
 // side-panel tab and the slash commands for them. Imported from main.tsx.
-import { Bookmark } from "lucide-react";
-import { lazy } from "react";
-import { panels, slash } from "../lib/extend.ts";
+import { Bookmark, FoldVertical, ListCollapse } from "lucide-react";
+import { createElement, lazy } from "react";
+import { panels, rowActions, slash } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
-import { pin, setDone, setTags } from "../lib/sessops.ts";
+import { moveSession, pin, setDone, setSkillMode, setTags, writeRecap } from "../lib/sessops.ts";
+import { api } from "../lib/store.ts";
 import { getUI, savePref } from "../lib/ui.ts";
 
 panels.add({
@@ -48,3 +49,49 @@ slash.add(
   },
   { id: "done", label: "Mark the work finished (your next message reopens it)", run: (_a, { session }) => setDone(need(session).id, true).then(() => {}) },
 );
+
+slash.add(
+  {
+    id: "recap",
+    label: "Write a recap of where this session stands",
+    run: async (_a, { session }) => {
+      const s = need(session);
+      savePref("panel", "session");
+      await writeRecap(s.id);
+    },
+  },
+  {
+    id: "skill-mode",
+    label: "Keep a skill on for every turn of this session (off turns it off)",
+    hint: "<skill> | off",
+    run: async (arg, { session }) => {
+      const s = need(session);
+      const a = arg.trim().replace(/^\//, "");
+      if (!a) return savePref("panel", "session");
+      if (a === "off") return void (await setSkillMode(s.id, null));
+      const { skills } = await api<{ skills: { name: string }[] }>(`/api/sessions/${s.id}/skill-mode`);
+      const hit = skills.find((k) => k.name === a) ?? skills.find((k) => k.name.includes(a));
+      if (!hit) throw Object.assign(new Error(`No skill you can invoke matches "${a}".`), { usage: true });
+      await setSkillMode(s.id, hit.name);
+    },
+  },
+);
+
+// Summarize a part of the conversation, from a prompt's row.
+const summarize = (direction: "from" | "up_to") => (e: { id: string }, s: { id: string }) =>
+  void import("../components/SummarizeDialog.tsx").then((m) => m.summarize({ sessionId: s.id, eventId: e.id, direction }));
+rowActions.add(
+  { id: "summarize-from", label: "Summarize from here", icon: createElement(FoldVertical, { className: "size-3.5" }), on: "user", when: (_e, s) => s.phase !== "working", run: summarize("from") },
+  { id: "summarize-up-to", label: "Summarize up to here", icon: createElement(ListCollapse, { className: "size-3.5" }), on: "user", when: (e, s) => s.phase !== "working" && e.parent !== null, run: summarize("up_to") },
+);
+
+slash.add({
+  id: "folder",
+  label: "Move this session to another folder; the conversation goes on there",
+  hint: "<path>",
+  run: async (arg, { session }) => {
+    const s = need(session);
+    if (!arg.trim()) return savePref("panel", "session");
+    await moveSession(s.id, { cwd: arg.trim() });
+  },
+});

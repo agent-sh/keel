@@ -215,5 +215,17 @@ describe("client commands against a running daemon", () => {
     expect(json(harnesses.out).map((h: any) => h.harness).sort()).toEqual(["claude", "codex", "keel"]);
     const badSub = await k(["import", "nope"]);
     expect(badSub.code).toBe(3);
+
+    // keel rules: the standing rules, and how the gate would judge a sample.
+    const none = await k(["rules"]);
+    expect(none.code).toBe(0);
+    const safe = await k(["rules", "check", "git status", "--mode", "ask", "--json"]);
+    expect(json(safe.out)).toMatchObject({ decision: "allow", tool: "shell", mode: "ask" });
+    const risky = await k(["rules", "check", "rm -rf build", "--mode", "ask", "--json"]);
+    expect(json(risky.out).decision).toBe("ask");
+    const ro = await k(["rules", "check", "notes.txt", "--tool", "edit", "--mode", "read-only"]);
+    expect(ro.out).toMatch(/^deny: edit notes\.txt/);
+    const badMode = await k(["rules", "check", "ls", "--mode", "yolo"]);
+    expect(badMode.code).toBe(3);
   }, 60_000);
 });

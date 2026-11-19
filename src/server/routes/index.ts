@@ -36,6 +36,8 @@ import { treeRoutes } from "./tree.ts";
 import { attachmentRoutes } from "./attachments.ts";
 import { runRoutes } from "./run.ts";
 import { marksRoutes } from "./marks.ts";
+import { convoRoutes } from "./convo.ts";
+import { placesRoutes } from "./places.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -70,6 +72,8 @@ export const routeModules: RouteModule[] = [
   mobileRoutes, // after automation: it registers the phone as an alert channel
   draftRoutes,
   marksRoutes, // after automation: unread marks are its alerts
+  convoRoutes,
+  placesRoutes,
   importRoutes,
   takeoverRoutes, // taking over a session another harness runs
   hookRoutes,

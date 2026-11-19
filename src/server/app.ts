@@ -138,7 +138,17 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const model = body.model || (await providers.defaultModel());
           if (!model) return bad("no model is available: no provider has credentials", 409);
           await providers.resolve(model);
-          const s = store.createSession({ model, workspace, title: body.title });
+          let s = store.createSession({ model, workspace, title: body.title });
+          // Module fields given at creation (tags, max_steps, the memory switches) hold or refuse it.
+          const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));
+          try {
+            for (const p of mine) await p.check?.(s, body);
+            for (const p of mine) await p.apply(s, body);
+          } catch (e) {
+            store.deleteSession(s.id);
+            throw e;
+          }
+          s = store.session(s.id)!;
           bus.emit({ t: "session", session: s });
           if (body.text) engine.send(s.id, body.text, { images: body.images ?? [] });
           return json({ session: store.session(s.id) }, 201);

@@ -167,7 +167,9 @@ export const turnRoutes: RouteModule = (deps) => {
         const base = `${s.title || "Session"} (fork`;
         let title = `${base})`;
         for (let n = 2; titles.has(title); n++) title = `${base} ${n})`;
-        const f = store.createSession({ title, model: s.model, workspace: s.workspace, settings: s.settings });
+        // The copy keeps the settings, not the source's pin or done mark.
+        const { pinned_ms: _p, done_ms: _d, ...settings } = s.settings;
+        const f = store.createSession({ title, model: s.model, workspace: s.workspace, settings });
         store.copyEvents(f.id, copy.filter((e) => e.kind !== "turn_start" || copy.at(-1) !== e));
         const session = store.session(f.id)!;
         bus.emit({ t: "session", session });

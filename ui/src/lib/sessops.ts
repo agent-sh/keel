@@ -26,6 +26,12 @@ export async function pin(id: string, on: boolean) {
 
 export const setTags = (id: string, tags: string[]) => actions.patch(id, { tags } as any);
 export const setDone = (id: string, done: boolean) => actions.patch(id, { done } as any);
+export const writeRecap = (id: string) => api<{ digest: any }>(`/api/sessions/${id}/recap`, { method: "POST" }).then((r) => r.digest);
+export const setSkillMode = (id: string, skill: string | null) => api(`/api/sessions/${id}/skill-mode`, { method: "POST", body: JSON.stringify({ skill }) });
+export const moveSession = (id: string, body: { cwd?: string; copy_files?: boolean; init_git?: boolean }) =>
+  api<{ session: Session; files_copied: number }>(`/api/sessions/${id}/folder`, { method: "POST", body: JSON.stringify(body) });
+export const cloneSession = (id: string, body: { cwd?: string; worktree?: { name?: string; base?: string } }) =>
+  api<{ session: Session; events_copied: number }>(`/api/sessions/${id}/clone`, { method: "POST", body: JSON.stringify(body) });
 export const setMaxSteps = (id: string, n: number) => actions.patch(id, { max_steps: n } as any);
 
 // Archive; when the session still runs background commands, ask first and
