@@ -15,6 +15,13 @@ export function daemonApi(base: string): DaemonApi {
   return {
     get: (path) => call("GET", path),
     send: (method, path, body) => call(method, path, body),
+    // An editor's embedded file: stored by the daemon like a file the owner attaches.
+    upload: async (name, type, bytes) => {
+      const r = await fetch(`${base}/api/attachments?name=${encodeURIComponent(name)}`, { method: "POST", headers: { "content-type": type, ...authHeaders() }, body: bytes as Uint8Array<ArrayBuffer> });
+      const b = (await r.json().catch(() => ({}))) as any;
+      if (!r.ok) throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { code: -32602 });
+      return b;
+    },
     frames: (on) =>
       new Promise((resolve, reject) => {
         const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws", { headers: authHeaders() } as any);
