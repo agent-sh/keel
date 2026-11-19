@@ -13,6 +13,9 @@ export type ToolContext = {
   // Set by a beforeTool hook: turns a command's argv into the argv that runs
   // it confined (bubblewrap, a systemd scope). Every tool that spawns uses it.
   wrapSpawn?: (argv: string[]) => string[];
+  // The confinement wrapSpawn applies (set with it): a tool that runs its
+  // command on another machine asks that machine for the same.
+  confined?: { sandbox: "workspace-write" | "read-only"; network: boolean };
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
   // Set by a beforeTool hook: runs the call somewhere else (the session's

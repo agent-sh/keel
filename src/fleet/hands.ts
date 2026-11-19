@@ -68,6 +68,17 @@ export function outsideRoot(input: any, cwd: string, root: string, spillDir: str
   return bad;
 }
 
+// The argv of a script /api/fleet/hands/exec runs: confined in the granted
+// directory as the caller asked (its session's sandbox), or refused when this
+// machine cannot confine it. A daemon's own git steps ask for nothing.
+export function execArgv(script: string, root: string, confined?: { sandbox?: unknown; network?: unknown }): string[] | { error: string } {
+  const argv = ["bash", "-c", script];
+  if (!confined) return argv;
+  const sandbox = confined.sandbox === "read-only" ? "read-only" : "workspace-write";
+  if (!sandboxStatus().available) return { error: `The session is sandboxed and this machine cannot sandbox commands (${sandboxStatus().reason}): nothing ran.` };
+  return confine(argv, { sandbox, network: confined.network === true }, root);
+}
+
 const seenBySession = new Map<string, Map<string, number>>();
 
 export async function runHands(q: HandsRequest, spillRoot: string, signal: AbortSignal): Promise<ToolOutput> {

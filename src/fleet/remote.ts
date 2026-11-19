@@ -39,14 +39,15 @@ export async function remoteRun(
 }
 
 // One command on a machine, with no tool state (keel__run_on): its own shell,
-// started in the directory asked for, bounded like a shell call.
+// started in the directory asked for, bounded like a shell call, and confined
+// there as the session's own shell commands are confined here.
 export async function remoteExec(fleet: Fleet, m: MachineRow, ctx: ToolContext, command: string, cwdIn?: string): Promise<ToolOutput> {
   const root = m.workspace_root!;
   const cwd = cwdIn ? (isAbsolute(cwdIn) ? cwdIn : resolve(root, cwdIn)) : root;
   fleet.step(ctx.sessionId, ctx.callId, m.id);
   try {
     const p = await fleet.peer(m.id);
-    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script: command, cwd, root }), signal: ctx.signal, timeout: CALL_MS });
+    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script: command, cwd, root, confined: ctx.confined }), signal: ctx.signal, timeout: CALL_MS });
     const b = (await r.json().catch(() => ({}))) as { code?: number; out?: string; error?: string };
     if (!r.ok || b.error) return { content: `Error [PEER]: ${m.name} answered: ${b.error ?? `HTTP ${r.status}`}`, is_error: true };
     const out = (b.out ?? "").trimEnd();

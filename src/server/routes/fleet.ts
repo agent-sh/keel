@@ -8,7 +8,7 @@ import { registerHooks } from "../../engine/hooks.ts";
 import { instructionFiles } from "../../engine/turn.ts";
 import { localFacts } from "../../fleet/facts.ts";
 import { Fleet } from "../../fleet/fleet.ts";
-import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
+import { execArgv, runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { listJobs, logPath, ownerRun, readJobLog, stopOne, waitOne } from "../../tools/terminal.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven, standingFrom } from "../../fleet/link.ts";
 import { innerHeaders, isLocal, type Standing } from "../../safety/presence.ts";
@@ -674,8 +674,10 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const b = await body(req);
         const cwd = resolve(String(b.cwd ?? ""));
         if (!b.root || !contains(resolve(b.root), cwd) || !existsSync(cwd)) return json({ code: 127, out: `not a directory inside the granted one: ${cwd}` });
+        const argv = execArgv(String(b.script ?? ""), resolve(b.root), b.confined && typeof b.confined === "object" ? b.confined : undefined);
+        if ("error" in argv) return json({ error: argv.error });
         return keepalive(async () => {
-          const p = Bun.spawn(["bash", "-c", String(b.script ?? "")], {
+          const p = Bun.spawn(argv, {
             cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, signal: req.signal,
             timeout: 10 * 60_000, // the longest a shell call may run in any family
           });

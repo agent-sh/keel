@@ -225,7 +225,8 @@ export class Gate {
     if ("deny" in r) return r;
     const p = this.perm(session.id);
     if (r.cls.kind === "shell" && r.cls.escalate) return;
-    if (this.sandboxed(session, p)) return { ctx: { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir) } };
+    if (this.sandboxed(session, p) && p.sandbox !== "off")
+      return { ctx: { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir), confined: { sandbox: p.sandbox, network: p.network } } };
   }
 
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,

@@ -4,7 +4,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { outsideRoot } from "./hands.ts";
+import { execArgv, outsideRoot } from "./hands.ts";
+import { remoteExec } from "./remote.ts";
 import { proof } from "./link.ts";
 import { sshHosts } from "./sshconfig.ts";
 
@@ -80,4 +81,30 @@ test("the outbox: handed out until acknowledged, and kept once however often it 
   a.msgs.queueOutbound("dB", to.id, "again", a.msgs.senderOf(from), true);
   a.msgs.ackOutbound("dC", a.msgs.pendingOutbound("dB").map((x) => x.id));
   expect(a.msgs.pendingOutbound("dB")).toHaveLength(1);
+});
+
+test("keel__run_on asks the far daemon to confine its command as the session's own shell is", async () => {
+  let sent: any;
+  const key = "k", daemonId = "far";
+  const srv = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    async fetch(req) {
+      sent = await req.json();
+      return Response.json({ code: 0, out: "ok" }, { headers: { "x-keel-proof": proof(key, req.headers.get("x-keel-nonce")!, daemonId) } });
+    },
+  });
+  try {
+    const fleet = { step() {}, peer: async () => ({ url: `http://127.0.0.1:${srv.port}`, myId: "me", key, daemonId }) } as any;
+    const ctx = { sessionId: "s", cwd: "/", signal: new AbortController().signal, spillDir: "/", seen: new Map(), confined: { sandbox: "workspace-write" as const, network: false } };
+    await remoteExec(fleet, { id: "m", name: "m", workspace_root: "/r" } as any, ctx, "make");
+    expect(sent.confined).toEqual({ sandbox: "workspace-write", network: false });
+  } finally {
+    srv.stop(true);
+  }
+  // The far side: no confinement asked runs the script as it is; one asked is
+  // confined, or refused when that machine cannot confine.
+  expect(execArgv("make", "/r")).toEqual(["bash", "-c", "make"]);
+  const c = execArgv("make", "/r", { sandbox: "workspace-write", network: false });
+  if (Array.isArray(c)) expect(c[0]).not.toBe("bash");
+  else expect(c.error).toContain("cannot sandbox");
 });
