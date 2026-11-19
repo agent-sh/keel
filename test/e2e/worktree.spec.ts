@@ -87,6 +87,11 @@ test("worktree session and branch review", async ({ page, request }) => {
   await expect(page.getByTestId("review-draft")).toBeVisible();
   await expect(page.getByTestId("review-comments").locator("li")).toHaveCount(2);
   await expect(page.getByTestId("review-note")).toHaveValue("Two small things.");
+  // A page reload keeps the draft too, as the message box keeps its text.
+  await page.reload();
+  await openPanel(page, "review");
+  await expect(page.getByTestId("review-comments").locator("li")).toHaveCount(2);
+  await expect(page.getByTestId("review-note")).toHaveValue("Two small things.");
   // An edit made outside Keel shows on Refresh, with no turn.
   writeFileSync(join(worktree.path, "todo.md"), "outside\n");
   await page.getByTestId("branch-refresh").click();

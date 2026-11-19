@@ -8,9 +8,17 @@ import { ReviewFindings } from "./ReviewFindings.tsx";
 
 type Branch = { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number; files: FileChange[]; diff: string; truncated: boolean; partial?: string };
 
-// Unsent feedback per session: closing the panel or switching to Changes
-// keeps it (for this page), another session never sees it.
-const drafts = new Map<string, { comments: Comment[]; note: string }>();
+// Unsent feedback per session, kept in this browser the way the message box
+// keeps its text: closing the panel, switching to Changes or reloading the
+// page keeps it; another session never sees it.
+type ReviewDraft = { comments: Comment[]; note: string };
+const draftKey = (id: string) => `keel.review-draft.${id}`;
+function loadDraft(id: string): ReviewDraft | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(draftKey(id)) ?? "null");
+    return v && Array.isArray(v.comments) && typeof v.note === "string" ? v : null;
+  } catch { return null; }
+}
 
 // A refreshed diff moves lines: each comment stays on the text it was written
 // on (same side and number, else the one line with that text), or is marked
@@ -32,7 +40,7 @@ function reconcile(comments: Comment[], patch: string): Comment[] {
 export function BranchReview({ session }: { session: Session }) {
   const sessionId = session.id;
   const [b, setB] = useState<Branch | null>(null);
-  const saved = drafts.get(sessionId);
+  const [saved] = useState(() => loadDraft(sessionId));
   const [comments, setComments] = useState<Comment[]>(saved?.comments ?? []);
   const [note, setNote] = useState(saved?.note ?? "");
   const [busy, setBusy] = useState(false);
@@ -42,8 +50,8 @@ export function BranchReview({ session }: { session: Session }) {
   const seq = useRef(0);
 
   useEffect(() => {
-    if (comments.length || note) drafts.set(sessionId, { comments, note });
-    else drafts.delete(sessionId);
+    if (comments.length || note) localStorage.setItem(draftKey(sessionId), JSON.stringify({ comments, note }));
+    else localStorage.removeItem(draftKey(sessionId));
   }, [sessionId, comments, note]);
 
   // Only the newest read lands: a slow answer from before a park or a
