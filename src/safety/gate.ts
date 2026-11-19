@@ -118,7 +118,11 @@ export class Gate {
   allowRetry(sessionId: string, id: string): Blocked | null {
     const r = this.store.db.query<{ data: string }, [string, string]>("SELECT data FROM perm_blocked WHERE id = ? AND session_id = ?").get(id, sessionId);
     if (!r) return null;
-    const b: Blocked = { ...JSON.parse(r.data), retry: true };
+    const prev = JSON.parse(r.data) as Blocked;
+    // Spent once: an id that already let its retry through (used or not)
+    // never grants another, so replaying an old one cannot rearm it.
+    if (prev.retry) return prev;
+    const b: Blocked = { ...prev, retry: true };
     this.retries.add(`${sessionId}\u0000${b.key}`);
     this.store.db.query("UPDATE perm_blocked SET data = ? WHERE id = ?").run(JSON.stringify(b), id);
     this.bus.emit({ t: "feature", name: "blocked", session_id: sessionId, data: b });

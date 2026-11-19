@@ -72,3 +72,23 @@ test("open cards are read whole and in one order, however much history there is"
   expect(ids(g.approvals({ session: "child", pending: true }))).toEqual(["a", "b"]);
   expect(g.approvals().length).toBe(500); // the history stays bounded
 });
+
+test("one retry the owner lets through is spent once; its blocked id never grants again", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm("s1", { mode: "reviewer", sandbox: "off" });
+  let judged = 0;
+  g.judge = async () => (judged++, { allow: false, risk: "low", reason: "not needed", model: "m" }) as any;
+  const run = async () => {
+    const r = await g.beforeTool(session, call(bash, { command: "npm install left-pad" }));
+    return r && "deny" in r ? "deny" : "allow";
+  };
+  expect(await run()).toBe("deny");
+  const id = g.blocked("s1")[0]!.id;
+  g.allowRetry("s1", id);
+  g.allowRetry("s1", id); // a double click before it is used: still one retry
+  expect(await run()).toBe("allow");
+  expect(await run()).toBe("deny");
+  g.allowRetry("s1", id); // the old id again, after its retry was used
+  expect(await run()).toBe("deny");
+  expect(judged).toBe(3);
+});
