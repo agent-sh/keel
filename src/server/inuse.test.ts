@@ -2,7 +2,7 @@
 // there: a turn, or a background command of this or another session, in the
 // folder, below it or through a link to it. Nothing else holds a rewind.
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, symlinkSync, writeSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -12,7 +12,7 @@ import { claudeTools } from "../tools/claude.ts";
 import { running, startJob, stopJob, type Job } from "../tools/jobs.ts";
 import { checkpointRoutes, checkpoints } from "./routes/checkpoints.ts";
 
-type Case = "turn" | "own job" | "other session's job" | "idle" | "job below" | "job through a link";
+type Case = "turn" | "own job" | "other session's job" | "idle" | "job below" | "job through a link" | "job ignoring TERM";
 
 async function attempt(kind: Case) {
   const base = mkdtempSync(join(tmpdir(), "keel-inuse-"));
@@ -41,8 +41,23 @@ async function attempt(kind: Case) {
     if (kind === "job through a link") symlinkSync(workspace, link);
     const cwd = kind === "job below" ? join(workspace, "sub") : kind === "job through a link" ? link : workspace;
     const owner = kind === "other session's job" ? store.createSession({ workspace: join(base, "elsewhere"), model: "fixture", title: "other" }).id : s.id;
-    job = startJob({ sessionId: owner, cwd, command: "sleep 30", logDir: join(base, "logs"), background: true } as any);
+    // A child of the job's shell that ignores TERM and writes once released
+    // through its own FIFO: the wrapper exits on TERM, the child does not.
+    const fifo = join(base, "release.fifo");
+    if (kind === "job ignoring TERM") Bun.spawnSync(["mkfifo", fifo]);
+    const command = kind === "job ignoring TERM"
+      ? `trap '' TERM; bash -c 'exec 3<> "$0"; echo READY; read -r x <&3; echo beta-late > "$1"' '${fifo}' '${file}'; sleep 30`
+      : "sleep 30";
+    job = startJob({ sessionId: owner, cwd, command, logDir: join(base, "logs"), background: true } as any);
+    if (kind === "job ignoring TERM") for (let i = 0; i < 200 && !readFileSync(job.log, "utf8").includes("READY"); i++) await Bun.sleep(25);
   }
+  // Whether anything of the job can still be released to write: a FIFO with
+  // no reader left refuses a writer that will not wait.
+  const release = () => {
+    const fifo = join(base, "release.fifo");
+    if (!existsSync(fifo)) return false;
+    try { const fd = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK); writeSync(fd, "go\n"); closeSync(fd); return true; } catch { return false; }
+  };
   const post = async (path: string, body: unknown) => {
     const req = Object.assign(new Request(`http://x${path}`, { method: "POST", body: JSON.stringify(body) }), { params: { id: s.id } });
     const r = await routes[path.replace(s.id, ":id")].POST(req);
@@ -53,7 +68,9 @@ async function attempt(kind: Case) {
     const kept = readFileSync(file, "utf8");
     // The owner can have the commands stopped and the rewind done in one step.
     const stopped = job ? await post(`/api/sessions/${s.id}/rewind`, { turn, stop_shells: true }) : undefined;
-    return { status: rewind.status, error: String(rewind.body.error ?? ""), kept, stopped: stopped?.status, after: readFileSync(file, "utf8"), jobRuns: job ? running(job) : false };
+    const released = release();
+    if (released) for (let i = 0; i < 200 && readFileSync(file, "utf8") === "alpha\n"; i++) await Bun.sleep(25);
+    return { status: rewind.status, error: String(rewind.body.error ?? ""), kept, stopped: stopped?.status, after: readFileSync(file, "utf8"), jobRuns: job ? running(job) : false, released };
   } finally {
     if (job) await stopJob(job);
     store.db.close();
@@ -63,10 +80,11 @@ async function attempt(kind: Case) {
 test("a rewind waits for every turn and background command in or around its folder", async () => {
   const held = { status: 409, kept: "beta\n" };
   expect(await attempt("turn")).toMatchObject(held);
-  for (const k of ["own job", "other session's job", "job below", "job through a link"] as const) {
+  for (const k of ["own job", "other session's job", "job below", "job through a link", "job ignoring TERM"] as const) {
     const r = await attempt(k);
-    expect({ k, ...r }).toMatchObject({ k, ...held, stopped: 200, after: "alpha\n", jobRuns: false });
-    expect(r.error).toContain("sleep 30");
+    // Restored only once nothing of the job is left that could write after.
+    expect({ k, ...r }).toMatchObject({ k, ...held, stopped: 200, after: "alpha\n", jobRuns: false, released: false });
+    expect(r.error).toContain(k === "job ignoring TERM" ? "trap" : "sleep 30");
   }
   expect(await attempt("idle")).toMatchObject({ status: 200, after: "alpha\n" });
 }, 60_000);

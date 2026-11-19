@@ -36,6 +36,7 @@ export type Job = {
   readOff: number;       // bytes of the log already handed to the model
   taken?: number;        // bytes the last read covered (more than it showed when it was cut)
   decoder: TextDecoder;
+  left?: number[];       // what a stop could not end of its group (it still runs)
   proc?: Subprocess<any, any, any>;   // absent for a job adopted after a restart
   exited: Promise<void>;
 };
@@ -279,14 +280,20 @@ function watchAdopted() {
   if (!adopted.size && watcher) { clearInterval(watcher); watcher = undefined; }
 }
 
-export const running = (j: Job) => j.ended === undefined;
+// Running: its process has not ended, or a stop left part of its group alive
+// (checked again each time, until nothing of it is left).
+export const running = (j: Job) => {
+  if (j.ended === undefined) return true;
+  if (j.left && !members(j).length) j.left = undefined;
+  return !!j.left;
+};
 // The pids of the jobs still running, adopted ones included (after a restart
 // they are no longer the daemon's children).
 export const jobPids = () => [...jobs.values()].filter(running).map((j) => j.pid);
 
 // Resolves true when the job ended within ms, false when it is still running.
 export async function waitJob(j: Job, ms: number, signal?: AbortSignal): Promise<boolean> {
-  if (!running(j)) return true;
+  if (j.ended !== undefined) return true;
   let timer: Timer | undefined;
   let onAbort: (() => void) | undefined;
   const r = await Promise.race([
@@ -333,36 +340,84 @@ export function takeUnread(j: Job): string {
 export const hasUnread = (j: Job) => size(j.log) > j.readOff;
 
 export function writeJob(j: Job, chars: string): boolean {
-  if (!running(j) || !j.pty || !j.proc?.terminal) return false;
+  if (j.ended !== undefined || !j.pty || !j.proc?.terminal) return false;
   j.proc.terminal.write(chars);
   return true;
 }
 
-// Stop the whole process group: TERM, then KILL if it lingers. Each signal
-// goes only while the group's leader is still the process the job started as
-// (its start time, read right before the signal): a pid reused since then, or
-// a leader that can no longer be read, gets nothing and the job ends as gone.
-// Bun has no pidfd API, so the read and the signal are back to back instead.
-export async function stopJob(j: Job, reason = "was stopped"): Promise<void> {
-  if (!running(j)) return;
-  j.stopReason = reason;
+// Stop the whole process group: TERM, then KILL if any of it lingers. The job
+// counts as stopped only once nothing of its group or session is left, not
+// when its leader exits: a child that ignores TERM outlives the wrapper shell
+// and could still write. Each signal goes only while the leader is the process
+// the job started as (its start time, read right before the signal); a leader
+// already gone leaves the group id to its members (the kernel does not hand
+// out a pid while a group still uses it as its id). A pid reused since, or a
+// leader that can no longer be read with no member left, gets nothing and the
+// job ends as gone. Bun has no pidfd API, so the read and the signal are back
+// to back instead. Resolves with what is still left (empty when stopped); a
+// job with something left keeps counting as running.
+export async function stopJob(j: Job, reason = "was stopped"): Promise<number[]> {
+  if (!running(j)) return [];
+  if (j.ended === undefined) j.stopReason = reason;
   const pid = j.pid;
-  const same = () => !j.boot || procStart(pid) === j.boot;
   const kill = (sig: NodeJS.Signals) => {
-    if (!same()) return gone(j);
+    const lead = procStart(pid);
+    if (j.boot && lead !== undefined && lead !== j.boot) return gone(j);
+    const rest = members(j);
+    if (j.boot && lead === undefined && !rest.length) return gone(j);
     try { process.kill(-pid, sig); } catch {
-      if (!same()) return gone(j);
-      try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {}
+      if (lead === undefined && j.boot) { if (!rest.length) return gone(j); }
+      else try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {}
     }
+    // Members that moved to a group of their own within the job's session.
+    for (const m of rest) if (m.group !== pid && procStart(m.pid) === m.start) try { process.kill(m.pid, sig); } catch {}
+  };
+  const quiet = async (ms: number) => {
+    const until = Date.now() + ms;
+    if (!(await waitJob(j, ms))) return false;
+    while (members(j).length && Date.now() < until) await Bun.sleep(25);
+    return !members(j).length;
   };
   kill("SIGTERM");
-  if (!(await waitJob(j, 2000))) kill("SIGKILL");
-  await waitJob(j, 2000);
+  if (!(await quiet(2000))) kill("SIGKILL");
+  await quiet(2000);
+  const rest = members(j).map((m) => m.pid);
+  j.left = rest.length ? rest : undefined;
+  return rest;
+}
+
+// Stops each job; resolves with the ones a stop could not end (part of each still runs).
+export async function stopJobs(list: Job[], reason: string): Promise<Job[]> {
+  const left = await Promise.all(list.map((j) => stopJob(j, reason)));
+  return list.filter((_, i) => left[i]!.length);
+}
+// What a refusal says of them: each command and the processes of it still alive.
+export const leftText = (list: Job[]) => list.map((j) => `${j.command.slice(0, 80)} (pid ${(j.left ?? [j.pid]).join(", ")})`).join("; ");
+
+// The processes still in a job's group or session (Linux), zombies aside: none
+// when its pid now belongs to another process.
+type Member = { pid: number; group: number; start: string };
+function members(j: Job): Member[] {
+  const lead = procStart(j.pid);
+  if (j.boot && lead !== undefined && lead !== j.boot) return [];
+  let names: string[];
+  try { names = readdirSync("/proc"); } catch { return []; }
+  const out: Member[] = [];
+  const id = String(j.pid);
+  for (const n of names) {
+    if (!/^\d+$/.test(n)) continue;
+    let f: string[];
+    try { const st = procfs.stat(Number(n)); f = st.slice(st.lastIndexOf(") ") + 2).split(" "); } catch { continue; }
+    if (f[0] === "Z" || f[0] === "X" || (f[2] !== id && f[3] !== id)) continue;
+    out.push({ pid: Number(n), group: Number(f[2]), start: f[19]! });
+  }
+  return out;
 }
 
 // A job whose process is no longer the one it started as: ended, nothing signalled.
 function gone(j: Job) {
-  if (!running(j)) return;
+  j.left = undefined;
+  if (j.ended !== undefined) return;
   j.stopReason = `${j.stopReason ?? "was stopped"}: its process is gone`;
   finish(j, null, null);
   const a = adopted.get(j.id);

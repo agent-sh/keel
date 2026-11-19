@@ -83,7 +83,8 @@ const TaskStop: Tool = {
       return fail(`No background task ${id}. Running: ${live.join(", ") || "none"}.`);
     }
     if (!running(j)) return ok(`Task ${j.id} already ended (exit ${j.exitCode}).`);
-    await stopJob(j, "was stopped");
+    const left = await stopJob(j, "was stopped");
+    if (left.length) return fail(`Task ${j.id} would not stop: process ${left.join(", ")} of it is still running. Its output is in ${j.log}.`);
     return ok(`Stopped task ${j.id}. Its output is in ${j.log}.`);
   },
 };
