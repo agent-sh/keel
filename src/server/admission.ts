@@ -35,11 +35,16 @@ function hostName(host: string): string {
   return host.replace(/:\d+$/, "");
 }
 
+// Hosts a module knows the owner gave: the address he told the phone to reach
+// this machine at, say. Each source is read per request, so a change applies at once.
+const hostSources: (() => string[])[] = [];
+export const addAllowedHosts = (f: () => string[]) => void hostSources.push(f);
+
 export function allowedHost(host: string | null): boolean {
   if (!host) return false;
   const name = hostName(host.toLowerCase());
   if (LOOPBACK.test(name)) return true;
-  const extra = (process.env.KEEL_ALLOWED_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  const extra = [...(process.env.KEEL_ALLOWED_HOSTS ?? "").split(","), ...hostSources.flatMap((f) => f())].map((h) => h.trim().toLowerCase()).filter(Boolean);
   return extra.includes(name) || extra.includes(host.toLowerCase());
 }
 

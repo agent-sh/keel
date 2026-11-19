@@ -86,6 +86,11 @@ describe("messages", () => {
     const replies = m.filter((x: any) => x.kind === "text" && x.role === "agent" && x.content === "Checked file A.");
     expect(replies.map((x: any) => x.meta.stop ?? null)).toEqual(["interrupted", null]);
     expect(m.filter((x: any) => x.kind === "status").map((x: any) => x.meta.outcome)).toEqual(["interrupted", "restart"]);
+    // A reply's tool calls follow its words as one trace row.
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "Looking." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] });
+    const after = (await call("GET", `/v1/chats/${s.id}/messages`)).body.messages.slice(-2);
+    expect(after.map((x: any) => x.kind)).toEqual(["text", "trace"]);
+    expect(after[1].meta.steps).toEqual([{ tool: "Bash", what: "ls" }]);
     // The chat names its parent.
     const chats = (await call("GET", "/v1/chats")).body.chats;
     expect(chats.find((c: any) => c.id === s.id).parent_id).toBe(parent.id);
@@ -135,6 +140,10 @@ describe("messages", () => {
     const p2 = (await call("GET", `/v1/chats/${s.id}/messages?limit=150&before=${p1.older}`)).body;
     const p3 = (await call("GET", `/v1/chats/${s.id}/messages?limit=150&before=${p2.older}`)).body;
     expect([p2.messages[0].content, p2.messages.at(-1).content, p3.messages.map((x: any) => x.content), p3.older]).toEqual(["row-2", "row-151", ["row-1"], null]);
+    // A phone starting from nothing gets this chat's newest page, at the current cursor, and pages the rest.
+    const first = (await call("GET", "/v1/sync?since=0")).body;
+    const mine = first.messages.filter((x: any) => x.chat_id === s.id).map((x: any) => x.content);
+    expect([mine.length, mine.at(-1), first.seq, first.more, first.complete]).toEqual([40, "row-301", mobile.globalSeq(), false, true]);
   });
 
   test("a sync page is never filled with events the app does not show", async () => {
@@ -178,7 +187,13 @@ describe("chats", () => {
     expect((await call("POST", `/v1/chats/${s.id}/messages`, { text: "look", attachments: [{ id: "f".repeat(64) }] })).status).toBe(400);
     expect(sent).toHaveLength(0);
     expect((await call("POST", `/v1/chats/${s.id}/messages`, { text: "look", attachments: [att] })).status).toBe(200);
-    expect((await call("POST", `/v1/chats/${s.id}/messages`, { text: "", attachments: [att] })).status).toBe(200);
+    const back = await call("POST", `/v1/chats/${s.id}/messages`, { text: "", attachments: [att] });
+    expect(back.status).toBe(200);
+    // The owner's bubble shows the photo it carried: named in the message, served by /v1/media.
+    const shown = back.body.message.meta.attachments[0];
+    expect(shown).toMatchObject({ kind: "image", mime: "image/png" });
+    const img: Response = await routes["/v1/media/:id"].GET(Object.assign(signedRaw("GET", `/v1/media/${shown.media}`, new Uint8Array()), { params: { id: shown.media } }), {});
+    expect(new Uint8Array(await img.arrayBuffer())).toEqual(png);
     expect(sent.map((x) => [x.text, x.opts.images?.[0]?.type, x.opts.images?.[0]?.data === Buffer.from(png).toString("base64")])).toEqual([["look", "image", true], ["", "image", true]]);
   });
 });
@@ -194,6 +209,9 @@ describe("questions", () => {
     const card = (await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.find((a: any) => a.id === "q-call-q");
     expect(card.command).toBe("Build type?\nWhich checks?");
     expect(card.questions.map((q: any) => q.options)).toEqual([["Debug", "Release"], ["Unit", "Integration"]]);
+    // The card has its place in the chat, where the app answers it.
+    const inChat = (await call("GET", `/v1/chats/${s.id}/messages`)).body.messages.find((m: any) => m.kind === "approval");
+    expect(inChat.meta).toMatchObject({ approval_id: "q-call-q", card: "question", state: "pending" });
     // Answers are signed with the approval key over what they say.
     const answer = (body: any, text: string) => {
       const ts = String(Math.floor(Date.now() / 1000));
@@ -264,6 +282,12 @@ describe("run, usage and pulse", () => {
     setSystemTime(new Date("2026-02-01T10:00:50Z"));
     const w = (await call("GET", "/v1/sync?since=0")).body.working.find((x: any) => x.chat_id === s.id);
     expect(Date.now() / 1000 - w.since).toBe(50);
+    // The next turn, before its start is stored: it counts from now, not from the previous turn.
+    store.append(s.id, "turn_end", { reason: "end_turn" });
+    setSystemTime(new Date("2026-02-01T10:02:00Z"));
+    store.append(s.id, "user", { text: "next" });
+    const w2 = (await call("GET", "/v1/sync?since=0")).body.working.find((x: any) => x.chat_id === s.id);
+    expect(Date.now() / 1000 - w2.since).toBe(0);
     running.delete(s.id);
     setSystemTime();
   });
@@ -344,3 +368,43 @@ function signedRaw(method: string, path: string, bytes: Uint8Array<ArrayBuffer>)
   const sig = sign("sha256", Buffer.from(`${method}\n${path}\n${ts}\n${h}`), { key: privateKey, dsaEncoding: "der" }).toString("base64");
   return new Request(`http://x${path}`, { method, body: bytes, headers: { authorization: `Bearer ${dev.token}`, "x-hm-ts": ts, "x-hm-sig": sig } });
 }
+
+describe("pairing", () => {
+  // The app signs every network attempt of its pairing POST with the request
+  // key and names the server in the body (Api.pair, PairSigner).
+  const k2 = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const pub2 = k2.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  async function pair(code: string, signed = true) {
+    const raw = JSON.stringify({ code, device_name: "p", pub: pub2, apub, lock: true, server: "http://x" });
+    const ts = String(Math.floor(Date.now() / 1000));
+    const sig = sign("sha256", Buffer.from(`POST\n/v1/pair\n${ts}\n${sha256Hex(raw)}`), { key: k2.privateKey, dsaEncoding: "der" }).toString("base64");
+    const req: any = new Request("http://x/v1/pair", { method: "POST", body: raw, headers: signed ? { "x-hm-ts": ts, "x-hm-sig": sig } : {} });
+    const res: Response = await routes["/v1/pair"].POST(req, { requestIP: () => ({ address: "10.0.0.9" }) });
+    return { status: res.status, body: await res.json() };
+  }
+  const me = (token: string) => routes["/v1/devices"].GET(Object.assign(signedAs(token, "GET", "/v1/devices"), { params: {} }), {});
+  function signedAs(token: string, method: string, path: string) {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const sig = sign("sha256", Buffer.from(`${method}\n${path}\n${ts}\n${sha256Hex("")}`), { key: k2.privateKey, dsaEncoding: "der" }).toString("base64");
+    return new Request(`http://x${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-hm-ts": ts, "x-hm-sig": sig } });
+  }
+
+  test("a phone that lost the answer pairs again with the same code and keeps one device; a used token ends retries", async () => {
+    const code = mobile.createPairCode(600);
+    const first = await pair(code);
+    expect(first.status).toBe(200);
+    const before = mobile.devices().length;
+    // The answer never arrived: the same code again, signed afresh.
+    const again = await pair(code);
+    expect(again.status).toBe(200);
+    expect(again.body.device_id).toBe(first.body.device_id);
+    expect(mobile.devices().length).toBe(before);
+    expect((await me(first.body.token)).status).toBe(401);
+    // Unsigned, a used code stays used.
+    expect((await pair(code, false)).status).toBe(403);
+    // Once the token has been used, no retry replaces it.
+    expect((await me(again.body.token)).status).toBe(200);
+    expect((await pair(code)).status).toBe(403);
+    expect((await me(again.body.token)).status).toBe(200);
+  });
+});

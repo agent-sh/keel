@@ -8,7 +8,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS mobile_devices (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, pub TEXT NOT NULL, apub TEXT NOT NULL,
   nolock INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0, created_secs REAL NOT NULL, last_seen_secs REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS mobile_pair_codes (code_hash TEXT PRIMARY KEY, expires_secs REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS mobile_pair_codes (code_hash TEXT PRIMARY KEY, expires_secs REAL NOT NULL, device_id TEXT);
 CREATE TABLE IF NOT EXISTS mobile_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS signature_replays (identity TEXT PRIMARY KEY, expires_secs INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS signature_replays_exp ON signature_replays(expires_secs);
@@ -24,6 +24,7 @@ CREATE TRIGGER IF NOT EXISTS event_gseq_del AFTER DELETE ON events BEGIN DELETE 
 
 export type Device = {
   id: string; name: string; pub: string; apub: string; nolock: boolean; revoked: boolean; created: number; last_seen: number;
+  token_used?: boolean;
 };
 export type PushRecord = {
   id: string; device_id: string; kind: string; session_id?: string | null; sent_ms: number; ok: boolean; error?: string | null; acked_ms?: number | null;
@@ -32,9 +33,10 @@ export type PushRecord = {
 
 const nowSecs = () => Date.now() / 1000;
 const rand = (n: number) => crypto.getRandomValues(new Uint8Array(n)).toHex();
-type DevRow = { id: string; name: string; pub: string; apub: string; nolock: number; revoked: number; created_secs: number; last_seen_secs: number };
+type DevRow = { id: string; name: string; pub: string; apub: string; nolock: number; revoked: number; created_secs: number; last_seen_secs: number; token_used: number };
 const toDevice = (r: DevRow): Device => ({
   id: r.id, name: r.name, pub: r.pub, apub: r.apub, nolock: !!r.nolock, revoked: !!r.revoked, created: r.created_secs, last_seen: r.last_seen_secs,
+  token_used: !!r.token_used,
 });
 const toPush = ({ token_hash, ...r }: any): PushRecord => ({ ...r, ok: !!r.ok });
 
@@ -43,6 +45,10 @@ export class MobileStore implements ReplayStore {
     store.migrate(SCHEMA);
     // Which token a push went to: a phone's new registration starts its own record.
     if (!store.db.query("SELECT 1 FROM pragma_table_info('pushes') WHERE name = 'token_hash'").get()) store.migrate("ALTER TABLE pushes ADD COLUMN token_hash TEXT");
+    // A redeemed code names its device until it expires (a pairing retry); a
+    // device's token is marked once it authenticated a request.
+    if (!store.db.query("SELECT 1 FROM pragma_table_info('mobile_pair_codes') WHERE name = 'device_id'").get()) store.migrate("ALTER TABLE mobile_pair_codes ADD COLUMN device_id TEXT");
+    if (!store.db.query("SELECT 1 FROM pragma_table_info('mobile_devices') WHERE name = 'token_used'").get()) store.migrate("ALTER TABLE mobile_devices ADD COLUMN token_used INTEGER NOT NULL DEFAULT 0");
     // Events stored before this table existed get their places in order, once.
     store.db.run("INSERT OR IGNORE INTO event_gseq (event_id) SELECT id FROM events WHERE id NOT IN (SELECT event_id FROM event_gseq) ORDER BY ts, rowid");
   }
@@ -66,23 +72,41 @@ export class MobileStore implements ReplayStore {
   }
 
   pairCodes(): number {
-    return this.db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM mobile_pair_codes WHERE expires_secs >= ?").get(nowSecs())!.n;
+    return this.db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM mobile_pair_codes WHERE expires_secs >= ? AND device_id IS NULL").get(nowSecs())!.n;
   }
 
-  // A code is good once: claiming it deletes it and makes the device.
-  claimPairCode(code: string, name: string, pub: string, apub: string, nolock: boolean): { device_id: string; token: string } | null {
+  // A code is good once: claiming it makes the device. A phone that lost the
+  // answer may ask again with the same code until it expires, and only with
+  // `proven` (it signed this request with the device's own key over a body
+  // naming this server): the same keys get the same device and a new token,
+  // as long as the first token never authenticated a request. Anything else
+  // with a used code fails.
+  claimPairCode(code: string, name: string, pub: string, apub: string, nolock: boolean, proven = false): { device_id: string; token: string; reissued?: boolean } | null {
     const now = nowSecs();
     return this.db.transaction(() => {
       const hash = sha256Hex(code);
-      const row = this.db.query<{ expires_secs: number }, [string]>("SELECT expires_secs FROM mobile_pair_codes WHERE code_hash = ?").get(hash);
-      this.db.query("DELETE FROM mobile_pair_codes WHERE code_hash = ? OR expires_secs < ?").run(hash, now);
+      this.db.query("DELETE FROM mobile_pair_codes WHERE expires_secs < ?").run(now);
+      const row = this.db.query<{ expires_secs: number; device_id: string | null }, [string]>("SELECT expires_secs, device_id FROM mobile_pair_codes WHERE code_hash = ?").get(hash);
       if (!row || row.expires_secs < now) return null;
       const token = rand(32);
+      if (row.device_id) {
+        if (!proven) return null;
+        const n = this.db.query("UPDATE mobile_devices SET token_hash = ?, last_seen_secs = ? WHERE id = ? AND revoked = 0 AND pub = ? AND apub = ? AND token_used = 0")
+          .run(sha256Hex(token), now, row.device_id, pub, apub).changes;
+        return n === 1 ? { device_id: row.device_id, token, reissued: true } : null;
+      }
       const id = `dev_${rand(8)}`;
+      this.db.query("UPDATE mobile_pair_codes SET device_id = ? WHERE code_hash = ?").run(id, hash);
       this.db.query("INSERT INTO mobile_devices (id, name, token_hash, pub, apub, nolock, revoked, created_secs, last_seen_secs) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
         .run(id, name.slice(0, 120), sha256Hex(token), pub, apub, nolock ? 1 : 0, now, now);
       return { device_id: id, token };
     }).immediate();
+  }
+
+  // The token authenticated a request: no pairing retry may replace it now.
+  // Bound to the token, so a request that raced a re-issue marks nothing.
+  markTokenUsed(id: string, token: string): boolean {
+    return this.db.query("UPDATE mobile_devices SET token_used = 1 WHERE id = ? AND token_hash = ? AND revoked = 0").run(id, sha256Hex(token.trim())).changes === 1;
   }
 
   deviceForToken(token: string): Device | null {

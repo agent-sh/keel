@@ -39,6 +39,8 @@ const UNASKED = new Set(["auto-edits", "full-auto"]);
 
 export type MobileCtx = Deps & { mobile: MobileStore; gate: () => Gate | undefined; changed: () => void };
 
+const urlOrigin = (u: string) => { try { return new URL(u).origin; } catch { return null; } };
+
 export function pairLink(base: string, code: string) {
   const q = new URLSearchParams({ u: base.replace(/\/+$/, ""), c: code, n: host() });
   return `hermes://pair?${q.toString().replace(/\+/g, "%20")}`;
@@ -107,6 +109,16 @@ function originOf(e: StoredEvent, titleOf: (sid: string) => string | undefined, 
   return null;
 }
 
+// What a prompt carried, as the app shows it: a photo fetched from /v1/media
+// (stored inline in the prompt, so its id names the event and its place), a
+// file by its stored id.
+const PROMPT_IMAGE = /^img-(\d+)-(.+)$/;
+function promptFiles(e: StoredEvent) {
+  return ((e.data.images ?? []) as any[]).map((b, i) => b.type === "image"
+    ? { kind: "image", media: `img-${i}-${e.id}`, mime: b.media_type }
+    : { kind: "file", media: b.id, mime: b.media_type, file_name: b.name, size: b.size });
+}
+
 export type MessageCtx = { titleOf?: (sid: string) => string | undefined; parentOf?: (sid: string) => string | null };
 
 // One stored event as the app's message, or null for what the app does not show.
@@ -122,7 +134,7 @@ export function messageOf(e: StoredEvent, gseq: number, ctx: MessageCtx = {}) {
   const base = { id: e.kind === "user" && e.data.queue_id ? String(e.data.queue_id) : e.id, chat_id: e.session_id, kind: "text", meta: {} as Record<string, unknown>, ts, seq: gseq };
   if (e.kind === "user") {
     const o = originOf(e, ctx.titleOf ?? (() => undefined), ctx.parentOf ?? (() => null));
-    if (!o) return { ...base, role: "user", content: String(e.data.text ?? ""), meta: e.data.images?.length ? { images: e.data.images.length } : {} };
+    if (!o) return { ...base, role: "user", content: String(e.data.text ?? ""), meta: e.data.images?.length ? { images: e.data.images.length, attachments: promptFiles(e) } : {} };
     if (o.origin === "harness" || o.origin === "goal") return { ...base, role: "agent", kind: "status", content: o.label ? `${o.label}: ${o.text}` : o.text, meta: { origin: o.origin } };
     return { ...base, role: "agent", content: o.label ? `**${o.label}**\n\n${o.text}` : o.text, meta: { origin: o.origin, ...o.meta } };
   }
@@ -139,6 +151,16 @@ export function messageOf(e: StoredEvent, gseq: number, ctx: MessageCtx = {}) {
   return null;
 }
 
+// The tool calls of one model reply as the app's trace row: what ran, one line
+// each. Its own message beside the reply's words, just after them.
+export function traceOf(e: StoredEvent, gseq: number) {
+  if (e.kind !== "assistant") return null;
+  const steps = ((e.data.blocks ?? []) as any[]).filter((b) => b.type === "tool_use").map((b) => ({ tool: String(b.name), what: stepWhat(b.input) ?? "" }));
+  if (!steps.length) return null;
+  const ts = (e.ts + (e.seq % 1000) / 1000 + 0.0005) / 1000;
+  return { id: `${e.id}.tools`, chat_id: e.session_id, role: "agent", kind: "trace", content: steps.map((x) => x.tool).join(", "), meta: { steps }, ts, seq: gseq };
+}
+
 const STATE: Record<string, string> = { pending: "pending", allowed: "approved", denied: "denied", cancelled: "expired" };
 
 export function approvalOf(a: Approval) {
@@ -152,9 +174,11 @@ export function approvalOf(a: Approval) {
   };
 }
 
-const approvalMsg = (a: ReturnType<typeof approvalOf>) => ({
+// The card's place in the chat. It carries the card's state, so a chat read
+// after the card closed never offers a decision on it.
+const approvalMsg = (a: { id: string; chat_id: string; kind: string; command: string; description: string; state: string; ts: number | null }) => ({
   id: `apr-${a.id}`, chat_id: a.chat_id, role: "agent", kind: "approval", content: a.description,
-  meta: { approval_id: a.id, command: a.command, description: a.description }, ts: a.ts, seq: 0,
+  meta: { approval_id: a.id, card: a.kind, command: a.command, description: a.description, state: a.state }, ts: a.ts ?? secs(Date.now()), seq: 0,
 });
 
 export function mobileApi(ctx: MobileCtx) {
@@ -164,11 +188,16 @@ export function mobileApi(ctx: MobileCtx) {
   const allSessions = () => [...store.sessions(), ...store.sessions({ archived: true })];
   // When the running turn started: the phone's elapsed timer counts from it,
   // whatever the turn stored since.
-  const turnStart = (sid: string) => store.db.query<{ t: number | null }, [string]>("SELECT MAX(ts) AS t FROM events WHERE session_id = ? AND kind = 'turn_start'").get(sid)!.t;
-  const since = (s: Session) => secs(turnStart(s.id) ?? s.updated);
+  // A turn that has not stored its start yet (the session just went working)
+  // starts now, not at the previous turn's start.
+  const turnBounds = (sid: string) => store.db.query<{ st: number | null; en: number | null }, [string]>(
+    "SELECT MAX(CASE WHEN kind = 'turn_start' THEN ts END) AS st, MAX(CASE WHEN kind = 'turn_end' THEN ts END) AS en FROM events WHERE session_id = ?").get(sid)!;
+  const since = (s: Session) => { const b = turnBounds(s.id); return secs(b.st !== null && (b.en === null || b.st > b.en) ? b.st : s.updated); };
   const working = () => store.sessions().filter((s) => engine.isRunning(s.id)).map((s) => ({ chat_id: s.id, since: since(s) }));
   const msgCtx: MessageCtx = { titleOf: (sid) => store.session(sid)?.title, parentOf: (sid) => store.session(sid)?.parent_id ?? null };
   const toMsg = (e: StoredEvent, gseq: number) => messageOf(e, gseq, msgCtx);
+  // Everything one event shows on the phone: its words, then its tool calls.
+  const msgsOf = (e: StoredEvent, gseq: number): any[] => [toMsg(e, gseq), traceOf(e, gseq)].filter(Boolean);
   // The newest message of the shown branch, walking back from the head.
   function preview(s: Session): ChatExtra["preview"] {
     let id = s.head;
@@ -180,6 +209,20 @@ export function mobileApi(ctx: MobileCtx) {
       id = e.parent;
     }
     return null;
+  }
+  // The newest messages of a chat's shown branch, walking back from its head:
+  // what a phone starting from nothing gets per chat. The rest comes by paging.
+  const FIRST_PAGE = 40;
+  function recent(s: Session) {
+    const out: any[] = [];
+    let id = s.head;
+    for (let i = 0; id && i < FIRST_PAGE * 10 && out.length < FIRST_PAGE; i++) {
+      const e = store.event(id);
+      if (!e) break;
+      out.unshift(...msgsOf(e, mobile.gseqOf(e.id)));
+      id = e.parent;
+    }
+    return out;
   }
   const unread = () => { try { return alerts.unreadCounts().sessions; } catch { return {} as Record<string, number>; } };
   const chatFull = (s: Session, u = unread()) => chatOf(s, lastSeq(s.id), { unread: u[s.id] ?? 0, preview: preview(s) });
@@ -232,6 +275,8 @@ export function mobileApi(ctx: MobileCtx) {
     const r = await checkAndClaim(req.headers.get("x-hm-sig") ?? "", dev.pub, msg, ts, "request", nowSecs(), mobile);
     if (r === "rejected") return err("bad signature", 401);
     if (r === "store_unavailable") return err("signature store is busy; try again", 503);
+    // The token's first use: from now on a pairing retry may not replace it.
+    if (!dev.token_used && !mobile.markTokenUsed(dev.id, auth.replace(/^bearer\s+/i, ""))) return err("unauthorized", 401);
     return h(req, dev, body, srv);
   };
   const parse = (b: Uint8Array): any => {
@@ -255,17 +300,26 @@ export function mobileApi(ctx: MobileCtx) {
     const now = nowSecs();
     const source = requestSource(req.headers, srv.requestIP(req)?.address ?? null);
     if (limiter.blocked(source, now)) return err("too many attempts", 429);
-    const b: any = await req.json().catch(() => ({}));
+    const raw = new Uint8Array(await req.arrayBuffer());
+    const b: any = parse(raw) ?? {};
     const [p, a] = await Promise.all([loadSpki(String(b?.pub ?? "")), loadSpki(String(b?.apub ?? ""))]);
     if (!p || !a) return err("device keys required (P-256 SPKI, base64)", 400);
     // The approval key stands for a biometric check; it must not be the request key.
     if (p.spki.toBase64() === a.spki.toBase64()) return err("the approval key must differ from the request key", 400);
-    const got = mobile.claimPairCode(String(b.code ?? ""), String(b.device_name ?? "phone"), b.pub, b.apub, b.lock === false);
+    // A retry of a redeemed code (the phone lost the answer) must prove the
+    // request key with the canonical request signature, claimed once in its own
+    // scope, over a body that names this server: a server the phone was lured to
+    // cannot relay its retry here. A first claim needs none.
+    const ts = req.headers.get("x-hm-ts") ?? "", sig = req.headers.get("x-hm-sig") ?? "";
+    const here = urlOrigin(mobile.setting("public_url") ?? new URL(req.url).origin);
+    const proven = !!sig && !!here && urlOrigin(String(b.server ?? "")) === here
+      && (await checkAndClaim(sig, String(b.pub), canonicalMessage(req.method, new URL(req.url).pathname, ts, raw), ts, "pair", now, mobile)) === "valid";
+    const got = mobile.claimPairCode(String(b.code ?? ""), String(b.device_name ?? "phone"), b.pub, b.apub, b.lock === false, proven);
     if (!got) {
       limiter.fail(source, now);
       return err("invalid or expired code", 403);
     }
-    ctx.changed();
+    if (!got.reissued) ctx.changed();
     return json({ device_id: got.device_id, token: got.token, cf: {}, server: { name: host(), profile: "keel" } });
   }
 
@@ -335,16 +389,35 @@ export function mobileApi(ctx: MobileCtx) {
             try {
               if (f.t === "event") {
                 const gseq = mobile.gseqOf(f.event.id);
-                const m = toMsg(f.event, gseq);
                 const s = store.session(f.event.session_id);
-                if (m) send({ type: "message", seq: gseq, message: m, chat: s ? chatFull(s) : null });
+                for (const m of msgsOf(f.event, gseq)) send({ type: "message", seq: gseq, message: m, chat: s ? chatFull(s) : null });
                 // A question answered elsewhere: its card closes on the phone too.
                 if (f.event.kind === "tool_result") {
                   const ids = new Set(((f.event.data.results ?? []) as any[]).map((r) => r.tool_use_id));
                   for (const c of closedCards(f.event.ts - 60_000)) if (c.kind === "question" && ids.has(c.id.slice(2))) send({ type: "approval", seq: gseq, approval: c });
                 }
               } else if (f.t === "delta" && f.kind === "text") send({ type: "delta", chat_id: f.session_id, delta: f.text });
-              else if (f.t === "session") send({ type: "working", chat_id: f.session.id, working: f.session.phase === "working", since: since(f.session) });
+              else if (f.t === "session") {
+                // Gone on the desktop: the phone drops it. Renamed, archived or
+                // pinned there: the phone's row follows without a sync.
+                if (f.deleted) send({ type: "chat_removed", chat_id: f.session.id, seq: mobile.globalSeq() });
+                else {
+                  const s = store.session(f.session.id);
+                  if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
+                  send({ type: "working", chat_id: f.session.id, working: f.session.phase === "working", since: since(f.session) });
+                }
+              }
+              else if (f.t === "feature" && f.name === "automation" && f.data?.kind === "alert" && f.data.data?.kind === "question" && !f.data.data.read && f.data.data.data?.call_id) {
+                // A question raised: its card reaches the phone now, not at the next sync.
+                const a = f.data.data;
+                if (closedQuestions(0).some((q) => q.call_id === a.data.call_id)) return;
+                const s = store.session(a.data.open_session ?? a.session_id);
+                if (s) {
+                  const q = questionCard(s, a.data.call_id);
+                  send({ type: "approval", seq: mobile.globalSeq(), approval: q });
+                  send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(q) });
+                }
+              }
               else if (f.t === "feature" && f.name === "approval") {
                 const a = approvalOf(f.data as Approval);
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });
@@ -374,10 +447,11 @@ export function mobileApi(ctx: MobileCtx) {
     const all = store.events(s.id);
     const line = lineage(all, s.head);
     const on = new Set(line.map((e) => e.id));
-    const msgs: any[] = line.map((e) => toMsg(e, mobile.gseqOf(e.id))).filter(Boolean);
+    const msgs: any[] = line.flatMap((e) => msgsOf(e, mobile.gseqOf(e.id)));
     for (const a of ctx.gate()?.approvals({ session: s.id }) ?? []) msgs.push(approvalMsg(approvalOf(a)));
+    for (const q of questions(s.id)) msgs.push(approvalMsg(q));
     msgs.sort((x, y) => x.ts - y.ts);
-    const off = all.filter((e) => !on.has(e.id)).map((e) => toMsg(e, 0)).filter(Boolean)
+    const off = all.filter((e) => !on.has(e.id)).flatMap((e) => msgsOf(e, 0))
       .map((m: any) => ({ ...m, kind: "deleted", content: "", meta: { branch: "not shown" } }));
     const before = q.get("before");
     const limit = Math.max(1, Math.min(1000, Number(q.get("limit")) || 150));
@@ -454,18 +528,23 @@ export function mobileApi(ctx: MobileCtx) {
     "/v1/sync": {
       GET: signed((req) => {
         const since = Math.max(0, Number(new URL(req.url).searchParams.get("since")) || 0);
-        // A page holds events the app shows, so a run of tool rounds and notes
-        // never fills a page with nothing to show (the app reads one page per sync).
-        const page = mobile.eventsAfter(since, SYNC_PAGE, SHOWN_KINDS);
+        // From nothing: every chat with its newest page, at the current cursor.
+        // After a cursor: a page of events the app shows, so a run of tool rounds
+        // and notes never fills a page with nothing to show.
+        const head = since === 0 ? mobile.globalSeq() : 0;
+        const page = since === 0 ? [] : mobile.eventsAfter(since, SYNC_PAGE, SHOWN_KINDS);
         const more = page.length === SYNC_PAGE;
-        const seq = more ? page.at(-1)!.gseq : Math.max(since, mobile.globalSeq());
+        const seq = since === 0 ? head : more ? page.at(-1)!.gseq : Math.max(since, mobile.globalSeq());
         const u = unread();
+        const all = allSessions();
         // Cards that closed since the cursor's time, or within a push's lifetime.
         const from = Math.min(Date.now() - 15 * 60_000, since ? (mobile.tsOfGseq(since) ?? 0) : Infinity);
+        // `complete`: the chats are every chat there is, so the app drops the
+        // ones it holds that are not among them (deleted on the desktop).
         return json({
-          seq, more,
-          chats: allSessions().map((s) => chatFull(s, u)),
-          messages: page.map((e) => toMsg(e, e.gseq)).filter(Boolean),
+          seq, more, complete: true,
+          chats: all.map((s) => chatFull(s, u)),
+          messages: since === 0 ? all.flatMap(recent) : page.flatMap((e) => msgsOf(e, e.gseq)),
           approvals: [...pendingApprovals(), ...closedCards(from)],
           working: working(),
         });
@@ -588,6 +667,12 @@ export function mobileApi(ctx: MobileCtx) {
     },
     "/v1/media/:id": {
       GET: signed((req) => {
+        const inline = PROMPT_IMAGE.exec(req.params.id!);
+        if (inline) {
+          const b = store.event(inline[2]!)?.data.images?.[Number(inline[1])];
+          if (b?.type !== "image") return err("no such file", 404);
+          return new Response(Buffer.from(b.data, "base64"), { headers: { "content-type": b.media_type, "x-content-type-options": "nosniff" } });
+        }
         const path = attachmentPath(req.params.id!);
         if (!path) return err("no such file", 404);
         return new Response(readFileSync(path), { headers: { "content-type": Bun.file(path).type || "application/octet-stream", "x-content-type-options": "nosniff" } });

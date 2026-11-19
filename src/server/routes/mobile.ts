@@ -7,6 +7,7 @@ import * as push from "../../integrations/mobile/push.ts";
 import { MobileStore } from "../../integrations/mobile/store.ts";
 import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
 import type { Deps, RouteModule } from "../app.ts";
+import { addAllowedHosts } from "../admission.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
 import { gate } from "./permissions.ts";
 
@@ -31,6 +32,12 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
   const mobile = new MobileStore(store);
   const changed = () => bus.emit({ t: "feature", name: "mobile", data: { changed: true } });
+  // The address the owner gave for the phone (in a pair link) is this daemon's
+  // own name to the phone: requests that name it pass the Host check.
+  addAllowedHosts(() => {
+    const u = mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL;
+    try { return u ? [new URL(u).host] : []; } catch { return []; }
+  });
 
   const deviceRows = () => mobile.devices().map(({ pub, apub, ...d }) => ({ ...d, push: mobile.pushStatus(d.id) }));
 
