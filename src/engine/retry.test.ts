@@ -14,6 +14,8 @@ test("passing failures retry, the rest fail at once", () => {
 test("retry-after wins over the exponential wait", () => {
   expect(backoffMs(0, { headers: new Headers({ "retry-after": "7" }) })).toBe(7000);
   expect(backoffMs(0, { headers: new Headers({ "retry-after-ms": "1500" }) })).toBe(1500);
+  // A long wait is kept as asked (the engine then ends the turn instead of retrying early).
+  expect(backoffMs(0, { headers: new Headers({ "retry-after": "900" }) })).toBe(900_000);
   const w = backoffMs(10);
   expect(w).toBeGreaterThanOrEqual(24_000);
   expect(w).toBeLessThanOrEqual(40_000);

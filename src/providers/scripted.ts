@@ -28,6 +28,7 @@ export class ScriptedProvider implements Provider {
   readonly label = "Scripted (test)";
   readonly family = "other" as const;
   private seen = new Map<string, number>();
+  private paused = new Map<string, string>();
 
   available() {
     return scriptedEnabled();
@@ -45,7 +46,8 @@ export class ScriptedProvider implements Provider {
     const msgs = req.messages;
     const last = msgs.at(-1);
     const lastText = textOf(last);
-    const key = `${req.sessionKey}:${req.model}:${msgs.length}:${lastText.slice(0, 200)}`;
+    // A retry is the same request: system, messages, tools, model and effort, byte for byte.
+    const key = String(Bun.hash(JSON.stringify([req.sessionKey, req.model, req.effort, req.system, msgs, req.tools.map((t) => t.name)])));
     const attempt = this.seen.get(key) ?? 0;
     this.seen.set(key, attempt + 1);
     // Everything but the newest message counts as read from cache.
@@ -77,6 +79,8 @@ export class ScriptedProvider implements Provider {
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
     switch (scenario) {
+      case "rate-limit-long":
+        throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 15 min", 429, 15 * 60_000);
       case "rate-limit":
         if (attempt === 0) throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 4 s", 429, 4_000);
         return reply("Answered after the rate limit passed.");
@@ -94,10 +98,21 @@ export class ScriptedProvider implements Provider {
         return reply("The whole reply, after the dropped stream.");
       case "cut":
         if (lastText.includes("[harness] Your last reply was cut off")) return reply("Part two, continued after the cut.");
-        return reply("Part one of a long answer.", "max_tokens", [{ type: "tool_use", id: `cut-${msgs.length}`, name: "Bash", input: { command: "echo half" } }]);
-      case "pause":
-        if (last?.role === "assistant") return reply("Resumed after the pause.");
+        // A whole call, then one the limit cut (its input still parses): only the first runs.
+        return reply("Part one of a long answer.", "max_tokens", [
+          { type: "tool_use", id: `whole-${msgs.length}`, name: "Bash", input: { command: "echo first-ran" } },
+          { type: "tool_use", id: `cut-${msgs.length}`, name: "Bash", input: { command: "echo cut-ran" } },
+        ]);
+      case "pause": {
+        // The continuation is the paused request plus the paused reply, as it was.
+        const sent = JSON.stringify(msgs.slice(0, -1));
+        if (last?.role === "assistant") {
+          const ok = this.paused.get(req.sessionKey ?? "") === sent && textOf(last) === "Paused at a server tool.";
+          return reply(ok ? "Resumed after the pause." : "The continuation did not carry the paused reply.");
+        }
+        this.paused.set(req.sessionKey ?? "", JSON.stringify(msgs));
         return reply("Paused at a server tool.", "pause_turn");
+      }
       case "refuse": {
         const r = await reply("I will not");
         return { ...r, stop: "refusal", stop_details: { category: "cyber", explanation: "Scripted refusal for the test." } };

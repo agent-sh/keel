@@ -7,7 +7,6 @@
 // the last request already used.
 import type { StoredEvent } from "../core/types.ts";
 import type { ModelInfo, Wire } from "../providers/types.ts";
-import { contextTokens } from "./compact.ts";
 
 // Anthropic's default cache lifetime, measured from the start of the request;
 // OpenAI keeps a prefix for 5 to 10 minutes of inactivity. The shorter one.
@@ -52,8 +51,11 @@ export function switchWarning(o: {
   const started = events[li - 1]?.ts ?? last.ts;
   const warmUntil = started + CACHE_TTL_MS;
   const u = last.data.usage;
-  const cached = u.input + u.cache_read + u.cache_write;
-  if (o.now >= warmUntil) return { cached_tokens: 0, warning: null };
+  // Only what the provider reported reading from or writing to its cache: a
+  // prompt below its caching minimum, or a route that reports nothing, has no
+  // prefix to lose.
+  const cached = u.cache_read + u.cache_write;
+  if (o.now >= warmUntil || !cached) return { cached_tokens: 0, warning: null };
   let effort: string | undefined;
   for (let i = li; i >= 0; i--) if (events[i]!.kind === "turn_start") { effort = events[i]!.data.effort; break; }
 
@@ -68,7 +70,8 @@ export function switchWarning(o: {
     certain = o.toWire === "anthropic_messages";
   }
   if (!cause) return { cached_tokens: cached, warm_until: warmUntil, warning: null };
-  const tokens = contextTokens(events).used;
+  // The reusable prefix is what loses its cache; what was added since is new input either way.
+  const tokens = cached;
   const rate = o.to.price ? o.to.price.cache_write ?? o.to.price.input : undefined;
   const readRate = o.from?.price?.cache_read;
   return {

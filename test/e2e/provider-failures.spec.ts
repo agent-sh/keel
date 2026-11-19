@@ -23,6 +23,8 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
 
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN } })).json();
+  // The cut-call case runs a command; approvals have their own e2e.
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   await page.goto(`/s/${session.id}`);
   const composer = page.getByTestId("composer");
   const texts = page.getByTestId("assistant-text");
@@ -56,12 +58,15 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await expect(texts.last()).toHaveText("The whole reply, after the dropped stream.", { timeout: 15_000 });
   await expect(page.getByTestId("transcript")).not.toContainText("This half reply");
 
-  // Cut at the output limit inside a tool call: the cut call is dropped and the
-  // turn goes on after a harness note, in the same turn.
+  // Cut at the output limit inside a tool call: the whole call before it runs,
+  // the cut one is kept but never run, and the turn goes on after a harness note.
   await send(page, "script:cut", 5);
   await expect(page.getByTestId("harness-note").last()).toContainText("cut off at the output limit");
   await expect(texts.last()).toHaveText("Part two, continued after the cut.");
-  await expect(page.getByTestId("tool-call")).toHaveCount(0);
+  await expect(page.getByTestId("tool-call")).toHaveCount(2);
+  const results = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results);
+  expect(results.find((r: any) => r.tool_use_id.startsWith("whole-")).content).toContain("first-ran");
+  expect(results.find((r: any) => r.tool_use_id.startsWith("cut-")).content).toContain("Not run: this call was cut at the output limit");
 
   // pause_turn: the same request goes on, one turn, two replies.
   await send(page, "script:pause", 6);
@@ -69,8 +74,14 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await expect(texts.last()).toHaveText("Resumed after the pause.");
   await shoot(page, "failures-02-continued");
 
+  // A provider that asks to wait longer than a turn waits: no early retry, the
+  // turn ends with the time it named.
+  await send(page, "script:rate-limit-long", 7);
+  await expect(page.getByTestId("turn-error").last()).toContainText(/asked to wait until \d\d:\d\d/);
+  await expect(page.getByTestId("turn-end").last()).toContainText("Failed");
+
   // A refusal: the card with the category and explanation, then a retry on another listed model.
-  await send(page, "script:refuse", 7);
+  await send(page, "script:refuse", 8);
   const card = page.getByTestId("refusal");
   await expect(card).toContainText("The model declined this request");
   await expect(card).toContainText("cyber");
@@ -82,7 +93,7 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await page.getByRole("option", { name: /Scripted backup/ }).first().click();
   await card.getByRole("button", { name: "Retry on it" }).click();
   await expect(texts.last()).toHaveText("The backup model took the request.", { timeout: 15_000 });
-  await expect(page.getByTestId("turn-end")).toHaveCount(8);
+  await expect(page.getByTestId("turn-end")).toHaveCount(9);
 
   // A new session for the window: a request too long compacts and goes on.
   const { session: s2 } = await (await request.post("/api/sessions", { data: { model: STAND_IN } })).json();
@@ -121,7 +132,7 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   // (a kind of failure is one row with a count); the second failed nothing.
   const errors = (await (await request.get("/api/errors")).json()).errors;
   const mine = errors.filter((e: any) => e.session_id === session.id);
-  expect(mine.map((e: any) => e.message).sort()).toEqual(["Scripted: 429 rate limited, retry after 4 s", "Scripted: 529 overloaded", "Scripted: the stream broke"]);
+  for (const m of ["Scripted: 429 rate limited, retry after 4 s", "Scripted: 529 overloaded", "Scripted: the stream broke"]) expect(mine.map((e: any) => e.message)).toContain(m);
   for (const e of mine) expect(e.source).toBe("provider");
   expect(errors.filter((e: any) => e.session_id === s2.id)).toEqual([]);
 });

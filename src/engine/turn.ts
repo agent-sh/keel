@@ -15,10 +15,13 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { checkpointAt, COMPACT_SHARE, contextTokens, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
-import { RETRY, backoffMs, errorText, retryable, sleep } from "./retry.ts";
+import { RETRY, RETRY_WAIT_MAX_MS, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
 // What the model is told about a tool call a daemon restart cut.
 export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
+
+// What the model is told about a tool call cut by the output limit.
+export const CUT_CALL = "Not run: this call was cut at the output limit, so its input may be incomplete. Send it again whole if it is still needed.";
 
 // A reply cut by the output limit is continued this many times in a row, then
 // the turn ends and says so.
@@ -330,12 +333,14 @@ export class Engine {
   // One provider call with retries for passing failures. The UI is told about
   // each wait and the half-streamed reply of a failed attempt is dropped.
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false): Promise<ProviderResult> {
+    // Built once: a retry sends the same request, byte for byte (the hooks run
+    // once, so a note a hook stored is in every attempt).
+    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
+    for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+    // What the model can read, applied after the hooks (a hook may rebuild the messages).
+    req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
     for (let attempt = 0; ; attempt++) {
       partial.clear();
-      let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
-      for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
-      // What the model can read, applied after the hooks (a hook may rebuild the messages).
-      req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
       if (!quiet) this.status(id, { kind: "model", since: Date.now(), model: st.info.name });
       let first = true;
       try {
@@ -352,6 +357,10 @@ export class Engine {
         if (signal.aborted) throw abortError();
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
         const wait = backoffMs(attempt, e);
+        if (wait > RETRY_WAIT_MAX_MS) {
+          const at = new Date(Date.now() + wait).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+          throw Object.assign(new Error(`${errorText(e)} (the provider asked to wait until ${at}, longer than a turn waits; Continue after that)`), { name: "RetryTooLong" });
+        }
         this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait });
         this.status(id, { kind: "retry", attempt: attempt + 1, max: RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
         await sleep(wait, signal);
@@ -434,18 +443,21 @@ export class Engine {
           break;
         }
 
-        let blocks: AssistantBlock[] = res.blocks;
-        if (res.stop === "max_tokens" && blocks.at(-1)?.type === "tool_use") blocks = blocks.slice(0, -1); // its input was cut
+        const blocks: AssistantBlock[] = res.blocks;
+        // At the output limit the last tool call may be cut, even when its input
+        // parses: it is kept (its id stays paired) but never run.
+        const cut = res.stop === "max_tokens" && blocks.at(-1)?.type === "tool_use" ? (blocks.at(-1) as ToolUseBlock) : undefined;
         this.append(id, "assistant", { blocks, model: st.info.id, usage: u, stop: res.stop });
 
         if (res.stop === "model_context_window_exceeded") {
           await this.compactNow(id, { auto: true, signal, step: st });
           continue;
         }
-        const uses = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use");
-        if (uses.length) {
-          this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
+        const uses = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use" && b !== cut);
+        if (uses.length || cut) {
+          if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const results = await Promise.all(uses.map((u) => this.runTool(session, st.tools, u, ctx)));
+          if (cut) results.push({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           this.append(id, "tool_result", { results });
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
@@ -621,15 +633,16 @@ export class Engine {
       if (cut.length) this.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: RESTART_CUT, is_error: true })) });
       this.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true });
     }
-    for (const s of this.store.sessions()) {
+    // Each session on its own: a provider still starting holds only its sessions.
+    await Promise.all(this.store.sessions().map(async (s) => {
       const line = this.lineage(s.id);
       const end = line.at(-1);
-      if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") continue;
+      if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;
       // The prompt that started the cut turn.
       const prompt = line.slice(0, line.findLastIndex((e) => e.kind === "turn_start")).findLast((e) => e.kind === "user");
       if (prompt?.data.origin === "restart") {
         this.append(s.id, "note", { kind: "restart", text: "The daemon restarted again during the continued turn. Continue when you want it to go on." });
-        continue;
+        return;
       }
       const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => r.content === RESTART_CUT) : [])).length;
       try {
@@ -637,16 +650,18 @@ export class Engine {
       } catch (e) {
         const rec = this.errors.capture("provider", e, { session: s.id, at: "resume after restart" });
         this.append(s.id, "note", { kind: "restart", text: `The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.` });
-        continue;
+        return;
       }
-      if (this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) continue; // the owner moved on meanwhile
+      // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
+      const now = this.store.session(s.id);
+      if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
       this.append(s.id, "user", {
         origin: "restart",
         text: `[harness] The daemon restarted during your previous turn${cutTools ? `; ${cutTools} tool call${cutTools > 1 ? "s" : ""} it cut ${cutTools > 1 ? "are" : "is"} marked as interrupted` : ""}. Continue where it left off.`,
       });
       this.start(s.id);
       this.emitQueue(s.id);
-    }
+    }));
   }
 
   // One answer outside the history (a side question): the session's own model,

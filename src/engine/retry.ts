@@ -4,6 +4,9 @@
 // harnesses (see research/loop-and-turns.md): base 0.5 s doubling to a 32 s cap,
 // 10 attempts, and a provider's retry-after wins when it sends one.
 export const RETRY = { max: 10, baseMs: 500, capMs: 32_000 };
+// The longest a turn waits for one retry. A provider that asks for longer is
+// not retried sooner than it said: the turn ends with the time it named.
+export const RETRY_WAIT_MAX_MS = 5 * 60_000;
 
 const RETRY_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
 const PASSING = /overloaded|rate.?limit|terminated|econnreset|econnrefused|etimedout|socket|network|stream (ended|closed)|premature close|fetch failed|timed? ?out|internal server error|service unavailable/i;
@@ -39,7 +42,7 @@ export function retryAfterMs(e: unknown): number | undefined {
 
 export function backoffMs(attempt: number, e?: unknown): number {
   const asked = retryAfterMs(e);
-  if (asked !== undefined) return Math.min(asked, 5 * 60_000);
+  if (asked !== undefined) return asked;
   const exp = Math.min(RETRY.capMs, RETRY.baseMs * 2 ** attempt);
   return Math.round(exp * (0.75 + Math.random() * 0.5));
 }
