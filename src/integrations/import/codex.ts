@@ -73,12 +73,41 @@ const parseArgs = (a: any) => {
 
 const COMPACTED = "Starts at Codex's last compaction: the history it kept is where this begins.";
 
+// A call's tool by namespace and name, the way Keel names the same tool
+// (mcp__<server>__<tool>): two servers' "lookup" stay two tools. A name
+// already qualified, or a namespace naming the tool itself, is kept as is.
+export const qualified = (name: string, namespace?: unknown) =>
+  typeof namespace !== "string" || !namespace || name === namespace || name.startsWith(`${namespace}__`) ? name : `${namespace}__${name}`;
+
+const UNAVAILABLE = "[unavailable: encrypted in the source]";
+
+// Tool definitions as Codex declared or loaded them (namespaces of functions,
+// plain functions), written out as they were. History only: the live catalog
+// and the gate decide what exists and what may run.
+function toolLines(tools: unknown): string[] {
+  const one = (t: any, ns?: string): string[] => {
+    if (t?.type === "namespace" && Array.isArray(t.tools)) return [`${t.name}${t.description ? ` (${t.description})` : ""}:`, ...t.tools.flatMap((x: any) => one(x, t.name))];
+    const name = typeof t?.name === "string" ? qualified(t.name, ns) : String(t?.type ?? "tool");
+    const schema = t?.parameters ?? t?.format;
+    return [`${ns ? "  " : ""}- ${name}${t?.description ? `: ${t.description}` : ""}${schema ? ` ${JSON.stringify(schema)}` : ""}`];
+  };
+  return (Array.isArray(tools) ? tools : []).flatMap((t) => one(t));
+}
+
+const HISTORY_ONLY = "Shown as they were then; history only, not tools available now.";
+
 export async function readCodex(path: string): Promise<Read> {
   const st = statSync(path);
   const found = codexFound(path, st.size, st.mtimeMs);
   if (!found) throw new Error("this rollout holds no conversation");
   const b = new Builder();
   const notes: string[] = [];
+  // Why each skipped item was left out, counted per reason for the report.
+  const skips = new Map<string, number>();
+  const skip = (why: string) => { b.counts.skipped++; skips.set(why, (skips.get(why) ?? 0) + 1); };
+  // A native tool search, kept as a note for the model: its query, then the
+  // tools its answer loaded (by call id).
+  const searches = new Map<string, { data: any }>();
   let model = found.model;
   const lines = readLines(await Bun.file(path).text());
   for (const r of lines.records) {
@@ -101,7 +130,7 @@ export async function readCodex(path: string): Promise<Read> {
       case "message": {
         const text = textOf(p.content);
         if (p.role === "user") {
-          if (injected(text)) { if (/^\s*<turn_aborted>/.test(text)) b.interrupted(); b.counts.skipped++; break; }
+          if (injected(text)) { if (/^\s*<turn_aborted>/.test(text)) b.interrupted(); skip("Codex's own context in a user message (environment, instructions, notices)"); break; }
           // A note Keel wrote for the model: read back as a note, never as the owner's words.
           if (text.startsWith(`${NOTE_OPEN}\n`) && text.trimEnd().endsWith(NOTE_CLOSE)) { b.note(text.slice(NOTE_OPEN.length + 1, text.trimEnd().length - NOTE_CLOSE.length).replace(/\n$/, ""), ts, true); break; }
           const images = (p.content ?? []).filter((c: any) => c?.type === "input_image" && typeof c.image_url === "string" && c.image_url.startsWith("data:")).map((c: any) => {
@@ -110,15 +139,44 @@ export async function readCodex(path: string): Promise<Read> {
           });
           b.user(text, ts, images);
         } else if (p.role === "assistant" && text.trim()) b.assistant([{ type: "text", text }], ts, model);
-        else b.counts.skipped++; // developer and system messages are Codex's own setup
+        else if (p.role === "assistant" && p.encrypted_content) b.assistant([{ type: "text", text: UNAVAILABLE }], ts, model);
+        else if (p.role === "assistant") skip("an empty assistant message");
+        else skip("developer and system messages (Codex's own setup)");
+        break;
+      }
+      case "agent_message": {
+        // Another agent's message (a child reporting to its parent): agent
+        // context, labelled with who wrote it, never the owner's words.
+        const parts = Array.isArray(p.content) ? p.content : [];
+        const text = parts.map((c: any) => (c?.type === "encrypted_content" ? UNAVAILABLE : c?.text ?? "")).join("\n").trim();
+        b.note(`Agent message from ${p.author || "an agent"} to ${p.recipient || "an agent"} (another agent's words, not the owner's):\n${text || UNAVAILABLE}`, ts, true);
+        break;
+      }
+      case "additional_tools":
+        b.note([`Tools Codex declared to the model here. ${HISTORY_ONLY}`, ...toolLines(p.tools)].join("\n"), ts, true);
+        break;
+      case "tool_search_call": {
+        const a = typeof p.arguments === "string" ? parseArgs(p.arguments) : p.arguments ?? {};
+        const ask = p.encrypted_content && !a.query ? UNAVAILABLE : `"${a.query ?? ""}"${a.limit ? ` (limit ${a.limit})` : ""}`;
+        b.note(`Codex searched its deferred tools for ${ask}.`, ts, true);
+        if (p.call_id) searches.set(p.call_id, b.events[b.events.length - 1]!);
+        break;
+      }
+      case "tool_search_output": {
+        const lines = toolLines(p.tools);
+        const loadedText = lines.length ? [`The search loaded these tools. ${HISTORY_ONLY}`, ...lines].join("\n") : "The search loaded no tools.";
+        const asked = p.call_id ? searches.get(p.call_id) : undefined;
+        if (asked) { asked.data.text += `\n${loadedText}`; searches.delete(p.call_id); }
+        else b.note(`Codex's deferred tool search answered. ${loadedText}`, ts, true);
         break;
       }
       case "function_call":
       case "custom_tool_call":
       case "local_shell_call": {
-        const input = p.type === "function_call" ? parseArgs(p.arguments) : p.type === "custom_tool_call" ? { input: p.input } : { command: p.action?.command };
-        const name = p.type === "local_shell_call" ? "shell" : p.name;
-        if (!name || !p.call_id) { b.counts.skipped++; break; }
+        const encrypted = p.type === "function_call" && !p.arguments && Array.isArray(p.encrypted_function_args) && p.encrypted_function_args.length;
+        const input = encrypted ? { arguments: UNAVAILABLE } : p.type === "function_call" ? parseArgs(p.arguments) : p.type === "custom_tool_call" ? { input: p.input } : { command: p.action?.command };
+        const name = p.type === "local_shell_call" ? "shell" : typeof p.name === "string" && p.name ? qualified(p.name, p.namespace) : undefined;
+        if (!name || !p.call_id) { skip("a tool call with no name or call id"); break; }
         b.assistant([{ type: "tool_use", id: p.call_id, name, input }], ts, model);
         break;
       }
@@ -135,10 +193,11 @@ export async function readCodex(path: string): Promise<Read> {
         b.counts.thoughts_dropped++;
         break;
       default:
-        b.counts.skipped++;
+        skip(`items of a kind Keel does not import (${p.type ?? "untyped"})`);
     }
   }
   notes.push(...damageNotes(lines));
+  for (const [why, n] of skips) notes.push(`${n} skipped: ${why}.`);
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} reasoning item${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: encrypted for the model that wrote them.`);
   return { found, events: b.events, counts: b.counts, notes };
 }

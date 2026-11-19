@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { requestText } from "./agy.ts";
 import { readClaude } from "./claude.ts";
 import { damageNotes, readLines } from "./files.ts";
+import { readCodex } from "./codex.ts";
 import { readKeel } from "./keel.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-import-"));
@@ -76,4 +77,38 @@ test("a Hermes call left without a result is closed as failed; its notices are n
   expect(results.map((x: any) => [x.tool_use_id, !!x.is_error])).toEqual([["c1", false], ["c2", true]]);
   expect(r.events.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["list the files"]);
   expect(r.events.some((e) => e.kind === "note" && e.data.text === "background job finished")).toBe(true);
+});
+
+test("a Codex rollout keeps namespaced tools apart and its discovery, agent and declared-tool items as history", async () => {
+  const call = (id: string, name: string, namespace?: string, custom = false) => custom
+    ? [{ type: "custom_tool_call", call_id: id, name, namespace, input: "patch" }, { type: "custom_tool_call_output", call_id: id, output: "ok" }]
+    : [{ type: "function_call", call_id: id, name, namespace, arguments: "{}" }, { type: "function_call_output", call_id: id, output: "ok" }];
+  const fns = [{ type: "namespace", name: "mcp__alpha", description: "Alpha", tools: [{ type: "function", name: "lookup", description: "Finds", parameters: { type: "object", properties: { q: { type: "string" } } } }] }];
+  const read = async (name: string, items: any[]) => {
+    const p = join(dir, `rollout-${name}.jsonl`);
+    const rec = (type: string, payload: any) => JSON.stringify({ timestamp: new Date().toISOString(), type, payload });
+    writeFileSync(p, [rec("session_meta", { id: name, cwd: dir }), rec("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }), ...items.map((i) => rec("response_item", i))].join("\n") + "\n");
+    const r = await readCodex(p);
+    return { ...r, calls: r.events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks : [])).filter((b: any) => b.type === "tool_use").map((b: any) => `${b.id}:${b.name}`), said: r.events.filter((e) => e.kind === "note").map((e) => e.data.text).join("\n") };
+  };
+  expect((await read("flat", [...call("a", "mcp__alpha__lookup"), ...call("b", "mcp__beta__lookup")])).calls).toEqual(["a:mcp__alpha__lookup", "b:mcp__beta__lookup"]);
+  expect((await read("ns", [...call("a", "lookup", "mcp__alpha"), ...call("b", "lookup", "mcp__beta"), ...call("c", "mcp__alpha__x", "mcp__alpha")])).calls).toEqual(["a:mcp__alpha__lookup", "b:mcp__beta__lookup", "c:mcp__alpha__x"]);
+  expect((await read("custom", [...call("a", "edit", "mcp__alpha", true), ...call("b", "edit", "mcp__beta", true)])).calls).toEqual(["a:mcp__alpha__edit", "b:mcp__beta__edit"]);
+  const search = await read("search", [
+    { type: "tool_search_call", call_id: "s", execution: "client", status: "completed", arguments: { query: "alpha lookup", limit: 1 } },
+    { type: "tool_search_output", call_id: "s", execution: "client", status: "completed", tools: fns },
+    ...call("a", "lookup", "mcp__alpha"),
+  ]);
+  expect(search.counts.skipped).toBe(0);
+  expect(search.calls).toEqual(["a:mcp__alpha__lookup"]);
+  expect(search.said).toContain('"alpha lookup"');
+  expect(search.said).toContain('mcp__alpha__lookup: Finds {"type":"object"');
+  const agent = await read("agent", [{ type: "agent_message", author: "child", recipient: "parent", content: [{ type: "input_text", text: "REPORT" }, { type: "encrypted_content", encrypted_content: "x" }] }]);
+  expect(agent.events.filter((e) => e.kind === "user")).toHaveLength(1);
+  expect(agent.said).toMatch(/from child to parent[^]*REPORT\n\[unavailable/);
+  const declared = await read("declared", [{ type: "additional_tools", role: "developer", tools: fns }, { type: "web_search_call", status: "completed" }]);
+  expect(declared.said).toContain("mcp__alpha__lookup");
+  expect(declared.notes).toEqual(["1 skipped: items of a kind Keel does not import (web_search_call)."]);
+  // Imported definitions are history: notes carry them, and no result loads a tool (a tool_reference).
+  for (const r of [search, declared]) expect(JSON.stringify(r.events)).not.toContain("tool_reference");
 });
