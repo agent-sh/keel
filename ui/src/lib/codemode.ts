@@ -2,7 +2,7 @@
 // shown, kept current by "code_call" frames.
 import { useEffect, useSyncExternalStore } from "react";
 import type { CodeCall } from "../../../src/tools/codemode.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
 export type { CodeCall };
 
@@ -27,7 +27,7 @@ export function useCodeCalls(sessionId: string | undefined, parent: string): Cod
   useEffect(() => {
     if (sessionId && !(key(sessionId, parent) in byParent)) {
       byParent = { ...byParent, [key(sessionId, parent)]: [] };
-      load(sessionId, parent).catch(reportError);
+      load(sessionId, parent).catch(reportUnlessGone);
     }
   }, [sessionId, parent]);
   return useSyncExternalStore(subscribe, () => (sessionId ? byParent[key(sessionId, parent)] ?? EMPTY : EMPTY));
@@ -45,7 +45,7 @@ onFeature({
   reconnect() {
     for (const k of Object.keys(byParent)) {
       const [sessionId, parent] = k.split("\u0000") as [string, string];
-      load(sessionId, parent).catch(reportError);
+      load(sessionId, parent).catch(reportUnlessGone);
     }
   },
 });

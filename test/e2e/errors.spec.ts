@@ -42,3 +42,31 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await request.patch(`/api/errors/${id}`, { data: { resolved: true } });
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// A session deleted while the page was cut off, and a page that loaded while
+// the daemon was down, are states the page settles quietly: the reconnect
+// drops the session (the station says it is gone) and loads what failed, and
+// nothing lands in the error table.
+test("a reconnect after a deletion or a failed first load records no error", async ({ page, request }) => {
+  const posted: string[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") posted.push(r.postData() ?? ""); });
+  const live: { ws?: import("@playwright/test").WebSocketRoute } = {};
+  await page.routeWebSocket(/\/ws$/, (ws) => { ws.connectToServer(); live.ws = ws; });
+  // The first model listing fails as a daemon restart would cut it.
+  let listings = 0;
+  await page.route(/\/api\/models(\?|$)/, (r) => (++listings === 1 ? r.abort("connectionrefused") : r.continue()));
+  const s = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Deleted while away" } })).json()).session;
+  await page.goto(`/s/${s.id}`);
+  await expect(page.getByTestId("station-head").first()).toContainText("Deleted while away");
+  await expect(page.getByTestId("permission-menu")).toBeVisible();
+  // The listing is there after all: the socket's open loaded it again.
+  await expect.poll(() => listings).toBeGreaterThanOrEqual(2);
+
+  // Cut off, the session is deleted; the page hears of it only on reconnect.
+  await live.ws!.close({ code: 4000, reason: "cut by the test" });
+  await request.delete(`/api/sessions/${s.id}`);
+  await expect(page.getByTestId("session-missing")).toBeVisible({ timeout: 15_000 });
+  await shoot(page, "errors-03-deleted-while-away");
+  await page.waitForTimeout(3_500); // a network failure is posted 3 s after it happened
+  expect(posted).toEqual([]);
+});

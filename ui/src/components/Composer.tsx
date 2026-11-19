@@ -5,7 +5,7 @@ import { slash, type SlashItem } from "../lib/extend.ts";
 import { toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { fuzzy } from "../lib/keys.ts";
 import { dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
-import { onFeature, reportError, useStore } from "../lib/store.ts";
+import { onFeature, reportError, reportUnlessGone, useStore } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { cn } from "../lib/utils.ts";
@@ -112,7 +112,7 @@ export function Composer({
     getDraft(sid).then(take).catch(reportError);
     const off = onFeature({
       frame: (f) => { if (f.name === "draft" && f.session_id === sid) take(f.data as Draft); },
-      reconnect: () => { getDraft(sid).then(take).catch(reportError); },
+      reconnect: () => { getDraft(sid).then(take).catch(reportUnlessGone); },
     });
     return () => { live = false; off(); have.current.clear(); };
   }, [session?.id]);

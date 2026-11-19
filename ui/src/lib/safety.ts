@@ -35,13 +35,23 @@ export function useSafety<T>(sel: (s: State) => T): T {
 const loaded = new Set<string>();
 
 export const safety = {
+  // A session deleted meanwhile is dropped, not an error: its views unmount,
+  // and a reconnect no longer asks for it.
   async loadSession(id: string) {
     loaded.add(id);
-    const [a, p] = await Promise.all([
-      api<{ approvals: Approval[] }>(`/api/sessions/${id}/approvals`),
-      api<{ perm: SessionPerm }>(`/api/sessions/${id}/permissions`),
-    ]);
-    set({ approvals: { ...state.approvals, [id]: a.approvals }, perms: { ...state.perms, [id]: p.perm } });
+    try {
+      const [a, p] = await Promise.all([
+        api<{ approvals: Approval[] }>(`/api/sessions/${id}/approvals`),
+        api<{ perm: SessionPerm }>(`/api/sessions/${id}/permissions`),
+      ]);
+      set({ approvals: { ...state.approvals, [id]: a.approvals }, perms: { ...state.perms, [id]: p.perm } });
+    } catch (e) {
+      if ((e as { status?: number }).status !== 404) throw e;
+      loaded.delete(id);
+      const { [id]: _a, ...approvals } = state.approvals;
+      const { [id]: _p, ...perms } = state.perms;
+      set({ approvals, perms });
+    }
   },
   // Open cards of every session (the sidebar marks the sessions that wait on the owner).
   async loadPending() {

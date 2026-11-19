@@ -320,14 +320,19 @@ export function connect() {
     // A draft from before the drop may be stale (a retry restarts it): the replay sends the current one.
     set({ drafts: Object.fromEntries(Object.entries(state.drafts).filter(([id]) => !(id in cursors))) });
     ws.send(JSON.stringify({ op: "resume", cursors }));
-    actions.loadSessions();
+    // What the page loads at start is loaded again: a first load the daemon
+    // was not up for (a restart under the page) comes in now, quietly.
+    actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }));
+    if (!state.loaded.models) actions.loadModels().catch((e) => reportError(e, { at: "reconnect" }));
+    actions.loadErrors().catch((e) => reportError(e, { at: "reconnect" }));
     // Queue and status of the open sessions moved meanwhile (their events come by the
     // replay); one deleted meanwhile is dropped.
     for (const id of Object.keys(cursors)) {
       actions.loadSession(id).catch((e) => {
         if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
         const { [id]: _, ...events } = state.events;
-        set({ events });
+        const { [id]: __, ...sessions } = state.sessions;
+        set({ events, sessions, gone: { ...state.gone, [id]: true } });
       });
     }
     for (const l of features) l.reconnect?.();
@@ -365,13 +370,22 @@ export function reportError(err: unknown, context?: unknown) {
     }).catch(() => {});
   // A request cut because the daemon went away (a restart) is the connection
   // state the page already shows, and the reconnect reloads: only a network
-  // failure while the socket stays up is tracked.
+  // failure while the socket was up and stays up is tracked. A request made
+  // before the socket first opened (the page loading during a restart) is
+  // loaded again when it opens.
   if (e instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(e.message)) {
+    if (!state.connected) return;
     const at = drops;
     setTimeout(() => { if (state.connected && drops === at) post(); }, 3000);
     return;
   }
   post();
+}
+// A per-session load that answers 404 found the session deleted meanwhile:
+// its views unmount, so that is no failure. Anything else is tracked.
+export function reportUnlessGone(err: unknown, context?: unknown) {
+  if ((err as { status?: number }).status === 404) return;
+  reportError(err, context);
 }
 window.addEventListener("error", (e) => reportError(e.error ?? e.message, { kind: "window.error" }));
 window.addEventListener("unhandledrejection", (e) => reportError(e.reason, { kind: "unhandledrejection" }));

@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { SecretMeta } from "../../../src/safety/secrets.ts";
 import type { SecretRequest } from "../../../src/server/routes/secrets.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
 export type { SecretMeta, SecretRequest };
 
@@ -62,6 +62,6 @@ onFeature({
     }
   },
   reconnect() {
-    for (const id of loaded) secrets.load(id).catch(reportError);
+    for (const id of loaded) secrets.load(id).catch(reportUnlessGone);
   },
 });

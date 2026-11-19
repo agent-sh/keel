@@ -2,7 +2,7 @@
 // feature frames. Also the start box's "in a new worktree" choice.
 import { useEffect, useSyncExternalStore } from "react";
 import type { WorktreeStatus } from "../../../src/worktree/manager.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
 export type { WorktreeStatus };
 
@@ -42,7 +42,7 @@ onFeature({
     if (f.name === "worktree" && f.session_id) loadWorktree(f.session_id).catch(reportError);
   },
   reconnect() {
-    for (const id of Object.keys(byId)) loadWorktree(id).catch(reportError);
+    for (const id of Object.keys(byId)) loadWorktree(id).catch(reportUnlessGone);
   },
 });
 
