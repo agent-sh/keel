@@ -58,6 +58,25 @@ export function toolDetail(name: string, input: Json): { locations?: Json[]; con
 }
 
 // TodoWrite / update_plan as an ACP plan.
+// The editor's permission request for a gate card: what the card shows the
+// owner, its reason (why only once is offered, why the owner is asked) included.
+export function permissionRequest(a: Json, name: string): Json {
+  const options = [
+    { optionId: "once", name: "Allow once", kind: "allow_once" },
+    ...(a.risk !== "high" && a.suggest?.length ? [{ optionId: "always", name: `Always allow ${a.suggest.map((s: Json) => s.pattern).join(", ")}`, kind: "allow_always" }] : []),
+    { optionId: "deny", name: "Deny", kind: "reject_once" },
+  ];
+  const why = [a.risk === "high" ? `High risk${a.why ? `: ${a.why}` : ""}.` : a.why ? `${a.why}.` : "", a.notice ?? ""].filter(Boolean).join(" ");
+  return {
+    sessionId: a.session_id,
+    toolCall: {
+      toolCallId: a.call_id, title: a.summary || toolTitle(name, a.input), kind: toolKind(name), status: "pending", rawInput: a.input,
+      ...(why ? { content: [{ type: "content", content: { type: "text", text: why } }] } : {}),
+    },
+    options,
+  };
+}
+
 export function planOf(name: string, input: Json): Json[] | null {
   const n = name.toLowerCase();
   if (n === "todowrite" && Array.isArray(input?.todos))
@@ -328,17 +347,8 @@ export class AcpBridge {
   // An approval card of the gate as the editor's permission request. The card
   // stays answerable in the workbench too; whichever answers first wins.
   private async ask(a: Json) {
-    const options = [
-      { optionId: "once", name: "Allow once", kind: "allow_once" },
-      ...(a.risk !== "high" && a.suggest?.length ? [{ optionId: "always", name: `Always allow ${a.suggest.map((s: Json) => s.pattern).join(", ")}`, kind: "allow_always" }] : []),
-      { optionId: "deny", name: "Deny", kind: "reject_once" },
-    ];
     const name = this.tools.get(a.call_id) ?? a.tool;
-    const msg = await this.request("session/request_permission", {
-      sessionId: a.session_id,
-      toolCall: { toolCallId: a.call_id, title: a.summary || toolTitle(name, a.input), kind: toolKind(name), status: "pending", rawInput: a.input },
-      options,
-    }, a.id);
+    const msg = await this.request("session/request_permission", permissionRequest(a, name), a.id);
     if (msg.answered) return; // the workbench answered first
     this.asking.delete(a.id);
     const outcome = msg.result?.outcome;
