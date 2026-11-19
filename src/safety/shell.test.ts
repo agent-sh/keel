@@ -20,6 +20,14 @@ test("read-only commands", () => {
     expect(ro(c)).toBe(false);
 });
 
+test("programs whose flags run other programs or write files are not read-only with them", () => {
+  for (const c of ["rg foo", "rg -n foo src", "fd ts", "fd -H -e ts", "git grep foo", "tree -L 2", "uniq a.txt", "uniq -c -f 1 a.txt", "sort -n a"])
+    expect(ro(c)).toBe(true);
+  for (const c of ["rg --pre ./x foo", "rg --pre=sh foo", "fd -x rm", "fd -HX rm", "fd --exec rm {}", "git grep -O foo", "git grep -Ovim foo", "git grep --open-files-in-pager=vim foo",
+    "tree -o out.txt", "uniq a.txt b.txt", "uniq -f 1 a.txt b.txt", "less a", "more a", "sort -no out a", "sort --compress-program=sh a", "file -C -m x"])
+    expect(ro(c)).toBe(false);
+});
+
 test("high risk keeps its reason", () => {
   expect(highRisk(split("git push --force origin main")[0]!)).toContain("history");
   expect(highRisk(split("rm -rf ~")[0]!)).toContain("recursively");

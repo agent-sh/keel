@@ -159,13 +159,26 @@ const body = (w: string[]) => {
 const READ_PROGRAMS = new Set([
   "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "fd", "pwd", "echo", "printf", "which", "type",
   "file", "stat", "du", "df", "tree", "uniq", "cut", "tr", "diff", "cmp", "jq", "basename", "dirname", "realpath",
-  "readlink", "date", "whoami", "id", "uname", "true", "false", "test", "[", "cd", "nl", "less", "more", "column",
+  "readlink", "date", "whoami", "id", "uname", "true", "false", "test", "[", "cd", "nl", "column",
   "sha256sum", "md5sum", "free", "uptime", "nproc", "lsof", "ps", "printenv",
 ]);
 const GIT_READ = new Set([
   "status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "blame", "grep", "describe", "shortlog",
   "cat-file", "merge-base", "rev-list", "reflog", "whatchanged", "name-rev", "for-each-ref", "check-ignore",
 ]);
+
+// uniq [OPTION]... [INPUT [OUTPUT]]: its operands, past the options that take a value.
+function uniqOperands(args: string[]): number {
+  let n = 0;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--") return n + args.length - i - 1;
+    if (/^-[fsw]$/.test(a)) { i++; continue; }
+    if (a.startsWith("-") && a !== "-") continue;
+    n++;
+  }
+  return n;
+}
 
 // A command that cannot change anything (files, processes, the network state).
 export function isReadOnly(s: Simple): boolean {
@@ -175,7 +188,13 @@ export function isReadOnly(s: Simple): boolean {
   const [prog, ...args] = words;
   if (prog === "env" || prog === "hostname") return args.length === 0; // `env CMD` runs CMD; `hostname X` sets it
   if (prog === "find") return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(a));
-  if (prog === "sort") return !args.some((a) => a === "-o" || a.startsWith("--output"));
+  if (prog === "sort") return !args.some((a) => /^-[a-zA-Z]*o/.test(a) || a.startsWith("--output") || a.startsWith("--compress-program"));
+  // Flags that run another program or write a file.
+  if (prog === "rg") return !args.some((a) => /^--(pre|hostname-bin)(=|$)/.test(a));
+  if (prog === "fd") return !args.some((a) => /^-[a-zA-Z]*[xX]/.test(a) || /^--exec(-batch)?(=|$)/.test(a));
+  if (prog === "tree") return !args.some((a) => /^-[a-zA-Z]*o/.test(a) || a.startsWith("--output"));
+  if (prog === "uniq") return uniqOperands(args) <= 1; // a second operand is the file it writes
+  if (prog === "file") return !args.some((a) => /^-[a-zA-Z]*C/.test(a) || a === "--compile");
   if (prog === "sed") return !args.some((a) => /^-[a-zA-Z]*i|^--in-place/.test(a) || /(^|[;}\s\d\/])[wWe](\s|$)/.test(a));
   if (prog === "git") {
     let i = 0;
@@ -187,6 +206,8 @@ export function isReadOnly(s: Simple): boolean {
     const sub = args[i];
     const rest = args.slice(i + 1);
     if (rest.some((a) => a.startsWith("--output") || a === "--ext-diff")) return false;
+    // git grep -O / --open-files-in-pager runs the pager it names on the hits.
+    if (sub === "grep" && rest.some((a) => /^-[a-zA-Z]*O/.test(a) || a.startsWith("--open-files-in-pager"))) return false;
     if (sub === "branch") return rest.every((a) => /^(-a|-r|-v|-vv|--list|--all|--show-current|--contains|--merged|--no-merged)$/.test(a) || !a.startsWith("-") && rest.includes("--list"));
     if (sub === "remote") return rest.length === 0 || (rest.length === 1 && rest[0] === "-v") || rest[0] === "get-url";
     if (sub === "tag") return rest.length === 0 || rest[0] === "-l" || rest[0] === "--list";
