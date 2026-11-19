@@ -95,7 +95,9 @@ const activeGlobal = () => {
 // but off the channels (the global snooze).
 export function filter(kind: string, sessionId: string | null): { deliver: boolean; quiet?: boolean } {
   const r = sessionFilter(kind, sessionId);
-  if (r.deliver && activeGlobal() && kind !== "snooze_over") {
+  // Every alert, a session's own snooze ending included, stays off the
+  // channels until the global snooze ends.
+  if (r.deliver && activeGlobal()) {
     db().query("UPDATE snoozes SET muted = muted + 1 WHERE session_id = ?").run(GLOBAL);
     return { deliver: true, quiet: true };
   }

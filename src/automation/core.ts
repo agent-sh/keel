@@ -22,6 +22,29 @@ export const alertHook: { raise?: (kind: string, sessionId: string | null, title
 
 export const capture = (err: unknown, context?: unknown) => D().errors.capture("server", err, { area: "automation", ...(context as object) });
 
+// Text cut to at most `max` UTF-16 units on a whole character (a grapheme, so an
+// emoji or a flag is never split), with an ellipsis when something was cut.
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+export function clip(s: string, max: number): string {
+  if (s.length <= max) return s;
+  let out = "";
+  for (const { segment } of graphemes.segment(s)) {
+    if (out.length + segment.length > max - 1) break;
+    out += segment;
+  }
+  return out + "…";
+}
+
+// A row reference for keyset paging: "ts:id" (ids are time-ordered), or a bare
+// timestamp from an older client.
+export function cursor(before: string | null | undefined): { ts: number; id: string } | undefined {
+  if (!before) return undefined;
+  const [t, id = ""] = before.split(":");
+  const ts = Number(t);
+  if (!Number.isFinite(ts)) throw Object.assign(new Error("before is a cursor (ts:id)"), { status: 400 });
+  return { ts, id };
+}
+
 // Input that is not the owner's typing: subagent results, wakes, loop runs. It
 // never lands inside a running turn (between a tool call and its result): it
 // starts a turn when the session is idle and waits for the turn to end when it

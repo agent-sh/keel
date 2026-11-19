@@ -200,7 +200,7 @@ export const automationRoutes: RouteModule = (deps) => {
           waits: waits.list(undefined, 30),
           loops: loops.list(),
           unread: alerts.unreadCounts(),
-          alerts: alerts.list({ limit: 50 }),
+          alerts: alerts.list({ limit: 50, withUnread: true }),
           settings: alerts.settings(),
           channels: alerts.channelList(),
           snoozes: snooze.all(),
@@ -321,23 +321,50 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/alerts": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
-        const before = q.get("before") ? Number(q.get("before")) : undefined;
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
-        if ((before !== undefined && !Number.isFinite(before)) || (limit !== undefined && !Number.isFinite(limit))) return bad("before and limit are numbers");
-        return json({ alerts: alerts.list({ before, limit, unread: q.has("unread") }), unread: alerts.unreadCounts() });
+        if (limit !== undefined && !Number.isFinite(limit)) return bad("limit is a number");
+        return attempt(async () => json({
+          alerts: alerts.list({ before: q.get("before") ?? undefined, limit, unread: q.has("unread"), withUnread: q.has("with_unread") }),
+          unread: alerts.unreadCounts(),
+        }));
       },
     },
     "/api/alerts/read": {
       POST: async (req: Request) => {
         const b = await body(req);
-        const changed = alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id });
+        const seen = b.seen === undefined || b.seen === null ? undefined : Number(b.seen);
+        if (seen !== undefined && !Number.isFinite(seen)) return bad("seen is the inbox revision the page had");
+        if (b.ids !== undefined && !Array.isArray(b.ids)) return bad("ids is a list of alert ids");
+        const changed = alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id, seen, auto: !!b.auto });
         return json({ ok: true, changed, unread: alerts.unreadCounts() });
       },
     },
     "/api/alerts/:id/unread": {
       POST: (req: any) => {
-        alerts.markUnread(req.params.id);
+        if (!alerts.markUnread(req.params.id)) return bad("no such alert", 404);
         return json({ ok: true, unread: alerts.unreadCounts() });
+      },
+    },
+    // Where an alert leads, judged when the owner opens it: the agent session it
+    // came from (or its own), the parent when that agent was deleted, and
+    // whether its approval still waits.
+    "/api/alerts/:id/target": {
+      GET: (req: any) => {
+        const a = alerts.get(req.params.id);
+        return a ? json(alerts.target(a.session_id, a.data?.child_session ?? (a.data?.open_session !== a.session_id ? a.data?.open_session : undefined), a.data?.approval_id)) : bad("no such alert", 404);
+      },
+    },
+    "/api/activity/:id/target": {
+      GET: (req: any) => {
+        const r = activity.get(req.params.id);
+        return r ? json(alerts.target(r.session_id, r.data?.child_session)) : bad("no such activity", 404);
+      },
+    },
+    // Sends again to the channels that failed for this alert, and only those.
+    "/api/alerts/:id/retry": {
+      POST: (req: any) => {
+        const a = alerts.retry(req.params.id);
+        return a ? json({ alert: a }) : bad("no such alert", 404);
       },
     },
     "/api/alerts/settings": {
@@ -348,7 +375,7 @@ export const automationRoutes: RouteModule = (deps) => {
       POST: async (req: Request) => {
         const b = await body(req);
         const a = alerts.raise((b.kind as alerts.AlertKind) ?? "agent", b.session_id ?? null, "Test alert", "This is how Keel reaches you.");
-        return json({ alert: a });
+        return json({ alert: a, channels: alerts.channelList() });
       },
     },
     // --- goal and the shared task list
@@ -426,19 +453,20 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/activity": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
-        const before = q.get("before") ? Number(q.get("before")) : undefined;
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
-        if ((before !== undefined && !Number.isFinite(before)) || (limit !== undefined && !Number.isFinite(limit))) return bad("before and limit are numbers");
+        if (limit !== undefined && !Number.isFinite(limit)) return bad("limit is a number");
         const kinds = (q.get("kind") ?? "").split(",").map((k) => k.trim()).filter(Boolean);
         const unknown = kinds.find((k) => !activity.ACTIVITY_KINDS.includes(k as activity.ActivityKind));
         if (unknown) return bad(`unknown kind ${unknown}; kinds: ${activity.ACTIVITY_KINDS.join(", ")}`);
-        return json({ ...activity.list({ before, limit, kinds, session_id: q.get("session_id") ?? undefined, q: q.get("q") ?? undefined }), kinds: activity.ACTIVITY_KINDS });
+        return attempt(async () => json({ ...activity.list({ before: q.get("before") ?? undefined, limit, kinds, session_id: q.get("session_id") ?? undefined, q: q.get("q") ?? undefined }), kinds: activity.ACTIVITY_KINDS }));
       },
     },
+    // The sessions the activity filter offers: those with activity, newest first.
+    "/api/activity/sessions": { GET: () => json({ sessions: activity.sessions() }) },
     "/api/presence": {
       POST: async (req: Request) => {
         const b = await body(req);
-        alerts.setPresence(b.session_id ?? null, !!b.focused);
+        alerts.setPresence(b.session_id ?? null, !!b.focused, typeof b.page === "string" ? b.page.slice(0, 64) : undefined);
         return json({ ok: true });
       },
     },
