@@ -10,8 +10,9 @@ import { unitTemplate } from "../admin/unit.ts";
 import { lockHolder } from "../admin/daemon.ts";
 import { restore as restoreBackup } from "../admin/storage.ts";
 import { authHeaders, findDaemon } from "./client.ts";
+import { defaultStateDir } from "../core/paths.ts";
 
-const stateDirOf = (v?: string) => resolve(v ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
+const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
 // --url, KEEL_URL, the address the state folder's daemon recorded, the default bind.
 const urlOf = (v?: string) => findDaemon({ url: v }).url;
 const common = { url: { type: "string" }, json: { type: "boolean" }, help: { type: "boolean" } } as const;

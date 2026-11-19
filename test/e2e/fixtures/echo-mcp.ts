@@ -3,7 +3,7 @@
 // for the MCP e2e: tools echo and add, one resource, one prompt.
 const tools = [
   { name: "echo", description: "Echo the given text back, prefixed with 'echo:'.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-  { name: "add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } },
+  { name: "add", description: "Add two numbers.", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } },
 ];
 
 const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");

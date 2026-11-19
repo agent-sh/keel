@@ -48,6 +48,8 @@ export type McpServerState = {
   error?: string;
   tools: number;
   tool_names: string[];
+  read_tools: string[];   // the tools the owner marked as reads (they run without asking)
+  hinted_reads: string[]; // the tools the server itself calls read-only (its word, not a read until marked)
   last_connected?: number;
   era?: "modern" | "legacy";
   version?: string;
@@ -331,6 +333,8 @@ export class McpManager {
       error: live ? live.error : e.error,
       tools: (e.bundled && !e.client ? e.bundled.tools : e.tools).length,
       tool_names: (e.bundled && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
+      read_tools: e.bundled ? [] : (e.config.read_tools ?? []),
+      hinted_reads: e.bundled ? [] : e.tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
       last_connected: e.last,
       era: e.client?.era,
       version: e.client?.version,

@@ -29,6 +29,16 @@ test("mcp servers", async ({ page, request }) => {
   await expect(row.getByTestId("mcp-tool-count")).toHaveText("2 tools");
   await shoot(page, "mcp-02-ready");
 
+  // Reads are the owner's call per tool: the server's own read-only hint is offered, not taken.
+  const add = row.locator('[data-testid="mcp-tool-read"][data-tool="add"]');
+  await expect(add).toHaveAttribute("aria-pressed", "false");
+  await row.getByTestId("mcp-reads-hinted").click();
+  await expect(add).toHaveAttribute("aria-pressed", "true");
+  await expect(row.locator('[data-testid="mcp-tool-read"][data-tool="echo"]')).toHaveAttribute("aria-pressed", "false");
+  await shoot(page, "mcp-02a-reads");
+  await add.click();
+  await expect(add).toHaveAttribute("aria-pressed", "false");
+
   // The server's resources and prompt templates: read one, fill one.
   await row.getByTestId("mcp-contents-toggle").click();
   await row.getByTestId("mcp-resource").filter({ hasText: "echo://readme" }).click();

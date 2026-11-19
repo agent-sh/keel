@@ -3,15 +3,15 @@
 // a test push asks the daemon, which holds the push key.
 import { Database } from "bun:sqlite";
 import { existsSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { renderSVG, renderUnicodeCompact } from "uqr";
 import { Store } from "../core/store.ts";
 import { MobileStore } from "../integrations/mobile/store.ts";
 import { pairLink } from "../integrations/mobile/v1.ts";
+import { defaultStateDir } from "../core/paths.ts";
 
-const stateDirOf = (v?: string) => resolve(v ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
+const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
 // The daemon may be running: open the database without the daemon's start-up
 // work (which resets the phase of working sessions).
 function open(dir?: string): MobileStore {

@@ -3,11 +3,11 @@
 //   keel plugin check --id <plugin-id> --command <path> [--json] [--only <fixture>]... [-- <arg>...]
 // Exit 0 when no fixture failed, 1 when one did, 2 when the check could not start.
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Check, type Row, type Target } from "../providers/plugins/check.ts";
 import { readPlugins } from "../providers/plugins/config.ts";
+import { defaultStateDir } from "../core/paths.ts";
 
 const USAGE = "usage: keel plugin check <plugin-id> [--json] [--only <fixture>]...\n       keel plugin check --id <plugin-id> --command <path> [--json] [--only <fixture>]... [-- <arg>...]";
 
@@ -42,7 +42,7 @@ async function check(argv: string[]): Promise<number> {
     };
   }
   if (!existsSync(target.command)) return (console.error(`keel plugin check: ${target.command} does not exist`), 2);
-  const stateDir = resolve(values["state-dir"] ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
+  const stateDir = values["state-dir"] ? resolve(values["state-dir"]) : defaultStateDir();
   const json = !!values.json;
   const c = new Check(target, stateDir, values.only ?? [], json ? (r: Row) => console.log(JSON.stringify(r)) : undefined);
   try {

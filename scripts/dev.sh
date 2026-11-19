@@ -22,6 +22,11 @@ export KEEL_IMPORT_CODEX_DIR="${KEEL_IMPORT_CODEX_DIR:-$DEV/import/codex}"
 export KEEL_IMPORT_AGY_DIR="${KEEL_IMPORT_AGY_DIR:-$DEV/import/agy}"
 export KEEL_IMPORT_KEEL_DB="${KEEL_IMPORT_KEEL_DB:-$DEV/import/keel.db}"
 mkdir -p "$DEV/import"
+# The tacit stand-in (never the owner's memory store) and the scripted
+# provider for the paths a real model cannot be made to take. The owner hooks
+# file lives in the scratch config folder.
+export TACIT_BIN="${TACIT_BIN:-$(cd "$(dirname "$0")/.." && pwd)/test/e2e/fixtures/tacit-standin.sh}"
+export KEEL_SCRIPTED_PROVIDER="${KEEL_SCRIPTED_PROVIDER:-1}"
 # Voice goes to the parlar stand-in beside the state, never the owner's own
 # parlar (its mic and speaker); KEEL_PARLAR picks another.
 if [ -z "${KEEL_PARLAR:-}" ]; then

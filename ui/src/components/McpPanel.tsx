@@ -2,7 +2,7 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
 import { Tabs } from "@base-ui/react/tabs";
-import { ChevronRight, Download, Globe, KeyRound, LogOut, Plug, RefreshCw, RotateCw, Smartphone, SquareTerminal, Trash2, X } from "lucide-react";
+import { ChevronRight, Download, Eye, Globe, KeyRound, LogOut, Plug, RefreshCw, RotateCw, Smartphone, SquareTerminal, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { McpServerState } from "../../../src/mcp/manager.ts";
 import type { ImportableServer } from "../../../src/mcp/config.ts";
@@ -115,20 +115,74 @@ function ServerRow({ s, act }: { s: McpServerState; act: (path: string, body?: u
           {s.error.slice(0, 600)}
         </div>
       )}
-      {offered(s) && shown.length > 0 && (
+      {offered(s) && shown.length > 0 && (s.bundled ? (
         <div className="mt-2 flex flex-wrap gap-1 pl-[18px]">
           {shown.map((t) => (
             <span key={t} className="rounded-md border border-line px-1.5 py-px font-mono text-micro text-muted">{t}</span>
           ))}
           {s.tool_names.length > shown.length && <span className="px-1 text-micro text-faint">+{s.tool_names.length - shown.length} more</span>}
         </div>
-      )}
+      ) : <ToolReads s={s} base={base} act={act} />)}
       {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
       {s.state === "ready" && s.last_connected && (
         <div className="mt-1.5 pl-[18px] text-micro text-faint">
           {s.server_info?.name ? `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""} · ` : ""}MCP {s.version} · connected {ago(s.last_connected)}
         </div>
       )}
+    </div>
+  );
+}
+
+// A server's tools, each one a toggle: a tool the owner counts as a read runs
+// without asking; every other one asks first. What the server itself calls
+// read-only is only its word, shown with a mark, until the owner takes it.
+function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: (path: string, body?: unknown, method?: string) => Promise<void> }) {
+  const [all, setAll] = useState(false);
+  const reads = new Set(s.read_tools);
+  const hinted = s.hinted_reads.filter((t) => !reads.has(t));
+  const put = (tools: string[]) => act(`${base}/reads`, { tools }, "PUT");
+  const shown = all ? s.tool_names : s.tool_names.slice(0, 10);
+  return (
+    <div className="mt-2 pl-[18px]" data-testid="mcp-tool-reads">
+      <div className="flex flex-wrap gap-1">
+        {shown.map((t) => {
+          const read = reads.has(t);
+          const hint = s.hinted_reads.includes(t);
+          return (
+            <button
+              key={t}
+              type="button"
+              data-testid="mcp-tool-read"
+              data-tool={t}
+              aria-pressed={read}
+              title={`${read ? "Counts as a read: runs without asking. Click to ask first again." : "Asks before it runs. Click to count it as a read."}${hint ? " The server calls it read-only." : ""}`}
+              onClick={() => put(read ? s.read_tools.filter((x) => x !== t) : [...s.read_tools, t])}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-1.5 py-px font-mono text-micro transition-colors",
+                read ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-line text-muted hover:border-line-strong hover:text-fg",
+              )}
+            >
+              {read && <Eye className="size-3" aria-hidden />}
+              {t}
+              {hint && !read && <span className="text-faint" aria-hidden>·ro</span>}
+            </button>
+          );
+        })}
+        {s.tool_names.length > 10 && (
+          <button type="button" onClick={() => setAll(!all)} className="px-1 text-micro text-faint hover:text-fg">
+            {all ? "fewer" : `+${s.tool_names.length - 10} more`}
+          </button>
+        )}
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 text-micro text-faint">
+        <span>{reads.size ? `${reads.size} of ${s.tool_names.length} count as reads` : "Every tool asks first"}</span>
+        {hinted.length > 0 && (
+          <button type="button" data-testid="mcp-reads-hinted" onClick={() => put([...s.read_tools, ...hinted])} className="text-accent hover:underline">
+            Count the {hinted.length} it calls read-only as reads
+          </button>
+        )}
+        {reads.size > 0 && <button type="button" onClick={() => put([])} className="hover:text-fg hover:underline">Ask for all</button>}
+      </div>
     </div>
   );
 }

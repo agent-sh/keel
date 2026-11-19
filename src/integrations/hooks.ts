@@ -11,12 +11,12 @@
 // context for the model (with the call's result; after the prompt), keep a turn
 // going (Stop). What it cannot: allow anything.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
+import { configDir } from "../providers/config.ts";
 
 export const EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PreCompact"] as const;
 export type HookEvent = (typeof EVENTS)[number];
@@ -26,7 +26,7 @@ type Group = { matcher?: string; hooks: Handler[] };
 // `covers`: the files under .keel/ the pin covers besides hooks.json (what its commands run).
 export type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers: string[]; groups: Partial<Record<HookEvent, Group[]>> };
 
-export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "keel-bun", "hooks.json");
+export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(configDir(), "hooks.json");
 
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
