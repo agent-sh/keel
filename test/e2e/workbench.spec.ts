@@ -145,3 +145,35 @@ test("workbench", async ({ page, request }) => {
   expect(errorsAfter).toBe(errorsBefore);
 });
 
+
+// The line being read stays put when something above it changes size (a
+// report opening, an image loading late), while the reader is not following
+// the end.
+test("the reading line holds when content above it grows", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Reading line" } })).json();
+  for (let i = 0; i < 6; i++) {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:grow ${i}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase, { timeout: 20_000 }).toBe("idle");
+  }
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${session.id}`);
+  const replies = page.getByTestId("assistant-text");
+  await expect(replies).toHaveCount(6);
+  // Read the fourth reply: scroll it to the middle, away from the end.
+  await replies.nth(3).evaluate((el) => {
+    const sc = document.querySelector('[data-testid="transcript"]')!.parentElement!;
+    sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientHeight / 3;
+  });
+  await page.mouse.wheel(0, -40);
+  await expect(page.getByTestId("jump-latest")).toBeVisible();
+  const top = () => replies.nth(3).evaluate((el) => el.getBoundingClientRect().top);
+  const before = await top();
+  // Something in the reply above, on screen over the line being read, grows by 320 px.
+  await replies.nth(2).evaluate((el) => { const d = document.createElement("div"); d.style.height = "320px"; el.prepend(d); });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(1);
+  await shoot(page, "workbench-reading-line");
+  await request.delete(`/api/sessions/${session.id}`);
+});

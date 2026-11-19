@@ -42,7 +42,8 @@ export function toMessages(events: StoredEvent[]): Message[] {
     if (e.kind === "compaction") {
       continue; // the checkpoint's summary leads (an older one in the tail is covered)
     } else if (e.kind === "user") {
-      const content: any[] = [...(e.data.images ?? []), { type: "text", text: e.data.text }];
+      // An image sent without a caption has no text block (providers refuse an empty one).
+      const content: any[] = [...(e.data.images ?? []), ...(e.data.text ? [{ type: "text", text: e.data.text }] : [])];
       out.push({ role: "user", content });
     } else if (e.kind === "assistant") {
       // A declined reply is discarded: its partial output is not the model's answer.

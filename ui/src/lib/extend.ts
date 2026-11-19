@@ -36,6 +36,9 @@ export type SlashItem = {
   hint?: string; // argument shape, e.g. "<name>"
   run?: (arg: string, ctx: SlashCtx) => void | Promise<void>;
   when?: (ctx: SlashCtx) => boolean;
+  // It starts a turn in the session (a prompt for the model): held while
+  // another branch is previewed, like a typed message.
+  sends?: true;
 };
 export type SlashCtx = { session?: Session; setText: (t: string) => void };
 export const slash = registry<SlashItem>();

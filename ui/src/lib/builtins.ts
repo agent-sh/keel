@@ -97,12 +97,14 @@ slash.add(
     label: "Review the changes in this folder and report what is wrong",
     hint: "[base branch or what to look at]",
     when: ({ session }) => !!session,
+    sends: true,
     run: (arg, { session }) => actions.send(session!.id, reviewPrompt(arg)).then(() => {}),
   },
   {
     id: "init",
     label: "Write an AGENTS.md for this folder",
     when: ({ session }) => !!session,
+    sends: true,
     run: (_a, { session }) => actions.send(session!.id, INIT_PROMPT).then(() => {}),
   },
   {

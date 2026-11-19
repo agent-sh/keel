@@ -121,3 +121,37 @@ test("attachments: the model's image and PDF support before Send", async ({ page
   await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// Files and images keep the order they were attached in, on the prompt as in
+// what the model reads, and a prompt sent without words has no made-up words.
+test("mixed attachments keep their order and need no caption", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("attach-input").setInputFiles([
+    { name: "a.png", mimeType: "image/png", buffer: png(200, 40, 40) },
+    { name: "b.txt", mimeType: "text/plain", buffer: Buffer.from("file b\n") },
+    { name: "c.png", mimeType: "image/png", buffer: png(40, 40, 200) },
+    { name: "d.txt", mimeType: "text/plain", buffer: Buffer.from("file d\n") },
+  ]);
+  await expect(page.getByTestId("attachments").locator(":scope > div")).toHaveCount(4);
+  await page.getByTestId("composer").press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+  const ev = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.find((e: any) => e.kind === "user");
+  expect(ev.data.text).toBe("");
+  const stored = ev.data.images.map((b: any) => (b.type === "attachment" ? b.name : "image"));
+  expect(stored).toEqual(["image", "b.txt", "image", "d.txt"]);
+  const row = page.getByTestId("user-message").first();
+  const shown = await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/\d+ KB$/, "").trim())));
+  expect(shown).toEqual(stored);
+  // No caption, no bubble; a caption that reads like a placeholder is the owner's and shows.
+  await expect(row.locator(".bg-accent-soft")).toHaveCount(0);
+  await page.getByTestId("attach-input").setInputFiles([{ name: "e.png", mimeType: "image/png", buffer: png(40, 200, 40) }]);
+  await page.getByTestId("composer").fill("(image)");
+  await page.getByTestId("composer").press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
+  await expect(page.getByTestId("user-message").last()).toContainText("(image)");
+  await shoot(page, "attach-05-mixed-order");
+  await request.delete(`/api/sessions/${session.id}`);
+});

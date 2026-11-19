@@ -62,38 +62,40 @@ function Extra({ on, e, s }: { on: "user" | "assistant"; e: StoredEvent; s: Sess
   );
 }
 
+// Attachments in the order they were sent (the order the model reads them),
+// files and images interleaved, so "the second one" means one thing.
 function Images({ blocks }: { blocks: PromptBlock[] }) {
   const [big, setBig] = useState<number | null>(null);
-  const images = blocks.filter((b): b is ImageBlock => b.type === "image");
-  const files = blocks.filter((b): b is AttachmentBlock => b.type === "attachment");
+  let n = 0;
   return (
-    <>
-    {files.length > 0 && (
-      <div className="flex flex-wrap justify-end gap-2">
-        {files.map((f) => (
-          <a key={f.id} href={`/api/attachments/${f.id}`} download={f.name} data-testid="message-file" title={`${f.name}, ${f.media_type}`}
-            className="flex h-10 max-w-64 items-center gap-2 rounded-lg border border-line bg-raised px-3 text-ui shadow-1 hover:border-line-strong">
-            <FileText className="size-4 shrink-0 text-muted" />
-            <span className="min-w-0 truncate">{f.name}</span>
-            <span className="shrink-0 text-micro tabular-nums text-faint">{f.size < 1024 * 1024 ? `${Math.max(1, Math.round(f.size / 1024))} KB` : `${(f.size / 1024 / 1024).toFixed(1)} MB`}</span>
-          </a>
-        ))}
-      </div>
-    )}
-    {images.length > 0 && (
-    <div className="flex flex-wrap justify-end gap-2">
-      {images.map((im, i) => (
-        <img
-          key={i}
-          src={`data:${im.media_type};base64,${im.data}`}
-          alt={`Attached image ${i + 1}`}
-          onClick={() => setBig(big === i ? null : i)}
-          className={cn("rounded-lg border border-line object-cover shadow-1", big === i ? "max-h-[70vh] max-w-full" : "max-h-40 max-w-60")}
-        />
-      ))}
+    <div className="flex flex-wrap items-end justify-end gap-2">
+      {blocks.map((b, i) => {
+        if (b.type === "attachment") {
+          const f = b as AttachmentBlock;
+          return (
+            <a key={i} href={`/api/attachments/${f.id}`} download={f.name} data-testid="message-file" title={`${f.name}, ${f.media_type}`}
+              className="flex h-10 max-w-64 items-center gap-2 rounded-lg border border-line bg-raised px-3 text-ui shadow-1 hover:border-line-strong">
+              <FileText className="size-4 shrink-0 text-muted" />
+              <span className="min-w-0 truncate">{f.name}</span>
+              <span className="shrink-0 text-micro tabular-nums text-faint">{f.size < 1024 * 1024 ? `${Math.max(1, Math.round(f.size / 1024))} KB` : `${(f.size / 1024 / 1024).toFixed(1)} MB`}</span>
+            </a>
+          );
+        }
+        if (b.type !== "image") return null;
+        const im = b as ImageBlock;
+        n++;
+        return (
+          <img
+            key={i}
+            src={`data:${im.media_type};base64,${im.data}`}
+            alt={`Attached image ${n}`}
+            data-testid="message-image"
+            onClick={() => setBig(big === i ? null : i)}
+            className={cn("rounded-lg border border-line object-cover shadow-1", big === i ? "max-h-[70vh] max-w-full" : "max-h-40 max-w-60")}
+          />
+        );
+      })}
     </div>
-    )}
-    </>
   );
 }
 
@@ -114,7 +116,7 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
       {origin === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-steer">Steered into the turn</span>}
       {origin === "queued" && <span className="text-micro font-medium text-faint" data-testid="origin-queued">From the queue</span>}
       {e.data.images?.length > 0 && <Images blocks={e.data.images} />}
-      {text && text !== "(image)" && text !== "(attached file)" && (
+      {text && (
         <div className="relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">
           <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{text}</div>
           {long && (
@@ -182,7 +184,7 @@ function Refusal({ e, s, handled }: { e: StoredEvent; s: Session; handled?: bool
   const [keep, setKeep] = useState(false);
   const d = e.data.stop_details ?? {};
   return (
-    <div className="rounded-lg border border-warn/40 bg-raised px-3.5 py-3 text-ui" data-testid="refusal">
+    <div id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-lg border border-warn/40 bg-raised px-3.5 py-3 text-ui" data-testid="refusal">
       <div className="flex items-center gap-2 font-medium">
         <ShieldAlert className="size-4 text-warn" /> The model declined this request
         {d.category && <span className="rounded-sm bg-sunken px-1.5 py-px text-micro uppercase tracking-wide text-muted">{d.category}</span>}
@@ -382,9 +384,22 @@ function Announcer({ sessionId, working }: { sessionId: string; working: boolean
 
 // The streaming reply and the working line. Deltas re-render only this, not
 // the whole transcript above it.
-function Live({ sessionId, working, asking, since }: { sessionId: string; working: boolean; asking: boolean; since?: number }) {
+function Live({ sessionId, working, asking, since, previewing }: { sessionId: string; working: boolean; asking: boolean; since?: number; previewing: boolean }) {
   const draft = useStore((s) => s.drafts[sessionId]);
   const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
+  // The reply streams on the current branch: under another branch it would read as that branch's.
+  if (previewing) {
+    return (
+      <>
+        {working && (
+          <div className="flex items-center gap-2.5 py-1 text-caption text-faint" data-testid="replying-elsewhere">
+            <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /> The current branch is replying. Back to the current one to read it.
+          </div>
+        )}
+        <Announcer sessionId={sessionId} working={working} />
+      </>
+    );
+  }
   return (
     <>
       {hasDraft && <div className="flex flex-col gap-3" data-testid="draft"><Draft draft={draft} /></div>}
@@ -411,6 +426,36 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [away, setAway] = useState(false);
+  // What the reader looks at when not following the end: the deepest block
+  // crossing the top of the view, and its offset there. A
+  // size change above it (a report opening, an image loading, rows rendering
+  // in) moves the scroll by as much, so the words stay under the eyes.
+  const anchor = useRef<{ el: Element; top: number } | null>(null);
+  const remember = () => {
+    const el = scroller.current;
+    const c = content.current;
+    anchor.current = null;
+    if (!el || !c || stick.current) return;
+    const top = el.getBoundingClientRect().top;
+    // Rows stack in order: the first whose bottom is below the top, by halving.
+    const over = (all: HTMLCollection) => {
+      const list = [...all].filter((x) => !(x as HTMLElement).dataset.pinned); // the sticky branch banner does not scroll
+      let lo = 0, hi = list.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid]!.getBoundingClientRect().bottom > top + 1) hi = mid; else lo = mid + 1; }
+      return list[lo];
+    };
+    const row = over(c.children);
+    if (!row) return;
+    let part: Element = row;
+    // Down to the deepest block crossing the top (a paragraph of a tall reply):
+    // what grows before it inside the same reply moves it too.
+    for (let depth = 0; depth < 6 && part.getBoundingClientRect().top < top; depth++) {
+      const inner: Element | undefined = [...part.children].find((x) => { const r = x.getBoundingClientRect(); return r.height > 0 && r.bottom > top + 1; });
+      if (!inner) break;
+      part = inner;
+    }
+    anchor.current = { el: part, top: part.getBoundingClientRect().top - top };
+  };
 
   // The versions of each prompt (see versions() in tree.ts), grouped once per change of the list.
   const siblings = useMemo(() => {
@@ -446,6 +491,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       // The message box keeps the column's edges: it gets the scroll bar's width as padding.
       document.documentElement.style.setProperty("--sbw", `${el.offsetWidth - el.clientWidth}px`);
       if (stick.current) el.scrollTop = el.scrollHeight;
+      else if (anchor.current?.el.isConnected) {
+        const moved = anchor.current.el.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.current.top;
+        if (Math.abs(moved) >= 0.5) el.scrollTop += moved;
+      }
+      remember();
     });
     ro.observe(c);
     const onEnd = () => toEnd(true);
@@ -454,18 +504,32 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   }, [!!events]);
 
   // A search hit opens the session at its message.
+  // The request is checked when the frame runs, before anything moves: one
+  // cleared or replaced meanwhile scrolls nothing. The row becomes the
+  // keyboard's place too, so the next Tab reaches its actions.
   const focus = useUI((s) => s.focusEvent);
   useEffect(() => {
     if (!focus || !events?.some((e) => e.id === focus)) return;
-    stick.current = false;
-    requestAnimationFrame(() => {
+    const raf = requestAnimationFrame(() => {
+      if (getUI().focusEvent !== focus) return;
+      setUI({ focusEvent: null });
       const el = document.getElementById(`e-${focus}`);
-      if (!el) return;
-      el.scrollIntoView({ block: "center" });
+      if (!el) return; // folded into a turn's notes: the session opens at its end as usual
+      stick.current = false;
+      // Centered in the transcript's own scroller (scrollIntoView would also move clipped ancestors).
+      const sc = scroller.current;
+      if (sc) {
+        const r = el.getBoundingClientRect();
+        const box = sc.getBoundingClientRect();
+        sc.scrollTop += r.top - box.top - Math.max(0, (box.height - r.height) / 2);
+      }
+      remember();
+      el.tabIndex = -1;
+      el.focus({ preventScroll: true });
       el.classList.add("flash");
       setTimeout(() => el.classList.remove("flash"), 1600);
-      if (getUI().focusEvent === focus) setUI({ focusEvent: null });
     });
+    return () => cancelAnimationFrame(raf);
   }, [focus, events]);
 
   if (!events) return <div className="flex-1" />;
@@ -489,11 +553,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
           stick.current = near;
           if (away === near) setAway(!near);
+          remember();
         }}
       >
         <div ref={content} className="mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
           {previewing && (
-            <div className="sticky top-2 z-10 flex items-center gap-2 rounded-lg border border-brass/50 bg-raised px-3.5 py-2 text-ui shadow-2" data-testid="branch-preview">
+            <div className="sticky top-2 z-10 flex items-center gap-2 rounded-lg border border-brass/50 bg-raised px-3.5 py-2 text-ui shadow-2" data-testid="branch-preview" data-pinned="1">
               <GitBranch className="size-4 shrink-0 text-brass" />
               <span className="min-w-0 flex-1 text-muted">You are reading another branch. Replies still go to the current one.</span>
               <button type="button" data-testid="preview-continue" disabled={session.phase === "working"} title={session.phase === "working" ? "Possible when the turn ends" : undefined}
@@ -508,11 +573,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               // Folded into the turn's notes (the footer); the cut itself shows on the footer.
               if (e.data.origin === "restart") { notes.push(e); return null; }
               if (e.data.origin === "harness") {
-                return <p key={e.id} className="text-center text-caption text-faint" data-testid="harness-note">{String(e.data.text).replace(/^\[harness\]\s*/, "")}</p>;
+                return <p key={e.id} id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-md text-center text-caption text-faint" data-testid="harness-note">{String(e.data.text).replace(/^\[harness\]\s*/, "")}</p>;
               }
               prompt = e;
               reply = [];
-              return SYSTEM_INPUT.has(e.data.kind) ? <InputNotice key={e.id} e={e} /> : isPeerMessage(e) ? <PeerMessage key={e.id} e={e} /> : <UserMessage key={e.id} e={e} s={session} vs={siblings.get(e.parent) ?? []} />;
+              if (SYSTEM_INPUT.has(e.data.kind) || isPeerMessage(e)) {
+                return <div key={e.id} id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-lg">{SYSTEM_INPUT.has(e.data.kind) ? <InputNotice e={e} /> : <PeerMessage e={e} />}</div>;
+              }
+              return <UserMessage key={e.id} e={e} s={session} vs={siblings.get(e.parent) ?? []} />;
             }
             if (e.kind === "compaction") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "assistant" && e.data.stop === "refusal") return <Refusal key={e.id} e={e} s={session} handled={events[idx + 1]?.kind === "note" && events[idx + 1]!.data.kind === "fallback"} />;
@@ -545,7 +613,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             return null;
           })}
           {notes.length > 0 && <div className="flex" data-testid="pending-notes"><TurnNotes notes={notes} working={session.phase === "working"} /></div>}
-          <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} />
+          <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} previewing={previewing} />
         </div>
       </div>
       {away && (

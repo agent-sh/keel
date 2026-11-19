@@ -151,7 +151,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           }
           s = store.session(s.id)!;
           bus.emit({ t: "session", session: s });
-          if (body.text) engine.send(s.id, body.text, { images: body.images ?? [] });
+          if (body.text || body.images?.length) engine.send(s.id, String(body.text ?? "").trim(), { images: body.images ?? [] });
           return json({ session: store.session(s.id) }, 201);
         }),
       },
@@ -236,7 +236,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (s.archived) return bad("the session is archived", 409);
           const body = (await req.json()) as any;
           const text = String(body.text ?? "").trim();
-          if (!text) return bad("text cannot be empty");
+          // An image or a file may go without a caption; an edit needs words.
+          if (!text && (body.edit_of || !body.images?.length)) return bad("text cannot be empty");
           if (body.mode && !["send", "steer", "queue"].includes(body.mode)) return bad(`unknown mode ${body.mode}`);
           if (body.edit_of) return json(await engine.edit(s.id, String(body.edit_of), text), 201);
           return json(engine.send(s.id, text, { mode: body.mode, images: body.images ?? [] }), 201);

@@ -21,6 +21,16 @@ test("search conversations", async ({ page, request }) => {
   await expect(page).toHaveURL(new RegExp(`/s/${session.id}`));
   await expect(page.locator(".flash")).toBeVisible();
   await shoot(page, "search-02-opened");
+  // Opened from the keyboard, the message is where the keyboard is too.
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill(word);
+  await expect(page.getByRole("option").filter({ has: page.locator("mark") })).toHaveCount(1);
+  await page.keyboard.press("ArrowDown"); // from the session row to the hit
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".flash")).toBeVisible();
+  const focused = await page.evaluate(() => document.activeElement?.getAttribute("data-event-id"));
+  const hitEvent = (await (await request.get(`/api/search?q=${word}`)).json()).hits.find((h: any) => h.event_id).event_id;
+  expect(focused).toBe(hitEvent);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

@@ -30,6 +30,7 @@ export async function loadSkillCommands(workspace: string) {
         label: s.description.slice(0, 90) || `Run the ${s.name} skill`,
         hint: s.argument_hint,
         when: ({ session }) => !!session && !!byFolder.get(session.workspace)?.has(s.name),
+        sends: true,
         run: (arg, { session }) => api(`/api/sessions/${session!.id}/skill`, { method: "POST", body: JSON.stringify({ name: s.name, args: arg }) }).then(() => {}),
       });
     }
@@ -72,9 +73,9 @@ export function loadMcpPrompts(): Promise<void> {
         const hint = p.arguments.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(" ") || undefined;
         const live = () => promptIds.has(id);
         slash.add(
-          { id, label: `${p.description ? p.description.slice(0, 80) : `${p.name} prompt`} (MCP)`, hint, when: ({ session }) => !!session && live(), run },
+          { id, label: `${p.description ? p.description.slice(0, 80) : `${p.name} prompt`} (MCP)`, hint, when: ({ session }) => !!session && live(), sends: true, run },
           // Typed in full it runs; the menu lists the short form only.
-          { id: alias, label: `${p.server}:${p.name} (MCP)`, hint, when: () => false, run },
+          { id: alias, label: `${p.server}:${p.name} (MCP)`, hint, when: () => false, sends: true, run },
         );
       }
       promptIds.clear();

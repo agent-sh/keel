@@ -30,6 +30,8 @@ function useSlashItems() {
   return slash.all();
 }
 
+const OFF_BRANCH = "You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.";
+
 export function Composer({
   session, onSend, onQueue, onStop, working, model, onModel, workspace, autoFocus, focus = true,
 }: {
@@ -216,10 +218,14 @@ export function Composer({
   const ctx = { session, setText };
   const runSlash = async (item: SlashItem, arg: string) => {
     if (!item.run) return setNotice(`/${item.id} is not available yet.`);
+    // A command that prompts the model is held like a typed message while another branch is read.
+    if (item.sends && offBranch) { setMenu(null); return setNotice(OFF_BRANCH); }
     setNotice(null);
     setText("");
     setMenu(null);
     try { await item.run(arg, ctx); } catch (e) {
+      // Nothing ran: the command as typed comes back, unless something new was typed.
+      setText((cur) => cur || `/${item.id}${arg ? ` ${arg}` : ""}`);
       setNotice(String((e as Error).message));
       if (!(e as { usage?: boolean }).usage) reportError(e, { kind: "slash", id: item.id }); // a mistyped argument is not a failure
     }
@@ -280,7 +286,7 @@ export function Composer({
       const item = slashItems.find((i) => i.id === cmd[1]);
       if (item) return runSlash(item, (cmd[2] ?? "").trim());
     }
-    if (offBranch) return setNotice("You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.");
+    if (offBranch) return setNotice(OFF_BRANCH);
     if (switching) return setNotice("The model switch is not confirmed yet: nothing was sent.");
     // A new screenshot for a model that says it reads none: nothing starts until
     // the owner switches model or removes the image to send the text alone.
@@ -294,9 +300,9 @@ export function Composer({
     setImages([]);
     setMenu(null);
     try {
-      const blank = sent.some((a) => !a.file) ? "(image)" : "(attached file)";
-      if (queue && onQueue) await onQueue(t || blank, sent.map(toBlock));
-      else await onSend(t || blank, sent.map(toBlock));
+      // No caption is no text: the owner's words are never made up.
+      if (queue && onQueue) await onQueue(t, sent.map(toBlock));
+      else await onSend(t, sent.map(toBlock));
       if (sid) for (const a of sent) dropImage(sid, a.id); // only what was sent: an image added meanwhile stays
     } catch (e) {
       // Nothing was sent: the text and images come back, unless something new was typed.
