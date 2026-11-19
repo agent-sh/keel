@@ -22,18 +22,34 @@ import { TEXT_INLINE, TEXT_MEDIA } from "./compact.ts";
 let root = "";
 export const setAttachmentsRoot = (dir: string) => void (root = join(dir, "attachments"));
 
-const safeName = (n: string) => basename(n).replace(/[^\w.\- ()+]/g, "_").slice(0, 120) || "file";
+// The name the owner sees and the model reads: the file's own name in any
+// script, without path parts, control characters or quotes.
+const shownName = (n: string) => basename(n.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f"<>]/g, "_").trim().slice(0, 120) || "file";
+// On disk: the name when it is plain ASCII, else `file` plus its extension,
+// so the path stays safe everywhere and the extension still gives the type.
+const diskName = (n: string) => (/^[\w.\- ()+]+$/.test(n) ? n : `file${/\.[A-Za-z0-9]{1,10}$/.exec(n)?.[0]?.toLowerCase() ?? ""}`);
 
 export function saveAttachment(bytes: Uint8Array, name: string, mediaType: string, charset?: string): AttachmentBlock {
   const id = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
   const dir = join(root, id);
-  const file = join(dir, safeName(name));
-  if (!existsSync(file)) {
+  const shown = shownName(name);
+  // The same bytes under another name or extension: one copy; each prompt keeps its own name.
+  if (!existsSync(dir) || !readdirSync(dir).length) {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, bytes);
+    writeFileSync(join(dir, diskName(shown)), bytes);
   }
   const cs = charset?.trim().toLowerCase().replace(/^"|"$/g, "");
-  return { type: "attachment", id, name: safeName(name), media_type: mediaType || "application/octet-stream", size: bytes.byteLength, ...(cs && /^[\w.:-]{1,40}$/.test(cs) ? { charset: cs } : {}) };
+  return { type: "attachment", id, name: shown, media_type: mediaType || "application/octet-stream", size: bytes.byteLength, ...(cs && /^[\w.:-]{1,40}$/.test(cs) ? { charset: cs } : {}) };
+}
+
+// What a download says it is: the type its name gives; a file declared as
+// text whose bytes are text is text/plain whatever its name; anything else
+// unknown stays binary.
+export function servedType(path: string, name: string, declared?: string): string {
+  const byName = Bun.file(name).type || Bun.file(path).type;
+  if (byName && byName !== "application/octet-stream") return byName;
+  if (declared && TEXT_MEDIA.test(declared) && "text" in decodeText({ type: "attachment", id: "", name, media_type: declared, size: 0 }, read(path))) return "text/plain;charset=utf-8";
+  return "application/octet-stream";
 }
 
 export function attachmentPath(id: string): string | undefined {

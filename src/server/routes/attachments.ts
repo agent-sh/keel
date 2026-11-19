@@ -2,7 +2,7 @@
 // (src/engine/attachments.ts). Not tied to a session, so a new session's first
 // prompt can carry them too.
 import { readFileSync } from "node:fs";
-import { ATTACHMENT_MAX, attachmentPath, saveAttachment, setAttachmentsRoot } from "../../engine/attachments.ts";
+import { ATTACHMENT_MAX, attachmentPath, saveAttachment, servedType, setAttachmentsRoot } from "../../engine/attachments.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -25,17 +25,21 @@ export const attachmentRoutes: RouteModule = ({ store }) => {
       },
     },
     "/api/attachments/:id": {
+      // `name` and `type`: the prompt's own reference (one content can be two
+      // files with two names); the download is named as that prompt named it.
       GET: (req: any) => {
         const path = attachmentPath(req.params.id);
         if (!path) return json({ error: "no such attachment" }, 404);
-        const name = path.split("/").pop()!;
-        const type = Bun.file(path).type || "application/octet-stream";
+        const q = new URL(req.url).searchParams;
+        const name = (q.get("name") || path.split("/").pop()!).replace(/[\u0000-\u001f\u007f"\\/]/g, "_").slice(0, 120);
+        const type = servedType(path, name, q.get("type") ?? undefined);
+        const ascii = name.replace(/[^\x20-\x7e]/g, "_");
         return new Response(readFileSync(path), {
           headers: {
             "content-type": type,
             "x-content-type-options": "nosniff",
             "content-security-policy": "sandbox; default-src 'none'",
-            ...(/^image\/(png|jpeg|gif|webp)$/.test(type) ? {} : { "content-disposition": `attachment; filename="${name.replace(/"/g, "")}"` }),
+            ...(/^image\/(png|jpeg|gif|webp)$/.test(type) ? {} : { "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}` }),
           },
         });
       },

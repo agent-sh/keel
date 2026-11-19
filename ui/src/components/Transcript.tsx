@@ -73,7 +73,7 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
         if (b.type === "attachment") {
           const f = b as AttachmentBlock;
           return (
-            <a key={i} href={`/api/attachments/${f.id}`} download={f.name} data-testid="message-file" title={`${f.name}, ${f.media_type}`}
+            <a key={i} href={`/api/attachments/${f.id}?name=${encodeURIComponent(f.name)}&type=${encodeURIComponent(f.media_type)}`} download={f.name} data-testid="message-file" title={`${f.name}, ${f.media_type}`}
               className="flex h-10 max-w-64 items-center gap-2 rounded-lg border border-line bg-raised px-3 text-ui shadow-1 hover:border-line-strong">
               <FileText className="size-4 shrink-0 text-muted" />
               <span className="min-w-0 truncate">{f.name}</span>

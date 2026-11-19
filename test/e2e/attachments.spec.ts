@@ -155,3 +155,28 @@ test("mixed attachments keep their order and need no caption", async ({ page, re
   await shoot(page, "attach-05-mixed-order");
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// A file keeps its own name in any script, on the prompt and as a download;
+// the same bytes under two names download under the name each prompt gave;
+// a plain-text file without an extension downloads as text.
+test("attachment names and types survive upload and download", async ({ request }) => {
+  const up = async (name: string, body: string, type = "text/plain") =>
+    (await (await request.post(`/api/attachments?name=${encodeURIComponent(name)}`, { headers: { "content-type": type }, data: Buffer.from(body) })).json());
+  const contract = await up("חוזה.txt", "a");
+  const flat = await up("דירה.txt", "b");
+  expect([contract.name, flat.name]).toEqual(["חוזה.txt", "דירה.txt"]);
+  const dl = (ref: any) => request.get(`/api/attachments/${ref.id}?name=${encodeURIComponent(ref.name)}&type=${encodeURIComponent(ref.media_type)}`);
+  const c = await dl(contract);
+  expect(await c.text()).toBe("a");
+  expect(c.headers()["content-disposition"]).toContain(`filename*=UTF-8''${encodeURIComponent("חוזה.txt")}`);
+  const stamp = Date.now().toString(36);
+  const budget = await up(`budget-${stamp}.txt`, `same bytes ${stamp}`);
+  const release = await up(`release-${stamp}.txt`, `same bytes ${stamp}`);
+  expect(budget.id).toBe(release.id);
+  expect((await dl(budget)).headers()["content-disposition"]).toContain(`budget-${stamp}.txt`);
+  expect((await dl(release)).headers()["content-disposition"]).toContain(`release-${stamp}.txt`);
+  const runbook = await up(`RUNBOOK${stamp}`, "step one\n");
+  expect((await dl(runbook)).headers()["content-type"]).toBe("text/plain;charset=utf-8");
+  const blob = await up(`blob${stamp}`, "\u0000\u0001binary", "application/octet-stream");
+  expect((await dl(blob)).headers()["content-type"]).toBe("application/octet-stream");
+});
