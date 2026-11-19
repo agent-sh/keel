@@ -12,6 +12,9 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 // restore brings it back; the main checkout never changes.
 test("worktree session and branch review", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  // This spec needs the gate to ask: set it, whatever an earlier spec left behind.
+  const prevMode = (await (await request.get("/api/permissions/settings")).json()).default_mode;
+  await request.put("/api/permissions/settings", { data: { default_mode: "ask" } });
   const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `wt-${Date.now()}`);
   mkdirSync(repo, { recursive: true });
   git(repo, "init", "-q", "-b", "main");
@@ -84,6 +87,7 @@ test("worktree session and branch review", async ({ page, request }) => {
   await expect(page.getByTestId("worktree-chip")).not.toContainText("parked");
   expect(readFileSync(join(worktree.path, "notes.md"), "utf8")).toContain("second line");
 
+  await request.put("/api/permissions/settings", { data: { default_mode: prevMode } });
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

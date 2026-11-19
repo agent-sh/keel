@@ -23,6 +23,9 @@ async function authenticator(page: Page) {
 // from a remote device without one is refused; the desk itself never asks.
 test("passkeys for remote approvals", async ({ page, browser, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  // This spec needs the gate to ask: set it, whatever an earlier spec left behind.
+  const prevMode = (await (await request.get("/api/permissions/settings")).json()).default_mode;
+  await request.put("/api/permissions/settings", { data: { default_mode: "ask" } });
   await page.goto(`${DESK}/settings/safety`);
   await page.getByTestId("passkey-code-new").click();
   const code = (await page.getByTestId("passkey-code-shown").locator("span").first().textContent())!.trim();
@@ -68,6 +71,7 @@ test("passkeys for remote approvals", async ({ page, browser, request }) => {
     await ctx.close();
   }
 
+  await request.put("/api/permissions/settings", { data: { default_mode: prevMode } });
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
