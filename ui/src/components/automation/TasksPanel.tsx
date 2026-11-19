@@ -97,7 +97,7 @@ function TaskRow({ t, sid }: { t: Task; sid: string }) {
     else save(mine, base);
   };
   return (
-    <div className="group flex flex-col rounded-md px-3 py-1.5 hover:bg-hover" data-testid="task-row" data-status={t.status}>
+    <div className="group flex flex-col rounded-md px-3 py-1.5 hover:bg-hover" data-testid="task-row" data-status={t.status} data-task-id={t.id}>
       <div className="flex items-start gap-2">
         <Checkbox.Root
           checked={t.status === "completed"}

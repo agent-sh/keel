@@ -76,8 +76,8 @@ test("goals and the shared task list", async ({ page, request }) => {
   const review = (await (await request.post(`/api/sessions/${session.id}/tasks`, { data: { text: "Review A" } })).json()).task;
   await expect(page.getByTestId("task-row").filter({ hasText: "Review A" })).toHaveCount(1);
   await request.patch(`/api/sessions/${session.id}/tasks/${review.id}`, { data: { text: "Review B" } });
-  const row = page.getByTestId("task-row").filter({ hasText: "Review B" });
-  await expect(row).toHaveCount(1);
+  const row = page.locator(`[data-task-id="${review.id}"]`);
+  await expect(row.getByTestId("task-text")).toHaveText("Review B");
   const edits: string[] = [];
   page.on("request", (r) => { if (r.method() === "PATCH" && r.url().includes(`/tasks/${review.id}`)) edits.push(r.postData() ?? ""); });
   await row.getByTestId("task-text").dblclick();
