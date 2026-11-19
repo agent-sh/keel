@@ -27,6 +27,7 @@ import { usageRoutes } from "./usage.ts";
 import { searchRoutes } from "./search.ts";
 import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
+import { portRoutes } from "./port.ts";
 import { takeoverRoutes } from "./takeover.ts";
 import { hookRoutes } from "./hooks.ts";
 import { surfaceRoutes } from "./surfaces.ts";
@@ -88,6 +89,7 @@ export const routeModules: RouteModule[] = [
   convoRoutes,
   placesRoutes,
   importRoutes,
+  portRoutes, // bring the setup of the other harnesses over
   takeoverRoutes, // taking over a session another harness runs
   hookRoutes,
   surfaceRoutes, // Settings: skills, agent files, instruction files, the hooks file, plugins.toml

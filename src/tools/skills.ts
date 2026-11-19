@@ -15,7 +15,7 @@ export type Skill = {
   description: string;
   dir: string;
   file: string;
-  scope: "personal" | "project";
+  scope: "personal" | "project" | "plugin";
   userInvocable: boolean;
   modelInvocable: boolean;
   argumentHint?: string;
@@ -25,17 +25,46 @@ export type Skill = {
   enabled: boolean; // the owner can turn a skill off without deleting it
 };
 
-// Skills the owner turned off, by name: <config>/skills.json { "off": [...] }.
+// <config>/skills.json: the skills the owner turned off, by name ("off"), the
+// other folders Keel reads skills from ("roots", e.g. Codex's), and the Claude
+// Code plugins whose skills, commands and agents Keel carries ("plugins": the
+// id and Claude Code's folder; the install path is looked up on each read, so
+// a plugin update is followed). `keel port` writes the last two.
+export type SkillRoot = { dir: string; label?: string; nested?: boolean; exclude?: string[] };
+export type PluginRef = { id: string; claude: string };
+export type SkillsConfig = { off?: string[]; roots?: SkillRoot[]; plugins?: PluginRef[] };
 const offFile = () => join(configDir(), "skills.json");
+export function skillsConfig(): SkillsConfig {
+  try { const c = JSON.parse(readFileSync(offFile(), "utf8")); return c && typeof c === "object" ? c : {}; } catch { return {}; }
+}
+export function writeSkillsConfig(c: SkillsConfig) {
+  mkdirSync(configDir(), { recursive: true });
+  writeFileSync(offFile(), JSON.stringify(c, null, 2) + "\n");
+}
 export function skillsOff(): Set<string> {
-  try { return new Set((JSON.parse(readFileSync(offFile(), "utf8")).off ?? []).map(String)); } catch { return new Set(); }
+  return new Set((skillsConfig().off ?? []).map(String));
 }
 export function setSkillOff(name: string, off: boolean) {
-  const set = skillsOff();
+  const c = skillsConfig();
+  const set = new Set((c.off ?? []).map(String));
   if (off) set.add(name); else set.delete(name);
-  mkdirSync(configDir(), { recursive: true });
-  writeFileSync(offFile(), JSON.stringify({ off: [...set].sort() }, null, 2) + "\n");
+  writeSkillsConfig({ ...c, off: [...set].sort() });
 }
+
+// A carried plugin's folder now: Claude Code's installed_plugins.json (v2:
+// { plugins: { "<name>@<marketplace>": [{ scope, installPath }] } }), the
+// user-scope install first. Null when it is no longer installed.
+export function pluginDir(p: PluginRef): { name: string; dir: string } | null {
+  try {
+    const all = JSON.parse(readFileSync(join(p.claude, "plugins", "installed_plugins.json"), "utf8")).plugins?.[p.id];
+    const hit = (Array.isArray(all) ? all : []).sort((a: any, b: any) => (a.scope === "user" ? -1 : 0) - (b.scope === "user" ? -1 : 0))[0];
+    if (!hit?.installPath || !existsSync(hit.installPath)) return null;
+    return { name: p.id.split("@")[0]!, dir: hit.installPath };
+  } catch {
+    return null;
+  }
+}
+export const carriedPlugins = () => (skillsConfig().plugins ?? []).map(pluginDir).filter((x): x is { name: string; dir: string } => !!x);
 
 // Small YAML subset: scalars, quoted strings, [a, b] and "- a" lists, | and > blocks.
 export function frontmatter(text: string): { data: Record<string, any>; body: string } {
@@ -124,7 +153,7 @@ export function discoverSkills(cwd: string): Skill[] {
   const off = skillsOff();
   const seenReal = new Set<string>();
   // `held` is what the trust pin decides on: a skill's folder, a command's file.
-  const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"]) => {
+  const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"], prefix = "", chosen = false) => {
     let real: string;
     try { if (!statSync(file).isFile()) return; real = realpathSync(file); } catch { return; }
     if (seenReal.has(real)) return;
@@ -133,11 +162,12 @@ export function discoverSkills(cwd: string): Skill[] {
     let text = "";
     try { text = readFileSync(file, "utf8"); } catch { return; }
     const { data, body } = frontmatter(text);
-    const name = String((kind === "skill" && data.name) || fallback);
+    const name = prefix + String((kind === "skill" && data.name) || fallback);
     if (out.has(name) || /[<>​]/.test(name)) return;
     const desc = [data.description || body.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") || "", data.when_to_use || ""]
       .filter(Boolean).join(" ").slice(0, 1536);
-    if (scope === "personal" && foreignSkill(name, desc, body)) return;
+    // A folder the owner chose (another harness's skills, a plugin) keeps every skill it holds.
+    if (scope === "personal" && !chosen && foreignSkill(name, desc, body)) return;
     const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];
     out.set(name, {
       name, description: desc, dir: dirname(file), file, scope, kind,
@@ -150,12 +180,40 @@ export function discoverSkills(cwd: string): Skill[] {
     });
   };
   const list = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
-  for (const { dir, scope } of skillRoots(cwd)) {
+  const roots = skillRoots(cwd);
+  const own = roots.filter((r) => r.scope === "personal");
+  const cfg = skillsConfig();
+  for (const { dir, scope } of own) {
+    for (const n of list(dir)) if (!n.startsWith(".") && n !== "synced") add(join(dir, n, "SKILL.md"), join(dir, n), n, dir, scope, "skill");
+  }
+  // Folders the owner added (another harness's skills): a skill folder, or a
+  // category folder of them (Hermes keeps skills by category), minus the
+  // names the root leaves out.
+  for (const r of cfg.roots ?? []) {
+    const skip = new Set(r.exclude ?? []);
+    const walk = (dir: string, depth: number) => {
+      for (const n of list(dir)) {
+        if (n.startsWith(".") || skip.has(n)) continue;
+        const d = join(dir, n);
+        if (existsSync(join(d, "SKILL.md"))) add(join(d, "SKILL.md"), d, n, r.dir, "personal", "skill", "", true);
+        else if (r.nested && depth < 3) walk(d, depth + 1);
+      }
+    };
+    walk(r.dir, 0);
+  }
+  // Claude Code plugins the owner carried: <plugin>:<skill>, as Claude Code names them.
+  for (const p of carriedPlugins()) {
+    for (const n of list(join(p.dir, "skills"))) if (!n.startsWith(".")) add(join(p.dir, "skills", n, "SKILL.md"), join(p.dir, "skills", n), n, p.dir, "plugin", "skill", `${p.name}:`);
+  }
+  for (const { dir, scope } of roots.filter((r) => r.scope !== "personal")) {
     for (const n of list(dir)) if (!n.startsWith(".") && n !== "synced") add(join(dir, n, "SKILL.md"), join(dir, n), n, dir, scope, "skill");
   }
   // A skill wins a name over a command file, as in Claude Code.
   for (const { dir, scope } of commandRoots(cwd)) {
     for (const n of list(dir)) if (n.endsWith(".md") && !n.startsWith(".")) add(join(dir, n), join(dir, n), n.slice(0, -3), dir, scope, "command");
+  }
+  for (const p of carriedPlugins()) {
+    for (const n of list(join(p.dir, "commands"))) if (n.endsWith(".md") && !n.startsWith(".")) add(join(p.dir, "commands", n), join(p.dir, "commands", n), n.slice(0, -3), p.dir, "plugin", "command", `${p.name}:`);
   }
   // By name: the listing in the shared, cached prompt prefix stays byte-stable.
   return [...out.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -199,7 +257,7 @@ export function renderSkill(body: string, args: string, names: string[], vars: R
     }
     out += c;
   }
-  out = out.replace(/\$\{(CLAUDE_SKILL_DIR|CLAUDE_PROJECT_DIR|CLAUDE_SESSION_ID|KEEL_SKILL_DIR|KEEL_SESSION_ID)\}/g, (all, k) => vars[k] ?? all);
+  out = out.replace(/\$\{(CLAUDE_SKILL_DIR|CLAUDE_PROJECT_DIR|CLAUDE_SESSION_ID|CLAUDE_PLUGIN_ROOT|KEEL_SKILL_DIR|KEEL_SESSION_ID)\}/g, (all, k) => vars[k] ?? all);
   if (args.trim() && !used) out = `${out.trimEnd()}\n\nARGUMENTS: ${args}`;
   return out;
 }
@@ -216,7 +274,7 @@ export function loadSkill(name: string, args: string, ctx: ToolContext) {
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
   const text = renderSkill(body, args ?? "", skill.arguments, {
-    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, CLAUDE_PROJECT_DIR: gitRoot(ctx.cwd) ?? ctx.cwd,
+    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root } : {}), CLAUDE_PROJECT_DIR: gitRoot(ctx.cwd) ?? ctx.cwd,
     CLAUDE_SESSION_ID: ctx.sessionId, KEEL_SESSION_ID: ctx.sessionId,
   });
   const sent = loaded.get(ctx.sessionId) ?? new Set();
@@ -235,7 +293,7 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
   if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
   const text = renderSkill(body, args, skill.arguments, {
-    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
+    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root } : {}), CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
     CLAUDE_SESSION_ID: sessionId, KEEL_SESSION_ID: sessionId,
   });
   return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}` };

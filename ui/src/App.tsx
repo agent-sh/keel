@@ -9,6 +9,7 @@ import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
 import { AdminBand } from "./components/AdminBand.tsx";
 import "./lib/integrations-ui.ts";
+import "./lib/port-ui.ts";
 import "./lib/surfaces-ui.ts";
 import { installKeymap } from "./lib/keys.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";

@@ -16,6 +16,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["open", "open the workbench on a directory's session"],
     ["export", "write a session for Claude Code or Codex"],
     ["import", "sessions of other harnesses: list, preview, import"],
+    ["port", "bring your setup from Claude Code, Codex, Hermes and the Rust Keel"],
     ["models", "the models the providers list"],
   ]],
   ["Daemon", [

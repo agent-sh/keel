@@ -4,6 +4,7 @@ import { adminCommands } from "./admin.ts";
 import { debug } from "./debug.ts";
 import { completion } from "./help.ts";
 import { importCmd } from "./imports.ts";
+import { portCmd } from "./port.ts";
 import { loginCommands } from "./login.ts";
 import { mobileCommands } from "./mobile.ts";
 import { pluginCommands } from "./plugin.ts";
@@ -21,5 +22,6 @@ export const commands: Record<string, Command> = {
   "-p": (argv) => run(["-p", ...argv]),
   "--print": (argv) => run(["-p", ...argv]),
   import: importCmd,
+  port: portCmd,
   completion,
 };

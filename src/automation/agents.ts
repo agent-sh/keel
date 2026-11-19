@@ -11,6 +11,7 @@ import { Worktrees } from "../worktree/manager.ts";
 import { contains } from "../core/paths.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
+import { carriedPlugins } from "../tools/skills.ts";
 import { checkpointAt } from "../engine/compact.ts";
 
 // Subagents: a child session with its own context that works on one task and
@@ -258,6 +259,8 @@ export function definitions(cwd: string): AgentDef[] {
   // The owner's: the Rust Keel's folder, Claude Code's, then keel-bun's own (it wins a name).
   const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
+  // Agents of the Claude Code plugins the owner carried, as Claude Code names them (<plugin>:<agent>).
+  for (const p of carriedPlugins()) for (const d of readDir(join(p.dir, "agents"), "owner")) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
   const dirs: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {
     dirs.unshift(d);

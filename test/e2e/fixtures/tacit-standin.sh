@@ -9,4 +9,12 @@ case "$2" in
   pre-tool) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"- echo-rule: echo commands in tests are fine"}}' ;;
   pre-compact) ;;
 esac
+# keel port: `tacit import [--store DIR] claude|codex DIR...` counts the memory files.
+if [ "$1" = "import" ]; then
+  shift; [ "$1" = "--store" ] && shift 2
+  kind=$1; shift
+  n=$(find "$@" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)
+  [ -n "$TACIT_STANDIN_LOG" ] && printf 'import %s %s\n' "$kind" "$*" >> "$TACIT_STANDIN_LOG"
+  echo "import $kind: written $n, unchanged 0, skipped 0, errors 0"
+fi
 exit 0

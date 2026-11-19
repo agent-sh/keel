@@ -51,6 +51,7 @@ export function keelSessions(path = keelDb()): Found[] {
       model: r.model ? `${unquote(r.provider)}:${r.model}` : undefined,
       kind: r.parent_session_id ? ("subagent" as const) : r.input_kind === "loop" || r.scratch ? ("headless" as const) : ("interactive" as const),
       parent_id: r.parent_session_id ?? undefined,
+      archived: !!r.archived || undefined,
     }));
 }
 

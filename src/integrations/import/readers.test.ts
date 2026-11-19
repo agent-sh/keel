@@ -54,3 +54,26 @@ test("a Rust Keel session whose head is gone is not read as all its branches", a
   new Database(p).run("UPDATE sessions SET head_event_id = 'gone'");
   await expect(readKeel("s", p)).rejects.toMatchObject({ status: 409 });
 });
+
+test("a Hermes call left without a result is closed as failed; its notices are not the owner's prompts", async () => {
+  const p = join(dir, "state.db");
+  const db = new Database(p, { create: true });
+  db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, cwd TEXT, title TEXT, model TEXT, archived INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0, parent_session_id TEXT, started_at REAL, ended_at REAL, last_activity_at REAL);
+    CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_call_id TEXT, tool_calls TEXT, reasoning TEXT, reasoning_details TEXT, codex_reasoning_items TEXT, display_kind TEXT, _compressed_summary INTEGER DEFAULT 0, active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0, timestamp REAL);`);
+  db.query("INSERT INTO sessions (id, source, cwd, title, model, started_at) VALUES ('h', 'cli', ?, 't', 'm', 1)").run(dir);
+  const m = db.query("INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, display_kind, timestamp) VALUES ('h', ?, ?, ?, ?, ?, 2)");
+  m.run("user", "list the files", null, null, null);
+  m.run("assistant", "", null, JSON.stringify([{ id: "c1", function: { name: "terminal", arguments: '{"command":"ls"}' } }, { id: "c2", function: { name: "terminal", arguments: '{"command":"pwd"}' } }]), null);
+  m.run("tool", "a.txt", "c1", null, null);
+  m.run("user", "background job finished", null, null, "process_complete");
+  m.run("assistant", "Done.", null, null, null);
+  db.close();
+  const { hermesSessions, readHermes } = await import("./hermes.ts");
+  const f = hermesSessions(p).find((x) => x.id === "h")!;
+  expect(f.first_prompt).toBe("list the files");
+  const r = await readHermes(f, p);
+  const results = r.events.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
+  expect(results.map((x: any) => [x.tool_use_id, !!x.is_error])).toEqual([["c1", false], ["c2", true]]);
+  expect(r.events.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["list the files"]);
+  expect(r.events.some((e) => e.kind === "note" && e.data.text === "background job finished")).toBe(true);
+});

@@ -3,7 +3,7 @@
 // events. Readers only read: they never write beside the files they read.
 import type { EventKind } from "../../core/types.ts";
 
-export type Harness = "claude" | "codex" | "keel" | "agy";
+export type Harness = "claude" | "codex" | "keel" | "agy" | "hermes";
 export type Kind = "interactive" | "subagent" | "headless";
 
 export type Found = {
@@ -19,6 +19,7 @@ export type Found = {
   model?: string;
   kind: Kind;
   parent_id?: string;
+  archived?: boolean;   // the source keeps it archived
 };
 
 export type ImportedEvent = { kind: EventKind; data: any; ts: number };

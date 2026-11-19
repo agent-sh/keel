@@ -20,7 +20,7 @@ const USAGE = `keel import <list|harnesses|folders|preview|run|batch|index> [opt
   batch HARNESS:ID... [--mode new|update|open] [-m MODEL]   one line per source; exit 1 when one failed
   index [status|refresh|rebuild]               the index the list reads
 
-  Harnesses: claude, codex, keel. Every subcommand takes --json.`;
+  Harnesses: claude, codex, keel, agy, hermes. Every subcommand takes --json.`;
 
 const listRow = (f: any) => {
   const tags = [f.kind !== "interactive" ? `[${f.kind}]` : "", f.imported ? "(imported)" : ""].filter(Boolean).join(" ");

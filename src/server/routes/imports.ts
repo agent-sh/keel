@@ -322,7 +322,7 @@ export const importRoutes: RouteModule = (deps) => {
         if (!l) return json({ origin: null });
         let source: { exists: boolean; grew: boolean } = { exists: false, grew: false };
         try {
-          const st = statSync(l.harness === "keel" ? l.source_path.split("#")[0]! : l.source_path);
+          const st = statSync(l.harness === "keel" || l.harness === "hermes" ? l.source_path.split("#")[0]! : l.source_path);
           source = { exists: true, grew: st.size !== l.source_size || Math.round(st.mtimeMs) !== l.source_mtime };
         } catch {}
         return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id) }, source });

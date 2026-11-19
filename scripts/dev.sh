@@ -23,7 +23,9 @@ export KEEL_IMPORT_CLAUDE_DIR="${KEEL_IMPORT_CLAUDE_DIR:-$DEV/import/claude}"
 export KEEL_IMPORT_CODEX_DIR="${KEEL_IMPORT_CODEX_DIR:-$DEV/import/codex}"
 export KEEL_IMPORT_AGY_DIR="${KEEL_IMPORT_AGY_DIR:-$DEV/import/agy}"
 export KEEL_IMPORT_KEEL_DB="${KEEL_IMPORT_KEEL_DB:-$DEV/import/keel.db}"
-# The other agents' MCP configs are read from a scratch home (the MCP import e2e writes them there).
+export KEEL_IMPORT_HERMES_DIR="${KEEL_IMPORT_HERMES_DIR:-$DEV/import/hermes}"
+# The other agents' setup (MCP configs, and what keel port brings: ~/.claude, ~/.codex,
+# ~/.hermes) is read from a scratch home (the MCP import and port e2e write them there).
 export KEEL_IMPORT_HOME="${KEEL_IMPORT_HOME:-$DEV/import/home}"
 mkdir -p "$DEV/import/home"
 # The tacit stand-in (never the owner's memory store) and the scripted

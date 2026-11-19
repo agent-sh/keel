@@ -11,6 +11,7 @@ import { claudeFiles, claudeFound, claudeRoot, readClaude } from "./claude.ts";
 import { codexFiles, codexFound, codexHome, readCodex } from "./codex.ts";
 import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
+import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import type { Found, Harness, Read } from "./types.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
@@ -18,6 +19,7 @@ export const HARNESSES: { harness: Harness; label: string; store: () => string; 
   { harness: "codex", label: "Codex", store: codexHome },
   { harness: "keel", label: "Keel (Rust)", store: keelDb },
   { harness: "agy", label: "Antigravity", store: agyHome },
+  { harness: "hermes", label: "Hermes", store: hermesDb },
 ];
 
 const SCHEMA = `
@@ -41,7 +43,7 @@ const refuse = (message: string) => Object.assign(new Error(message), { status: 
 export type ListQuery = { harness?: Harness; q?: string; cwd?: string; show?: string; sort?: "updated" | "size" | "title"; limit?: number; cursor?: number };
 
 const sourceStat = (f: Found) => {
-  try { const s = statSync(f.harness === "keel" ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
+  try { const s = statSync(f.harness === "keel" || f.harness === "hermes" ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
 };
 
 const REFRESH_MS = 30_000;
@@ -65,6 +67,7 @@ export class Imports {
   private builtAt = 0;
   private keelCache: { at: number; rows: Found[] } | null = null;
   private agyCache: { at: number; rows: Found[] } | null = null;
+  private hermesCache: { at: number; rows: Found[] } | null = null;
   complete = false;
 
   constructor(private store: Store) {
@@ -97,6 +100,13 @@ export class Imports {
           if (++n % 200 === 0) await new Promise((r) => setTimeout(r, 0));
         }
       }
+      // Hermes's one database: its prompts read a slice at a time.
+      for (let i = 0; i < 10_000; i++) {
+        try { hermesSessions(undefined, 40); } catch { break; }
+        if (!hermesPending) break;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      this.hermesCache = null;
       const gone = [...known.keys()].filter((p) => !seen.has(p));
       const del = db.query("DELETE FROM import_index WHERE path = ?");
       for (const p of gone) del.run(p);
@@ -109,6 +119,7 @@ export class Imports {
   invalidate() {
     this.keelCache = null;
     this.agyCache = null;
+    this.hermesCache = null;
   }
 
   // Up to `ms` of a refresh before answering; the rest goes on in the background.
@@ -140,9 +151,18 @@ export class Imports {
     return rows;
   }
 
+  // Hermes keeps every session in one database: read like the Rust Keel's.
+  private hermes(): Found[] {
+    if (this.hermesCache && Date.now() - this.hermesCache.at < 5000) return this.hermesCache.rows;
+    let rows: Found[] = [];
+    try { rows = hermesSessions(undefined, 50); } catch {}
+    this.hermesCache = { at: Date.now(), rows };
+    return rows;
+  }
+
   all(harness?: Harness): Found[] {
     const out: Found[] = [];
-    if (!harness || (harness !== "keel" && harness !== "agy")) {
+    if (!harness || (harness !== "keel" && harness !== "agy" && harness !== "hermes")) {
       const rows = harness
         ? this.store.db.query<{ found: string }, [string]>("SELECT found FROM import_index WHERE found IS NOT NULL AND harness = ?").all(harness)
         : this.store.db.query<{ found: string }, []>("SELECT found FROM import_index WHERE found IS NOT NULL").all();
@@ -150,6 +170,7 @@ export class Imports {
     }
     if (!harness || harness === "keel") out.push(...this.keel());
     if (!harness || harness === "agy") out.push(...this.agy());
+    if (!harness || harness === "hermes") out.push(...this.hermes());
     return out;
   }
 
@@ -208,6 +229,7 @@ export class Imports {
     if (f.harness === "claude") return readClaude(f.path);
     if (f.harness === "codex") return readCodex(f.path);
     if (f.harness === "agy") return readAgy(f);
+    if (f.harness === "hermes") return readHermes(f);
     return readKeel(f.id);
   }
 
