@@ -5,6 +5,7 @@
 // runs every 5 s while a turn works, every 30 s when idle.
 import { readdirSync, readFileSync, statfsSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
+import { jobPids } from "../tools/jobs.ts";
 
 const TICK_MS = 10; // USER_HZ is 100 on Linux (getconf CLK_TCK)
 const ACTIVE_MS = 5_000;
@@ -15,7 +16,7 @@ export type Proc = {
   pid: number; ppid: number; name: string; label: string; command: string; kind: string; session_id?: string; started_ms: number;
   rss_bytes: number; peak_rss_bytes: number; cpu_user_ms: number; cpu_system_ms: number; cpu_percent: number; threads: number; open_files?: number;
 };
-type Sample = { ts_ms: number; cpu_percent: number; daemon_cpu_percent: number; cpu_ms: number; daemon_cpu_ms: number; rss_bytes: number; daemon_rss_bytes: number; processes: number; busy: boolean };
+type Sample = { ts_ms: number; unmeasured_ended: number; cpu_percent: number; daemon_cpu_percent: number; cpu_ms: number; daemon_cpu_ms: number; rss_bytes: number; daemon_rss_bytes: number; processes: number; busy: boolean };
 
 const read = (p: string) => { try { return readFileSync(p, "utf8"); } catch { return ""; } };
 const BOOT_MS = (() => {
@@ -71,6 +72,8 @@ export class Resources {
   private prev = new Map<number, { cpu: number; ts: number }>();
   private ended = new Map<string, { cpu_user_ms: number; cpu_system_ms: number; processes: number }>();
   private seen = new Map<number, Proc>();
+  // CPU ms of each process at the last sample, by pid and start time (a reused pid is another process).
+  private cpuAt = new Map<string, number>();
   private history: Sample[] = [];
   private procs: Proc[] = [];
   private measured = 0;
@@ -100,20 +103,23 @@ export class Resources {
     (this.timer as any).unref?.();
   }
 
-  // Every process under the daemon, children of children included. Each
-  // thread's `children` file names the processes it started, so only the
-  // daemon's own tree is read, not every process on the machine.
+  // Every process under the daemon, children of children included, and the
+  // background jobs a previous daemon started and this one adopted (with
+  // their children). Each thread's `children` file names the processes it
+  // started, so only the daemon's own trees are read, not every process.
   private descendants(): number[] {
     const out: number[] = [];
+    const seen = new Set<number>([process.pid]);
     const walk = (pid: number) => {
       let tids: string[] = [];
       try { tids = readdirSync(`/proc/${pid}/task`); } catch { return; }
       for (const t of tids) for (const c of read(`/proc/${pid}/task/${t}/children`).split(" ")) {
         const n = Number(c);
-        if (n) { out.push(n); walk(n); }
+        if (n && !seen.has(n)) { seen.add(n); out.push(n); walk(n); }
       }
     };
     walk(process.pid);
+    for (const pid of jobPids()) if (!seen.has(pid) && stat(pid)) { seen.add(pid); out.push(pid); walk(pid); }
     return out;
   }
 
@@ -154,10 +160,28 @@ export class Resources {
     const daemonMs = d.cpu_user_ms + d.cpu_system_ms;
     const before = this.history.at(-1);
     const dt = before ? now - before.ts_ms : 0;
+    // The CPU of the interval: each process's own growth since the last
+    // sample (a process born since then counts whole). A process that ended
+    // in between has an unknown last interval: counted in unmeasured_ended,
+    // never subtracted from the others.
+    const at = new Map<string, number>();
+    let used = 0;
+    const self = { pid: process.pid, started_ms: this.started, cpu: daemonMs };
+    for (const p of [self, ...procs.map((p) => ({ pid: p.pid, started_ms: p.started_ms, cpu: p.cpu_user_ms + p.cpu_system_ms }))]) {
+      const key = `${p.pid}:${p.started_ms}`;
+      at.set(key, p.cpu);
+      const was = this.cpuAt.get(key);
+      if (was !== undefined) used += Math.max(0, p.cpu - was);
+      else if (before && p.started_ms >= before.ts_ms) used += p.cpu;
+    }
+    let gone = 0;
+    for (const key of this.cpuAt.keys()) if (!at.has(key)) gone++;
+    this.cpuAt = at;
     this.history.push({
       ts_ms: now,
-      // Of one core over the time since the last sample; a process that ended in between is left out.
-      cpu_percent: dt ? Math.max(0, ((cpuMs - before!.cpu_ms) / dt) * 100) : 0,
+      unmeasured_ended: gone,
+      // Of one core over the time since the last sample.
+      cpu_percent: dt ? (used / dt) * 100 : 0,
       daemon_cpu_percent: dt ? Math.max(0, ((daemonMs - before!.daemon_cpu_ms) / dt) * 100) : 0,
       cpu_ms: cpuMs,
       daemon_cpu_ms: daemonMs,

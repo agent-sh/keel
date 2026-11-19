@@ -219,6 +219,9 @@ function watchAdopted() {
 }
 
 export const running = (j: Job) => j.ended === undefined;
+// The pids of the jobs still running, adopted ones included (after a restart
+// they are no longer the daemon's children).
+export const jobPids = () => [...jobs.values()].filter(running).map((j) => j.pid);
 
 // Resolves true when the job ended within ms, false when it is still running.
 export async function waitJob(j: Job, ms: number, signal?: AbortSignal): Promise<boolean> {
