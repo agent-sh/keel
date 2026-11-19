@@ -1,16 +1,16 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Bot, CornerDownLeft, Search, TextSearch, Zap } from "lucide-react";
+import { Archive, Bot, CornerDownLeft, Search, SquareTerminal, TextSearch, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { allCommands, commandsVersion, fuzzy, onCommands } from "../lib/keys.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
-import { ago, cn } from "../lib/utils.ts";
+import { ago, cn, folderNames } from "../lib/utils.ts";
 import { useWatches, WATCH_LABEL } from "../lib/watch.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
 
-type Hit = { session_id: string; session_title: string; event_id?: string; kind: string; snippet: string };
+type Hit = { session_id: string; session_title: string; event_id?: string; kind: string; snippet: string; cwd: string; archived: boolean; ts: number; ref?: string; partial?: boolean };
 type Entry = { key: string; group: string; label: ReactNode; detail?: string; keys?: string; icon: ReactNode; score: number; run: () => void };
 
 // A search snippet: \u0001 and \u0002 mark the matched words.
@@ -21,6 +21,9 @@ function Snippet({ text }: { text: string }) {
   const parts = t.split(/(\u0001[^\u0002]*\u0002)/);
   return <>{parts.map((p, i) => (p.startsWith("\u0001") ? <mark key={i} className="rounded-xs bg-brass-soft px-0.5 text-fg">{p.slice(1, -1)}</mark> : p))}</>;
 }
+
+// A hit in an archived session says so before it is opened (opening it reads, it does not restore).
+const Archived = () => <span className="ml-2 rounded-xs bg-sunken px-1 py-px text-micro font-medium text-muted" data-testid="hit-archived">Archived</span>;
 
 export function Palette() {
   const open = useUI((s) => s.palette);
@@ -52,7 +55,7 @@ export function Palette() {
         .then(async (r) => {
           const body = await r.json().catch(() => ({}));
           if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
-          setSearch({ q, hits: (body.hits ?? []).filter((h: Hit) => h.event_id) });
+          setSearch({ q, hits: body.hits ?? [] });
         })
         .catch((e) => {
           if (e.name === "AbortError") return;
@@ -70,11 +73,27 @@ export function Palette() {
     const out: Entry[] = [];
     const recent = Object.values(sessions).filter((s) => !s.archived).sort((a, b) => b.updated - a.updated);
     const w = watches;
-    for (const s of q ? recent : recent.slice(0, 6)) {
+    const listed = q ? recent : recent.slice(0, 6);
+    // Folders read apart where their last parts are the same (alpha/api, beta/api).
+    const names = folderNames([...listed.map((s) => s.workspace), ...hits.map((h) => h.cwd)]);
+    const seen = new Set<string>();
+    for (const s of listed) {
       const score = fuzzy(q, `${s.title} ${s.workspace}`);
-      if (score > 0) out.push({
-        key: `s:${s.id}`, group: "Sessions", label: s.title || "New session", detail: `${s.workspace.split("/").pop()}  ${ago(s.updated)}`,
-        icon: <span className="grid size-4 place-items-center" title={WATCH_LABEL[w[s.id] ?? "idle"]}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5, run: () => navigate({ name: "session", id: s.id }),
+      if (score > 0) {
+        seen.add(s.id);
+        out.push({
+          key: `s:${s.id}`, group: "Sessions", label: s.title || "New session", detail: `${names.get(s.workspace)}  ${ago(s.updated)}`,
+          icon: <span className="grid size-4 place-items-center" title={WATCH_LABEL[w[s.id] ?? "idle"]}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5, run: () => navigate({ name: "session", id: s.id }),
+        });
+      }
+    }
+    // A title or folder the daemon matched that is not listed here (archived, not loaded): opened to read, not restored.
+    for (const [i, h] of hits.entries()) {
+      if (h.kind !== "title" || seen.has(h.session_id)) continue;
+      seen.add(h.session_id);
+      out.push({
+        key: `t:${h.session_id}`, group: "Sessions", label: <>{h.session_title || "New session"}{h.archived && <Archived />}</>, detail: `${names.get(h.cwd)}  ${ago(h.ts)}`,
+        icon: h.archived ? <Archive className="size-4" /> : <TextSearch className="size-4" />, score: 40 - i, run: () => navigate({ name: "session", id: h.session_id }),
       });
     }
     for (const c of allCommands()) {
@@ -93,11 +112,15 @@ export function Palette() {
       }
     }
     for (const [i, h] of hits.entries()) {
+      if (!h.event_id) continue;
+      const tool = h.kind === "tool_use" || h.kind === "tool_result";
+      const where = `${h.session_title || "New session"} · ${names.get(h.cwd)}`;
       out.push({
-        key: `h:${h.event_id}`, group: "In conversations", detail: h.session_title || "New session",
-        label: <Snippet text={h.snippet} />, icon: <TextSearch className="size-4" />, score: 50 - i,
-        // Read it where it is: another branch is previewed, the session's own branch stays.
-        run: () => { setUI({ focusEvent: h.event_id!, preview: { session: h.session_id, event: h.event_id! } }); navigate({ name: "session", id: h.session_id }); },
+        key: `h:${h.event_id}:${h.ref ?? h.kind}`, group: "In conversations",
+        detail: `${h.archived ? "Archived · " : ""}${tool ? (h.kind === "tool_use" ? "Command · " : "Tool output · ") : h.kind === "summary" ? "Summary · " : ""}${where}${h.partial ? " · first part searched" : ""}`,
+        label: <><Snippet text={h.snippet} />{h.archived && <Archived />}</>, icon: tool ? <SquareTerminal className="size-4" /> : <TextSearch className="size-4" />, score: 50 - i,
+        // Read it where it is: another branch is previewed, the session's own branch stays; a tool hit opens its card.
+        run: () => { setUI({ focusEvent: h.event_id!, focusCall: tool ? h.ref ?? null : null, preview: { session: h.session_id, event: h.event_id! } }); navigate({ name: "session", id: h.session_id }); },
       });
     }
     const order = ["Sessions", "Actions", "In conversations", "Models"];

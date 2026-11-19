@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
-import { toAttachment, toBlock, type Attachment } from "../lib/images.ts";
+import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { fuzzy } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
@@ -111,7 +111,7 @@ export function Composer({
         setNotice(d.origin && d.origin !== "page" ? `Text added from ${d.origin}.` : "Text added from outside the page.");
       }
       const ids = new Set(d.attachments.map((f) => f.id));
-      setImages((cur) => cur.filter((a) => ids.has(a.id) || pendingKeep.current.has(a.id)));
+      setImages((cur) => cur.filter((a) => a.file || ids.has(a.id) || pendingKeep.current.has(a.id)));
       for (const f of d.attachments) {
         if (have.current.has(f.id)) continue;
         have.current.add(f.id);
@@ -151,6 +151,13 @@ export function Composer({
     setUI({ composerSeed: null }); // consumed: another message box mounted later must not take it
     setText((cur) => (seed.append && cur.trim() ? `${cur}${cur.endsWith("\n") ? "" : "\n"}${seed.text}` : seed.text));
     if (seed.notice) setNotice(seed.notice);
+    if (seed.blocks?.length) {
+      // Attachments in their order: a picture is kept in the server draft like a pasted one.
+      const sid = sidRef.current;
+      const add = seed.blocks.map(fromBlock);
+      setImages((cur) => [...cur, ...add].slice(0, 20));
+      if (sid) for (const a of add) if (!a.file) { have.current.add(a.id); pendingKeep.current.add(a.id); keepImage(sid, a).finally(() => pendingKeep.current.delete(a.id)); }
+    }
     requestAnimationFrame(() => {
       const el = ref.current;
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }

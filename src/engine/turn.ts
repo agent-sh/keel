@@ -318,7 +318,8 @@ export class Engine {
     }
     this.release(id);
     const ev = this.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
-    this.titleFrom(id, text);
+    // The title comes from the owner's first words, not from a timer's or a report's envelope.
+    if (!opts.meta) this.titleFrom(id, text);
     this.start(id);
     this.emitQueue(id);
     return { event: ev };
@@ -331,7 +332,8 @@ export class Engine {
     if (!old || old.session_id !== id || old.kind !== "user") throw Object.assign(new Error("not a prompt of this session"), { status: 400 });
     await this.interrupt(id);
     this.release(id);
-    const ev = this.append(id, "user", { text, images: old.data.images }, old.parent);
+    // An edited steer is a new turn from the same place, not a live steer: it says what it was.
+    const ev = this.append(id, "user", { text, images: old.data.images, ...(old.data.origin === "steer" ? { edited_from: "steer" } : {}) }, old.parent);
     this.emitSession(id);
     this.start(id);
     this.emitQueue(id);

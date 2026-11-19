@@ -88,3 +88,54 @@ test("branches, fork, rename, archive, search, delete", async ({ page, request }
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// A fork made before a prompt puts the prompt back in the new box with its
+// picture; the fork keeps its clear undoable (its marker names the fork's own
+// event), says where it came from, and a fork can be named at once. A rename
+// is not new work: the session keeps its place among the newest.
+test("fork before a prompt, named fork, clear undo in a fork", async ({ page, request }) => {
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const tag = `fb${Date.now().toString(36)}`;
+  const M = "scripted:stand-in";
+  const idle = (id: string) => expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+  // 1x1 PNG
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const { session } = await (await request.post("/api/sessions", { data: { model: M, text: `first ${tag}` } })).json();
+  await idle(session.id);
+  await request.post(`/api/sessions/${session.id}/clear`);
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `second ${tag}`, images: [{ type: "image", media_type: "image/png", data: png }] } });
+  await idle(session.id);
+
+  await page.goto(`/s/${session.id}`);
+  const second = page.getByTestId("user-message").filter({ hasText: `second ${tag}` });
+  await second.hover();
+  await second.getByRole("button", { name: "Fork before this prompt and edit it there" }).click();
+  await expect(page).not.toHaveURL(new RegExp(session.id));
+  await expect(page.getByTestId("composer")).toHaveValue(`second ${tag}`);
+  await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
+  await expect(page.getByTestId("fork-note")).toBeVisible();
+  // The fork's clear: Undo shows and moves the fork back before it, the source stays.
+  const sourceHead = (await (await request.get(`/api/sessions/${session.id}`)).json()).session.head;
+  await shoot(page, "tree-06-fork-before");
+  await page.getByTestId("undo-clear").click();
+  await expect(page.getByTestId("cleared")).toHaveCount(0);
+  await expect(page.getByTestId("user-message").filter({ hasText: `first ${tag}` })).toBeVisible();
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.head).toBe(sourceHead);
+
+  // A named fork from the source: its title at once; the source keeps its own.
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").fill("/fork Docs");
+  await page.getByTestId("composer").press("Enter");
+  await expect(page.getByTestId("session-title")).toHaveText("Docs");
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.title).not.toBe("Docs");
+
+  // A rename keeps the session's last activity (its place in the lists).
+  const before = (await (await request.get(`/api/sessions/${session.id}`)).json()).session;
+  await request.patch(`/api/sessions/${session.id}`, { data: { title: `Renamed ${tag}` } });
+  const after = (await (await request.get(`/api/sessions/${session.id}`)).json()).session;
+  expect(after.updated).toBe(before.updated);
+  expect(after.rev).toBeGreaterThan(before.rev);
+
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
+});

@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS queue (
 `;
 
 type EventRow = Omit<StoredEvent, "data"> & { data: string };
+// Fields of event data that hold the id of another event of the same session.
+const EVENT_REFS = ["covered", "undo_head", "from_event", "replaced_head"] as const;
 const rowToEvent = (r: EventRow): StoredEvent => ({ ...r, parent: r.parent ?? null, kind: r.kind as EventKind, data: JSON.parse(r.data) });
 
 // Cached events are shared by every reader: frozen, so a reader that changes
@@ -135,6 +137,9 @@ export class Store {
     // The session's head when the prompt was queued: the branch it was written on.
     if (!this.columnExists("queue", "anchor")) this.db.exec("ALTER TABLE queue ADD COLUMN anchor TEXT");
     if (!this.columnExists("sessions", "settings")) this.db.exec("ALTER TABLE sessions ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
+    // Bumped by every change of the session row: a reply that carries an older
+    // revision than what a page holds does not undo the newer change.
+    if (!this.columnExists("sessions", "rev")) this.db.exec("ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
     for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
@@ -180,17 +185,24 @@ export class Store {
       .map(rowToSession);
   }
 
+  // `updated` is the session's last activity (lists sort by it, "the last
+  // session" is the newest by it): a rename or a settings change is not work,
+  // so it moves `rev` only.
   updateSession(id: string, patch: Partial<Pick<Session, "title" | "model" | "phase" | "archived" | "usage" | "workspace" | "head" | "settings">>): Session {
-    const sets: string[] = [];
+    const sets: string[] = ["rev = rev + 1"];
     const vals: (string | number)[] = [];
+    let activity = false;
     for (const [k, v] of Object.entries(patch)) {
       if (v === undefined) continue;
       sets.push(`${k} = ?`);
+      if (k !== "title" && k !== "settings") activity = true;
       if (k === "title") { vals.push(this.redact(id, "title", v)); continue; }
       vals.push(k === "usage" || k === "settings" ? JSON.stringify(v) : k === "archived" ? (v ? 1 : 0) : (v as string));
     }
-    sets.push("updated = ?");
-    vals.push(Date.now());
+    if (activity) {
+      sets.push("updated = ?");
+      vals.push(Date.now());
+    }
     this.db.query(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
     return this.session(id)!;
   }
@@ -205,7 +217,7 @@ export class Store {
       if (v === null || v === undefined) delete next[k];
       else next[k] = v;
     }
-    this.db.query("UPDATE sessions SET settings = ? WHERE id = ?").run(JSON.stringify(next), id);
+    this.db.query("UPDATE sessions SET settings = ?, rev = rev + 1 WHERE id = ?").run(JSON.stringify(next), id);
     return this.session(id);
   }
 
@@ -281,15 +293,29 @@ export class Store {
   }
 
   // Copy a lineage into another session under new ids (fork). Returns the new head.
+  // An event that names another one (a checkpoint's `covered`, a clear's
+  // `undo_head`, a summary's `from_event`) names the copy of it; a name that
+  // points outside the copied line is dropped, never left pointing at the source.
   copyEvents(session_id: string, events: StoredEvent[]): string | null {
     let prev: string | null = null;
+    const ids = new Map(events.map((e) => [e.id, Bun.randomUUIDv7()] as const));
     const tx = this.db.transaction(() => {
       let seq = 0;
       for (const e of events) {
-        const id = Bun.randomUUIDv7();
+        const id = ids.get(e.id)!;
+        let data = e.data as Record<string, unknown>;
+        if (data && typeof data === "object" && EVENT_REFS.some((k) => typeof data[k] === "string")) {
+          data = { ...data };
+          for (const k of EVENT_REFS) {
+            if (typeof data[k] !== "string") continue;
+            const to = ids.get(data[k] as string);
+            if (to) data[k] = to;
+            else delete data[k];
+          }
+        }
         this.db
           .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(this.redact(session_id, e.kind, e.data)), e.ts);
+          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(this.redact(session_id, e.kind, data)), e.ts);
         prev = id;
       }
       this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, session_id);

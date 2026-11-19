@@ -51,3 +51,10 @@ export async function toAttachment(file: File): Promise<Attachment> {
 }
 
 export const toBlock = (a: Attachment): PromptBlock => a.file ?? { type: "image", media_type: a.media_type, data: a.data };
+
+// A stored prompt's attachment back in the message box (a prompt forked back to be edited).
+export function fromBlock(b: PromptBlock, i: number): Attachment {
+  if (b.type === "attachment") return { type: "image", media_type: b.media_type, data: "", id: crypto.randomUUID(), name: b.name, url: `/api/attachments/${b.id}`, bytes: b.size, file: b };
+  const bytes = Math.floor((b.data.length * 3) / 4);
+  return { type: "image", media_type: b.media_type, data: b.data, id: crypto.randomUUID(), name: `image ${i + 1}`, url: `data:${b.media_type};base64,${b.data}`, bytes };
+}

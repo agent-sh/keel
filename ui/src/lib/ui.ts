@@ -1,6 +1,7 @@
 // Page state that is not daemon state: the route, theme, which overlays are
 // open, and the owner's local preferences. Components read it with useUI.
 import { useSyncExternalStore } from "react";
+import type { PromptBlock } from "../../../src/core/types.ts";
 
 export type Route =
   | { name: "new" }
@@ -23,10 +24,12 @@ type UIState = {
   newModel: string;
   // Text pushed into a message box (a file mention, a starter): `session` names the
   // session's box, absent for the start box. Several boxes can be on screen.
-  // `append`: added below what the box holds instead of replacing it; `notice`: said in the box.
-  composerSeed: { text: string; n: number; session?: string; append?: boolean; notice?: string } | null;
+  // `append`: added below what the box holds instead of replacing it; `notice`: said in the box;
+  // `blocks`: attachments that go into the box with the text (a prompt forked back to the box).
+  composerSeed: { text: string; n: number; session?: string; append?: boolean; notice?: string; blocks?: PromptBlock[] } | null;
   panel: string | null; // the open tab of the side panel
   focusEvent: string | null; // a message to scroll to once its session is shown (?e=)
+  focusCall: string | null; // a tool call whose card opens there (a search hit on a command or its output)
   // A message opened from search on another branch: shown without moving the
   // session's branch until the owner chooses to continue from it.
   preview: { session: string; event: string } | null;
@@ -70,6 +73,7 @@ let state: UIState = {
   composerSeed: null,
   panel: pref("keel.panel", null),
   focusEvent: new URLSearchParams(location.search).get("e"),
+  focusCall: null,
   preview: null,
 };
 const subs = new Set<() => void>();
@@ -120,7 +124,7 @@ export function setTheme(t: ThemePref) {
 }
 export const isDark = () => document.documentElement.classList.contains("dark");
 export const phone = isPhone;
-export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined, o: { append?: boolean; notice?: string } = {}) =>
+export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined, o: { append?: boolean; notice?: string; blocks?: PromptBlock[] } = {}) =>
   setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1, session, ...o } });
 
 // Models the owner picked, newest first: the picker's Recent group. A pick

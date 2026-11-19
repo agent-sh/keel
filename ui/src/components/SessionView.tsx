@@ -35,7 +35,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   // ones the page already held.
   const [unreached, setUnreached] = useState<string | null>(null);
   const connected = useStore((s) => s.connected);
-  const gone = useStore((s) => !!s.gone[id]);
+  const gone = useStore((s) => s.gone[id]);
   useEffect(() => {
     setMissing(null);
     if (unreached === id && !connected) return;
@@ -54,7 +54,9 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
         <div className={missingHeader ? "max-w-md px-[22px] py-5" : "m-auto max-w-sm text-center"}>
           {!missingHeader && <p className="text-ui text-fg">This session is not on this daemon.</p>}
           <p className="mt-1 text-caption text-muted">It was deleted, or the link comes from another machine.</p>
-          <button type="button" onClick={() => navigate({ name: "new" })} className="mt-3 h-8 rounded-md border border-line px-3 text-ui hover:bg-hover">Start a new session</button>
+          {typeof gone === "string"
+            ? <button type="button" data-testid="missing-parent" onClick={() => navigate({ name: "session", id: gone })} className="mt-3 h-8 rounded-md border border-line px-3 text-ui hover:bg-hover">Back to the parent session</button>
+            : <button type="button" onClick={() => navigate({ name: "new" })} className="mt-3 h-8 rounded-md border border-line px-3 text-ui hover:bg-hover">Start a new session</button>}
         </div>
       </div>
     );

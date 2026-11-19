@@ -1,7 +1,7 @@
 // Turn and session-tree commands: slash commands, palette actions and the
 // fork button under prompts and replies.
 import { createElement } from "react";
-import { GitBranch } from "lucide-react";
+import { GitBranch, Split } from "lucide-react";
 import { rowActions, slash } from "./extend.ts";
 import { chooseFallback, setFallback } from "../components/Fallback.tsx";
 import { fuzzy, registerCommand } from "./keys.ts";
@@ -12,7 +12,7 @@ const current = () => {
   const r = getUI().route;
   return r.name === "session" ? getState().sessions[r.id] : undefined;
 };
-const fork = (id: string, eventId: string) => actions.fork(id, eventId).then((s) => navigate({ name: "session", id: s.id }));
+const fork = (id: string, eventId: string, opts: { before?: boolean; title?: string } = {}) => actions.fork(id, eventId, opts).then((s) => navigate({ name: "session", id: s.id }));
 const efforts = (model: string) => getState().models.find((m) => m.id === model)?.efforts ?? [];
 
 slash.add(
@@ -25,7 +25,7 @@ slash.add(
       return actions.compact(session.id, arg || undefined).then(() => {});
     },
   },
-  { id: "fork", label: "Fork this session into a new one", when: ({ session }) => !!session?.head, run: (_a, { session }) => fork(session!.id, session!.head!) },
+  { id: "fork", label: "Fork this session into a new one", hint: "[name]", when: ({ session }) => !!session?.head, run: (a, { session }) => fork(session!.id, session!.head!, { title: a }) },
   {
     id: "effort",
     label: "Set the reasoning effort",
@@ -63,5 +63,7 @@ registerCommand(
 
 rowActions.add(
   { id: "fork", label: "Fork a new session from here", icon: createElement(GitBranch, { className: "size-3.5" }), on: "user", run: (e, s) => void fork(s.id, e.id).catch(reportError) },
+  // The prompt itself stays out of the copy and waits in the new box, with its attachments, to be changed.
+  { id: "fork-before", label: "Fork before this prompt and edit it there", icon: createElement(Split, { className: "size-3.5" }), on: "user", run: (e, s) => void fork(s.id, e.id, { before: true }).catch(reportError) },
   { id: "fork-reply", label: "Fork a new session from here", icon: createElement(GitBranch, { className: "size-3.5" }), on: "assistant", run: (e, s) => void fork(s.id, e.id).catch(reportError) },
 );

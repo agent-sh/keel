@@ -3,7 +3,8 @@ import {
   Check, ChevronRight, Circle, CircleDot, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
   ListChecks, MessageCircleQuestion, NotebookPen, Plug, Search, Sparkles, SquareTerminal, Square, Wrench, X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { actions, failed } from "../lib/store.ts";
@@ -82,8 +83,18 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
   const shell = kind === "shell" || kind === "stdin" ? shellStatus(out) : {};
   // Diffs are what the owner wants to see: small ones start open.
   const [open, setOpen] = useState(() => !!diff && diff.lines.length <= 40 && !live);
+  // A search hit on this call or its output opens this card (not a sibling call of the same reply).
+  const focused = useUI((s) => s.focusCall === use.id);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focused) return;
+    setOpen(true);
+    setUI({ focusCall: null });
+    // After the transcript has scrolled to the reply that holds it (its frame comes first).
+    requestAnimationFrame(() => requestAnimationFrame(() => { root.current?.scrollIntoView({ block: "center" }); root.current?.classList.add("flash"); setTimeout(() => root.current?.classList.remove("flash"), 1600); }));
+  }, [focused]);
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-tool={use.name} data-state={live ? "live" : state} data-kind={kind}>
+    <Collapsible.Root ref={root} open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={live ? "live" : state} data-kind={kind}>
       <Collapsible.Trigger className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui hover:bg-hover">
         <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" ? "bg-danger-soft text-danger" : state === "running" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
           <Icon className="size-3.5" />

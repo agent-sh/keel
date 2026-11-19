@@ -181,6 +181,15 @@ describe("client commands against a running daemon", () => {
     expect(ids.out.trim().split("\n")).toEqual(all.map((s: any) => s.id));
     const found = await k(["sessions", "then what", "--json"]);
     expect(json(found.out).length).toBeGreaterThan(0);
+    // --tail 0 is none of the history; --all is the archived ones too, not instead.
+    expect(json((await k(["show", all[0].id, "--json", "--tail", "0"])).out).events).toEqual([]);
+    expect((await k(["logs", all[0].id, "--tail", "0"])).out).toBe("");
+    const base = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const old = json((await k(["run", "--json", "to be archived"])).out).session_id;
+    await fetch(`${base}/api/sessions/${old}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ archived: true }) });
+    const every = json((await k(["sessions", "--all", "--json"])).out).map((s: any) => s.id);
+    expect(every).toEqual(expect.arrayContaining([...all.map((s: any) => s.id), old]));
+    expect(json((await k(["sessions", "--json"])).out).map((s: any) => s.id)).not.toContain(old);
 
     // Without an id a prompt goes to the session the owner used in the last minute.
     const toLast = await k(["send", "--json", "where does this go"]);

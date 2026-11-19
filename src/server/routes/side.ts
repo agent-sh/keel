@@ -42,11 +42,18 @@ export const sideRoutes: RouteModule = ({ store, engine, errors }) => {
     return [...by.entries()].map(([id, exchanges]) => ({ id, created_ms: exchanges[0]!.ts, exchanges }));
   };
 
+  // Clear forgets every exchange, also one still being answered: each clear
+  // starts a new generation and stops the answers asked before it.
+  const gen = new Map<string, number>();
+  const pending = new Map<string, Set<AbortController>>();
+
   return {
     "/api/sessions/:id/side": {
       GET: (req: any) => (store.session(req.params.id) ? json({ threads: threads(req.params.id) }) : json({ error: "no such session" }, 404)),
       DELETE: (req: any) => {
         if (!store.session(req.params.id)) return json({ error: "no such session" }, 404);
+        gen.set(req.params.id, (gen.get(req.params.id) ?? 0) + 1);
+        for (const c of pending.get(req.params.id) ?? []) c.abort();
         store.db.run("DELETE FROM side_exchanges WHERE session_id = ?", [req.params.id]);
         return json({ threads: [] });
       },
@@ -65,13 +72,23 @@ export const sideRoutes: RouteModule = ({ store, engine, errors }) => {
           extra.push({ role: "assistant", content: [{ type: "text", text: x.answer }] });
         }
         extra.push({ role: "user", content: [{ type: "text", text: asked(question) }] });
+        const at = gen.get(s.id) ?? 0;
+        const stop = new AbortController();
+        const mine = pending.get(s.id) ?? pending.set(s.id, new Set()).get(s.id)!;
+        mine.add(stop);
+        const cleared = () => json({ error: "the side questions were cleared while this one was answered", cleared: true }, 409);
         let res;
         try {
-          res = await engine.ask(s.id, extra, req.signal);
+          res = await engine.ask(s.id, extra, AbortSignal.any([req.signal, stop.signal]));
         } catch (e) {
+          if ((gen.get(s.id) ?? 0) !== at) return cleared();
           const rec = errors.capture("provider", e, { session: s.id, at: "side question" });
           return json({ error: rec.message, error_id: rec.id }, 502);
+        } finally {
+          mine.delete(stop);
         }
+        // An answer that lands after a clear is not kept (its thread was forgotten).
+        if ((gen.get(s.id) ?? 0) !== at) return cleared();
         const ranTools = res.blocks.some((x) => x.type === "tool_use");
         let answer = res.blocks.filter((x) => x.type === "text").map((x: any) => x.text).join("\n\n").trim();
         if (ranTools) answer += `${answer ? "\n\n" : ""}_It asked to run a tool; side questions run none._`;

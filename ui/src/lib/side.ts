@@ -16,6 +16,8 @@ export type SideState = {
   error: Record<string, string | undefined>;
 };
 
+// Clears per session: an answer asked before the newest clear is dropped.
+const cleared = new Map<string, number>();
 let st: SideState = { threads: {}, current: {}, pending: {}, error: {} };
 const subs = new Set<() => void>();
 const set = (p: Partial<SideState>) => { st = { ...st, ...p }; subs.forEach((f) => f()); };
@@ -28,27 +30,31 @@ export const side = {
     set({ threads: { ...st.threads, [id]: threads }, current: { ...st.current, [id]: st.current[id] ?? threads.at(-1)?.id } });
   },
   async ask(id: string, question: string) {
+    const at = cleared.get(id) ?? 0;
     set({ pending: { ...st.pending, [id]: question }, error: { ...st.error, [id]: undefined } });
     try {
       const r = await api<{ thread_id: string; exchange: SideExchange }>(`/api/sessions/${id}/side`, {
         method: "POST", body: JSON.stringify({ question, thread_id: st.current[id] }),
       });
+      if ((cleared.get(id) ?? 0) !== at) return; // cleared meanwhile: its answer is forgotten too
       const list = [...(st.threads[id] ?? [])];
       const t = list.find((x) => x.id === r.thread_id);
       if (t) list[list.indexOf(t)] = { ...t, exchanges: [...t.exchanges, r.exchange] };
       else list.push({ id: r.thread_id, created_ms: r.exchange.ts, exchanges: [r.exchange] });
       set({ threads: { ...st.threads, [id]: list }, current: { ...st.current, [id]: r.thread_id } });
     } catch (e) {
+      if ((cleared.get(id) ?? 0) !== at || (e as { body?: { cleared?: boolean } }).body?.cleared) return;
       set({ error: { ...st.error, [id]: (e as Error).message } });
       throw e;
     } finally {
-      set({ pending: { ...st.pending, [id]: undefined } });
+      if ((cleared.get(id) ?? 0) === at) set({ pending: { ...st.pending, [id]: undefined } });
     }
   },
   newThread: (id: string) => set({ current: { ...st.current, [id]: undefined } }),
   async clear(id: string) {
     await api(`/api/sessions/${id}/side`, { method: "DELETE" });
-    set({ threads: { ...st.threads, [id]: [] }, current: { ...st.current, [id]: undefined } });
+    cleared.set(id, (cleared.get(id) ?? 0) + 1);
+    set({ threads: { ...st.threads, [id]: [] }, current: { ...st.current, [id]: undefined }, pending: { ...st.pending, [id]: undefined } });
   },
 };
 

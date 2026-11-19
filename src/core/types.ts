@@ -99,7 +99,8 @@ export type Session = {
   model: string;
   workspace: string;
   created: number;
-  updated: number;
+  updated: number; // the last activity (a prompt, a turn), not a rename
+  rev?: number; // bumped by every change of the session itself
   phase: "idle" | "working" | "error";
   archived: boolean;
   usage: Usage;

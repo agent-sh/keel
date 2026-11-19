@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { expect, test } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -65,4 +66,58 @@ test("search conversations", async ({ page, request }) => {
   await expect(page.getByTestId("palette")).toBeVisible();
   release();
   await page.unroute(/\/api\/search\?/);
+});
+
+// What the palette finds besides prompts and replies: a command and its
+// output (opening that tool card), an attached file by its name, a title
+// copied with its accents, and an archived session's title, marked Archived
+// and opened to read. Two sessions of same-named folders read apart.
+test("search commands, outputs, files and archived titles", async ({ page, request }) => {
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const tag = `kx${Date.now().toString(36)}`;
+  const M = "scripted:stand-in";
+  const home = process.env.HOME!;
+  const idle = (id: string) => expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+
+  const run = (await (await request.post("/api/sessions", { data: { model: M, text: `script:calls [{"name":"Bash","input":{"command":"echo shout-${tag}-done"}}]` } })).json()).session;
+  await idle(run.id);
+  const ref = await (await request.post(`/api/attachments?name=saffron-${tag}.txt`, { headers: { "content-type": "text/plain" }, data: "ledger" })).json();
+  const filed = (await (await request.post("/api/sessions", { data: { model: M, text: "(attached file)", images: [ref] } })).json()).session;
+  await idle(filed.id);
+  for (const d of ["alpha", "beta"]) mkdirSync(`${home}/.cache/keel-work/bun/e2e-ws/${d}/api`, { recursive: true });
+  const old = (await (await request.post("/api/sessions", { data: { model: M, workspace: `${home}/.cache/keel-work/bun/e2e-ws/alpha/api` } })).json()).session;
+  await request.patch(`/api/sessions/${old.id}`, { data: { title: `École ${tag}`, archived: true } });
+  const twin = (await (await request.post("/api/sessions", { data: { model: M, workspace: `${home}/.cache/keel-work/bun/e2e-ws/beta/api` } })).json()).session;
+  await request.patch(`/api/sessions/${twin.id}`, { data: { title: `École ${tag}` } });
+
+  await page.goto("/");
+  const find = async (q: string) => { await page.keyboard.press("Control+k"); await page.getByTestId("palette-input").fill(q); };
+  // The output of the command: its tool card opens.
+  await find(`shout-${tag}`);
+  const out = page.getByRole("option").filter({ hasText: "Tool output" });
+  await expect(out).toHaveCount(1);
+  await shoot(page, "search-03-tool-output");
+  await out.click();
+  await expect(page).toHaveURL(new RegExp(`/s/${run.id}`));
+  await expect(page.locator('[data-testid="tool-call"][data-open]')).toHaveCount(1);
+
+  // An attached file by its name, though the prompt had no words.
+  await find(`saffron-${tag}`);
+  await expect(page.getByRole("option").filter({ hasText: `saffron-${tag}` })).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  // The title without its accent: both sessions, the archived one marked, the folders apart.
+  await find(`ecole ${tag}`);
+  const rows = page.getByRole("option").filter({ hasText: `École ${tag}` });
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ has: page.getByTestId("hit-archived") })).toHaveCount(1);
+  await expect(rows.filter({ hasText: "alpha/api" })).toHaveCount(1);
+  await expect(rows.filter({ hasText: "beta/api" })).toHaveCount(1);
+  await shoot(page, "search-04-archived-title");
+  await rows.filter({ has: page.getByTestId("hit-archived") }).click();
+  await expect(page).toHaveURL(new RegExp(`/s/${old.id}`));
+  expect((await (await request.get(`/api/sessions/${old.id}`)).json()).session.archived).toBe(true);
+
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
 });

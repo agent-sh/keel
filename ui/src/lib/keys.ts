@@ -85,10 +85,13 @@ export function keyLabel(spec: string): string[] {
 // Palette and picker matching: every word of the query must appear in the
 // text, word starts score higher; a short tight subsequence ("nsess" for
 // "new session") is the fallback.
+// Case and accents fold as the daemon's search folds them (École = ecole).
+const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
+
 export function fuzzy(query: string, text: string): number {
-  const q = query.toLowerCase().trim();
+  const q = fold(query).trim();
   if (!q) return 1;
-  const s = text.toLowerCase();
+  const s = fold(text);
   let total = 0;
   for (const w of q.split(/\s+/)) {
     const at = s.indexOf(w);

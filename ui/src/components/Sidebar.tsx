@@ -11,7 +11,7 @@ import { useSafety } from "../lib/safety.ts";
 import { useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
-import { ago, cn, when } from "../lib/utils.ts";
+import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { lastLine, useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
 import { useAuto } from "../lib/automation.ts";
 import { folderOf, Mark, modelOf } from "./Mark.tsx";
@@ -75,11 +75,17 @@ function Row({ s, active }: { s: Session; active: boolean }) {
   );
 }
 
-// A folder shows its newest sessions; the rest open on request (and the open one is always shown).
+// A folder shows its newest sessions; the rest open on request (and the open
+// one is always shown, also when it is a subagent's: its parent's row then).
 const SHOWN = 6;
 function Group({ list, current }: { list: Session[]; current: string | null }) {
   const [all, setAll] = useState(false);
-  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === current);
+  const root = useStore((x) => {
+    let s = current ? x.sessions[current] : undefined;
+    for (let n = 0; s?.parent_id && n < 32; n++) s = x.sessions[s.parent_id] ?? undefined;
+    return s?.id ?? current;
+  });
+  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root);
   return (
     <div className="flex flex-col gap-px">
       {shown.map((s) => (
@@ -200,15 +206,27 @@ function Index({ current }: { current: string | null }) {
     if (tab === "archived") api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => setArchived(r.sessions)).catch(reportError);
   }, [tab, sessions]);
   // A tag picked above the list narrows it; pinned sessions lead it.
-  const [tag, setTag] = useState<string | null>(null);
+  // Each tab keeps its own tag: one picked in Sessions does not empty Archived.
+  const [tags_, setTags] = useState<Record<string, string | null>>({});
   const base_ = useMemo(
     () => (tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
     [sessions, tab, archived],
   );
   const tags = useMemo(() => [...new Set(base_.flatMap((s) => s.settings.tags ?? []))].sort((a, b) => a.localeCompare(b)), [base_]);
+  const picked = tags_[tab] ?? null;
+  const tag = picked && tags.includes(picked) ? picked : null; // a tag no session has any more filters nothing
+  const setTag = (t: string | null) => setTags((m) => ({ ...m, [tab]: t }));
   const listed = tag ? base_.filter((s) => (s.settings.tags ?? []).includes(tag)) : base_;
   const pinned = listed.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!);
   const grouped = useMemo(() => groups(listed.filter((s) => !s.settings.pinned_ms)), [listed]);
+  // Same-named folders read apart (beta/api, alpha/api); a machine's folders are named among its own.
+  const heads = useMemo(() => {
+    const by = new Map<string, string[]>();
+    for (const g of grouped) (by.get(g.machine ?? "") ?? by.set(g.machine ?? "", []).get(g.machine ?? "")!).push(g.ws);
+    const out = new Map<string, string>();
+    for (const [m, list] of by) for (const [ws, name] of folderNames(list)) out.set(`${m}\u0000${ws}`, name);
+    return out;
+  }, [grouped]);
   return (
     <>
       <div role="tablist" aria-label="Session list" className="k-tabs">
@@ -236,13 +254,15 @@ function Index({ current }: { current: string | null }) {
           </section>
         )}
         {grouped.length === 0 && pinned.length === 0 && (
-          <p className="k-empty">{tab === "active" ? "Sessions you start show up here, grouped by folder." : "Archived sessions show up here. Restore one to bring it back."}</p>
+          tag
+            ? <p className="k-empty" data-testid="tag-empty">No sessions match the tag {tag}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setTag(null)}>Show all</button></p>
+            : <p className="k-empty">{tab === "active" ? "Sessions you start show up here, grouped by folder." : "Archived sessions show up here. Restore one to bring it back."}</p>
         )}
         {grouped.map((g) => (
           <section key={g.key} className="k-group" data-machine={g.machine}>
             <h2 className="k-group-head" title={g.machine ? `${g.ws} on ${machineName(g.machine)}` : g.ws}>
               {g.machine ? <Server style={machineColour(g.machine) ? { color: machineColour(g.machine) } : undefined} /> : <Folder />}
-              <span className="truncate">{base(g.ws)}</span>
+              <span className="truncate">{heads.get(`${g.machine ?? ""}\u0000${g.ws}`) ?? base(g.ws)}</span>
               {g.machine && <span className="k-group-machine" data-testid="group-machine">{machineName(g.machine)}</span>}
             </h2>
             <Group list={g.list} current={current} />

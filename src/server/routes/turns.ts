@@ -183,19 +183,31 @@ export const turnRoutes: RouteModule = (deps) => {
         const at = all.find((e) => e.id === b.event_id);
         if (!at) return bad("not an event of this session");
         const line = lineage(all, at.id);
-        const copy = b.before ? line.slice(0, -1) : line;
+        const cut = b.before ? line.slice(0, -1) : line;
         // A fork ends after a whole step: drop a trailing turn marker left open.
-        const titles = new Set(store.sessions().concat(store.sessions({ archived: true })).map((x) => x.title));
-        const base = `${s.title || "Session"} (fork`;
-        let title = `${base})`;
-        for (let n = 2; titles.has(title); n++) title = `${base} ${n})`;
+        const copy = cut.filter((e) => e.kind !== "turn_start" || cut.at(-1) !== e);
+        // A name given at the fork (`/fork Docs`) is its title; else "<source> (fork n)".
+        const named = typeof b.title === "string" ? b.title.trim().slice(0, 200) : "";
+        let title = named;
+        if (!title) {
+          const titles = new Set(store.sessions().concat(store.sessions({ archived: true })).map((x) => x.title));
+          const base = `${s.title || "Session"} (fork`;
+          title = `${base})`;
+          for (let n = 2; titles.has(title); n++) title = `${base} ${n})`;
+        }
         // The copy keeps the settings, not the source's pin or done mark.
         const { pinned_ms: _p, done_ms: _d, ...settings } = s.settings;
         const f = store.createSession({ title, model: s.model, workspace: s.workspace, settings });
-        store.copyEvents(f.id, copy.filter((e) => e.kind !== "turn_start" || copy.at(-1) !== e));
+        store.copyEvents(f.id, copy);
+        // Queued prompts are the source's work, not history: they stay there, and the fork says so.
+        const left = store.queue(s.id).length;
+        store.append(f.id, "note", { kind: "fork", from_session: s.id, from_title: s.title, queue_left: left || undefined, text: `Forked from ${s.title || "a session"}.${left ? ` ${left === 1 ? "One queued message stays" : `${left} queued messages stay`} there.` : ""}` });
         const session = store.session(f.id)!;
         bus.emit({ t: "session", session });
-        return json({ session, prompt_text: b.before && at.kind === "user" ? at.data.text : undefined, events_copied: copy.length }, 201);
+        // `before`: the prompt itself is not copied; its words and attachments go back to the box.
+        const prompt = b.before && at.kind === "user" ? at : undefined;
+        const text = prompt && prompt.data.text !== "(image)" && prompt.data.text !== "(attached file)" ? prompt.data.text : prompt ? "" : undefined;
+        return json({ session, prompt_text: text, prompt_images: prompt?.data.images?.length ? prompt.data.images : undefined, events_copied: copy.length, queue_left: left }, 201);
       },
     },
 

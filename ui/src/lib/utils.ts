@@ -35,3 +35,23 @@ export function fmtWait(ms: number): string {
   const s = Math.max(0, Math.ceil(ms / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
+
+// Short names for folders that stay apart: the last part of each path, with
+// as many parts before it as it takes to differ from the others shown with
+// it (`docs`, `beta/api`, `alpha/api`).
+export function folderNames(paths: Iterable<string>): Map<string, string> {
+  const all = [...new Set(paths)];
+  const parts = new Map<string, string[]>(all.map((p) => [p, p.split("/").filter(Boolean)]));
+  const depth = new Map<string, number>(all.map((p) => [p, 1]));
+  const label = (p: string) => parts.get(p)!.slice(-depth.get(p)!).join("/") || p;
+  for (let changed = true; changed; ) {
+    changed = false;
+    const by = new Map<string, string[]>();
+    for (const p of all) (by.get(label(p)) ?? by.set(label(p), []).get(label(p))!).push(p);
+    for (const same of by.values()) {
+      if (same.length < 2) continue;
+      for (const p of same) if (depth.get(p)! < parts.get(p)!.length) { depth.set(p, depth.get(p)! + 1); changed = true; }
+    }
+  }
+  return new Map(all.map((p) => [p, label(p)]));
+}

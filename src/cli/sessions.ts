@@ -34,10 +34,14 @@ const sessions = command("sessions", SESSIONS_USAGE, {
   const q = (v.query ?? pos.join(" ")).trim();
   const cwd = v.cwd ? resolve(v.cwd) : undefined;
   if (q) {
-    const { hits } = await c.get<{ hits: any[] }>(`/api/search?q=${encodeURIComponent(q)}&limit=${Math.min(limit * 3, 100)}`);
+    // The daemon applies the scope before it ranks and cuts, one hit per session per group.
+    const scope = new URLSearchParams({ q, limit: String(Math.min(limit, 100)), sessions: "1" });
+    if (!v.subagents) scope.set("roots", "1");
+    if (!v.all) scope.set("archived", "0");
+    if (cwd) scope.set("cwd", cwd);
+    const { hits } = await c.get<{ hits: any[] }>(`/api/search?${scope}`);
     const seen = new Map<string, any>();
     for (const h of hits) {
-      if ((!v.all && h.archived) || (cwd && h.cwd !== cwd)) continue;
       if (!seen.has(h.session_id)) seen.set(h.session_id, { id: h.session_id, title: h.session_title, workspace: h.cwd, archived: h.archived, matches: [] });
       seen.get(h.session_id).matches.push({ kind: h.kind, ts: h.ts, snippet: h.snippet.replace(/[\u0001\u0002]/g, "") });
     }
@@ -47,11 +51,13 @@ const sessions = command("sessions", SESSIONS_USAGE, {
     if (!list.length) return (console.error(`no session matches ${JSON.stringify(q)}`), EXIT.ok);
     for (const s of list) {
       console.log(`${s.id}  ${line(s.title) || "(untitled)"}  ${tilde(s.workspace)}${s.archived ? "  [archived]" : ""}`);
-      for (const m of s.matches.slice(0, 2)) if (m.kind !== "title") console.log(`    ${m.kind === "user" ? ">" : " "} ${line(m.snippet)}`);
+      for (const m of s.matches.slice(0, 2)) if (m.kind !== "title") console.log(`    ${m.kind === "user" ? ">" : m.kind === "tool_use" || m.kind === "tool_result" ? "$" : " "} ${line(m.snippet)}`);
     }
     return EXIT.ok;
   }
-  const { sessions: all } = await c.get<{ sessions: any[] }>(`/api/sessions${v.all ? "?archived=1" : ""}`);
+  // --all: both partitions, merged before the sort and the cut.
+  const { sessions: live } = await c.get<{ sessions: any[] }>("/api/sessions");
+  const all = v.all ? live.concat((await c.get<{ sessions: any[] }>("/api/sessions?archived=1")).sessions) : live;
   const list = all.filter((s) => (v.subagents || !s.parent_id) && (!cwd || s.workspace === cwd)).sort((a, b) => b.updated - a.updated).slice(0, limit);
   if (v.ids) return (list.forEach((s) => console.log(s.id)), EXIT.ok);
   if (v.json) return (printJson(list), EXIT.ok);
@@ -85,16 +91,18 @@ const logsOf = (name: "show" | "logs", usage: string) =>
     const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${s.id}/events`);
     const tail = v.tail ? Number(v.tail) : undefined;
     if (tail !== undefined && !(tail >= 0)) return usageError(name, "--tail is a number", usage);
+    // --tail 0 prints none of the history (with -f: only what comes next), like tail -n 0.
+    const shown = tail === undefined ? events : tail === 0 ? [] : events.slice(-tail);
     if (name === "show") {
       if (v.json) {
         const st = await c.get<any>(`/api/cli/state/${s.id}`);
-        printJson({ session: s, running: st.running, queue: st.queue, approvals: st.approvals, url: c.url(s.id), events: tail !== undefined ? events.slice(-tail) : events });
+        printJson({ session: s, running: st.running, queue: st.queue, approvals: st.approvals, url: c.url(s.id), events: shown });
         return EXIT.ok;
       }
       const u = s.usage ?? {};
       console.log(`${line(s.title) || "(untitled)"}\n  id       ${s.id}\n  model    ${s.model}\n  folder   ${tilde(s.workspace)}\n  state    ${s.archived ? "archived" : s.phase}, updated ${ago(s.updated)} ago\n  tokens   ${(u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0)} in, ${u.output ?? 0} out${u.cost !== undefined ? `, $${u.cost.toFixed(4)}` : ""}\n  open     ${c.url(s.id)}\n`);
     }
-    printEvents(tail !== undefined ? events.slice(-tail) : events, v);
+    printEvents(shown, v);
     if (!v.follow) return EXIT.ok;
     const f = new Follower(c, s.id, events.at(-1)?.seq ?? 0, (e) => printEvents([e], v));
     await f.connect();

@@ -5,6 +5,7 @@ import { useSyncExternalStore } from "react";
 import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
+import { seedComposer } from "./ui.ts";
 
 export type ProvidersReport = {
   providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem })[];
@@ -33,7 +34,8 @@ export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: strin
 
 type State = {
   sessions: Record<string, Session>;
-  gone: Record<string, true>; // deleted while this page was open
+  // Deleted while this page was open: the parent's id for a subagent's session (its view links back), else true.
+  gone: Record<string, string | true>;
   events: Record<string, StoredEvent[]>;
   drafts: Record<string, Record<number, DraftBlock>>;
   models: ListedModel[];
@@ -50,12 +52,10 @@ type State = {
   providers: ProvidersReport | null;
   queues: Record<string, { queue: QueueItem[]; held: boolean }>;
   status: Record<string, TurnStatus>;
-  // Text handed to a session's composer (a forked-off prompt to edit).
-  composer: Record<string, string>;
 };
 
 let state: State = { loaded: { sessions: false, models: false },
-  sessions: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {}, composer: {},
+  sessions: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
 };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => {
@@ -204,20 +204,24 @@ export const actions = {
   interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST" }),
   patch: async (id: string, body: Partial<Omit<Session, "settings">> & { settings?: Record<string, unknown> }) => {
     const r = await api<{ session: Session }>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) });
-    // A reply that comes after a newer change (from another tab, or a later edit here) does not undo it.
+    // A reply that comes after a newer change (from another tab, or a later edit here) does not
+    // undo it: the row's revision orders them (two saves in one millisecond too). The head
+    // follows the events, which may have moved it since the reply was made.
     const cur = state.sessions[id];
-    if (!cur || r.session.updated >= cur.updated) set({ sessions: { ...state.sessions, [id]: r.session } });
+    if (!cur || (r.session.rev ?? 0) > (cur.rev ?? 0)) set({ sessions: { ...state.sessions, [id]: cur ? { ...r.session, head: cur.head } : r.session } });
     return r.session;
   },
   // `leaf`: show the newest end of the branch below the event (a version
   // switch); without it the event itself becomes the head (undo a clear).
   setHead: (id: string, eventId: string, reveal = false, leaf = true) =>
     api(`/api/sessions/${id}/head`, { method: "POST", body: JSON.stringify({ head_event_id: eventId, reveal, leaf }) }),
-  async fork(id: string, eventId: string, before = false): Promise<Session> {
-    const r = await api<{ session: Session; prompt_text?: string }>(`/api/sessions/${id}/fork`, {
-      method: "POST", body: JSON.stringify({ event_id: eventId, before }),
+  // `before`: the prompt is left out of the copy and goes back to the new box, words and attachments.
+  async fork(id: string, eventId: string, opts: { before?: boolean; title?: string } = {}): Promise<Session> {
+    const r = await api<{ session: Session; prompt_text?: string; prompt_images?: PromptBlock[] }>(`/api/sessions/${id}/fork`, {
+      method: "POST", body: JSON.stringify({ event_id: eventId, before: !!opts.before, title: opts.title || undefined }),
     });
-    set({ sessions: { ...state.sessions, [r.session.id]: r.session }, composer: r.prompt_text ? { ...state.composer, [r.session.id]: r.prompt_text } : state.composer });
+    set({ sessions: { ...state.sessions, [r.session.id]: r.session } });
+    if (r.prompt_text !== undefined || r.prompt_images) seedComposer(r.prompt_text ?? "", r.session.id, { blocks: r.prompt_images });
     return r.session;
   },
   compact: (id: string, focus?: string) => api(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ focus }) }),
@@ -230,14 +234,6 @@ export const actions = {
     api(`/api/sessions/${id}/queue/${qid}`, { method: "PATCH", body: JSON.stringify(body) }),
   queueRemove: (id: string, qid: string) => api(`/api/sessions/${id}/queue/${qid}`, { method: "DELETE" }),
   queueSendNow: (id: string, qid: string, here = false) => api(`/api/sessions/${id}/queue/${qid}/send`, { method: "POST", body: JSON.stringify({ here }) }),
-  takeComposer(id: string): string | undefined {
-    const t = state.composer[id];
-    if (t !== undefined) {
-      const { [id]: _, ...rest } = state.composer;
-      set({ composer: rest });
-    }
-    return t;
-  },
   remove: async (id: string) => {
     await api(`/api/sessions/${id}`, { method: "DELETE" });
     const { [id]: _, ...rest } = state.sessions;
@@ -301,7 +297,7 @@ export function apply(f: Frame) {
       // Its views unmount now instead of asking the daemon for a session it no longer has.
       const { [s.id]: _s, ...sessions } = state.sessions;
       const { [s.id]: _e, ...events } = state.events;
-      set({ sessions, events, gone: { ...state.gone, [s.id]: true } });
+      set({ sessions, events, gone: { ...state.gone, [s.id]: s.parent_id ?? state.sessions[s.id]?.parent_id ?? true } });
       return;
     }
     if (!state.sessions[s.id] && s.archived) return;
@@ -388,7 +384,7 @@ export function connect() {
         if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
         const { [id]: _, ...events } = state.events;
         const { [id]: __, ...sessions } = state.sessions;
-        set({ events, sessions, gone: { ...state.gone, [id]: true } });
+        set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
       }));
     }
     // Caught up when this socket's replay came and the reloads landed; a late

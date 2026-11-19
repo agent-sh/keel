@@ -7,7 +7,7 @@ import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { toolKind } from "../lib/tools.ts";
-import { getUI, seedComposer, setUI, useUI } from "../lib/ui.ts";
+import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens, fmtWait } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -114,6 +114,7 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
   return (
     <div id={`e-${e.id}`} className="group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
       {origin === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-steer">Steered into the turn</span>}
+      {e.data.edited_from === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-edited-steer">An edited steer, sent as a new turn</span>}
       {origin === "queued" && <span className="text-micro font-medium text-faint" data-testid="origin-queued">From the queue</span>}
       {e.data.images?.length > 0 && <Images blocks={e.data.images} />}
       {text && (
@@ -148,28 +149,45 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
   );
 }
 
+const PLACEHOLDERS = new Set(["(image)", "(attached file)"]);
+
+// The new version keeps the prompt's attachments, in their order: they are
+// shown here before Send, and only the words change.
 function EditPrompt({ e, s, onDone }: { e: StoredEvent; s: Session; onDone: () => void }) {
-  const [text, setText] = useState<string>(e.data.text ?? "");
-  const send = () => text.trim() && actions.edit(s.id, e.id, text.trim()).then(onDone, reportError);
+  const raw: string = e.data.text ?? "";
+  const [text, setText] = useState<string>(PLACEHOLDERS.has(raw) ? "" : raw);
+  const blocks: PromptBlock[] = e.data.images ?? [];
+  const n = blocks.length;
+  const ok = !!text.trim() || n > 0;
+  const send = () => ok && actions.edit(s.id, e.id, text.trim() || (blocks.some((b) => b.type === "image") ? "(image)" : "(attached file)")).then(onDone, reportError);
   return (
     <div className="flex justify-end animate-in" data-event-id={e.id}>
       <div className="w-[min(85%,40rem)] rounded-xl border border-line-strong bg-raised p-2 shadow-2">
+        {n > 0 && (
+          <div className="mb-1.5 flex flex-col items-end gap-1.5 px-1 pt-1" data-testid="edit-attachments">
+            <Images blocks={blocks} />
+          </div>
+        )}
         <textarea
           data-testid="edit-box"
           autoFocus
           value={text}
           aria-label="Edit the prompt"
+          placeholder={n ? "Words to send with the attachments (optional)" : undefined}
           onChange={(x) => setText(x.target.value)}
           onKeyDown={(x) => {
             if (x.key === "Escape") onDone();
             if (x.key === "Enter" && !x.shiftKey) { x.preventDefault(); send(); }
           }}
-          className="block min-h-16 w-full resize-y bg-transparent px-2 py-1 text-read leading-relaxed outline-none"
+          className="block min-h-16 w-full resize-y bg-transparent px-2 py-1 text-read leading-relaxed outline-none placeholder:text-faint"
         />
         <div className="flex items-center justify-end gap-1.5 pt-1">
-          <span className="mr-auto pl-2 text-caption text-faint">{s.phase === "working" ? "Stops the turn, then sends this as a new version." : "Sends as a new version; the current one stays as a branch."}</span>
+          <span className="mr-auto pl-2 text-caption text-faint" data-testid="edit-note">
+            {s.phase === "working" ? "Stops the turn, then sends this as a new version." : "Sends as a new version; the current one stays as a branch."}
+            {n > 0 && ` The ${n === 1 ? "attachment goes" : `${n} attachments go`} with it as before.`}
+          </span>
           <button type="button" onClick={onDone} className="h-7 rounded-md px-2.5 text-ui text-muted hover:bg-hover">Cancel</button>
-          <button type="button" data-testid="edit-send" disabled={!text.trim()} onClick={send} className="h-7 rounded-md bg-accent px-2.5 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
+          <button type="button" data-testid="edit-send" disabled={!ok} onClick={send} className="h-7 rounded-md bg-accent px-2.5 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
             Send
           </button>
         </div>
@@ -229,13 +247,13 @@ function Divider({ children, testid }: { children: ReactNode; testid?: string })
 }
 
 // A context checkpoint: a summary (expandable) or a clear (undo while it is the head).
-function Checkpoint({ e, s }: { e: StoredEvent; s: Session }) {
+function Checkpoint({ e, s, undoable }: { e: StoredEvent; s: Session; undoable?: boolean }) {
   if (e.data.mode === "clear") {
     return (
       <Divider testid="cleared">
         <span className="flex items-center gap-1.5"><RotateCcw className="size-3.5" /> Context cleared. The model starts fresh from here.</span>
-        {e.id === s.head && (
-          <button type="button" className="rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.setHead(s.id, e.data.undo_head, false, false).catch(reportError)}>
+        {undoable && e.data.undo_head && (
+          <button type="button" data-testid="undo-clear" className="rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.setHead(s.id, e.data.undo_head, false, false).catch(reportError)}>
             Undo
           </button>
         )}
@@ -256,6 +274,23 @@ function Checkpoint({ e, s }: { e: StoredEvent; s: Session }) {
       </summary>
       <div className="mt-2 rounded-lg border border-line bg-raised px-4 py-3 text-ui text-muted"><Markdown text={e.data.summary} /></div>
     </details>
+  );
+}
+
+// Where a fork came from, with a way back (its queued prompts stayed there).
+function ForkNote({ e }: { e: StoredEvent }) {
+  const from = useStore((x) => x.sessions[e.data.from_session]);
+  const left: number = e.data.queue_left ?? 0;
+  return (
+    <Divider testid="fork-note">
+      <span className="flex items-center gap-1.5">
+        <GitBranch className="size-3.5" /> Forked from
+        <button type="button" data-testid="fork-source" onClick={() => navigate({ name: "session", id: e.data.from_session })} className="rounded-sm px-1 font-medium text-accent-ink hover:bg-accent-soft">
+          {from?.title || e.data.from_title || "the source session"}
+        </button>
+        {left > 0 && <span data-testid="fork-queue-left">{left === 1 ? "One queued message stays there." : `${left} queued messages stay there.`}</span>}
+      </span>
+    </Divider>
   );
 }
 
@@ -582,7 +617,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               }
               return <UserMessage key={e.id} e={e} s={session} vs={siblings.get(e.parent) ?? []} />;
             }
-            if (e.kind === "compaction") return <Checkpoint key={e.id} e={e} s={session} />;
+            // A clear is undone while nothing the model reads came after it (a note of the page may have).
+            if (e.kind === "compaction") return <Checkpoint key={e.id} e={e} s={session} undoable={!previewing && events.slice(idx + 1).every((x) => x.kind === "note" && !x.data.model)} />;
             if (e.kind === "assistant" && e.data.stop === "refusal") return <Refusal key={e.id} e={e} s={session} handled={events[idx + 1]?.kind === "note" && events[idx + 1]!.data.kind === "fallback"} />;
             if (e.kind === "assistant") {
               for (const b of e.data.blocks) if (b.type === "text" && b.text.trim()) reply.push(b.text);
@@ -599,6 +635,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             // Memory and hook notes fold into the turn's notes on its footer: quiet at six stations.
             if (e.kind === "note" && (e.data.hook || e.data.memory)) { notes.push(e); return null; }
             if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
+            if (e.kind === "note" && e.data.kind === "fork") return <ForkNote key={e.id} e={e} />;
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.
               const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
