@@ -190,6 +190,35 @@ test("at start, a report a stored wait result holds is not delivered again", asy
   expect(agents.get(a.id)!.handback).toBeFalsy();
 });
 
+// A wait took the child's first report; the child is sent a second task and
+// ends with the same words while the parent is busy, then the daemon dies.
+// The second report is its own: the next start delivers it once. Also for a
+// wait result stored before reports had ids (`legacy`).
+for (const legacy of [false, true]) test(`a later report with the same words is delivered after a restart${legacy ? " (a wait result without report ids)" : ""}`, async () => {
+  busy.add(parent.id);
+  const a = await spawn();
+  end(a, "end_turn", "report I");
+  await settled();
+  const call = legacy ? "wl" : "wn";
+  const out = await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: call });
+  const content = legacy ? JSON.stringify({ ...JSON.parse(String(out.content)), status: { [a.id]: { completed: "report I" } } }) : out.content;
+  store.append(parent.id, "assistant", { blocks: [{ type: "tool_use", id: call, name: "wait_agent", input: { targets: [a.id] } }], stop: "tool_use" });
+  store.append(parent.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: call, content }] });
+  ackStoredWaits(parent.id, [{ tool_use_id: call, content: out.content }]); // the daemon that stored it acked it
+  expect(agents.get(a.id)!.handback).toBeFalsy();
+  await agents.send(a.id, "task two");
+  end(a, "end_turn", "report I");
+  await settled();
+  expect(agents.get(a.id)!.handback).toBe(true);
+  dropPending(parent.id); // a new process
+  agents.recover();
+  busy.delete(parent.id);
+  sends.length = 0;
+  flush(parent.id);
+  expect(sends.filter((x) => x.id === parent.id && x.text.includes(`agent_id="${a.id}"`))).toHaveLength(1);
+  expect(agents.get(a.id)!.handback).toBeFalsy();
+});
+
 // Call ids are unique only within a session: two parents whose waits share
 // one each get their own report marked delivered.
 test("waits with the same call id in two sessions each mark their own report delivered", async () => {

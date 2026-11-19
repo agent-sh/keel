@@ -199,24 +199,27 @@ const wait_agent: Tool = {
     const status: Record<string, unknown> = {};
     // Only a finished answer is completed: a stopped agent is interrupted (with
     // who stopped it), one that ran out of steps or output, or declined, is incomplete.
+    // Each report names its instance (report_id): a later task's report with
+    // the same words is another report.
     for (const a of res) {
+      const id = { report_id: agents.reportId(a) };
       status[a.id] = !agents.isEnded(a) ? a.status
-        : a.status === "completed" ? { completed: a.result }
-          : a.status === "failed" ? { errored: a.result }
-            : a.status === "stopped" ? { interrupted: { by: a.stopped_by ?? null, report: a.result } }
-              : { incomplete: { reason: a.end_reason ?? null, report: a.result } };
+        : a.status === "completed" ? { completed: a.result, ...id }
+          : a.status === "failed" ? { errored: a.result, ...id }
+            : a.status === "stopped" ? { interrupted: { by: a.stopped_by ?? null, report: a.result }, ...id }
+              : { incomplete: { reason: a.end_reason ?? null, report: a.result }, ...id };
     }
     const text = JSON.stringify({ status, timed_out: res.length > 0 && !res.some((a) => agents.isEnded(a)) });
     // Acked when this result is stored as it is (resultStored), not when the turn
     // was stopped and its result says so instead.
-    if (ctx.callId) waited.set(waitKey(ctx.sessionId, ctx.callId), { ids: res.filter((a) => agents.isEnded(a)).map((a) => a.id), text });
+    if (ctx.callId) waited.set(waitKey(ctx.sessionId, ctx.callId), { reports: res.filter((a) => agents.isEnded(a)).map((a) => ({ id: a.id, report: agents.reportId(a) })), text });
     return ok(text);
   }),
 };
 
 // wait_agent results not yet seen stored, by session and tool call id (a call
 // id is unique only within its session: providers and the scripted one reuse them).
-const waited = new Map<string, { ids: string[]; text: string }>();
+const waited = new Map<string, { reports: { id: string; report: string }[]; text: string }>();
 const waitKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
 export function ackStoredWaits(sessionId: string, results: { tool_use_id: string; content: unknown }[]) {
   for (const r of results) {
@@ -225,7 +228,7 @@ export function ackStoredWaits(sessionId: string, results: { tool_use_id: string
     if (!w) continue;
     waited.delete(key);
     const stored = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
-    if (stored.includes(w.text)) agents.ackWaited(sessionId, w.ids);
+    if (stored.includes(w.text)) agents.ackWaited(sessionId, w.reports);
   }
 }
 
