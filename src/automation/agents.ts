@@ -573,7 +573,17 @@ function handback(a: AgentRecord) {
   if (isPending(a.parent_id, (m) => m.kind === "subagent" && m.agent_id === a.id)) return; // already on its way
   // Said with each report while others run: models set timers to wait for the rest.
   const left = list(a.parent_id).filter((o) => o.id !== a.id && !isEnded(o) && o.type !== "reviewer").length;
-  const still = left ? `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.` : "";
+  let still = left ? `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.` : "";
+  // The last report is what a timer set while the agents ran waited for (models
+  // set them though told not to, and each woke the parent again after the work
+  // was done): it is cancelled, and the report says so.
+  if (!left) {
+    const mine = list(a.parent_id);
+    const during = (t: number) => mine.some((o) => o.created <= t && (o.ended ?? Date.now()) >= t);
+    const timers = waits.list(a.parent_id, 0).filter((w) => w.status === "active" && w.kind === "timer" && during(w.created));
+    for (const w of timers) waits.cancel(w.id, a.parent_id);
+    if (timers.length) still = `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.map((w) => w.id).join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.`;
+  }
   deliver(a.parent_id, `${HANDBACK_PREFACE}\n${reportBlock(a)}${still}`, { kind: "subagent", agent_id: a.id, status: a.status }, {
     coalesceMs: 300,
     onSent: () => update(a.id, { handback: false }),

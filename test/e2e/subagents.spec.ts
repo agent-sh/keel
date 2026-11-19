@@ -78,3 +78,31 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   expect(errorsAfter).toBe(errorsBefore);
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// Feature: a timer the model sets while its agents run (models do, though the
+// spawn says the reports wake it) is cancelled by the last report, which says
+// so, instead of waking the parent again after the work is done.
+test("the last agent report ends a timer set while the agents ran", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Agents and a timer" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const calls = [
+    { name: "spawn_agent", input: { message: "Slow helper\nscript:long-tool" } },
+    { name: "wait_for", input: { kind: "timer", seconds: 600, note: "wait for the agent" } },
+  ];
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 90_000 });
+  const timer = async () => (await (await request.get(`/api/sessions/${session.id}/background`)).json()).waits.find((w: any) => w.kind === "timer");
+  await expect.poll(async () => (await timer())?.status, { timeout: 30_000 }).toBe("cancelled");
+  const events = (await (await request.get(`/api/sessions/${session.id}`)).json()).events;
+  const report = events.find((e: any) => e.kind === "user" && String(e.data.text).includes("<subagent_result"));
+  expect(report.data.text).toContain("cancelled now that their reports are in");
+  await shoot(page, "agents-07-timer-ended");
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
+  await request.delete(`/api/sessions/${session.id}`);
+});
