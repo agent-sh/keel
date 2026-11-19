@@ -265,6 +265,35 @@ for (const [name, flushFirst, second] of [["a newer report", false, "report M"],
   });
 }
 
+// A report still queued to a busy parent when the child is sent a new task,
+// then the daemon dies: the report is owed on disk, so the next start
+// delivers it once, and the second task's report later goes out on its own.
+test("a queued report survives a new task and a crash", async () => {
+  busy.add(parent.id);
+  const a = await spawn();
+  end(a, "end_turn", "report N");
+  await settled();
+  await agents.send(a.id, "task two");
+  dropPending(parent.id); // the crash: the queue was only in memory
+  agents.recover();
+  busy.delete(parent.id);
+  sends.length = 0;
+  flush(parent.id);
+  const mine = () => sends.filter((x) => x.id === parent.id && x.text.includes(`agent_id="${a.id}"`)).map((x) => x.text);
+  expect(mine().filter((t) => t.includes("report N"))).toHaveLength(1);
+  sends.length = 0;
+  end(a, "end_turn", "report O");
+  await settled();
+  flush(parent.id);
+  expect(mine().map((t) => [t.includes("report N"), t.includes("report O")])).toEqual([[false, true]]);
+  expect(agents.get(a.id)!.handback).toBeFalsy();
+  dropPending(parent.id);
+  agents.recover(); // nothing is owed any more
+  sends.length = 0;
+  flush(parent.id);
+  expect(mine()).toEqual([]);
+});
+
 // Call ids are unique only within a session: two parents whose waits share
 // one each get their own report marked delivered.
 test("waits with the same call id in two sessions each mark their own report delivered", async () => {
