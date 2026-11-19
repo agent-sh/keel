@@ -9,6 +9,9 @@
 .k-mark[data-watch="need"] { border-radius: 1px; background: var(--st-need); transform: rotate(45deg) scale(0.86); }
 .k-mark[data-watch="fail"] { border-radius: 1px; background: var(--st-fail); }
 .k-mark[data-watch="idle"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-idle); }
+/* Stopped: a hollow square. Waiting to resume: an open ring that does not turn. */
+.k-mark[data-watch="stop"] { border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 2px var(--st-idle); }
+.k-mark[data-watch="resume"] { background: transparent; border: 2px solid var(--st-idle); border-right-color: transparent; }
 /* Working: a ring with a gap that turns. Only transform animates. */
 .k-mark[data-watch="work"] { background: transparent; border: 2px solid var(--st-work); border-top-color: transparent; animation: k-turn 1.1s linear infinite; }
 @keyframes k-turn { to { transform: rotate(1turn); } }

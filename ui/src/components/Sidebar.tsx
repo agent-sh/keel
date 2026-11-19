@@ -118,6 +118,7 @@ const BANDS: { w: Watch[]; label: string; short: string }[] = [
   { w: ["need"], label: "Needs you", short: "Need" },
   { w: ["work"], label: "Working", short: "Work" },
   { w: ["fail"], label: "Failed", short: "Fail" },
+  { w: ["resume", "stop"], label: "Stopped", short: "Stop" },
   { w: ["done", "idle"], label: "Done", short: "Done" },
 ];
 function Marks({ current }: { current: string | null }) {

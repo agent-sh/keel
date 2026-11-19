@@ -88,7 +88,12 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
       .get(id);
     return e && (e.kind === "error" || (e.kind === "turn_end" && e.reason === "error")) ? e.ts : null;
   };
+  // How the last turn ended, for lists that have no events: a stopped turn
+  // and one waiting to resume after a restart are not "done".
+  const lastEnd = (id: string) =>
+    store.db.query<{ reason: string | null }, [string]>("SELECT json_extract(data, '$.reason') AS reason FROM events WHERE session_id = ? AND kind = 'turn_end' ORDER BY seq DESC LIMIT 1").get(id)?.reason ?? null;
   for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
+    if (!s.settings.last_end) { const r = lastEnd(s.id); if (r) store.mergeSettings(s.id, { last_end: r }); }
     if (s.settings.failed_ms) continue;
     const at = failedAt(s.id);
     if (at) store.mergeSettings(s.id, { failed_ms: at });
@@ -97,7 +102,8 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
     if (f.t !== "event") return;
     const { kind, session_id: id, data, ts } = f.event;
     if (kind === "turn_start" && store.session(id)?.settings.failed_ms) store.mergeSettings(id, { failed_ms: null });
-    else if (kind === "error" || (kind === "turn_end" && data.reason === "error")) store.mergeSettings(id, { failed_ms: ts });
+    else if (kind === "error" || (kind === "turn_end" && data.reason === "error")) store.mergeSettings(id, { failed_ms: ts, ...(kind === "turn_end" ? { last_end: "error" } : {}) });
+    else if (kind === "turn_end" && data.reason) store.mergeSettings(id, { last_end: String(data.reason) });
     else return;
     emit(id);
   });

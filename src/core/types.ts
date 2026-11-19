@@ -125,6 +125,7 @@ export type SessionSettings = {
   tags?: string[];
   done_ms?: number;    // the owner marked the work finished; his next prompt clears it
   failed_ms?: number;  // the last turn ended in a failure; the next turn's start clears it
+  last_end?: string;   // why the last turn ended (turn_end's reason: end_turn, interrupted, restart, error...)
   accept_messages?: boolean; // false: messages from other sessions are refused
   peer_turns?: number; // turns other sessions may start before the owner speaks here again
   max_steps?: number;  // model steps one turn may take; absent = no budget

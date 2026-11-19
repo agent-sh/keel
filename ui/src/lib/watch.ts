@@ -7,13 +7,16 @@ import { useSafety } from "./safety.ts";
 import { actions, getState, reportError, useStore } from "./store.ts";
 import { shortPath, toolKind, type ToolKind } from "./tools.ts";
 
-export type Watch = "need" | "work" | "fail" | "done" | "idle";
+// `stop`: the owner (or a parent) stopped the last turn; `resume`: a daemon
+// restart cut it and it waits to go on. Neither is done.
+export type Watch = "need" | "work" | "fail" | "resume" | "stop" | "done" | "idle";
 
 export const WATCH_LABEL: Record<Watch, string> = {
-  need: "Needs you", work: "Working", fail: "Failed", done: "Done", idle: "Not started",
+  need: "Needs you", work: "Working", fail: "Failed", resume: "Waiting to resume", stop: "Stopped", done: "Done", idle: "Not started",
 };
 // Order of attention: what needs the owner first, quiet work last.
-export const WATCH_RANK: Record<Watch, number> = { need: 0, work: 1, fail: 2, done: 3, idle: 4 };
+export const WATCH_RANK: Record<Watch, number> = { need: 0, work: 1, fail: 2, resume: 3, stop: 4, done: 5, idle: 6 };
+const ENDED: Record<string, Watch> = { error: "fail", interrupted: "stop", restart: "resume" };
 
 const openQuestion = (events: StoredEvent[] | undefined) => {
   if (!events) return false;
@@ -35,7 +38,7 @@ export function watchOf(s: Session, events: StoredEvent[] | undefined, approvals
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
       if (e.kind === "error") return "fail";
-      if (e.kind === "turn_end") return e.data.reason === "error" ? "fail" : "done";
+      if (e.kind === "turn_end") return ENDED[e.data.reason] ?? "done";
       if (e.kind === "user") break;
     }
     // A turn that started and never ended (the daemon stopped under it) failed.
@@ -44,6 +47,7 @@ export function watchOf(s: Session, events: StoredEvent[] | undefined, approvals
   }
   // Events not loaded (the rail lists every session): the daemon's marks say it.
   if (s.settings.failed_ms) return "fail";
+  if (s.settings.last_end) return ENDED[s.settings.last_end] ?? "done";
   return s.usage.output > 0 ? "done" : "idle";
 }
 
@@ -71,7 +75,8 @@ export function useLoadEvents(ids: string[]) {
       if (asked.has(id) || getState().events[id]) continue;
       asked.add(id);
       // A session deleted meanwhile is simply not shown.
-      actions.loadSession(id).catch((e) => { if ((e as { status?: number }).status !== 404) reportError(e, { at: "overview events" }); });
+      // A failed load is asked again next time (the marks stand meanwhile).
+      actions.loadSession(id).catch((e) => { if ((e as { status?: number }).status !== 404) { asked.delete(id); reportError(e, { at: "overview events" }); } });
     }
   }, [key]);
 }

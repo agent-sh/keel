@@ -42,8 +42,10 @@ test("steer, queue, stop and send now", async ({ page, request }) => {
   await composer.press("Tab");
   const t0 = Date.now();
   await page.getByTestId("stop").click();
-  await expect(page.getByTestId("turn-end").last()).toContainText("Stopped", { timeout: 10_000 });
+  await expect(page.getByTestId("turn-end").last()).toContainText("Stopped by you", { timeout: 10_000 });
   expect(Date.now() - t0).toBeLessThan(8_000);
+  // The session reads as stopped wherever it is listed, not as done.
+  await expect(page.locator(`[aria-label="Stopped"][data-watch="stop"]`).first()).toBeAttached();
   await expect(page.getByTestId("queue-held")).toBeVisible();
   await expect(page.getByTestId("resume")).toBeVisible();
   await shoot(page, "turn-03-stopped-queue-held");
