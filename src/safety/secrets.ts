@@ -89,24 +89,30 @@ type Listener = (ev: { type: "found"; session_id: string; secret: SecretMeta } |
 // A shell script with each placeholder replaced by a reference to the
 // variable `name` returns, quoted for where it stands: bare text and $( )
 // get "${V}", a double-quoted string ${V}, a single-quoted one closes and
-// reopens around "${V}" (an $'...' string reopens as $'). A placeholder
-// `name` returns null for stays as written.
-export function shellRefs(text: string, name: (id: string | undefined, varName: string | undefined) => string | null): string {
+// reopens around "${V}" (an $'...' string reopens as $'). The body of a
+// heredoc whose word is unquoted (<<EOF) expands variables but takes quotes
+// as text: it gets ${V}. A quoted heredoc (<<'EOF') expands nothing, so no
+// reference can stand there: its placeholders stay as written and `stuck`
+// hears of each. A placeholder `name` returns null for stays as written.
+export function shellRefs(text: string, name: (id: string | undefined, varName: string | undefined) => string | null, stuck?: (placeholder: string) => void): string {
   type Ctx = "top" | "sq" | "ansi" | "dq" | "sub";
   const stack: Ctx[] = ["top"];
+  // Heredocs opened on the current line: their bodies start at its end.
+  const pending: { word: string; quoted: boolean; tabs: boolean }[] = [];
   let out = "";
+  const ref = (i: number): { len: number; v: string | null; raw: string } | null => {
+    PLACE_AT.lastIndex = i;
+    const m = PLACE_AT.exec(text);
+    return m ? { len: m[0].length, v: name(m[1], m[2]), raw: m[0] } : null;
+  };
   for (let i = 0; i < text.length;) {
     const ctx = stack.at(-1)!;
     if (text[i] === "[") {
-      PLACE_AT.lastIndex = i;
-      const m = PLACE_AT.exec(text);
-      if (m) {
-        const v = name(m[1], m[2]);
-        if (v) {
-          out += ctx === "dq" ? `\${${v}}` : ctx === "sq" ? `'"\${${v}}"'` : ctx === "ansi" ? `'"\${${v}}"$'` : `"\${${v}}"`;
-          i += m[0].length;
-          continue;
-        }
+      const r = ref(i);
+      if (r?.v) {
+        out += ctx === "dq" ? `\${${r.v}}` : ctx === "sq" ? `'"\${${r.v}}"'` : ctx === "ansi" ? `'"\${${r.v}}"$'` : `"\${${r.v}}"`;
+        i += r.len;
+        continue;
       }
     }
     const c = text[i]!;
@@ -117,6 +123,46 @@ export function shellRefs(text: string, name: (id: string | undefined, varName: 
       if (c === '"') stack.pop();
       else if (c === "$" && text[i + 1] === "(") { stack.push("sub"); out += "$("; i += 2; continue; }
       out += c; i++; continue;
+    }
+    // A heredoc operator (not <<<): its word, quoted in any part or not.
+    if (c === "<" && text[i + 1] === "<" && text[i + 2] !== "<") {
+      const h = /^<<(-?)[ \t]*((?:'[^'\n]*'|"[^"\n]*"|\\.|[^\s;&|<>()])+)/.exec(text.slice(i));
+      if (h) {
+        pending.push({ word: h[2]!.replace(/'([^']*)'|"([^"]*)"|\\(.)/g, "$1$2$3"), quoted: /['"\\]/.test(h[2]!), tabs: h[1] === "-" });
+        out += h[0];
+        i += h[0].length;
+        continue;
+      }
+    }
+    // The end of a line with heredocs open: their bodies, line by line, up to each word.
+    if (c === "\n" && pending.length) {
+      out += c;
+      i++;
+      for (const d of pending.splice(0)) {
+        while (i < text.length) {
+          const end = text.indexOf("\n", i);
+          const line = text.slice(i, end < 0 ? text.length : end);
+          if ((d.tabs ? line.replace(/^\t+/, "") : line) === d.word) { out += line; i += line.length; if (end >= 0) { out += "\n"; i++; } break; }
+          let body = "";
+          for (let j = 0; j < line.length;) {
+            if (line[j] === "[") {
+              const r = ref(i + j);
+              if (r) {
+                if (r.v && !d.quoted) body += `\${${r.v}}`;
+                else { if (r.v && d.quoted) stuck?.(r.raw); body += r.raw; }
+                j += r.len;
+                continue;
+              }
+            }
+            body += line[j];
+            j++;
+          }
+          out += body;
+          i += line.length;
+          if (end >= 0) { out += "\n"; i++; }
+        }
+      }
+      continue;
     }
     // top or inside $( ): quotes open, a ( nests, a ) closes a $(.
     if (c === "'") stack.push("sq");
@@ -261,14 +307,16 @@ export class Vault {
   // Only those fields: a command is where a credential is used. Every other
   // field and tool keeps the placeholder (an internal tool would store the
   // value, a model-consulting one would send it to a model).
-  reveal<T extends Record<string, unknown>>(v: T, sessionId: string, shell: ReadonlySet<string>): { value: T; used: string[]; env: Record<string, string> } {
+  // `stuck`: placeholders of known secrets where no reference can stand (a quoted heredoc).
+  reveal<T extends Record<string, unknown>>(v: T, sessionId: string, shell: ReadonlySet<string>): { value: T; used: string[]; env: Record<string, string>; stuck: string[] } {
     const used: string[] = [];
     const env: Record<string, string> = {};
+    const stuck: string[] = [];
     const find = (id: string | undefined, name: string | undefined) => {
       const e = id ? this.byId.get(id) : [...this.byId.values()].find((x) => x.name === name && this.holds(x, sessionId));
       return e && this.holds(e, sessionId) ? e : undefined;
     };
-    if (!v || typeof v !== "object") return { value: v, used, env };
+    if (!v || typeof v !== "object") return { value: v, used, env, stuck };
     const out: Record<string, unknown> = { ...v };
     for (const k of shell) {
       const y = v[k];
@@ -279,9 +327,9 @@ export class Vault {
         used.push(e.id);
         env[`KEEL_SECRET_${e.id}`] = e.value;
         return `KEEL_SECRET_${e.id}`;
-      });
+      }, (p) => stuck.push(p));
     }
-    return { value: (used.length ? out : v) as T, used, env };
+    return { value: (used.length ? out : v) as T, used, env, stuck };
   }
 
   // Every known value in a JSON value replaced by its placeholder, nothing
@@ -353,7 +401,7 @@ export class Vault {
         if (all.length > 1) { ambiguous.add(name); return null; }
         env[`KEEL_SECRET_${all[0]!.id}`] = all[0]!.value;
         return `KEEL_SECRET_${all[0]!.id}`;
-      });
+      }, (p) => missing.add(`${p.match(/\$(\w+)/)?.[1] ?? p} (inside a quoted heredoc, where nothing expands)`));
     }
     if (missing.size || ambiguous.size) return { missing: [...missing], ambiguous: [...ambiguous] };
     return { value: out as T, env };

@@ -66,3 +66,36 @@ test("a secret in a shell command arrives exact and runs nothing", () => {
   // A field that is not a script keeps the placeholder: only a command uses a credential.
   expect(v.reveal({ content: "[value of $FIX]" }, "s1", new Set(["command"])).value.content).toBe("[value of $FIX]");
 });
+
+// A heredoc body: an unquoted one (<<EOF) expands a variable but takes quotes
+// as text, so it gets a bare reference and the value arrives exact; a quoted
+// one (<<'EOF') expands nothing, so its placeholder is reported, never spliced.
+test("a secret in a heredoc arrives exact, or is refused where nothing expands", () => {
+  const v = new Vault();
+  const value = `it's "q" $HOME \`touch pwned\` $(touch pwned2) \\ end`;
+  const e = v.add(value, "test", "card", "s1", "FIX");
+  const dir = join(process.env.TMPDIR ?? join(process.env.HOME!, ".cache"), `heredoc-refs-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  const sha = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
+  const sh = new Set(["command"]);
+  for (const cmd of [
+    "cat <<EOF | sha256sum\n[value of $FIX]\nEOF",
+    `cat <<-END | sha256sum\n\t[secret:${e.id}]\n\tEND`,
+    "cat <<EOF | sha256sum; echo '[value of $FIX]' >/dev/null\n[value of $FIX]\nEOF",
+  ]) {
+    const r = v.reveal({ command: cmd }, "s1", sh);
+    expect(r.stuck).toEqual([]);
+    const p = Bun.spawnSync(["bash", "-c", r.value.command], { cwd: dir, env: { PATH: process.env.PATH!, ...r.env } });
+    expect({ cmd, out: p.stdout.toString().split(" ")[0] }).toEqual({ cmd, out: sha(`${value}\n`) });
+  }
+  expect(readdirSync(dir)).toEqual([]);
+  for (const cmd of ["cat <<'EOF'\n[value of $FIX]\nEOF", `cat <<"EOF"\nx [value of $FIX]\nEOF`, "cat <<\\EOF\n[value of $FIX]\nEOF"]) {
+    const r = v.reveal({ command: cmd }, "s1", sh);
+    expect({ cmd, stuck: r.stuck }).toEqual({ cmd, stuck: ["[value of $FIX]"] });
+    expect(r.value.command).not.toContain(value);
+  }
+  // After the quoted heredoc ends, the command goes on as usual.
+  const after = v.reveal({ command: "cat <<'EOF'\nplain\nEOF\nprintf %s [value of $FIX] | sha256sum" }, "s1", sh);
+  expect(after.stuck).toEqual([]);
+  expect(Bun.spawnSync(["bash", "-c", after.value.command], { cwd: dir, env: { PATH: process.env.PATH!, ...after.env } }).stdout.toString()).toContain(sha(value));
+});

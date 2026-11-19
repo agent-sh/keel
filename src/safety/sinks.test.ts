@@ -72,6 +72,10 @@ test("only a shell command gets a secret's value; nothing else stores it or send
     const bash = toolsFor("claude").find((t) => t.name === "Bash")!;
     const out = await run(bash, { command: `printf %s ${ref} | sha256sum` }, "c5");
     expect(String(out.content)).toContain(new Bun.CryptoHasher("sha256").update(sentinel).digest("hex"));
+    // Inside a quoted heredoc nothing expands: refused, never run with the placeholder text.
+    const stuck = await run(bash, { command: `cat <<'EOF' > got.txt\n${ref}\nEOF` }, "c6");
+    expect(stuck.is_error).toBe(true);
+    expect(String(stuck.content)).toContain("quoted heredoc");
 
     expect(mcpGot).toEqual([{ token: ref }]);
     expect(bodies.length).toBeGreaterThanOrEqual(3); // the advisor, the subagent's turn, the ask

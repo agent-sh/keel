@@ -106,6 +106,16 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     // store it, an advisor, side question or subagent would send it to a
     // model, an MCP or web call would send it to a server. A call bound for
     // another machine is sent with placeholders (src/fleet/remote.ts).
+    // A placeholder where no variable can expand (a quoted heredoc's body)
+    // would reach the command as its own text: the call is refused, saying how
+    // to write it. Splicing the value in would put it in the script's syntax,
+    // and unquoting the heredoc would change what every other $ in it means.
+    beforeTool(s, call) {
+      if (call.tool.kind !== "shell" || !call.input || typeof call.input !== "object") return;
+      const { stuck } = vault.reveal(call.input, s.id, SHELL_FIELDS);
+      if (!stuck.length) return;
+      return { deny: `${[...new Set(stuck)].join(", ")} stands inside a quoted heredoc (<<'EOF'), where nothing expands, so the command would get the placeholder text, not the secret; nothing ran. Use an unquoted heredoc (<<EOF, where it expands) or put the placeholder outside it, for example: printf '%s' <the placeholder> | your-command.` };
+    },
     execInput(s, call) {
       if (call.tool.kind !== "shell" || call.ctx.dispatch || call.tool.peer) return;
       const { value, used, env } = vault.reveal(call.input, s.id, SHELL_FIELDS);
