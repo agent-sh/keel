@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Providers } from "./registry.ts";
+import { Providers, servedTier } from "./registry.ts";
 import type { ListedModel, Provider } from "./types.ts";
 
 type Step = { resolve: (m: ListedModel[]) => void; reject: (e: Error) => void };
@@ -86,4 +86,32 @@ test("after a restart a read answers from the saved list while the refresh runs"
   const empty = await Promise.race([r3.models().then(() => "answered"), Bun.sleep(50).then(() => "waiting")]);
   expect(empty).toBe("waiting");
   h.calls[0]!.resolve([]);
+});
+
+test("a call is priced at the tier the provider says served it, else marked as asked", () => {
+  const price = (input: number) => ({ input, output: 0 });
+  const priority = { id: "priority", label: "Priority", price: price(3), body: { service_tier: "priority" } };
+  const flex = { id: "flex", label: "Flex", price: price(0.5), body: { service_tier: "flex" } };
+  const info = { speeds: [priority, flex] } as any;
+  expect(servedTier(info, priority, "default")).toEqual({ reported: "standard" });
+  expect(servedTier(info, priority, "priority")).toEqual({ offer: priority, reported: "priority" });
+  expect(servedTier(info, priority, "flex")).toEqual({ offer: flex, reported: "flex" });
+  expect(servedTier(info, priority, undefined)).toEqual({ offer: priority });
+  expect(servedTier(info, priority, "turbo")).toEqual({ offer: priority });
+});
+
+test("another provider's catalog entry cannot make an unknown route text-only", async () => {
+  const f = fake("plug");
+  const r = make(dir(), [f.p]);
+  (r.catalog as any).byId.set("fiction", { id: "fiction", name: "Fiction", images: false, pdf: false });
+  (r.catalog as any).byId.set("seer", { id: "seer", name: "Seer", images: true });
+  const a = r.refresh("plug");
+  await Bun.sleep(0);
+  f.calls[0]!.resolve([{ model: "fiction" }, { model: "seer" }, { model: "said-no", images: false }]);
+  await a;
+  const by = new Map(r.current().map((m) => [m.model, m]));
+  expect(by.get("fiction")!.images).toBeUndefined();
+  expect(by.get("fiction")!.pdf).toBeUndefined();
+  expect(by.get("seer")!.images).toBe(true);
+  expect(by.get("said-no")!.images).toBe(false);
 });

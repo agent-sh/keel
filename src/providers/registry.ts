@@ -15,7 +15,7 @@ import { priceOf } from "./pricing.ts";
 import { ProviderError } from "./http.ts";
 import { fromHeaders, Limits, type Window } from "./limits.ts";
 import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
-import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
+import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus, SpeedOffer } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
 import { runMode } from "../core/runmode.ts";
 
@@ -217,6 +217,7 @@ export class Providers {
   private join(p: Provider, m: ListedModel): ModelInfo {
     const section = p instanceof CompatProvider ? p.cfg.catalog : SECTION[p.id];
     const c = this.catalog.lookup(m.model, section);
+    const own = this.catalog.own(m.model, section);
     const billing = m.billing?.kind ?? (p instanceof CompatProvider && p.cfg.billing === "subscription" ? "subscription" : "per_token");
     return {
       id: `${p.id}:${m.model}`,
@@ -231,10 +232,13 @@ export class Providers {
       release: c?.release,
       price: billing === "per_token" ? m.price ?? c?.price : undefined,
       billing,
-      images: m.images ?? c?.images,
-      pdf: m.pdf ?? c?.pdf,
+      // A capability is the listing's or the route's own catalog entry. An entry
+      // of another provider (the bare-id fallback) may say the model reads
+      // images, never that this route does not: an unknown route sends them.
+      images: m.images ?? (own ? own.images : c?.images || undefined),
+      pdf: m.pdf ?? (own ? own.pdf : c?.pdf || undefined),
       // The listing's own offers win; else the route's catalog section's.
-      speeds: m.speeds ?? this.catalog.own(m.model, section)?.speeds,
+      speeds: m.speeds ?? own?.speeds,
     };
   }
 
@@ -371,11 +375,10 @@ export class Providers {
         this.cleared(p.id);
         const origin = `${p.id}:${req.model}`;
         for (const b of res.blocks) if ((b.type === "thinking" || b.type === "tool_use" || b.type === "text") && !b.origin && (b.type === "thinking" || b.signature)) b.origin = origin;
-        // Billed at the speed that served: a request the provider moved back
-        // to standard (it says so in `service_tier` or `usage.speed`) costs standard.
-        const servedStandard = res.served !== undefined && /^(default|standard|auto)$/.test(res.served);
-        res.usage = priced(res.usage, offer && !servedStandard && offer.price ? { ...info, price: offer.price } : info);
-        if (offer) res.usage.speed = res.served ?? offer.id;
+        const tier = servedTier(info, offer, res.served);
+        res.usage = priced(res.usage, tier.offer?.price ? { ...info, price: tier.offer.price } : info);
+        if (offer) res.usage.speed_asked = offer.id;
+        if (tier.reported) res.usage.speed = tier.reported;
         return res;
       },
     };
@@ -393,6 +396,18 @@ export function speedOffer(info: ModelInfo, want?: string) {
   if (!want) return undefined;
   const all = info.speeds ?? [];
   return all.find((o) => o.id === want) ?? all.find((o) => o.label.toLowerCase() === want.toLowerCase());
+}
+
+// The tier a call is billed at. The provider's own word wins when it names
+// standard or one of the model's offers (`service_tier`, `usage.speed`); a
+// reply that names nothing, or a tier this route does not list, is estimated at
+// the offer asked for, and `speed` stays unset, so the record says the tier
+// was asked for, not confirmed.
+export function servedTier(info: ModelInfo, asked: SpeedOffer | undefined, served?: string): { offer?: SpeedOffer; reported?: string } {
+  if (served === undefined) return { offer: asked };
+  if (/^(default|standard|auto)$/.test(served)) return { reported: "standard" };
+  const hit = (info.speeds ?? []).find((o) => o.id === served || o.body.service_tier === served || o.body.speed === served);
+  return hit ? { offer: hit, reported: hit.id } : { offer: asked };
 }
 
 function priced(u: Usage, info: ModelInfo): Usage {

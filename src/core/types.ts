@@ -22,7 +22,7 @@ export type AssistantBlock = TextBlock | ThinkingBlock | RedactedThinkingBlock |
 // It travels with the prompt among its image blocks and is resolved per model
 // just before a request: text inline, a PDF as a document where the model
 // reads PDFs, anything else as a note with the saved path.
-export type AttachmentBlock = { type: "attachment"; id: string; name: string; media_type: string; size: number };
+export type AttachmentBlock = { type: "attachment"; id: string; name: string; media_type: string; size: number; charset?: string };
 // A PDF as the provider reads it (resolved from an attachment, never stored).
 export type DocumentBlock = { type: "document"; media_type: string; data: string; name: string };
 // What a prompt carries besides its text (stored in the user event's `images`).
@@ -48,7 +48,8 @@ export type Usage = {
   cache_write_12h?: number;
   cost?: number;
   unpriced?: number;
-  speed?: string; // one call's tier when a speed was asked for: what served it, else the offer asked
+  speed_asked?: string; // the speed offer the call asked for
+  speed?: string;       // the tier the provider said served it (an offer id or "standard"); unset when it did not say
 };
 
 export const emptyUsage = (): Usage => ({ input: 0, output: 0, cache_read: 0, cache_write: 0 });
