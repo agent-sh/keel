@@ -58,6 +58,8 @@ test("usage dashboard", async ({ page, request }) => {
   await shoot(page, "usage-04-budget");
   await request.post(`/api/sessions/${s.id}/messages`, { data: { text: "Say ok." } });
   await expect.poll(async () => JSON.stringify((await (await request.get(`/api/sessions/${s.id}`)).json()).events.filter((e: any) => e.kind === "error")), { timeout: 30_000 }).toContain("daily spend limit");
+  // The limit reads as what was set: a sub-cent limit is never shown as $0.00.
+  expect(JSON.stringify((await (await request.get(`/api/sessions/${s.id}`)).json()).events.filter((e: any) => e.kind === "error"))).toContain("limit of $0.000001 is reached");
 
   await request.patch("/api/settings", { data: { budget: { daily_usd: null } } });
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });

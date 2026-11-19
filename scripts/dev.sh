@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Dev daemon on Bedrock with a scratch state dir. Usage: scripts/dev.sh [port]
+# Dev daemon on Bedrock with a scratch state dir. Usage: scripts/dev.sh <port>
 # (KEEL_BIN=dist/keel runs the built binary instead of the hot-reloading source).
+# The port is always given and the state is the port's own unless KEEL_DEV_DIR
+# names one: two daemons never share a state folder by default.
 set -euo pipefail
-PORT="${1:-47961}"
-DEV="${KEEL_DEV_DIR:-$HOME/.cache/keel-work/bun/dev}"
+PORT="${1:?usage: scripts/dev.sh <port>}"
+DEV="${KEEL_DEV_DIR:-$HOME/.cache/keel-work/bun/dev-$PORT}"
 mkdir -p "$DEV/ws"
 if [ -f "$HOME/.config/claude-code/bedrock.env" ]; then
   set -a; . "$HOME/.config/claude-code/bedrock.env"; set +a

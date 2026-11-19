@@ -5,7 +5,7 @@ import { HAIKU, remoteHeaders, shoot } from "./shots.ts";
 // worked before its fix. A remote device is a request with x-forwarded-for
 // (what a tunnel or reverse proxy adds) and the access token; the desk is a
 // plain loopback call.
-const BASE = new URL(process.env.KEEL_URL ?? "http://127.0.0.1:47961");
+const BASE = new URL(process.env.KEEL_URL!);
 const REMOTE = `http://device.localhost:${BASE.port}`;
 
 async function authenticator(page: Page) {

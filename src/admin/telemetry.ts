@@ -185,7 +185,8 @@ export class Telemetry {
     const b = settings().budget;
     if (!b.daily_usd && !b.monthly_usd) return undefined;
     const s = this.spend();
-    const usd = (v: number) => "$" + v.toFixed(2);
+    // Cents, or two significant digits below a cent: a limit is never shown as $0.00.
+    const usd = (v: number) => "$" + (v >= 0.01 || v === 0 ? v.toFixed(2) : v.toLocaleString("en-US", { maximumSignificantDigits: 2 }));
     if (b.daily_usd && s.day.usd >= b.daily_usd) return `The daily spend limit of ${usd(b.daily_usd)} is reached (${usd(s.day.usd)} today). Raise it in Settings > Usage to go on.`;
     if (b.monthly_usd && s.month.usd >= b.monthly_usd) return `The monthly spend limit of ${usd(b.monthly_usd)} is reached (${usd(s.month.usd)} this month). Raise it in Settings > Usage to go on.`;
     return undefined;

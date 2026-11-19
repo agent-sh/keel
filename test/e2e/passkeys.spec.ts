@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, remoteHeaders, shoot } from "./shots.ts";
 
-const BASE = new URL(process.env.KEEL_URL ?? "http://127.0.0.1:47961");
+const BASE = new URL(process.env.KEEL_URL!);
 // A name that is not the desk but still a secure context: *.localhost is loopback in Chromium.
 const REMOTE = `http://device.localhost:${BASE.port}`;
 const DESK = `http://localhost:${BASE.port}`;

@@ -120,7 +120,7 @@ test("pair a phone, approve from it, push, revoke", async ({ page, request }) =>
     expect(sync0.chats.some((c: any) => c.id === session.id)).toBe(true);
     const cursor = sync0.seq;
     // The live stream starts with hello and carries what follows.
-    const base = process.env.KEEL_URL ?? "http://127.0.0.1:47961";
+    const base = process.env.KEEL_URL!;
     const stream = await fetch(`${base}/v1/events`, { headers: phone.headers("GET", "/v1/events", "") });
     const frames: any[] = [];
     (async () => {

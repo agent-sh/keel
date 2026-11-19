@@ -6,7 +6,7 @@ import { HAIKU, remoteHeaders, shoot } from "./shots.ts";
 // forwards to the other (KEEL_PEER_URL).
 const PEER = process.env.KEEL_PEER_URL ?? "http://127.0.0.1:47975";
 const ROOT = process.env.KEEL_PEER_ROOT ?? `${process.env.HOME}/.cache/keel-work/bun/dev-fleet-b/root`;
-const BASE = new URL(process.env.KEEL_URL ?? "http://127.0.0.1:47961");
+const BASE = new URL(process.env.KEEL_URL!);
 // A name that is not the desk but still a secure context: *.localhost is loopback in Chromium.
 const REMOTE = `http://device.localhost:${BASE.port}`;
 
