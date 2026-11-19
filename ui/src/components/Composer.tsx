@@ -5,7 +5,7 @@ import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
 import { toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { fuzzy } from "../lib/keys.ts";
-import { dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
+import { draftGone, draftHere, dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
@@ -124,6 +124,15 @@ export function Composer({
     if (text) localStorage.setItem(draftKey(session?.id), text);
     else localStorage.removeItem(draftKey(session?.id));
   }, [text, session?.id]);
+  const unsent = !!text.trim() || images.length > 0;
+  useEffect(() => (session?.id ? draftHere(session.id, unsent) : undefined), [unsent, session?.id]);
+  useEffect(() => {
+    const sid = session?.id;
+    if (!sid) return;
+    const gone = () => draftGone(sid);
+    addEventListener("pagehide", gone);
+    return () => { removeEventListener("pagehide", gone); gone(); };
+  }, [session?.id]);
   useEffect(() => {
     if (!seed) return;
     setUI({ composerSeed: null }); // consumed: another message box mounted later must not take it

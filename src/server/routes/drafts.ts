@@ -3,6 +3,7 @@
 // its attachments here too, so an image survives a reload or a session switch
 // until it is sent. Nothing here sends anything.
 import type { RouteModule } from "../app.ts";
+import type { Store } from "../../core/store.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS drafts (session_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', origin TEXT, updated_ms INTEGER NOT NULL);
@@ -28,6 +29,30 @@ export type Draft = { text?: string; origin?: string | null; attachments: DraftF
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
+
+// An unsent message the owner is writing in a page: the page says when its box
+// holds one and repeats it while it does (DRAFT_BEAT_MS); a claim not repeated
+// for three beats is from a page that went away. Only that it exists is kept,
+// never what it says.
+// Each page speaks for its own box (a second tab with an empty box does not
+// cancel the first one's message).
+const DRAFT_BEAT_MS = 30_000; // the page's beat (ui/src/lib/drafts.ts)
+const typed = new Map<string, Map<string, number>>(); // session -> page -> last claim
+
+// Whether the owner has a message not yet sent in this session: one in an open
+// page's box, or text or images kept in the session's draft on the daemon.
+export function draftPresent(store: Store, id: string): boolean {
+  const pages = typed.get(id);
+  for (const [p, t] of pages ?? []) {
+    if (Date.now() - t <= 3 * DRAFT_BEAT_MS) return true;
+    pages!.delete(p);
+  }
+  try {
+    return !!store.db.query("SELECT 1 FROM drafts WHERE session_id = ? AND text != '' UNION ALL SELECT 1 FROM draft_files WHERE session_id = ? LIMIT 1").get(id, id);
+  } catch {
+    return false; // the drafts table is not there yet
+  }
+}
 
 export const draftRoutes: RouteModule = ({ store, bus }) => {
   store.migrate(SCHEMA);
@@ -123,10 +148,18 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
         return json({ ok: true });
       },
     },
-    // The owner is typing in this session (the page says so every few seconds).
+    // The owner is typing in this session (the page says so every few seconds);
+    // { draft: boolean } says whether the page's box holds an unsent message.
     "/api/sessions/:id/presence": {
-      POST: (req: any) => {
+      POST: async (req: any) => {
         if (!store.session(req.params.id)) return bad("no such session", 404);
+        const b = (await req.json().catch(() => null)) as { draft?: unknown; page?: unknown } | null;
+        const page = typeof b?.page === "string" ? b.page.slice(0, 64) : "";
+        if (b?.draft === true) {
+          const pages = typed.get(req.params.id) ?? new Map<string, number>();
+          pages.set(page, Date.now());
+          typed.set(req.params.id, pages);
+        } else if (b?.draft === false) typed.get(req.params.id)?.delete(page);
         touch(req.params.id);
         return json({ ok: true });
       },

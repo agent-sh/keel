@@ -14,7 +14,9 @@ import { findBin, runBounded } from "./tacit.ts";
 
 export const MAX_LINE = 256 * 1024;
 
-type Ctx = { store: Store; engine: Engine; transcript?: (s: Session) => string };
+// draft: whether the owner has an unsent message in the session (its presence
+// only, never its text); without it the answer is unknown (null).
+type Ctx = { store: Store; engine: Engine; transcript?: (s: Session) => string; draft?: (id: string) => boolean };
 
 // The momentum phase of a session: needs_you (an approval is open), working, idle, done.
 export function phaseOf(s: Session, running: boolean, pending: Set<string>) {
@@ -55,7 +57,7 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
         phase: phaseOf(s, c.engine.isRunning(s.id), pending),
         ask_kind: pending.has(s.id) ? "permission" : null,
         ask: asks.get(s.id) ?? null,
-        ui_draft_present: false,
+        ui_draft_present: c.draft ? c.draft(s.id) : null,
         transcript: c.transcript?.(s) ?? null,
         updated_ms: s.updated,
       })),
@@ -73,6 +75,9 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     }
     if (!text.trim()) return { ok: false, code: "empty_text", error: "queue and steer need text" };
     if (s.archived) return { ok: false, code: "archived", error: "the session is archived" };
+    // The owner is writing a message there: momentum's waits, so his message
+    // is not overtaken (interrupt still goes through).
+    if (c.draft?.(s.id)) return { ok: false, code: "hold_ui_draft", error: "the owner has an unsent message in this session" };
     const tagged = text.trimStart().startsWith("[momentum]") ? text : `[momentum] ${text.trim()}`;
     // A message sent while a turn runs reaches it at the next step (steer); else it starts one.
     c.engine.send(s.id, tagged, { mode: action === "steer" ? "steer" : "queue", meta: { origin: "momentum" } });

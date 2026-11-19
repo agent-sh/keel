@@ -1,6 +1,7 @@
 // The owner's own tools Keel works with: tacit (memory hooks) and momentum
 // (the supervisor's report and control socket).
 import { registerSessionPatch, type RouteModule } from "../app.ts";
+import { draftPresent } from "./drafts.ts";
 import { momentumReport, momentumSocketPath, startMomentumSocket } from "../../integrations/momentum.ts";
 import { findBin, Tacit } from "../../integrations/tacit.ts";
 
@@ -17,7 +18,7 @@ export const integrationRoutes: RouteModule = (deps) => {
   g.__keelMomentum?.stop();
   let socket: string | null = null;
   try {
-    g.__keelMomentum = startMomentumSocket(momentumSocketPath(store.stateDir), { store, engine, transcript: (s) => tacit.transcriptPath(s) });
+    g.__keelMomentum = startMomentumSocket(momentumSocketPath(store.stateDir), { store, engine, transcript: (s) => tacit.transcriptPath(s), draft: (id) => draftPresent(store, id) });
     socket = momentumSocketPath(store.stateDir);
   } catch (e) {
     g.__keelMomentum = undefined;

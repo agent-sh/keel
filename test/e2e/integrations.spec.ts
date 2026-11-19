@@ -58,7 +58,18 @@ test("tacit and momentum", async ({ page, request }) => {
   // momentum: the session is listed with its phase, and a queued message runs a turn.
   const listed = await ask(info.momentum.socket, { cmd: "list_sessions" });
   const row = listed.sessions.find((s: any) => s.session_id === session.id);
-  expect(row).toMatchObject({ tool: "keel", phase: "idle", key: `keel:${session.id}` });
+  expect(row).toMatchObject({ tool: "keel", phase: "idle", key: `keel:${session.id}`, ui_draft_present: false });
+  // The owner is writing a message there: momentum's queue and steer wait for
+  // it (only that a draft exists is told, never its text); once the box is
+  // empty they go through.
+  await page.getByTestId("composer").fill("not sent yet");
+  const present = async () => (await ask(info.momentum.socket, { cmd: "list_sessions" })).sessions.find((s: any) => s.session_id === session.id).ui_draft_present;
+  await expect.poll(present).toBe(true);
+  for (const action of ["queue", "steer"])
+    expect(await ask(info.momentum.socket, { cmd: "supervise_act", session_id: session.id, action, text: "Reply with: held." })).toMatchObject({ ok: false, code: "hold_ui_draft" });
+  expect(JSON.stringify(await ask(info.momentum.socket, { cmd: "list_sessions" }))).not.toContain("not sent yet");
+  await page.getByTestId("composer").fill("");
+  await expect.poll(present).toBe(false);
   expect(await ask(info.momentum.socket, { cmd: "supervise_act", session_id: session.id, action: "queue", text: "   " })).toMatchObject({ ok: false, code: "empty_text" });
   expect(await ask(info.momentum.socket, { cmd: "supervise_act", session_id: session.id, action: "queue", text: "Reply with the single word: done." })).toMatchObject({ ok: true });
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 120_000 });
