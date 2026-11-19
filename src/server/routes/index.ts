@@ -14,6 +14,7 @@ import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { secretRoutes } from "./secrets.ts";
 import { providersRoutes } from "./providers.ts";
+import { profileRoutes } from "./profile.ts";
 import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
 import { usageRoutes } from "./usage.ts";
@@ -42,6 +43,7 @@ export const routeModules: RouteModule[] = [
   toolRoutes,
   searchRoutes,
   providersRoutes,
+  profileRoutes,
   worktreeRoutes,
   reviewRoutes,
   turnRoutes,
