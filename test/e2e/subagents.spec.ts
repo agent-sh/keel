@@ -111,3 +111,46 @@ test("the last agent report ends a timer set while the agents ran", async ({ pag
   expect(errorsAfter).toBe(errorsBefore);
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// Feature: an agent's own page stops it whole, as its card in the parent
+// does (by the owner, its waits cancelled), and a held Escape on that page
+// goes back to the parent once, stopping nothing there.
+test("an agent's page stops the whole agent; a held Escape stops nothing", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Agent page stop" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const child = [{ name: "wait_for", input: { kind: "timer", seconds: 600, note: "check back" } }, { name: "Bash", input: { command: "sleep 40" } }];
+  const calls = [{ name: "spawn_agent", input: { message: `Timer helper\nscript:calls ${JSON.stringify(child)}` } }, { name: "Bash", input: { command: "sleep 40" } }];
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  const agent = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents[0];
+  await expect.poll(async () => (await agent())?.session_id, { timeout: 30_000 }).toBeTruthy();
+  const a = await agent();
+  const timer = async () => (await (await request.get(`/api/sessions/${a.session_id}/background`)).json()).waits.find((w: any) => w.kind === "timer");
+  await expect.poll(async () => (await timer())?.status, { timeout: 30_000 }).toBe("active");
+  const running = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).running;
+  await expect.poll(() => running(a.session_id), { timeout: 30_000 }).toBe(true);
+  await expect.poll(() => running(session.id), { timeout: 30_000 }).toBe(true);
+
+  // Held: the first keydown goes back to the parent, the repeats stop nothing there.
+  await page.goto(`/s/${a.session_id}`);
+  await expect(page.getByTestId("stop")).toHaveText("Stop this agent");
+  await page.getByTestId("transcript").click();
+  await page.keyboard.down("Escape");
+  await page.keyboard.down("Escape");
+  await page.keyboard.down("Escape");
+  await page.keyboard.up("Escape");
+  await expect(page).toHaveURL(new RegExp(`/s/${session.id}$`));
+  await page.waitForTimeout(1_000); // a stop would have ended the turn by now
+  expect(await running(session.id)).toBe(true);
+
+  // Stop from the agent's page: the agent is stopped by the owner and its timer goes.
+  await page.goto(`/s/${a.session_id}`);
+  await page.getByTestId("stop").click();
+  await expect.poll(async () => (await agent()).status, { timeout: 30_000 }).toBe("stopped");
+  expect((await agent()).stopped_by).toBe("owner");
+  expect((await timer()).status).toBe("cancelled");
+  await request.post(`/api/sessions/${session.id}/interrupt`);
+  await request.delete(`/api/sessions/${session.id}`);
+});

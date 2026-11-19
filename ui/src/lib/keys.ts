@@ -63,8 +63,28 @@ export function installKeymap() {
       }
     }
   };
+  // One Escape press acts once. A held key repeats its keydown (and the first
+  // one may already have taken the page to the parent or closed a menu), so
+  // every Escape keydown after the first, until the key comes up, is dropped
+  // before anything sees it: the body, the controls and the message box alike.
+  let escDown = false;
+  const onEscDown = (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    if (e.repeat || escDown) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    escDown = true;
+  };
+  const onEscUp = (e: KeyboardEvent) => { if (e.key === "Escape") escDown = false; };
+  const onBlur = () => { escDown = false; };
+  addEventListener("keydown", onEscDown, true);
+  addEventListener("keyup", onEscUp, true);
+  addEventListener("blur", onBlur);
   addEventListener("keydown", onKey);
-  return () => removeEventListener("keydown", onKey);
+  return () => {
+    removeEventListener("keydown", onEscDown, true);
+    removeEventListener("keyup", onEscUp, true);
+    removeEventListener("blur", onBlur);
+    removeEventListener("keydown", onKey);
+  };
 }
 
 // "mod+shift+o" -> ["Ctrl", "Shift", "O"] (or the Mac symbols).
