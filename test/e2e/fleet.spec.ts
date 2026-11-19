@@ -65,6 +65,12 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await page.getByTestId("model-picker").click();
     await expect(page.getByTestId("peer-catalog")).toContainText("Models devbox lists");
     await expect(page.getByTestId("model-option").first()).toBeVisible();
+    // The default badge is that daemon's default, not this one's.
+    const peerDefault = (await (await request.get(`${PEER}/api/models`)).json()).default;
+    const localDefault = (await (await request.get("/api/models")).json()).default;
+    const badged = page.getByTestId("model-option").filter({ has: page.getByTestId("model-default") });
+    if (peerDefault) await expect(badged.first()).toHaveAttribute("data-model", peerDefault);
+    if (localDefault !== peerDefault) await expect(page.locator(`[data-testid="model-option"][data-model="${localDefault}"]`).getByTestId("model-default")).toHaveCount(0);
     await shoot(page, "fleet-02a-peer-models");
     await page.keyboard.press("Escape");
     // Driven through the link: the turn runs on the other daemon, its frames come back over the relay.

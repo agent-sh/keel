@@ -4,7 +4,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { api, onFeature, reportError, type ListedModel } from "./store.ts";
 
-type Catalog = { models?: ListedModel[]; labels?: Record<string, string>; error?: string };
+type Catalog = { models?: ListedModel[]; labels?: Record<string, string>; default?: string; error?: string };
 const catalogs = new Map<string, Catalog>();
 const asked = new Set<string>();
 const subs = new Set<() => void>();
@@ -12,8 +12,8 @@ const bump = () => subs.forEach((f) => f());
 
 export function loadPeerModels(machine: string, refresh = false) {
   asked.add(machine);
-  api<{ models: ListedModel[]; providers?: { id: string; label: string }[] }>(`/api/fleet/machines/${encodeURIComponent(machine)}/api/models${refresh ? "?refresh" : ""}`)
-    .then((r) => catalogs.set(machine, { models: r.models, labels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) }))
+  api<{ models: ListedModel[]; default?: string; providers?: { id: string; label: string }[] }>(`/api/fleet/machines/${encodeURIComponent(machine)}/api/models${refresh ? "?refresh" : ""}`)
+    .then((r) => catalogs.set(machine, { models: r.models, default: r.default, labels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) }))
     // The last listing it gave stays; only that it is not current is said.
     .catch((e) => {
       // A machine out of reach (the forwarder's 502) is a state the picker says; anything else is a failure.

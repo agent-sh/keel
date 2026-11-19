@@ -287,6 +287,20 @@ function draftStep(cur: Record<number, DraftBlock>, f: Frame): Record<number, Dr
 }
 const draftSession = (f: Frame) => (f.t === "event" ? f.event.session_id : f.t === "delta" || f.t === "status" ? f.session_id : undefined);
 
+// A row that left a list without word of why (another daemon's fresh list no
+// longer has it): out of the session list, neither archived nor gone. One
+// that was opened asks its daemon instead, which says what became of it.
+export function dropSession(id: string) {
+  const s = state.sessions[id];
+  if (!s) return;
+  if (state.events[id]) {
+    actions.loadSession(id).catch((e) => (e as { status?: number }).status === 404 ? apply({ t: "session", session: s, deleted: true } as Frame) : reportError(e, { at: "session left list", id }));
+    return;
+  }
+  const { [id]: _s, ...sessions } = state.sessions;
+  set({ sessions });
+}
+
 export function apply(f: Frame) {
   const ds = draftSession(f);
   if (ds) draftLog.get(ds)?.frames.push(f);

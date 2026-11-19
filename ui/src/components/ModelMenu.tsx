@@ -30,7 +30,9 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine }: { v
   const peer = usePeerModels(machine);
   const models = machine ? peer?.models ?? [] : local;
   const sessions = useStore((s) => s.sessions);
-  const def = useStore((s) => s.defaultModel);
+  // The default badge is the listing daemon's own default.
+  const localDef = useStore((s) => s.defaultModel);
+  const def = machine ? peer?.default ?? "" : localDef;
   const pinned = useStore((s) => s.pinned);
   const localLabels = useStore((s) => s.providerLabels);
   const labels = machine ? peer?.labels ?? {} : localLabels;
@@ -218,7 +220,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine }: { v
                         </Combobox.ItemIndicator>
                         <span className="col-start-2 flex min-w-0 items-center gap-1.5">
                           <span className={cn("truncate", item.hidden && "shrink-0 max-w-[55%]")}>{item.label}</span>
-                          {item.value === def && <span className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
+                          {item.value === def && <span data-testid="model-default" className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
                           {!group.provider && !item.hidden && <span className="shrink-0 truncate text-micro text-faint">{item.providerLabel}</span>}
                           {item.hidden && <span className="min-w-0 truncate text-micro text-faint" title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>

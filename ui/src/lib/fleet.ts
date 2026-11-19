@@ -4,7 +4,7 @@
 import { useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { asRemote, relayed, splitId } from "./fleet-ids.ts";
-import { actions, api, apply, getState, onFeature, reportError, reportUnlessGone } from "./store.ts";
+import { actions, api, apply, dropSession, getState, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
 export type Facts = { hostname: string; os: string; arch: string; cpus: number; load1: number; mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[]; sandbox: boolean; keel_version: string; root?: string; measured_ms?: number };
 export type Machine = {
@@ -76,7 +76,7 @@ export const fleet = {
     for (const id of Object.keys(cur)) {
       const sid = splitId(id);
       if (!sid || next[id]) continue;
-      if (fresh.has(sid.machine) || !r.machines.some((m) => m.id === sid.machine)) apply({ t: "session", session: { ...cur[id]!, archived: true } });
+      if (fresh.has(sid.machine) || !r.machines.some((m) => m.id === sid.machine)) dropSession(id);
       else apply({ t: "session", session: cur[id]! });
     }
   },
