@@ -60,15 +60,31 @@ test("independent review with findings", async ({ page, request }) => {
   await expect(findings.first()).toHaveAttribute("data-state", "fix_requested");
   await expect.poll(async () => (await events(request, session.id)).some((e) => e.kind === "user" && /independent review/.test(e.data.text))).toBe(true);
   if (n > 1) {
+    // Two sends of the same finding at once queue it once.
+    const url = `/api/sessions/${session.id}/reviews/${reviews[0].id}/findings`;
+    const both = await Promise.all([0, 1].map(() => request.post(url, { data: { action: "fix", ids: [2] } })));
+    expect(both.map((r) => r.status()).sort()).toEqual([200, 409]);
+    await request.post(url, { data: { action: "reopen", ids: [2] } });
+    await expect(findings.nth(1)).toHaveAttribute("data-state", "open");
+    // Dismissing the one picked finding leaves nothing picked: the unchecked
+    // ones are not checked again behind the owner's back.
+    await findings.nth(1).locator("input[type=checkbox]").check();
     await card.getByTestId("findings-dismiss").click();
     await expect(findings.nth(1)).toHaveAttribute("data-state", "dismissed");
+    if (n > 2) await expect(card.getByTestId("findings-fix")).toBeDisabled();
   }
-  await turnsDone(request, session.id, 1);
+  await turnsDone(request, session.id, n > 1 ? 2 : 1);
   await shoot(page, "review-03-sent");
 
-  // The same change again is not reviewed twice.
+  // The same change again on the same reviewer is not reviewed twice.
   const again = await (await request.post(`/api/sessions/${session.id}/reviews`, { data: {} })).json();
   expect(again.skipped).toBe(true);
+  // A review the owner stops is stopped, not failed.
+  const other = await (await request.post(`/api/sessions/${session.id}/reviews`, { data: { focus: "error handling only" } })).json();
+  expect(other.skipped).toBe(false);
+  await request.delete(`/api/sessions/${session.id}/reviews/${other.review.id}`);
+  await expect(reviewer.getByTestId("review").first()).toHaveAttribute("data-state", "stopped");
+  await expect(reviewer.getByTestId("review-stopped")).toBeVisible();
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);

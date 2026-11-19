@@ -12,11 +12,12 @@ export type Finding = {
   file: string;
   line: number;
   end_line?: number;
-  priority: 0 | 1 | 2 | 3; // P0 blocks a release ... P3 nit
+  priority: 0 | 1 | 2 | 3 | null; // P0 blocks a release ... P3 nit; null: the reviewer gave none (unrated)
   confidence?: number;
   title: string;
   body: string;
   state: "open" | "dismissed" | "fix_requested";
+  sent_to?: string; // who a fix request went to: the agent's title, or "the session"
 };
 export type Review = {
   id: string;
@@ -29,7 +30,7 @@ export type Review = {
   model: string;
   diff_sha256: string;
   files: number;
-  state: "running" | "done" | "failed";
+  state: "running" | "done" | "failed" | "stopped"; // stopped: the owner's Stop, not a failure
   error?: string;
   verdict?: "correct" | "incorrect";
   summary?: string;
@@ -38,6 +39,12 @@ export type Review = {
   created: number;
   ended?: number;
   agent_id?: string; // a review of one agent's work (its worktree branch)
+  agent_title?: string;
+  agent_branch?: string;
+  cut?: boolean;      // the diff the reviewer got was cut to fit (it read the files for the rest, or not)
+  rejected?: number;  // findings in the answer that could not be read
+  rejected_why?: string[];
+  omitted?: number;   // readable findings past the stored cap (the lowest priorities)
 };
 
 export const SCHEMA = `
@@ -46,7 +53,14 @@ CREATE INDEX IF NOT EXISTS reviews_session ON reviews(session_id, created);
 CREATE INDEX IF NOT EXISTS reviews_child ON reviews(child_id);
 `;
 
-export const reviewKey = (diff: string, kind: ReviewKind, focus = "") => createHash("sha256").update(`${kind}\n${focus}\n${diff}`).digest("hex");
+// The same change on the same reviewer: the two trees it compares (the whole
+// change, not the preview cut to fit), the kind, the focus and the model.
+export const reviewKey = (o: { from: string; to: string; kind: ReviewKind; focus?: string; model: string }) =>
+  createHash("sha256").update([o.kind, o.focus ?? "", o.model, o.from, o.to].join("\n")).digest("hex");
+
+export const priorityLabel = (p: Finding["priority"]) => (p === null ? "unrated" : `P${p}`);
+const rank = (p: Finding["priority"]) => (p === null ? 4 : p);
+const MAX_FINDINGS = 100;
 
 const RUBRIC: Record<ReviewKind, string> = {
   code: [
@@ -84,7 +98,10 @@ export function reviewTask(o: { kind: ReviewKind; scope: Scope; target: string; 
 }
 
 // The reviewer's answer: the last JSON object in its reply.
-export function parseAnswer(text: string): Pick<Review, "findings" | "verdict" | "summary" | "reading_order"> {
+// Findings sorted by priority before any cap (a P0 at position 51 is kept);
+// an entry that cannot be read is counted with why, and an answer whose
+// findings are all unreadable is not "no findings".
+export function parseAnswer(text: string): Pick<Review, "findings" | "verdict" | "summary" | "reading_order" | "rejected" | "rejected_why" | "omitted"> {
   const fences = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((m) => m[1]!);
   const candidates = fences.length ? fences.reverse() : [text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)];
   let obj: any = null;
@@ -92,23 +109,34 @@ export function parseAnswer(text: string): Pick<Review, "findings" | "verdict" |
     try { obj = JSON.parse(c); break; } catch {}
   }
   if (!obj || typeof obj !== "object" || !Array.isArray(obj.findings)) throw new Error("the reviewer's answer is not the findings asked for");
-  const findings: Finding[] = obj.findings
-    .filter((f: any) => f && typeof f.file === "string" && (typeof f.title === "string" || typeof f.body === "string"))
-    .slice(0, 50)
-    .map((f: any, i: number) => ({
-      id: i + 1,
+  const why = new Set<string>();
+  const good = obj.findings.filter((f: any) => {
+    if (!f || typeof f !== "object") return why.add("not an object"), false;
+    if (typeof f.file !== "string" || !f.file) return why.add("no file"), false;
+    if (typeof f.title !== "string" && typeof f.body !== "string") return why.add("no title or body"), false;
+    return true;
+  });
+  const rejected = obj.findings.length - good.length;
+  if (obj.findings.length && !good.length) throw new Error(`the reviewer reported ${obj.findings.length} finding${obj.findings.length === 1 ? "" : "s"} that could not be read (${[...why].join(", ")})`);
+  const all: Finding[] = good
+    .map((f: any) => ({
+      id: 0,
       file: String(f.file).replace(/^\.\//, ""),
       line: Math.max(1, Math.floor(Number(f.line) || 1)),
       end_line: Number(f.end_line) > Number(f.line) ? Math.floor(Number(f.end_line)) : undefined,
-      priority: ([0, 1, 2, 3].includes(Number(f.priority)) ? Number(f.priority) : 2) as Finding["priority"],
-      confidence: Number.isFinite(Number(f.confidence)) ? Math.min(1, Math.max(0, Number(f.confidence))) : undefined,
+      // Only a number 0 to 3 is a priority: omitted, null or anything else is unrated.
+      priority: (typeof f.priority === "number" && [0, 1, 2, 3].includes(f.priority) ? f.priority : null) as Finding["priority"],
+      confidence: Number.isFinite(Number(f.confidence)) && f.confidence !== null ? Math.min(1, Math.max(0, Number(f.confidence))) : undefined,
       title: String(f.title ?? f.body).slice(0, 160),
       body: String(f.body ?? "").slice(0, 4000),
       state: "open" as const,
     }))
-    .sort((a: Finding, b: Finding) => a.priority - b.priority);
+    .sort((a: Finding, b: Finding) => rank(a.priority) - rank(b.priority));
+  const findings = all.slice(0, MAX_FINDINGS).map((f, i) => ({ ...f, id: i + 1 }));
   return {
     findings,
+    ...(rejected ? { rejected, rejected_why: [...why] } : {}),
+    ...(all.length > MAX_FINDINGS ? { omitted: all.length - MAX_FINDINGS } : {}),
     verdict: obj.verdict === "correct" || obj.verdict === "incorrect" ? obj.verdict : undefined,
     summary: typeof obj.summary === "string" ? obj.summary.slice(0, 1000) : undefined,
     reading_order: Array.isArray(obj.reading_order)
@@ -119,7 +147,7 @@ export function parseAnswer(text: string): Pick<Review, "findings" | "verdict" |
 
 // The prompt that sends chosen findings to the working model.
 export function fixPrompt(r: Review, chosen: Finding[]): string {
-  const lines = chosen.map((f) => `- [P${f.priority}] ${f.file}:${f.line}${f.end_line ? `-${f.end_line}` : ""}: ${f.title}${f.body ? `\n  ${f.body.replace(/\n/g, "\n  ")}` : ""}`);
+  const lines = chosen.map((f) => `- [${priorityLabel(f.priority)}] ${f.file}:${f.line}${f.end_line ? `-${f.end_line}` : ""}: ${f.title}${f.body ? `\n  ${f.body.replace(/\n/g, "\n  ")}` : ""}`);
   return [
     `An independent ${r.kind === "security" ? "security " : ""}review of ${r.scope === "commit" ? `commit ${r.target}` : r.scope === "branch" ? `the branch over ${r.target}` : "the uncommitted work"} found ${chosen.length === 1 ? "this" : "these"}:`,
     lines.join("\n"),

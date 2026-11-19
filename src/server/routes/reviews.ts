@@ -46,10 +46,13 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
   for (const r of store.db.query<{ data: string }, []>("SELECT data FROM reviews WHERE state = 'running'").all().map((x) => JSON.parse(x.data) as Review))
     save({ ...r, state: "failed", error: "the daemon stopped while the review ran", ended: Date.now() });
 
+  // Reviews the owner asked to stop: their end is "stopped", not a failure.
+  const stopping = new Set<string>();
   const finish = (r: Review, reason: string) => {
     if (!r.child_id) return;
+    if (stopping.delete(r.id)) { save({ ...r, state: "stopped", error: "Stopped by you", ended: Date.now() }); return; }
     if (reason === "interrupted" || reason === "error" || reason === "refusal") {
-      save({ ...r, state: "failed", error: reason === "interrupted" ? "the review was stopped" : `the reviewer's turn ended: ${reason}`, ended: Date.now() });
+      save({ ...r, state: "failed", error: reason === "interrupted" ? "the reviewer's turn was cut off" : `the reviewer's turn ended: ${reason}`, ended: Date.now() });
       return;
     }
     const evs = store.events(r.child_id);
@@ -111,9 +114,11 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         try { ({ info } = await providers.resolve(model)); } catch (e) { return bad(`the reviewer cannot start: ${(e as Error).message}`, 409); }
         const d = await wts.changeDiff(of, scope, scope === "commit" ? b.commit : b.base);
         if (!d.files.length) return bad(scope === "uncommitted" ? "there is no uncommitted work to review" : "there is no change in that scope to review");
-        const key = reviewKey(d.diff, kind, focus);
-        const earlier = all(s.id).reverse().find((r) => r.diff_sha256 === key && r.state !== "failed" && (r.agent_id ?? null) === (agent?.id ?? null));
-        if (earlier) return json({ review: earlier, skipped: true, note: "this exact change was reviewed already" });
+        // The same trees on the same reviewer were reviewed already: that result is
+        // returned (another model is a second opinion and runs).
+        const key = reviewKey({ from: d.from, to: d.to, kind, focus, model: info.id });
+        const earlier = all(s.id).reverse().find((r) => r.diff_sha256 === key && (r.state === "done" || r.state === "running") && (r.agent_id ?? null) === (agent?.id ?? null));
+        if (earlier) return json({ review: earlier, skipped: true, note: `${info.name ?? info.id} reviewed this exact change already` });
         // Half the reviewer's window for the diff (about four characters a token).
         const room = Math.max(20_000, info.context * 2);
         const cut = d.diff.length > room || d.truncated;
@@ -125,7 +130,8 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         gate?.setPerm(child.id, { mode: "read-only", sandbox: sb ? "read-only" : "off", network: !sb });
         const r = save({
           id: Bun.randomUUIDv7(), session_id: s.id, child_id: child.id, kind, scope, target: d.target, focus, model: info.id,
-          diff_sha256: key, files: d.files.length, state: "running", findings: [], created: Date.now(), agent_id: agent?.id,
+          diff_sha256: key, files: d.files.length, state: "running", findings: [], created: Date.now(), cut,
+          ...(agent ? { agent_id: agent.id, agent_title: agent.title, agent_branch: agent.branch ?? undefined } : {}),
         });
         agents.adopt(s.id, child.id, { title: child.title || "Review", type: "reviewer", model: info.id });
         bus.emit({ t: "session", session: store.session(child.id)! });
@@ -144,33 +150,51 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         const r = get(req.params.rid);
         if (!r || r.session_id !== req.params.id) return bad("no such review", 404);
         if (r.state !== "running") return bad("the review is not running", 409);
+        stopping.add(r.id);
         if (r.child_id && engine.isRunning(r.child_id)) await engine.interrupt(r.child_id);
+        stopping.delete(r.id);
         const now = get(r.id)!;
-        return json({ review: now.state === "running" ? save({ ...now, state: "failed", error: "the review was stopped", ended: Date.now() }) : now });
+        return json({ review: now.state === "running" ? save({ ...now, state: "stopped", error: "Stopped by you", ended: Date.now() }) : now });
       },
     },
     "/api/sessions/:id/reviews/:rid/findings": {
       POST: async (req: any) => {
+        const b = await body(req);
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         const r = get(req.params.rid);
         if (!r || r.session_id !== s.id) return bad("no such review", 404);
         if (r.state !== "done") return bad("the review is not done", 409);
-        const b = await body(req);
         if (!["fix", "dismiss", "reopen"].includes(b.action)) return bad("action is fix, dismiss or reopen");
         const ids: number[] | null = Array.isArray(b.ids) ? b.ids.map(Number) : null;
         const want = b.action === "reopen" ? (f: Review["findings"][0]) => f.state !== "open" : (f: Review["findings"][0]) => f.state === "open";
         const chosen = r.findings.filter((f) => (!ids || ids.includes(f.id)) && want(f));
         if (!chosen.length) return bad("no finding to act on", 409);
+        // Findings on an agent's work go to that agent, which continues with its
+        // context. When it is gone, nothing is sent unless the owner picks the
+        // session instead (to: "session").
+        const agent = b.action === "fix" && r.agent_id ? agents.get(r.agent_id) : undefined;
         if (b.action === "fix") {
           if (s.archived) return bad("the session is archived", 409);
-          // Findings on an agent's work go to that agent, which continues with its context.
-          if (r.agent_id && agents.get(r.agent_id)) await agents.send(r.agent_id, fixPrompt(r, chosen));
-          else engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
+          if (r.agent_id && !agent && b.to !== "session") return json({ error: `the agent that did this work (${r.agent_title ?? r.agent_id.slice(0, 8)}) is gone`, agent_gone: true }, 409);
         }
         const state = b.action === "fix" ? "fix_requested" : b.action === "dismiss" ? "dismissed" : "open";
+        const sentTo = b.action === "fix" ? (agent ? agent.title : "the session") : undefined;
         const picked = new Set(chosen.map((f) => f.id));
-        return json({ review: save({ ...r, findings: r.findings.map((f) => (picked.has(f.id) ? { ...f, state } : f)) }) });
+        // Claimed before anything is sent (no await in between): a second
+        // request for the same findings finds them taken and sends nothing.
+        const next = save({ ...r, findings: r.findings.map((f) => (picked.has(f.id) ? { ...f, state, ...(sentTo ? { sent_to: sentTo } : {}) } : f)) });
+        if (b.action === "fix") {
+          try {
+            if (agent) await agents.send(agent.id, fixPrompt(r, chosen));
+            else engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
+          } catch (e) {
+            const back = get(r.id)!;
+            save({ ...back, findings: back.findings.map((f) => (picked.has(f.id) ? chosen.find((c) => c.id === f.id)! : f)) });
+            throw e;
+          }
+        }
+        return json({ review: next });
       },
     },
   };

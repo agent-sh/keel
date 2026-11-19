@@ -38,7 +38,9 @@ test("reviews of an agent's work go back to that agent", async ({ page, request 
   // Review the agent's branch from its card: the Review panel shows it, the reviewer is a listed child.
   await card.getByTestId("agent-call-review").click();
   const review = page.getByTestId("review").first();
-  await expect(review).toContainText("an agent's branch over main", { timeout: 30_000 });
+  // The card names the agent and its branch, and Send names it as the recipient.
+  await expect(review).toContainText("Add math's branch over main", { timeout: 30_000 });
+  await expect(review.getByTestId("review-agent")).toContainText("keel/");
   // The reviewer is one of the session's agents (listed under it in the rail, with stop).
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents.filter((a: any) => a.type === "reviewer").length).toBe(1);
   await expect(review).toHaveAttribute("data-state", "done", { timeout: 180_000 });
@@ -49,6 +51,7 @@ test("reviews of an agent's work go back to that agent", async ({ page, request 
   const { agents } = await (await request.get(`/api/sessions/${session.id}/agents`)).json();
   const worker = agents.find((a: any) => a.type === "general-purpose");
   const before = (await (await request.get(`/api/sessions/${worker.session_id}`)).json()).events.length;
+  await expect(page.getByTestId("findings-fix")).toContainText("to Add math");
   await page.getByTestId("findings-fix").click();
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents.find((a: any) => a.id === worker.id).status, { timeout: 30_000 }).not.toBe("completed");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents.find((a: any) => a.id === worker.id).status, { timeout: 180_000 }).toBe("completed");
