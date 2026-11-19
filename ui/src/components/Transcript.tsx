@@ -1,5 +1,5 @@
 import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
-import { MemoryNote } from "./MemoryNote.tsx";
+import { TurnNotes } from "./MemoryNote.tsx";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
@@ -322,7 +322,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
 
 const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "Cut at the output limit", refusal: "Declined", error: "Failed", restart: "Cut by a daemon restart" };
 
-function TurnFooter({ e, reply, prompt, s, last }: { e: StoredEvent; reply: string; prompt?: StoredEvent; s: Session; last: boolean }) {
+function TurnFooter({ e, reply, prompt, s, last, notes = [] }: { e: StoredEvent; reply: string; prompt?: StoredEvent; s: Session; last: boolean; notes?: StoredEvent[] }) {
   const u = e.data.usage;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
@@ -335,6 +335,7 @@ function TurnFooter({ e, reply, prompt, s, last }: { e: StoredEvent; reply: stri
         </ActionButton>
       )}
       <Extra on="assistant" e={e} s={s} />
+      <TurnNotes notes={notes} working={s.phase === "working"} />
       <span className="ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
         {REASONS[e.data.reason] && <span className="text-warn">{REASONS[e.data.reason]}</span>}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
@@ -463,6 +464,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // Per turn: the prompt that started it and the text of its replies, for the footer's actions.
   let prompt: StoredEvent | undefined;
   let reply: string[] = [];
+  let notes: StoredEvent[] = []; // harness notes of the turn, shown on its footer
   const lastEnd = [...events].reverse().find((e) => e.kind === "turn_end")?.id;
 
   return (
@@ -491,9 +493,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           {events.length === 0 && session.phase !== "working" && <p className="py-10 text-center text-ui text-faint">No messages yet.</p>}
           {events.map((e, idx) => {
             if (e.kind === "user") {
-              if (e.data.origin === "restart") {
-                return <Divider key={e.id} testid="restart-note"><span className="flex items-center gap-1.5"><RotateCw className="size-3.5" /> Continued by itself after a daemon restart{session.phase === "working" ? ". Stop ends it." : ""}</span></Divider>;
-              }
+              // Folded into the turn's notes (the footer); the cut itself shows on the footer.
+              if (e.data.origin === "restart") { notes.push(e); return null; }
               if (e.data.origin === "harness") {
                 return <p key={e.id} className="text-center text-caption text-faint" data-testid="harness-note">{String(e.data.text).replace(/^\[harness\]\s*/, "")}</p>;
               }
@@ -515,8 +516,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
                 </div>
               );
             }
-            if (e.kind === "note" && e.data.hook) return <MemoryNote key={e.id} label="From a hook" text={e.data.text} hooks={[e.data.hook]} />;
-            if (e.kind === "note" && e.data.memory) return <MemoryNote key={e.id} text={e.data.text} hooks={e.data.memory.hooks ?? []} />;
+            // Memory and hook notes fold into the turn's notes on its footer: quiet at six stations.
+            if (e.kind === "note" && (e.data.hook || e.data.memory)) { notes.push(e); return null; }
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.
               const text = e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
@@ -524,10 +525,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             }
             if (e.kind === "turn_end") {
               const r = reply.join("\n\n");
-              return <Fragment key={e.id}><TurnFooter e={e} reply={r} prompt={prompt} s={session} last={e.id === lastEnd} /></Fragment>;
+              const mine = notes;
+              notes = [];
+              return <Fragment key={e.id}><TurnFooter e={e} reply={r} prompt={prompt} s={session} last={e.id === lastEnd} notes={mine} /></Fragment>;
             }
             return null;
           })}
+          {notes.length > 0 && <div className="flex" data-testid="pending-notes"><TurnNotes notes={notes} working={session.phase === "working"} /></div>}
           <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} />
         </div>
       </div>

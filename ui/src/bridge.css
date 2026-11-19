@@ -306,3 +306,15 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 /* Inside a station the band already says it works and a running tool row has its amber edge:
    the inline pulsing dots stay still (the clocks still count). One moving thing per station. */
 .k-station .animate-pulse-dot { animation: none; opacity: 0.75; }
+
+/* ---------- Turn notes: memory, hooks, restarts, folded onto the footer ---------- */
+.k-notes { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
+.k-note-chip-wrap { display: inline-flex; }
+.k-note-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: 3px; font: 500 11px/1 var(--font-inst); font-stretch: 75%; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
+button.k-note-chip:hover, button.k-note-chip[data-popup-open] { color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.k-note-pop { width: min(36rem, 90vw); max-height: 50vh; overflow: auto; padding: 10px 12px; border-radius: 5px; border: 1px solid var(--line-strong); border-top: 3px solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
+.k-note-pop-head { margin-bottom: 6px; font-family: var(--font-inst); font-stretch: 75%; font-weight: 700; font-size: 11.5px; color: var(--faint); }
+/* A turn's footer wraps whole items on a narrow station instead of breaking words. */
+div:has(> [data-testid="turn-end"]) { height: auto; min-height: 28px; flex-wrap: wrap; row-gap: 2px; }
+[data-testid="turn-end"] { flex-wrap: wrap; row-gap: 2px; }
+[data-testid="turn-end"] > span, .k-notes { white-space: nowrap; }

@@ -15,4 +15,6 @@ export KEEL_DESKTOP_NOTIFY="${KEEL_DESKTOP_NOTIFY:-off}"
 cd "$(dirname "$0")/.."
 # Lanes add dependencies; a stale node_modules breaks the bundle at load.
 bun install --silent
+# Imported stylesheets reload too (the bundler watches only the entry stylesheet).
+bun scripts/css-watch.ts "$$" &
 exec bun --hot src/main.ts serve --dev --bind "127.0.0.1:$PORT" --state-dir "$DEV/state" --workspace "$DEV/ws"
