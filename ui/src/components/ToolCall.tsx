@@ -6,7 +6,7 @@ import {
 import { useMemo, useState } from "react";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
-import { actions } from "../lib/store.ts";
+import { actions, failed } from "../lib/store.ts";
 import {
   patchFiles, planItems, questions, resultImages, resultText, shellBody, shellStatus, shortPath, stripAnsi, toolKind,
   type PlanItem, type ToolKind,
@@ -258,7 +258,7 @@ function QuestionCard({ use, result, sessionId, waiting }: Props) {
     try {
       await actions.answer(sessionId, use.id, Object.fromEntries(qs.map((q) => [q.id, { picked: picked[q.id] ?? [], other: other[q.id] }])));
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ToolCall" }));
       setSending(false);
     }
   };

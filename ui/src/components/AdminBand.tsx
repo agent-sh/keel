@@ -3,7 +3,7 @@
 // daemon came back (the page asks before reloading, so nothing typed is lost).
 import { RotateCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, onFeature, useStore } from "../lib/store.ts";
+import { api, onFeature, reportError, useStore } from "../lib/store.ts";
 
 export function AdminBand() {
   const [draining, setDraining] = useState<{ restart: boolean } | null>(null);
@@ -15,7 +15,7 @@ export function AdminBand() {
       if (build.current && build.current !== b.build_id) setUpdated(true);
       build.current ??= b.build_id;
       setDraining(b.draining);
-    }).catch(() => {});
+    }).catch((e) => reportError(e, { at: "daemon status" }));
     check();
     return onFeature({ frame: (f) => { if (f.name === "daemon") setDraining(f.data.draining); }, reconnect: check });
   }, []);

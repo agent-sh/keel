@@ -2,7 +2,7 @@
 // phone with whether its alerts arrive, send a test push, revoke.
 import { BellRing, Check, Copy, QrCode, Send, ShieldAlert, Smartphone, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Card } from "./Settings.tsx";
@@ -44,7 +44,7 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
     try {
       setBundle(await api<Bundle>("/api/mobile/pair", { method: "POST", body: JSON.stringify({ public_url: url }) }));
     } catch (e) {
-      setError((e as Error).message);
+      setError(failed(e, { at: "PhonePanel" }));
     }
   };
 
@@ -121,7 +121,7 @@ function DeviceRow({ d, canPush, reload }: { d: Device; canPush: boolean; reload
       const r = await api<{ pushes: PushRec[] }>(`/api/mobile/devices/${d.id}/test-push`, { method: "POST" });
       setNote(r.pushes.every((p) => p.ok) ? "Sent. The row updates when the phone confirms it." : (r.pushes[0]?.error ?? "Not sent"));
     } catch (e) {
-      setNote((e as Error).message);
+      setNote(failed(e, { at: "PhonePanel" }));
     } finally {
       setBusy(false);
       reload();

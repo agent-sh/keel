@@ -2,7 +2,7 @@ import { ArrowDownToLine, ArrowLeft, ArrowUp, CircleAlert, Cpu, RefreshCw, Termi
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReadPrompt, Row } from "../../../src/drive/drive.ts";
 import type { Turn } from "../../../src/drive/transcript.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { copyable, takeOver, TOOL } from "./TakeOver.tsx";
 import { ago, cn, when } from "../lib/utils.ts";
@@ -171,7 +171,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
       setR(await api<Read>(`/api/fleet/outside/${enc(id)}?lines=120`));
       setErr("");
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ElsewherePanel" }));
     }
   }, [id]);
   useEffect(() => {
@@ -191,7 +191,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
       load();
       return true;
     } catch (e) {
-      setNote({ ok: false, text: (e as Error).message });
+      setNote({ ok: false, text: failed(e, { at: "ElsewherePanel" }) });
       return false;
     } finally {
       setSending(false);
@@ -247,7 +247,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
                 const res = await takeOver(s.id, s.name || s.id, TOOL[s.kind] ?? s.kind);
                 if (res) navigate({ name: "session", id: res.session.id });
               } catch (e) {
-                setNote({ ok: false, text: (e as Error).message });
+                setNote({ ok: false, text: failed(e, { at: "ElsewherePanel" }) });
               }
             }}
             className="h-8 shrink-0 rounded-md px-2.5 text-caption font-medium text-muted hover:bg-hover hover:text-fg"
@@ -369,7 +369,7 @@ export function ElsewhereSettings() {
       setStatus(null);
       check();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ElsewherePanel" }));
     }
   };
   return (

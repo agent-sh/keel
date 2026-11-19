@@ -119,3 +119,23 @@ test("a session whose folder is gone is a state, not a failure", async ({ page, 
   expect(after.filter((x: string) => !errorsBefore.includes(x))).toEqual([]);
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// A failure is recorded once: an answer the daemon recorded itself (it names
+// the record) is not posted again by the page; one it did not record is
+// posted once.
+test("a failure the daemon recorded is not recorded again by the page", async ({ page }) => {
+  const posted: string[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") posted.push(r.postData() ?? ""); });
+  let recorded = true;
+  await page.route(/\/api\/providers(\?|$)/, (r) => r.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify(recorded ? { error: "listing exploded", error_id: "rec-1" } : { error: "listing exploded" }) }));
+  await page.goto("/settings/providers");
+  await expect(page.getByTestId("providers-panel")).toBeVisible();
+  await page.waitForTimeout(800);
+  expect(posted.filter((p) => p.includes("listing exploded"))).toEqual([]);
+  recorded = false;
+  await page.reload();
+  await expect.poll(() => posted.filter((p) => p.includes("listing exploded")).length).toBe(1);
+  await page.waitForTimeout(800);
+  expect(posted.filter((p) => p.includes("listing exploded")).length).toBe(1);
+  await page.unroute(/\/api\/providers(\?|$)/);
+});

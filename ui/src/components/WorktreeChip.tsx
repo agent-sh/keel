@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitPullRequest, MoveLeft, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, reportError } from "../lib/store.ts";
+import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadWorktree, setStartInWorktree, useStartInWorktree, useWorktree } from "../lib/worktree.ts";
 import { popupClass } from "./ui.tsx";
@@ -41,7 +41,7 @@ export function WorktreeChip({ session }: { session: Session }) {
       if (ok) setMsg(ok(r));
       await loadWorktree(session.id);
     } catch (e) {
-      setMsg({ text: (e as Error).message, error: true });
+      setMsg({ text: failed(e, { at: "WorktreeChip" }), error: true });
     } finally {
       setBusy(false);
     }

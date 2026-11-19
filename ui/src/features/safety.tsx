@@ -5,7 +5,7 @@ import { lazy } from "react";
 import { panels, settingsSections } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { safety } from "../lib/safety.ts";
-import { getState, reportError } from "../lib/store.ts";
+import { getState, reportError, failed } from "../lib/store.ts";
 import { getUI, savePref } from "../lib/ui.ts";
 import { handoff } from "../lib/worktree.ts";
 import { confirmAction } from "../components/Confirm.tsx";
@@ -72,7 +72,7 @@ async function move(to: "worktree" | "main") {
   try {
     await handoff(s.id, to);
   } catch (e) {
-    await confirmAction({ title: "The session was not moved", body: (e as Error).message, action: "OK" });
+    await confirmAction({ title: "The session was not moved", body: failed(e, { at: "safety" }), action: "OK" });
   }
 }
 registerCommand(

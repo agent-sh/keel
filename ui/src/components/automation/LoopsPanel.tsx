@@ -2,7 +2,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Check, CircleAlert, CircleCheck, CircleSlash, Copy, ExternalLink, KeyRound, Pause, Play, Plus, Repeat, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunRecord } from "../../lib/automation.ts";
-import { reportError, useStore } from "../../lib/store.ts";
+import { reportError, useStore, failed } from "../../lib/store.ts";
 import { ago, cn, fmtTokens } from "../../lib/utils.ts";
 import { Empty, IconButton } from "./bits.tsx";
 
@@ -150,7 +150,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
           if (l.hook_key) setKeys({ hook_key: l.hook_key, hook_secret: l.hook_secret });
           else onDone(l.id);
         } catch (x) {
-          setErr((x as Error).message);
+          setErr(failed(x, { at: "LoopsPanel" }));
         }
       }}
     >

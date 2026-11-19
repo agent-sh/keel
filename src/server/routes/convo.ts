@@ -175,7 +175,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           res = await engine.ask(s.id, ask(RECAP_PROMPT), req.signal ?? new AbortController().signal);
         } catch (e) {
           const rec = errors.capture("provider", e, { session: s.id, at: "recap" });
-          return bad(`the recap call failed: ${rec.message}`, 502);
+          return json({ error: `the recap call failed: ${rec.message}`, error_id: rec.id }, 502);
         }
         const d = parseDigest(textOf(res.blocks));
         const digest: Digest = { recap: d.recap, recap_seq: line.at(-1)?.seq ?? 0, next_prompt: d.next, ts_ms: Date.now(), cost_usd: res.usage.cost, model: res.model_id };
@@ -208,7 +208,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           res = await engine.ask(s.id, ask(prompt), new AbortController().signal);
         } catch (e) {
           const rec = errors.capture("provider", e, { session: s.id, at: "summarize" });
-          return bad(`the summary call failed: ${rec.message}`, 502);
+          return json({ error: `the summary call failed: ${rec.message}`, error_id: rec.id }, 502);
         }
         const summary = textOf(res.blocks);
         if (res.stop === "refusal" || !summary) return bad("the model wrote no summary", 502);

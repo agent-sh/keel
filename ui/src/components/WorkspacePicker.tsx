@@ -1,7 +1,7 @@
 import { Popover } from "@base-ui/react/popover";
 import { ChevronDown, ChevronLeft, Folder, FolderGit2, History } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, reportError } from "../lib/store.ts";
+import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 
@@ -27,7 +27,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
   const shown = value || info?.default || "";
   const home = info?.home ?? "";
 
-  const go = (path: string) => api(`/api/fs/dirs?path=${encodeURIComponent(path)}`).then(setBrowse).catch((e) => setTyped(`${path}: ${e.message}`));
+  const go = (path: string) => api(`/api/fs/dirs?path=${encodeURIComponent(path)}`).then(setBrowse).catch((e) => setTyped(`${path}: ${failed(e, { at: "WorkspacePicker" })}`));
   const pick = (path: string) => { onChange(path); setOpen(false); setBrowse(null); };
 
   return (

@@ -49,8 +49,8 @@ export const surfaceRoutes: RouteModule = (deps) => {
     try { return await f(); } catch (e) {
       const status = (e as any).status;
       if (status) return bad((e as Error).message, status);
-      deps.errors.capture("server", e, { at: "settings file" });
-      return bad((e as Error).message, 500);
+      const rec = deps.errors.capture("server", e, { at: "settings file" });
+      return json({ error: (e as Error).message, error_id: rec.id }, 500);
     }
   };
 

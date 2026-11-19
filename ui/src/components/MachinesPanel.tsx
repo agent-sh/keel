@@ -5,7 +5,7 @@
 import { ArrowUp, Cpu, Link2, Plus, RefreshCw, Server, Terminal, Trash2, Unlink, Wand2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { fleet, useFleet, type Machine, type Rule } from "../lib/fleet.ts";
-import { reportError } from "../lib/store.ts";
+import { reportError, failed } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Card } from "./Settings.tsx";
@@ -72,7 +72,7 @@ function MachineRow({ m }: { m: Machine }) {
   const run = async (f: () => Promise<unknown>) => {
     setBusy(true);
     setErr("");
-    try { await f(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+    try { await f(); } catch (e) { setErr(failed(e, { at: "MachinesPanel" })); } finally { setBusy(false); }
   };
   const link = m.daemon;
   return (
@@ -154,7 +154,7 @@ function AddMachine({ offered, preset, onDone }: { offered: Machine[]; preset?: 
       if (m?.state === "offline") setErr(`Added, but it does not answer: ${m.reason ?? m.daemon?.reason ?? ""}`);
       else onDone();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "MachinesPanel" }));
     } finally {
       setBusy(false);
     }
@@ -230,7 +230,7 @@ function Placement({ machines }: { machines: Machine[] }) {
   const [err, setErr] = useState("");
   const targets = [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine" }, ...machines.filter((m) => m.source !== "local" && m.enabled)];
   const name = (id: string) => targets.find((t) => t.id === id)?.name ?? id;
-  const save = (next: Rule[]) => fleet.saveRules(next).then(() => setErr("")).catch((e) => setErr((e as Error).message));
+  const save = (next: Rule[]) => fleet.saveRules(next).then(() => setErr("")).catch((e) => setErr(failed(e, { at: "MachinesPanel" })));
   return (
     <Card>
       <div className="py-1" data-testid="placement">

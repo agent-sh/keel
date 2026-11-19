@@ -3,7 +3,7 @@ import { Check, CircleDot, ExternalLink, Flag, Pause, Play, Trash2, X } from "lu
 import { useEffect, useState } from "react";
 import type { Session } from "../../../../src/core/types.ts";
 import { auto, openSession, useAuto, type Goal, type Task } from "../../lib/automation.ts";
-import { reportError } from "../../lib/store.ts";
+import { reportError, failed } from "../../lib/store.ts";
 import { cn, fmtTokens } from "../../lib/utils.ts";
 import { Empty, IconButton, SectionTitle } from "./bits.tsx";
 
@@ -27,7 +27,7 @@ function NewGoal({ sid, replace }: { sid: string; replace: boolean }) {
       onSubmit={(e) => {
         e.preventDefault();
         setErr("");
-        auto.setGoal(sid, { objective, max_turns: turns ? Number(turns) : null, replace }).catch((x) => setErr((x as Error).message));
+        auto.setGoal(sid, { objective, max_turns: turns ? Number(turns) : null, replace }).catch((x) => setErr(failed(x, { at: "TasksPanel" })));
       }}
     >
       <textarea

@@ -97,8 +97,9 @@ export const driveRoutes: RouteModule = (deps: Deps) => {
           }
           return bad("action is send, answer or model");
         } catch (e) {
-          if (!(e instanceof DriveError)) deps.errors.capture("server", e, { at: "drive act", action: b.action });
-          return fail(e);
+          if (e instanceof DriveError) return fail(e);
+          const rec = deps.errors.capture("server", e, { at: "drive act", action: b.action });
+          return json({ error: (e as Error).message, error_id: rec.id }, 500);
         }
       },
     },

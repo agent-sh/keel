@@ -33,7 +33,7 @@ export function setStartInWorktree(v: boolean) {
 // Whether a folder is in a git repository (cached per folder).
 const gitCache = new Map<string, Promise<boolean>>();
 export const isGitFolder = (dir: string) => {
-  if (!gitCache.has(dir)) gitCache.set(dir, api<{ git: boolean }>(`/api/worktrees/check?workspace=${encodeURIComponent(dir)}`).then((r) => r.git).catch(() => false));
+  if (!gitCache.has(dir)) gitCache.set(dir, api<{ git: boolean }>(`/api/worktrees/check?workspace=${encodeURIComponent(dir)}`).then((r) => r.git).catch((e) => (reportError(e, { at: "git check" }), false)));
   return gitCache.get(dir)!;
 };
 

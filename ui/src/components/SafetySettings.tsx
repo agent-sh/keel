@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { safety, useSafety } from "../lib/safety.ts";
-import { api, reportError } from "../lib/store.ts";
+import { api, reportError, failed } from "../lib/store.ts";
 import type { WorktreeStatus } from "../lib/worktree.ts";
 import { useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -122,7 +122,7 @@ function WorktreesCard() {
             </ul>
           )}
           <div className="mt-3 flex items-center gap-2">
-            <button data-testid="worktree-prune" onClick={() => api<{ removed: string[] }>("/api/worktrees/prune", { method: "POST", body: "{}" }).then((r) => { setNote(r.removed.length ? `Removed ${r.removed.length}, working state saved.` : "Nothing to prune."); load(); }).catch((e) => setNote(e.message))}
+            <button data-testid="worktree-prune" onClick={() => api<{ removed: string[] }>("/api/worktrees/prune", { method: "POST", body: "{}" }).then((r) => { setNote(r.removed.length ? `Removed ${r.removed.length}, working state saved.` : "Nothing to prune."); load(); }).catch((e) => setNote(failed(e, { at: "SafetySettings" })))}
               className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">Prune now</button>
             {note && <span className="text-caption text-muted" data-testid="worktree-prune-note">{note}</span>}
           </div>
@@ -173,7 +173,7 @@ function PasskeysCard() {
       setMsg({ text: "Passkey enrolled." });
       setTyped("");
       load();
-    } catch (e) { setMsg({ text: (e as Error).message, error: true }); }
+    } catch (e) { setMsg({ text: failed(e, { at: "SafetySettings" }), error: true }); }
   };
   return (
     <div className="flex flex-col gap-2">
@@ -192,7 +192,7 @@ function PasskeysCard() {
                   <span className="min-w-0 flex-1 truncate">{p.label ?? "Passkey"}</span>
                   <span className="font-mono text-faint">{p.rp_id}</span>
                   <span className="text-faint">{p.used ? `used ${new Date(p.used).toLocaleDateString()}` : "not used yet"}</span>
-                  <button className="text-faint hover:text-danger" onClick={() => api(`/api/owner-presence/${encodeURIComponent(p.id)}`, { method: "DELETE" }).then(load).catch((e) => setMsg({ text: e.message, error: true }))}>Remove</button>
+                  <button className="text-faint hover:text-danger" onClick={() => api(`/api/owner-presence/${encodeURIComponent(p.id)}`, { method: "DELETE" }).then(load).catch((e) => setMsg({ text: failed(e, { at: "SafetySettings" }), error: true }))}>Remove</button>
                 </li>
               ))}
             </ul>
@@ -229,7 +229,7 @@ function PasskeysCard() {
 function RemoteAccessCard() {
   const [link, setLink] = useState<{ path: string; hosts: string[] } | null>(null);
   const [copied, setCopied] = useState(false);
-  useEffect(() => { api<{ path: string; hosts: string[] }>("/api/remote-access").then(setLink).catch(() => setLink(null)); }, []);
+  useEffect(() => { api<{ path: string; hosts: string[] }>("/api/remote-access").then(setLink).catch((e) => { failed(e, { at: "remote access" }); setLink(null); }); }, []);
   if (!link) return null;
   const full = link.hosts[0] ? `https://${link.hosts[0]}${link.path}` : link.path;
   return (

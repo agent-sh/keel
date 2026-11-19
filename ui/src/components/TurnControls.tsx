@@ -7,7 +7,7 @@ import { useMemo, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
-import { actions, reportError, useStore, type ContextInfo } from "../lib/store.ts";
+import { actions, reportError, useStore, type ContextInfo, failed } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
@@ -126,7 +126,7 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
       setFocus("");
       setInfo(await actions.context(sessionId));
     } catch (e) {
-      setError((e as Error).message);
+      setError(failed(e, { at: "TurnControls" }));
     } finally {
       setBusy("");
     }

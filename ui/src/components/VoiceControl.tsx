@@ -3,7 +3,7 @@
 import { Mic, MicOff, Square, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { VoiceState } from "../../../src/integrations/voice.ts";
-import { onFeature, reportError } from "../lib/store.ts";
+import { onFeature, reportError, failed } from "../lib/store.ts";
 import { useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -81,7 +81,7 @@ export function VoiceCard() {
       states.set(id, b);
       bump();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "VoiceControl" }));
     } finally {
       setBusy(false);
     }

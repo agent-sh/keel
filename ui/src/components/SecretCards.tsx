@@ -1,7 +1,7 @@
 import { KeyRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { secrets, useSecrets, type SecretMeta, type SecretRequest } from "../lib/secrets.ts";
-import { reportError } from "../lib/store.ts";
+import { reportError, failed } from "../lib/store.ts";
 
 const NONE: never[] = [];
 
@@ -77,7 +77,7 @@ function FoundCard({ m, sessionId }: { m: SecretMeta; sessionId: string }) {
   const where = m.source === "prompt" ? "your message" : "the output";
   const save = async () => {
     setErr("");
-    try { await secrets.rename(m.id, name.trim() || null); secrets.dismiss(sessionId, m.id); } catch (e) { setErr((e as Error).message); }
+    try { await secrets.rename(m.id, name.trim() || null); secrets.dismiss(sessionId, m.id); } catch (e) { setErr(failed(e, { at: "SecretCards" })); }
   };
   return (
     <div className={shell} data-testid="secret-found">
@@ -95,7 +95,7 @@ function FoundCard({ m, sessionId }: { m: SecretMeta; sessionId: string }) {
       <form className="flex items-center gap-1.5 px-4 py-3" onSubmit={(e) => { e.preventDefault(); save(); }}>
         <input data-testid="secret-name" value={name} onChange={(e) => setName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_"))} placeholder="Variable name for commands, e.g. GITHUB_TOKEN" className={input} />
         <button type="submit" disabled={!name.trim()} data-testid="secret-save-name" className={primary}>Name it</button>
-        <button type="button" data-testid="secret-forget" onClick={() => secrets.forget(m.id).then(() => secrets.dismiss(sessionId, m.id)).catch((e) => setErr(e.message))} className={quiet}>Forget</button>
+        <button type="button" data-testid="secret-forget" onClick={() => secrets.forget(m.id).then(() => secrets.dismiss(sessionId, m.id)).catch((e) => setErr(failed(e, { at: "SecretCards" })))} className={quiet}>Forget</button>
       </form>
       {err && <p className="px-4 pb-3 -mt-1 text-micro text-danger">{err}</p>}
     </div>

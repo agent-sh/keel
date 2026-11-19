@@ -6,7 +6,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Check, Copy, FileDown, FileJson, History, Terminal, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { reportError } from "../lib/store.ts";
+import { reportError, failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 
 let current: Session | null = null;
@@ -61,7 +61,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
       if (!r.ok) throw new Error(b.error ?? `HTTP ${r.status}`);
       setWritten(b);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ExportDialog" }));
     } finally {
       setBusy(false);
     }
@@ -74,7 +74,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
       if (!r.ok) throw new Error((await r.json()).error);
       setOrigin(await (await fetch(`${base}/origin`)).json());
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ExportDialog" }));
     } finally {
       setBusy(false);
     }

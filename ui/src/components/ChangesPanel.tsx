@@ -3,7 +3,7 @@ import { Tabs } from "@base-ui/react/tabs";
 import { FileDiff, FolderX, History, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
 
@@ -65,7 +65,7 @@ export function ChangesPanel({ session }: { session: Session }) {
       setIncludeOutside(false);
       setPending({ title, body, preview });
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ChangesPanel" }));
     }
   };
 
@@ -77,7 +77,7 @@ export function ChangesPanel({ session }: { session: Session }) {
       setPending(null);
       load();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ChangesPanel" }));
     }
   };
 
@@ -148,7 +148,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                 try {
                   setDone(await api<RewindResult>(`/api/sessions/${sessionId}/changes/revert`, { method: "POST", body: JSON.stringify({ path: h.path, hunk: { index: h.index, header: h.header }, from: firstTurn }) }));
                   load();
-                } catch (e) { setErr((e as Error).message); }
+                } catch (e) { setErr(failed(e, { at: "ChangesPanel" })); }
               }}
             />
           )}

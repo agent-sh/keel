@@ -2,7 +2,7 @@
 // shape Claude Code and Codex share. Yours runs and is edited here; a
 // repository's runs only once you read and pin exactly that file.
 import { useCallback, useEffect, useState } from "react";
-import { api, reportError } from "../../lib/store.ts";
+import { api, reportError, failed } from "../../lib/store.ts";
 import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, tilde, type Group } from "./kit.tsx";
 
 type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers?: string[] };
@@ -44,7 +44,7 @@ export default function Hooks() {
     try {
       await api("/api/hooks/trust", { method: "POST", body: JSON.stringify({ cwd: s.root, sha256: s.sha256 }) });
       load();
-    } catch (e) { setErr((e as Error).message); }
+    } catch (e) { setErr(failed(e, { at: "Hooks" })); }
   };
   const isOwner = sel === owner?.path;
 

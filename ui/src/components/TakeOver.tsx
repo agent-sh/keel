@@ -3,7 +3,7 @@
 // original still runs says so above the composer, with Take over now.
 import { CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, useStore } from "../lib/store.ts";
+import { api, useStore, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { confirmAction } from "./Confirm.tsx";
 
@@ -59,7 +59,7 @@ export function LiveSourceBanner({ sessionId }: { sessionId: string }) {
               if (r.session.id !== sessionId) navigate({ name: "session", id: r.session.id });
             }
           } catch (e) {
-            setNote((e as Error).message);
+            setNote(failed(e, { at: "TakeOver" }));
           } finally {
             setBusy(false);
           }

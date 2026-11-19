@@ -28,8 +28,8 @@ export function DaemonPanel() {
 
   useEffect(() => {
     const load = () => {
-      api<Status>("/api/daemon").then(setSt).catch(() => {});
-      api<Awake>("/api/awake").then(setAw).catch(() => {});
+      api<Status>("/api/daemon").then(setSt).catch((e) => reportError(e, { at: "daemon panel" }));
+      api<Awake>("/api/awake").then(setAw).catch((e) => reportError(e, { at: "daemon panel" }));
     };
     load();
     const off = onFeature({

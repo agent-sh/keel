@@ -7,7 +7,7 @@ import { ChevronRight, Download, Eye, Globe, KeyRound, LogOut, RefreshCw, Rotate
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
-import { api, reportError } from "../../lib/store.ts";
+import { api, reportError, failed } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { Blank, FolderLine, Ledger, ReaderHead, Seg, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
 
@@ -257,7 +257,7 @@ function AddServer({ onAdded }: { onAdded: (servers: McpServerState[], name: str
       onAdded(r.servers, name.trim());
       setName(""); setTarget(""); setExtra(""); setBearer("");
     } catch (x) {
-      setErr((x as Error).message);
+      setErr(failed(x, { at: "Mcp" }));
     }
   };
   return (
@@ -333,7 +333,7 @@ export default function McpServers() {
       setServers(r.servers);
       if (method === "DELETE") { loadImportable(); setSel(null); }
     } catch (e) {
-      setNote((e as Error).message);
+      setNote(failed(e, { at: "Mcp" }));
     }
   };
   const all = servers ?? [];
@@ -345,7 +345,7 @@ export default function McpServers() {
   const cur = all.find((s) => s.name === sel);
   const ready = all.filter((s) => s.state === "ready" || s.state === "idle" || s.state === "armed");
   const waiting = all.filter((s) => s.state === "needs_auth").length;
-  const failed = all.filter((s) => mcpMark(s) === "fail").length;
+  const failing = all.filter((s) => mcpMark(s) === "fail").length;
   const fresh = importable.filter((i) => !i.configured).length;
 
   return (
@@ -354,7 +354,7 @@ export default function McpServers() {
         { n: all.length, label: "servers" },
         { n: ready.reduce((n, s) => n + s.tools, 0), label: "tools offered" },
         ...(waiting ? [{ n: waiting, label: "need sign-in", tone: "need" as const }] : []),
-        ...(failed ? [{ n: failed, label: "failed", tone: "fail" as const }] : []),
+        ...(failing ? [{ n: failing, label: "failed", tone: "fail" as const }] : []),
       ]} />
       {note && (
         <div className="k-issue mb-3 flex items-center gap-2" data-tone="quiet" data-testid="mcp-note">
@@ -378,7 +378,7 @@ export default function McpServers() {
                   const r = await api<{ line: string; servers: McpServerState[] }>("/api/mcp/reload", { method: "POST", body: "{}" });
                   setServers(r.servers);
                   setNote(r.line);
-                } catch (e) { setNote((e as Error).message); }
+                } catch (e) { setNote(failed(e, { at: "Mcp" })); }
               }}><RefreshCw /> Read mcp.json again</button>
             } />
             <div className="k-reader-body"><ImportList items={importable} onImport={async (i) => { await act("/api/mcp/import", { source: i.source, name: i.name }); loadImportable(); setSel(i.name); }} /></div>

@@ -35,7 +35,7 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
   const labels = useStore((s) => s.providerLabels);
   const hiddenProviders = useStore((s) => s.providers?.choices.hidden_providers);
   const problems = useStore((s) => s.limits?.problems);
-  useEffect(() => { if (open) actions.loadLimits().catch(() => {}); }, [open]);
+  useEffect(() => { if (open) actions.loadLimits().catch((e) => reportError(e, { at: "limits" })); }, [open]);
 
   // Built once per listing change; a keystroke only filters these.
   const { all, byId, order } = useMemo(() => {

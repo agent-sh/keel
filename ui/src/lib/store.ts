@@ -286,7 +286,7 @@ export function apply(f: Frame) {
 let limitsTimer: ReturnType<typeof setTimeout> | undefined;
 function limitsSoon() {
   clearTimeout(limitsTimer);
-  limitsTimer = setTimeout(() => actions.loadLimits().catch(() => {}), 1500);
+  limitsTimer = setTimeout(() => actions.loadLimits().catch((e) => reportError(e, { at: "limits" })), 1500);
 }
 
 // Snapshots on their way, with the events that came meanwhile.
@@ -360,6 +360,8 @@ export function connect() {
 // Client-side error tracking: every uncaught error goes to the server's table.
 let drops = 0; // socket drops so far: a network failure around one is the daemon going away
 export function reportError(err: unknown, context?: unknown) {
+  // The daemon recorded this one itself (its answer names the record): once is enough.
+  if ((err as { body?: { error_id?: string } } | null)?.body?.error_id) return;
   const e = err instanceof Error ? err : new Error(String(err));
   const url = location.pathname;
   const post = () =>
@@ -380,6 +382,14 @@ export function reportError(err: unknown, context?: unknown) {
     return;
   }
   post();
+}
+// A failure the owner sees where it happened: tracked once, unless it is the
+// daemon's answer to the request (a 4xx says what to change, not a fault) or
+// the daemon recorded it itself. Returns the words to show.
+export function failed(err: unknown, context?: unknown): string {
+  const st = (err as { status?: number } | null)?.status;
+  if (!(typeof st === "number" && st >= 400 && st < 500)) reportError(err, context);
+  return err instanceof Error ? err.message : String(err);
 }
 // A per-session load that answers 404 found the session deleted meanwhile:
 // its views unmount, so that is no failure. Anything else is tracked.

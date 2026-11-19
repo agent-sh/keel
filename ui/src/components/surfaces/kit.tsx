@@ -4,7 +4,7 @@
 import { Switch } from "@base-ui/react/switch";
 import { Plus, Search } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { api, reportError } from "../../lib/store.ts";
+import { api, reportError, failed } from "../../lib/store.ts";
 import { WorkspacePicker } from "../WorkspacePicker.tsx";
 
 export type Mark = "on" | "off" | "need" | "fail" | "work";
@@ -164,7 +164,7 @@ export function FileEditor({ name, text, onSave, readOnly, note, testid = "file-
       if (msg) setErr(msg);
     } catch (e) {
       setState("");
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "kit" }));
     }
   };
   const ro = !!readOnly || !onSave;
@@ -222,7 +222,7 @@ export function NewFile({ kind, scopes, onCreate, hint }: {
         setErr("");
         setBusy(true);
         try { await onCreate({ name: name.trim(), description: description.trim(), scope }); setName(""); setDescription(""); }
-        catch (x) { setErr((x as Error).message); }
+        catch (x) { setErr(failed(x, { at: "kit" })); }
         finally { setBusy(false); }
       }}
     >

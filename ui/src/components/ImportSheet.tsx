@@ -8,7 +8,7 @@ import { ArrowDownToLine, FolderOpen, History, RefreshCw, Search, X } from "luci
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Found, Harness } from "../../../src/integrations/import/types.ts";
 import { useFleet } from "../lib/fleet.ts";
-import { api, reportError } from "../lib/store.ts";
+import { api, reportError, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { takeOver, TOOL } from "./TakeOver.tsx";
 import { ago, cn } from "../lib/utils.ts";
@@ -66,7 +66,7 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
       onDone();
       navigate({ name: "session", id: r.session.id });
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ImportSheet" }));
     } finally {
       setBusy(false);
     }
@@ -147,7 +147,7 @@ function Running({ onDone }: { onDone: () => void }) {
       onDone();
       navigate({ name: "session", id: r.session.id });
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ImportSheet" }));
     }
   };
   return (

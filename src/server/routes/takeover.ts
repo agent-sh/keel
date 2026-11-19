@@ -113,8 +113,8 @@ export const takeoverRoutes: RouteModule = (deps: Deps) => {
           return json(d);
         } catch (e) {
           if (e instanceof HttpError) return bad(e.message, e.status);
-          deps.errors.capture("server", e, { at: "takeover" });
-          return bad((e as Error).message, 500);
+          const rec = deps.errors.capture("server", e, { at: "takeover" });
+          return json({ error: (e as Error).message, error_id: rec.id }, 500);
         }
       },
     },

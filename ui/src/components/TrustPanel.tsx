@@ -4,7 +4,7 @@ import type { Session } from "../../../src/core/types.ts";
 import type { Source as HookSource } from "../../../src/integrations/hooks.ts";
 import type { Batch } from "../../../src/safety/quarantine.ts";
 import type { ProjectFile } from "../../../src/safety/trust.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { DiffView } from "./DiffView.tsx";
@@ -26,7 +26,7 @@ export function TrustPanel({ session }: { session: Session }) {
   const [err, setErr] = useState("");
   const cwd = encodeURIComponent(session.workspace);
   const load = useCallback(() => {
-    api<View>(`/api/trust?cwd=${cwd}`).then(setView).catch((e) => setErr(e.message));
+    api<View>(`/api/trust?cwd=${cwd}`).then(setView).catch((e) => setErr(failed(e, { at: "TrustPanel" })));
     api<{ sources: Omit<HookSource, "groups">[] }>(`/api/hooks?cwd=${cwd}`).then((r) => setHooks(r.sources)).catch(reportError);
     api<{ batches: Batch[] }>(`/api/permissions/quarantine?session=${session.id}`).then((r) => setBatches(r.batches)).catch(reportError);
   }, [cwd, session.id]);
@@ -94,7 +94,7 @@ export function TrustPanel({ session }: { session: Session }) {
                   <>
                     <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap">{h.text}</pre>
                     <button data-testid="trust-hooks"
-                      onClick={() => api("/api/hooks/trust", { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: h.sha256 }) }).then(load).catch((e) => setHookErr(e.message))}
+                      onClick={() => api("/api/hooks/trust", { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: h.sha256 }) }).then(load).catch((e) => setHookErr(failed(e, { at: "TrustPanel" })))}
                       className="mt-2 h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90">Trust this version</button>
                     {hookErr && <p className="mt-1 text-danger">{hookErr}</p>}
                   </>
@@ -121,14 +121,14 @@ function HeldFile({ f, cwd, onDone }: { f: File; cwd: string; onDone: () => void
   const Icon = ICON[f.kind];
   useEffect(() => {
     if (f.state === "gone") return;
-    api<Diff>(`/api/trust/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(f.path)}`).then(setDiff).catch((e) => setErr(e.message));
+    api<Diff>(`/api/trust/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(f.path)}`).then(setDiff).catch((e) => setErr(failed(e, { at: "TrustPanel" })));
   }, [f.path, f.sha256]);
   const trust = async () => {
     setErr("");
     try {
       await api("/api/trust", { method: "POST", body: JSON.stringify({ cwd, files: [{ path: f.path, sha256: diff?.sha256 ?? f.sha256 }] }) });
       onDone();
-    } catch (e) { setErr((e as Error).message); }
+    } catch (e) { setErr(failed(e, { at: "TrustPanel" })); }
   };
   return (
     <div className="overflow-hidden rounded-xl border border-warn/40 bg-raised" data-testid="held-file" data-kind={f.kind}>
@@ -149,7 +149,7 @@ function HeldFile({ f, cwd, onDone }: { f: File; cwd: string; onDone: () => void
 
 function BatchCard({ b, onDone }: { b: Batch; onDone: () => void }) {
   const [err, setErr] = useState("");
-  const act = async (f: () => Promise<unknown>) => { setErr(""); try { await f(); onDone(); } catch (e) { setErr((e as Error).message); } };
+  const act = async (f: () => Promise<unknown>) => { setErr(""); try { await f(); onDone(); } catch (e) { setErr(failed(e, { at: "TrustPanel" })); } };
   return (
     <div className="rounded-xl border border-line bg-raised px-3 py-2" data-testid="quarantine-batch">
       <p className="text-caption text-muted">{new Date(b.created).toLocaleString()} · {b.paths.length} file{b.paths.length === 1 ? "" : "s"}</p>

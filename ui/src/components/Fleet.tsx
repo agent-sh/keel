@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { fleet, machineColour, machineName, setNewMachine, useFleet } from "../lib/fleet.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 
@@ -63,7 +63,7 @@ export function MachineChip({ session }: { session: Session }) {
   const move = async (to: string) => {
     setErr("");
     try { setH((await api<{ handoff: Handoff }>(`/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({ machine_id: to, carry }) })).handoff); }
-    catch (e) { setErr((e as Error).message); }
+    catch (e) { setErr(failed(e, { at: "Fleet" })); }
   };
   const dests = [...(runs ? [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine", sub: "back here" }] : []), ...targets.map((m) => ({ id: m.id, name: m.name, sub: m.workspace_root! }))];
   return (

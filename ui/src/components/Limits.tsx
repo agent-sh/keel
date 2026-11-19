@@ -4,7 +4,7 @@
 import { Popover } from "@base-ui/react/popover";
 import { AlertTriangle, ExternalLink, Gauge } from "lucide-react";
 import { useEffect } from "react";
-import { actions, useStore, type LimitWindow, type ProviderProblem } from "../lib/store.ts";
+import { actions, reportError, useStore, type LimitWindow, type ProviderProblem } from "../lib/store.ts";
 import { cn, fmtCost, when } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 
@@ -71,7 +71,7 @@ export function ProblemNote({ p, label, detail }: { p: ProviderProblem; label: s
 export function LimitChip({ model }: { model: string }) {
   const limits = useStore((s) => s.limits);
   const labels = useStore((s) => s.providerLabels);
-  useEffect(() => { actions.loadLimits().catch(() => {}); }, []);
+  useEffect(() => { actions.loadLimits().catch((e) => reportError(e, { at: "limits" })); }, []);
   const provider = model.slice(0, model.indexOf(":"));
   if (!limits || !provider) return null;
   const problem = limits.problems[provider];

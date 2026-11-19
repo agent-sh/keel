@@ -1,7 +1,7 @@
 import { GitBranch, MessageSquare, Send, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { DiffView, type Comment, type FileChange } from "./DiffView.tsx";
 import { ReviewFindings } from "./ReviewFindings.tsx";
 
@@ -37,7 +37,7 @@ export function BranchReview({ session }: { session: Session }) {
       setComments([]);
       setNote("");
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "BranchReview" }));
     } finally {
       setBusy(false);
     }

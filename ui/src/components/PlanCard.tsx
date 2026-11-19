@@ -1,7 +1,7 @@
 import { ClipboardList, Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { Markdown } from "./Markdown.tsx";
 
 const MODES = [
@@ -35,7 +35,7 @@ function Plan({ c }: { c: Card }) {
   const [feedback, setFeedback] = useState("");
   const [back, setBack] = useState(false);
   const [err, setErr] = useState("");
-  const send = (b: object) => api(`/api/sessions/${c.session_id}/plan/${c.id}`, { method: "POST", body: JSON.stringify(b) }).catch((e) => setErr(e.message));
+  const send = (b: object) => api(`/api/sessions/${c.session_id}/plan/${c.id}`, { method: "POST", body: JSON.stringify(b) }).catch((e) => setErr(failed(e, { at: "PlanCard" })));
   return (
     <div className="animate-in overflow-hidden rounded-2xl border border-accent/40 bg-raised shadow-2" data-testid="plan-card">
       <div className="flex items-center gap-2.5 px-4 pt-3">

@@ -2,7 +2,7 @@ import { Check, CircleAlert, Loader2, ScanSearch, Send, Square, X } from "lucide
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Finding, Review } from "../../../src/safety/review.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { Segmented } from "./Settings.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -37,7 +37,7 @@ export function ReviewFindings({ session }: { session: Session }) {
       if (r.skipped) setErr(r.note ?? "This change was reviewed already.");
       setReviews((l) => [...l.filter((x) => x.id !== r.review.id), r.review]);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(failed(e, { at: "ReviewFindings" }));
     } finally {
       setBusy(false);
     }
@@ -83,7 +83,7 @@ function ReviewCard({ r, sessionId }: { r: Review; sessionId: string }) {
   const [err, setErr] = useState("");
   const act = async (action: "fix" | "dismiss" | "reopen", ids: number[]) => {
     setErr("");
-    try { await api(`/api/sessions/${sessionId}/reviews/${r.id}/findings`, { method: "POST", body: JSON.stringify({ action, ids }) }); } catch (e) { setErr((e as Error).message); }
+    try { await api(`/api/sessions/${sessionId}/reviews/${r.id}/findings`, { method: "POST", body: JSON.stringify({ action, ids }) }); } catch (e) { setErr(failed(e, { at: "ReviewFindings" })); }
   };
   const what = r.scope === "uncommitted" ? "uncommitted work" : r.scope === "branch" ? `branch over ${r.target}` : `commit ${r.target}`;
   const whose = r.agent_id ? "an agent's " : "";
