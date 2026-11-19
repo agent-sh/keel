@@ -3,7 +3,8 @@
 import { createElement } from "react";
 import { GitBranch } from "lucide-react";
 import { rowActions, slash } from "./extend.ts";
-import { registerCommand } from "./keys.ts";
+import { chooseFallback, setFallback } from "../components/Fallback.tsx";
+import { fuzzy, registerCommand } from "./keys.ts";
 import { actions, getState, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 
@@ -37,12 +38,26 @@ slash.add(
     },
   },
   { id: "continue", label: "Continue the stopped turn", when: ({ session }) => !!session && session.phase !== "working", run: (_a, { session }) => actions.resume(session!.id).then(() => {}) },
+  {
+    id: "fallback",
+    label: "The model a declined request goes on with",
+    hint: "[model | off]",
+    when: ({ session }) => !!session,
+    run: (arg, { session }) => {
+      if (!arg) return chooseFallback(session!.id);
+      if (arg === "off" || arg === "none") return setFallback(session!.id, null).then(() => {});
+      const best = getState().models.map((m) => ({ m, s: fuzzy(arg, `${m.name} ${m.id}`) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s)[0];
+      if (!best) throw new Error(`No listed model matches "${arg}".`);
+      return setFallback(session!.id, best.m.id).then(() => {});
+    },
+  },
 );
 
 registerCommand(
   { id: "compact", label: "Compact the context", group: "Session", words: "summarize summary free tokens", when: () => !!current(), run: () => actions.compact(current()!.id).catch(reportError) },
   { id: "clear-context", label: "Clear the context, keep the session", group: "Session", words: "fresh reset", when: () => !!current(), run: () => actions.clear(current()!.id).catch(reportError) },
   { id: "fork", label: "Fork this session", group: "Session", words: "branch copy", when: () => !!current()?.head, run: () => fork(current()!.id, current()!.head!).catch(reportError) },
+  { id: "fallback", label: "Set a fallback model for declined requests", group: "Session", words: "refusal declined backup model", when: () => !!current(), run: () => chooseFallback(current()!.id) },
   { id: "continue", label: "Continue the stopped turn", group: "Session", words: "resume", when: () => !!current() && current()!.phase !== "working", run: () => actions.resume(current()!.id).catch(reportError) },
 );
 

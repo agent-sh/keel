@@ -8,6 +8,7 @@ import { dropImage, fromServer, getDraft, keepImage, textTaken, typing, type Dra
 import { onFeature, reportError, useStore } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
+import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
 import { SpeedPicker } from "./SpeedPicker.tsx";
@@ -401,6 +402,7 @@ export function Composer({
         <ModelPicker value={model} onChange={onModel} openSignal={pickerSignal} />
         {sid && <EffortPicker sessionId={sid} />}
         {sid && <SpeedPicker sessionId={sid} />}
+        {session && <FallbackChip session={session} />}
         {model && <LimitChip model={model} />}
         {notice && <span className="ml-1 min-w-0 truncate text-caption text-warn animate-in" role="status" data-testid="composer-notice">{notice}</span>}
         {!connected && !notice && <span className="ml-1 truncate text-caption text-faint">Reconnecting</span>}

@@ -176,8 +176,9 @@ function EditPrompt({ e, s, onDone }: { e: StoredEvent; s: Session; onDone: () =
 }
 
 // A declined reply: what the provider said, and a way on with another model.
-function Refusal({ e, s }: { e: StoredEvent; s: Session }) {
+function Refusal({ e, s, handled }: { e: StoredEvent; s: Session; handled?: boolean }) {
   const [pick, setPick] = useState("");
+  const [keep, setKeep] = useState(false);
   const d = e.data.stop_details ?? {};
   return (
     <div className="rounded-lg border border-warn/40 bg-raised px-3.5 py-3 text-ui" data-testid="refusal">
@@ -186,18 +187,22 @@ function Refusal({ e, s }: { e: StoredEvent; s: Session }) {
         {d.category && <span className="rounded-sm bg-sunken px-1.5 py-px text-micro uppercase tracking-wide text-muted">{d.category}</span>}
       </div>
       {d.explanation && <p className="mt-1 text-muted">{d.explanation}</p>}
-      <p className="mt-1 text-muted">Its partial reply is left out of the context. Another model can take the same request.</p>
-      <div className="mt-2 flex items-center gap-2">
+      <p className="mt-1 text-muted">Its partial reply is left out of the context.{handled ? " The fallback model took the request." : " Another model can take the same request."}</p>
+      {!handled && <div className="mt-2 flex items-center gap-2">
         <div className="rounded-md border border-line"><ModelPicker value={pick || s.model} onChange={setPick} /></div>
         <button
           type="button"
           disabled={!pick || pick === s.model}
-          onClick={() => actions.patch(s.id, { model: pick }).then(() => actions.resume(s.id)).catch(reportError)}
+          onClick={() => actions.patch(s.id, { model: pick, ...(keep ? { settings: { fallback: pick } } : {}) }).then(() => actions.resume(s.id)).catch(reportError)}
           className="h-8 rounded-md bg-accent px-3 font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40"
         >
           Retry on it
         </button>
-      </div>
+        <label className="flex items-center gap-1.5 text-caption text-muted" title="When a model declines later in this session, the turn goes on by itself on this one">
+          <input type="checkbox" data-testid="refusal-keep-fallback" checked={keep} onChange={(x) => setKeep(x.target.checked)} className="accent-[var(--accent)]" />
+          Also use it when a model declines later
+        </label>
+      </div>}
     </div>
   );
 }
@@ -466,7 +471,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       >
         <div ref={content} className="mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
           {events.length === 0 && session.phase !== "working" && <p className="py-10 text-center text-ui text-faint">No messages yet.</p>}
-          {events.map((e) => {
+          {events.map((e, idx) => {
             if (e.kind === "user") {
               if (e.data.origin === "restart") {
                 return <Divider key={e.id} testid="restart-note"><span className="flex items-center gap-1.5"><RotateCw className="size-3.5" /> Continued by itself after a daemon restart{session.phase === "working" ? ". Stop ends it." : ""}</span></Divider>;
@@ -479,7 +484,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               return SYSTEM_INPUT.has(e.data.kind) ? <InputNotice key={e.id} e={e} /> : isPeerMessage(e) ? <PeerMessage key={e.id} e={e} /> : <UserMessage key={e.id} e={e} s={session} vs={siblings.get(e.parent) ?? []} />;
             }
             if (e.kind === "compaction") return <Checkpoint key={e.id} e={e} s={session} />;
-            if (e.kind === "assistant" && e.data.stop === "refusal") return <Refusal key={e.id} e={e} s={session} />;
+            if (e.kind === "assistant" && e.data.stop === "refusal") return <Refusal key={e.id} e={e} s={session} handled={events[idx + 1]?.kind === "note" && events[idx + 1]!.data.kind === "fallback"} />;
             if (e.kind === "assistant") {
               for (const b of e.data.blocks) if (b.type === "text" && b.text.trim()) reply.push(b.text);
               return <div key={e.id} id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} results={results} s={session} /></div>;
