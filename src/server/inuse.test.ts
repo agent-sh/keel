@@ -12,7 +12,7 @@ import { claudeTools } from "../tools/claude.ts";
 import { running, startJob, stopJob, type Job } from "../tools/jobs.ts";
 import { checkpointRoutes, checkpoints } from "./routes/checkpoints.ts";
 
-type Case = "turn" | "own job" | "other session's job" | "idle" | "job below" | "job through a link" | "job ignoring TERM";
+type Case = "turn" | "own job" | "other session's job" | "idle" | "job below" | "job through a link" | "job ignoring TERM" | "job with a setsid child";
 
 async function attempt(kind: Case) {
   const base = mkdtempSync(join(tmpdir(), "keel-inuse-"));
@@ -44,12 +44,16 @@ async function attempt(kind: Case) {
     // A child of the job's shell that ignores TERM and writes once released
     // through its own FIFO: the wrapper exits on TERM, the child does not.
     const fifo = join(base, "release.fifo");
-    if (kind === "job ignoring TERM") Bun.spawnSync(["mkfifo", fifo]);
-    const command = kind === "job ignoring TERM"
-      ? `trap '' TERM; bash -c 'exec 3<> "$0"; echo READY; read -r x <&3; echo beta-late > "$1"' '${fifo}' '${file}'; sleep 30`
+    // The setsid one leaves the job's process group and session too, and
+    // ignores TERM: only the job's cgroup still holds it.
+    const writer = `bash -c 'exec 3<> "$0"; echo READY; read -r x <&3; echo beta-late > "$1"' '${fifo}' '${file}'`;
+    const fifoCase = kind === "job ignoring TERM" || kind === "job with a setsid child";
+    if (fifoCase) Bun.spawnSync(["mkfifo", fifo]);
+    const command = kind === "job ignoring TERM" ? `trap '' TERM; ${writer}; sleep 30`
+      : kind === "job with a setsid child" ? `trap '' TERM; setsid ${writer} & sleep 30`
       : "sleep 30";
     job = startJob({ sessionId: owner, cwd, command, logDir: join(base, "logs"), background: true } as any);
-    if (kind === "job ignoring TERM") for (let i = 0; i < 200 && !readFileSync(job.log, "utf8").includes("READY"); i++) await Bun.sleep(25);
+    if (fifoCase) for (let i = 0; i < 200 && !readFileSync(job.log, "utf8").includes("READY"); i++) await Bun.sleep(25);
   }
   // Whether anything of the job can still be released to write: a FIFO with
   // no reader left refuses a writer that will not wait.
@@ -80,11 +84,16 @@ async function attempt(kind: Case) {
 test("a rewind waits for every turn and background command in or around its folder", async () => {
   const held = { status: 409, kept: "beta\n" };
   expect(await attempt("turn")).toMatchObject(held);
-  for (const k of ["own job", "other session's job", "job below", "job through a link", "job ignoring TERM"] as const) {
+  // Without systemd --user and cgroup v2 a job has no cgroup, and a setsid
+  // descendant is out of reach: that case runs only where jobs get a scope.
+  const scoped = startJob({ sessionId: "probe", cwd: tmpdir(), command: "true", logDir: join(mkdtempSync(join(tmpdir(), "keel-inuse-")), "logs") } as any);
+  await scoped.exited;
+  const cases = ["own job", "other session's job", "job below", "job through a link", "job ignoring TERM", ...(scoped.contain === "cgroup" ? ["job with a setsid child" as const] : [])] as const;
+  for (const k of cases) {
     const r = await attempt(k);
     // Restored only once nothing of the job is left that could write after.
     expect({ k, ...r }).toMatchObject({ k, ...held, stopped: 200, after: "alpha\n", jobRuns: false, released: false });
-    expect(r.error).toContain(k === "job ignoring TERM" ? "trap" : "sleep 30");
+    expect(r.error).toContain(k.startsWith("job ignoring") || k.startsWith("job with") ? "trap" : "sleep 30");
   }
   expect(await attempt("idle")).toMatchObject({ status: 200, after: "alpha\n" });
 }, 60_000);

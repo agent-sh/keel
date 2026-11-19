@@ -45,6 +45,16 @@ function scopeProps(): string[] {
   return p;
 }
 
+// The scope part of a confined argv, split off: a job that runs in its own
+// scope takes the properties into it, so nothing of the command lands in a
+// scope of its own outside the job's (see startJob).
+export function splitScope(argv: string[]): { props: string[]; argv: string[] } {
+  const head = ["systemd-run", "--user", "--scope", "--quiet", "--collect"];
+  if (!head.every((a, i) => argv[i] === a)) return { props: [], argv };
+  const end = argv.indexOf("--", head.length);
+  return end < 0 ? { props: [], argv } : { props: argv.slice(head.length, end), argv: argv.slice(end + 1) };
+}
+
 // The argv that runs `argv` confined by the session's profile.
 // `scratch` is the session's own tool folder (a command's working-directory
 // file, spilled output), or several (an ACP agent's own folders): writable in

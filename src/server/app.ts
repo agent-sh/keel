@@ -6,7 +6,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
-import { jobsOf, leftText, running, stopJobs } from "../tools/jobs.ts";
+import { jobsOf, leftText, jobLive, stopJobs } from "../tools/jobs.ts";
 import { admit, initAccess } from "./admission.ts";
 import { Live } from "./live.ts";
 import index from "../../ui/index.html";
@@ -197,7 +197,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // Archiving stops the session: the turn is cut and its queue held. Its
           // background commands stop only when the request says so.
           if (body.archived === true && !s.archived) {
-            const jobs = jobsOf(s.id).filter(running);
+            const jobs = jobsOf(s.id).filter(jobLive);
             if (jobs.length && body.stop_shells !== true) return json({ error: `the session still runs ${jobs.length} background command${jobs.length > 1 ? "s" : ""}: ${jobs.map((j) => j.command.slice(0, 80)).join("; ")}. Archive with stop_shells to stop them.`, jobs: jobs.map((j) => ({ id: j.id, command: j.command })) }, 409);
             await engine.interrupt(s.id);
             const left = await stopJobs(jobs, "was stopped: its session was archived");
@@ -220,7 +220,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // that would not stop keeps the whole family.
           const family = [...store.descendants(s.id).reverse(), s.id];
           for (const id of family) await engine.interrupt(id);
-          const left = await stopJobs(family.flatMap((id) => jobsOf(id).filter(running)), "was stopped: its session was deleted");
+          const left = await stopJobs(family.flatMap((id) => jobsOf(id).filter(jobLive)), "was stopped: its session was deleted");
           if (left.length) return json({ error: `the session was not deleted: ${left.length > 1 ? "these commands" : "this command"} would not stop: ${leftText(left)}`, jobs: left.map((j) => ({ id: j.id, command: j.command, session_id: j.sessionId, pids: j.left })) }, 409);
           for (const id of family) {
             const x = store.session(id);

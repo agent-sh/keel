@@ -11,7 +11,7 @@ import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import type { Engine } from "../engine/turn.ts";
-import { jobsOf, leftText, running, stopJob, stopJobs } from "../tools/jobs.ts";
+import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
 import { readText } from "../core/proc.ts";
 
@@ -188,7 +188,7 @@ export class Storage {
     const s = this.store.session(id);
     if (!s) return;
     await this.engine.interrupt(id);
-    await Promise.all(jobsOf(id).filter(running).map((j) => stopJob(j, "was stopped: its session was deleted")));
+    await Promise.all(jobsOf(id).filter(jobLive).map((j) => stopJob(j, "was stopped: its session was deleted")));
     rmSync(join(this.dir, "spill", id), { recursive: true, force: true });
     this.store.deleteSession(id);
     this.bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle" } });
@@ -245,7 +245,7 @@ export class Storage {
       const moved = kids.find((k) => k.updated > listed);
       if (moved) { skipped.push({ id: want.id, why: `its subagent ${moved.title || moved.id} changed since it was listed` }); continue; }
       // Its commands are stopped first; one that would not stop keeps the family.
-      const left = await stopJobs([...kids, want].flatMap((k) => jobsOf(k.id).filter(running)), "was stopped: its session was deleted");
+      const left = await stopJobs([...kids, want].flatMap((k) => jobsOf(k.id).filter(jobLive)), "was stopped: its session was deleted");
       if (left.length) { skipped.push({ id: want.id, why: `a command would not stop: ${leftText(left)}` }); continue; }
       // Deepest first, so no child outlives its parent.
       for (const sub of kids.reverse()) await this.removeSession(sub.id);

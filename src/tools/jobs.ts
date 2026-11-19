@@ -13,6 +13,7 @@ import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, 
 import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
+import { sandboxStatus, splitScope } from "../safety/sandbox.ts";
 
 export type Job = {
   id: string;            // short text id (Claude task_id)
@@ -28,6 +29,12 @@ export type Job = {
   exitCode?: number | null;
   signal?: string | null;
   stopReason?: string;
+  // What holds the job's processes: its own transient systemd user scope (a
+  // cgroup no descendant leaves, setsid and double forks included), or where
+  // that is missing its process group and session, and why.
+  cgroup?: string;
+  contain?: "cgroup" | "group";
+  containWhy?: string;
   background: boolean;   // the model was told it runs on; its end is reported
   callId?: string;       // the tool call that started it
   by?: "owner";          // the owner ran it from the terminal pane
@@ -118,7 +125,9 @@ export function startJob(o: StartOpts): Job {
   const log = join(o.logDir, `${id}.log`);
   writeFileSync(log, "");
   const bare = o.argv ?? ["bash", "-c", o.command];
-  const argv = o.wrap ? o.wrap(bare) : bare;
+  // A confinement's own scope is taken into the job's (its limits with it).
+  const { props, argv } = splitScope(o.wrap ? o.wrap(bare) : bare);
+  const box = jobScope();
   const extra = o.callId ? callEnvs.get(o.callId) : undefined;
   if (o.callId) callEnvs.delete(o.callId);
   const env = { ...(o.env ?? toolEnv(o.sessionId)), ...extra };
@@ -126,11 +135,15 @@ export function startJob(o: StartOpts): Job {
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
     log, started: Date.now(), background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by } as Job;
+  const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
+  if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
+  else { job.contain = "group"; job.containWhy = box.why; }
+  const scoped = (a: string[]) => box.slice ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--slice=app.slice", `--unit=${unit}`, ...props, "--", ...a] : a;
   // Known secret values never reach the log: its output is filtered on the way in.
   const pairs = secretPairs();
   if (o.pty) {
     const sc = pairs.length ? streamConcealer(pairs) : null;
-    job.proc = Bun.spawn(argv, {
+    job.proc = Bun.spawn(scoped(argv), {
       cwd: o.cwd, env: { ...env, TERM: "xterm-256color" },
       terminal: { cols: 200, rows: 50, data: (_t, d) => { try { appendFileSync(log, sc ? sc.push(d) : d); } catch {} } },
     });
@@ -147,7 +160,7 @@ export function startJob(o: StartOpts): Job {
       : '"$@"; c=$?; echo $c > "$0"; exit $c';
     const wrapEnv = pairs.length ? { ...env, KEEL_CONCEAL: JSON.stringify(pairs), KEEL_CONCEAL_BIN: process.execPath, KEEL_CONCEAL_JS: FILTER_JS } : env;
     try {
-      job.proc = Bun.spawn(["bash", "-c", script, exitPath(log), ...argv], {
+      job.proc = Bun.spawn(scoped(["bash", "-c", script, exitPath(log), ...argv]), {
         cwd: o.cwd, env: wrapEnv, stdin: "ignore", stdout: fd, stderr: fd, detached: true,
       });
     } finally { closeSync(fd); }
@@ -170,17 +183,32 @@ export function startJob(o: StartOpts): Job {
   return job;
 }
 
+// Where jobs' scopes go: the user manager's app.slice, when systemd --user
+// and cgroup v2 are there (read once).
+let scopeAt: { slice?: string; why?: string } | undefined;
+function jobScope(): { slice?: string; why?: string } {
+  if (scopeAt) return scopeAt;
+  if (!existsSync("/sys/fs/cgroup/cgroup.controllers")) return (scopeAt = { why: "cgroup v2 is not mounted" });
+  const st = sandboxStatus();
+  if (!st.scope) return (scopeAt = { why: st.scopeReason ?? "no systemd user manager" });
+  const r = Bun.spawnSync(["systemctl", "--user", "show", "-p", "ControlGroup", "--value", "app.slice"], { stdout: "pipe", stderr: "ignore" });
+  const slice = r.success ? r.stdout.toString().trim() : "";
+  return (scopeAt = slice.startsWith("/") ? { slice } : { why: "the user manager names no cgroup for app.slice" });
+}
+
 // The sidecar of a job's log: what adoption needs, and once it ended how it
 // ended, so the terminal pane lists commands of earlier daemons too.
 export type Meta = {
   id: string; num: number; sessionId: string; command: string; description?: string; cwd: string; started: number; background: boolean; pid: number;
   boot?: string; reported?: boolean; pty?: boolean; call_id?: string; by?: "owner";
+  cgroup?: string; contain?: "cgroup" | "group"; contain_why?: string;
   ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
   read_off?: number; // bytes of the log the model was handed (a later daemon goes on from there)
 };
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
   started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, read_off: j.readOff,
+  cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy,
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
 function writeMeta(log: string, m: Meta) {
@@ -193,6 +221,7 @@ function patchMeta(log: string, patch: Partial<Meta>) {
 // The start time of a process (Linux), so a reused pid is not taken for the job.
 // `procfs.stat` is the read (a test stands in for it).
 export const procfs = { stat: (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8") };
+const procName = (pid: number) => { try { const st = procfs.stat(pid); return st.slice(st.indexOf("(") + 1, st.lastIndexOf(")")); } catch { return undefined; } };
 function procStart(pid: number): string | undefined {
   try { return procfs.stat(pid).split(") ").pop()!.split(" ")[19]; } catch { return undefined; }
 }
@@ -246,7 +275,7 @@ export function adoptJobs(spillRoot: string): number {
       if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
       const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
         pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-        callId: m.call_id, by: m.by };
+        callId: m.call_id, by: m.by, cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
       if (m.reported || m.pty) {
         // History: a PTY never outlives its daemon; one with no end ended with it.
         history.push({ ...base, readOff: m.read_off ?? size(log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() });
@@ -345,32 +374,38 @@ export function writeJob(j: Job, chars: string): boolean {
   return true;
 }
 
-// Stop the whole process group: TERM, then KILL if any of it lingers. The job
-// counts as stopped only once nothing of its group or session is left, not
-// when its leader exits: a child that ignores TERM outlives the wrapper shell
-// and could still write. Each signal goes only while the leader is the process
-// the job started as (its start time, read right before the signal); a leader
-// already gone leaves the group id to its members (the kernel does not hand
-// out a pid while a group still uses it as its id). A pid reused since, or a
-// leader that can no longer be read with no member left, gets nothing and the
-// job ends as gone. Bun has no pidfd API, so the read and the signal are back
-// to back instead. Resolves with what is still left (empty when stopped); a
-// job with something left keeps counting as running.
+// Stop everything of a job: TERM, then KILL if any of it lingers. The job
+// counts as stopped only once its cgroup is empty and nothing of its process
+// group or session is left, not when its leader exits: a child that ignores
+// TERM outlives the wrapper shell, and one that called setsid or forked twice
+// leaves the group but never the cgroup. KILL goes to the cgroup at once
+// (cgroup.kill). A signal to the group goes only while the leader is the
+// process the job started as (its start time, read right before the signal),
+// or, the leader gone, while members still carry its group id (the kernel does
+// not hand out a pid a group still uses). A pid reused since, with nothing of
+// the job left, gets nothing and the job ends as gone. Bun has no pidfd API,
+// so the read and the signal are back to back instead. Resolves with what is
+// still alive (empty when stopped); a job with something left keeps running.
 export async function stopJob(j: Job, reason = "was stopped"): Promise<number[]> {
-  if (!running(j)) return [];
+  if (!jobLive(j)) return [];
   if (j.ended === undefined) j.stopReason = reason;
   const pid = j.pid;
+  // A job stopped while systemd-run still sets up its scope would leave the
+  // scope behind empty: its command starts (systemd-run execs it) first.
+  if (j.cgroup) for (let i = 0; i < 80 && j.ended === undefined && procName(pid) === "systemd-run"; i++) await Bun.sleep(25);
   const kill = (sig: NodeJS.Signals) => {
     const lead = procStart(pid);
-    if (j.boot && lead !== undefined && lead !== j.boot) return gone(j);
+    const reused = !!j.boot && lead !== undefined && lead !== j.boot;
     const rest = members(j);
-    if (j.boot && lead === undefined && !rest.length) return gone(j);
-    try { process.kill(-pid, sig); } catch {
-      if (lead === undefined && j.boot) { if (!rest.length) return gone(j); }
-      else try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {}
+    const groupOk = !reused && (!j.boot || lead !== undefined || rest.some((m) => m.group === pid));
+    if (groupOk) try { process.kill(-pid, sig); } catch {
+      if (lead !== undefined || !j.boot) try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {}
     }
-    // Members that moved to a group of their own within the job's session.
-    for (const m of rest) if (m.group !== pid && procStart(m.pid) === m.start) try { process.kill(m.pid, sig); } catch {}
+    // Members outside the group: in the cgroup (setsid, double forks) or
+    // moved to a group of their own within the session.
+    if (sig === "SIGKILL" && j.cgroup) try { writeFileSync(`${j.cgroup}/cgroup.kill`, "1"); } catch {}
+    for (const m of rest) if (m.group !== pid && procStart(m.pid) === m.start && (!m.cg || inCgroup(m.pid, j.cgroup!))) try { process.kill(m.pid, sig); } catch {}
+    if (!rest.length && (reused || (j.boot && lead === undefined))) gone(j);
   };
   const quiet = async (ms: number) => {
     const until = Date.now() + ms;
@@ -394,24 +429,51 @@ export async function stopJobs(list: Job[], reason: string): Promise<Job[]> {
 // What a refusal says of them: each command and the processes of it still alive.
 export const leftText = (list: Job[]) => list.map((j) => `${j.command.slice(0, 80)} (pid ${(j.left ?? [j.pid]).join(", ")})`).join("; ");
 
-// The processes still in a job's group or session (Linux), zombies aside: none
-// when its pid now belongs to another process.
-type Member = { pid: number; group: number; start: string };
+// The pids in a job's cgroup (empty once its scope is gone).
+function cgroupPids(j: Job): number[] {
+  if (!j.cgroup) return [];
+  try { return readFileSync(`${j.cgroup}/cgroup.procs`, "utf8").split("\n").filter(Boolean).map(Number); } catch { return []; }
+}
+const inCgroup = (pid: number, cg: string) => { try { return readFileSync(`/proc/${pid}/cgroup`, "utf8").trim().endsWith(cg.slice("/sys/fs/cgroup".length)); } catch { return false; } };
+
+// The processes still alive of a job, zombies aside: those in its cgroup,
+// and those in its process group or session (a process that has not reached
+// the scope yet, or a job with no scope). None of the group when its pid now
+// belongs to another process.
+type Member = { pid: number; group: number; start: string; cg?: boolean };
 function members(j: Job): Member[] {
-  const lead = procStart(j.pid);
-  if (j.boot && lead !== undefined && lead !== j.boot) return [];
-  let names: string[];
-  try { names = readdirSync("/proc"); } catch { return []; }
   const out: Member[] = [];
+  const seen = new Set<number>();
+  const stat = (pid: number) => { try { const st = procfs.stat(pid); return st.slice(st.lastIndexOf(") ") + 2).split(" "); } catch { return undefined; } };
+  for (const pid of cgroupPids(j)) {
+    const f = stat(pid);
+    if (!f || f[0] === "Z" || f[0] === "X") continue;
+    seen.add(pid);
+    out.push({ pid, group: Number(f[2]), start: f[19]!, cg: true });
+  }
+  const lead = procStart(j.pid);
+  if (j.boot && lead !== undefined && lead !== j.boot) return out;
+  let names: string[];
+  try { names = readdirSync("/proc"); } catch { return out; }
   const id = String(j.pid);
   for (const n of names) {
-    if (!/^\d+$/.test(n)) continue;
-    let f: string[];
-    try { const st = procfs.stat(Number(n)); f = st.slice(st.lastIndexOf(") ") + 2).split(" "); } catch { continue; }
-    if (f[0] === "Z" || f[0] === "X" || (f[2] !== id && f[3] !== id)) continue;
+    if (!/^\d+$/.test(n) || seen.has(Number(n))) continue;
+    const f = stat(Number(n));
+    if (!f || f[0] === "Z" || f[0] === "X" || (f[2] !== id && f[3] !== id)) continue;
     out.push({ pid: Number(n), group: Number(f[2]), start: f[19]! });
   }
   return out;
+}
+
+// Whether a job still holds its folder: it runs, or something it started is
+// still alive in its cgroup after its command ended (a server left running in
+// the background). Without a cgroup only what a stop left is known.
+export function jobLive(j: Job): boolean {
+  if (running(j)) return true;
+  if (!j.cgroup) return false;
+  if (cgroupPids(j).length) return true;
+  j.cgroup = undefined;   // its scope is gone for good: nothing to read again
+  return false;
 }
 
 // A job whose process is no longer the one it started as: ended, nothing signalled.
@@ -425,9 +487,9 @@ function gone(j: Job) {
 }
 
 export const jobsOf = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId);
-// Running jobs of any session whose folder is in `dir` or holds it (where links
+// Live jobs (see jobLive) of any session whose folder is in `dir` or holds it (where links
 // land): a job in a parent folder can write into it too.
-export const jobsIn = (dir: string) => { const d = realOf(dir); return [...jobs.values()].filter((j) => { const c = realOf(j.cwd); return running(j) && (contains(d, c) || contains(c, d)); }); };
+export const jobsIn = (dir: string) => { const d = realOf(dir); return [...jobs.values()].filter((j) => { const c = realOf(j.cwd); return (contains(d, c) || contains(c, d)) && jobLive(j); }); };
 export const findJob = (sessionId: string, id: string | number) =>
   [...jobs.values()].find((j) => j.sessionId === sessionId && (j.id === String(id) || j.num === Number(id)));
 
@@ -454,6 +516,7 @@ export const jobView = (j: Job) => concealDeep({
   id: j.id, num: j.num, command: j.command, description: j.description, cwd: j.cwd, pty: j.pty, log: j.log,
   started: j.started, ended: j.ended, exit_code: j.exitCode, signal: j.signal, background: j.background, bytes: size(j.log),
   running: running(j), last: lastLine(j.log), call_id: j.callId, by: j.by, stop_reason: j.stopReason,
+  contain: j.contain, contain_why: j.containWhy, left: j.left,
 }, j.sessionId);
 
 // The last line a job printed (a progress line, an ETA), for the owner's view
