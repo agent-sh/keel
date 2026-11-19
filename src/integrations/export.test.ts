@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { marked } from "marked";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
-import { activeContext, forClaude, parseKeelJsonl, toCodexRollout, toKeelJsonl, toMarkdown } from "./export.ts";
+import { activeContext, forClaude, handoffNotes, parseKeelJsonl, toCodexRollout, toKeelJsonl, toMarkdown } from "./export.ts";
 import { readClaude } from "./import/claude.ts";
 import { readCodex } from "./import/codex.ts";
 
@@ -110,4 +110,32 @@ test("round trips through Claude Code's and Codex's files keep ids, outcomes, no
     expect(last.data.stop).toBe("interrupted");
     expect(r.events.filter((e) => e.kind === "assistant").map((e) => e.data.model)).toEqual(["alpha", "beta"]);
   }
+});
+
+test("a tool result's image goes to Codex and Claude Code byte for byte and comes back under its call", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "", "keel-export-"));
+  const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQcGgAAAFkAOHHE8n2AAAAAElFTkSuQmCC";
+  const hash = (d: string) => new Bun.CryptoHasher("sha256").update(Buffer.from(d, "base64")).digest("hex");
+  const evs = [
+    ev("user", { text: "look at it" }),
+    ev("assistant", { blocks: [{ type: "tool_use", id: "call_view", name: "view_image", input: { path: "a.png" } }, { type: "tool_use", id: "call_bad", name: "view_image", input: { path: "b.png" } }, { type: "tool_use", id: "call_find", name: "tool_search", input: { query: "x" } }], model: "p:alpha" }),
+    ev("tool_result", { results: [
+      { type: "tool_result", tool_use_id: "call_view", content: [{ type: "image", media_type: "image/png", data }, { type: "text", text: "a.png" }] },
+      { type: "tool_result", tool_use_id: "call_bad", content: [{ type: "image", media_type: "image/png", data }, { type: "text", text: "half read" }], is_error: true },
+      { type: "tool_result", tool_use_id: "call_find", content: [{ type: "tool_reference", tool_name: "mcp__echo__say" }] },
+    ] }),
+  ];
+  writeFileSync(join(dir, "rollout-x.jsonl"), toCodexRollout(s, evs, "x", 0));
+  const claude = toJsonl(toClaudeRecords(s, forClaude(evs), "c"));
+  expect(claude).toContain(`"source":{"type":"base64","media_type":"image/png","data":"${data}"}`);
+  writeFileSync(join(dir, "c.jsonl"), claude);
+  for (const read of [readCodex(join(dir, "rollout-x.jsonl")), readClaude(join(dir, "c.jsonl"))]) {
+    const results = (await read).events.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
+    // Codex keeps the id as is; Claude Code's export gives it the toolu_ prefix it needs.
+    const byId = (id: string) => results.find((r: any) => r.tool_use_id === id || r.tool_use_id === `toolu_${id}`);
+    for (const id of ["call_view", "call_bad"]) expect(hash(byId(id).content.find((c: any) => c.type === "image").data)).toBe(hash(data));
+    expect(byId("call_bad").is_error).toBe(true);
+    expect(byId("call_view").is_error).toBeUndefined();
+  }
+  expect(handoffNotes("codex", evs).join()).toContain("tool search result goes as text");
 });

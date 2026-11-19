@@ -15,7 +15,9 @@ import { checkpointAt } from "../engine/compact.ts";
 
 export const EXPORT_VERSION = 2;
 
-const textOf = (c: any): string => (typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => (b.type === "text" ? b.text : `[${b.type}]`)).join("\n") : "");
+// A part with no text of its own is named: a tool a search loaded by its name.
+const partText = (b: any): string => (b.type === "text" ? b.text : b.type === "tool_reference" ? `[loaded tool ${b.tool_name}]` : `[${b.type}]`);
+const textOf = (c: any): string => (typeof c === "string" ? c : Array.isArray(c) ? c.map(partText).join("\n") : "");
 
 // A code block no line of `text` can close: its fence is longer than any run of
 // backticks inside (CommonMark), so a README with its own fences stays inside.
@@ -209,7 +211,7 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
         const images = Array.isArray(r.content) && r.content.some((b: any) => b.type === "image");
         const text = textOf(r.content);
         const output = images
-          ? [...(r.is_error ? [{ type: "input_text", text: FAILED_LABEL }] : []), ...r.content.map((b: any) => (b.type === "image" ? { type: "input_image", image_url: `data:${b.media_type};base64,${b.data}` } : { type: "input_text", text: b.type === "text" ? b.text : `[${b.type}]` }))]
+          ? [...(r.is_error ? [{ type: "input_text", text: FAILED_LABEL }] : []), ...r.content.map((b: any) => (b.type === "image" ? { type: "input_image", image_url: `data:${b.media_type};base64,${b.data}` } : { type: "input_text", text: partText(b) }))]
           : r.is_error ? `${FAILED_LABEL}\n${text}` : text;
         line(e.ts, "response_item", { type: custom.has(r.tool_use_id) ? "custom_tool_call_output" : "function_call_output", call_id: r.tool_use_id, output });
       }
@@ -221,10 +223,11 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
 // What a handoff could not carry, said before the owner resumes it.
 export function handoffNotes(format: "claude_code" | "codex", events: StoredEvent[]): string[] {
   const notes: string[] = [];
-  let files = 0, unknownUsage = 0;
+  let files = 0, unknownUsage = 0, loads = 0;
   const providers = new Map<string, Set<string>>();
   for (const e of events) {
     if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") files++;
+    if (e.kind === "tool_result") for (const r of e.data.results ?? []) if (Array.isArray(r.content) && r.content.some((c: any) => c.type === "tool_reference")) loads++;
     if (e.kind === "assistant") {
       if (!e.data.usage) unknownUsage++;
       const m = String(e.data.model ?? "");
@@ -233,6 +236,7 @@ export function handoffNotes(format: "claude_code" | "codex", events: StoredEven
     }
   }
   if (files) notes.push(`${files} attached file${files === 1 ? " is" : "s are"} not carried: only their names were in the prompt.`);
+  if (format === "codex" && loads) notes.push(`${loads} tool search result${loads === 1 ? " goes" : "s go"} as text naming the tools ${loads === 1 ? "it" : "they"} loaded: Codex loads a tool only through its own search.`);
   if (format === "claude_code" && unknownUsage) notes.push(`${unknownUsage} repl${unknownUsage === 1 ? "y has" : "ies have"} no measured usage: written as zero, which the format cannot tell from unknown.`);
   if ([...providers.values()].some((ps) => ps.size > 1)) notes.push(`${format === "codex" ? "Codex" : "Claude Code"} records a model by name only: replies from different providers of the same model read as one.`);
   return notes;

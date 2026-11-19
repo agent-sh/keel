@@ -58,7 +58,9 @@ export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: st
       push({ ...base(e.ts), type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] }, uuid: crypto.randomUUID() });
     } else if (e.kind === "tool_result") {
       for (const r of e.data.results ?? []) {
-        push({ ...base(e.ts), type: "user", message: { role: "user", content: [r] }, uuid: crypto.randomUUID() });
+        // Images in Claude's own shape (a base64 source), the bytes kept.
+        const content = Array.isArray(r.content) ? r.content.map((c: any) => (c.type === "image" && !c.source ? { type: "image", source: { type: "base64", media_type: c.media_type, data: c.data } } : c)) : r.content;
+        push({ ...base(e.ts), type: "user", message: { role: "user", content: [{ ...r, content }] }, uuid: crypto.randomUUID() });
       }
     }
   }
