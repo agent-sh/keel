@@ -32,8 +32,11 @@ export const QUESTION_CUT = "No answer was recorded before the daemon restarted:
 // A call cut while it waited for the owner's approval never ran.
 export const APPROVAL_CUT = "The daemon restarted while this call waited for the owner's approval: it did not run. Call it again if it is still needed.";
 const CUT = new Set([RESTART_CUT, QUESTION_CUT, APPROVAL_CUT]);
-const cutText = (session: string, u: { id: string; name: string }) =>
-  asksOwner(u.name) ? QUESTION_CUT : allHooks().some((h) => h.waitedAtRestart?.(session, u.id)) ? APPROVAL_CUT : RESTART_CUT;
+const cutText = (session: string, u: { id: string; name: string }) => {
+  if (asksOwner(u.name)) return QUESTION_CUT;
+  const o = allHooks().map((h) => h.callOutcome?.(session, u.id)).find(Boolean);
+  return o === "not_run" ? APPROVAL_CUT : o ? o.denied : RESTART_CUT;
+};
 
 // What the model is told about a tool call cut by the output limit.
 export const CUT_CALL = "Not run: this call was cut at the output limit, so its input may be incomplete. Send it again whole if it is still needed.";

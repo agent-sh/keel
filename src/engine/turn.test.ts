@@ -86,27 +86,57 @@ test("instruction files: each source once, an unreadable one named", async () =>
   }
 });
 
-test("a restart expires an unanswered question and warns only for a call that may have run", async () => {
+// A call the restart cut gets what its approval card recorded: the owner's
+// denial and reason, "did not run" for a card nothing answered, and "may have
+// partly run" only for an allowed call or one with no card. Also state from
+// before results were stored per call: a denial whose result was never stored.
+test("a restart cut: questions expire, approval outcomes are kept, only a call that may have run warns", async () => {
   const { mkdtempSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { Store } = await import("../core/store.ts");
   const { Bus } = await import("../core/bus.ts");
-  const { Engine, QUESTION_CUT, RESTART_CUT } = await import("./turn.ts");
+  const { Gate } = await import("../safety/gate.ts");
+  const { registerHooks } = await import("./hooks.ts");
+  const { Engine, APPROVAL_CUT, QUESTION_CUT, RESTART_CUT } = await import("./turn.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "recover-"));
   const store = new Store(dir);
+  const bus = new Bus();
   const s = store.createSession({ model: "x:y", workspace: dir });
   store.append(s.id, "user", { text: "go" });
   store.append(s.id, "turn_start", {});
+  const bash = (id: string) => ({ type: "tool_use", id, name: "Bash", input: { command: `touch ${id}` } });
   store.append(s.id, "assistant", { blocks: [
     { type: "tool_use", id: "q1", name: "AskUserQuestion", input: {} },
     { type: "tool_use", id: "q2", name: "request_user_input", input: {} },
     { type: "tool_use", id: "q3", name: "ask_user", input: {} },
-    { type: "tool_use", id: "w1", name: "Bash", input: { command: "touch x" } },
+    bash("w1"), bash("d1"), bash("d2"), bash("d3"), bash("p1"), bash("a1"),
   ], stop: "tool_use" });
-  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
-  await engine.recover([s.id], async () => { throw new Error("no model here"); });
+  // The cards the last daemon left: an owner denial with a reason and one
+  // without, a denial by a rule, an open card, an allowed one.
+  new Gate(store, bus);
+  const card = (call: string, state: string, extra: object = {}) =>
+    store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?)")
+      .run(`c-${call}`, s.id, state, JSON.stringify({ id: `c-${call}`, session_id: s.id, call_id: call, tool: "Bash", kind: "shell", summary: `touch ${call}`, input: {}, risk: "low", suggest: [], state, created: 1, ...extra }), 1);
+  card("d1", "denied", { choice: "deny", reason: "leave d1 alone" });
+  card("d2", "denied", { choice: "deny" });
+  card("d3", "denied", { reason: "Refused by the rule: no touching here." });
+  card("p1", "pending");
+  card("a1", "allowed", { choice: "once" });
+  const gate = new Gate(store, bus); // the new daemon: the open card is cancelled
+  registerHooks({ callOutcome: (sid, call) => gate.callOutcome(sid, call) });
+  const engine = new Engine(store, bus, {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  const none = async () => { throw new Error("no model here"); };
+  await engine.recover([s.id], none);
+  await engine.recover([s.id], none); // a second boot adds nothing
   const cut = store.events(s.id).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
-  expect(Object.fromEntries(cut.map((r: any) => [r.tool_use_id, r.content]))).toEqual({ q1: QUESTION_CUT, q2: QUESTION_CUT, q3: QUESTION_CUT, w1: RESTART_CUT });
+  expect(cut).toHaveLength(9);
+  expect(Object.fromEntries(cut.map((r: any) => [r.tool_use_id, r.content]))).toEqual({
+    q1: QUESTION_CUT, q2: QUESTION_CUT, q3: QUESTION_CUT, w1: RESTART_CUT, a1: RESTART_CUT, p1: APPROVAL_CUT,
+    d1: "The owner denied this call: leave d1 alone",
+    d2: "The owner denied this call. Do not retry it; take another way or ask.",
+    d3: "Refused by the rule: no touching here.",
+  });
+  expect(gate.rules()).toEqual([]);
 });
 
 // Idle compaction: a context past its idle minimum whose cache is about to

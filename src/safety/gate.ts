@@ -69,7 +69,6 @@ export class Gate {
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
-  private cancelledAtBoot = new Set<string>(); // session + call id of the cards a restart cancelled
   // Reviewer mode's judge (set by the permission routes, which hold the providers).
   judge: (a: ReviewAsk) => Promise<Verdict> = async () => ({ unavailable: "no reviewer is set up" });
 
@@ -77,16 +76,22 @@ export class Gate {
     store.migrate(SCHEMA);
     if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
     const db = store.db;
-    // Restart: no turn waits on an old card. Its call never ran (waitedAtRestart).
+    // Restart: no turn waits on an old card. Its call never ran (callOutcome).
     for (const r of db.query<{ id: string; data: string }, []>("SELECT id, data FROM approvals WHERE state = 'pending'").all()) {
       const a = { ...(JSON.parse(r.data) as Approval), state: "cancelled" as const, reason: "the daemon restarted", resolved: Date.now() };
       db.query("UPDATE approvals SET state = 'cancelled', data = ? WHERE id = ?").run(JSON.stringify(a), r.id);
-      this.cancelledAtBoot.add(`${a.session_id}\u0000${a.call_id}`);
     }
   }
 
-  waitedAtRestart(sessionId: string, callId: string): boolean {
-    return this.cancelledAtBoot.has(`${sessionId}\u0000${callId}`);
+  // What a call's card recorded, for a call a restart cut before its result
+  // was stored: a denial as the model got it, or a card nothing answered (it
+  // never ran). An allowed call, or one without a card, may have run.
+  callOutcome(sessionId: string, callId: string): { denied: string } | "not_run" | undefined {
+    const r = this.store.db.query<{ data: string }, [string, string]>("SELECT data FROM approvals WHERE session_id = ? AND json_extract(data, '$.call_id') = ? ORDER BY created DESC LIMIT 1").get(sessionId, callId);
+    const a = r ? (JSON.parse(r.data) as Approval) : undefined;
+    if (a?.state === "cancelled") return "not_run";
+    if (a?.state === "denied") return { denied: a.choice === "deny" ? ownerDenial(a.reason) : a.reason ?? ownerDenial() };
+    return undefined;
   }
 
   setSandboxCheck(f: (s: Session, p: SessionPerm) => boolean) {
@@ -341,8 +346,7 @@ export class Gate {
       return { error: `this card covers its one call only (${a.why}): answer once or deny`, status: 400 };
     if (c.choice === "deny") {
       this.finish(a, { state: "denied", choice: "deny", reason: c.reason?.trim() || undefined });
-      const why = c.reason?.trim();
-      w.resolve({ deny: why ? `The owner denied this call: ${why}` : "The owner denied this call. Do not retry it; take another way or ask." });
+      w.resolve({ deny: ownerDenial(c.reason?.trim()) });
       return { ok: true };
     }
     if (c.choice === "session" || c.choice === "always") {
@@ -380,6 +384,9 @@ export class Gate {
     }
   }
 }
+
+// What the model gets for a call the owner denied.
+const ownerDenial = (why?: string) => (why ? `The owner denied this call: ${why}` : "The owner denied this call. Do not retry it; take another way or ask.");
 
 export function closedWhy(a: Approval): string {
   const why = a.reason ? `: ${a.reason}` : "";
