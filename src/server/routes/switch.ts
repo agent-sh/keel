@@ -23,6 +23,7 @@ export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
         lineage, now: Date.now(), to, toEffort: effort,
         from: models.find((m) => m.id === ranOn),
         toWire: providers.get(to.provider)?.wire ?? "anthropic_messages",
+        fromWire: providers.get(ranOn.slice(0, ranOn.indexOf(":")))?.wire ?? "anthropic_messages",
       }));
     },
   },
