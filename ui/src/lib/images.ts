@@ -1,9 +1,11 @@
 // Pasted or dropped pictures become image blocks for the model. Large ones are
 // scaled to the long edge the providers read at full detail (1568 px), which
 // also keeps the request small; a screenshot stays PNG so text stays sharp.
-import type { ImageBlock } from "../../../src/core/types.ts";
+import type { AttachmentBlock, ImageBlock, PromptBlock } from "../../../src/core/types.ts";
 
-export type Attachment = ImageBlock & { id: string; name: string; url: string; bytes: number };
+// A picture (sent as an image block) or another file (uploaded once and sent
+// as a reference the daemon resolves per model: text inline, PDF as a document).
+export type Attachment = ImageBlock & { id: string; name: string; url: string; bytes: number; file?: AttachmentBlock };
 
 const MAX_EDGE = 1568;
 const MAX_BYTES = 3_750_000; // providers refuse a base64 image over 5 MB
@@ -16,8 +18,16 @@ const toBase64 = (buf: ArrayBuffer) => {
   return btoa(s);
 };
 
+async function upload(file: File): Promise<Attachment> {
+  const r = await fetch(`/api/attachments?name=${encodeURIComponent(file.name || "file")}`, { method: "POST", headers: { "content-type": file.type || "application/octet-stream" }, body: file });
+  const body = await r.json();
+  if (!r.ok) throw new Error(`${file.name}: ${body.error ?? `HTTP ${r.status}`}`);
+  const ref = body as AttachmentBlock;
+  return { type: "image", media_type: ref.media_type, data: "", id: crypto.randomUUID(), name: ref.name, url: `/api/attachments/${ref.id}`, bytes: ref.size, file: ref };
+}
+
 export async function toAttachment(file: File): Promise<Attachment> {
-  if (!file.type.startsWith("image/")) throw new Error(`${file.name || "file"}: only images can be attached`);
+  if (!file.type.startsWith("image/") || file.type === "image/svg+xml") return upload(file);
   const bmp = await createImageBitmap(file);
   const scale = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height));
   let blob: Blob = file;
@@ -40,4 +50,4 @@ export async function toAttachment(file: File): Promise<Attachment> {
   };
 }
 
-export const toBlock = (a: Attachment): ImageBlock => ({ type: "image", media_type: a.media_type, data: a.data });
+export const toBlock = (a: Attachment): PromptBlock => a.file ?? { type: "image", media_type: a.media_type, data: a.data };

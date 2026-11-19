@@ -210,6 +210,7 @@ export class Providers {
       price: billing === "per_token" ? m.price ?? c?.price : undefined,
       billing,
       images: m.images ?? c?.images,
+      pdf: m.pdf ?? c?.pdf,
       // The listing's own offers win; else the route's catalog section's.
       speeds: m.speeds ?? this.catalog.own(m.model, section)?.speeds,
     };

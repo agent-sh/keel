@@ -1,8 +1,8 @@
-import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
+import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { MemoryNote } from "./MemoryNote.tsx";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage } from "../../../src/core/tree.ts";
-import type { AssistantBlock, ImageBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
+import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
@@ -61,9 +61,25 @@ function Extra({ on, e, s }: { on: "user" | "assistant"; e: StoredEvent; s: Sess
   );
 }
 
-function Images({ images }: { images: ImageBlock[] }) {
+function Images({ blocks }: { blocks: PromptBlock[] }) {
   const [big, setBig] = useState<number | null>(null);
+  const images = blocks.filter((b): b is ImageBlock => b.type === "image");
+  const files = blocks.filter((b): b is AttachmentBlock => b.type === "attachment");
   return (
+    <>
+    {files.length > 0 && (
+      <div className="flex flex-wrap justify-end gap-2">
+        {files.map((f) => (
+          <a key={f.id} href={`/api/attachments/${f.id}`} download={f.name} data-testid="message-file" title={`${f.name}, ${f.media_type}`}
+            className="flex h-10 max-w-64 items-center gap-2 rounded-lg border border-line bg-raised px-3 text-ui shadow-1 hover:border-line-strong">
+            <FileText className="size-4 shrink-0 text-muted" />
+            <span className="min-w-0 truncate">{f.name}</span>
+            <span className="shrink-0 text-micro tabular-nums text-faint">{f.size < 1024 * 1024 ? `${Math.max(1, Math.round(f.size / 1024))} KB` : `${(f.size / 1024 / 1024).toFixed(1)} MB`}</span>
+          </a>
+        ))}
+      </div>
+    )}
+    {images.length > 0 && (
     <div className="flex flex-wrap justify-end gap-2">
       {images.map((im, i) => (
         <img
@@ -75,6 +91,8 @@ function Images({ images }: { images: ImageBlock[] }) {
         />
       ))}
     </div>
+    )}
+    </>
   );
 }
 
@@ -94,8 +112,8 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
     <div id={`e-${e.id}`} className="group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
       {origin === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-steer">Steered into the turn</span>}
       {origin === "queued" && <span className="text-micro font-medium text-faint" data-testid="origin-queued">From the queue</span>}
-      {e.data.images?.length > 0 && <Images images={e.data.images} />}
-      {text && text !== "(image)" && (
+      {e.data.images?.length > 0 && <Images blocks={e.data.images} />}
+      {text && text !== "(image)" && text !== "(attached file)" && (
         <div className="relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">
           <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{text}</div>
           {long && (

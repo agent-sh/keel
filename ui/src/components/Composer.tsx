@@ -1,6 +1,6 @@
-import { ArrowUp, File as FileIcon, Folder, ImagePlus, ListPlus, Slash, Square, X } from "lucide-react";
+import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { ImageBlock, Session } from "../../../src/core/types.ts";
+import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { fuzzy } from "../lib/keys.ts";
@@ -31,10 +31,10 @@ export function Composer({
   session, onSend, onQueue, onStop, working, model, onModel, workspace, autoFocus, focus = true,
 }: {
   session?: Session;
-  onSend: (text: string, images: ImageBlock[]) => Promise<unknown> | void;
+  onSend: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
   // While a turn runs, Enter steers (the text joins the turn at its next model
   // call) and Tab or the queue button queues it for after the turn.
-  onQueue?: (text: string, images: ImageBlock[]) => Promise<unknown> | void;
+  onQueue?: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
   onStop?: () => void;
   working?: boolean;
   model: string;
@@ -141,15 +141,13 @@ export function Composer({
 
   // Files dropped or pasted anywhere on the page land here.
   const addFiles = async (list: File[]) => {
-    const pics = list.filter((f) => f.type.startsWith("image/"));
-    if (pics.length < list.length) setNotice("Only images can be attached; mention other files with @.");
-    for (const f of pics) {
+    for (const f of list) {
       try {
         const a = await toAttachment(f);
         let added = false;
         setImages((cur) => (cur.length >= 20 ? cur : ((added = true), [...cur, a])));
         const sid = sidRef.current;
-        if (added && sid) {
+        if (added && sid && !a.file) {
           have.current.add(a.id);
           pendingKeep.current.add(a.id);
           keepImage(sid, a).finally(() => pendingKeep.current.delete(a.id));
@@ -262,8 +260,9 @@ export function Composer({
     setImages([]);
     setMenu(null);
     try {
-      if (queue && onQueue) await onQueue(t || "(image)", sent.map(toBlock));
-      else await onSend(t || "(image)", sent.map(toBlock));
+      const blank = sent.some((a) => !a.file) ? "(image)" : "(attached file)";
+      if (queue && onQueue) await onQueue(t || blank, sent.map(toBlock));
+      else await onSend(t || blank, sent.map(toBlock));
       if (sid) for (const a of sent) dropImage(sid, a.id); // only what was sent: an image added meanwhile stays
     } catch (e) {
       // Nothing was sent: the text and images come back, unless something new was typed.
@@ -332,7 +331,12 @@ export function Composer({
         <div className="flex flex-wrap gap-2 px-3 pt-3" data-testid="attachments">
           {images.map((a) => (
             <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${Math.round(a.bytes / 1024)} KB`}>
-              <img src={a.url} alt={a.name} className="size-full object-cover" />
+              {a.file ? (
+                <div className="flex size-full flex-col items-center justify-center gap-0.5 px-1 text-center" data-testid="attached-file">
+                  <FileText className="size-5 text-muted" />
+                  <span className="w-full truncate text-micro text-muted">{a.name}</span>
+                </div>
+              ) : <img src={a.url} alt={a.name} className="size-full object-cover" />}
               <button
                 type="button"
                 aria-label={`Remove ${a.name}`}
@@ -385,15 +389,15 @@ export function Composer({
       <div className="flex items-center gap-0.5 px-2 pb-2">
         <button
           type="button"
-          title="Attach images (or paste, or drop them here)"
-          aria-label="Attach images"
+          title="Attach images or files (or paste, or drop them here)"
+          aria-label="Attach images or files"
           data-testid="attach"
           onClick={() => fileInput.current?.click()}
           className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
         >
-          <ImagePlus className="size-4" />
+          <Paperclip className="size-4" />
         </button>
-        <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
+        <input ref={fileInput} type="file" multiple hidden data-testid="attach-input" onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
         <ModelPicker value={model} onChange={onModel} openSignal={pickerSignal} />
         {sid && <EffortPicker sessionId={sid} />}
         {sid && <SpeedPicker sessionId={sid} />}

@@ -26,7 +26,7 @@ export function geminiBody(req: ProviderRequest, ctx: WireCtx, o: GeminiOpts = {
     let firstCall = true;
     for (const b of m.content) {
       if (b.type === "text") parts.push(b.signature ? { text: b.text, thoughtSignature: b.signature } : { text: b.text });
-      else if (b.type === "image") parts.push({ inlineData: { mimeType: b.media_type, data: b.data } });
+      else if (b.type === "image" || b.type === "document") parts.push({ inlineData: { mimeType: b.media_type, data: b.data } });
       else if (b.type === "thinking") { if (Array.isArray(b.opaque)) parts.push(...b.opaque); }
       else if (b.type === "tool_use") {
         const p: any = { functionCall: { id: b.id, name: b.name, args: b.input ?? {} } };

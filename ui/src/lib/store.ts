@@ -2,7 +2,7 @@
 // errors, fed by REST on load and by the WebSocket after. Components read it
 // with useStore(selector).
 import { useSyncExternalStore } from "react";
-import type { ErrorRecord, Frame, ImageBlock, QueueItem, Session, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
+import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
 
@@ -139,12 +139,12 @@ export const actions = {
   },
   resolveError: (id: string, resolved: boolean) => api(`/api/errors/${id}`, { method: "PATCH", body: JSON.stringify({ resolved }) }),
   resolveAllErrors: () => api("/api/errors/resolve-all", { method: "POST" }),
-  async create(text: string, model?: string, workspace?: string, images?: ImageBlock[]): Promise<Session> {
+  async create(text: string, model?: string, workspace?: string, images?: PromptBlock[]): Promise<Session> {
     const r = await api<{ session: Session }>("/api/sessions", { method: "POST", body: JSON.stringify({ text, model, workspace, images }) });
     set({ sessions: { ...state.sessions, [r.session.id]: r.session } });
     return r.session;
   },
-  send: (id: string, text: string, opts: { images?: ImageBlock[]; mode?: "send" | "queue" } = {}) =>
+  send: (id: string, text: string, opts: { images?: PromptBlock[]; mode?: "send" | "queue" } = {}) =>
     api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images: opts.images, mode: opts.mode }) }),
   edit: (id: string, eventId: string, text: string) =>
     api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, edit_of: eventId }) }),

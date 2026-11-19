@@ -96,6 +96,7 @@ export type ListedModel = {
   price?: Price;
   billing?: Billing;
   images?: boolean;
+  pdf?: boolean; // reads PDF documents (the catalog's input modalities)
   speeds?: SpeedOffer[];
 };
 
@@ -112,6 +113,7 @@ export type ModelInfo = {
   price?: Price;       // absent: unknown, never free
   billing: Billing["kind"];
   images?: boolean;
+  pdf?: boolean; // reads PDF documents (the catalog's input modalities)
   speeds?: SpeedOffer[];
 };
 

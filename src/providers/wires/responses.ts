@@ -42,6 +42,7 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
     for (const b of m.content) {
       if (b.type === "text") texts.push({ type: m.role === "user" ? "input_text" : "output_text", text: b.text });
       else if (b.type === "image") texts.push({ type: "input_image", image_url: dataUrl(b) });
+      else if (b.type === "document") texts.push({ type: "input_file", filename: b.name, file_data: dataUrl(b) });
       else if (b.type === "thinking") {
         flush();
         if (b.opaque) input.push(b.opaque);

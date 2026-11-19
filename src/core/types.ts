@@ -18,7 +18,16 @@ export type ToolResultBlock = {
 };
 
 export type AssistantBlock = TextBlock | ThinkingBlock | RedactedThinkingBlock | ToolUseBlock;
-export type UserBlock = TextBlock | ImageBlock | ToolResultBlock;
+// A file the owner attached, stored once by content (src/engine/attachments.ts).
+// It travels with the prompt among its image blocks and is resolved per model
+// just before a request: text inline, a PDF as a document where the model
+// reads PDFs, anything else as a note with the saved path.
+export type AttachmentBlock = { type: "attachment"; id: string; name: string; media_type: string; size: number };
+// A PDF as the provider reads it (resolved from an attachment, never stored).
+export type DocumentBlock = { type: "document"; media_type: string; data: string; name: string };
+// What a prompt carries besides its text (stored in the user event's `images`).
+export type PromptBlock = ImageBlock | AttachmentBlock;
+export type UserBlock = TextBlock | ImageBlock | ToolResultBlock | AttachmentBlock | DocumentBlock;
 
 export type Message =
   | { role: "user"; content: UserBlock[] }

@@ -45,6 +45,7 @@ export function chatBody(req: ProviderRequest, ctx: WireCtx, o: ChatOpts = {}, s
       if (b.type === "tool_result") messages.push({ role: "tool", tool_call_id: b.tool_use_id, content: resultText(b.content) || "(no output)" });
       else if (b.type === "text") parts.push({ type: "text", text: b.text });
       else if (b.type === "image") parts.push({ type: "image_url", image_url: { url: dataUrl(b) } });
+      else if (b.type === "document") parts.push({ type: "file", file: { filename: b.name, file_data: dataUrl(b) } });
     }
     if (parts.length) messages.push({ role: "user", content: parts.every((p) => p.type === "text") ? parts.map((p) => p.text).join("\n") : parts });
   }

@@ -23,7 +23,7 @@ export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: st
   };
   for (const e of events) {
     if (e.kind === "user") {
-      const content = [...(e.data.images ?? []), { type: "text", text: e.data.text }];
+      const content = [...(e.data.images ?? []).filter((b: any) => b.type === "image"), { type: "text", text: e.data.text }];
       push({ ...base(e.ts), type: "user", message: { role: "user", content: content.length === 1 ? e.data.text : content }, uuid: crypto.randomUUID() });
     } else if (e.kind === "note" && e.data.model) {
       push({ ...base(e.ts), type: "user", isMeta: true, message: { role: "user", content: [{ type: "text", text: e.data.text }] }, uuid: crypto.randomUUID() });

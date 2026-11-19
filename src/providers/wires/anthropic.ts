@@ -23,6 +23,7 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
     content: m.content.map((b): any => {
       switch (b.type) {
         case "image": return image(b);
+        case "document": return { type: "document", source: { type: "base64", media_type: b.media_type, data: b.data }, title: b.name };
         case "text": return { type: "text", text: b.text };
         case "thinking":
           // A thought without a signature cannot be replayed on this wire.

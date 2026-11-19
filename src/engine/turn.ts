@@ -14,6 +14,7 @@ import { allHooks, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { checkpointAt, COMPACT_SHARE, contextTokens, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
 import { withoutImages } from "./images.ts";
+import { resolveAttachments } from "./attachments.ts";
 import { RETRY, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
 // What the model is told about a tool call a daemon restart cut.
@@ -331,8 +332,10 @@ export class Engine {
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false): Promise<ProviderResult> {
     for (let attempt = 0; ; attempt++) {
       partial.clear();
-      let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages: st.info.images === false ? withoutImages(messages, st.info.name ?? st.info.model) : messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
+      let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
       for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+      // What the model can read, applied after the hooks (a hook may rebuild the messages).
+      req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
       if (!quiet) this.status(id, { kind: "model", since: Date.now(), model: st.info.name });
       let first = true;
       try {

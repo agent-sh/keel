@@ -18,6 +18,7 @@ export type CatalogEntry = {
   reasoning?: boolean;
   tools?: boolean;
   images?: boolean;
+  pdf?: boolean;
   price?: Price;
   speeds?: SpeedOffer[];
 };
@@ -68,6 +69,7 @@ function entry(id: string, m: any): CatalogEntry {
     reasoning: m.reasoning,
     tools: m.tool_call,
     images: m.modalities?.input?.includes("image"),
+    pdf: m.modalities?.input?.includes("pdf"),
     price: priceOf(c),
     speeds: speedsOf(m),
   };
