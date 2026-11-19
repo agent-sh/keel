@@ -1,21 +1,19 @@
-// Reading a child process's pipes. Bun can release a pipe's reader when the
-// process ends; `new Response(pipe).text()` and `for await` over the pipe then
-// reject with "Invalid state: Reader released", often outside any handler. Every
-// module reads child output through these helpers instead: an explicit reader,
-// and the release at exit ends the read with what was already taken.
+// Reading a child process's pipes. Every module reads child output through
+// these helpers, which take the pipe's reader and never hand it back: in Bun
+// the only source of "Invalid state: Reader released" is releaseLock() (the
+// reader's release steps), and a release while the pipe is still open rejects
+// the reader's closed promise, which then escapes as an unhandled rejection
+// through any reaction on it. A read that stops early cancels the pipe
+// instead, which closes it (closed resolves) and lets the child see EPIPE
+// rather than block on a full pipe.
 
 type Pipe = ReadableStream<Uint8Array> | number | null | undefined;
 
-const released = (e: unknown) => (e as any)?.code === "ERR_INVALID_STATE" || /reader (was )?released/i.test(String((e as Error)?.message ?? e));
-
-// Each chunk as it comes; resolves when the pipe ends or is released at exit.
-// Any other read failure rejects, tagged with `where`.
+// Each chunk as it comes; resolves when the pipe ends. A read failure, or an
+// `onChunk` that throws, rejects, tagged with `where`.
 export async function pump(pipe: Pipe, onChunk: (c: Uint8Array) => void, where = "child pipe"): Promise<void> {
   if (!pipe || typeof pipe === "number") return;
   const r = pipe.getReader();
-  // Releasing the lock rejects `closed`; nobody waits on it, so it would surface
-  // as an unhandled rejection.
-  r.closed.catch(() => {});
   try {
     for (;;) {
       const { done, value } = await r.read();
@@ -23,12 +21,8 @@ export async function pump(pipe: Pipe, onChunk: (c: Uint8Array) => void, where =
       if (value) onChunk(value);
     }
   } catch (e) {
-    if (released(e)) return;
+    r.cancel(e).catch(() => {});
     throw Object.assign(e instanceof Error ? e : new Error(String(e)), { where });
-  } finally {
-    try { r.releaseLock(); } catch {}
-    // Bun swaps in a new rejected `closed` on release without marking it handled.
-    r.closed.catch(() => {});
   }
 }
 
