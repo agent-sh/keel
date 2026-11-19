@@ -57,7 +57,10 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   const count = useMemo(() => countLabel(query, all, groups), [query, all, groups]);
   const selected = byId.get(value) ?? null;
 
-  const togglePin = (i: Item) => actions.choose(pinned.includes(i.value) ? { unpin: [i.value] } : { pin: [i.value] }).catch(reportError);
+  // Favorites and hidden models are this daemon's own choices: a peer's
+  // listing offers no pin or hide (they would land here, not there).
+  const own = !machine;
+  const togglePin = (i: Item) => own && actions.choose(pinned.includes(i.value) ? { unpin: [i.value] } : { pin: [i.value] }).catch(reportError);
   // Hide asks nothing of the daemon for the default: its row has no Hide either.
   const hide = (i: Item) => {
     if (i.value === def) return setHint("Choose another default before hiding this model.");
@@ -139,7 +142,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                     if (i) choose(i);
                     return;
                   }
-                  if (!(e.ctrlKey || e.metaKey) || (e.key !== "f" && e.key !== "h")) return;
+                  if (!own || !(e.ctrlKey || e.metaKey) || (e.key !== "f" && e.key !== "h")) return;
                   e.preventDefault();
                   const i = current();
                   if (!i) return;
@@ -185,7 +188,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         {problems[group.provider]!.kind === "billing" ? "billing" : "key refused"}
                       </span>
                     )}
-                    {group.provider && group.provider !== selected?.provider && !def.startsWith(`${group.provider}:`) && (
+                    {own && group.provider && group.provider !== selected?.provider && !def.startsWith(`${group.provider}:`) && (
                       <button
                         type="button"
                         title={`Hide ${group.label} from the picker (search still finds its models)`}
@@ -225,7 +228,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                           {item.hidden && <span className="min-w-0 truncate text-micro text-faint" title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>
                         <span className="col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint">
-                          {!item.hidden && <RowAction
+                          {own && !item.hidden && <RowAction
                             label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
                             on={pinned.includes(item.value)}
                             testid="pin-model"
@@ -233,16 +236,16 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                           >
                             <Star className={cn("size-3", pinned.includes(item.value) && "fill-current text-brass")} />
                           </RowAction>}
-                          {!item.hidden && item.value !== def && (
+                          {own && !item.hidden && item.value !== def && (
                             <RowAction label="Hide" on={false} testid="hide-model" onPress={() => hide(item)}>
                               <EyeOff className="size-3" />
                             </RowAction>
                           )}
-                          {item.hidden === "model" && <TextAction testid="show-model" label="Show" onPress={() => show(item)} />}
-                          {(item.hidden === "provider" || item.hidden === "both") && (
+                          {own && item.hidden === "model" && <TextAction testid="show-model" label="Show" onPress={() => show(item)} />}
+                          {own && (item.hidden === "provider" || item.hidden === "both") && (
                             <TextAction testid="show-provider" label="Show provider" title={item.hidden === "both" ? `Show ${item.providerLabel} again; this model stays hidden` : `Show ${item.providerLabel} again`} onPress={() => showProvider(item, false)} />
                           )}
-                          {item.hidden === "both" && <TextAction testid="show-both" label="Show both" title={`Show ${item.providerLabel} and this model`} onPress={() => showProvider(item, true)} />}
+                          {own && item.hidden === "both" && <TextAction testid="show-both" label="Show both" title={`Show ${item.providerLabel} and this model`} onPress={() => showProvider(item, true)} />}
                           {!item.hidden && item.vision === true && <Image className="ml-0.5 size-3" aria-label="Reads images" />}
                           {!item.hidden && item.vision === false && <ImageOff className="ml-0.5 size-3" aria-label="Does not read images" />}
                           {!item.hidden && <span className="w-8 text-right" title="Context window">{item.context ? fmtTokens(item.context) : ""}</span>}
@@ -265,9 +268,13 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
               )}
             </Combobox.List>
             <div className="flex items-center gap-3 border-t border-line px-3 py-1.5 text-micro text-faint">
-              <span className="inline-flex items-center gap-1"><Kbd keys="mod+f" /> favorite</span>
-              <span className="inline-flex items-center gap-1"><Kbd keys="mod+h" /> hide</span>
-              <span className="ml-auto">Search finds hidden models</span>
+              {own ? (
+                <>
+                  <span className="inline-flex items-center gap-1"><Kbd keys="mod+f" /> favorite</span>
+                  <span className="inline-flex items-center gap-1"><Kbd keys="mod+h" /> hide</span>
+                  <span className="ml-auto">Search finds hidden models</span>
+                </>
+              ) : <span data-testid="peer-choices-note">Favorites and hidden models are set on {machineName(machine!)} itself</span>}
             </div>
           </Combobox.Popup>
         </Combobox.Positioner>

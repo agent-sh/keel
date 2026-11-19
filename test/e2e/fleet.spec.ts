@@ -65,6 +65,11 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await page.getByTestId("model-picker").click();
     await expect(page.getByTestId("peer-catalog")).toContainText("Models devbox lists");
     await expect(page.getByTestId("model-option").first()).toBeVisible();
+    // Favorites and hiding are this daemon's choices: a peer's listing offers neither.
+    await page.getByTestId("model-option").first().hover();
+    await expect(page.getByTestId("pin-model")).toHaveCount(0);
+    await expect(page.getByTestId("hide-model")).toHaveCount(0);
+    await expect(page.getByTestId("peer-choices-note")).toContainText("devbox");
     // The default badge is that daemon's default, not this one's.
     const peerDefault = (await (await request.get(`${PEER}/api/models`)).json()).default;
     const localDefault = (await (await request.get("/api/models")).json()).default;
