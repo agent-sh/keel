@@ -295,16 +295,19 @@ export class Gate {
     };
     this.save(a);
     const signal = call.ctx.signal;
+    // The turn's signal is shared by all its calls: the listener goes when
+    // the card is answered, so answered cards do not pile up on it.
+    let onAbort = () => {};
     const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
       this.waiting.set(a.id, { resolve, call, cls, session, name, once });
-      const onAbort = () => {
+      onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
         this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
         resolve({ deny: "The turn was stopped before the owner answered." });
       };
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
-    });
+    }).finally(() => signal.removeEventListener("abort", onAbort));
     if ("deny" in out) return out;
     this.allowedCalls.add(call.id);
     if (this.allowedCalls.size > 2000) this.allowedCalls.delete(this.allowedCalls.values().next().value!);

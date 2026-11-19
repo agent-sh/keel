@@ -92,3 +92,21 @@ test("one retry the owner lets through is spent once; its blocked id never grant
   expect(await run()).toBe("deny");
   expect(judged).toBe(3);
 });
+
+test("an answered card takes its abort listener off the turn's shared signal", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm("s1", { mode: "ask", sandbox: "off" });
+  const stop = new AbortController();
+  let live = 0;
+  const add = stop.signal.addEventListener.bind(stop.signal), remove = stop.signal.removeEventListener.bind(stop.signal);
+  stop.signal.addEventListener = ((t: string, f: any, o?: any) => (t === "abort" && live++, add(t, f, o))) as any;
+  stop.signal.removeEventListener = ((t: string, f: any, o?: any) => (t === "abort" && live--, remove(t, f, o))) as any;
+  for (const choice of ["once", "deny", "once"]) {
+    const asked = g.beforeTool(session, call(bash, { command: "npm install left-pad" }, stop.signal));
+    await Bun.sleep(5);
+    const [card] = g.approvals({ session: "s1", pending: true });
+    g.resolve(card!.id, "s1", { choice } as any);
+    await asked;
+    expect(live).toBe(0);
+  }
+});
