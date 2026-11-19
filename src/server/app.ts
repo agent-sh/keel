@@ -26,6 +26,21 @@ export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Provider
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
 
+// Two modules that define the same route: the later one would silently win (a
+// worktree handoff once answered as the fleet's). In development that stops
+// the start; in a live daemon it is captured and the first one is kept.
+function clashFree(entries: [string, any][], strict: boolean, errors: ErrorTracker): [string, any][] {
+  const seen = new Map<string, any>();
+  for (const [path, methods] of entries) {
+    const prev = seen.get(path);
+    if (!prev) { seen.set(path, methods); continue; }
+    const err = new Error(`route ${path} is defined by two modules`);
+    if (strict) throw err;
+    errors.capture("server", err, { at: "startup" });
+  }
+  return [...seen.entries()];
+}
+
 export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }, modules: RouteModule[] = []) {
   const { store, bus, engine, providers, errors } = deps;
   // Every tab subscribes to one topic; Bun's publish writes a frame to all of
@@ -165,7 +180,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
 
       "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
       ...Object.fromEntries(
-        modules.flatMap((m) => Object.entries(m(deps))).map(([path, methods]) => [
+        clashFree(modules.flatMap((m) => Object.entries(m(deps))), opts.development ?? false, errors).map(([path, methods]) => [
           path,
           typeof methods === "function"
             ? wrap(methods)

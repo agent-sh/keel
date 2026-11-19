@@ -86,7 +86,7 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
       },
     },
     // Move the session between its main checkout and a worktree, with its uncommitted work.
-    "/api/sessions/:id/handoff": {
+    "/api/sessions/:id/worktree/handoff": {
       POST: (req: any) => guard(async () => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);

@@ -136,7 +136,7 @@ export function WorktreeChip({ session }: { session: Session }) {
                     </button>
                   )}
                   <button className={btn} disabled={busy} data-testid="handoff-main" title="The main checkout switches to this branch and gets the uncommitted work; this folder goes"
-                    onClick={() => act(() => post("/handoff", { to: "main" }), (r) => ({ text: `Moved to the main checkout on ${r.branch}.` }))}>
+                    onClick={() => act(() => post("/worktree/handoff", { to: "main" }), (r) => ({ text: `Moved to the main checkout on ${r.branch}.` }))}>
                     <MoveLeft /> Move to main checkout
                   </button>
                   <button className={btn} disabled={busy} data-testid="worktree-park" onClick={() => act(() => post("/worktree/park"), () => ({ text: "Parked. The working state is saved on a ref." }))}>
