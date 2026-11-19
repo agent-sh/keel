@@ -1,19 +1,17 @@
 import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
-import { Boundary, SessionView } from "./components/SessionView.tsx";
+import { Bridge } from "./components/Bridge.tsx";
+import { Boundary } from "./components/SessionView.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
-import { StartBox } from "./components/StartBox.tsx";
 import "./lib/builtins.ts";
 import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
 import { AdminBand } from "./components/AdminBand.tsx";
 import "./lib/integrations-ui.ts";
-import { useDirection } from "./lib/direction.ts";
 import { installKeymap } from "./lib/keys.ts";
 import { actions, connect, reportError } from "./lib/store.ts";
-import { savePref, setUI, useUI } from "./lib/ui.ts";
-import { cn } from "./lib/utils.ts";
+import { phone, savePref, setUI, useUI } from "./lib/ui.ts";
 
 // Overlays and Settings load on first use; the first page carries the shell only.
 const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
@@ -21,10 +19,6 @@ const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((
 const McpPanel = lazy(() => import("./components/McpPanel.tsx").then((m) => ({ default: m.McpPanel })));
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
 const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
-// Each direction's shell is its own chunk: only the chosen one loads.
-const Bridge = lazy(() => import("./components/shells/Bridge.tsx").then((m) => ({ default: m.Bridge })));
-const Wake = lazy(() => import("./components/shells/Wake.tsx").then((m) => ({ default: m.Wake })));
-const Watch = lazy(() => import("./components/shells/Watch.tsx").then((m) => ({ default: m.Watch })));
 
 // Mounts its child the first time `open` is true, then keeps it (for close animations).
 function OnFirstOpen({ open, children }: { open: boolean; children: ReactNode }) {
@@ -33,33 +27,8 @@ function OnFirstOpen({ open, children }: { open: boolean; children: ReactNode })
   return seen.current ? <Suspense fallback={null}>{children}</Suspense> : null;
 }
 
-// The single-column shell: the sidebar, one session.
-function Classic() {
-  const route = useUI((s) => s.route);
-  const sidebar = useUI((s) => s.sidebar);
-  return (
-    <>
-      {/* Desktop: the sidebar is part of the layout. Phone: a drawer over it. */}
-      <div
-        className={cn(
-          "z-40 h-full shrink-0 transition-[margin,transform] duration-200 ease-[var(--ease-out)]",
-          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-3",
-          sidebar ? "md:ml-0" : "md:-ml-[272px] max-md:-translate-x-full",
-        )}
-      >
-        <Sidebar />
-      </div>
-      {sidebar && <div className="fixed inset-0 z-30 bg-overlay md:hidden" onClick={() => savePref("sidebar", false)} aria-hidden="true" />}
-      <main className="flex min-w-0 flex-1 flex-col">
-        {route.name === "session" ? <SessionView key={route.id} id={route.id} /> : <StartBox />}
-      </main>
-    </>
-  );
-}
-
 export function App() {
   const route = useUI((s) => s.route);
-  const direction = useDirection();
 
   useEffect(() => {
     connect();
@@ -70,11 +39,12 @@ export function App() {
   }, []);
   useEffect(() => { if (route.name !== "session") document.title = route.name === "settings" ? "Settings - Keel" : "Keel"; }, [route]);
 
+  const sidebar = useUI((s) => s.sidebar);
   const page = route.name === "settings";
   return (
     <Boundary>
       <div
-        className="k-app flex h-full overflow-hidden"
+        className="k-app"
         onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()}
         onDrop={(e) => {
           if (!e.dataTransfer.files.length) return;
@@ -82,35 +52,17 @@ export function App() {
           dispatchEvent(new CustomEvent("keel:files", { detail: [...e.dataTransfer.files] }));
         }}
       >
-        {direction === "classic" || page ? (
-          page ? (
-            <>
-              {direction === "classic" && <ClassicSidebarOnly />}
-              <main className="flex min-w-0 flex-1 flex-col"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}</Suspense></main>
-            </>
-          ) : <Classic />
-        ) : (
-          <Suspense fallback={null}>
-            {direction === "bridge" ? <Bridge /> : direction === "wake" ? <Wake /> : <Watch />}
-          </Suspense>
-        )}
+        {/* Desktop: the rail, folded or open. Phone: the open rail as a drawer. */}
+        <div className="k-rail-wrap" data-drawer={sidebar || undefined}><Sidebar open={sidebar || phone()} /></div>
+        {sidebar && <div className="k-scrim" onClick={() => savePref("sidebar", false)} aria-hidden="true" />}
+        {page ? (
+          <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}</Suspense></main>
+        ) : <Bridge />}
       </div>
       <Overlays />
       <ConfirmHost />
       <AdminBand />
     </Boundary>
-  );
-}
-
-function ClassicSidebarOnly() {
-  const sidebar = useUI((s) => s.sidebar);
-  return (
-    <>
-      <div className={cn("z-40 h-full shrink-0 transition-[margin,transform] duration-200 ease-[var(--ease-out)] max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-3", sidebar ? "md:ml-0" : "md:-ml-[272px] max-md:-translate-x-full")}>
-        <Sidebar />
-      </div>
-      {sidebar && <div className="fixed inset-0 z-30 bg-overlay md:hidden" onClick={() => savePref("sidebar", false)} aria-hidden="true" />}
-    </>
   );
 }
 

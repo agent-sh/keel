@@ -14,5 +14,8 @@ export default defineConfig({
     viewport: { width: 1920, height: 1040 },
     headless: true,
     trace: "retain-on-failure",
+    // Specs drive one session at a time: the bridge shows only the helm
+    // (focus mode). bridge.spec.ts clears this to drive several stations.
+    storageState: { cookies: [], origins: [{ origin: new URL(process.env.KEEL_URL ?? "http://127.0.0.1:47961").origin, localStorage: [{ name: "keel.focus", value: "true" }] }] },
   },
 });

@@ -55,7 +55,7 @@ const isPhone = () => matchMedia("(max-width: 767px)").matches;
 let state: UIState = {
   route: parse(),
   theme: (localStorage.getItem("keel.theme") as ThemePref) || "system",
-  sidebar: isPhone() ? false : pref("keel.sidebar", true),
+  sidebar: isPhone() ? false : pref("keel.rail", false), // desktop: the rail shows the full index
   palette: false,
   shortcuts: false,
   errors: false,
@@ -92,21 +92,21 @@ addEventListener("popstate", () => setUI({ route: parse() }));
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 
 export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel", v: unknown) {
-  if (!(k === "sidebar" && isPhone())) localStorage.setItem(`keel.${k}`, JSON.stringify(v));
+  if (!(k === "sidebar" && isPhone())) localStorage.setItem(`keel.${k === "sidebar" ? "rail" : k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);
 }
 
 // Crossing to phone width closes the drawer; back on a wide screen the owner's choice returns.
-matchMedia("(max-width: 767px)").addEventListener("change", (e) => setUI({ sidebar: e.matches ? false : pref("keel.sidebar", true) }));
+matchMedia("(max-width: 767px)").addEventListener("change", (e) => setUI({ sidebar: e.matches ? false : pref("keel.rail", false) }));
 
 const media = matchMedia("(prefers-color-scheme: dark)");
 function applyTheme() {
-  const dark = document.documentElement.dataset.direction === "watch" || state.theme === "dark" || (state.theme === "system" && media.matches);
+  const dark = state.theme === "dark" || (state.theme === "system" && media.matches);
   const root = document.documentElement;
   if (root.classList.contains("dark") === dark) return;
   root.classList.add("theme-switch");
   root.classList.toggle("dark", dark);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#141b22" : "#f7faf9");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#1b1f27" : "#eceef2");
   requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("theme-switch")));
 }
 media.addEventListener("change", applyTheme);
@@ -115,7 +115,6 @@ export function setTheme(t: ThemePref) {
   setUI({ theme: t });
   applyTheme();
 }
-export const reapplyTheme = applyTheme;
 export const isDark = () => document.documentElement.classList.contains("dark");
 export const phone = isPhone;
 export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined) =>

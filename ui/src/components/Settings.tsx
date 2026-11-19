@@ -5,7 +5,6 @@ import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
-import { DIRECTIONS, setDirection, useDirection, type Direction } from "../lib/direction.ts";
 
 // Settings building blocks other lanes reuse for their sections.
 export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
@@ -46,12 +45,8 @@ export function Card({ children }: { children: ReactNode }) {
 function General() {
   const theme = useUI((s) => s.theme);
   const enterSends = useUI((s) => s.enterSends);
-  const direction = useDirection();
   return (
     <Card>
-      <SettingRow label="Direction" hint={DIRECTIONS.find((d) => d.id === direction)?.hint}>
-        <Segmented<Direction> label="Direction" value={direction} onChange={setDirection} options={DIRECTIONS.map((d) => ({ value: d.id, label: d.name }))} />
-      </SettingRow>
       <SettingRow label="Theme" hint="Follow the system, or keep one.">
         <Segmented<ThemePref> label="Theme" value={theme} onChange={setTheme} options={[{ value: "system", label: "System" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} />
       </SettingRow>

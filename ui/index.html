@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#f7faf9" />
+    <meta name="theme-color" content="#eceef2" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>Keel</title>
@@ -12,11 +12,9 @@
     <script>
       (function () {
         var t = localStorage.getItem("keel.theme") || "system";
-        var d = new URLSearchParams(location.search).get("direction") || localStorage.getItem("keel.direction") || "classic";
-        document.documentElement.dataset.direction = d;
-        var dark = d === "watch" || t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.classList.toggle("dark", dark);
-        document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#141b22" : "#f7faf9");
+        document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#1b1f27" : "#eceef2");
       })();
     </script>
   </head>

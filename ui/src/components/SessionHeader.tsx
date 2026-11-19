@@ -4,7 +4,7 @@ import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } fro
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
 import { actions, reportError } from "../lib/store.ts";
-import { navigate, savePref, useUI } from "../lib/ui.ts";
+import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { BackgroundButton } from "./automation/BackgroundPopover.tsx";
@@ -19,7 +19,8 @@ const WorktreeChip = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ defa
 
 export function SidebarButton() {
   const sidebar = useUI((s) => s.sidebar);
-  if (sidebar) return null;
+  // Desktop has the rail; a phone opens the list from here.
+  if (sidebar || !phone()) return null;
   return (
     <button type="button" aria-label="Show the sidebar" title="Show the sidebar (Ctrl B)" data-testid="show-sidebar" onClick={() => savePref("sidebar", true)} className={iconButton}>
       <MenuIcon className="size-4" />
