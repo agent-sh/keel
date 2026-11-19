@@ -21,7 +21,9 @@ export type Worktree = {
   created: number;
   updated: number;
 };
-export type WorktreeStatus = Worktree & { exists: boolean; dirty: number; commits_ahead: number; unknown?: string };
+// exists: the folder is on disk; branch_missing: the branch ref is gone;
+// unknown: git could not say what the branch holds (then nothing is removed).
+export type WorktreeStatus = Worktree & { exists: boolean; dirty: number; commits_ahead: number; branch_missing?: boolean; unknown?: string };
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS worktrees (session_id TEXT PRIMARY KEY, repo_root TEXT NOT NULL, path TEXT NOT NULL, branch TEXT NOT NULL, base TEXT NOT NULL, base_commit TEXT NOT NULL, state TEXT NOT NULL, snapshot_ref TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL);
@@ -132,7 +134,18 @@ export class Worktrees {
 
   async status(w: Worktree): Promise<WorktreeStatus> {
     const exists = existsSync(w.path);
-    if (!exists) return { ...w, exists, dirty: 0, commits_ahead: 0 };
+    // The folder gone (removed with git, or parked) is not an empty branch:
+    // the branch is read from the repository itself.
+    if (!exists) {
+      try {
+        const ref = (await git(w.repo_root, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`], { ok: true })).trim();
+        if (!ref) return { ...w, exists, dirty: 0, commits_ahead: 0, branch_missing: true };
+        const ahead = (await git(w.repo_root, ["rev-list", "--count", `${w.base_commit}..${ref}`])).trim();
+        return { ...w, exists, dirty: 0, commits_ahead: Number(ahead) || 0 };
+      } catch (e) {
+        return { ...w, exists, dirty: 0, commits_ahead: 0, unknown: (e as Error).message };
+      }
+    }
     try {
       const [st, ahead] = await Promise.all([
         git(w.path, ["status", "--porcelain", "-z"]),
@@ -284,9 +297,11 @@ export class Worktrees {
       await git(w.repo_root, ["worktree", "remove", "--force", w.path]);
     }
     let branchDeleted = false;
-    if (!st.commits_ahead && !ref) {
-      await git(w.repo_root, ["branch", "-D", w.branch], { ok: true });
-      branchDeleted = true;
+    if (!st.commits_ahead && !ref && !st.branch_missing) {
+      try {
+        await git(w.repo_root, ["branch", "-D", w.branch]);
+        branchDeleted = true;
+      } catch {} // still there: said so (branch_deleted false)
     }
     this.put({ ...w, state: "removed", snapshot_ref: ref });
     return { removed: true, snapshot_ref: ref, branch_deleted: branchDeleted };
