@@ -653,7 +653,12 @@ export class Engine {
       this.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true });
     }
     // Each session on its own: a provider still starting holds only its sessions.
-    await Promise.all(this.store.sessions().map(async (s) => {
+    // The continued turns start a few at a time, the newest first, spaced out,
+    // so a restart with many open sessions does not send every replayed context
+    // to the providers in the same second.
+    const slots = new Slots(RESUME_AT_ONCE, RESUME_GAP_MS);
+    const sessions = this.store.sessions().sort((a, b) => b.updated - a.updated);
+    await Promise.all(sessions.map(async (s) => {
       const line = this.lineage(s.id);
       const end = line.at(-1);
       if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;
@@ -671,15 +676,23 @@ export class Engine {
         this.append(s.id, "note", { kind: "restart", text: `The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.` });
         return;
       }
-      // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
-      const now = this.store.session(s.id);
-      if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
-      this.append(s.id, "user", {
-        origin: "restart",
-        text: `[harness] The daemon restarted during your previous turn${cutTools ? `; ${cutTools} tool call${cutTools > 1 ? "s" : ""} it cut ${cutTools > 1 ? "are" : "is"} marked as interrupted` : ""}. Continue where it left off.`,
-      });
-      this.start(s.id);
-      this.emitQueue(s.id);
+      await slots.take();
+      try {
+        // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
+        const now = this.store.session(s.id);
+        if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
+        this.append(s.id, "user", {
+          origin: "restart",
+          text: `[harness] The daemon restarted during your previous turn${cutTools ? `; ${cutTools} tool call${cutTools > 1 ? "s" : ""} it cut ${cutTools > 1 ? "are" : "is"} marked as interrupted` : ""}. Continue where it left off.`,
+        });
+        this.start(s.id);
+        this.emitQueue(s.id);
+        // Held until the turn ends or its first steps had time to run: a turn that
+        // then waits on the owner (an approval) does not hold back the others.
+        await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS)]);
+      } finally {
+        slots.give();
+      }
     }));
   }
 
@@ -713,5 +726,30 @@ export class Engine {
     const ev = this.append(id, "compaction", { mode: "clear", undo_head: last.id });
     this.emitSession(id);
     return ev;
+  }
+}
+
+
+// Continued turns after a restart: this many run at once, each start at least
+// this far after the previous one. Three covers the usual one to three open
+// sessions with no wait; more queue behind them.
+const RESUME_AT_ONCE = Number(process.env.KEEL_RESUME_AT_ONCE || 3);
+const RESUME_GAP_MS = Number(process.env.KEEL_RESUME_GAP_MS ?? 1000);
+const RESUME_HOLD_MS = 30_000;
+
+class Slots {
+  private waiting: (() => void)[] = [];
+  private last = 0;
+  constructor(private free: number, private gapMs: number) {}
+  async take() {
+    while (this.free <= 0) await new Promise<void>((r) => this.waiting.push(r));
+    this.free--;
+    const wait = this.last + this.gapMs - Date.now();
+    this.last = Math.max(Date.now(), this.last + this.gapMs);
+    if (wait > 0) await Bun.sleep(wait);
+  }
+  give() {
+    this.free++;
+    this.waiting.shift()?.();
   }
 }

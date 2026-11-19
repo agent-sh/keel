@@ -11,9 +11,9 @@ import { shoot } from "./shots.ts";
 // its own daemons on a scratch state folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
-function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
+function daemon(state: string, extra: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", state], {
-    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in" },
+    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", ...extra },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
@@ -81,6 +81,41 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     expect(ev.events.filter((e: any) => e.kind === "turn_end").map((e: any) => e.data.reason)).toEqual(["restart", "end_turn", "restart", "end_turn"]);
     await page.getByTestId("tool-call").first().click();
     await shoot(page, "restart-02-resumed-after-stop");
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
+// Many cut sessions continue a few at a time: with one slot, the second starts
+// only after the first continued turn ended.
+test("continued turns after a restart take turns", async () => {
+  const state = join(ROOT, `restart-slots-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const one = { KEEL_RESUME_AT_ONCE: "1", KEEL_RESUME_GAP_MS: "0" };
+  let d = await daemon(state, one);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in" });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+      await call(`/api/sessions/${session.id}/messages`, { text: "script:long-tool" });
+      ids.push(session.id);
+    }
+    const events = async (id: string) => (await call(`/api/sessions/${id}`, undefined, "GET")).events as any[];
+    await expect.poll(async () => (await Promise.all(ids.map(events))).every((ev) => ev.some((e) => e.kind === "tool_use" || (e.kind === "assistant" && e.data.blocks?.some((b: any) => b.type === "tool_use")))), { timeout: 15_000 }).toBe(true);
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state, one);
+    const done = async () => (await Promise.all(ids.map(events))).map((ev) => ev.filter((e) => e.kind === "turn_end").length);
+    await expect.poll(done, { timeout: 60_000 }).toEqual([2, 2]);
+    const spans = (await Promise.all(ids.map(events))).map((ev) => ({
+      start: ev.find((e) => e.kind === "user" && e.data.origin === "restart")!.ts as number,
+      end: ev.filter((e) => e.kind === "turn_end").at(-1)!.ts as number,
+    })).sort((a, b) => a.start - b.start);
+    expect(spans[1]!.start).toBeGreaterThanOrEqual(spans[0]!.end);
   } finally {
     d.proc.kill("SIGKILL");
   }
