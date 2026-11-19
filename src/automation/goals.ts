@@ -240,7 +240,8 @@ export function fromPlanTool(sessionId: string, tool: string, input: any) {
   const now = Date.now();
   db().transaction(() => {
     const st = listState(sessionId);
-    const unseen = (t: Task) => !!st.owner_changed && (t.owner_ms ?? 0) > st.seen_ms;
+    // An edit in the same millisecond as the last sync came after it.
+    const unseen = (t: Task) => !!st.owner_changed && (t.owner_ms ?? 0) >= st.seen_ms;
     const removed = new Set<string>(st.owner_changed && st.removed ? JSON.parse(st.removed) : []);
     const prior = tasks(sessionId);
     const byText = new Map<string, Task[]>();
@@ -276,7 +277,6 @@ function ownerChanged(sessionId: string, removedText?: string) {
   if (removedText) removed.push(removedText);
   db().query("INSERT INTO task_lists (session_id, owner_changed, removed) VALUES (?, 1, ?) ON CONFLICT(session_id) DO UPDATE SET owner_changed = 1, removed = excluded.removed").run(sessionId, removed.length ? JSON.stringify(removed) : null);
   changed(sessionId);
-  if (!D().engine.isRunning(sessionId)) tellModel(sessionId);
 }
 
 export function addTask(sessionId: string, text: string): Task {
@@ -315,15 +315,18 @@ export function removeTask(sessionId: string, id: string): boolean {
 const MARK: Record<TaskStatus, string> = { pending: "[ ]", in_progress: "[~]", completed: "[x]", cancelled: "[-]" };
 
 // The owner's changes reach the model as one note, appended (so what was sent
-// stays as it was): it comes with the next request.
-export function tellModel(sessionId: string) {
+// stays as it was) just before the session's next model request: any number
+// of edits made since the last request, idle or mid-turn, make one note with
+// the list as it then reads. True when a note was added.
+export function tellModel(sessionId: string): boolean {
   const r = db().query<{ owner_changed: number }, [string]>("SELECT owner_changed FROM task_lists WHERE session_id = ?").get(sessionId);
-  if (!r?.owner_changed) return;
+  if (!r?.owner_changed) return false;
   const list = tasks(sessionId);
   const text = `[owner] The owner changed the shared task list. It now reads:\n${list.map((t) => `${MARK[t.status]} ${t.text}`).join("\n") || "(empty)"}\nKeep it with your plan tool from here, with these items as they are written.`;
   const ev = D().store.append(sessionId, "note", { kind: "tasks", text, model: true });
   D().bus.emit({ t: "event", event: ev });
   db().query("UPDATE task_lists SET owner_changed = 0, seen_ms = ?, removed = NULL WHERE session_id = ?").run(Date.now(), sessionId);
+  return true;
 }
 
 export const isPlanTool = (name: string) => PLAN_TOOLS.has(name);

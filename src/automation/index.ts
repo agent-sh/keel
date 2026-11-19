@@ -1,5 +1,7 @@
 import { awakeHolds, awakeReasons, recheckAwake } from "../admin/awake.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { toMessages } from "../engine/turn.ts";
+import { lineage } from "../core/tree.ts";
 import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
 import * as activity from "./activity.ts";
@@ -54,6 +56,9 @@ function init(deps: Deps) {
   extendTaskStop();
 
   registerHooks({
+    // The owner's task-list edits since the last request, as one note.
+    beforeRequest: (s, req) =>
+      req.purpose === "turn" && goals.tellModel(s.id) ? { ...req, messages: toMessages(lineage(deps.store.events(s.id), deps.store.session(s.id)?.head ?? null)) } : req,
     system: (s) => {
       const custom = agents.definitions(s.workspace).filter((d) => d.source !== "built-in");
       return custom.length ? `Agent types you can start besides the built-ins:\n${custom.map((d) => `- ${d.name}: ${d.description}`).join("\n")}` : "";
@@ -91,7 +96,6 @@ function init(deps: Deps) {
         const child = !!deps.store.session(s.id)?.parent_id;
         if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`);
         alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more });
-        goals.tellModel(s.id);
         if (!child) goals.afterTurn(s.id, reason, { judge: !more }).catch((e) => capture(e, { at: "goal" }));
       });
     },

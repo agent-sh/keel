@@ -47,6 +47,21 @@ test("an item the owner cancelled mid-turn stays cancelled when the model's olde
   expect(store.events(s.id).filter((e) => e.kind === "note" && e.data.kind === "tasks")).toHaveLength(1);
 });
 
+test("owner edits to an idle session's list reach the model as one note at its next request", () => {
+  const s = session();
+  const notes = () => store.events(s.id).filter((e) => e.kind === "note" && e.data.kind === "tasks");
+  const a = goals.addTask(s.id, "Read the spec");
+  goals.addTask(s.id, "Write the parser");
+  goals.editTask(s.id, a.id, { status: "in_progress" });
+  goals.editTask(s.id, a.id, { text: "Read the whole spec" });
+  const c = goals.addTask(s.id, "Scratch");
+  goals.removeTask(s.id, c.id);
+  expect(notes()).toHaveLength(0);
+  expect(goals.tellModel(s.id)).toBe(true);
+  expect(goals.tellModel(s.id)).toBe(false);
+  expect(notes().map((e) => e.data.text)).toEqual([expect.stringContaining("[~] Read the whole spec\n[ ] Write the parser\n")]);
+});
+
 test("a message steered into a turn does not hide the turn's tokens from the goal's budget", async () => {
   const s = session();
   await goals.set(s.id, { objective: "make it pass", token_budget: 100 });
