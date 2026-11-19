@@ -13,7 +13,7 @@ export function D(): Deps {
 // The tool family of a session's model, from the listing (never from its name).
 export const familyOf = (model: string) => D().providers.current().find((m) => m.id === model)?.family ?? "claude";
 
-export function emit(kind: "agent" | "wait" | "loop" | "alert" | "alerts_read" | "activity" | "snooze", data: unknown) {
+export function emit(kind: "agent" | "wait" | "loop" | "alert" | "alerts_read" | "activity" | "snooze" | "goal" | "tasks", data: unknown) {
   D().bus.emit({ t: "feature", name: "automation", data: { kind, data } });
 }
 

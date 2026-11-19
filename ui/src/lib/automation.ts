@@ -7,9 +7,11 @@ import type { LoopRecord, RunRecord } from "../../../src/automation/loops.ts";
 import type { WaitRecord } from "../../../src/automation/waits.ts";
 import type { Activity } from "../../../src/automation/activity.ts";
 import type { Snooze } from "../../../src/automation/snooze.ts";
+import type { Goal, Task } from "../../../src/automation/goals.ts";
 import { onFeature, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 
+export type { Goal, Task };
 export type { Activity, AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, Snooze, WaitRecord };
 export type Channel = { id: string; label: string; available: boolean };
 
@@ -23,9 +25,11 @@ type State = {
   channels: Channel[];
   snoozes: Record<string, Snooze>; // "*" is the global snooze
   activityTick: number; // bumped by each new activity row
+  goals: Record<string, Goal | null>; // by session, once loaded
+  tasks: Record<string, Task[]>;
 };
 
-let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: { total: 0, sessions: {} }, settings: null, channels: [], snoozes: {}, activityTick: 0 };
+let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: { total: 0, sessions: {} }, settings: null, channels: [], snoozes: {}, activityTick: 0, goals: {}, tasks: {} };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => {
   state = { ...state, ...p };
@@ -56,6 +60,7 @@ export const auto = {
     const r = await api<{ alerts: Alert[]; unread: State["unread"] }>("/api/alerts?limit=100");
     set({ alerts: r.alerts, unread: r.unread });
   },
+  reviewAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/reviews`, { method: "POST", body: JSON.stringify({ agent_id: a.id }) }),
   stopAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/agents/${a.id}/stop`, { method: "POST" }),
   cancelWait: (id: string) => api(`/api/waits/${id}`, { method: "DELETE" }),
   patchLoop: (id: string, body: Partial<LoopRecord>) => api(`/api/loops/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -96,6 +101,23 @@ export const auto = {
     if (q.q) p.set("q", q.q);
     return api<{ items: Activity[]; has_more: boolean; kinds: string[] }>(`/api/activity?${p}`);
   },
+  async loadSessionPlan(sid: string) {
+    const [g, t] = await Promise.all([api<{ goal: Goal | null }>(`/api/sessions/${sid}/goal`), api<{ tasks: Task[] }>(`/api/sessions/${sid}/tasks`)]);
+    set({ goals: { ...state.goals, [sid]: g.goal }, tasks: { ...state.tasks, [sid]: t.tasks } });
+  },
+  setGoal: (sid: string, body: { objective: string; max_turns?: number | null; token_budget?: number | null; replace?: boolean }) =>
+    api<{ goal: Goal }>(`/api/sessions/${sid}/goal`, { method: "PUT", body: JSON.stringify(body) }),
+  patchGoal: (sid: string, body: Record<string, unknown>) => api<{ goal: Goal }>(`/api/sessions/${sid}/goal`, { method: "PATCH", body: JSON.stringify(body) }),
+  clearGoal: (sid: string) => api(`/api/sessions/${sid}/goal`, { method: "DELETE" }),
+  addTask: (sid: string, text: string) => api(`/api/sessions/${sid}/tasks`, { method: "POST", body: JSON.stringify({ text }) }),
+  editTask: (sid: string, id: string, body: Partial<Pick<Task, "text" | "status">>) => api(`/api/sessions/${sid}/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  removeTask: (sid: string, id: string) => api(`/api/sessions/${sid}/tasks/${id}`, { method: "DELETE" }),
+  startTask: (sid: string, id: string) => api<{ session_id: string }>(`/api/sessions/${sid}/tasks/${id}/start`, { method: "POST" }),
+  advisor: () => api<{ model: string | null }>("/api/advisor"),
+  setAdvisor: (model: string | null) => api<{ model: string | null }>("/api/advisor", { method: "PUT", body: JSON.stringify({ model }) }),
+  sessionAdvisor: (sid: string) => api<{ model: string | null; own: string | null; default: string | null }>(`/api/sessions/${sid}/advisor`),
+  setSessionAdvisor: (sid: string, model: string | null) =>
+    api<{ model: string | null; own: string | null; default: string | null }>(`/api/sessions/${sid}/advisor`, { method: "PUT", body: JSON.stringify({ model }) }),
   test: () => api("/api/alerts/test", { method: "POST", body: JSON.stringify({ kind: "agent" }) }),
   presence: (session_id: string | null, focused: boolean) =>
     fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id, focused }) }).catch(() => {}),
@@ -125,7 +147,9 @@ onFeature({
     else if (kind === "snooze") {
       const { [d.session_id]: _, ...rest } = state.snoozes;
       set({ snoozes: d.snooze ? { ...rest, [d.session_id]: d.snooze } : rest });
-    } else if (kind === "activity") set({ activityTick: state.activityTick + 1 });
+    } else if (kind === "goal") set({ goals: { ...state.goals, [d.session_id]: d.cleared ? null : d } });
+    else if (kind === "tasks") set({ tasks: { ...state.tasks, [d.session_id]: d.tasks } });
+    else if (kind === "activity") set({ activityTick: state.activityTick + 1 });
   },
   reconnect: () => void auto.load().catch(reportError),
 });

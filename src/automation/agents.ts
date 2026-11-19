@@ -47,6 +47,7 @@ export type AgentDef = {
   isolation?: "worktree" | "none";
   body?: string;
   source: string;
+  silent?: boolean; // its result goes to its own panel (a reviewer's findings), not to the parent's conversation
 };
 
 export const MAX_LIVE = Number(process.env.KEEL_MAX_SUBAGENTS ?? 8);
@@ -399,6 +400,19 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   return rec;
 }
 
+// A child another module started (the reviewer): listed with its parent's
+// agents, live, stoppable, in the activity list; its result is not handed back.
+export function adopt(parentId: string, childId: string, o: { title: string; type: string; model: string }): AgentRecord {
+  const id = Bun.randomUUIDv7().slice(-12);
+  const def: AgentDef = { name: o.type, description: o.type, readOnly: true, source: "built-in", silent: true };
+  D().store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def) VALUES (?, ?, ?, ?, ?, ?, 1, 'running', ?, ?)")
+    .run(id, parentId, childId, o.title.slice(0, 80), o.type, o.model, Date.now(), JSON.stringify(def));
+  activity.record("agent", "started", parentId, `Started ${o.type} "${o.title}" on ${o.model}`, { agent_id: id, child_session: childId });
+  const rec = get(id)!;
+  emit("agent", rec);
+  return rec;
+}
+
 // The final message of every round since the task, joined; a long result keeps
 // its first report and its last round.
 function collectResult(a: AgentRecord): string {
@@ -493,7 +507,8 @@ async function finish(a: AgentRecord, status: AgentStatus) {
     }
   }
   if (a.worktree) result += await worktreeNote(a);
-  const blocked = !a.background && (waiters.get(a.id)?.length ?? 0) > 0;
+  const silent = !!defOf(a.id)?.silent;
+  const blocked = silent || (!a.background && (waiters.get(a.id)?.length ?? 0) > 0);
   const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked })!;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${status === "completed" ? "reported" : status}`, { agent_id: a.id, child_session: a.session_id });
   wake(a.id);

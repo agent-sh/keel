@@ -1,9 +1,9 @@
-import { BellRing } from "lucide-react";
+import { BellRing, Bot, ListChecks } from "lucide-react";
 import { lazy } from "react";
 import { auto } from "../../lib/automation.ts";
-import { settingsSections, slash } from "../../lib/extend.ts";
+import { panels, settingsSections, slash } from "../../lib/extend.ts";
 import { actions, getState } from "../../lib/store.ts";
-import { getUI, navigate } from "../../lib/ui.ts";
+import { getUI, navigate, savePref } from "../../lib/ui.ts";
 
 // The automation lane's entries in the workbench: /loop and Settings > Alerts.
 slash.add({
@@ -30,4 +30,58 @@ settingsSections.add({
   icon: <BellRing className="size-4" />,
   order: 40,
   component: lazy(() => import("./AlertSettings.tsx")),
+});
+
+// /advisor [model | off | default]: the advisor of this session. A name matches
+// a listed model by id or name; without one it opens Settings > Agents.
+slash.add({
+  id: "advisor",
+  label: "Choose the model this session may consult for advice",
+  hint: "[model | off | default]",
+  run: async (arg, { session }) => {
+    const a = arg.trim();
+    if (!a || !session) return navigate({ name: "settings", section: "agents" });
+    if (a === "off" || a === "default") return void (await auto.setSessionAdvisor(session.id, a === "off" ? "off" : null));
+    const w = a.toLowerCase();
+    const ms = getState().models.filter((m) => !m.hidden);
+    const hit = ms.find((m) => m.id === a) ?? ms.find((m) => m.id.toLowerCase().includes(w) || m.name.toLowerCase().includes(w));
+    if (!hit) throw new Error(`No listed model matches "${a}".`);
+    await auto.setSessionAdvisor(session.id, hit.id);
+  },
+});
+
+settingsSections.add({
+  id: "agents",
+  label: "Agents",
+  words: "advisor consult second opinion subagents model",
+  icon: <Bot className="size-4" />,
+  order: 41,
+  component: lazy(() => import("./AgentSettings.tsx")),
+});
+
+// The session's goal and the task list the model and the owner share.
+panels.add({
+  id: "tasks",
+  label: "Tasks",
+  icon: <ListChecks className="size-4" />,
+  order: 15,
+  when: (s) => !s.parent_id,
+  component: lazy(() => import("./TasksPanel.tsx").then((m) => ({ default: m.TasksPanel }))),
+});
+
+// /goal <objective> sets the session's goal (it starts a turn); /goal pause,
+// resume or clear; /goal alone opens the panel.
+slash.add({
+  id: "goal",
+  label: "Keep working until a condition holds, checked after each turn",
+  hint: "[objective | pause | resume | clear]",
+  run: async (arg, { session }) => {
+    const a = arg.trim();
+    if (!session) throw new Error("Open a session first.");
+    savePref("panel", "tasks");
+    if (!a) return;
+    if (a === "pause" || a === "resume") return void (await auto.patchGoal(session.id, { status: a === "pause" ? "paused" : "pursuing" }));
+    if (["clear", "stop", "off", "cancel"].includes(a)) return void (await auto.clearGoal(session.id));
+    await auto.setGoal(session.id, { objective: a, replace: true });
+  },
 });

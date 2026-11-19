@@ -675,10 +675,14 @@ export class Engine {
   // One answer outside the history (a side question): the session's own model,
   // tools and system on its stored branch plus `extra`, so the prefix is read
   // from cache. Nothing is appended; the cost counts for the session.
-  async ask(id: string, extra: Message[], signal: AbortSignal): Promise<ProviderResult & { model_id: string }> {
+  // `model`: answer on another model (an advisor) over the same conversation.
+  // `pending`: the text for a call of the running turn that has no result yet
+  // (the call asking), in place of the "interrupted" stand-in.
+  async ask(id: string, extra: Message[], signal: AbortSignal, model?: string, pending?: { id: string; text: string }): Promise<ProviderResult & { model_id: string }> {
     const session = this.store.session(id)!;
-    const st = await this.step(session, session.model);
+    const st = await this.step(session, model ?? session.model);
     const messages = toMessages(this.lineage(id));
+    if (pending) for (const m of messages) for (const b of m.content as any[]) if (b.type === "tool_result" && b.tool_use_id === pending.id) { b.content = pending.text; b.is_error = false; }
     const last = messages.at(-1);
     for (const m of extra) {
       if (last?.role === "user" && m === extra[0] && m.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, ...m.content] };

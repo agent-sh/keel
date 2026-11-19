@@ -1,15 +1,16 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { Bot, ChevronRight, CornerDownRight, ExternalLink, GitBranch, Radio, Repeat, Timer, Zap } from "lucide-react";
+import { Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
 import { useMemo } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
+import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
 import { Markdown } from "../Markdown.tsx";
 import { AgentStatus, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
-export const SYSTEM_INPUT = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake"]);
+export const SYSTEM_INPUT = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal"]);
 
 type Report = { id: string; title: string; status: AgentRecord["status"]; text: string };
 
@@ -49,6 +50,8 @@ export function toolSummary(name: string, input: any): string | undefined {
       return input.message ?? input.text;
     case "CronList": case "schedule_list":
       return "scheduled tasks, waits and agents";
+    case "advisor":
+      return input.question ? `asks: ${input.question}` : "a check of where things stand";
     default:
       return undefined;
   }
@@ -106,6 +109,14 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     return (
       <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice">
         <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">{text}</p>
+      </Shell>
+    );
+  }
+  if (kind === "goal") {
+    const label = e.data.goal === "start" ? "Goal set" : e.data.goal === "resume" ? "Goal resumed" : "Goal not met yet: next turn";
+    return (
+      <Shell icon={Flag} label={label} testid="goal-notice" defaultOpen={e.data.goal === "start"}>
+        <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">{text.replace(/^\[harness\]\s*/, "")}</p>
       </Shell>
     );
   }
@@ -172,6 +183,9 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
               <AgentStatus status={agent.status} />
               <span className="text-micro text-faint" data-testid="agent-call-status">{STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}</span>
               {isLive(agent) && <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(agent).catch(reportError)} testid="agent-call-stop"><StopIcon /></IconButton>}
+              {!isLive(agent) && agent.branch && (
+                <IconButton title="Review this agent's work" onClick={() => auto.reviewAgent(agent).then(() => savePref("panel", "review")).catch(reportError)} testid="agent-call-review"><ScanSearch className="size-3.5" /></IconButton>
+              )}
               <IconButton title="Open the agent's session" onClick={() => openSession(agent.session_id)} testid="agent-call-open"><ExternalLink className="size-3.5" /></IconButton>
             </>
           ) : (

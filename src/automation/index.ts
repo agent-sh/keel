@@ -2,6 +2,8 @@ import { registerHooks } from "../engine/hooks.ts";
 import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
 import * as activity from "./activity.ts";
+import * as consult from "./consult.ts";
+import * as goals from "./goals.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as snooze from "./snooze.ts";
@@ -37,7 +39,9 @@ function init(deps: Deps) {
   alerts.migrate();
   activity.migrate();
   snooze.migrate();
-  registerShared(...automationTools);
+  consult.migrate();
+  goals.migrate();
+  registerShared(...automationTools, consult.advisorTool);
   extendTaskStop();
 
   registerHooks({
@@ -58,6 +62,7 @@ function init(deps: Deps) {
       return undefined;
     },
     afterTool: (s, call) => {
+      if (goals.isPlanTool(call.tool.name)) goals.fromPlanTool(s.id, call.tool.name, call.input);
       if (QUESTION_TOOLS.has(call.tool.name)) {
         alerts.openQuestions.delete(s.id);
         alerts.readWhere("call_id", call.id);
@@ -74,6 +79,8 @@ function init(deps: Deps) {
         const child = !!deps.store.session(s.id)?.parent_id;
         if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`);
         alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more });
+        goals.tellModel(s.id);
+        if (!child && !more) goals.afterTurn(s.id, reason).catch((e) => capture(e, { at: "goal" }));
       });
     },
   });
@@ -310,6 +317,58 @@ export const automationRoutes: RouteModule = (deps) => {
         return json({ alert: a });
       },
     },
+    // --- goal and the shared task list
+    "/api/sessions/:id/goal": {
+      GET: (req: any) => (session(req.params.id) ? json({ goal: goals.get(req.params.id) ?? null }) : bad("no such session", 404)),
+      PUT: (req: any) => attempt(async () => json({ goal: await goals.set(req.params.id, await body(req)) })),
+      PATCH: (req: any) => attempt(async () => json({ goal: goals.patch(req.params.id, await body(req)) })),
+      DELETE: (req: any) => (session(req.params.id) ? json({ ok: true, cleared: goals.clear(req.params.id) }) : bad("no such session", 404)),
+    },
+    "/api/sessions/:id/tasks": {
+      GET: (req: any) => (session(req.params.id) ? json({ tasks: goals.tasks(req.params.id) }) : bad("no such session", 404)),
+      POST: (req: any) => attempt(async () => {
+        if (!session(req.params.id)) return bad("no such session", 404);
+        return json({ task: goals.addTask(req.params.id, String((await body(req)).text ?? "")) }, 201);
+      }),
+    },
+    "/api/sessions/:id/tasks/:tid": {
+      PATCH: (req: any) => attempt(async () => json({ task: goals.editTask(req.params.id, req.params.tid, await body(req)) })),
+      DELETE: (req: any) => (goals.removeTask(req.params.id, req.params.tid) ? json({ ok: true }) : bad("no such task", 404)),
+    },
+    // A task taken out into a session of its own, on this session's model and folder.
+    "/api/sessions/:id/tasks/:tid/start": {
+      POST: (req: any) => attempt(async () => {
+        const s = session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const t = goals.tasks(s.id).find((x) => x.id === req.params.tid);
+        if (!t) return bad("no such task", 404);
+        const n = store.createSession({ model: s.model, workspace: s.workspace, title: t.text.slice(0, 80) });
+        deps.bus.emit({ t: "session", session: n });
+        deps.engine.send(n.id, `${t.text}\n\n(A task taken from the session "${s.title || "untitled"}".)`, { meta: { kind: "task_start", from_session: s.id } });
+        goals.editTask(s.id, t.id, { status: "in_progress", text: `${t.text} (in its own session)` });
+        return json({ session_id: n.id }, 201);
+      }),
+    },
+
+    // --- advisor
+    "/api/advisor": {
+      GET: () => json({ model: consult.defaultAdvisor() }),
+      PUT: (req: Request) => attempt(async () => {
+        const b = await body(req);
+        await consult.setDefault(b.model ? String(b.model) : null);
+        return json({ model: consult.defaultAdvisor() });
+      }),
+    },
+    "/api/sessions/:id/advisor": {
+      GET: (req: any) => (session(req.params.id) ? json({ model: consult.advisorFor(req.params.id), own: consult.sessionAdvisor(req.params.id), default: consult.defaultAdvisor() }) : bad("no such session", 404)),
+      PUT: (req: any) => attempt(async () => {
+        if (!session(req.params.id)) return bad("no such session", 404);
+        const b = await body(req);
+        await consult.setForSession(req.params.id, b.model ? String(b.model) : null);
+        return json({ model: consult.advisorFor(req.params.id), own: consult.sessionAdvisor(req.params.id), default: consult.defaultAdvisor() });
+      }),
+    },
+
     // --- snooze and activity
     "/api/sessions/:id/snooze": {
       PUT: (req: any) => attempt(async () => {

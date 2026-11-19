@@ -86,11 +86,12 @@ function ReviewCard({ r, sessionId }: { r: Review; sessionId: string }) {
     try { await api(`/api/sessions/${sessionId}/reviews/${r.id}/findings`, { method: "POST", body: JSON.stringify({ action, ids }) }); } catch (e) { setErr((e as Error).message); }
   };
   const what = r.scope === "uncommitted" ? "uncommitted work" : r.scope === "branch" ? `branch over ${r.target}` : `commit ${r.target}`;
+  const whose = r.agent_id ? "an agent's " : "";
   return (
     <div className="rounded-lg border border-line bg-bg" data-testid="review" data-state={r.state}>
       <div className="flex items-center gap-2 border-b border-line px-3 py-2 text-caption">
         {r.state === "running" ? <Loader2 className="size-3.5 animate-spin text-accent" /> : r.state === "failed" ? <CircleAlert className="size-3.5 text-danger" /> : <Check className="size-3.5 text-ok" />}
-        <span className="font-medium">{r.kind === "security" ? "Security review" : "Review"} of {what}</span>
+        <span className="font-medium">{r.kind === "security" ? "Security review" : "Review"} of {whose}{what}</span>
         <span className="text-faint">· {r.files} file{r.files === 1 ? "" : "s"} · {r.model.split(":").pop()}</span>
         {r.state === "done" && r.verdict && <span className={cn("ml-auto rounded-full px-2 py-0.5 text-micro font-medium", r.verdict === "correct" ? "bg-ok/15 text-ok" : "bg-danger-soft text-danger")}>{r.verdict === "correct" ? "looks correct" : "has problems"}</span>}
         {r.state === "running" && (
@@ -111,7 +112,7 @@ function ReviewCard({ r, sessionId }: { r: Review; sessionId: string }) {
       {open.length > 0 && (
         <div className="flex items-center gap-1.5 border-t border-line px-3 py-2">
           <button data-testid="findings-fix" disabled={!picked.size} onClick={() => act("fix", [...picked])} className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
-            <Send className="size-3" /> Send {picked.size} to the model
+            <Send className="size-3" /> Send {picked.size} to {r.agent_id ? "the agent" : "the model"}
           </button>
           <button data-testid="findings-dismiss" disabled={!picked.size} onClick={() => act("dismiss", [...picked])} className="inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40">
             <X className="size-3" /> Dismiss

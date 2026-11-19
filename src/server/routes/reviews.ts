@@ -8,6 +8,7 @@ import { GitError, Worktrees } from "../../worktree/manager.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { join } from "node:path";
 import { gate } from "./permissions.ts";
+import * as agents from "../../automation/agents.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -96,31 +97,37 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         if (!s) return bad("no such session", 404);
         if (s.parent_id) return bad("a review runs from the session that owns the work, not from a child session");
         const b = await body(req);
-        const scope: Scope = b.scope ?? "uncommitted";
+        // A review of one agent's work: its worktree's branch, its findings sent back to that agent.
+        const agent = b.agent_id ? agents.get(String(b.agent_id)) : undefined;
+        if (b.agent_id && (!agent || agent.parent_id !== s.id)) return bad("the session has no such agent", 404);
+        const of = agent ? store.session(agent.session_id) : s;
+        if (!of) return bad("the agent's session is gone", 404);
+        const scope: Scope = b.scope ?? (agent?.worktree ? "branch" : "uncommitted");
         if (!SCOPES.includes(scope)) return bad(`scope is ${SCOPES.join(", ")}`);
         const kind: ReviewKind = b.kind === "security" ? "security" : "code";
         const focus = typeof b.focus === "string" && b.focus.trim() ? b.focus.trim().slice(0, 2000) : undefined;
         const model = String(b.model || setting("model") || s.model);
         let info;
         try { ({ info } = await providers.resolve(model)); } catch (e) { return bad(`the reviewer cannot start: ${(e as Error).message}`, 409); }
-        const d = await wts.changeDiff(s, scope, scope === "commit" ? b.commit : b.base);
+        const d = await wts.changeDiff(of, scope, scope === "commit" ? b.commit : b.base);
         if (!d.files.length) return bad(scope === "uncommitted" ? "there is no uncommitted work to review" : "there is no change in that scope to review");
         const key = reviewKey(d.diff, kind, focus);
-        const earlier = all(s.id).reverse().find((r) => r.diff_sha256 === key && r.state !== "failed");
+        const earlier = all(s.id).reverse().find((r) => r.diff_sha256 === key && r.state !== "failed" && (r.agent_id ?? null) === (agent?.id ?? null));
         if (earlier) return json({ review: earlier, skipped: true, note: "this exact change was reviewed already" });
         // Half the reviewer's window for the diff (about four characters a token).
         const room = Math.max(20_000, info.context * 2);
         const cut = d.diff.length > room || d.truncated;
         const task = reviewTask({ kind, scope, target: d.target, focus, diff: d.diff.slice(0, room), cut, files: d.files });
-        const child = store.createSession({ model, workspace: s.workspace, title: `${kind === "security" ? "Security review" : "Review"}: ${s.title || "session"}`.slice(0, 80) });
+        const child = store.createSession({ model, workspace: of.workspace, title: `${kind === "security" ? "Security review" : "Review"}: ${agent ? agent.title : s.title || "session"}`.slice(0, 80) });
         store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(s.id, child.id);
         // Read-only, and confined with no network where the sandbox can run.
         const sb = sandboxStatus().available;
         gate?.setPerm(child.id, { mode: "read-only", sandbox: sb ? "read-only" : "off", network: !sb });
         const r = save({
           id: Bun.randomUUIDv7(), session_id: s.id, child_id: child.id, kind, scope, target: d.target, focus, model: info.id,
-          diff_sha256: key, files: d.files.length, state: "running", findings: [], created: Date.now(),
+          diff_sha256: key, files: d.files.length, state: "running", findings: [], created: Date.now(), agent_id: agent?.id,
         });
+        agents.adopt(s.id, child.id, { title: child.title || "Review", type: "reviewer", model: info.id });
         bus.emit({ t: "session", session: store.session(child.id)! });
         try {
           engine.send(child.id, task, { meta: { kind: "review", review_id: r.id } });
@@ -157,7 +164,9 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         if (!chosen.length) return bad("no finding to act on", 409);
         if (b.action === "fix") {
           if (s.archived) return bad("the session is archived", 409);
-          engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
+          // Findings on an agent's work go to that agent, which continues with its context.
+          if (r.agent_id && agents.get(r.agent_id)) await agents.send(r.agent_id, fixPrompt(r, chosen));
+          else engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
         }
         const state = b.action === "fix" ? "fix_requested" : b.action === "dismiss" ? "dismissed" : "open";
         const picked = new Set(chosen.map((f) => f.id));

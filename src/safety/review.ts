@@ -37,6 +37,7 @@ export type Review = {
   findings: Finding[];
   created: number;
   ended?: number;
+  agent_id?: string; // a review of one agent's work (its worktree branch)
 };
 
 export const SCHEMA = `
