@@ -3,7 +3,7 @@ import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch,
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
-import { actions, reportError } from "../lib/store.ts";
+import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
@@ -130,7 +130,11 @@ export function SessionHeader({ session }: { session: Session }) {
                 className={cn(itemClass, "text-danger [&>svg]:text-danger")}
                 data-testid="menu-delete"
                 onClick={async () => {
-                  const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
+                  // Its subagents' sessions go with it: the dialog says how many before anything is removed.
+                  const all = Object.values(getState().sessions);
+                  const below = (id: string): number => all.filter((x) => x.parent_id === id).reduce((n, x) => n + 1 + below(x.id), 0);
+                  const kids = below(session.id);
+                  const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed${kids ? `, with the sessions of its ${kids === 1 ? "subagent" : `${kids} subagents`}` : ""}. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
                   if (ok) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); }
                 }}
               >
