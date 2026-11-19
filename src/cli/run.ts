@@ -27,6 +27,8 @@ export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is ke
   -m, --model M               a model id, its provider's name for it, or its listed name
       --provider P            the provider of --model
       --permission-mode, --mode MODE   ask, auto-edits, full-auto, read-only or reviewer
+      --steer, --queue        to a busy session: join the running turn at its next model
+                              call (the default), or run after it (as keel send takes them)
       --effort E              one of the model's listed efforts
       --worktree[=NAME]       start the session in a git worktree of its own
       --peer, --machine NAME  run the session's tools on this fleet machine
@@ -55,6 +57,8 @@ export const RUN_OPTIONS = {
   provider: { type: "string" },
   "permission-mode": { type: "string" },
   mode: { type: "string" },
+  steer: { type: "boolean" },
+  queue: { type: "boolean" },
   effort: { type: "string" },
   worktree: { type: "string" },
   peer: { type: "string" },
@@ -256,6 +260,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
   if (timeoutS !== undefined && !(timeoutS > 0)) return usageError(name, "--timeout is a number of seconds above 0", RUN_USAGE);
   const sessionArg = v.session ?? v.resume;
   if (sessionArg && v.continue) return usageError(name, "pass --session or --continue, not both", RUN_USAGE);
+  if (v.steer && v.queue) return usageError(name, "--steer or --queue, not both", RUN_USAGE);
 
   // The prompt: the argument, or standard input; piped input next to an argument is context.
   let prompt = pos.join(" ").trim();
@@ -303,6 +308,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
       worktree: v.worktree,
       peer: v.peer ?? v.machine,
       idempotency_key: v["idempotency-key"],
+      ...(v.queue ? { mode: "queue" } : v.steer ? { mode: "steer" } : {}),
     });
     sessionId = sent.session_id as string;
     const url = (own ? c0 : c).url(sessionId);
