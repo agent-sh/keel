@@ -9,7 +9,11 @@ import { registerHooks } from "../../engine/hooks.ts";
 import { instructionFiles } from "../../engine/turn.ts";
 import { localFacts } from "../../fleet/facts.ts";
 import { Fleet } from "../../fleet/fleet.ts";
-import { execArgv, runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
+import { execArgv, namedSecrets, runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
+import { vault } from "../../safety/secrets.ts";
+
+// The script field of a handoff or keel__run_on command.
+const SCRIPT: ReadonlySet<string> = new Set(["script"]);
 import { listJobs, logPath, ownerRun, readJobLog, stopOne, waitOne } from "../../tools/terminal.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven, standingFrom } from "../../fleet/link.ts";
 import { innerHeaders, isLocal, type Standing } from "../../safety/presence.ts";
@@ -691,15 +695,17 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const b = await body(req);
         const cwd = resolve(String(b.cwd ?? ""));
         if (!b.root || !contains(resolve(b.root), cwd) || !existsSync(cwd)) return json({ code: 127, out: `not a directory inside the granted one: ${cwd}` });
-        const argv = execArgv(String(b.script ?? ""), resolve(b.root), b.confined && typeof b.confined === "object" ? b.confined : undefined);
+        const named = namedSecrets({ script: String(b.script ?? "") }, SCRIPT);
+        if ("error" in named) return json({ error: named.error });
+        const argv = execArgv(named.value.script, resolve(b.root), b.confined && typeof b.confined === "object" ? b.confined : undefined);
         if ("error" in argv) return json({ error: argv.error });
         return keepalive(async () => {
           const p = Bun.spawn(argv, {
-            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, signal: req.signal,
+            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...named.env }, signal: req.signal,
             timeout: 10 * 60_000, // the longest a shell call may run in any family
           });
           const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
-          return { code, out: (out + err).slice(-200_000) };
+          return { code, out: vault.mask((out + err).slice(-200_000)) };
         });
       }),
     },

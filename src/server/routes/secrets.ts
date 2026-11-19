@@ -4,7 +4,7 @@
 // secret by name (request_secret), which its commands then get as a variable.
 import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
-import { nameError, vault } from "../../safety/secrets.ts";
+import { nameError, SHELL_FIELDS, vault } from "../../safety/secrets.ts";
 import { dropCallEnv, registerEnv, setCallEnv } from "../../tools/jobs.ts";
 import { registerShared } from "../../tools/registry.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
@@ -63,7 +63,6 @@ const RequestSecret: Tool = {
 setConcealer({ text: (s, sessionId) => vault.redact(s, sessionId, "output"), pairs: () => vault.pairs() });
 
 // The fields of a shell tool's input that hold the script (Bash, exec_command, run_shell_command).
-const SHELL_FIELDS = new Set(["command", "cmd"]);
 
 let emitRequest: (r: SecretRequest, state: "open" | "closed") => void = () => {};
 
@@ -96,13 +95,20 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
   registerHooks({
     system: () =>
       "Secrets: text like [secret:1a2b3c4d] or [value of $NAME] stands for a secret kept out of the conversation. Write it as it is where the value is needed: a tool input that contains it runs with the real value, and output shows the placeholder again. In a shell command it stands for a quoted variable holding the value, so write it as one word, never inside other syntax. Named ones are also in your commands' environment as $NAME. To get a secret, use request_secret; never ask for one in the chat.",
-    // The system prompt (instruction files) is sent redacted too.
-    beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output") }),
-    // A call that names a placeholder runs with the value. Only the tool sees
-    // it: cards, other hooks, traces and records keep the placeholder.
-    // In a shell command it is a quoted variable set on that command's process alone.
+    // The system prompt (instruction files) is sent redacted too, and no
+    // message of a request carries a known value: whatever path put one there,
+    // it does not reach a model.
+    beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output"), messages: vault.mask(req.messages) }),
+    // A value is put back only where a credential is used: a shell command on
+    // this machine, as a quoted variable set on that command's process alone
+    // (and named secrets in the environment of the session's jobs). Every
+    // other tool keeps the placeholder: loops, tasks, notes and the like would
+    // store it, an advisor, side question or subagent would send it to a
+    // model, an MCP or web call would send it to a server. A call bound for
+    // another machine is sent with placeholders (src/fleet/remote.ts).
     execInput(s, call) {
-      const { value, used, env } = vault.reveal(call.input, s.id, call.tool.kind === "shell" ? SHELL_FIELDS : undefined);
+      if (call.tool.kind !== "shell" || call.ctx.dispatch || call.tool.peer) return;
+      const { value, used, env } = vault.reveal(call.input, s.id, SHELL_FIELDS);
       if (Object.keys(env).length) setCallEnv(call.id, env);
       if (used.length) return value;
     },

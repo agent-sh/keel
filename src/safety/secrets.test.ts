@@ -22,10 +22,11 @@ test("a value is one placeholder, put back only in its sessions, and named for c
   expect(v.redact(`again ${GH}`, "s1", "output")).toBe(a.replace("use", "again").replace(" please", ""));
   expect(v.redact(`echo ${GH.slice(0, 20)}`, "s1", "prompt")).toMatch(/^echo \[secret:[0-9a-f]{8}\]$/);
   const ph = a.match(/\[secret:[0-9a-f]{8}\]/)![0];
-  expect(v.reveal({ command: `curl -H "Authorization: token ${ph}"` }, "s1").value.command).toContain(GH);
-  expect(v.reveal({ command: ph }, "other").value.command).toBe(ph);
+  const sh = new Set(["command"]);
+  expect(Object.values(v.reveal({ command: `curl -H "Authorization: token ${ph}"` }, "s1", sh).env)).toEqual([GH]);
+  expect(v.reveal({ command: ph }, "other", sh).value.command).toBe(ph);
   v.parentOf = (s) => (s === "child" ? "s1" : null);
-  expect(v.reveal({ command: ph }, "child").value.command).toBe(GH);
+  expect(Object.values(v.reveal({ command: ph }, "child", sh).env)).toEqual([GH]);
   const id = v.list("s1")[0]!.id;
   v.rename(id, "GITHUB_TOKEN");
   expect(v.env("s1")).toEqual({ GITHUB_TOKEN: GH });
@@ -62,6 +63,6 @@ test("a secret in a shell command arrives exact and runs nothing", () => {
     expect({ cmd, out: p.stdout.toString().split(" ")[0] }).toEqual({ cmd, out: sha(value) });
   }
   expect(readdirSync(dir)).toEqual([]);
-  // A field that is not a script gets the value itself.
-  expect(v.reveal({ content: "[value of $FIX]" }, "s1", new Set(["command"])).value.content).toBe(value);
+  // A field that is not a script keeps the placeholder: only a command uses a credential.
+  expect(v.reveal({ content: "[value of $FIX]" }, "s1", new Set(["command"])).value.content).toBe("[value of $FIX]");
 });

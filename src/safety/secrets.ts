@@ -74,7 +74,8 @@ export function detect(text: string): Hit[] {
 
 const KEY = randomBytes(32);
 // Tool input fields that describe a call to the owner and run nothing.
-const DESCRIBES = new Set(["description"]);
+// The fields of a shell tool that hold its script.
+export const SHELL_FIELDS: ReadonlySet<string> = new Set(["command", "cmd"]);
 const PLACE = /\[secret:([0-9a-f]{8})\]|\[value of \$([A-Za-z_][A-Za-z0-9_]*)\]/g;
 const PLACE_AT = new RegExp(PLACE.source, "y");
 const RESERVED = /^(PATH|HOME|USER|SHELL|PWD|OLDPWD|TERM|LANG|LC_\w*|TZ|TMPDIR|IFS|PS\d|BASH_ENV|ENV|BASH_\w*|LD_\w*|DYLD_\w*|GIT_\w*|SSH_\w*|PYTHON\w*|NODE_OPTIONS|NODE_PATH|PERL5\w*|RUBY\w*|KEEL_\w*|XDG_\w*|DISPLAY|WAYLAND_\w*|DBUS_\w*)$/;
@@ -254,36 +255,108 @@ export class Vault {
     return walk(v);
   }
 
-  // A tool input with the placeholders of the session's secrets put back.
-  // `shell`: the fields holding shell script text (a shell tool's command).
-  // There a placeholder becomes a quoted reference to a variable set on the
-  // child process only (`env`), so the value arrives byte for byte and is
-  // never spliced into the script's syntax; elsewhere it is the value itself.
-  reveal<T>(v: T, sessionId: string, shell: ReadonlySet<string> = new Set()): { value: T; used: string[]; env: Record<string, string> } {
+  // A shell tool's input with its script fields' placeholders made quoted
+  // references to variables set on the child process only (`env`), so the
+  // value arrives byte for byte and is never spliced into the script's syntax.
+  // Only those fields: a command is where a credential is used. Every other
+  // field and tool keeps the placeholder (an internal tool would store the
+  // value, a model-consulting one would send it to a model).
+  reveal<T extends Record<string, unknown>>(v: T, sessionId: string, shell: ReadonlySet<string>): { value: T; used: string[]; env: Record<string, string> } {
     const used: string[] = [];
     const env: Record<string, string> = {};
     const find = (id: string | undefined, name: string | undefined) => {
       const e = id ? this.byId.get(id) : [...this.byId.values()].find((x) => x.name === name && this.holds(x, sessionId));
       return e && this.holds(e, sessionId) ? e : undefined;
     };
+    if (!v || typeof v !== "object") return { value: v, used, env };
+    const out: Record<string, unknown> = { ...v };
+    for (const k of shell) {
+      const y = v[k];
+      if (typeof y !== "string") continue;
+      out[k] = shellRefs(y, (id, name) => {
+        const e = find(id, name);
+        if (!e) return null;
+        used.push(e.id);
+        env[`KEEL_SECRET_${e.id}`] = e.value;
+        return `KEEL_SECRET_${e.id}`;
+      });
+    }
+    return { value: (used.length ? out : v) as T, used, env };
+  }
+
+  // Every known value in a JSON value replaced by its placeholder, nothing
+  // else looked for: the last check on what is sent to a provider. What holds
+  // no known value is returned as it is (the same objects, the same bytes).
+  mask<T>(v: T): T {
+    if (!this.byValue.size) return v;
+    const known = [...this.byValue.values()].sort((a, b) => b.value.length - a.value.length);
+    const walk = (x: any, key?: string): any => {
+      if (typeof x === "string") {
+        if (key === "data" || key === "signature" || key === "opaque") return x;
+        let out = x;
+        for (const e of known) if (out.includes(e.value)) out = out.split(e.value).join(this.placeholder(e));
+        return out;
+      }
+      if (Array.isArray(x)) {
+        let changed = false;
+        const a = x.map((y) => { const z = walk(y); if (z !== y) changed = true; return z; });
+        return changed ? a : x;
+      }
+      if (x && typeof x === "object") {
+        if (x.type === "thinking" || x.type === "redacted_thinking" || x.type === "image") return x;
+        let changed = false;
+        const o: any = {};
+        for (const [k, y] of Object.entries(x)) { const z = walk(y, k); if (z !== y) changed = true; o[k] = z; }
+        return changed ? o : x;
+      }
+      return x;
+    };
+    return walk(v);
+  }
+
+  // A tool input bound for another machine: each placeholder of this
+  // session's secrets in its named form, never the value. That machine puts
+  // back a secret it holds under the same name (resolveNamed); a secret with
+  // no name cannot be matched there and is refused.
+  forPeer<T>(v: T, sessionId: string): { value: T; names: string[] } | { error: string } {
+    const names = new Set<string>();
+    const unnamed: string[] = [];
     const sub = (s: string) => s.replace(PLACE, (m, id: string | undefined, name: string | undefined) => {
-      const e = find(id, name);
-      if (!e) return m;
-      used.push(e.id);
-      return e.value;
+      const e = id ? this.byId.get(id) : [...this.byId.values()].find((x) => x.name === name && this.holds(x, sessionId));
+      if (!e || !this.holds(e, sessionId)) return m;
+      if (!e.name) { unnamed.push(m); return m; }
+      names.add(e.name);
+      return this.placeholder(e);
     });
-    const script = (s: string) => shellRefs(s, (id, name) => {
-      const e = find(id, name);
-      if (!e) return null;
-      used.push(e.id);
-      env[`KEEL_SECRET_${e.id}`] = e.value;
-      return `KEEL_SECRET_${e.id}`;
-    });
-    // A field that only describes the call (a command's description) is shown and kept, never run: it keeps the placeholder.
-    const walk = (x: any, top = false): any =>
-      typeof x === "string" ? sub(x) : Array.isArray(x) ? x.map((y) => walk(y)) : x && typeof x === "object"
-        ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, DESCRIBES.has(k) ? y : top && shell.has(k) && typeof y === "string" ? script(y) : walk(y)])) : x;
-    return { value: walk(v, true), used, env };
+    const walk = (x: any): any => typeof x === "string" ? sub(x) : Array.isArray(x) ? x.map(walk) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y)])) : x;
+    const value = walk(v);
+    if (unnamed.length) return { error: `${[...new Set(unnamed)].join(", ")} has no name, so another machine cannot hold it: name it, give it to that machine under the same name, and call again` };
+    return { value, names: [...names] };
+  }
+
+  // On the machine a call was sent to: its shell fields' named placeholders
+  // resolved against the secrets this daemon holds under those names, as
+  // quoted variable references with the values in `env`. A name this daemon
+  // does not hold (or holds twice, with two values) is refused by name.
+  resolveNamed<T extends Record<string, unknown>>(v: T, shell: ReadonlySet<string>): { value: T; env: Record<string, string> } | { missing: string[]; ambiguous: string[] } {
+    const env: Record<string, string> = {};
+    const missing = new Set<string>(), ambiguous = new Set<string>();
+    if (!v || typeof v !== "object") return { value: v, env };
+    const out: Record<string, unknown> = { ...v };
+    for (const k of shell) {
+      const y = v[k];
+      if (typeof y !== "string") continue;
+      out[k] = shellRefs(y, (_id, name) => {
+        if (!name) return null;
+        const all = [...this.byId.values()].filter((x) => x.name === name);
+        if (!all.length) { missing.add(name); return null; }
+        if (all.length > 1) { ambiguous.add(name); return null; }
+        env[`KEEL_SECRET_${all[0]!.id}`] = all[0]!.value;
+        return `KEEL_SECRET_${all[0]!.id}`;
+      });
+    }
+    if (missing.size || ambiguous.size) return { missing: [...missing], ambiguous: [...ambiguous] };
+    return { value: out as T, env };
   }
 
   // Every known value with its placeholder (a stream filter replaces them).

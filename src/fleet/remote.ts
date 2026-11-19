@@ -5,6 +5,14 @@ import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import type { MachineRow } from "./db.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError, linkFetch } from "./link.ts";
+import { vault } from "../safety/secrets.ts";
+
+// What is sent to another machine names a secret, never holds its value: that
+// machine puts back one it holds under the same name, or refuses by name.
+function placeholders<T>(m: MachineRow, input: T, sessionId: string): { value: T } | { refused: ToolOutput } {
+  const r = vault.forPeer(input, sessionId);
+  return "error" in r ? { refused: { content: `Error [SECRET_NOT_SENT]: nothing ran on ${m.name}: ${r.error}.`, is_error: true } } : { value: r.value };
+}
 
 // A remote tool is bounded by its own timeout there; the link waits as long as
 // the call may run (the longest shell timeout a family allows is 10 minutes;
@@ -19,12 +27,15 @@ export async function remoteRun(
 ): Promise<ToolOutput> {
   const root = m.workspace_root!;
   const cwd = call.cwd ? (isAbsolute(call.cwd) ? call.cwd : resolve(root, call.cwd)) : root;
+  const p0 = placeholders(m, call.input, ctx.sessionId);
+  if ("refused" in p0) return p0.refused;
+  const input = p0.value;
   fleet.step(ctx.sessionId, ctx.callId, m.id);
   try {
     const p = await fleet.peer(m.id);
     const r = await linkFetch(p, "/api/fleet/hands", {
       method: "POST",
-      body: JSON.stringify({ session: ctx.sessionId, call: ctx.callId, tool: call.tool, input: call.input, cwd, root, sandbox: !!call.sandbox }),
+      body: JSON.stringify({ session: ctx.sessionId, call: ctx.callId, tool: call.tool, input, cwd, root, sandbox: !!call.sandbox }),
       signal: ctx.signal,
       timeout: CALL_MS,
     });
@@ -44,10 +55,13 @@ export async function remoteRun(
 export async function remoteExec(fleet: Fleet, m: MachineRow, ctx: ToolContext, command: string, cwdIn?: string): Promise<ToolOutput> {
   const root = m.workspace_root!;
   const cwd = cwdIn ? (isAbsolute(cwdIn) ? cwdIn : resolve(root, cwdIn)) : root;
+  const p0 = placeholders(m, { script: command, cwd }, ctx.sessionId);
+  if ("refused" in p0) return p0.refused;
+  const sent = p0.value;
   fleet.step(ctx.sessionId, ctx.callId, m.id);
   try {
     const p = await fleet.peer(m.id);
-    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script: command, cwd, root, confined: ctx.confined }), signal: ctx.signal, timeout: CALL_MS });
+    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script: sent.script, cwd: sent.cwd, root, confined: ctx.confined }), signal: ctx.signal, timeout: CALL_MS });
     const b = (await r.json().catch(() => ({}))) as { code?: number; out?: string; error?: string };
     if (!r.ok || b.error) return { content: `Error [PEER]: ${m.name} answered: ${b.error ?? `HTTP ${r.status}`}`, is_error: true };
     const out = (b.out ?? "").trimEnd();

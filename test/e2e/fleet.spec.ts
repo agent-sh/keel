@@ -1,6 +1,8 @@
 import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: the fleet. Two daemons on this machine stand in for two machines:
@@ -155,5 +157,81 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await request.put("/api/permissions/settings", { data: { default_mode: prev } });
     await request.post("/api/fleet/placement", { data: { rules: prevRules } });
     await request.delete(`${PEER}/api/sessions/${made.session.id}`);
+  }
+});
+
+// A secret never crosses to the other machine: a call sent there names it,
+// and that machine puts back one it holds under the same name, or refuses by
+// name. The other daemon's state and answers never hold the value.
+test("fleet: a secret goes to the other machine by name only", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const STAND_IN = "scripted:stand-in";
+  test.skip(!(await (await request.get("/api/models")).json()).models.some((m: any) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const STATE = process.env.KEEL_PEER_STATE ?? `${dirname(ROOT)}/state`;
+  test.skip(!existsSync(STATE), `the peer's state folder ${STATE} is not on this machine: set KEEL_PEER_STATE`);
+  const known = (async () => (await (await request.get("/api/fleet/machines")).json()).machines.find((x: any) => x.daemon_url === PEER && x.workspace_root === ROOT));
+  let m = await known();
+  if (!m) {
+    expect((await request.post("/api/fleet/machines", { data: { name: "secretbox", daemon_url: PEER, workspace_root: ROOT } })).status()).toBe(201);
+    m = await known();
+  }
+  mkdirSync(ROOT, { recursive: true });
+  const token = `ghp_${Date.now().toString(36)}Pe3rS3cr3tA1b2C3d4E5f6G7h8I9j0K1`.slice(0, 40);
+  const sha = createHash("sha256").update(token).digest("hex");
+  const NAME = `E2E_PEER_${Date.now().toString(36).toUpperCase()}`; // a daemon keeps a secret until it restarts
+  const ref = "[value of $" + NAME + "]";
+  const made: { base: string; id: string }[] = [];
+  const done = (base: string, id: string, n: number) => expect.poll(async () => {
+    const r = await (await request.get(`${base}/api/sessions/${id}`)).json();
+    return !r.running && r.events.filter((e: any) => e.kind === "turn_end").length;
+  }, { timeout: 60_000 }).toBe(n);
+  // A daemon learns the value from an owner's message, and the owner names it.
+  const learn = async (base: string, id: string) => {
+    await request.post(`${base}/api/sessions/${id}/messages`, { data: { text: `keep ${token} script:calls []` } });
+    await done(base, id, 1);
+    const { secrets } = await (await request.get(`${base}/api/sessions/${id}/secrets`)).json();
+    expect((await request.patch(`${base}/api/secrets/${secrets[0].id}`, { data: { name: NAME } })).ok()).toBe(true);
+  };
+  try {
+    const placed = await (await request.post("/api/fleet/sessions", { data: { machine: m.id, model: STAND_IN, title: "Secret by name" } })).json();
+    const s = placed.session.id as string;
+    made.push({ base: "", id: s });
+    await request.put(`/api/sessions/${s}/permissions`, { data: { mode: "full-auto" } });
+    await learn("", s);
+    const calls = JSON.stringify([
+      { name: "Bash", input: { command: `printf %s ${ref} | sha256sum` } },
+      { name: "keel__run_on", input: { machine: m.name, command: `printf %s ${ref} | sha256sum` } },
+    ]);
+    const results = async () => (await (await request.get(`/api/sessions/${s}`)).json()).events.filter((e: any) => e.kind === "tool_result").map((e: any) => JSON.stringify(e.data));
+
+    // The other machine does not hold it: nothing runs there, and the reason names it.
+    await request.post(`/api/sessions/${s}/messages`, { data: { text: `script:calls ${calls}` } });
+    await done("", s, 2);
+    const refused = (await results()).slice(-2);
+    expect(refused.length).toBe(2);
+    for (const r of refused) expect(r).toContain("$" + NAME + " is not a secret on this machine");
+    await page.goto(`/s/${s}`);
+    await expect(page.locator('[data-tool="keel__run_on"]').first()).toBeVisible();
+    await shoot(page, "fleet-05-secret-not-there");
+
+    // Given there under the same name, both calls run with it.
+    const far = (await (await request.post(`${PEER}/api/sessions`, { data: { workspace: ROOT, title: "Holds the secret", model: STAND_IN } })).json()).session.id as string;
+    made.push({ base: PEER, id: far });
+    await learn(PEER, far);
+    await request.post(`/api/sessions/${s}/messages`, { data: { text: `script:calls ${calls}` } });
+    await done("", s, 3);
+    for (const r of (await results()).slice(-2)) expect(r).toContain(sha);
+
+    // The value is in no file of the other daemon's state and no answer it gives.
+    const files = (d: string): string[] => readdirSync(d).flatMap((n) => { const p = join(d, n), st = statSync(p); return st.isDirectory() ? files(p) : st.isFile() ? [p] : []; });
+    for (const f of files(STATE)) expect({ f, has: readFileSync(f).includes(token) }).toEqual({ f, has: false });
+    for (const path of [`/api/sessions/${far}`, `/api/sessions/${s}/jobs`, "/api/errors", "/api/fleet/messages"]) {
+      const body = await (await request.get(`${PEER}${path}`)).text();
+      expect({ path, has: body.includes(token) }).toEqual({ path, has: false });
+    }
+    expect(JSON.stringify(await (await request.get(`/api/sessions/${s}`)).json())).not.toContain(token);
+  } finally {
+    for (const x of made) await request.delete(`${x.base}/api/sessions/${x.id}`);
   }
 });

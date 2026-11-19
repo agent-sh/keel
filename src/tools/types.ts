@@ -48,6 +48,8 @@ export type ToolKind = "shell" | "edit" | "control" | "remote";
 export type Tool = ToolSpec & {
   readOnly: boolean;
   kind?: ToolKind;
+  // Its input goes to another machine (keel__run_on): sent with secret placeholders, never values.
+  peer?: boolean;
   // Where a call's relative paths resolve, when not the session's folder
   // (apply_patch: the shell's current directory).
   cwdOf?(ctx: ToolContext): string;

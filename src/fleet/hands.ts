@@ -8,6 +8,21 @@ import { confine, sandboxStatus } from "../safety/sandbox.ts";
 import { contains } from "../core/paths.ts";
 import { toolsFor } from "../tools/registry.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
+import { dropCallEnv, setCallEnv } from "../tools/jobs.ts";
+import { SHELL_FIELDS, vault } from "../safety/secrets.ts";
+
+// A secret named in a call another daemon sent (it sends names, never values):
+// one this daemon holds under that name, or a refusal that names it.
+export function namedSecrets<T extends Record<string, unknown>>(input: T, shell: ReadonlySet<string>): { value: T; env: Record<string, string> } | { error: string } {
+  const r = vault.resolveNamed(input, shell);
+  if ("value" in r) return r;
+  const list = (ns: string[]) => ns.map((n) => "$" + n).join(", ");
+  const parts = [
+    r.missing.length ? `${list(r.missing)} ${r.missing.length > 1 ? "are" : "is"} not a secret on this machine: give it here under that name` : "",
+    r.ambiguous.length ? `${list(r.ambiguous)} names two secrets on this machine: keep one` : "",
+  ].filter(Boolean);
+  return { error: `Error [SECRET_NOT_HERE]: nothing ran: ${parts.join("; ")}.` };
+}
 
 // The tools that touch the workspace: they run where the session's files are.
 // Everything else (questions to the owner, plans, web, MCP, skills, the fleet's
@@ -93,9 +108,22 @@ export async function runHands(q: HandsRequest, spillRoot: string, signal: Abort
   if (out.length) return { content: `Error [OUTSIDE_WORKSPACE]: ${out.join(", ")} is outside the directory granted on this machine (${q.root}).`, is_error: true };
   const seen = seenBySession.get(q.session) ?? new Map();
   seenBySession.set(q.session, seen);
+  const callId = typeof q.call === "string" && q.call ? q.call : crypto.randomUUID();
   const ctx: ToolContext = {
-    sessionId: q.session, cwd: q.cwd, signal, seen, spillDir, callId: typeof q.call === "string" ? q.call : undefined,
+    sessionId: q.session, cwd: q.cwd, signal, seen, spillDir, callId,
     wrapSpawn: q.sandbox ? (argv) => confine(argv, { sandbox: "workspace-write", network: false }, q.root) : undefined,
   };
-  return tool.run(q.input, ctx);
+  let input = q.input;
+  if (tool.kind === "shell" && input && typeof input === "object") {
+    const r = namedSecrets(input, SHELL_FIELDS);
+    if ("error" in r) return { content: r.error, is_error: true };
+    input = r.value;
+    if (Object.keys(r.env).length) setCallEnv(callId, r.env);
+  }
+  try {
+    // Output with a value this daemon knows goes back with its placeholder.
+    return vault.mask(await tool.run(input, ctx));
+  } finally {
+    dropCallEnv(callId);
+  }
 }
