@@ -61,6 +61,7 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
+        if (s.workspace_gone) return bad("the session's folder is gone; move the session to a folder that exists first", 409);
         if (busy(s.id, s.workspace)) return bad("a turn is running in this workspace; stop it first", 409);
         if (typeof b.path !== "string" || !Number.isInteger(b.hunk?.index) || typeof b.hunk?.header !== "string" || !Number.isFinite(b.from)) return bad("give path, hunk { index, header } and from (the turn)");
         if (b.path.startsWith("/") || b.path.split("/").includes("..")) return bad("the path is relative to the workspace and stays inside it");
@@ -72,6 +73,7 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
+        if (s.workspace_gone) return bad("the session's folder is gone; move the session to a folder that exists first", 409);
         if (!b.preview && busy(s.id, s.workspace)) return bad("a turn is running in this workspace; stop it first", 409);
         const paths = Array.isArray(b.paths) ? b.paths.filter((p: unknown) => typeof p === "string") : undefined;
         return json(await c.rewind(s, { turn: b.turn, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside }));

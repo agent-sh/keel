@@ -91,6 +91,24 @@ function StationHead({ s, w, helm, pinned, shown }: { s: Session; w: Watch; helm
   );
 }
 
+// The head of a station whose session this daemon does not have (deleted, or
+// a link from another machine): the same head, its word in steel, the id as its line.
+function MissingHead({ id }: { id: string }) {
+  return (
+    <header className="k-station-head" data-testid="station-head">
+      <div className="k-station-row">
+        <span className="k-station-word"><Mark w="idle" />Not here</span>
+        <span className="k-station-meta" />
+        <span className="k-station-tools">
+          <Tool label="Close the station (Alt W)" testid="station-close" onClick={() => closeStation(id)}><X /></Tool>
+        </span>
+      </div>
+      <h2 className="k-station-title">This session is not on this daemon</h2>
+      <p className="k-station-line truncate font-mono text-caption" title={id}>{id}</p>
+    </header>
+  );
+}
+
 function Station({ s, helm, pinned, shown }: { s: Session; helm: boolean; pinned: boolean; shown: string[] }) {
   const w = useWatch(s);
   const ref = useRef<HTMLElement>(null);
@@ -212,11 +230,11 @@ export function Bridge() {
     <>
       <main ref={track} className="k-stations" data-count={all.length + (fresh ? 1 : 0)} data-focus={focus || undefined} data-testid="bridge">
         {orphan && (sessions[orphan] ? <Station key={orphan} s={sessions[orphan]!} helm pinned={false} shown={shownNow} /> : (
-          <section className="k-station" data-helm data-station={orphan} aria-label="Session"><div className="k-band" aria-hidden="true" /><SessionView id={orphan} /></section>
+          <section className="k-station" data-helm data-station={orphan} data-watch="idle" data-missing aria-label="Session not on this daemon"><div className="k-band" aria-hidden="true" /><SessionView id={orphan} missingHeader={<MissingHead id={orphan} />} /></section>
         ))}
         {all.map((s) => <Station key={s.id} s={s} helm={s.id === helm} pinned={st.pinned.includes(s.id) || !!s.settings.pinned_ms} shown={shownNow} />)}
         {fresh && <NewStation />}
-        {!fresh && all.length === 0 && <NewStation />}
+        {!fresh && !orphan && all.length === 0 && <NewStation />}
       </main>
       {phone && <PhoneDock list={picked} helm={helm} />}
     </>

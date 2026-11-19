@@ -68,6 +68,8 @@ test("a reconnect after a deletion or a failed first load records no error", asy
   await live.ws!.close({ code: 4000, reason: "cut by the test" });
   await request.delete(`/api/sessions/${s.id}`);
   await expect(page.getByTestId("session-missing")).toBeVisible({ timeout: 15_000 });
+  // Inside its station: the station's head and band, in steel.
+  await expect(page.locator(".k-station[data-missing]").getByTestId("station-head")).toContainText("Not here");
   await shoot(page, "errors-03-deleted-while-away");
   await page.waitForTimeout(3_500); // a network failure is posted 3 s after it happened
   expect(posted).toEqual([]);
@@ -104,6 +106,11 @@ test("a session whose folder is gone is a state, not a failure", async ({ page, 
   await expect(page.getByTestId("station-head").first()).toContainText("gone");
   await openPanel(page, "changes");
   await expect(page.getByTestId("side-panel")).toContainText("notes.txt");
+  // Nothing to put files back into: the reverts are not offered, and say why.
+  await expect(page.getByTestId("revert-gone")).toBeVisible();
+  await expect(page.getByTestId("revert-all")).toHaveCount(0);
+  await expect(page.getByTestId("revert-file")).toHaveCount(0);
+  expect((await request.post(`/api/sessions/${s.id}/rewind`, { data: { turn: turns[0].turn } })).status()).toBe(409);
   await shoot(page, "errors-04-folder-gone");
   await page.getByTestId("folder-gone-move").click();
   await expect(page.getByTestId("move-session")).toBeVisible();
