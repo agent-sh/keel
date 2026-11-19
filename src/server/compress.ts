@@ -63,13 +63,19 @@ export async function compressJson(req: Request, res: Response): Promise<Respons
 // Types worth compressing; images and fonts come compressed already.
 const TEXT = /^(text\/|application\/(javascript|json|manifest\+json|wasm)|image\/svg\+xml)/;
 
-type Asset = { type: string; etag: string; raw: Uint8Array<ArrayBuffer>; gzip?: Uint8Array<ArrayBuffer>; br?: Uint8Array<ArrayBuffer> };
+type Asset = { type: string; etag: string; cache: string; raw: Uint8Array<ArrayBuffer>; gzip?: Uint8Array<ArrayBuffer>; br?: Uint8Array<ArrayBuffer> };
+
+// Every output file but the page is named by its content hash (/_bun/client/index-<hash>.js,
+// /_bun/asset/<hash>.css): it never changes under its name. The page is asked again each
+// load (its etag makes that a 304), so a new build is picked up at once.
+const IMMUTABLE = "public, max-age=31536000, immutable";
+const PAGE = "no-cache";
 
 function assetHandler(a: Asset) {
   return (req: Request) => {
     const e = a.gzip ? pick(req.headers.get("accept-encoding"), a.br ? ["br", "gzip"] : ["gzip"]) : null;
     const etag = `"${a.etag}${e ? `-${e}` : ""}"`;
-    const headers: Record<string, string> = { "content-type": a.type, etag };
+    const headers: Record<string, string> = { "content-type": a.type, etag, "cache-control": a.cache };
     if (a.gzip) headers.vary = "Accept-Encoding";
     const inm = req.headers.get("if-none-match");
     if (inm && inm.split(",").some((t) => t.trim().replace(/^W\//, "") === etag)) return new Response(null, { status: 304, headers });
@@ -87,9 +93,9 @@ export function bundleRoutes(bundle: Bun.HTMLBundle, pages: string[], onError: (
   if (!bundle.files?.length) return undefined;
   const root = dirname(bundle.index);
   const routes: Record<string, (req: Request) => Response> = {};
-  const add = (path: string, type: string, etag: string) => {
+  const add = (path: string, type: string, etag: string, cache = IMMUTABLE) => {
     const raw = new Uint8Array(readFileSync(path));
-    const a: Asset = { type, etag, raw };
+    const a: Asset = { type, etag, cache, raw };
     if (TEXT.test(type) && raw.length >= MIN_BYTES) {
       a.gzip = Bun.gzipSync(raw, { level: 9 });
       brotliCompress(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } }, (err, out) => {
@@ -104,7 +110,7 @@ export function bundleRoutes(bundle: Bun.HTMLBundle, pages: string[], onError: (
     routes[f.path.slice(root.length)] = add(f.path, f.headers["content-type"], f.headers.etag);
   }
   const html = bundle.files.find((f) => f.path === bundle.index);
-  const page = add(bundle.index, html?.headers["content-type"] ?? "text/html;charset=utf-8", html?.headers.etag ?? String(Bun.hash(readFileSync(bundle.index))));
+  const page = add(bundle.index, html?.headers["content-type"] ?? "text/html;charset=utf-8", html?.headers.etag ?? String(Bun.hash(readFileSync(bundle.index))), PAGE);
   for (const p of pages) routes[p] = page;
   return routes;
 }
