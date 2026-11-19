@@ -95,13 +95,15 @@ async function bench(opts: { model: string; label: string; reps: number; tasks: 
   const turn = async (sid: string, text: string) => {
     const done = new Promise<void>((resolve) => {
       const off = bus.on((f) => {
-        if (f.t === "event" && f.event.session_id === sid && f.event.kind === "turn_end") { off(); resolve(); }
+        if (f.t === "event" && f.event.session_id === sid && (f.event.kind === "turn_end" || f.event.kind === "error")) { off(); resolve(); }
       });
     });
     const from = store.events(sid).length;
     engine.send(sid, text);
     const timedOut = await Promise.race([done.then(() => false), Bun.sleep(TASK_TIMEOUT_MS).then(() => true)]);
     if (timedOut) await engine.interrupt(sid);
+    // A turn that failed writes its error after its turn_end: read the events once the turn has settled.
+    await engine.idle(sid);
     return { timedOut, events: store.events(sid).slice(from) };
   };
   const usageOf = (events: any[]) => {
