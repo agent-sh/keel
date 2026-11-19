@@ -1,7 +1,7 @@
 // A scripted stand-in provider for the e2e of the paths a real model cannot be
 // made to take on demand: a 429 with retry-after, a 529, a stream that breaks,
 // a reply cut at the output limit inside a tool call, pause_turn, a refusal and
-// a request too long for the window, and a tool long enough
+// a request too long for the window, refused billing, and a tool long enough
 // for a daemon restart to cut. Test-only: it is listed only when the
 // daemon starts with KEEL_SCRIPTED_PROVIDER=1.
 //
@@ -79,6 +79,9 @@ export class ScriptedProvider implements Provider {
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
     switch (scenario) {
+      case "billing":
+        // An account state, not a passing failure: turns are refused until the owner acts.
+        throw new ProviderError("quota", "Scripted: your credit balance is too low to make this request. Add credits at https://example.com/billing.", 402);
       case "rate-limit-long":
         throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 15 min", 429, 15 * 60_000);
       case "rate-limit":
