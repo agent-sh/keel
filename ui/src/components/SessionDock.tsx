@@ -23,8 +23,10 @@ function useJobs(sessionId: string, working: boolean) {
       try {
         const r = await actions.jobs(sessionId);
         if (stop) return;
-        setJobs(r.jobs);
-        if (working || r.jobs.some((j) => j.running && j.background)) timer = setTimeout(load, 2000);
+        // A session placed on another machine answers from there, perhaps without the list.
+        const list = r.jobs ?? [];
+        setJobs(list);
+        if (working || list.some((j) => j.running && j.background)) timer = setTimeout(load, 2000);
       } catch (e) { reportError(e, { at: "jobs" }); }
     };
     load();

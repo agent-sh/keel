@@ -4,12 +4,13 @@
 // permission gate.
 import { existsSync, statSync } from "node:fs";
 import * as av from "../../drive/agentview.ts";
-import { Drive, DriveError } from "../../drive/drive.ts";
+import { DriveError, sharedDrive } from "../../drive/drive.ts";
 import { saysNo } from "../../drive/text.ts";
 import { driveTools } from "../../drive/tools.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerCatalog } from "../../tools/catalog.ts";
 import type { Deps, RouteModule } from "../app.ts";
+import { presence } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400, code?: string) => json({ error, code }, status);
@@ -19,8 +20,8 @@ const fail = (e: unknown) => (e instanceof DriveError ? bad(e.message, e.status,
 const PAGE_BUDGET = 200_000;
 
 export const driveRoutes: RouteModule = (deps: Deps) => {
-  const drive = new Drive();
-  drive.onList = (sessions) => deps.bus.emit({ t: "feature", name: "outside", data: { sessions, at: Date.now() } });
+  const drive = sharedDrive();
+  drive.onList.push((sessions) => deps.bus.emit({ t: "feature", name: "outside", data: { sessions, at: Date.now() } }));
   registerCatalog({ name: "keel", tools: async () => driveTools(drive, deps.store, deps.providers) });
   registerHooks({
     system: () =>
@@ -73,6 +74,8 @@ export const driveRoutes: RouteModule = (deps: Deps) => {
         }
       },
       POST: async (req: any) => {
+        // A send, an answer or a model switch from a remote device is the owner's: his passkey.
+        if (presence && !presence.allows(req, "outside")) return json({ error: "this needs your passkey from a remote device", presence: { action: "outside" } }, 428);
         const b = await body(req);
         try {
           if (b.action === "send") {

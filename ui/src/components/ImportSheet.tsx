@@ -10,9 +10,10 @@ import type { Found, Harness } from "../../../src/integrations/import/types.ts";
 import { useFleet } from "../lib/fleet.ts";
 import { api, reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
+import { takeOver } from "./TakeOver.tsx";
 import { ago, cn } from "../lib/utils.ts";
 
-type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean } };
+type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean } };
 type HarnessState = { harness: Harness; label: string; store: string; installed: boolean; total: number; interactive: number };
 type Preview = {
   session: Found & { cwd_exists: boolean };
@@ -110,12 +111,12 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
       </div>
       <div className="flex items-center gap-2 border-t border-line px-5 py-3">
         <span className="min-w-0 flex-1 text-caption text-faint">
-          {done ? (done.grew ? "Imported before; the original has gone on since." : "Imported before.") : "A copy: the original stays as it is."}
+          {done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : "A copy: the original stays as it is."}
         </span>
         {done ? (
           <>
-            <button type="button" disabled={busy} onClick={() => go("new")} className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">New copy</button>
-            {done.grew && <button type="button" disabled={busy} onClick={() => go("update")} data-testid="import-update" className="h-8 rounded-lg border border-line-strong px-3 text-ui font-medium hover:bg-hover">Update</button>}
+            <button type="button" disabled={busy} onClick={() => go("new")} data-testid="import-new" className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">New copy</button>
+            {done.grew && !done.went_on && <button type="button" disabled={busy} onClick={() => go("update")} data-testid="import-update" className="h-8 rounded-lg border border-line-strong px-3 text-ui font-medium hover:bg-hover">Update</button>}
             <button type="button" disabled={busy} onClick={() => go("open")} data-testid="import-open" className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90">Open</button>
           </>
         ) : (
@@ -124,6 +125,45 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+type RunningRow = { id: string; name: string; kind: string; state: string; cwd: string; harness: Harness | null; transcript_path: string | null; imported?: string };
+
+// The sessions the agent view runs now: copy one, or take it over (it ends
+// where it runs and goes on here).
+function Running({ onDone }: { onDone: () => void }) {
+  const [rows, setRows] = useState<RunningRow[]>([]);
+  const [err, setErr] = useState("");
+  useEffect(() => { api<{ sessions: RunningRow[] }>("/api/import/running").then((r) => setRows(r.sessions), () => setRows([])); }, []);
+  const usable = rows.filter((r) => r.harness && r.transcript_path);
+  if (!usable.length) return null;
+  const go = async (p: Promise<{ session: { id: string } } | null>) => {
+    setErr("");
+    try {
+      const r = await p;
+      if (!r) return;
+      onDone();
+      navigate({ name: "session", id: r.session.id });
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+  return (
+    <div className="border-b border-line" data-testid="import-running">
+      <div className="px-3 pt-2 pb-1 text-micro font-medium uppercase tracking-wide text-faint">Running now</div>
+      {usable.map((r) => (
+        <div key={r.id} data-testid="import-running-row" data-id={r.id} className="flex items-center gap-2 px-3 py-1.5">
+          <span className="size-1.5 shrink-0 rounded-full bg-ok" />
+          <span className="min-w-0 flex-1 truncate text-ui">{r.name || r.id}<span className="ml-1.5 text-micro text-faint">{r.kind === "claude" ? "Claude Code" : "Codex"} · {r.state}</span></span>
+          <button type="button" title="Import a copy; the original keeps running" onClick={() => go(api("/api/import", { method: "POST", body: JSON.stringify({ outside: r.id, mode: r.imported ? "open" : undefined }) }))}
+            className="h-6 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg">{r.imported ? "Open copy" : "Copy"}</button>
+          <button type="button" data-testid="import-takeover" onClick={() => go(takeOver(r.id, r.name || r.id, r.kind === "claude" ? "Claude Code" : "Codex"))}
+            className="h-6 shrink-0 rounded-md border border-line-strong px-2 text-caption font-medium hover:bg-hover">Take over</button>
+        </div>
+      ))}
+      {err && <p className="mx-3 mb-2 rounded-md bg-danger-soft px-2 py-1 text-caption text-danger" data-testid="import-running-error">{err}</p>}
     </div>
   );
 }
@@ -252,6 +292,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                   </Switch.Root>
                 </label>
               </div>
+              {!from && <Running onDone={() => onOpenChange(false)} />}
               <div className="flex items-center gap-2 px-3 py-1.5 text-micro text-faint tabular-nums">
                 <span className="min-w-0 flex-1 truncate" data-testid="import-total">{bulk || (rows ? `${total.toLocaleString()} session${total === 1 ? "" : "s"}${building ? " · reading the store" : ""}` : "Reading")}</span>
                 {rows && total > 0 && !building && !from && (

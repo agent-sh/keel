@@ -101,7 +101,8 @@ export class Drive {
   private cache: { at: number; raws: av.Raw[] } | null = null;
   private inflight: Promise<av.Raw[]> | null = null;
   private seen = new Map<string, Map<string, string>>(); // per driver: row id -> fingerprint
-  onList?: (rows: Row[]) => void;
+  // Called with every list the agent view printed (the page's frame, the copies a take-over settles).
+  readonly onList: ((rows: Row[]) => void)[] = [];
 
   configured(): boolean {
     return !!av.settings().agent_view?.trim();
@@ -115,7 +116,8 @@ export class Drive {
         (raws) => {
           this.cache = { at: Date.now(), raws };
           this.inflight = null;
-          this.onList?.(raws.map((r) => toRow(r)));
+          const rows = raws.filter((r) => (av.KINDS as readonly string[]).includes(r.tool)).map((r) => toRow(r));
+          for (const f of this.onList) f(rows);
           return raws;
         },
         (e) => {
@@ -125,6 +127,11 @@ export class Drive {
       );
     }
     return this.inflight;
+  }
+
+  // An act changed what the agent view lists (a stop): the next read asks again.
+  invalidate() {
+    this.cache = null;
   }
 
   cached(): { at: number; rows: Row[] } | null {
@@ -178,7 +185,7 @@ export class Drive {
 
   // The agent view's row of a session as it is now (`snapshot` carries what
   // `list` leaves out: the identity, and Claude Code's own state).
-  private async freshRow(f: Found): Promise<av.Raw> {
+  async freshRow(f: Found): Promise<av.Raw> {
     const snap = await av.rpc(f.host, { op: "snapshot" });
     const row = (snap?.agents ?? []).find((a: av.Raw) => av.nativeKey(a) === f.key && !str(a.host));
     if (!row) throw new Error("the session is no longer listed by the agent view");
@@ -214,7 +221,7 @@ export class Drive {
   // The agent view's identity of the session, checked against what was judged
   // (live included). A row of a linked machine carries it; for one here it is
   // read now. The agent view checks it again before it delivers.
-  private async identity(f: Found): Promise<unknown> {
+  async identity(f: Found): Promise<unknown> {
     const id = f.host ? f.raw.remote_identity : (await this.freshRow(f)).remote_identity;
     if (!id || typeof id !== "object") throw new Error("the agent view gave no identity for the session, so it cannot be checked to be the one judged");
     const judged = f.raw.live === true;
@@ -351,6 +358,43 @@ export class Drive {
       }
     }
     return line;
+  }
+}
+
+// One Drive per daemon: the routes, the tools and the take-over share its list.
+let shared: Drive | undefined;
+export const sharedDrive = () => (shared ??= new Drive());
+
+// The work an agent view row reports in flight besides a scheduled wake: a
+// turn, subagents, shell jobs. A session that waits on a wake or a loop is
+// reported working with that hold, and is not at work; one working with no hold
+// runs a turn. Null: nothing runs now.
+export function inFlight(raw: av.Raw): string | null {
+  const word = str(raw.state).toLowerCase();
+  const working = ["working", "busy", "running", "thinking"].includes(word);
+  const hold = str(raw.hold).trim();
+  const parts: string[] = [];
+  if (hold) {
+    if (hold.startsWith("waiting on") || hold.startsWith("background shell")) parts.push(hold);
+  } else if (working) parts.push("a turn running");
+  const tasks = typeof raw.tasks === "number" ? raw.tasks : 0;
+  if (tasks > 0) parts.push(`${tasks} background task${tasks === 1 ? "" : "s"} (subagents or shell jobs)`);
+  return parts.length ? parts.join(", ") : null;
+}
+
+export type Stop = { stopped: true; how?: string } | { stopped: false; unsupported: boolean; why: string };
+
+// Asks the agent view on the machine that holds the session to end it the way
+// its harness ends (claude stop for a background job, /exit or /quit typed at an
+// idle prompt), naming the identity that was judged, and to answer once the
+// process is gone.
+export async function stopSession(f: Found, identity: unknown): Promise<Stop> {
+  try {
+    const r = await av.rpc(f.host, { op: "stop", key: f.key, identity });
+    return { stopped: true, how: typeof r === "string" ? r : str(r?.how) || undefined };
+  } catch (e) {
+    const why = (e as Error).message;
+    return { stopped: false, unsupported: why.includes("Unsupported RPC operation"), why };
   }
 }
 

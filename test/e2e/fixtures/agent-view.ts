@@ -3,8 +3,8 @@
 // --json`, `rpc`), over a JSON state file the test writes. Usage:
 //   agent-view.ts <state.json> list -a --json
 //   agent-view.ts <state.json> rpc            (request on stdin)
-// State: { agents: Row[], prompts: { key: card }, screens: { key: lines }, queue: [], answers: [] }
-import { readFileSync, writeFileSync } from "node:fs";
+// State: { agents: Row[], prompts: { key: card }, screens: { key: lines }, queue: [], answers: [], last?: { key: records }, no_stop?: true }
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const [file, verb] = [process.argv[2]!, process.argv[3]];
 const state = JSON.parse(readFileSync(file, "utf8"));
@@ -50,5 +50,17 @@ else if (req.op === "answer") {
     state.queue.push({ id, key: req.key, body: req.body });
     save();
     reply({ id, state: "submitted", detail: a.live ? "pasted into its terminal" : "resumed with the text" });
+  }
+} else if (req.op === "stop" && !state.no_stop && !a.no_stop) {
+  // Ends the session the way its harness ends, after it writes its last lines
+  // (`last[key]`: transcript records appended as it exits).
+  if (req.identity && JSON.stringify(req.identity) !== JSON.stringify(identity(a))) error("Session identity changed");
+  else if (!a.live) error("Session already ended");
+  else {
+    if (a.transcript && state.last?.[req.key]) appendFileSync(a.transcript, state.last[req.key].map((r: unknown) => JSON.stringify(r) + "\n").join(""));
+    Object.assign(a, { live: false, state: "ended", label: "ended" });
+    (state.stopped ??= []).push(req.key);
+    save();
+    reply({ how: a.tool === "codex" ? "/quit typed into its pane" : "/exit typed into its pane" });
   }
 } else error("Unsupported RPC operation");

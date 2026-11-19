@@ -142,7 +142,7 @@ function decideDrive(c: Extract<CallClass, { kind: "drive" }>, f: Facts): Decisi
   if (c.owner) {
     const tool = c.resource.slice(0, c.resource.indexOf(":"));
     if (tools.includes(c.resource) || tools.includes(`${tool}:*`)) return { allow: true };
-    return { ask: { risk: "high", why: `only the owner sends this: ${c.owner}`, suggest: [] } };
+    return { ask: { risk: "high", why: `only the owner allows this: ${c.owner}`, suggest: [] } };
   }
   if (f.mode === "full-auto") return { allow: true };
   if (tools.includes(`drive:${c.target}`) || tools.includes("drive:*")) return { allow: true };

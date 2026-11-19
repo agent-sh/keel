@@ -4,6 +4,7 @@ import type { ReadPrompt, Row } from "../../../src/drive/drive.ts";
 import type { Turn } from "../../../src/drive/transcript.ts";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
+import { takeOver } from "./TakeOver.tsx";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 
@@ -233,6 +234,25 @@ function Detail({ id, back }: { id: string; back: () => void }) {
             className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
           >
             <ArrowDownToLine className="size-4" />
+          </button>
+        )}
+        {s && s.live && s.transcript && !s.host && (s.kind === "claude" || s.kind === "codex") && (
+          <button
+            data-testid="elsewhere-takeover"
+            title="Take over: end it where it runs and go on with it in Keel"
+            disabled={sending}
+            onClick={async () => {
+              setNote(null);
+              try {
+                const res = await takeOver(s.id, s.name || s.id, s.kind === "claude" ? "Claude Code" : "Codex");
+                if (res) navigate({ name: "session", id: res.session.id });
+              } catch (e) {
+                setNote({ ok: false, text: (e as Error).message });
+              }
+            }}
+            className="h-8 shrink-0 rounded-md px-2.5 text-caption font-medium text-muted hover:bg-hover hover:text-fg"
+          >
+            Take over
           </button>
         )}
         {s?.drive.model && (

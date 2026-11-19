@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS import_index (path TEXT PRIMARY KEY, harness TEXT NOT
 CREATE INDEX IF NOT EXISTS import_index_h ON import_index(harness);
 CREATE TABLE IF NOT EXISTS import_links (session_id TEXT PRIMARY KEY, harness TEXT NOT NULL, source_id TEXT NOT NULL, source_path TEXT NOT NULL, items INTEGER NOT NULL, source_size INTEGER NOT NULL, source_mtime INTEGER NOT NULL, imported_ms INTEGER NOT NULL, synced_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS import_links_src ON import_links(harness, source_id);
+CREATE TABLE IF NOT EXISTS import_live (session_id TEXT PRIMARY KEY, drive_id TEXT NOT NULL, since_ms INTEGER NOT NULL);
 `;
 
 export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number };
@@ -34,6 +35,20 @@ const sourceStat = (f: Found) => {
 };
 
 const REFRESH_MS = 30_000;
+
+let shared: Imports | undefined;
+// One per daemon: the import routes and the take-over share the index and the links.
+export const sharedImports = (store: Store) => (shared ??= new Imports(store));
+
+// A model id without its provider and region prefixes: bedrock:global.anthropic.claude-x-5 -> claude-x-5.
+const bare = (id: string) => id.replace(/^[\w-]+:/, "").replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|openai|google|meta|mistral)\./, "");
+
+// The source's model when a provider lists it, else the owner's default.
+export async function modelFor(providers: { models(): Promise<any[]>; defaultModel(): Promise<string | undefined | null> }, f: Found): Promise<string | undefined> {
+  const listed = await providers.models().catch(() => []);
+  const want = f.model && bare(f.model);
+  return (want && (listed as any[]).find((m) => m.id === f.model || bare(m.id) === want)?.id) || (await providers.defaultModel()) || undefined;
+}
 
 export class Imports {
   private building: Promise<void> | null = null;
@@ -166,6 +181,22 @@ export class Imports {
     return readKeel(f.id);
   }
 
+  // The copies told that their original still runs, by the agent view's id of
+  // it: the page shows "still runs" with Take over now, a later list settles it.
+  liveSource(sessionId: string): { id: string; since_ms: number } | null {
+    const r = this.store.db.query<{ drive_id: string; since_ms: number }, [string]>("SELECT drive_id, since_ms FROM import_live WHERE session_id = ?").get(sessionId);
+    return r ? { id: r.drive_id, since_ms: r.since_ms } : null;
+  }
+  liveSources(): { session_id: string; drive_id: string }[] {
+    return this.store.db.query<{ session_id: string; drive_id: string }, []>("SELECT session_id, drive_id FROM import_live").all().filter((r) => this.store.session(r.session_id));
+  }
+  putLive(sessionId: string, driveId: string) {
+    this.store.db.query("INSERT INTO import_live (session_id, drive_id, since_ms) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET drive_id = excluded.drive_id").run(sessionId, driveId, Date.now());
+  }
+  clearLive(sessionId: string) {
+    this.store.db.query("DELETE FROM import_live WHERE session_id = ?").run(sessionId);
+  }
+
   links(harness: Harness, id: string): Link[] {
     return this.store.db.query<Link, [string, string]>("SELECT * FROM import_links WHERE harness = ? AND source_id = ? ORDER BY imported_ms DESC").all(harness, id)
       .filter((l) => this.store.session(l.session_id));
@@ -179,7 +210,13 @@ export class Imports {
     const l = this.links(f.harness, f.id)[0];
     if (!l) return undefined;
     const st = sourceStat(f);
-    return { session_id: l.session_id, synced_ms: l.synced_ms, grew: !!st && (st.size !== l.source_size || st.mtime !== l.source_mtime) };
+    return { session_id: l.session_id, synced_ms: l.synced_ms, grew: !!st && (st.size !== l.source_size || st.mtime !== l.source_mtime), went_on: this.wentOn(l.session_id) };
+  }
+
+  // The copy went on in Keel (a turn taken there, or one running now): the
+  // source's later turns would land after its own, so it is not updated.
+  wentOn(sessionId: string): boolean {
+    return !!this.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' LIMIT 1").get(sessionId);
   }
 
   // A new keel-bun session from a source, or the events the source gained

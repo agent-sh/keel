@@ -4,19 +4,18 @@
 import { existsSync, statSync } from "node:fs";
 import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
-import { Drive } from "../../drive/drive.ts";
+import { sharedDrive } from "../../drive/drive.ts";
 import { exportTo, parseKeelJsonl, redact, redactDeep, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
-import { HARNESSES, Imports } from "../../integrations/import/service.ts";
+import { HARNESSES, modelFor as pickModel, sharedImports } from "../../integrations/import/service.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, linkJson, proven } from "../../fleet/link.ts";
 import { contains } from "../../core/paths.ts";
 import { fleet } from "./fleet.ts";
+import { takeover } from "./takeover.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 const isHarness = (h: unknown): h is Harness => HARNESSES.some((x) => x.harness === h);
-// A model id without its provider and region prefixes: bedrock:global.anthropic.claude-x-5 -> claude-x-5.
-const bare = (id: string) => id.replace(/^[\w-]+:/, "").replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|openai|google|meta|mistral)\./, "");
 // Transcripts another machine never offers: any under a folder or with a name of credentials.
 const CREDENTIAL = /(^|\/)(\.ssh|\.gnupg|\.aws|\.docker|\.kube|\.password-store|[^/]*(credential|secret|token|passw|\.pem$|\.key$)[^/]*)(\/|$)/i;
 const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
@@ -38,19 +37,15 @@ export const importRoutes: RouteModule = (deps) => {
   const { store, bus, providers } = deps;
   // The index is built on first use (the import sheet), not at start: walking
   // tens of thousands of other harnesses' files costs every start CPU and memory.
-  const imports = new Imports(store);
+  const imports = sharedImports(store);
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
   // The source's model when this daemon lists it, else the default one.
-  const modelFor = async (f: Found): Promise<string | undefined> => {
-    const listed = await providers.models().catch(() => []);
-    const want = f.model && bare(f.model);
-    return (want && (listed as any[]).find((m) => m.id === f.model || bare(m.id) === want)?.id) || (await providers.defaultModel()) || undefined;
-  };
+  const modelFor = (f: Found) => pickModel(providers, f);
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
 
   // A session the drive list shows (by its id there): imported from the
   // transcript the agent view names. A read-only copy; the original runs on.
-  const drive = new Drive();
+  const drive = sharedDrive();
   const target = async (b: any): Promise<Found | Response> => {
     if (b.outside) {
       let f;
@@ -242,12 +237,16 @@ export const importRoutes: RouteModule = (deps) => {
         const prior = imports.links(f.harness, f.id)[0];
         if (prior && !b.mode) return json({ error: "this session was imported before: open it, update it, or make a new copy", session_id: prior.session_id }, 409);
         if (!prior && (b.mode === "update" || b.mode === "open")) return bad("this session was never imported", 404);
+        // The original's later turns would land after the copy's own.
+        if (prior && b.mode === "update" && takeover?.wentOn(prior.session_id)) return json({ error: "the Keel session went on since it was copied, so it is not updated: open it, or make a new copy", session_id: prior.session_id }, 409);
         const model = b.model || (await modelFor(f));
         if (!model) return bad("no model is available: no provider has credentials", 409);
         if (b.cwd && !isDir(b.cwd)) return bad(`not a directory: ${b.cwd}`);
         const workspace = b.cwd || (isDir(f.cwd) ? f.cwd! : deps.workspace);
         const r = await imports.import(f, { mode: b.mode, model, workspace, title: b.title });
         bus.emit({ t: "session", session: r.session });
+        // A copy of a session that still runs is told so, once the agent view's list is read.
+        if (r.action !== "opened") takeover?.noteLiveLater(r.session.id);
         return json({ action: r.action, session: r.session, imported_events: r.imported_events, counts: r.read.counts, notes: r.read.notes }, r.action === "created" ? 201 : 200);
       },
     },
@@ -295,7 +294,7 @@ export const importRoutes: RouteModule = (deps) => {
           const st = statSync(l.harness === "keel" ? l.source_path.split("#")[0]! : l.source_path);
           source = { exists: true, grew: st.size !== l.source_size || Math.round(st.mtimeMs) !== l.source_mtime };
         } catch {}
-        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label }, source });
+        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id) }, source });
       },
     },
     "/api/sessions/:id/export": {

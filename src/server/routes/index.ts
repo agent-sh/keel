@@ -23,6 +23,7 @@ import { usageRoutes } from "./usage.ts";
 import { searchRoutes } from "./search.ts";
 import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
+import { takeoverRoutes } from "./takeover.ts";
 import { hookRoutes } from "./hooks.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
@@ -68,6 +69,7 @@ export const routeModules: RouteModule[] = [
   draftRoutes,
   marksRoutes, // after automation: unread marks are its alerts
   importRoutes,
+  takeoverRoutes, // taking over a session another harness runs
   hookRoutes,
   runRoutes, // the command line: keel run, keel send
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder

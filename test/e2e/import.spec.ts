@@ -65,7 +65,8 @@ test("import and export", async ({ page, request }) => {
   await expect(page.getByTestId("assistant-text").last()).toContainText(/quince/i);
   await shoot(page, "import-02-continued");
 
-  // The source goes on: the list says so, and Update brings what it gained.
+  // The source goes on: the list says so. The copy went on here too, so it is
+  // not updated (the source's turns would land after its own); a new copy has both.
   growClaude(made.claude, cwd, `c0ffee00-0000-4000-8000-${tag.padStart(12, "0")}`);
   await page.keyboard.press("Control+k");
   await page.getByTestId("palette-input").fill("Import sessions");
@@ -73,7 +74,9 @@ test("import and export", async ({ page, request }) => {
   await page.getByTestId("import-search").fill(tag);
   await expect(rows.first().getByTestId("import-imported")).toHaveText("imported · grew", { timeout: 15_000 });
   await rows.first().click();
-  await page.getByTestId("import-update").click();
+  await expect(preview).toContainText("the copy went on here and the original too");
+  await expect(preview.getByTestId("import-update")).toHaveCount(0);
+  await preview.getByTestId("import-new").click();
   await expect(page.getByText("Yellow.")).toBeVisible();
 
   // Codex and the Rust Keel, from their own stores.
