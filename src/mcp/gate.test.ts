@@ -36,3 +36,92 @@ test("server names cannot take a built-in's name or make two tools' full names c
   for (const n of ["keel", "phone", "parlar", "keel-import", "a__b", "a_"]) expect(validate(n, { command: "x" })).not.toBeNull();
   expect(validate("a_b", { command: "x" })).toBeNull();
 });
+
+// An owner's answer is for the server source it was given for: a server
+// replaced under the same name, with the same description, schema and read
+// flag but another endpoint or credentials, does not inherit it.
+test("an answer waiting on a card runs only on the source it was given for (native and mcp_call)", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Gate } = await import("../safety/gate.ts");
+  const { withCatalog } = await import("../tools/defer.ts");
+  installMcpTools({ configured: () => [] } as any);
+  const results: Record<string, { error: boolean; runs: string[]; text: string }> = {};
+  for (const profile of ["native", "dispatcher"] as const)
+    for (const change of ["unchanged", "source", "schema", "removed"] as const) {
+      const dir = mkdtempSync(join(tmpdir(), "keel-mcp-bind-"));
+      const store = new Store(join(dir, "state")), bus = new Bus(), g = new Gate(store, bus);
+      const s = store.createSession({ workspace: dir, model: "fixture", title: "bind" });
+      g.setPerm(s.id, { mode: "ask" });
+      const runs: string[] = [];
+      // Every catalog read makes new objects, as the manager does.
+      const make = (src: string, type = "number") => ({
+        server: "fixture", name: "act", qualified: "fixture__act", mcp: true, source: src, description: "Synthetic operation", readOnly: false,
+        input_schema: { type: "object", properties: { value: { type } }, required: ["value"] },
+        run: async () => { runs.push(src); return { content: src }; },
+      });
+      const put = (src: string, type?: string) => registerCatalog({ name: "fixture", tools: async () => [make(src, type)], known: () => [make(src, type)] });
+      put("A");
+      const tool = profile === "native" ? (await withCatalog([], "claude", [])).find((t) => t.name === "mcp__fixture__act")! : toolsFor("gpt").find((t) => t.name === "mcp_call")!;
+      const input = profile === "native" ? { value: 1 } : { tool: "fixture__act", arguments: { value: 1 } };
+      const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, seen: new Map(), spillDir: join(dir, "spill") };
+      const shown = new Promise<any>((res) => { const off = bus.on((f: any) => { if (f.name === "approval" && f.data?.state === "pending") { off(); res(f.data); } }); });
+      const pending = g.beforeTool(s, { id: crypto.randomUUID(), tool, input, ctx } as any);
+      const card = await shown;
+      if (change === "removed") unregisterCatalog("fixture");
+      else if (change === "source") put("B");
+      else if (change === "schema") put("B", "string");
+      else put("A"); // a no-op refresh or a reconnect of the same server
+      expect(g.resolve(card.id, s.id, { choice: "once" })).toEqual({ ok: true });
+      expect(await pending).toBeUndefined();
+      const out = await tool.run(input, ctx as any);
+      results[`${profile}/${change}`] = { error: !!out.is_error, runs, text: String(out.content) };
+      unregisterCatalog("fixture");
+      store.db.close();
+    }
+  for (const p of ["native", "dispatcher"]) {
+    expect(results[`${p}/unchanged`]).toMatchObject({ error: false, runs: ["A"] });
+    expect(results[`${p}/source`]).toMatchObject({ error: true, runs: [] });
+    expect(results[`${p}/source`]!.text).toContain("another source");
+    expect(results[`${p}/schema`]).toMatchObject({ error: true, runs: [] });
+    expect(results[`${p}/removed`]).toMatchObject({ error: true, runs: [] });
+  }
+});
+
+test("an always grant for an MCP tool covers the source it was given for, not a replacement", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Gate } = await import("../safety/gate.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-mcp-bind-"));
+  const store = new Store(join(dir, "state")), bus = new Bus(), g = new Gate(store, bus);
+  const s = store.createSession({ workspace: dir, model: "fixture", title: "bind" });
+  g.setPerm(s.id, { mode: "ask" });
+  const on = (source: string) => ({ name: "mcp_call", readOnly: false, input_schema: {}, run: async () => ({ content: "" }), target: async (input: any) => ({ name: "fixture__act", readOnly: false, input, source }) });
+  const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, seen: new Map(), spillDir: dir };
+  const cards: any[] = [];
+  bus.on((f: any) => { if (f.name === "approval" && f.data?.state === "pending") cards.push(f.data); });
+  const first = g.beforeTool(s, { id: "1", tool: on("A"), input: {}, ctx } as any);
+  await Bun.sleep(0);
+  g.resolve(cards[0].id, s.id, { choice: "always" });
+  await first;
+  expect(await g.beforeTool(s, { id: "2", tool: on("A"), input: {}, ctx } as any)).toBeUndefined();
+  void g.beforeTool(s, { id: "3", tool: on("B"), input: {}, ctx } as any);
+  await Bun.sleep(0);
+  expect(cards.length).toBe(2);
+  store.db.close();
+});
+
+test("a server's source binding follows its endpoint, program and credentials, not Keel's own choices", async () => {
+  const { binding } = await import("./sources.ts");
+  const key = new Uint8Array(32);
+  const b = (c: any) => binding(c, key);
+  const base = { command: "/usr/bin/node", args: ["server.js"], env: { TOKEN: "a" } };
+  expect(b({ ...base })).toBe(b(base));
+  expect(b({ ...base, enabled: false, read_tools: ["x"], sync: { source: "claude", name: "n" } })).toBe(b(base));
+  expect(b({ ...base, command: "/opt/other/node" })).not.toBe(b(base));
+  expect(b({ ...base, args: ["other.js"] })).not.toBe(b(base));
+  expect(b({ ...base, env: { TOKEN: "b" } })).not.toBe(b(base));
+  expect(b({ url: "https://A.example/mcp", headers: { Authorization: "x" } })).toBe(b({ url: "https://a.example:443/mcp", headers: { authorization: "x" } }));
+  expect(b({ url: "https://a.example/mcp", headers: { Authorization: "y" } })).not.toBe(b({ url: "https://a.example/mcp", headers: { Authorization: "x" } }));
+  expect(b({ url: "https://a.example/mcp" })).not.toBe(b({ url: "https://b.example/mcp" }));
+});

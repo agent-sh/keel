@@ -14,6 +14,9 @@ export type CatalogTool = {
   readOnly?: boolean;
   hidden?: boolean;        // not offered by search, still answered by mcp_call (a server turned off says so)
   mcp?: boolean;           // a tool of an MCP server (named mcp__<server>__<tool> where tools load natively)
+  // Which source runs it (an MCP server's endpoint or program and a private
+  // fingerprint of its credentials): an answer the owner gave is for this one.
+  source?: string;
   // What a call does, for the permission gate, when the read flag alone does not say.
   judge?(input: any): Promise<CallClass>;
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;
@@ -34,6 +37,19 @@ export type CatalogSource = {
 };
 
 const sources = new Map<string, CatalogSource>();
+
+// What the gate judged a call as, kept until it runs: the tool's shape and its
+// source. A call whose tool changed while its card waited does not run.
+export type Judged = { shape: string; source?: string };
+export const judgedOf = (t: CatalogTool): Judged => ({ shape: JSON.stringify([t.qualified, t.description, t.input_schema, !!t.readOnly]), source: t.source });
+// Why the answer given no longer fits the tool found now, or null when it does.
+export function stale(was: Judged | undefined, now: CatalogTool, name: string, again: string): string | null {
+  if (!was) return null;
+  const n = judgedOf(now);
+  if (was.source !== n.source) return `${name} now runs from another source than the one the owner answered for (its server's endpoint, program or credentials changed), so it was not run. ${again} to ask anew.`;
+  if (was.shape !== n.shape) return `${name} changed while this call waited (its server was reloaded): the answer given was for the old tool. ${again} and call it anew.`;
+  return null;
+}
 
 export const registerCatalog = (s: CatalogSource) => void sources.set(s.name, s);
 export const unregisterCatalog = (name: string) => void sources.delete(name);

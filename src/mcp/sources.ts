@@ -236,19 +236,28 @@ export function endpoint(c: McpServerConfig): string {
 // names. Kept private: a keyed hash (the key lives only in this process), so
 // a low-entropy value such as an account letter cannot be read back from it.
 const KEY = randomBytes(32);
-export function account(c: McpServerConfig): string {
+export function account(c: McpServerConfig, key: Uint8Array = KEY): string {
   const lower = (h?: Record<string, string>) => h && Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
   const sorted = (o: Record<string, unknown>) => JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
   const parts = {
     env: c.env && sorted(c.env), env_vars: c.env_vars && [...c.env_vars].sort(), headers: c.headers && sorted(lower(c.headers)!),
     headers_env: c.headers_env && sorted(lower(c.headers_env)!), bearer_env: c.bearer_env, headers_helper: c.headers_helper, oauth: c.oauth?.client_id,
   };
-  return createHmac("sha256", KEY).update(sorted(parts)).digest("hex").slice(0, 16);
+  return createHmac("sha256", key).update(sorted(parts)).digest("hex").slice(0, 16);
 }
 
 // What makes two configs the same server: the endpoint and the account. The
 // same endpoint under another account is another server.
 export const identity = (c: McpServerConfig) => `${endpoint(c)}\u0000${account(c)}`;
+
+// Which source a tool runs on, for the permission gate: an answer given for one
+// source never runs on another under the same name. Stricter than identity:
+// the program's full path, its folder and the transport count too. The key is
+// the daemon's own (kept in its state), so a grant outlives a restart.
+export function binding(c: McpServerConfig, key: Uint8Array): string {
+  const where = c.url ? [endpoint(c), c.transport ?? ""] : [c.command ?? "", c.args ?? [], c.cwd ?? ""];
+  return createHmac("sha256", key).update(JSON.stringify([where, account(c, key)])).digest("hex").slice(0, 24);
+}
 
 // The part of a config the source decides. The owner's own choices in Keel
 // (on or off, which tools are reads, what it follows) are not the source's.

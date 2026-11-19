@@ -26,8 +26,10 @@ export const childMode = (parent: Mode, want?: string): Mode => (isMode(want) &&
 export const writesNothing = (m: Mode) => m === "read-only" || m === "plan";
 
 export type RuleKind = "shell" | "edit" | "tool";
-export type Rule = { id: string; kind: RuleKind; pattern: string; scope: string; lifetime: "always" | "session"; session_id?: string | null; created: number };
-export type Suggest = { kind: RuleKind; pattern: string };
+// `bind`, on a tool rule, names the source it was granted for (an MCP server's
+// binding): the same name on another source is not covered.
+export type Rule = { id: string; kind: RuleKind; pattern: string; scope: string; lifetime: "always" | "session"; session_id?: string | null; created: number; bind?: string | null };
+export type Suggest = { kind: RuleKind; pattern: string; bind?: string };
 
 export type CallClass =
   | { kind: "read" }
@@ -90,7 +92,7 @@ function shellText(input: any): string | null {
 
 export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
 
-export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string };
+export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string };
 
 export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read" || c.kind === "control") return { allow: true };
@@ -130,8 +132,8 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
   const grant = (c.kind === "other" && c.grant) || f.tool;
-  if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant)) return { allow: true };
-  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant }] } };
+  if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
+  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
 }
 
 function decideShell(command: string, f: Facts): Decision {

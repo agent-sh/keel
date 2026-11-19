@@ -11,7 +11,7 @@
 // route that refuses it) keep the provider-neutral pair search_tools/mcp_call
 // and every built-in eager.
 import type { Message } from "../core/types.ts";
-import { catalogReady, catalogTools, score, type CatalogTool } from "./catalog.ts";
+import { catalogReady, catalogTools, judgedOf, score, stale, type CatalogTool, type Judged } from "./catalog.ts";
 import { fail, type Tool, type ToolOutput } from "./types.ts";
 
 export const TOOL_SEARCH = "ToolSearch";
@@ -55,8 +55,7 @@ type Deferred = Tool & { catalog?: string };
 
 // What the gate judged for a call, as mcp_call keeps it: a server reloaded
 // while the card waited makes the answer one for another tool.
-const judged = new WeakMap<object, string>();
-const shape = (t: CatalogTool) => JSON.stringify([t.qualified, t.description, t.input_schema, !!t.readOnly]);
+const judged = new WeakMap<object, Judged>();
 
 function wrap(t: CatalogTool): Deferred {
   const name = nativeName(t);
@@ -64,14 +63,14 @@ function wrap(t: CatalogTool): Deferred {
     name, description: t.description, input_schema: t.input_schema, defer: true, readOnly: !!t.readOnly, catalog: t.qualified,
     // Judged and granted as the catalog tool, the name mcp_call uses too.
     async target(input) {
-      if (input && typeof input === "object") judged.set(input, shape(t));
-      return { name: t.qualified, readOnly: !!t.readOnly, input, cls: t.judge ? await t.judge(input) : undefined };
+      if (input && typeof input === "object") judged.set(input, judgedOf(t));
+      return { name: t.qualified, readOnly: !!t.readOnly, input, source: t.source, cls: t.judge ? await t.judge(input) : undefined };
     },
     async run(input, ctx): Promise<ToolOutput> {
       const now = (await catalogTools()).find((x) => x.qualified === t.qualified);
       if (!now) return fail(`${name} is no longer available (its server was removed or is not connected). Search with ${TOOL_SEARCH} again.`);
-      const was = input && typeof input === "object" ? judged.get(input) : undefined;
-      if (was !== undefined && was !== shape(now)) return fail(`${name} changed while this call waited (its server was reloaded): the answer given was for the old tool. Load it again and call it anew.`);
+      const why = stale(input && typeof input === "object" ? judged.get(input) : undefined, now, name, "Load it again");
+      if (why) return fail(why);
       return now.run(input ?? {}, ctx);
     },
   };

@@ -3,7 +3,8 @@
 // Servers connect in the background after startup and on first use; a reload
 // restarts only the servers whose config changed, and never touches a session's
 // request prefix (MCP tools are deferred, so the eager tool list is fixed).
-import { mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
@@ -11,7 +12,7 @@ import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpClient, RpcError, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
-import { endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
+import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
 import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
@@ -150,10 +151,19 @@ export class McpManager {
   private disposed = false;
 
   private bundledOffPath: string;
+  // The key of each server's source binding (sources.ts binding), kept in the
+  // state so an owner's grant for a server outlives a restart.
+  private bindKey: Uint8Array;
 
   constructor(private errors: ErrorTracker, stateDir: string, private workspace: string) {
     this.oauth = new OAuthStore(stateDir);
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
+    const keyPath = join(stateDir, "mcp-bind.key");
+    if (!existsSync(keyPath)) {
+      mkdirSync(stateDir, { recursive: true });
+      try { writeFileSync(keyPath, randomBytes(32), { mode: 0o600, flag: "wx" }); } catch {} // another manager wrote it first
+    }
+    this.bindKey = readFileSync(keyPath);
   }
 
   // Register a server Keel brings itself; call before start().
@@ -268,6 +278,7 @@ export class McpManager {
       name: t.name,
       qualified: `${e.name}__${t.name}`,
       mcp: true,
+      source: binding(sourced(e.config), this.bindKey),
       description: t.description ?? t.title ?? "",
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
       readOnly: e.bundled ? e.bundled.reads(t.name) : !!e.config.read_tools?.includes(t.name),

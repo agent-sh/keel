@@ -54,7 +54,8 @@ export type Tool = ToolSpec & {
   // A dispatcher (mcp_call) names the tool it will run, so the permission gate
   // judges and grants that tool, not the dispatcher.
   // `cls`, when given, is what the call does (a drive tool judges its target).
-  target?(input: any): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass } | null>;
+  // `source` names what runs it (an MCP server's binding): a grant is for that source.
+  target?(input: any): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass; source?: string } | null>;
   // A shared tool offered only to these families (default: every family).
   families?: string[];
   // It waits on the owner's answer (a question): a restart expires it, it did nothing.

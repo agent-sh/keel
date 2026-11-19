@@ -62,7 +62,7 @@ export type Verdict = { allow: boolean; risk: string; reason: string; model: str
 // A call the reviewer refused; the owner can let one retry of it through.
 export type Blocked = { id: string; session_id: string; tool: string; summary: string; reason: string; risk: string; model: string; key: string; retry?: boolean; created: number };
 
-type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean };
+type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string };
 
 export class Gate {
   private waiting = new Map<string, Waiter>();
@@ -74,6 +74,7 @@ export class Gate {
 
   constructor(private store: Store, private bus: Bus, private sandboxed: (s: Session, p: SessionPerm) => boolean = () => false) {
     store.migrate(SCHEMA);
+    if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
     const db = store.db;
     // Restart: no turn waits on an old card.
     for (const r of db.query<{ id: string; data: string }, []>("SELECT id, data FROM approvals WHERE state = 'pending'").all()) {
@@ -165,10 +166,10 @@ export class Gate {
     return all.filter((r) => (r.lifetime === "session" ? r.session_id === session.id : contains(r.scope, session.workspace) || contains(r.scope, this.scopeOf(session.workspace))));
   }
 
-  addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session"): Rule {
-    const rule: Rule = { id: crypto.randomUUID(), kind, pattern: pattern.trim(), scope: this.scopeOf(session.workspace), lifetime, session_id: lifetime === "session" ? session.id : null, created: Date.now() };
-    this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(rule.id, rule.kind, rule.pattern, rule.scope, rule.lifetime, rule.session_id ?? null, rule.created);
+  addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session", bind?: string): Rule {
+    const rule: Rule = { id: crypto.randomUUID(), kind, pattern: pattern.trim(), scope: this.scopeOf(session.workspace), lifetime, session_id: lifetime === "session" ? session.id : null, created: Date.now(), bind: bind ?? null };
+    this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(rule.id, rule.kind, rule.pattern, rule.scope, rule.lifetime, rule.session_id ?? null, rule.created, rule.bind ?? null);
     this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     return rule;
   }
@@ -189,8 +190,8 @@ export class Gate {
     const r = this.revoked.get(id);
     if (!r) return null;
     this.revoked.delete(id);
-    this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(r.id, r.kind, r.pattern, r.scope, r.lifetime, r.session_id ?? null, r.created);
+    this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(r.id, r.kind, r.pattern, r.scope, r.lifetime, r.session_id ?? null, r.created, r.bind ?? null);
     this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     return r;
   }
@@ -233,10 +234,10 @@ export class Gate {
     this.bus.emit({ t: "feature", name: "approval", session_id: a.session_id, data: a });
   }
 
-  private evaluate(session: Session, name: string, cls: CallClass): Decision {
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string): Decision {
     const p = this.perm(session.id);
     // Edits are judged where they land (links resolved), so the workspace is too.
-    return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name });
+    return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind });
   }
 
   // The beforeTool hook: the gate first; a call it lets through runs confined
@@ -258,7 +259,7 @@ export class Gate {
     const target = call.tool.target ? await call.tool.target(call.input) : null;
     const name = target?.name ?? call.tool.name;
     const cls: CallClass = landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classifyCall(call));
-    const d = this.evaluate(session, name, cls);
+    const d = this.evaluate(session, name, cls, target?.source);
     if ("allow" in d) return { cls };
     if ("deny" in d) return { deny: d.deny };
     if (cls.kind === "control") return { cls };
@@ -279,7 +280,7 @@ export class Gate {
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
-    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice })) ?? { cls };
+    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice, bind: target?.source })) ?? { cls };
   }
 
   // A card for this one call that only the owner answers (a hook asked): no
@@ -297,7 +298,7 @@ export class Gate {
   }
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
-    ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string }, once = false): Promise<{ deny: string } | void> {
+    ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string; bind?: string }, once = false): Promise<{ deny: string } | void> {
     const a: Approval = {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, notice: ask.notice,
@@ -309,7 +310,7 @@ export class Gate {
     // the card is answered, so answered cards do not pile up on it.
     let onAbort = () => {};
     const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
-      this.waiting.set(a.id, { resolve, call, cls, session, name, once });
+      this.waiting.set(a.id, { resolve, call, cls, session, name, once, bind: ask.bind });
       onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
         this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
@@ -340,7 +341,8 @@ export class Gate {
     if (c.choice === "session" || c.choice === "always") {
       const rules = (c.rules?.length ? c.rules : a.suggest).filter((r) => r.pattern?.trim());
       if (!rules.length) return { error: "nothing to grant: give a rule", status: 400 };
-      for (const r of rules) this.addRule(w.session, r.kind, r.pattern, c.choice);
+      // A tool grant is for the source the card judged (taken from the card, never the client).
+      for (const r of rules) this.addRule(w.session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w.bind : undefined));
     }
     this.finish(a, { state: "allowed", choice: c.choice });
     w.resolve({ allow: true });
@@ -358,7 +360,7 @@ export class Gate {
   private recheck(which: (w: Waiter) => boolean) {
     for (const [id, w] of [...this.waiting]) {
       if (w.once || !which(w)) continue; // a one-call card only the owner answers
-      const d = this.evaluate(w.session, w.name, w.cls);
+      const d = this.evaluate(w.session, w.name, w.cls, w.bind);
       const a = this.approval(id);
       if (!a) continue;
       if ("allow" in d) {

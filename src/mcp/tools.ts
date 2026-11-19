@@ -3,7 +3,7 @@
 // one line per hit and the schema only for the hits shown, so finding a tool
 // costs a few hundred tokens instead of every server's schemas on every request.
 import { registerHooks } from "../engine/hooks.ts";
-import { catalogSources, catalogTools, registerCatalog, score, type CatalogTool } from "../tools/catalog.ts";
+import { catalogSources, catalogTools, judgedOf, registerCatalog, score, stale, type CatalogTool, type Judged } from "../tools/catalog.ts";
 export { score };
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
@@ -76,8 +76,7 @@ function unknownTool(name: string, all: CatalogTool[]): string {
 
 // What the gate judged for a call: if the server is reloaded while the card
 // waits and the tool changes, the owner's answer was for another tool.
-const judged = new WeakMap<object, string>();
-const shape = (t: CatalogTool) => JSON.stringify([t.qualified, t.description, t.input_schema, !!t.readOnly]);
+const judged = new WeakMap<object, Judged>();
 
 const McpCall: Tool = {
   name: "mcp_call",
@@ -87,8 +86,8 @@ const McpCall: Tool = {
     const all = await catalogTools();
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
     const args = input?.arguments ?? {};
-    if (t && input && typeof input === "object") judged.set(input, shape(t));
-    if (t) return { name: t.qualified, readOnly: !!t.readOnly, input: args, cls: t.judge ? await t.judge(args) : undefined };
+    if (t && input && typeof input === "object") judged.set(input, judgedOf(t));
+    if (t) return { name: t.qualified, readOnly: !!t.readOnly, input: args, source: t.source, cls: t.judge ? await t.judge(args) : undefined };
     // A name not known yet (its server still starting, after the catalog
     // waited on it) is refused, never judged as a read: by the time it would
     // run, the server may know it.
@@ -109,9 +108,8 @@ const McpCall: Tool = {
     const all = await catalogTools();
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
     if (!t) return fail(unknownTool(name, all));
-    const was = judged.get(input);
-    if (was !== undefined && was !== shape(t))
-      return fail(`${t.qualified} changed while this call waited (its server was reloaded): the answer given was for the old tool. Search for it again and call it anew.`);
+    const why = stale(judged.get(input), t, t.qualified, "Search for it again");
+    if (why) return fail(why);
     const args = input.arguments ?? {};
     if (typeof args !== "object" || Array.isArray(args)) return fail("arguments must be an object.");
     const required: string[] = (t.input_schema as any).required ?? [];
