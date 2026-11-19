@@ -287,7 +287,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const s = from ? Math.max(0, Math.round((Date.now() - from) / 1000)) : 0;
   const what = approving ? "Waiting for your approval" : st?.kind === "model" ? `Waiting on ${st.model}` : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
   return (
-    <div className="flex items-center gap-2.5 py-1 text-ui text-muted" aria-live="polite" data-testid="working">
+    <div className="flex items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
         {[0, 1, 2].map((i) => <span key={i} className="size-1.5 rounded-full bg-brass animate-pulse-dot" style={{ animationDelay: `${i * 160}ms` }} />)}
       </span>
@@ -328,6 +328,24 @@ function TurnFooter({ e, reply, prompt, s, last }: { e: StoredEvent; reply: stri
   );
 }
 
+// What a screen reader hears about the turn: why it waits, once per change.
+// The visible clocks above tick; this region changes only when the reason
+// does, and a replayed status after a reconnect says nothing new.
+function Announcer({ sessionId, working }: { sessionId: string; working: boolean }) {
+  const st = useStore((x) => x.status[sessionId]);
+  const approving = useSafety((x) => (x.approvals[sessionId]?.length ?? 0) > 0);
+  const said = useRef<string | null>(null);
+  let text = "";
+  if (approving) text = "Waiting for your approval.";
+  else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, attempt ${st.attempt} of ${st.max}.`;
+  else if (st?.kind === "compacting") text = "Compacting the context.";
+  else if (working) text = "Working.";
+  else if (said.current) text = "The turn ended.";
+  if (said.current === null && !working && !approving) text = ""; // opening an idle session announces nothing
+  said.current = text || said.current;
+  return <div className="sr-only" role="status" aria-live="polite" data-testid="turn-announcer">{text}</div>;
+}
+
 // The streaming reply and the working line. Deltas re-render only this, not
 // the whole transcript above it.
 function Live({ sessionId, working, asking, since }: { sessionId: string; working: boolean; asking: boolean; since?: number }) {
@@ -338,6 +356,7 @@ function Live({ sessionId, working, asking, since }: { sessionId: string; workin
       {hasDraft && <div className="flex flex-col gap-3"><Draft draft={draft} /></div>}
       <Status sessionId={sessionId} />
       {working && !hasDraft && !asking && <Working since={since} sessionId={sessionId} />}
+      <Announcer sessionId={sessionId} working={working} />
     </>
   );
 }
