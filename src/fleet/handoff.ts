@@ -16,6 +16,7 @@ import type { Engine } from "../engine/turn.ts";
 import type { MachineRow } from "./db.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError, linkFetch } from "./link.ts";
+import { readText } from "../core/proc.ts";
 
 export type StepName = "interrupt" | "snapshot" | "transfer" | "worktree" | "switch";
 export type Step = { name: StepName; state: "pending" | "running" | "done" | "skipped" | "failed"; detail?: string };
@@ -60,7 +61,7 @@ export class Handoffs {
   private async sh(machine: MachineRow | null, cwd: string, script: string): Promise<{ code: number; out: string }> {
     if (!machine) {
       const p = Bun.spawn(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
-      const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+      const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
       return { code, out: out + err };
     }
     const p = await this.fleet.peer(machine.id);

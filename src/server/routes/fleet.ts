@@ -24,6 +24,7 @@ import { contains } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
+import { readText } from "../../core/proc.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -618,7 +619,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
             cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, signal: req.signal,
             timeout: 10 * 60_000, // the longest a shell call may run in any family
           });
-          const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+          const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
           return { code, out: (out + err).slice(-200_000) };
         });
       }),

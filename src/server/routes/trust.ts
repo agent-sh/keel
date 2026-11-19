@@ -12,6 +12,7 @@ import { rootOf, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
+import { readText } from "../../core/proc.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -22,7 +23,7 @@ async function patchOf(rel: string, a: string, b: string): Promise<{ text: strin
     writeFileSync(join(dir, "a"), a);
     writeFileSync(join(dir, "b"), b);
     const p = Bun.spawn(["git", "diff", "--no-index", "--no-color", "-U3", "--", join(dir, "a"), join(dir, "b")], { stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(p.stdout).text();
+    const out = await readText(p.stdout);
     await p.exited;
     const body = out.split("\n").filter((l) => !/^(diff --git|index |--- |\+\+\+ |new file|deleted file)/.test(l)).join("\n");
     const lines = body.split("\n");

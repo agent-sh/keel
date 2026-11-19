@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { readText } from "../core/proc.ts";
 
 export type FileChange = { path: string; status: string; added: number; removed: number; outside?: boolean };
 export type DiffResult = { files: FileChange[]; diff: string; truncated: boolean };
@@ -64,7 +65,7 @@ export class Shadow {
       stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : "ignore",
       stdout: "pipe", stderr: "pipe", timeout: opts.timeout ?? 60_000, killSignal: "SIGKILL",
     });
-    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
     if (code !== 0 && !(opts.ok ?? []).includes(code)) throw new Error(`git ${args[0]} failed (${p.signalCode ?? code}): ${err.trim().slice(0, 500)}`);
     return out;
   }

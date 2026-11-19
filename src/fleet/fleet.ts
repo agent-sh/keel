@@ -11,6 +11,7 @@ import { freeCores, localFacts, VERSION } from "./facts.ts";
 import { CONNECT_MS, freePort, LinkError, linkFetch, linkJson, listenerUids, loopbackUrl, newKey, type Peer } from "./link.ts";
 import { place, type Place, type Rule, type Want } from "./placement.ts";
 import { plainAlias, SSH_BASE, SSH_ONE_SHOT, sshHosts, sshProgram, sshReach } from "./sshconfig.ts";
+import { readText } from "../core/proc.ts";
 
 export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
 
@@ -184,7 +185,7 @@ export class Fleet {
     const deadline = Date.now() + CONNECT_MS + 5000;
     while (Date.now() < deadline) {
       if (proc.exitCode !== null) {
-        const err = (await new Response(proc.stderr).text()).trim().split("\n").pop();
+        const err = (await readText(proc.stderr)).trim().split("\n").pop();
         throw new LinkError(`ssh -L to ${m.ssh_host} ended: ${err || `exit ${proc.exitCode}`}`);
       }
       const uids = listenerUids(port);
@@ -215,7 +216,7 @@ export class Fleet {
     }
     const script = `p=${m.daemon_port}; hp=$(printf ':%04X' "$p"); for t in /proc/net/tcp /proc/net/tcp6; do [ -r "$t" ] && awk -v p="$hp" '$4=="0A" && substr($2, length($2)-4)==p {print "uid=" $8}' "$t"; done; command -v lsof >/dev/null 2>&1 && [ ! -r /proc/net/tcp ] && lsof -nP -iTCP:$p -sTCP:LISTEN -Fu 2>/dev/null | sed -n 's/^u/uid=/p'; echo "me=$(id -u)"`;
     const proc = Bun.spawn([sshProgram(), ...SSH_ONE_SHOT, m.ssh_host!, script], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
-    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    const [out, code] = await Promise.all([readText(proc.stdout), proc.exited]);
     if (code !== 0) return `cannot read the listeners on ${m.ssh_host}`;
     const me = out.match(/me=(\d+)/)?.[1];
     const uids = [...out.matchAll(/uid=(\d+)/g)].map((x) => x[1]);

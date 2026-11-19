@@ -13,6 +13,7 @@ import { Barrier, FakeVendor, type Answer } from "./check-vendor.ts";
 import { FIXTURE_FILES } from "./check-fixtures.ts";
 import { codecFor } from "./index.ts";
 import type { PluginProviderDecl } from "./host.ts";
+import { pumpLines, pumpText } from "../../core/proc.ts";
 
 const LOCAL = 20_000;
 const IDLE = 300_000;
@@ -88,20 +89,11 @@ class Proc {
       this.pending.clear();
     });
     void this.read();
-    void (async () => { for await (const c of p.stderr) this.stderr = (this.stderr + dec.decode(c, { stream: true })).slice(-65536); })();
+    void pumpText(p.stderr, (t) => (this.stderr = (this.stderr + t).slice(-65536)), "plugin check stderr");
   }
 
   private async read() {
-    let buf = "";
-    for await (const c of this.p.stdout) {
-      buf += dec.decode(c, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (line.trim()) this.onLine(line);
-      }
-    }
+    await pumpLines(this.p.stdout, (line) => { if (line.trim()) this.onLine(line); }, "plugin check stdout");
   }
 
   private violation(what: string) { this.violations++; this.lastViolation = what; }

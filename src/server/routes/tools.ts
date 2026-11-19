@@ -8,17 +8,9 @@ import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts"
 import { adoptJobs, drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { discoverSkills, renderForOwner } from "../../tools/skills.ts";
 import type { RouteModule } from "../app.ts";
+import { pumpLines } from "../../core/proc.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
-
-// Text chunks to lines.
-const lines = () => {
-  let rest = "";
-  return new TransformStream<string, string>({
-    transform(chunk, c) { const parts = (rest + chunk).split("\n"); rest = parts.pop()!; for (const p of parts) c.enqueue(p); },
-    flush(c) { if (rest) c.enqueue(rest); },
-  });
-};
 
 export const toolRoutes: RouteModule = (deps) => {
   // Background commands a previous daemon started run on; take them back.
@@ -95,12 +87,12 @@ export const toolRoutes: RouteModule = (deps) => {
         const proc = Bun.spawn(["rg", "--json", "-F", "-i", "--max-filesize", "2M", "--max-columns", "300", "--", q, "."], { cwd: s.workspace, stdout: "pipe", stderr: "ignore", signal: req.signal });
         const matches: { path: string; line: number; text: string }[] = [];
         let truncated = false;
-        for await (const line of proc.stdout.pipeThrough(new TextDecoderStream()).pipeThrough(lines())) {
-          if (!line.includes('"type":"match"')) continue;
+        await pumpLines(proc.stdout, (line) => {
+          if (truncated || !line.includes('"type":"match"')) return;
           const m = JSON.parse(line).data;
           matches.push({ path: String(m.path.text).replace(/^\.\//, ""), line: m.line_number, text: String(m.lines.text ?? "").trimEnd().slice(0, 300) });
-          if (matches.length >= 200) { truncated = true; proc.kill(); break; }
-        }
+          if (matches.length >= 200) { truncated = true; proc.kill(); }
+        }, "content search");
         return json({ matches, truncated });
       },
     },

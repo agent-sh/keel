@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { registerCatalog } from "./catalog.ts";
 import { spill } from "./spill.ts";
+import { readText } from "../core/proc.ts";
 
 const HOME = homedir();
 const findBin = (name: string, env?: string) =>
@@ -32,7 +33,7 @@ async function rpc(bin: string, method: string, params: unknown, session: unknow
   const proc = Bun.spawn([bin], { stdin: "pipe", stdout: "pipe", stderr: "pipe", signal, timeout: 90_000 });
   proc.stdin.write(JSON.stringify({ id: 1, method, params: { params, session } }) + "\n");
   proc.stdin.end();
-  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  const [out, err] = await Promise.all([readText(proc.stdout), readText(proc.stderr), proc.exited]);
   const line = out.split("\n").find((l) => l.trim());
   if (!line) throw new Error(`${method}: no answer from ${bin}: ${err.slice(0, 300)}`);
   const d = JSON.parse(line);
@@ -136,7 +137,7 @@ async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal) {
   const path = join(o.spillDir, "web", `${Bun.hash(url).toString(36)}.pdf`);
   await Bun.write(path, res);
   const p = Bun.spawn(["pdftotext", "-layout", "-enc", "UTF-8", path, "-"], { stdout: "pipe", stderr: "ignore" });
-  const text = await new Response(p.stdout).text();
+  const text = await readText(p.stdout);
   return { text: await spill(`PDF saved to ${path}\n\n${text}`, o.spillDir, "webfetch-pdf") };
 }
 

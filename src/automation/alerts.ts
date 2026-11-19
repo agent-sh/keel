@@ -2,6 +2,7 @@ import * as activity from "./activity.ts";
 import { D, alertHook, capture, emit } from "./core.ts";
 import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
+import { readText } from "../core/proc.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -231,7 +232,7 @@ registerChannel({
       `{'suppress-sound': <true>, 'urgency': <byte ${urgency}>, 'desktop-entry': <'keel'>, 'category': <${gvariantString(`keel.${a.kind}`)}>}`,
       "int32 -1",
     ], { stdout: "pipe", stderr: "pipe" });
-    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
     if (code !== 0) throw new Error(`gdbus Notify failed: ${err.trim()}`);
     const m = out.match(/uint32 (\d+)/);
     if (m) shown[key] = Number(m[1]);
@@ -254,7 +255,7 @@ registerChannel({
     const argv = process.env.KEEL_NOTIFY_COMMAND!.trim().split(/\s+/);
     const p = Bun.spawn([...argv, JSON.stringify(a)], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
     p.exited.then(async (code) => {
-      if (code !== 0) capture(new Error(`KEEL_NOTIFY_COMMAND exited ${code}: ${(await new Response(p.stderr).text()).slice(0, 500)}`), { alert: a.id });
+      if (code !== 0) capture(new Error(`KEEL_NOTIFY_COMMAND exited ${code}: ${(await readText(p.stderr)).slice(0, 500)}`), { alert: a.id });
     });
   },
 });

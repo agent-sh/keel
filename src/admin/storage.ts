@@ -13,6 +13,7 @@ import type { Store } from "../core/store.ts";
 import type { Engine } from "../engine/turn.ts";
 import { jobsOf, running, stopJob } from "../tools/jobs.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
+import { readText } from "../core/proc.ts";
 
 const DAY = 86_400_000;
 
@@ -37,7 +38,7 @@ async function du(paths: string[]): Promise<Map<string, number>> {
   const have = paths.filter((p) => existsSync(p));
   if (!have.length) return out;
   const p = Bun.spawn(["du", "-sb", "--", ...have], { stdout: "pipe", stderr: "ignore" });
-  const text = await new Response(p.stdout).text();
+  const text = await readText(p.stdout);
   await p.exited;
   for (const line of text.split("\n")) {
     const m = /^(\d+)\t(.+)$/.exec(line);

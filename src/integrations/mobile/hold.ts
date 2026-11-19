@@ -4,6 +4,7 @@
 // workbench that reported presence, or a screen the login manager says is
 // unlocked. While the owner stays at the desk the check backs off from 1 s,
 // doubling, to 20 s, so a held push does not start a process every second.
+import { readText } from "../../core/proc.ts";
 
 export const FIRST_WAIT_MS = 20_000;
 export const MAX_PROBE_MS = 20_000;
@@ -41,7 +42,7 @@ export async function screenUnlocked(): Promise<boolean> {
   const run = async (argv: string[]) => {
     try {
       const p = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
-      const out = (await new Response(p.stdout).text()).trim();
+      const out = (await readText(p.stdout)).trim();
       return (await p.exited) === 0 ? out : "";
     } catch {
       return "";

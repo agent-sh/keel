@@ -6,6 +6,7 @@
 // Mcp-Session-Id. We probe with server/discover and fall back to initialize on
 // any error that is not a recognized modern one, as the spec's dual-era client
 // section says. Most servers in use today are legacy.
+import { pumpLines, pumpText } from "../core/proc.ts";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
@@ -141,25 +142,8 @@ export class McpClient {
       stderr: "pipe",
     });
     this.proc = proc;
-    (async () => {
-      const dec = new TextDecoder();
-      let buf = "";
-      for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
-        buf += dec.decode(chunk, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (line) this.onMessage(line);
-        }
-      }
-    })().catch(() => {});
-    (async () => {
-      const dec = new TextDecoder();
-      for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
-        this.stderrTail = (this.stderrTail + dec.decode(chunk, { stream: true })).slice(-4000);
-      }
-    })().catch(() => {});
+    void pumpLines(proc.stdout as ReadableStream<Uint8Array>, (l) => { const line = l.trim(); if (line) this.onMessage(line); }, "mcp stdout");
+    void pumpText(proc.stderr as ReadableStream<Uint8Array>, (t) => (this.stderrTail = (this.stderrTail + t).slice(-4000)), "mcp stderr");
     proc.exited.then((code) => {
       const why = `the server exited (code ${code})`;
       this.failAll(this.withStderr(new Error(why)));

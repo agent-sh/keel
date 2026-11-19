@@ -6,6 +6,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readText } from "../core/proc.ts";
 
 const TTL = 5 * 60_000;
 const cache = new Map<string, { value: string; at: number }>();
@@ -26,7 +27,7 @@ export async function key(src: KeySource): Promise<string | null> {
   if (hit && Date.now() - hit.at < TTL) return hit.value;
   const p = Bun.spawn([credGet(), src.cred], { stdin: "ignore", stdout: "pipe", stderr: "ignore", cwd: homedir() });
   const timer = setTimeout(() => p.kill(), 20_000);
-  const out = (await new Response(p.stdout).text()).split("\n")[0]!.trim();
+  const out = (await readText(p.stdout)).split("\n")[0]!.trim();
   clearTimeout(timer);
   await p.exited;
   if (!out) {

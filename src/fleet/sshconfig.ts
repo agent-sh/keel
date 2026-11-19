@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { readText } from "../core/proc.ts";
 
 const MAX_DEPTH = 16;
 
@@ -59,7 +60,7 @@ export async function sshReach(alias: string): Promise<{ ok: true; detail: strin
   if (!plainAlias(alias)) return { ok: false, reason: `${alias} is not a plain host alias` };
   const p = Bun.spawn([sshProgram(), ...SSH_ONE_SHOT, alias, "uname -sm"], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const timer = setTimeout(() => p.kill(), 12_000);
-  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
   clearTimeout(timer);
   return code === 0 ? { ok: true, detail: out.trim() } : { ok: false, reason: (err.trim().split("\n").pop() || `ssh exited ${code}`).slice(0, 300) };
 }

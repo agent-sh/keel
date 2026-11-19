@@ -7,6 +7,7 @@ import { basename, dirname, join, relative } from "node:path";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { Shadow, type DiffResult } from "../safety/shadow.ts";
+import { readText } from "../core/proc.ts";
 
 export type Worktree = {
   session_id: string;
@@ -35,7 +36,7 @@ export async function git(cwd: string, args: string[], opts: { env?: Record<stri
     cwd, env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0", ...opts.env },
     stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : "ignore", stdout: "pipe", stderr: "pipe", timeout: 120_000,
   });
-  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
   if (code !== 0) {
     if (opts.ok) return "";
     throw new GitError(`git ${args[0]}: ${err.trim().split("\n").slice(-3).join(" ") || `exit ${code}`}`);
@@ -45,7 +46,7 @@ export async function git(cwd: string, args: string[], opts: { env?: Record<stri
 
 async function run(cwd: string, argv: string[]): Promise<{ out: string; err: string; code: number }> {
   const p = Bun.spawn(argv, { cwd, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 120_000 });
-  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
   return { out, err, code };
 }
 

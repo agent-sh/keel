@@ -8,6 +8,7 @@ import type { Subprocess } from "bun";
 import { classify, ProviderError, scrub, streamIdleMs } from "../http.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "../sse.ts";
 import type { PluginEntry } from "./config.ts";
+import { pumpText } from "../../core/proc.ts";
 
 export type PluginProviderDecl = {
   id: string;
@@ -244,28 +245,25 @@ export class PluginProcess {
   }
 
   private async readStdout(proc: Subprocess<"pipe", "pipe", "pipe">) {
-    const dec = new TextDecoder();
     let buf = "";
-    try {
-      for await (const chunk of proc.stdout) {
-        buf += dec.decode(chunk, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).replace(/\r$/, "");
-          buf = buf.slice(nl + 1);
-          if (line) this.onLine(line);
-        }
-        if (buf.length > 32 * 1024 * 1024) return this.violation("a line over 32 MiB", true);
+    let tooLong = false;
+    await pumpText(proc.stdout, (t) => {
+      if (tooLong) return;
+      buf += t;
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).replace(/\r$/, "");
+        buf = buf.slice(nl + 1);
+        if (line) this.onLine(line);
       }
-    } catch {}
+      if (buf.length > 32 * 1024 * 1024) tooLong = true;
+    }, "plugin stdout").catch((e) => this.capture(e, { plugin: this.entry.id, at: "stdout" }));
+    if (tooLong) return this.violation("a line over 32 MiB", true);
     if (this.proc === proc && !this.stopping) this.crashed("its output ended");
   }
 
   private async readStderr(proc: Subprocess<"pipe", "pipe", "pipe">) {
-    const dec = new TextDecoder();
-    try {
-      for await (const chunk of proc.stderr) this.stderrTail = scrub((this.stderrTail + dec.decode(chunk, { stream: true })).slice(-4096));
-    } catch {}
+    await pumpText(proc.stderr, (t) => (this.stderrTail = scrub((this.stderrTail + t).slice(-4096))), "plugin stderr").catch((e) => this.capture(e, { plugin: this.entry.id, at: "stderr" }));
   }
 
   private onLine(line: string) {

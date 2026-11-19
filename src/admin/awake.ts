@@ -7,6 +7,7 @@ import type { Subprocess } from "bun";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
 import { registerSettings, settings } from "./settings.ts";
+import { readText } from "../core/proc.ts";
 
 registerSettings("keep_awake", { mode: "turns" }, (v) => (["turns", "never"].includes(v.mode) ? undefined : "mode is turns or never"));
 
@@ -102,7 +103,7 @@ export class Awake {
       if (this.proc !== p) return;
       this.proc = undefined;
       this.locked = false;
-      const err = (await new Response(p.stderr).text().catch(() => "")).trim();
+      const err = (await readText(p.stderr).catch(() => "")).trim();
       this.refused = err || `systemd-inhibit ended with ${code}`;
       this.capture(new Error(`keep-awake refused: ${this.refused}`), { at: "keep-awake" });
       this.emit();
