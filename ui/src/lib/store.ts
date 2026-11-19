@@ -70,9 +70,21 @@ export function useStore<T>(sel: (s: State) => T): T {
 }
 export const getState = () => state;
 
+// A write a remote device makes with the owner's authority answers 428 with
+// the action to sign: the page gets a passkey assertion (lib/presence.ts) and
+// sends the same request once more. Cancelling sends nothing again.
+export const presenceHook: { sign?: (action: string) => Promise<string | null> } = {};
+
 export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(apiPath(path), { ...init, headers: { "content-type": "application/json", ...init?.headers } });
-  const body = await r.json().catch(() => ({}));
+  const send = (extra?: Record<string, string>) => fetch(apiPath(path), { ...init, headers: { "content-type": "application/json", ...init?.headers, ...extra } });
+  let r = await send();
+  let body = await r.json().catch(() => ({}));
+  if (r.status === 428 && body.presence?.action && presenceHook.sign) {
+    const receipt = await presenceHook.sign(body.presence.action);
+    if (!receipt) throw Object.assign(new Error("Not done: the passkey check was cancelled."), { status: 428 });
+    r = await send({ "x-keel-presence": receipt });
+    body = await r.json().catch(() => ({}));
+  }
   if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status });
   return body as T;
 }

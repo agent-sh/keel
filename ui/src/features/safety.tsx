@@ -9,6 +9,7 @@ import { getState, reportError } from "../lib/store.ts";
 import { getUI, savePref } from "../lib/ui.ts";
 import { handoff } from "../lib/worktree.ts";
 import { confirmAction } from "../components/Confirm.tsx";
+import "../lib/presence.ts";
 import { slash } from "../lib/extend.ts";
 
 panels.add(

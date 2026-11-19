@@ -1,0 +1,148 @@
+// Verified owner presence: passkeys (WebAuthn) for what a remote device asks
+// for with the owner's authority. A request from the desk itself (the page at
+// localhost) needs none. From anywhere else, once a passkey is enrolled, a
+// high-risk approval and authority changes (a mode that asks less, a grant,
+// the gate's settings) need a fresh assertion signed over that exact action:
+// the challenge is the hash of the action and a nonce, a receipt covers that
+// one action once, within the ceremony's timeout. Only public keys are stored.
+import { createHash, randomBytes, randomInt } from "node:crypto";
+import {
+  generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
+} from "@simplewebauthn/server";
+import type { Store } from "../core/store.ts";
+
+const TIMEOUT = 300_000; // the upstream ceremony timeout; receipts last as long
+const SCHEMA = `CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, rp_id TEXT NOT NULL, origin TEXT NOT NULL, public_key TEXT NOT NULL, counter INTEGER NOT NULL, transports TEXT, label TEXT, created INTEGER NOT NULL, used INTEGER);`;
+
+export type Passkey = { id: string; rp_id: string; origin: string; label: string | null; created: number; used: number | null };
+type Ceremony = { kind: "register" | "authenticate"; challenge: string; origin: string; rpID: string; action?: string; expires: number };
+
+// The desk: the page was opened at localhost (or the loopback address) and no
+// proxy stands between. Everything else is a remote device.
+export function isLocal(req: Request): boolean {
+  if (req.headers.get("x-forwarded-for") || req.headers.get("forwarded")) return false;
+  const host = (req.headers.get("host") ?? "").replace(/:\d+$/, "").toLowerCase();
+  const local = (h: string) => h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+  if (!local(host)) return false;
+  const origin = req.headers.get("origin");
+  if (!origin) return true;
+  try { return local(new URL(origin).hostname.toLowerCase()); } catch { return false; }
+}
+
+const originOf = (req: Request) => {
+  const o = req.headers.get("origin");
+  if (!o) throw Object.assign(new Error("a passkey ceremony needs the page's Origin"), { status: 400 });
+  return o;
+};
+
+export class Presence {
+  private ceremonies = new Map<string, Ceremony>();
+  private receipts = new Map<string, { action: string; expires: number }>();
+  private codes = new Map<string, number>(); // enrollment code -> expiry
+
+  constructor(private store: Store) {
+    store.migrate(SCHEMA);
+  }
+
+  list(): Passkey[] {
+    return this.store.db.query<Passkey, []>("SELECT id, rp_id, origin, label, created, used FROM passkeys ORDER BY created").all();
+  }
+  enrolled(): boolean {
+    return !!this.store.db.query("SELECT 1 FROM passkeys LIMIT 1").get();
+  }
+  remove(id: string): boolean {
+    return this.store.db.query("DELETE FROM passkeys WHERE id = ?").run(id).changes > 0;
+  }
+
+  // A one-time code shown at the desk, typed on the device that enrolls.
+  code(): { code: string; expires: number } {
+    const code = Array.from({ length: 8 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[randomInt(32)]).join("");
+    const expires = Date.now() + 10 * 60_000;
+    this.codes.set(code, expires);
+    return { code, expires };
+  }
+
+  private sweep() {
+    const now = Date.now();
+    for (const [k, c] of this.ceremonies) if (c.expires < now) this.ceremonies.delete(k);
+    for (const [k, r] of this.receipts) if (r.expires < now) this.receipts.delete(k);
+    for (const [k, e] of this.codes) if (e < now) this.codes.delete(k);
+  }
+
+  async registerStart(req: Request, code?: string) {
+    this.sweep();
+    const origin = originOf(req);
+    if (!isLocal(req)) {
+      const c = (code ?? "").trim().toUpperCase();
+      if (!c || !this.codes.has(c)) throw Object.assign(new Error("enrolling from another device needs the code shown at the desk (Settings > Safety > Add a device)"), { status: 403 });
+      this.codes.delete(c);
+    }
+    const rpID = new URL(origin).hostname;
+    const options = await generateRegistrationOptions({
+      rpName: "Keel", rpID, userName: "owner", userDisplayName: "Keel owner", timeout: TIMEOUT, attestationType: "none",
+      userID: new TextEncoder().encode("keel-owner"),
+      excludeCredentials: this.list().filter((p) => p.rp_id === rpID).map((p) => ({ id: p.id })),
+      authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
+    });
+    const ceremony = crypto.randomUUID();
+    this.ceremonies.set(ceremony, { kind: "register", challenge: options.challenge, origin, rpID, expires: Date.now() + TIMEOUT });
+    return { ceremony, options };
+  }
+
+  async registerFinish(req: Request, ceremony: string, credential: any, label?: string) {
+    const c = this.ceremonies.get(ceremony);
+    this.ceremonies.delete(ceremony); // consumed once, whatever happens
+    if (!c || c.kind !== "register" || c.expires < Date.now()) throw Object.assign(new Error("unknown, expired or used ceremony"), { status: 400 });
+    if (originOf(req) !== c.origin) throw Object.assign(new Error("the ceremony belongs to another origin"), { status: 400 });
+    const v = await verifyRegistrationResponse({ response: credential, expectedChallenge: c.challenge, expectedOrigin: c.origin, expectedRPID: c.rpID, requireUserVerification: true });
+    if (!v.verified || !v.registrationInfo) throw Object.assign(new Error("the passkey could not be verified"), { status: 400 });
+    const cred = v.registrationInfo.credential;
+    this.store.db.query("INSERT INTO passkeys (id, rp_id, origin, public_key, counter, transports, label, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(cred.id, c.rpID, c.origin, Buffer.from(cred.publicKey).toString("base64"), cred.counter, JSON.stringify(cred.transports ?? []), label?.slice(0, 80) || null, Date.now());
+    return { id: cred.id };
+  }
+
+  // An assertion over one action. The challenge commits to the action.
+  async authStart(req: Request, action: string) {
+    this.sweep();
+    const origin = originOf(req);
+    const rpID = new URL(origin).hostname;
+    const keys = this.list().filter((p) => p.rp_id === rpID);
+    if (!keys.length) throw Object.assign(new Error(`no passkey is enrolled for ${rpID}: enroll this device in Settings > Safety`), { status: 400 });
+    const nonce = randomBytes(16).toString("hex");
+    const challenge = createHash("sha256").update(`${action}\n${nonce}`).digest();
+    const options = await generateAuthenticationOptions({ rpID, challenge, timeout: TIMEOUT, userVerification: "required", allowCredentials: keys.map((k) => ({ id: k.id })) });
+    const ceremony = crypto.randomUUID();
+    this.ceremonies.set(ceremony, { kind: "authenticate", challenge: options.challenge, origin, rpID, action, expires: Date.now() + TIMEOUT });
+    return { ceremony, options };
+  }
+
+  async authFinish(req: Request, ceremony: string, credential: any): Promise<{ receipt: string; action: string }> {
+    const c = this.ceremonies.get(ceremony);
+    this.ceremonies.delete(ceremony);
+    if (!c || c.kind !== "authenticate" || c.expires < Date.now() || !c.action) throw Object.assign(new Error("unknown, expired or used ceremony"), { status: 400 });
+    if (originOf(req) !== c.origin) throw Object.assign(new Error("the ceremony belongs to another origin"), { status: 400 });
+    const row = this.store.db.query<{ id: string; public_key: string; counter: number; transports: string | null; rp_id: string }, [string]>("SELECT * FROM passkeys WHERE id = ?").get(String(credential?.id ?? ""));
+    if (!row || row.rp_id !== c.rpID) throw Object.assign(new Error("that passkey is not enrolled here"), { status: 400 });
+    const v = await verifyAuthenticationResponse({
+      response: credential, expectedChallenge: c.challenge, expectedOrigin: c.origin, expectedRPID: c.rpID, requireUserVerification: true,
+      credential: { id: row.id, publicKey: new Uint8Array(Buffer.from(row.public_key, "base64")), counter: row.counter, transports: row.transports ? JSON.parse(row.transports) : undefined },
+    });
+    if (!v.verified) throw Object.assign(new Error("the passkey's signature did not verify"), { status: 400 });
+    this.store.db.query("UPDATE passkeys SET counter = ?, used = ? WHERE id = ?").run(v.authenticationInfo.newCounter, Date.now(), row.id);
+    const receipt = randomBytes(24).toString("base64url");
+    this.receipts.set(receipt, { action: c.action, expires: Date.now() + TIMEOUT });
+    return { receipt, action: c.action };
+  }
+
+  // Whether the request may do `action`: from the desk, before any passkey is
+  // enrolled, or with a receipt for exactly that action (used up here).
+  allows(req: Request, action: string): boolean {
+    if (isLocal(req) || !this.enrolled()) return true;
+    const token = req.headers.get("x-keel-presence");
+    if (!token) return false;
+    const r = this.receipts.get(token);
+    this.receipts.delete(token);
+    return !!r && r.action === action && r.expires >= Date.now();
+  }
+}

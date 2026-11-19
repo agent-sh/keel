@@ -11,7 +11,7 @@ import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
 import { rootOf, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import type { Deps, RouteModule } from "../app.ts";
-import { gate } from "./permissions.ts";
+import { gate, presence } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -32,6 +32,8 @@ async function patchOf(rel: string, a: string, b: string): Promise<{ text: strin
   }
 }
 const bad = (error: string, status = 400) => json({ error }, status);
+// From a remote device, loading a repository's files or putting protected files back needs the owner's passkey.
+const needs = (req: Request, action: string) => (!presence || presence.allows(req, action) ? null : json({ error: "this needs your passkey from a remote device", presence: { action } }, 428));
 
 export const trustRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
@@ -110,6 +112,8 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
       GET: (req: any) => guard(() => json(view(dirOf(new URL(req.url).searchParams.get("cwd")))))(),
       // Trust files at the content the owner was shown: { cwd, files: [{ path, sha256 }] }.
       POST: async (req: any) => guard(async () => {
+        const g = needs(req, "trust");
+        if (g) return g;
         const b = await body(req);
         const cwd = dirOf(b.cwd);
         const list = Array.isArray(b.files) ? b.files : b.path ? [{ path: b.path, sha256: b.sha256 }] : [];
@@ -157,6 +161,8 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
     },
     "/api/permissions/quarantine/:id/restore": {
       POST: (req: any) => guard(() => {
+        const g = needs(req, `quarantine:${req.params.id}`);
+        if (g) return g;
         const b = quarantine.restore(req.params.id);
         bus.emit({ t: "feature", name: "quarantine", session_id: b.session_id, data: b });
         return json({ ok: true, batch: b });

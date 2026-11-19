@@ -4,6 +4,7 @@ import { api, reportError } from "../lib/store.ts";
 import type { WorktreeStatus } from "../lib/worktree.ts";
 import { useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { enroll, passkeysUsable } from "../lib/presence.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type PermSettings = { default_mode: string; reviewer_model: string | null; reviewer_policy: string };
@@ -54,6 +55,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
           </div>
         </SettingRow>
       </Card>
+      <PasskeysCard />
       <TrustCard />
       <WorktreesCard />
       {children}
@@ -144,6 +146,77 @@ function TrustCard() {
             <option value="ask">Wait for me</option>
           </select>
         </SettingRow>
+      </Card>
+    </div>
+  );
+}
+
+type PresenceInfo = { local: boolean; enrolled: boolean; rp_id: string | null; passkeys: { id: string; rp_id: string; label: string | null; created: number; used: number | null }[] };
+
+// Passkeys: high-risk approvals and authority changes from another device ask
+// for one; the desk itself never does.
+function PasskeysCard() {
+  const [info, setInfo] = useState<PresenceInfo | null>(null);
+  const [code, setCode] = useState<{ code: string; expires: number } | null>(null);
+  const [typed, setTyped] = useState("");
+  const [label, setLabel] = useState("");
+  const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
+  const load = () => api<PresenceInfo>("/api/owner-presence").then(setInfo).catch(reportError);
+  useEffect(() => { load(); }, []);
+  if (!info) return null;
+  const here = info.passkeys.filter((p) => p.rp_id === location.hostname);
+  const doEnroll = async () => {
+    setMsg(null);
+    try {
+      await enroll(label.trim() || (info.local ? "This computer" : "This device"), info.local ? undefined : typed);
+      setMsg({ text: "Passkey enrolled." });
+      setTyped("");
+      load();
+    } catch (e) { setMsg({ text: (e as Error).message, error: true }); }
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="px-1 text-ui font-medium text-muted">Passkeys</h3>
+      <Card>
+        <div className="py-4" data-testid="passkeys">
+          <p className="text-ui text-muted">
+            {info.enrolled
+              ? "From another device, a high-risk approval and changes that let sessions do more (a looser mode, a grant, trusting a repository's files, these settings) need your passkey, signed over that one action. Here at the desk nothing asks."
+              : "With a passkey enrolled, a high-risk approval and changes that let sessions do more need it when they come from another device. Here at the desk nothing asks."}
+          </p>
+          {info.passkeys.length > 0 && (
+            <ul className="mt-3 flex flex-col gap-1" data-testid="passkey-list">
+              {info.passkeys.map((p) => (
+                <li key={p.id} className="flex items-center gap-2 text-caption">
+                  <span className="min-w-0 flex-1 truncate">{p.label ?? "Passkey"}</span>
+                  <span className="font-mono text-faint">{p.rp_id}</span>
+                  <span className="text-faint">{p.used ? `used ${new Date(p.used).toLocaleDateString()}` : "not used yet"}</span>
+                  <button className="text-faint hover:text-danger" onClick={() => api(`/api/owner-presence/${encodeURIComponent(p.id)}`, { method: "DELETE" }).then(load).catch((e) => setMsg({ text: e.message, error: true }))}>Remove</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!passkeysUsable() ? (
+            <p className="mt-3 text-caption text-warn">Passkeys work only over HTTPS or at localhost; this page is at {location.origin}.</p>
+          ) : (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {!info.local && <input data-testid="passkey-code" value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} placeholder="Code shown at the desk" className="h-8 w-52 rounded-md border border-line bg-raised px-2 font-mono text-ui outline-none placeholder:font-sans focus:border-line-strong" />}
+              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={info.local ? "This computer" : "This device"} className="h-8 w-44 rounded-md border border-line bg-raised px-2 text-ui outline-none focus:border-line-strong" />
+              <button data-testid="passkey-enroll" disabled={!info.local && !typed.trim()} onClick={doEnroll} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+                {here.length ? "Enroll another passkey here" : "Enroll this device"}
+              </button>
+              {info.local && (
+                <button data-testid="passkey-code-new" onClick={() => api<{ code: string; expires: number }>("/api/owner-presence/code", { method: "POST" }).then(setCode).catch(reportError)} className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">Add a device</button>
+              )}
+            </div>
+          )}
+          {code && (
+            <p className="mt-3 text-caption text-muted" data-testid="passkey-code-shown">
+              On the other device, open Keel over HTTPS, go to Settings, Safety, and enroll it with <span className="rounded bg-code px-1.5 py-0.5 font-mono text-ui text-fg">{code.code}</span> (until {new Date(code.expires).toLocaleTimeString()}).
+            </p>
+          )}
+          {msg && <p className={msg.error ? "mt-2 text-caption text-danger" : "mt-2 text-caption text-ok"} data-testid="passkey-msg">{msg.text}</p>}
+        </div>
       </Card>
     </div>
   );

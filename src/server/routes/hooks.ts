@@ -5,7 +5,7 @@ import { lineage } from "../../core/tree.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { Hooks, hookContext, namesOf, ownerHooksPath, projectRoot } from "../../integrations/hooks.ts";
-import { gate } from "./permissions.ts";
+import { gate, presence } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -109,6 +109,8 @@ export const hookRoutes: RouteModule = (deps) => {
     },
     "/api/hooks/trust": {
       POST: async (req: Request) => {
+        // From a remote device, pinning a hook file (it will run commands) needs the owner's passkey.
+        if (presence && !presence.allows(req, "hooks-trust")) return json({ error: "this needs your passkey from a remote device", presence: { action: "hooks-trust" } }, 428);
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
         if (typeof b.sha256 !== "string") return bad("give the sha256 of the file you read");
         const cwd = typeof b.cwd === "string" ? b.cwd : deps.workspace;
