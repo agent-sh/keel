@@ -5,7 +5,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadWorktree, setStartInWorktree, useStartInWorktree, useWorktree } from "../lib/worktree.ts";
-import { confirmAction } from "./Confirm.tsx";
+import { stoppingShells } from "../lib/shells.ts";
 import { popupClass } from "./ui.tsx";
 
 type Pr = { number: number; url: string; title: string; state: string; isDraft: boolean; head_matches?: boolean; checks?: { summary: string; passed: number; failed: number; pending: number; rows: { name: string; status: string; url?: string }[] } };
@@ -50,21 +50,7 @@ export function WorktreeChip({ session }: { session: Session }) {
   const post = (path: string, body?: object) => api(`/api/sessions/${session.id}${path}`, { method: "POST", body: JSON.stringify(body ?? {}) });
   // The folder goes or moves: background commands still running in it are
   // named first, and stopped only when the owner says so.
-  const shells = async <T,>(run: (stop: boolean) => Promise<T>, verb: string): Promise<T | undefined> => {
-    try {
-      return await run(false);
-    } catch (e) {
-      const jobs = (e as { body?: { jobs?: { command: string }[] } }).body?.jobs;
-      if ((e as { status?: number }).status !== 409 || !jobs?.length) throw e;
-      const ok = await confirmAction({
-        title: "Stop its background commands?",
-        body: `This session still runs ${jobs.map((j) => j.command.slice(0, 60)).join(", ")} in the worktree. ${verb} stops ${jobs.length > 1 ? "them" : "it"}.`,
-        action: `Stop and ${verb.toLowerCase()}`,
-        danger: true,
-      });
-      return ok ? run(true) : undefined;
-    }
-  };
+  const shells = <T,>(run: (stop: boolean) => Promise<T>, verb: string) => stoppingShells(run, { verb, where: "the worktree" });
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>

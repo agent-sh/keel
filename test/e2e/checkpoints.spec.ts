@@ -54,13 +54,32 @@ test("checkpoints and rewind", async ({ page, request }) => {
   await expect(panel.getByTestId("rewind-done")).toContainText("Restored 1 file");
   expect(readFileSync(join(ws, "long.txt"), "utf8")).toMatch(/^line 1\n[\s\S]*\nLAST\n$/);
 
-  // Revert one file (b.txt, created by the session).
+  // Revert one file (b.txt, created by the session) while another session's
+  // background command still runs in the folder: its late write would undo
+  // the restore, so the owner is asked to stop it first.
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  let other: string | undefined;
+  if (models.some((m) => m.id === "scripted:stand-in")) {
+    other = (await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: "Writer" } })).json()).session.id;
+    await request.put(`/api/sessions/${other}/permissions`, { data: { mode: "full-auto" } });
+    await request.post(`/api/sessions/${other}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 120; echo late > b.txt", run_in_background: true } }])}` } });
+    await turnsDone(request, other!, 1);
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${other}/jobs`)).json()).jobs.filter((j: any) => j.state === "running" || j.running).length).toBe(1);
+  }
   await panel.getByTestId("tab-session").click();
   await panel.locator('[data-path="b.txt"]').getByTestId("revert-file").click();
   await expect(page.getByTestId("rewind-confirm")).toContainText("b.txt");
   await page.getByTestId("rewind-go").click();
+  if (other) {
+    const stop = page.getByTestId("confirm");
+    await expect(stop).toContainText("sleep 120");
+    expect(existsSync(join(ws, "b.txt"))).toBe(true);
+    await shoot(page, "ckpt-02b-stop-commands");
+    await stop.getByRole("button", { name: "Stop and restore" }).click();
+  }
   await expect(panel.getByTestId("rewind-done")).toContainText("Restored 1 file");
   expect(existsSync(join(ws, "b.txt"))).toBe(false);
+  if (other) await request.delete(`/api/sessions/${other}`);
 
   // Rewind to before turn 2.
   await panel.getByTestId("tab-turns").click();

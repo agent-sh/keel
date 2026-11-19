@@ -4,6 +4,7 @@ import { FileDiff, FolderX, History, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
+import { stoppingShells } from "../lib/shells.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
 
@@ -80,9 +81,10 @@ export function ChangesPanel({ session }: { session: Session }) {
   const run = async (body: object) => {
     setErr("");
     try {
-      const r = await api<RewindResult>(`/api/sessions/${sessionId}/rewind`, { method: "POST", body: JSON.stringify(body) });
-      setDone(r);
+      // Background commands in the folder would write over the restore: the owner may stop them first.
       setPending(null);
+      const r = await stoppingShells((stop) => api<RewindResult>(`/api/sessions/${sessionId}/rewind`, { method: "POST", body: JSON.stringify({ ...body, stop_shells: stop || undefined }) }), { verb: "Restore", where: "this folder" });
+      if (r) setDone(r);
     } catch (e) {
       setErr(failed(e, { at: "ChangesPanel" }));
     }
@@ -174,7 +176,8 @@ export function ChangesPanel({ session }: { session: Session }) {
               onHunk={!canRevert ? undefined : async (h) => {
                 setErr("");
                 try {
-                  setDone(await api<RewindResult>(`/api/sessions/${sessionId}/changes/revert`, { method: "POST", body: JSON.stringify({ path: h.path, hunk: { index: h.index, header: h.header, body: h.body }, from: firstTurn }) }));
+                  const r = await stoppingShells((stop) => api<RewindResult>(`/api/sessions/${sessionId}/changes/revert`, { method: "POST", body: JSON.stringify({ path: h.path, hunk: { index: h.index, header: h.header, body: h.body }, from: firstTurn, stop_shells: stop || undefined }) }), { verb: "Revert", where: "this folder" });
+                  if (r) setDone(r);
                 } catch (e) { setErr(failed(e, { at: "ChangesPanel" })); }
                 load();
               }}

@@ -346,8 +346,9 @@ export async function stopJob(j: Job, reason = "was stopped"): Promise<void> {
 }
 
 export const jobsOf = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId);
-// Running jobs of any session whose folder is in `dir` (where links land).
-export const jobsIn = (dir: string) => { const d = realOf(dir); return [...jobs.values()].filter((j) => running(j) && contains(d, realOf(j.cwd))); };
+// Running jobs of any session whose folder is in `dir` or holds it (where links
+// land): a job in a parent folder can write into it too.
+export const jobsIn = (dir: string) => { const d = realOf(dir); return [...jobs.values()].filter((j) => { const c = realOf(j.cwd); return running(j) && (contains(d, c) || contains(c, d)); }); };
 export const findJob = (sessionId: string, id: string | number) =>
   [...jobs.values()].find((j) => j.sessionId === sessionId && (j.id === String(id) || j.num === Number(id)));
 

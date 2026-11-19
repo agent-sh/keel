@@ -3,7 +3,7 @@
 import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { Bad, Checkpoints } from "../../safety/checkpoints.ts";
-import { overlaps } from "../../core/paths.ts";
+import { folderUse, inUse } from "../inuse.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -33,10 +33,13 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
     turnEnd: async (s) => void (s.machine || (await quiet("checkpoint end", () => c.end(s)))),
   });
 
-  // A restore while a turn runs in this workspace (this session or another)
-  // would race the tools.
-  const busy = (id: string, workspace: string) =>
-    store.sessions().some((o) => engine.isRunning(o.id) && (o.id === id || overlaps(o.workspace, workspace)));
+  // A restore while the folder is in use would race what writes there: a turn
+  // in or around it (this session's or another's), or a background command of
+  // any session whose folder overlaps it (its late write would undo the
+  // restore). The owner can have the commands stopped with it (stop_shells).
+  // Other idle sessions in the folder do not hold it.
+  const held = (s: { id: string; workspace: string }, stopShells: boolean) =>
+    inUse(folderUse(store, (x) => engine.isRunning(x), s.workspace, s.id), s.id, { stopShells, what: "rewound", others: false });
 
   return {
     "/api/sessions/:id/checkpoints": {
@@ -64,7 +67,8 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         if (!s) return bad("no such session", 404);
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
         if (s.workspace_gone) return bad("the session's folder is gone; move the session to a folder that exists first", 409);
-        if (busy(s.id, s.workspace)) return bad("a turn is running in this workspace; stop it first", 409);
+        const h = await held(s, !!b.stop_shells);
+        if (h) return h;
         if (typeof b.path !== "string" || !Number.isInteger(b.hunk?.index) || typeof b.hunk?.header !== "string" || typeof b.hunk?.body !== "string" || !Number.isFinite(b.from)) return bad("give path, hunk { index, header, body } and from (the turn)");
         if (b.path.startsWith("/") || b.path.split("/").includes("..")) return bad("the path is relative to the workspace and stays inside it");
         return json(await c.revertHunk(s, { from: Number(b.from), path: b.path, index: b.hunk.index, header: b.hunk.header, body: b.hunk.body }));
@@ -76,7 +80,8 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         if (!s) return bad("no such session", 404);
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
         if (s.workspace_gone) return bad("the session's folder is gone; move the session to a folder that exists first", 409);
-        if (!b.preview && busy(s.id, s.workspace)) return bad("a turn is running in this workspace; stop it first", 409);
+        const h = b.preview ? null : await held(s, !!b.stop_shells);
+        if (h) return h;
         const paths = Array.isArray(b.paths) ? b.paths.filter((p: unknown) => typeof p === "string") : undefined;
         const confirm = Array.isArray(b.confirm?.paths) && b.confirm.versions && typeof b.confirm.versions === "object"
           ? { paths: b.confirm.paths.filter((p: unknown) => typeof p === "string"), versions: b.confirm.versions as Record<string, string> } : undefined;
