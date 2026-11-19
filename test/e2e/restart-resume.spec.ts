@@ -232,6 +232,32 @@ test("an approval pending at a crash is closed, and the continued turn asks agai
     const cards = (await call(`/api/sessions/${sid}/approvals?all`, undefined, "GET")).approvals as any[];
     expect(cards.map((a) => [a.id, a.state]).sort()).toEqual([[old, "cancelled"], [fresh, "allowed"]].sort());
 
+    // A parallel batch: the owner denies one call with a reason while the other
+    // still runs, then the daemon dies. The denial and its reason reach the
+    // model after the restart; only the call that was running may have partly run.
+    expect((await call("/api/permissions/grants", { session_id: sid, kind: "shell", pattern: "sleep *", lifetime: "session" })).status).toBe(201);
+    const denied = join(state, "denied.txt");
+    await page.getByTestId("composer").fill(`script:batch ${JSON.stringify([{ name: "Bash", input: { command: "sleep 20" } }, { name: "Bash", input: { command: `echo no > ${denied}` } }])}`);
+    await page.getByTestId("composer").press("Enter");
+    await expect(card).toHaveCount(1, { timeout: 15_000 });
+    await expect(card.getByTestId("approval-summary")).toContainText("denied.txt");
+    await card.getByTestId("deny").click();
+    await page.getByTestId("deny-reason").fill("leave denied.txt alone");
+    await page.getByTestId("deny-send").click();
+    await expect(card).toHaveCount(0);
+    await expect(page.getByTestId("working")).toContainText("Running Bash"); // the sleep still runs
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state, {}, at);
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Batch done.", { timeout: 30_000 });
+    await expect(page.getByTestId("assistant-text").last()).toContainText("leave denied.txt alone");
+    expect(existsSync(denied)).toBe(false);
+    const batch = ((await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).filter((r: any) => r.tool_use_id.startsWith("batch-"));
+    expect(batch.map((r: any) => [r.is_error, r.content]).sort()).toEqual([
+      [true, "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again."],
+      [true, "The owner denied this call: leave denied.txt alone"],
+    ]);
+
     // Nothing but this machine's provider listings reached the Errors panel.
     const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
     expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);

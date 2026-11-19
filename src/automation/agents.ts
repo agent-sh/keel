@@ -535,6 +535,7 @@ function collectResult(a: AgentRecord, end?: string): string {
   let final = "";
   let before = "";
   let failure = "";
+  let bad: any[] = []; // the failed results of the newest step
   let err = "";
   const close = () => {
     if (final) rounds.push(final);
@@ -543,14 +544,15 @@ function collectResult(a: AgentRecord, end?: string): string {
   };
   for (const e of evs) {
     if (e.kind === "assistant") {
+      bad = [];
       const t = (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
       const usesTools = (e.data.blocks as any[]).some((b) => b.type === "tool_use");
       if (t && !usesTools) final = t;
       else if (t) { before = t; final = ""; }
       else if (usesTools) final = "";
     } else if (e.kind === "tool_result") {
-      const bad = (e.data.results as any[]).filter((r) => r.is_error);
-      // A failure a later call got past is not the agent's last word.
+      bad.push(...(e.data.results as any[]).filter((r) => r.is_error));
+      // A failure a later step got past is not the agent's last word.
       failure = bad.length ? bad.map((r) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content))).join("\n").slice(0, 2000) : "";
     } else if (e.kind === "error") err = e.data.message;
     else if (e.kind === "turn_end") close();

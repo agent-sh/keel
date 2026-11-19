@@ -92,6 +92,12 @@ export function toMessages(events: StoredEvent[]): Message[] {
     const uses = m.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
     if (!uses.length) continue;
     const next = merged[i + 1];
+    // Results stored as each call settled come back in call order.
+    if (next?.role === "user") {
+      const order = new Map(uses.map((u, k) => [u.id, k]));
+      const rank = (b: any) => (b.type === "tool_result" ? (order.get(b.tool_use_id) ?? uses.length) : uses.length + 1);
+      (next.content as any[]).sort((a, b) => rank(a) - rank(b));
+    }
     const have = new Set(next?.role === "user" ? next.content.filter((b) => b.type === "tool_result").map((b: any) => b.tool_use_id) : []);
     const missing: ToolResultBlock[] = uses.filter((u) => !have.has(u.id)).map((u) => ({
       type: "tool_result", tool_use_id: u.id, content: "Interrupted by the user before this tool ran.", is_error: true,
@@ -702,12 +708,18 @@ export class Engine {
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = budget > 0 && steps >= budget;
-          const results = await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx))));
-          if (cut) results.push({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
+          // Each result is stored as it settles, not when the whole batch has:
+          // a crash while one call still runs keeps what the others returned
+          // (a denial and its reason, a finished read). The projection puts a
+          // step's results back in call order.
+          const settle = (r: ToolResultBlock) => {
+            const shown = this.shown.get(r.tool_use_id);
+            this.shown.delete(r.tool_use_id);
+            this.append(id, "tool_result", { results: [r], ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+          };
+          await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx)).then(settle)));
+          if (cut) settle({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
-          const shown = Object.fromEntries(results.filter((r) => this.shown.has(r.tool_use_id)).map((r) => [r.tool_use_id, this.shown.get(r.tool_use_id)]));
-          for (const r of results) this.shown.delete(r.tool_use_id);
-          this.append(id, "tool_result", { results, ...(Object.keys(shown).length ? { shown } : {}) });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
         }

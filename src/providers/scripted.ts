@@ -97,6 +97,17 @@ export class ScriptedProvider implements Provider {
         const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
         return reply(`Done with ${calls.length} call${calls.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
       }
+      case "batch": {
+        // `script:batch [{"name":...,"input":...}, ...]`: every call in one reply
+        // (a parallel batch), then a reply quoting each result it got back.
+        const at = msgs.findLastIndex((m) => m.role === "user" && textOf(m).includes("script:batch"));
+        if (!msgs.slice(at + 1).some((m) => m.role === "assistant")) {
+          return reply("Running a batch.", "tool_use", callsAfter(owner, "script:batch").map((c, i) => ({ type: "tool_use", id: `batch-${msgs.length}-${i}`, name: String(c.name), input: c.input ?? {} })));
+        }
+        const got = msgs.slice(at + 1).flatMap((m) => (m.role === "user" ? (m.content as any[]).filter((b) => b.type === "tool_result") : []));
+        const said = (b: any) => (typeof b.content === "string" ? b.content : (b.content as any[]).map((c: any) => c.text ?? "").join("\n"));
+        return reply(`Batch done. ${got.map((b) => `[${said(b).slice(0, 200)}]`).join(" ")}`);
+      }
       case "liar":
         // A worker that says it finished without doing anything, and a judge
         // that believes it: what the independent goal check exists for.
@@ -187,9 +198,9 @@ export class ScriptedProvider implements Provider {
   }
 }
 
-// The JSON list that follows `script:calls` in a text.
-function callsAfter(text: string): { name: unknown; input?: unknown }[] {
-  const i = text.indexOf("script:calls");
+// The JSON list that follows `script:calls` (or `word`) in a text.
+function callsAfter(text: string, word = "script:calls"): { name: unknown; input?: unknown }[] {
+  const i = text.indexOf(word);
   const start = text.indexOf("[", i);
   if (i < 0 || start < 0) return [];
   for (let end = text.indexOf("]", start); end >= 0; end = text.indexOf("]", end + 1)) {

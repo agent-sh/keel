@@ -89,8 +89,10 @@ function init(deps: Deps) {
     },
     // A step's tool results are stored: wait_agent reports they hold are delivered.
     stepDone: (s) => {
-      const last = deps.store.events(s.id).findLast((e) => e.kind === "tool_result");
-      if (last) ackStoredWaits(s.id, last.data.results ?? []);
+      // The step's results: one event per call, stored after its assistant reply.
+      const evs = deps.store.events(s.id);
+      const step = evs.slice(evs.findLastIndex((e) => e.kind === "assistant") + 1).filter((e) => e.kind === "tool_result");
+      if (step.length) ackStoredWaits(s.id, step.flatMap((e) => e.data.results ?? []));
     },
     turnEnd: (s, reason) => {
       afterTurn(s.id, () => {
