@@ -158,3 +158,35 @@ test("an agent's page stops the whole agent; a held Escape stops nothing", async
     await request.delete(`/api/sessions/${session.id}`);
   }
 });
+
+// Feature: one child, two tasks, both reports queued while the parent works:
+// they arrive in one input and show as two cards, each with its task, keyed
+// by its own report (no duplicate React keys).
+test("two reports of one agent in one input show as two cards", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const warnings: string[] = [];
+  page.on("console", (m) => { if (/same key|unique "key"/i.test(m.text())) warnings.push(m.text()); });
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "One agent, two tasks" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const calls = [
+    { name: "spawn_agent", input: { message: "Twice helper\nscript:calls []" } },
+    { name: "Bash", input: { command: "sleep 2" } },
+    { name: "send_input", input: { target: "Twice helper", message: "One more time." } },
+    { name: "Bash", input: { command: "sleep 2" } },
+  ];
+  await page.goto(`/s/${session.id}`);
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  const cards = page.getByTestId("agent-reports").last().getByTestId("agent-report");
+  await expect(cards).toHaveCount(2, { timeout: 60_000 });
+  await cards.first().click();
+  await cards.last().click();
+  await expect(cards.first()).toContainText("Done with 0 calls.");
+  await expect(cards.last()).toContainText("Scripted reply.");
+  expect(warnings).toEqual([]);
+  await expect(cards.first().getByTestId("agent-report-status")).toContainText("earlier task");
+  await expect(cards.last().getByTestId("agent-report-status")).toContainText("latest task");
+  await shoot(page, "agents-09-two-reports-one-agent");
+  await request.delete(`/api/sessions/${session.id}`);
+});

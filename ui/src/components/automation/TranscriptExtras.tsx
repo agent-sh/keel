@@ -14,19 +14,32 @@ import { AgentStatus, agentWhy, IconButton, STATUS_LABEL, StopIcon } from "./bit
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
 export const SYSTEM_INPUT = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal"]);
 
-type Report = { id: string; title: string; status: AgentRecord["status"]; text: string; why?: string };
+type Report = { id: string; title: string; status: AgentRecord["status"]; text: string; why?: string; key: string; task?: string };
 
 // The daemon escapes only a frame's own tag inside it (core.ts inert): only
 // that is undone here, so a report's own "&lt;" stays as it was written.
 const unframe = (text: string, tag: string) => text.replace(new RegExp(`&lt;(\\s*/?\\s*${tag})`, "gi"), "<$1");
 const attrOf = (attrs: string, name: string) => attrs.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1];
 
-function reports(text: string): Report[] {
+// `meta`: the input's meta; each report takes its report_id from the parts in
+// order (an input can carry two reports of one agent, one per task). Older
+// inputs have none: agent and position stand in.
+function reports(text: string, meta?: Record<string, any>): Report[] {
   const out: Report[] = [];
+  const parts = ((meta?.parts ?? [meta ?? {}]) as Record<string, any>[]).filter((p) => p.kind === "subagent");
+  const used = new Set<number>();
   const re = /<subagent_result agent_id="([^"]*)" title="([^"]*)" status="([^"]*)"([^>]*)>\n?([\s\S]*?)\n?<\/subagent_result>/g;
   for (const m of text.matchAll(re)) {
     const status = m[3] as Report["status"];
-    out.push({ id: m[1]!, title: m[2]!, status, text: unframe(m[5]!, "subagent_result"), why: agentWhy({ status, stopped_by: attrOf(m[4]!, "stopped_by"), end_reason: attrOf(m[4]!, "ended") }) });
+    const at = parts.findIndex((p, i) => !used.has(i) && p.agent_id === m[1]);
+    if (at >= 0) used.add(at);
+    const key = (at >= 0 && parts[at]!.report_id) || `${m[1]}#${out.length}`;
+    out.push({ id: m[1]!, key, title: m[2]!, status, text: unframe(m[5]!, "subagent_result"), why: agentWhy({ status, stopped_by: attrOf(m[4]!, "stopped_by"), end_reason: attrOf(m[4]!, "ended") }) });
+  }
+  // One agent with more than one report here: each says which task it answers.
+  for (const r of out) {
+    const same = out.filter((o) => o.id === r.id);
+    if (same.length > 1) r.task = same.at(-1) === r ? "latest task" : "earlier task";
   }
   return out;
 }
@@ -102,19 +115,19 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   const kind = e.data.kind as string;
   const text = String(e.data.text ?? "");
   const sessions = useStore((s) => s.sessions);
-  const rs = useMemo(() => reports(text), [text]);
+  const rs = useMemo(() => reports(text, e.data), [text, e.data]);
   const ws = useMemo(() => wakes(text), [text]);
 
   // One input can carry agents' reports and wakes together: every part shows.
   const reportCards = rs.length > 0 && (kind === "subagent" || kind === "wake") && (
     <div className="flex flex-col gap-2 animate-in" data-testid="agent-reports">
       {rs.map((r) => (
-        <Collapsible.Root key={r.id} className="group/rep rounded-lg border border-line bg-raised shadow-1" data-testid="agent-report" data-status={r.status}>
+        <Collapsible.Root key={r.key} className="group/rep rounded-lg border border-line bg-raised shadow-1" data-testid="agent-report" data-status={r.status}>
           <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-ui outline-none">
             <CornerDownRight className="size-3.5 shrink-0 text-faint" />
             <AgentStatus status={r.status} />
             <span className="font-medium">{r.title}</span>
-            <span className="min-w-0 truncate text-caption text-faint" data-testid="agent-report-status">reported · {STATUS_LABEL[r.status] ?? r.status}{r.why ? ` · ${r.why}` : ""}</span>
+            <span className="min-w-0 truncate text-caption text-faint" data-testid="agent-report-status">reported{r.task ? ` · ${r.task}` : ""} · {STATUS_LABEL[r.status] ?? r.status}{r.why ? ` · ${r.why}` : ""}</span>
             <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/rep:rotate-90" />
           </Collapsible.Trigger>
           <Collapsible.Panel className="overflow-hidden border-t border-line px-4 py-3 text-ui"><Markdown text={r.text} /></Collapsible.Panel>
