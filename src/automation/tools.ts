@@ -6,6 +6,7 @@ import * as loops from "./loops.ts";
 import { toolsFor } from "../tools/registry.ts";
 import { D, familyOf } from "./core.ts";
 import * as waits from "./waits.ts";
+import { privateHost } from "../tools/web.ts";
 
 // Each family gets the names and shapes it was trained on: Claude the Claude
 // Code tools (Agent, SendMessage, TaskStop, Monitor, ScheduleWakeup, Cron*,
@@ -237,6 +238,9 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
   if (input.kind === "webhook" || input.spec?.kind === "webhook") return fail("A webhook wait is the owner's to create.");
   const spec = waits.normalize(input, ctx.cwd);
   if (waits.isMonitor(spec.kind)) return fail("Use the monitor tool for a command's output or a socket.");
+  // The model's http wait follows web fetch's address rules (the wait tool runs unasked, as a read).
+  if (spec.kind === "http" && privateHost(new URL(spec.url).hostname))
+    return fail(`${new URL(spec.url).hostname} is a local or private address; watch a local server with the monitor tool and a command such as curl.`);
   return waitResult(waits.create(ctx.sessionId, spec, { timeout_seconds: input.timeout_seconds, note: input.note }));
 });
 
@@ -350,6 +354,7 @@ const deleteRun = (input: any, ctx: ToolContext) => guard(() => {
   const l = loops.get(String(input.id));
   if (!l || l.session_id !== ctx.sessionId) return fail(`No scheduled task ${input.id} in this session.`);
   if (l.kind === "webhook") return fail("A webhook loop is the owner's; it is changed in the page.");
+  if (l.created_by !== "model") return fail(`The owner made ${l.id}; only the owner changes it, in the page.`);
   loops.remove(l.id);
   return ok(`Deleted ${l.id}.`);
 });

@@ -93,13 +93,17 @@ async function exaSearch(query: string, count: number, signal?: AbortSignal): Pr
 export type FetchOpts = { method?: string; body?: string; headers?: Record<string, string>; extract?: string; spillDir: string };
 
 const PRIVATE_HOST = /^(localhost|.*\.localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?$|\[?f[cd])/i;
+// A host the web tools do not reach: this machine and private networks (and a
+// name with no dot, which resolves on the local network). Web fetch and the
+// http wait share it.
+export const privateHost = (hostname: string) => !hostname.includes(".") || PRIVATE_HOST.test(hostname);
 
 export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal): Promise<{ text: string; error?: boolean }> {
   let u: URL;
   try { u = new URL(url.trim()); } catch { return { text: `Not a URL: ${url}`, error: true }; }
   if (u.protocol === "http:") u.protocol = "https:";
   if (u.protocol !== "https:") return { text: `Only http(s) URLs can be fetched. Read local files with the file tool.`, error: true };
-  if (!u.hostname.includes(".") || PRIVATE_HOST.test(u.hostname)) {
+  if (privateHost(u.hostname)) {
     return { text: `${u.hostname} is a local or private address; reach local servers with curl in the shell.`, error: true };
   }
   if (/\.pdf($|\?)/i.test(u.pathname) && Bun.which("pdftotext")) return pdfText(u.href, o, signal);
