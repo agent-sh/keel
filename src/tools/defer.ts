@@ -43,12 +43,16 @@ export const isDeferError = (e: unknown) =>
   /defer_loading|tool_reference|tool[ _-]?search|deferred tool/i.test(String((e as any)?.message ?? e)) && !/rate|overloaded|timeout/i.test(String((e as any)?.message ?? e));
 
 const NAME_OK = /^[A-Za-z0-9_-]{1,64}$/;
-// The name a catalog tool is declared and called by.
+// The name a catalog tool is declared and called by: its own name when the
+// wire takes it, else the name made fit plus a hash of the original. Two tools
+// never share one (MCP names may hold dots: search.docs and search_docs are two
+// tools), and the name depends on nothing else in the catalog, so it stays the
+// same across a refresh or another order.
 export function nativeName(t: Pick<CatalogTool, "qualified" | "mcp">): string {
   const raw = t.mcp ? `mcp__${t.qualified}` : t.qualified;
   if (NAME_OK.test(raw)) return raw;
-  const clean = raw.replace(/[^A-Za-z0-9_-]/g, "_");
-  return clean.length <= 64 ? clean : `${clean.slice(0, 57)}_${Bun.hash(raw).toString(36).slice(0, 6)}`;
+  const h = Bun.hash(raw).toString(36).padStart(8, "0").slice(-8);
+  return `${raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 55)}_${h}`;
 }
 
 type Deferred = Tool & { catalog?: string };
@@ -97,14 +101,25 @@ export function referenced(messages: Message[]): Set<string> {
 
 // The tools of one request: the family's own (eager and deferred built-ins)
 // plus every catalog tool known now, plus stand-ins for referenced tools that left.
-export async function withCatalog(tools: Tool[], family: string, messages: Message[]): Promise<Tool[]> {
+// Two catalog tools that still share a native name (a hash clash, or one
+// server listing a name twice) are reported once each; the first one stays.
+const clashes = new Set<string>();
+export async function withCatalog(tools: Tool[], family: string, messages: Message[], report?: (e: Error, context: unknown) => void): Promise<Tool[]> {
   const own = tools.filter((t) => !(t as Deferred).catalog);
   const names = new Set(own.map((t) => t.name));
   const cat: Deferred[] = [];
   // A hidden tool (its server turned off) stays declared: a call by name gets the plain reason.
   for (const t of await catalogReady(family)) {
     const w = wrap(t);
-    if (names.has(w.name)) continue;
+    if (names.has(w.name)) {
+      const first = cat.find((c) => c.name === w.name);
+      const key = `${w.name}\u0000${first?.catalog}\u0000${t.qualified}`;
+      if (first && first.catalog !== t.qualified && !clashes.has(key)) {
+        clashes.add(key);
+        report?.(new Error(`two deferred tools share the name ${w.name}: ${first.catalog} is declared, ${t.qualified} is not`), { tool: t.qualified, kept: first.catalog });
+      }
+      continue;
+    }
     names.add(w.name);
     cat.push(w);
   }

@@ -480,7 +480,7 @@ export class Engine {
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn"): Promise<ProviderResult> {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
-    if (st.native && purpose !== "reader") st.tools = await withCatalog(st.tools, st.info.family, messages);
+    if (st.native && purpose !== "reader") st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c));
     let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id };
     // A reader's request carries no conversation for the hooks to add to.
     if (purpose === "reader") req.cache = false;
