@@ -68,7 +68,8 @@ export function useLoadEvents(ids: string[]) {
     for (const id of ids) {
       if (asked.has(id) || getState().events[id]) continue;
       asked.add(id);
-      actions.loadSession(id).catch(reportError);
+      // A session deleted meanwhile is simply not shown.
+      actions.loadSession(id).catch((e) => { if ((e as { status?: number }).status !== 404) reportError(e, { at: "overview events" }); });
     }
   }, [key]);
 }

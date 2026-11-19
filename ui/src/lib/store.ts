@@ -86,7 +86,7 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
     r = await send({ "x-keel-presence": receipt });
     body = await r.json().catch(() => ({}));
   }
-  if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status });
+  if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
   return body as T;
 }
 

@@ -8,7 +8,7 @@ import { ArrowDownToLine, FolderOpen, History, RefreshCw, Search, X } from "luci
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Found, Harness } from "../../../src/integrations/import/types.ts";
 import { useFleet } from "../lib/fleet.ts";
-import { reportError } from "../lib/store.ts";
+import { api, reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
 
@@ -30,12 +30,6 @@ export function ImportOverlay() {
   return <ImportSheet open={o} onOpenChange={setImportOpen} />;
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
-  const b = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { body: b, status: r.status });
-  return b as T;
-}
 
 const size = (n: number) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
 const home = (p?: string) => (p ?? "").replace(/^\/home\/[^/]+/, "~");
