@@ -31,6 +31,10 @@ test("side questions stay out of the conversation", async ({ page, request }) =>
   expect(after.events.length).toBe(before);
   await expect(page.getByTestId("turn-end")).toHaveCount(1);
   await expect(page.getByTestId("user-message")).toHaveCount(1);
+  // Yet both side answers are requests the usage report counts, as the spend guard does.
+  const usage = await (await request.get(`/api/usage?group=model&session_id=${session.id}`)).json();
+  expect(usage.by_purpose.find((p: any) => p.purpose === "side").calls).toBe(2);
+  expect(usage.total.calls).toBeGreaterThanOrEqual(3);
 
   // The threads come back after a reload, and Clear forgets them.
   await page.reload();
