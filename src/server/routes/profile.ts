@@ -2,6 +2,7 @@
 // with what the model offers, the tool profile its family gets, and the
 // instruction files the session's prompt carries. POST picks a model with its
 // reasoning and speed in one step (applied from the next request, also mid-turn).
+import { commitSwitch } from "../switch.ts";
 import { readFileSync, statSync } from "node:fs";
 import { instructionPaths } from "../../engine/turn.ts";
 import type { RouteModule } from "../app.ts";
@@ -79,11 +80,7 @@ export const profileRoutes: RouteModule = ({ store, bus, providers }) => {
           if (!o) return json({ error: `${info.name} has no ${b!.speed} speed on ${info.provider}` }, 400);
           settings.speed = o.id;
         } else if (b!.speed === "standard" || !speedOffer(info, settings.speed)) delete settings.speed;
-        if (info.id !== s.model) {
-          const from = (await providers.models()).find((m) => m.id === s.model)?.name ?? s.model;
-          bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "model", text: `Model changed from ${from} to ${info.name}.` }) });
-        }
-        bus.emit({ t: "session", session: store.updateSession(s.id, { model: info.id, settings }) });
+        bus.emit({ t: "session", session: await commitSwitch(store, bus, providers, s, info, { settings }) });
         return json(await answer(s.id));
       },
     },

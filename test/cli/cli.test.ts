@@ -143,6 +143,16 @@ describe("client commands against a running daemon", () => {
     const replay = await k(["run", "--json", "--idempotency-key", "k1", "keyed"]);
     expect(json(replay.out)).toMatchObject({ session_id: json(again.out).session_id, replayed: true });
 
+    // A refused run changes nothing: no new session (also on a keyed retry),
+    // no new model on the session it named.
+    const before = json((await k(["sessions", "--json"])).out).length;
+    for (let i = 0; i < 2; i++) expect((await k(["run", "--json", "--idempotency-key", "bad", "--effort", "max", "nope"])).code).not.toBe(0);
+    const bad = await k(["run", "--json", "-r", id, "-m", "scripted:stand-in-backup", "--effort", "max", "nope"]);
+    expect(bad.code).not.toBe(0);
+    const after = json((await k(["sessions", "--json"])).out);
+    expect(after.length).toBe(before);
+    expect(after.find((x: any) => x.id === id).model).toBe("scripted:stand-in");
+
     // A card is left open for the owner: exit 2, then keel approve answers it.
     const ask = await k(["run", "--wait", "--json", "--permission-mode", "ask", "script:long-tool"]);
     expect(ask.code).toBe(2);

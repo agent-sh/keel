@@ -14,6 +14,7 @@ import type { ModelInfo } from "../../providers/types.ts";
 import { isMode } from "../../safety/policy.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { asksLess, gate, presence } from "./permissions.ts";
+import { carrySettings, commitSwitch } from "../switch.ts";
 import * as agents from "../../automation/agents.ts";
 import * as waits from "../../automation/waits.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
@@ -135,16 +136,19 @@ export const runRoutes: RouteModule = (deps) => {
         if (b.permission_mode && gate && presence && asksLess(b.permission_mode, s ? gate.perm(s.id).mode : gate.defaultMode()) && !presence.allows(req, `perm:${s?.id ?? "new"}`)) {
           return json({ error: "this needs your passkey from a remote device", presence: { action: `perm:${s?.id ?? "new"}` } }, 428);
         }
+        if (s?.archived) throw fail("the session is archived", 409);
+        // The model and effort the run will use are checked before the session
+        // is changed or made: a refused run leaves no new session and no new model.
+        const target = s && !b.model ? s.model : await model(b.model, b.provider);
+        const info = (await providers.models()).find((m) => m.id === target);
+        if (b.effort && info && !info.efforts.includes(b.effort)) throw fail(`${info.name} does not take effort ${b.effort} (it takes ${info.efforts.join(", ") || "none"})`);
         if (s) {
-          if (s.archived) throw fail("the session is archived", 409);
-          if (b.model) {
-            const id = await model(b.model, b.provider);
-            if (id !== s.model) s = store.updateSession(s.id, { model: id });
-          }
+          if (target !== s.model && info) s = await commitSwitch(store, bus, providers, s, info, { settings: carrySettings(s.settings, info) });
+          else if (target !== s.model) s = store.updateSession(s.id, { model: target });
         } else {
           const workspace = resolve(b.cwd || deps.workspace);
           if (!existsSync(workspace) || !statSync(workspace).isDirectory()) throw fail(`not a directory: ${workspace}`);
-          const m = await model(b.model, b.provider);
+          const m = target;
           if (typeof b.worktree === "string") {
             // The worktree route makes the session in a fresh worktree of the folder's repository.
             const r = await fetch(new URL("/api/worktrees", req.url), {
@@ -160,11 +164,7 @@ export const runRoutes: RouteModule = (deps) => {
             bus.emit({ t: "session", session: s });
           }
         }
-        if (b.effort) {
-          const info = (await providers.models()).find((m) => m.id === s!.model);
-          if (info && !info.efforts.includes(b.effort)) throw fail(`${info.name} does not take effort ${b.effort} (it takes ${info.efforts.join(", ") || "none"})`);
-          s = store.updateSession(s.id, { settings: { ...s.settings, effort: b.effort } });
-        }
+        if (b.effort) s = store.updateSession(s.id, { settings: { ...s.settings, effort: b.effort } });
         if (b.permission_mode) gate?.setPerm(s.id, { mode: b.permission_mode });
         bus.emit({ t: "session", session: store.session(s.id)! });
         // Its tools run on a peer machine: the fleet moves the session there first.

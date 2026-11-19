@@ -11,6 +11,7 @@ import { admit, initAccess } from "./admission.ts";
 import { Live } from "./live.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
+import { carrySettings, commitSwitch } from "./switch.ts";
 
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
@@ -169,26 +170,20 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (!s) return bad("no such session", 404);
           const body = (await req.json()) as any;
           if (body.title !== undefined && !String(body.title).trim()) return bad("the title cannot be empty");
-          if (body.model && body.model !== s.model) {
-            const { info } = await providers.resolve(body.model);
-            const was = (await providers.models()).find((m) => m.id === s.model);
-            // Two routes may list one name: then each end says its provider.
-            const label = (id: string) => providers.statuses().find((p) => p.id === id.slice(0, id.indexOf(":")))?.label ?? id.slice(0, id.indexOf(":"));
-            const same = was?.name === info.name;
-            const apart = label(s.model) !== label(body.model);
-            const end = (name: string | undefined, id: string) => (!name ? id : same ? `${name} (${apart ? label(id) : id})` : name);
-            const text = `Model changed from ${end(was?.name, s.model)} to ${end(info.name, body.model)}.`;
-            bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "model", text, from: s.model, to: body.model }) });
-          }
-          let settings = s.settings;
+          // The whole change is checked before anything is written: a refused
+          // request leaves the model, the settings and the history as they were.
+          const moving = body.model && body.model !== s.model ? (await providers.resolve(body.model)).info : undefined;
+          // A model switch keeps only what the new model takes (an effort or a
+          // speed it does not list is dropped, as the profile POST does).
+          let settings = moving ? carrySettings(s.settings, moving) : s.settings;
           if (body.settings) {
-            settings = { ...s.settings };
+            settings = { ...settings };
             for (const [k, v] of Object.entries(body.settings)) {
               if (v === null || v === "") delete (settings as any)[k];
               else (settings as any)[k] = v;
             }
-            const info = (await providers.models()).find((m) => m.id === (body.model ?? s.model));
-            if (settings.effort && info && !info.efforts.includes(settings.effort)) return bad(`${info.name} does not take effort ${settings.effort}`);
+            const info = moving ?? (await providers.models()).find((m) => m.id === s.model);
+            if (body.settings.effort && settings.effort && info && !info.efforts.includes(settings.effort)) return bad(`${info.name} does not take effort ${settings.effort}`);
             if (settings.fallback) await providers.resolve(settings.fallback);
             if (body.settings.speed && info && !speedOffer(info, settings.speed)) return bad(`${info.name} has no ${settings.speed} speed on ${info.provider}`);
             if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");
@@ -204,7 +199,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             await Promise.all(jobs.map((j) => stopJob(j, "was stopped: its session was archived")));
           }
           const core = body.title !== undefined || body.model !== undefined || body.archived !== undefined || body.settings !== undefined;
-          let next = core ? store.updateSession(s.id, { title: body.title?.trim(), model: body.model, archived: body.archived, settings }) : s;
+          const patch = { title: body.title?.trim(), archived: body.archived, settings };
+          let next = moving ? await commitSwitch(store, bus, providers, s, moving, patch) : core ? store.updateSession(s.id, { ...patch, model: body.model }) : s;
           for (const p of mine) await p.apply(next, body);
           next = store.session(s.id)!;
           bus.emit({ t: "session", session: next });

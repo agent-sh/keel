@@ -42,3 +42,20 @@ test("profile: the panel, and a model pick with reasoning and speed", async ({ p
   }
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// A refused model change writes nothing: no switch note, no new model; the
+// corrected retry leaves exactly one note.
+test("profile: a refused model change leaves no note", async ({ request }) => {
+  const s = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json()).session;
+  const notes = async () => ((await (await request.get(`/api/sessions/${s.id}`)).json()).events as any[]).filter((e) => e.kind === "note" && e.data.kind === "model");
+  const bad = await request.patch(`/api/sessions/${s.id}`, { data: { model: "scripted:stand-in-backup", settings: { effort: "max" } } });
+  expect(bad.status()).toBe(400);
+  expect(await notes()).toHaveLength(0);
+  expect((await (await request.get(`/api/sessions/${s.id}`)).json()).session.model).toBe("scripted:stand-in");
+  const ok = await request.patch(`/api/sessions/${s.id}`, { data: { model: "scripted:stand-in-backup", settings: { effort: "low" } } });
+  expect(ok.status()).toBe(200);
+  const n = await notes();
+  expect(n).toHaveLength(1);
+  expect(n[0].data).toMatchObject({ from: "scripted:stand-in", to: "scripted:stand-in-backup" });
+  await request.delete(`/api/sessions/${s.id}`);
+});
