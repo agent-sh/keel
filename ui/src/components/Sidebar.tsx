@@ -3,7 +3,7 @@
 // from you, with a bracket on the ones that have a station. Unfolded (Ctrl B)
 // it is the full index: sessions by folder and machine, and the archive. On
 // a phone it is a drawer.
-import { Archive, ArchiveRestore, Bug, Folder, ListTree, Moon, PanelLeftClose, Plus, Search, Server, Settings, Sun, SunMoon } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Folder, ListTree, Moon, PanelLeftClose, Pin, Plus, Search, Server, Settings, Sun, SunMoon, Tag } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineColour, machineName, useFleet } from "../lib/fleet.ts";
@@ -17,6 +17,7 @@ import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/S
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
 import { Mark } from "./Mark.tsx";
+import { archive } from "../lib/sessops.ts";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -51,6 +52,7 @@ function Row({ s, active }: { s: Session; active: boolean }) {
     >
       <Mark w={w} />
       <span className="k-row-title">{s.title || "New session"}</span>
+      {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag max-w-20 shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
       <NeedsYou sessionId={s.id} />
       <SessionBadges sessionId={s.id} />
       <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" title={when(s.updated)}>{ago(s.updated)}</span>
@@ -60,7 +62,7 @@ function Row({ s, active }: { s: Session; active: boolean }) {
         aria-label={restore ? "Restore session" : "Archive session"}
         onClick={(e) => {
           e.stopPropagation();
-          actions.patch(s.id, { archived: !restore }).catch(reportError);
+          archive(s, !restore).catch(reportError);
         }}
         className="k-row-act hidden group-hover:grid group-focus-within:grid"
       >
@@ -153,10 +155,16 @@ function Index({ current }: { current: string | null }) {
   useEffect(() => {
     if (tab === "archived") api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => setArchived(r.sessions)).catch(reportError);
   }, [tab, sessions]);
-  const grouped = useMemo(
-    () => groups(tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
+  // A tag picked above the list narrows it; pinned sessions lead it.
+  const [tag, setTag] = useState<string | null>(null);
+  const base_ = useMemo(
+    () => (tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
     [sessions, tab, archived],
   );
+  const tags = useMemo(() => [...new Set(base_.flatMap((s) => s.settings.tags ?? []))].sort((a, b) => a.localeCompare(b)), [base_]);
+  const listed = tag ? base_.filter((s) => (s.settings.tags ?? []).includes(tag)) : base_;
+  const pinned = listed.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!);
+  const grouped = useMemo(() => groups(listed.filter((s) => !s.settings.pinned_ms)), [listed]);
   return (
     <>
       <div role="tablist" aria-label="Session list" className="k-tabs">
@@ -166,8 +174,24 @@ function Index({ current }: { current: string | null }) {
           </button>
         ))}
       </div>
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
+          {tags.map((t) => (
+            <button key={t} type="button" aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}
+              className={cn("inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-caption", tag === t ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted hover:text-fg")}>
+              <Tag className="size-3" />{t}
+            </button>
+          ))}
+        </div>
+      )}
       <nav className="k-index" data-testid="session-list" aria-label="Sessions">
-        {grouped.length === 0 && (
+        {pinned.length > 0 && (
+          <section className="k-group" data-testid="pinned-group">
+            <h2 className="k-group-head"><Pin /><span className="truncate">Pinned</span></h2>
+            <Group list={pinned} current={current} />
+          </section>
+        )}
+        {grouped.length === 0 && pinned.length === 0 && (
           <p className="k-empty">{tab === "active" ? "Sessions you start show up here, grouped by folder." : "Archived sessions show up here. Restore one to bring it back."}</p>
         )}
         {grouped.map((g) => (

@@ -30,6 +30,9 @@ export type TurnHooks = {
   beforeTool?: (s: Session, call: ToolCall) => ToolGate | Promise<ToolGate>;
   // After each call that ran, with its result (checkpoints, audit).
   afterTool?: (s: Session, call: ToolCall, result: ToolResultBlock) => void | Promise<void>;
+  // After a step's tool results are stored, before the next model call (a
+  // tool that asked for a fresh context gets its checkpoint here).
+  stepDone?: (s: Session) => void | Promise<void>;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
   // Before a compaction summarises the history (a memory tool reads it whole first).
   beforeCompact?: (s: Session) => void | Promise<void>;

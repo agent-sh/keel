@@ -11,6 +11,8 @@ import { getStations, pickStations, stations, useStations } from "../lib/station
 import { useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { lastLine, useWatch, WATCH_LABEL, type Watch } from "../lib/watch.ts";
+import { pin as pinSession } from "../lib/sessops.ts";
+import { reportError } from "../lib/store.ts";
 import { elapsed, folderOf, Mark, modelOf, useLive, useNow } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
@@ -44,7 +46,7 @@ registerCommand(
   { id: "station.right", label: "Move the station right", group: "Bridge", keys: "alt+shift+]", inInput: true, run: () => { const h = helmNow(); if (h) stations.move(h, shownNow, 1); } },
   { id: "station.left", label: "Move the station left", group: "Bridge", keys: "alt+shift+[", inInput: true, run: () => { const h = helmNow(); if (h) stations.move(h, shownNow, -1); } },
   { id: "station.focus", label: "Focus the station (full width) or show all", group: "Bridge", keys: "alt+enter", inInput: true, run: () => stations.toggleFocus() },
-  { id: "station.pin", label: "Pin or unpin the station", group: "Bridge", keys: "alt+p", run: () => { const h = helmNow(); if (h) (getStations().pinned.includes(h) ? stations.unpin : stations.pin)(h); } },
+  { id: "station.pin", label: "Pin or unpin the station", group: "Bridge", keys: "alt+p", run: () => { const h = helmNow(); if (h) pinSession(h, !getStations().pinned.includes(h)).catch(reportError); } },
   { id: "station.close", label: "Close the station", group: "Bridge", keys: "alt+w", run: () => { const h = helmNow(); if (h) closeStation(h); } },
 );
 
@@ -77,7 +79,7 @@ function StationHead({ s, w, helm, pinned, shown }: { s: Session; w: Watch; helm
         <span className="k-station-tools">
           {!focus && <Tool label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, shown, -1)}><ChevronLeft /></Tool>}
           {!focus && <Tool label="Move right (Alt Shift ])" onClick={() => stations.move(s.id, shown, 1)}><ChevronRight /></Tool>}
-          <Tool label={pinned ? "Unpin (Alt P)" : "Pin here (Alt P)"} testid="station-pin" on={pinned} onClick={() => (pinned ? stations.unpin : stations.pin)(s.id)}>{pinned ? <PinOff /> : <Pin />}</Tool>
+          <Tool label={pinned ? "Unpin (Alt P)" : "Pin here (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(s.id, !pinned).catch(reportError)}>{pinned ? <PinOff /> : <Pin />}</Tool>
           <Tool label={focus ? "Show all stations (Alt Enter)" : "Focus this station (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id: s.id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
           <Tool label="Close the station (Alt W)" testid="station-close" onClick={() => closeStation(s.id)}><X /></Tool>
         </span>
@@ -212,7 +214,7 @@ export function Bridge() {
         {orphan && (sessions[orphan] ? <Station key={orphan} s={sessions[orphan]!} helm pinned={false} shown={shownNow} /> : (
           <section className="k-station" data-helm data-station={orphan} aria-label="Session"><div className="k-band" aria-hidden="true" /><SessionView id={orphan} /></section>
         ))}
-        {all.map((s) => <Station key={s.id} s={s} helm={s.id === helm} pinned={st.pinned.includes(s.id)} shown={shownNow} />)}
+        {all.map((s) => <Station key={s.id} s={s} helm={s.id === helm} pinned={st.pinned.includes(s.id) || !!s.settings.pinned_ms} shown={shownNow} />)}
         {fresh && <NewStation />}
         {!fresh && all.length === 0 && <NewStation />}
       </main>

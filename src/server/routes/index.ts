@@ -33,6 +33,7 @@ import { sideRoutes } from "./side.ts";
 import { treeRoutes } from "./tree.ts";
 import { attachmentRoutes } from "./attachments.ts";
 import { runRoutes } from "./run.ts";
+import { marksRoutes } from "./marks.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -65,6 +66,7 @@ export const routeModules: RouteModule[] = [
   fleetRoutes, // after the gates: sends a placed session's workspace calls to their machine
   mobileRoutes, // after automation: it registers the phone as an alert channel
   draftRoutes,
+  marksRoutes, // after automation: unread marks are its alerts
   importRoutes,
   hookRoutes,
   runRoutes, // the command line: keel run, keel send

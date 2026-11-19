@@ -189,6 +189,20 @@ export class Store {
     return this.session(id)!;
   }
 
+  // Merge keys into the session's settings (null or undefined removes one)
+  // without moving it in the list: a mark is not new work.
+  mergeSettings(id: string, patch: Record<string, unknown>): Session | undefined {
+    const s = this.session(id);
+    if (!s) return undefined;
+    const next: Record<string, unknown> = { ...s.settings };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null || v === undefined) delete next[k];
+      else next[k] = v;
+    }
+    this.db.query("UPDATE sessions SET settings = ? WHERE id = ?").run(JSON.stringify(next), id);
+    return this.session(id);
+  }
+
   deleteSession(id: string) {
     this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
     forgetSession(id);

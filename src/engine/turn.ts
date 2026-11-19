@@ -399,6 +399,7 @@ export class Engine {
     let cuts = 0;
     let fellBack = false;
     let compactedForFit = false;
+    let steps = 0;
     const partial = new Map<number, { kind: string; text: string }>();
     try {
       for (;;) {
@@ -409,6 +410,17 @@ export class Engine {
           this.emitQueue(id);
         }
         session = this.store.session(id)!;
+        // The owner's step budget for one turn (none by default).
+        const budget = session.settings.max_steps ?? 0;
+        if (budget > 0 && steps >= budget) {
+          this.append(id, "note", { kind: "max_steps", text: `Stopped after ${steps} model steps: the step budget of this session. Continue to go on.` });
+          reason = "max_steps";
+          break;
+        }
+        steps++;
+        // The last step of the budget answers in words: the request keeps its
+        // tools (the cached prefix), and calls it still makes are not run.
+        if (budget > 0 && steps === budget) this.append(id, "user", { text: `[harness] This is the last model step this turn may take (the session's step budget is ${budget}). Do not call tools: reply with where the work stands and what is left to do.`, origin: "harness" });
         let events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
         const used = contextTokens(events).used;
@@ -472,10 +484,12 @@ export class Engine {
         const uses = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use" && b !== cut);
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
-          const results = await Promise.all(uses.map((u) => this.runTool(session, st.tools, u, ctx)));
+          const spent = budget > 0 && steps >= budget;
+          const results = await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx))));
           if (cut) results.push({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           this.append(id, "tool_result", { results });
+          for (const h of allHooks()) await Promise.resolve(h.stepDone?.(session)).catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
         }
         if (res.stop === "max_tokens") {

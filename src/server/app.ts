@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
+import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, running, stopJob } from "../tools/jobs.ts";
@@ -23,6 +24,17 @@ export const registerSocket = (kind: string, h: SocketHandler) => void socketKin
 const socketKind = (ws: Bun.ServerWebSocket<any>) => (ws.data && typeof ws.data === "object" ? socketKinds.get((ws.data as any).kind) : undefined);
 
 export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string };
+
+// Fields of `PATCH /api/sessions/:id` a feature module owns (marks, memory
+// switches, a step budget). Every `check` runs before anything changes and
+// refuses by throwing an Error with a `status`; `apply` runs after the core
+// fields are written. `id` keeps one entry per module across hot reloads.
+export type SessionPatch = { id: string; fields: string[]; check?(s: Session, body: any): void | Promise<void>; apply(s: Session, body: any): void | Promise<void> };
+const patchers = new Map<string, SessionPatch>();
+export const registerSessionPatch = (p: SessionPatch) => void patchers.set(p.id, p);
+// Filters of `GET /api/sessions` a module owns (`?tag=`, `?pinned=1`).
+const listFilters = new Map<string, (s: Session, q: URLSearchParams) => boolean>();
+export const registerListFilter = (id: string, f: (s: Session, q: URLSearchParams) => boolean) => void listFilters.set(id, f);
 
 // The core routes plus every module's. Two modules may share a path with
 // different methods; a core path, or the same path and method twice, is a
@@ -114,7 +126,11 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       },
 
       "/api/sessions": {
-        GET: wrap((req) => json({ sessions: store.sessions({ archived: new URL(req.url).searchParams.has("archived") }) })),
+        GET: wrap((req) => {
+          const q = new URL(req.url).searchParams;
+          const fs = [...listFilters.values()];
+          return json({ sessions: store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q))) });
+        }),
         POST: wrap(async (req) => {
           const body = (await req.json().catch(() => ({}))) as any;
           const workspace = resolve(body.workspace || deps.workspace);
@@ -159,9 +175,20 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             if (body.settings.speed && info && !speedOffer(info, settings.speed)) return bad(`${info.name} has no ${settings.speed} speed on ${info.provider}`);
             if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");
           }
-          // Archiving stops the session: the turn is cut and its queue held.
-          if (body.archived === true) await engine.interrupt(s.id);
-          const next = store.updateSession(s.id, { title: body.title?.trim(), model: body.model, archived: body.archived, settings });
+          const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));
+          for (const p of mine) await p.check?.(s, body);
+          // Archiving stops the session: the turn is cut and its queue held. Its
+          // background commands stop only when the request says so.
+          if (body.archived === true && !s.archived) {
+            const jobs = jobsOf(s.id).filter(running);
+            if (jobs.length && body.stop_shells !== true) return json({ error: `the session still runs ${jobs.length} background command${jobs.length > 1 ? "s" : ""}: ${jobs.map((j) => j.command.slice(0, 80)).join("; ")}. Archive with stop_shells to stop them.`, jobs: jobs.map((j) => ({ id: j.id, command: j.command })) }, 409);
+            await engine.interrupt(s.id);
+            await Promise.all(jobs.map((j) => stopJob(j, "was stopped: its session was archived")));
+          }
+          const core = body.title !== undefined || body.model !== undefined || body.archived !== undefined || body.settings !== undefined;
+          let next = core ? store.updateSession(s.id, { title: body.title?.trim(), model: body.model, archived: body.archived, settings }) : s;
+          for (const p of mine) await p.apply(next, body);
+          next = store.session(s.id)!;
           bus.emit({ t: "session", session: next });
           return json({ session: next });
         }),

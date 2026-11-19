@@ -7,6 +7,7 @@ import { actions, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
+import { archive } from "../lib/sessops.ts";
 import { BackgroundButton } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { PanelToggles } from "./SidePanel.tsx";
@@ -123,7 +124,7 @@ export function SessionHeader({ session }: { session: Session }) {
               {session.archived ? (
                 <Menu.Item className={itemClass} data-testid="menu-restore" onClick={() => actions.patch(session.id, { archived: false }).catch(reportError)}><ArchiveRestore /> Restore</Menu.Item>
               ) : (
-                <Menu.Item className={itemClass} data-testid="menu-archive" onClick={() => actions.patch(session.id, { archived: true }).catch(reportError)}><Archive /> Archive</Menu.Item>
+                <Menu.Item className={itemClass} data-testid="menu-archive" onClick={() => archive(session).catch(reportError)}><Archive /> Archive</Menu.Item>
               )}
               <Menu.Item
                 className={cn(itemClass, "text-danger [&>svg]:text-danger")}

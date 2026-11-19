@@ -18,7 +18,7 @@ const MAX_HELD = 100; // past that the oldest held message is dropped
 const MAX_OUTBOX = 100; // per daemon
 const DUP_MS = 60_000;
 const PER_MINUTE = Number(process.env.KEEL_PEER_MESSAGES_PER_MINUTE ?? 10);
-const PEER_TURNS = Number(process.env.KEEL_PEER_TURNS ?? 50); // turns other sessions may start since the owner last spoke
+export const PEER_TURNS = Number(process.env.KEEL_PEER_TURNS ?? 50); // turns other sessions may start since the owner last spoke
 
 export type Sender = { session_id: string; title?: string; daemon_id: string; machine?: string; mode?: string; sandbox?: string; limited?: boolean; outbox_id?: string };
 export type Message = {
@@ -101,7 +101,9 @@ export class Messages {
     const ts = SANDBOX_WIDTH[mine?.sandbox ?? "off"] ?? 3;
     if (fs < ts) return `the sender's sandbox (${from.sandbox ?? "unknown"}) is narrower than this session's (${mine?.sandbox ?? "off"})`;
     if (from.limited && !to.parent_id) return "the sender is a subagent with narrowed tools";
-    if (this.peerTurns(to.id) >= PEER_TURNS) return `other sessions started ${PEER_TURNS} turns here since you last spoke (loop guard)`;
+    // The session's own number (its marks), else the daemon's.
+    const budget = to.settings?.peer_turns ?? PEER_TURNS;
+    if (this.peerTurns(to.id) >= budget) return `other sessions started ${budget} turns here since you last spoke (loop guard)`;
     return null;
   }
 
@@ -124,7 +126,7 @@ export class Messages {
     if (!text.trim()) throw new HttpError(400, "text cannot be empty");
     if (text.length > MAX_TEXT) throw new HttpError(400, `text is over ${MAX_TEXT.toLocaleString()} characters`);
     if (to.archived) throw new HttpError(409, "the session is archived");
-    if (to.settings && (to.settings as any).accept_messages === false) throw new HttpError(409, "the session does not take messages from other sessions");
+    if (to.settings?.accept_messages === false) throw new HttpError(409, "the session does not take messages from other sessions");
     const recent = this.store.db
       .query<Row, [string, number]>("SELECT * FROM fleet_messages WHERE to_session = ? AND created_ms > ?")
       .all(to.id, Date.now() - DUP_MS)

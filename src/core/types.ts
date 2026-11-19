@@ -111,6 +111,14 @@ export type SessionSettings = {
   fallback?: string;   // model id to continue on when the session's model declines
   compact_at?: number; // owner ceiling in tokens; absent = a share of the model's window
   speed?: string;      // a speed offer id of the model's listing; absent = standard
+  // Marks, daemon state every client shares (src/server/routes/marks.ts).
+  pinned_ms?: number;  // pinned at; absent = not pinned
+  tags?: string[];
+  done_ms?: number;    // the owner marked the work finished; his next prompt clears it
+  accept_messages?: boolean; // false: messages from other sessions are refused
+  peer_turns?: number; // turns other sessions may start before the owner speaks here again
+  max_steps?: number;  // model steps one turn may take; absent = no budget
+  skill_mode?: string; // a skill kept on as standing instructions
 };
 
 export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number };
