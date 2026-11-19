@@ -18,7 +18,7 @@ test("an edit through a link is judged where it lands", () => {
   symlinkSync(join(ws, ".git/hooks/pre-commit"), join(ws, "hook.sh"));
   symlinkSync(join(ws, "notes.txt"), join(ws, ".envrc"));
   const judge = (path: string, mode: Mode = "auto-edits") =>
-    kind(decide(landing(classify({ name: "Write", readOnly: false }, { file_path: path }, ws)), { mode, workspace: realOf(ws), sandboxed: false, rules: [], tool: "Write" }));
+    kind(decide(landing(classify({ name: "Write", readOnly: false, kind: "edit" }, { file_path: path }, ws)), { mode, workspace: realOf(ws), sandboxed: false, rules: [], tool: "Write" }));
   expect(judge("src/a.ts")).toBe("allow"); // a new file under a folder that does not exist yet
   expect(judge("notes.txt")).toBe("allow");
   expect(judge("escape/x.txt")).toBe("ask-low"); // a folder link out of the workspace

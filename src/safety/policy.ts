@@ -3,6 +3,7 @@
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { highRisk, isReadOnly, matchRule, splitCommand, suggestRule } from "./shell.ts";
 import { contains } from "../core/paths.ts";
+import type { ToolKind } from "../tools/types.ts";
 
 export const MODES = [
   { id: "ask", name: "Ask", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
@@ -39,21 +40,32 @@ export type Decision =
   | { deny: string }
   | { ask: { risk: "high" | "low"; why?: string; suggest: Suggest[] } };
 
-// What a call does, from its tool's flag and its input's shape, so tools of
-// every family (Bash, shell, exec_command, apply_patch, MCP) classify alike.
-export function classify(tool: { name: string; readOnly: boolean }, input: any, cwd: string): CallClass {
+// What a call does. The tool's own definition says which kind of call it is
+// (its read flag and its kind); the input only supplies the command or the
+// paths of that kind, so no key a model puts in a call changes how it is judged.
+export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any }, input: any, cwd: string): CallClass {
   if (tool.readOnly) return { kind: "read" };
-  const cmd = shellText(input);
-  // Codex's exec_command can ask to run outside the sandbox.
-  if (cmd !== null) return { kind: "shell", command: cmd, escalate: input?.sandbox_permissions === "require_escalated" || undefined };
-  const keys = Object.keys(input ?? {});
-  if (keys.some((k) => /^(session_id|task_id|shell_id|bash_id)$/.test(k)) && !keys.some((k) => /path|command|cmd|patch|url/.test(k))) return { kind: "control" };
-  const paths: string[] = [];
-  for (const k of ["file_path", "path", "notebook_path"]) if (typeof input?.[k] === "string") paths.push(input[k]);
-  const patch = typeof input?.patch === "string" ? input.patch : typeof input?.input === "string" ? input.input : "";
-  for (const m of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) paths.push((m[1] ?? m[2])!.trim());
-  if (paths.length) return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p))) };
-  return { kind: "other" };
+  switch (tool.kind) {
+    case "control":
+      return { kind: "control" };
+    case "shell": {
+      const cmd = shellText(input);
+      if (cmd === null) return { kind: "other" }; // a monitor of a socket: judged by the tool's name
+      // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
+      const escalate = !!tool.input_schema?.properties?.sandbox_permissions && input?.sandbox_permissions === "require_escalated";
+      return { kind: "shell", command: cmd, escalate: escalate || undefined };
+    }
+    case "edit": {
+      const paths: string[] = [];
+      for (const k of ["file_path", "path", "notebook_path"]) if (typeof input?.[k] === "string") paths.push(input[k]);
+      const patch = typeof input === "string" ? input : typeof input?.patch === "string" ? input.patch : typeof input?.input === "string" ? input.input : "";
+      for (const m of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) paths.push((m[1] ?? m[2])!.trim());
+      if (!paths.length) return { kind: "refused", why: `${tool.name} names no file to change.` };
+      return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p))) };
+    }
+    default:
+      return { kind: "other" };
+  }
 }
 
 function shellText(input: any): string | null {

@@ -15,6 +15,7 @@ const obj = (properties: Record<string, unknown>, required: string[]) => ({ type
 const run_shell_command: Tool = {
   name: "run_shell_command",
   readOnly: false,
+  kind: "shell",
   description:
     "Executes a given shell command as `bash -c <command>`. Set is_background for servers and watchers; " +
     "a command still running after 5 minutes moves to the background. The result gives Output, Exit Code and " +
@@ -70,6 +71,7 @@ const read_file: Tool = {
 const write_file: Tool = {
   name: "write_file",
   readOnly: false,
+  kind: "edit",
   description: "Writes the complete content to a file, automatically creating missing parent directories. Overwrites existing files. Best for new or small files; use 'replace' for targeted edits.",
   input_schema: obj({
     file_path: { type: "string", description: "Path to the file." },
@@ -88,6 +90,7 @@ const write_file: Tool = {
 const replace: Tool = {
   name: "replace",
   readOnly: false,
+  kind: "edit",
   description:
     "Replaces text within a file. By default, the tool expects to find and replace exactly ONE occurrence of `old_string`. " +
     "Set `allow_multiple` to replace every occurrence. Include enough surrounding context to target one place.",

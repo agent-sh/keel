@@ -53,6 +53,7 @@ const runOn: Tool = {
     additionalProperties: false,
   },
   readOnly: false,
+  kind: "shell",
   async run(input, ctx) {
     if (!fleet) return fail("The fleet is not running.");
     const m = fleet.byName(String(input.machine ?? ""));

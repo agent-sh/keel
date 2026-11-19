@@ -287,8 +287,8 @@ const monitorRun = (input: any, ctx: ToolContext) => guard(() => {
 });
 
 const monitorDesc = "Run a command in the background and receive its output lines as events while you keep working, without polling. Use it to tail a log, watch a build, or poll a status with a small script that prints when something changes. For a server that pushes events, give ws with its URL instead of a command: each message is an event.";
-const Monitor: Tool = { name: "Monitor", families: CLAUDE, readOnly: false, description: monitorDesc, input_schema: monitorSchema, run: monitorRun };
-const monitor: Tool = { name: "monitor", families: OTHERS, readOnly: false, description: monitorDesc, input_schema: monitorSchema, run: monitorRun };
+const Monitor: Tool = { name: "Monitor", families: CLAUDE, readOnly: false, kind: "shell", description: monitorDesc, input_schema: monitorSchema, run: monitorRun };
+const monitor: Tool = { name: "monitor", families: OTHERS, readOnly: false, kind: "shell", description: monitorDesc, input_schema: monitorSchema, run: monitorRun };
 
 // --- loops -------------------------------------------------------------------
 

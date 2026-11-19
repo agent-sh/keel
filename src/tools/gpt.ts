@@ -48,6 +48,7 @@ async function runPatch(text: string, base: string, ctx: ToolContext) {
 const exec_command: Tool = {
   name: "exec_command",
   readOnly: false,
+  kind: "shell",
   description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
   input_schema: obj({
     cmd: { type: "string", description: "Shell command to execute." },
@@ -82,6 +83,7 @@ const exec_command: Tool = {
 const write_stdin: Tool = {
   name: "write_stdin",
   readOnly: false,
+  kind: "control",
   description: "Writes characters to an existing unified exec session and returns recent output.",
   input_schema: obj({
     session_id: { type: "number", description: "Identifier of the running unified exec session." },
@@ -106,6 +108,8 @@ const write_stdin: Tool = {
 export const applyPatchTool: Tool = {
   name: "apply_patch",
   readOnly: false,
+  kind: "edit",
+  cwdOf: shellCwd,
   description: "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
   freeform: { syntax: "lark", definition: grammar },
   input_schema: obj({ input: { type: "string", description: "The entire contents of the apply_patch command" } }, ["input"]),

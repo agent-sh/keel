@@ -17,6 +17,9 @@ import { classify, decide, isMode, type CallClass, type Decision, type Mode, typ
 export const landing = (c: CallClass): CallClass =>
   c.kind === "edit" ? { kind: "edit", paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
 
+// What a call does, its relative paths resolved where the tool resolves them.
+export const classifyCall = (call: ToolCall): CallClass => classify(call.tool, call.input, call.tool.cwdOf?.(call.ctx) ?? call.ctx.cwd);
+
 export type SandboxProfile = "off" | "workspace-write" | "read-only";
 export type SessionPerm = { session_id: string; mode: Mode; sandbox: SandboxProfile; network: boolean };
 
@@ -217,7 +220,7 @@ export class Gate {
   async check(session: Session, call: ToolCall): Promise<{ deny: string } | void> {
     const target = call.tool.target ? await call.tool.target(call.input) : null;
     const name = target?.name ?? call.tool.name;
-    const cls: CallClass = landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classify(call.tool, call.input, call.ctx.cwd));
+    const cls: CallClass = landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classifyCall(call));
     const d = this.evaluate(session, name, cls);
     if ("allow" in d) return;
     if ("deny" in d) return { deny: d.deny };
@@ -245,7 +248,7 @@ export class Gate {
   // A card for this one call that only the owner answers (a hook asked): no
   // grant, mode change or reviewer settles it.
   async askOnce(session: Session, call: ToolCall, name: string, why: string): Promise<{ deny: string } | void> {
-    const c = landing(classify(call.tool, call.input, call.ctx.cwd));
+    const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
     const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(call.input ?? {}).slice(0, 400);
     return this.card(session, call, name, cls, summary, { risk: "high", why, suggest: [] }, true);

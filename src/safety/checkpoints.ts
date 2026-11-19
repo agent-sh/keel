@@ -11,7 +11,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { contains } from "../core/paths.ts";
-import { classify } from "./policy.ts";
+import { classifyCall } from "./gate.ts";
 import { Shadow, type DiffResult, type FileChange } from "./shadow.ts";
 
 export type Checkpoint = {
@@ -110,7 +110,7 @@ export class Checkpoints {
 
   // beforeTool: the turn's start snapshot exists before anything changes.
   async before(s: Session, call: ToolCall) {
-    const cls = classify(call.tool, call.input, call.ctx.cwd);
+    const cls = classifyCall(call);
     if (cls.kind === "read") return;
     const sh = this.shadow(s.workspace);
     const turn = this.currentTurn(s.id);

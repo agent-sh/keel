@@ -4,18 +4,27 @@ import { classify, decide, type Facts, type Mode, type Rule } from "./policy.ts"
 const ws = "/w/repo";
 const rule = (kind: Rule["kind"], pattern: string): Rule => ({ id: pattern, kind, pattern, scope: ws, lifetime: "always", created: 0 });
 const facts = (mode: Mode, extra: Partial<Facts> = {}): Facts => ({ mode, workspace: ws, sandboxed: false, rules: [], tool: "Bash", ...extra });
-const tool = (name: string, readOnly = false) => ({ name, readOnly });
+const tool = (name: string, kind?: "shell" | "edit" | "control" | "remote", readOnly = false, input_schema?: any) => ({ name, readOnly, kind, input_schema });
+const escalating = { properties: { cmd: {}, sandbox_permissions: {} } };
 const kind = (d: ReturnType<typeof decide>) => ("allow" in d ? "allow" : "deny" in d ? "deny" : `ask-${d.ask.risk}`);
 
-test("tools of every family classify by input shape", () => {
-  expect(classify(tool("Bash"), { command: "ls" }, ws)).toEqual({ kind: "shell", command: "ls" });
-  expect(classify(tool("exec_command"), { cmd: "npm test", sandbox_permissions: "require_escalated" }, ws)).toEqual({ kind: "shell", command: "npm test", escalate: true });
-  expect(classify(tool("shell"), { command: ["bash", "-lc", "git status"] }, ws)).toEqual({ kind: "shell", command: "git status" });
-  expect(classify(tool("Edit"), { file_path: "src/a.ts" }, ws)).toEqual({ kind: "edit", paths: ["/w/repo/src/a.ts"] });
-  expect(classify(tool("apply_patch"), { input: "*** Begin Patch\n*** Update File: a.ts\n*** Add File: b.ts\n*** End Patch" }, ws)).toEqual({ kind: "edit", paths: ["/w/repo/a.ts", "/w/repo/b.ts"] });
-  expect(classify(tool("write_stdin"), { session_id: 3, chars: "y\n" }, ws)).toEqual({ kind: "control" });
+test("a call's class comes from its tool's definition", () => {
+  expect(classify(tool("Bash", "shell"), { command: "ls" }, ws)).toEqual({ kind: "shell", command: "ls" });
+  expect(classify(tool("exec_command", "shell", false, escalating), { cmd: "npm test", sandbox_permissions: "require_escalated" }, ws)).toEqual({ kind: "shell", command: "npm test", escalate: true });
+  expect(classify(tool("shell", "shell"), { command: ["bash", "-lc", "git status"] }, ws)).toEqual({ kind: "shell", command: "git status" });
+  expect(classify(tool("Edit", "edit"), { file_path: "src/a.ts" }, ws)).toEqual({ kind: "edit", paths: ["/w/repo/src/a.ts"] });
+  expect(classify(tool("apply_patch", "edit"), { input: "*** Begin Patch\n*** Update File: a.ts\n*** Add File: b.ts\n*** End Patch" }, ws)).toEqual({ kind: "edit", paths: ["/w/repo/a.ts", "/w/repo/b.ts"] });
+  expect(classify(tool("apply_patch", "edit"), "*** Begin Patch\n*** Delete File: c.ts\n*** End Patch", ws)).toEqual({ kind: "edit", paths: ["/w/repo/c.ts"] });
+  expect(classify(tool("write_stdin", "control"), { session_id: 3, chars: "y\n" }, ws)).toEqual({ kind: "control" });
   expect(classify(tool("mcp_call"), { tool: "github__create_issue", arguments: {} }, ws)).toEqual({ kind: "other" });
-  expect(classify(tool("Read", true), { file_path: "/etc/passwd" }, ws)).toEqual({ kind: "read" });
+  expect(classify(tool("Read", undefined, true), { file_path: "/etc/passwd" }, ws)).toEqual({ kind: "read" });
+  // Keys in the input never change the class.
+  expect(classify(tool("keel__session_send"), { session_id: "x", text: "hi" }, ws)).toEqual({ kind: "other" });
+  expect(classify(tool("keel__session_send"), { task_id: "x", to: "y" }, ws)).toEqual({ kind: "other" });
+  expect(classify(tool("keel__send_files", "remote"), { file_path: "a.ts" }, ws)).toEqual({ kind: "other" });
+  expect(classify(tool("some_tool"), { command: "rm -rf build" }, ws)).toEqual({ kind: "other" });
+  expect(classify(tool("Bash", "shell"), { command: "npm test", sandbox_permissions: "require_escalated" }, ws)).toEqual({ kind: "shell", command: "npm test" });
+  expect(classify(tool("Bash", "shell"), { command: "ls", session_id: "x" }, ws)).toEqual({ kind: "shell", command: "ls" });
 });
 
 test("modes", () => {

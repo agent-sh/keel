@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { registerHooks, type ToolCall } from "../../engine/hooks.ts";
 import { instructionFilter } from "../../engine/turn.ts";
-import { classify } from "../../safety/policy.ts";
+import { classifyCall } from "../../safety/gate.ts";
 import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
 import { rootOf, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
@@ -60,7 +60,7 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
       return "";
     },
     beforeTool(s, call) {
-      const cls = classify(call.tool, call.input, call.ctx.cwd);
+      const cls = classifyCall(call);
       // Protected files are watched around calls the owner does not answer.
       if (cls.kind !== "read" && cls.kind !== "control" && gate?.perm(s.id).mode !== "full-auto") {
         const root = rootOf(s.workspace) ?? s.workspace;

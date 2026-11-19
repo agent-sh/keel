@@ -21,6 +21,7 @@ const obj = (properties: Record<string, unknown>, required: string[]) =>
 const Bash: Tool = {
   name: "Bash",
   readOnly: false,
+  kind: "shell",
   description:
     "Run a bash command and return its output (stdout and stderr together). The working directory carries over " +
     "between calls when you cd inside the project; environment variables do not. Default timeout 120000 ms, " +
@@ -68,6 +69,7 @@ const Bash: Tool = {
 const TaskStop: Tool = {
   name: "TaskStop",
   readOnly: false,
+  kind: "control",
   description: "Stop a running background task by its ID (from Bash run_in_background or a command moved to the background).",
   input_schema: obj({
     task_id: { type: "string", description: "The ID of the background task to stop" },
@@ -111,6 +113,7 @@ const Read: Tool = {
 const Write: Tool = {
   name: "Write",
   readOnly: false,
+  kind: "edit",
   description:
     "Create a file or overwrite one with the full content given, creating parent directories. Overwriting an " +
     "existing file needs a Read of it first. For partial changes use Edit.",
@@ -133,6 +136,7 @@ const Write: Tool = {
 const Edit: Tool = {
   name: "Edit",
   readOnly: false,
+  kind: "edit",
   description:
     "Replace an exact string in a file. old_string must match the file exactly (whitespace and indentation " +
     "included) and appear once, unless replace_all is set; add surrounding lines to make it unique. Read the " +
@@ -154,6 +158,7 @@ const Edit: Tool = {
 const NotebookEdit: Tool = {
   name: "NotebookEdit",
   readOnly: false,
+  kind: "edit",
   description:
     "Replace, insert or delete one cell of a Jupyter notebook. cell_id is the id shown by Read. insert adds after " +
     "cell_id (or at the start without one) and needs cell_type. Replacing a code cell clears its outputs.",

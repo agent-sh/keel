@@ -25,8 +25,20 @@ export type ToolContext = {
 
 export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_error?: boolean };
 
+// What a call of a tool does, for the permission gate: declared by the tool,
+// never read off its input. readOnly tools are reads; a tool that declares no
+// kind is judged by its name ("other": it asks, and a grant names it).
+//   shell: runs the command in its input here; edit: writes the paths in its
+//   input; control: input to, or the stop of, a process an allowed call
+//   started; remote: acts on another machine.
+export type ToolKind = "shell" | "edit" | "control" | "remote";
+
 export type Tool = ToolSpec & {
   readOnly: boolean;
+  kind?: ToolKind;
+  // Where a call's relative paths resolve, when not the session's folder
+  // (apply_patch: the shell's current directory).
+  cwdOf?(ctx: ToolContext): string;
   // A dispatcher (mcp_call) names the tool it will run, so the permission gate
   // judges and grants that tool, not the dispatcher.
   // `cls`, when given, is what the call does (a drive tool judges its target).
