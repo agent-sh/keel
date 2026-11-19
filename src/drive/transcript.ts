@@ -77,8 +77,9 @@ export function codexTurns(lines: string[]): Turn[] {
     const p = r.payload ?? {};
     const at = time(r.timestamp);
     if (p.type === "message" && (p.role === "user" || p.role === "assistant")) {
-      const text = (p.content ?? []).map((x: any) => x?.text ?? "").join("\n").trim();
-      if (text && !injected(text)) out.push({ role: p.role, text, at });
+      // Each part on its own: the harness's context in one part leaves the owner's words in another.
+      const text = (p.content ?? []).map((x: any) => String(x?.text ?? "")).filter((t: string) => t.trim() && !injected(t)).join("\n").trim();
+      if (text) out.push({ role: p.role, text, at });
     } else if (p.type === "function_call" || p.type === "custom_tool_call") {
       out.push({ role: "tool", text: toolLine(p.name, p.arguments ?? p.input), at });
     }

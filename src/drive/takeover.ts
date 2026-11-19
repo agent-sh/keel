@@ -228,7 +228,10 @@ export class TakeOver {
     }
     const stop = await stopSession(f, identity);
     this.drive.invalidate();
-    if (!stop.stopped) return snapshot(stop.unsupported ? manualStep(f.row, f.raw) : `The agent view did not stop it: ${stop.why}. Take it over again when it is idle.`);
+    // No answer to the stop is not proof either way: the copy stays a copy (it
+    // runs nothing), and taking over again reads the original's state anew and
+    // copies what it wrote last, once.
+    if (!stop.stopped) return snapshot(stop.unsupported ? manualStep(f.row, f.raw) : `Keel asked the agent view to end it and got no answer it could trust (${stop.why}); it may or may not have ended. Take it over again: Keel checks whether it still runs and copies what it wrote last.`);
     // A copy that went on gets nothing more of the original: the ended line says what it lacks.
     const done = first.went_on ? answer(first, "taken_over", true) : answer(await this.copy(src, req), "taken_over", true, undefined, first.imported_events);
     if (stop.how) done.how = stop.how;

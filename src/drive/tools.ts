@@ -55,9 +55,8 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
       { kind: { type: "string", enum: ["claude", "codex", "agy"] }, host: { type: "string" }, changed_only: { type: "boolean" } }, [], true,
       async (i, ctx) => {
         const r = await drive.list();
-        let rows = drive.markChanged(ctx.sessionId, r.sessions);
-        if (i.kind) rows = rows.filter((x) => x.kind === i.kind);
-        if (i.host) rows = rows.filter((x) => x.host === i.host);
+        const inScope = (x: { kind: string; host?: string | null }) => (!i.kind || x.kind === i.kind) && (!i.host || x.host === i.host);
+        let rows = drive.markChanged(ctx.sessionId, r.sessions, inScope).filter(inScope);
         if (i.changed_only) rows = rows.filter((x) => x.changed);
         const slim = rows.map(({ transcript: _t, ...x }) => Object.fromEntries(Object.entries(x).filter(([, v]) => v !== null && v !== "")));
         return ok(JSON.stringify(r.not_listed ? { sessions: slim, not_listed: r.not_listed } : { sessions: slim }));

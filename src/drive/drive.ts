@@ -100,7 +100,7 @@ const MAX_AGE_MS = 4000; // a list takes seconds; reads within this share one
 export class Drive {
   private cache: { at: number; raws: av.Raw[] } | null = null;
   private inflight: Promise<av.Raw[]> | null = null;
-  private seen = new Map<string, Map<string, string>>(); // per driver: row id -> fingerprint
+  private seen = new Map<string, Map<string, { f: string; row: Row }>>(); // per driver: row id -> fingerprint
   // Called with every list the agent view printed (the page's frame, the copies a take-over settles).
   readonly onList: ((rows: Row[]) => void)[] = [];
 
@@ -148,15 +148,19 @@ export class Drive {
   }
 
   // Marks the rows that are new or different (state, wait, activity, schedule)
-  // since this driver's previous list. Kept in memory: the first list after a
+  // since this driver's previous list of them. Only the rows in `scope` (the
+  // kind or host the list asked for) count as seen: checking one group does
+  // not take the news of another. Kept in memory: the first list after a
   // restart marks every row.
-  markChanged(driver: string, rows: Row[]): Row[] {
-    const prev = this.seen.get(driver) ?? new Map<string, string>();
-    const next = new Map<string, string>();
+  markChanged(driver: string, rows: Row[], scope: (r: Row) => boolean = () => true): Row[] {
+    const prev = this.seen.get(driver) ?? new Map<string, { f: string; row: Row }>();
+    const next = new Map([...prev].filter(([, v]) => !scope(v.row))); // out of scope: as it was
     const out = rows.map((r) => {
       const f = JSON.stringify([r.state, r.waiting_on, r.last_activity_ms, r.until_ms]);
-      next.set(r.id, f);
-      return { ...r, changed: prev.get(r.id) !== f };
+      const was = prev.get(r.id);
+      if (scope(r)) next.set(r.id, { f, row: r });
+      else if (was) next.set(r.id, was);
+      return { ...r, changed: was?.f !== f };
     });
     this.seen.set(driver, next);
     return out;
@@ -272,12 +276,14 @@ export class Drive {
     const room = Math.max(400, opts.budget - head.length - tail.length - 2);
     // The transcript when the agent view names one here (turns read better than
     // a screen and cost less); else the screen or recent activity lines.
+    let missed = "";
     if (f.row.transcript) {
       try {
         const turns = turnsOf(f.row.kind, f.raw.transcript);
         if (turns.length) return { session: f.row, turns: turns.slice(-Math.min(n, 400)), prompt, text: `${head}${fitTurns(turns.slice(-Math.min(n, 400)), room)}${tail ? `\n\n${tail}` : ""}` };
-      } catch {
-        // an unreadable transcript falls back to the screen
+        missed = "its transcript holds no turns yet";
+      } catch (e) {
+        missed = `its transcript could not be read (${(e as Error).message.slice(0, 120)})`; // the screen stands in
       }
     }
     let lines: string[];
@@ -287,7 +293,9 @@ export class Drive {
     } catch (e) {
       throw err("NOT_AVAILABLE", (e as Error).message);
     }
-    return { session: f.row, lines, prompt, text: `${head}${fitLines(lines, room)}${tail ? `\n\n${tail}` : ""}` };
+    // Screen lines are a snapshot of what it shows, not its history: said so when they stand in for the transcript.
+    const note = missed ? `(A screen snapshot, not the conversation: ${missed}.)\n` : "";
+    return { session: f.row, lines, prompt, text: `${head}${note}${fitLines(lines, room)}${tail ? `\n\n${tail}` : ""}` };
   }
 
   // A text for a session as it will arrive, and what it is: the owner's alone
