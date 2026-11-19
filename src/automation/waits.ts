@@ -14,7 +14,7 @@ export type WaitSpec =
   | { kind: "file"; path: string; contains?: string }
   | { kind: "log"; path: string; match: string }
   | { kind: "http"; url: string; status?: number }
-  | { kind: "process"; pid: number }
+  | { kind: "process"; pid: number; start?: string }
   | { kind: "monitor"; command: string; match?: string; coalesce_ms?: number; max_events?: number }
   // A monitor on a WebSocket: each text message is one line of events.
   | { kind: "websocket"; url: string; protocols?: string[]; match?: string; coalesce_ms?: number; max_events?: number }
@@ -118,28 +118,34 @@ function resolvePath(p: string, cwd: string) {
   return isAbsolute(p) ? p : resolve(cwd, p);
 }
 
+// How this module looks at a process: signal 0 (false when there is no such
+// process) and its /proc stat line (null when unreadable). Tests replace it.
+export const procfs = {
+  signal0(pid: number): boolean {
+    try { process.kill(pid, 0); } catch (e: any) { if (e.code === "ESRCH") return false; }
+    return true;
+  },
+  stat(pid: number): string | null {
+    try { return readFileSync(`/proc/${pid}/stat`, "utf8"); } catch { return null; }
+  },
+};
+
+// The stat fields after the command name (which may hold spaces and parens).
+const statFields = (stat: string) => stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+
 function procAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-  } catch (e: any) {
-    if (e.code === "ESRCH") return false;
-  }
+  if (!procfs.signal0(pid)) return false;
   // A zombie has exited: its parent just has not read its status yet.
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
-  } catch {
-    return existsSync(`/proc/${pid}`) || process.platform !== "linux";
-  }
+  const stat = procfs.stat(pid);
+  if (stat) return statFields(stat)[0] !== "Z";
+  return existsSync(`/proc/${pid}`) || process.platform !== "linux";
 }
 
+// When the process started (clock ticks since boot): with the pid, what names
+// one process, since a pid is reused once its process ends.
 function startTime(pid: number): string | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-  } catch {
-    return undefined;
-  }
+  const stat = procfs.stat(pid);
+  return stat ? statFields(stat)[19] : undefined;
 }
 
 // Validates a spec the way the model or the page wrote it; throws the reason.
@@ -171,7 +177,8 @@ export function normalize(raw: any, cwd: string): WaitSpec {
       const pid = Number(spec.pid);
       if (!Number.isInteger(pid) || pid <= 1) throw new Error("a process wait needs a pid");
       if (!procAlive(pid)) throw new Error(`process ${pid} has already ended`);
-      return { kind, pid };
+      const start = startTime(pid);
+      return start ? { kind, pid, start } : { kind, pid };
     }
     case "websocket": {
       const u = new URL(String(spec.url));
@@ -359,7 +366,11 @@ async function probe(w: WaitRecord): Promise<string | undefined> {
       }
     }
     case "process":
-      return procAlive(s.pid) ? undefined : `Process ${s.pid} has ended.`;
+      if (!procAlive(s.pid)) return `Process ${s.pid} has ended.`;
+      // The pid names another process now: the one waited on has ended. An
+      // unreadable start time proves nothing either way; the pid is alive.
+      const now = s.start && startTime(s.pid);
+      return now && now !== s.start ? `Process ${s.pid} has ended (its id now names another process).` : undefined;
     case "pr_checks": {
       const p = Bun.spawn([process.env.KEEL_GH_BIN || "gh", "pr", "view", String(s.pr_number), "--repo", s.repo, "--json", "state,statusCheckRollup"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       const [out, err, code] = await Promise.all([readText(p.stdout, "gh pr view"), readText(p.stderr, "gh pr view"), p.exited]);

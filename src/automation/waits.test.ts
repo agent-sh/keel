@@ -1,7 +1,7 @@
 // Log waits read on from a durable cursor (a restart, a rotated file, a line
 // longer than one read), a monitor matches whole lines, and a cancel says what
 // it did. What a restart does cannot be reached from the page.
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { appendFileSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,4 +79,25 @@ test("cancelling a wait that already fired says it did not stop the wake", async
   expect(waits.cancel(u.id)).toBe("cancelled");
   expect(waits.cancel(u.id)).toBe("already_cancelled");
   expect(status(u.id)).toBe("cancelled");
+});
+
+test("a process wait ends when its pid comes to name another process", async () => {
+  const real = { ...waits.procfs };
+  let start = "100", alive = true;
+  waits.procfs.signal0 = (pid) => (pid === 4242 ? alive : real.signal0(pid));
+  waits.procfs.stat = (pid) => (pid === 4242 ? `4242 (job one) S 1 ${Array.from({ length: 17 }, () => "0").join(" ")} ${start} 0` : real.stat(pid));
+  try {
+    const w = waits.create(s.id, waits.normalize({ kind: "process", pid: 4242 }, dir), { timeout_seconds: 600 });
+    let t = Date.now();
+    const later = async () => { setSystemTime(new Date((t += 60_000))); await waits.tick(); };
+    await later();
+    expect(status(w.id)).toBe("active"); // the same process runs on
+    start = "200"; // it ended, and the pid now names a new process
+    await later();
+    expect(status(w.id)).toBe("fired");
+    expect(waits.get(w.id)!.outcome).toContain("another process");
+  } finally {
+    Object.assign(waits.procfs, real);
+    setSystemTime();
+  }
 });
