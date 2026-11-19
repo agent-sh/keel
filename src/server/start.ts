@@ -11,6 +11,7 @@ import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
 import { serve } from "./app.ts";
 import { routeModules } from "./routes/index.ts";
+import { portHolder, waitForPredecessor } from "../admin/daemon.ts";
 
 export { defaultStateDir };
 
@@ -20,6 +21,16 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   runMode.client = !!opts.client;
   const stateDir = resolve(opts.stateDir ?? defaultStateDir());
   const [hostname, portStr] = opts.bind.split(/:(?=\d+$)/);
+  // Once per process (a hot reload serves the same port again): a port that
+  // something already answers on is refused, after a restart's old daemon is gone.
+  if (!(globalThis as { __keelEngine?: unknown }).__keelEngine && Number(portStr) !== 0) {
+    waitForPredecessor();
+    const holder = await portHolder(hostname!, Number(portStr));
+    if (holder) {
+      console.error(`keel: ${opts.bind} is already in use by ${holder}; pick another --bind or stop it first`);
+      process.exit(1);
+    }
+  }
   const store = new Store(stateDir);
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);

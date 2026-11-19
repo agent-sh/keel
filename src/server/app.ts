@@ -95,6 +95,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     hostname: opts.hostname,
     port: opts.port,
     idleTimeout: IDLE_S,
+    reusePort: false, // one daemon per port (Bun 1.4 binds a taken port anyway: start.ts checks first)
     development: opts.development ? { hmr: true, console: true } : false,
     routes: withModules({
       "/": index,

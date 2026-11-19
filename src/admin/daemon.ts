@@ -13,16 +13,36 @@ const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as any).code === "EPERM"; }
 };
 
-// Refuses a second daemon on the same state folder. A lock left by a daemon
-// that died is taken over. A restart passes the old pid: wait for it to exit.
-export function acquireLock(stateDir: string) {
-  const path = join(stateDir, LOCK);
+// A restart passes the old daemon's pid: wait (up to a minute) until it exits.
+export function waitForPredecessor() {
   const waitFor = Number(process.env.KEEL_WAIT_FOR_PID || 0);
   if (waitFor && waitFor !== process.pid) {
     const until = Date.now() + 60_000;
     while (alive(waitFor) && Date.now() < until) Bun.sleepSync(100);
-    delete process.env.KEEL_WAIT_FOR_PID;
   }
+  delete process.env.KEEL_WAIT_FOR_PID;
+}
+
+// Who answers on host:port, if anything does: Bun lets a second server bind a
+// port another process listens on, and both then answer. A Keel daemon says
+// its pid and state folder.
+export async function portHolder(host: string, port: number): Promise<string | null> {
+  const h = host === "0.0.0.0" || host === "::" || host === "" ? "127.0.0.1" : host;
+  const open = await Bun.connect({ hostname: h, port, socket: { data() {}, error() {} } }).then((s) => (s.end(), true), () => false);
+  if (!open) return null;
+  try {
+    const r = await fetch(`http://${h.includes(":") ? `[${h}]` : h}:${port}/api/daemon`, { signal: AbortSignal.timeout(1500) });
+    const d = (await r.json()) as { pid?: number; state_dir?: string };
+    if (d.pid) return `a Keel daemon (pid ${d.pid}, state ${d.state_dir ?? "?"})`;
+  } catch {}
+  return "another program";
+}
+
+// Refuses a second daemon on the same state folder. A lock left by a daemon
+// that died is taken over. A restart passes the old pid: wait for it to exit.
+export function acquireLock(stateDir: string) {
+  const path = join(stateDir, LOCK);
+  waitForPredecessor();
   if (existsSync(path)) {
     const held = JSON.parse(readFileSync(path, "utf8") || "{}") as { pid?: number; bind?: string };
     if (held.pid && held.pid !== process.pid && alive(held.pid)) {
