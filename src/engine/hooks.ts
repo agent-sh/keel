@@ -1,4 +1,4 @@
-import type { Message, Session, ToolResultBlock } from "../core/types.ts";
+import type { Message, Session, StoredEvent, ToolResultBlock, TurnStatus, Usage } from "../core/types.ts";
 import type { ProviderRequest, ProviderResult } from "../providers/types.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 
@@ -41,7 +41,20 @@ export type TurnHooks = {
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
   // Before a compaction summarises the history (a memory tool reads it whole first).
   beforeCompact?: (s: Session) => void | Promise<void>;
+  // A session another agent answers (an ACP agent): its runner takes the whole
+  // turn, keeps its own history, and stores what happened through `io`. The
+  // first hook that returns a runner wins; the provider loop does not run.
+  external?: (s: Session) => ExternalTurn | undefined;
 };
+
+export type ExternalIO = {
+  signal: AbortSignal;
+  events(): StoredEvent[];   // the branch shown, as it is now
+  append(kind: StoredEvent["kind"], data: unknown): StoredEvent;
+  delta(kind: "text" | "thinking", index: number, text: string): void;
+  status(s: TurnStatus): void;
+};
+export type ExternalTurn = (io: ExternalIO) => Promise<{ reason: string; usage?: Usage }>;
 
 const hooks: TurnHooks[] = [];
 export const registerHooks = (h: TurnHooks) => void hooks.push(h);

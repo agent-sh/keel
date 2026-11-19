@@ -1,6 +1,6 @@
 // The integrations lane's place in the workbench: a settings section, the
 // /memory command, and how a memory note reads in the transcript.
-import { Brain, Share, Webhook } from "lucide-react";
+import { Brain, Cable, Share, Webhook } from "lucide-react";
 import { createElement, Fragment, lazy } from "react";
 import { headerActions, settingsSections, slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
@@ -14,6 +14,15 @@ settingsSections.add({
   icon: createElement(Brain, { className: "size-4" }),
   order: 40,
   component: lazy(() => import("../components/IntegrationsPanel.tsx").then((m) => ({ default: m.IntegrationsSettings }))),
+});
+
+settingsSections.add({
+  id: "acp-agents",
+  label: "ACP agents",
+  words: "acp agent client protocol zed opencode codex gemini claude kimi registry external",
+  icon: createElement(Cable, { className: "size-4" }),
+  order: 45,
+  component: lazy(() => import("../components/AcpAgentsPanel.tsx").then((m) => ({ default: m.AcpAgentsSettings }))),
 });
 
 settingsSections.add({

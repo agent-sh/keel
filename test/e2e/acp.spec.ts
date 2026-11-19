@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -48,9 +48,10 @@ test("acp", async ({ page, baseURL }) => {
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
   const ed = new Editor(baseURL!);
-  const init = await ed.call("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true } }, clientInfo: { name: "e2e", version: "1" } });
+  const init = await ed.call("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true }, elicitation: { form: {} } }, clientInfo: { name: "e2e", version: "1" } });
   expect(init.protocolVersion).toBe(1);
   expect(init.agentCapabilities.loadSession).toBe(true);
+  expect(init.agentCapabilities.sessionCapabilities).toMatchObject({ resume: {}, close: {} });
 
   const s = await ed.call("session/new", { cwd: ws, mcpServers: [{ name: "editor-fs", command: "true", args: [], env: [] }] });
   const id = s.sessionId as string;
@@ -58,6 +59,8 @@ test("acp", async ({ page, baseURL }) => {
   await ed.call("session/set_config_option", { sessionId: id, configId: "model", value: HAIKU });
   await ed.call("session/set_mode", { sessionId: id, modeId: "ask" });
   await expect.poll(() => ed.updates.some((u) => u.sessionId === id && JSON.stringify(u.update).includes("did not connect the editor's MCP servers"))).toBe(true);
+  // The daemon's MCP prompts are the editor's slash commands (none on a scratch daemon is fine; the update comes).
+  await expect.poll(() => ed.kinds(id)).toContain("available_commands_update");
 
   const asked: any[] = [];
   ed.onRequest = (m) => {
@@ -75,6 +78,11 @@ test("acp", async ({ page, baseURL }) => {
   expect(kinds).toContain("tool_call_update");
   expect(kinds).toContain("agent_message_chunk");
   expect(ed.updates.filter((u) => u.update.sessionUpdate === "tool_call_update" && u.sessionId === id).map((u) => u.update.status)).toEqual(["in_progress", "completed"]);
+  // The context and cost as the turn left them, before its answer.
+  const usage = ed.updates.filter((u) => u.sessionId === id && u.update.sessionUpdate === "usage_update").at(-1)?.update;
+  expect(usage.size).toBeGreaterThan(100_000);
+  expect(usage.used).toBeGreaterThan(0);
+  expect(usage.cost.currency).toBe("USD");
 
   // The workbench has the same session.
   await page.goto(`/s/${id}`);
@@ -91,7 +99,21 @@ test("acp", async ({ page, baseURL }) => {
   expect(JSON.stringify(ed2.updates)).toContain("touch acp.txt");
   const listed = await ed2.call("session/list", { cwd: ws });
   expect(listed.sessions.map((x: any) => x.sessionId)).toContain(id);
+  // Resume opens it again without a replay; close lets go of it.
+  const replayed = ed2.updates.length;
+  await ed2.call("session/resume", { sessionId: id, cwd: ws, mcpServers: [] });
+  expect(ed2.updates.slice(replayed).filter((u) => u.update.sessionUpdate === "user_message_chunk")).toHaveLength(0);
+  expect(await ed2.call("session/close", { sessionId: id })).toEqual({});
   ed2.close();
+
+  // A question card is the editor's elicitation form; its answer reaches the card.
+  ed.onRequest = (m) => (m.method === "elicitation/create" ? (asked.push(m), { action: "accept", content: { [Object.keys(m.params.requestedSchema.properties)[0]!]: "Blue" } }) : { outcome: { outcome: "selected", optionId: "once" } });
+  const q = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: "Use the AskUserQuestion tool once to ask me to pick a color, with exactly the options Red and Blue. Then reply with only the color I picked." }] });
+  expect(q.stopReason).toBe("end_turn");
+  const form = asked.find((m) => m.method === "elicitation/create");
+  expect(form.params.mode).toBe("form");
+  expect(JSON.stringify(form.params.requestedSchema)).toContain("Blue");
+  await expect(page.getByTestId("assistant-text").last()).toContainText(/blue/i, { timeout: 30_000 });
 
   // Cancel: the turn ends as cancelled.
   await ed.call("session/set_mode", { sessionId: id, modeId: "full-auto" });
@@ -101,4 +123,73 @@ test("acp", async ({ page, baseURL }) => {
   ed.notify("session/cancel", { sessionId: id });
   expect((await turn).stopReason).toBe("cancelled");
   ed.close();
+});
+
+// Feature: Keel drives another ACP agent. Settings lists the agents of the ACP
+// registry and the owner's own; one added there answers a new session: its
+// thought, plan, calls and reply show as Keel's own, the command it asks to run
+// is a gate card the owner answers, the file it writes through Keel is judged
+// the same way, its cost reaches the session, it keeps its own history, Stop
+// cancels its turn, and a session that talked keeps its agent.
+test("acp client", async ({ page, request }) => {
+  const standin = join(import.meta.dirname, "fixtures/acp-agent-standin.ts");
+  await request.delete("/api/acp/agents/standin").catch(() => {});
+  await page.goto("/settings/acp-agents");
+  await expect(page.getByTestId("acp-registry-count")).toContainText(/\d+ agents/);
+  await page.getByTestId("acp-add-id").fill("standin");
+  await page.getByTestId("acp-add-command").fill("bun");
+  await page.getByTestId("acp-add-args").fill(standin);
+  await page.getByTestId("acp-add").click();
+  await expect(page.getByTestId("acp-agent-standin")).toBeVisible();
+  await shoot(page, "acp-10-agents");
+
+  await page.getByTestId("acp-agent-standin").getByTestId("acp-agent-start").click();
+  await expect(page).toHaveURL(/\/s\//);
+  const id = page.url().split("/s/")[1]!.split(/[?#]/)[0]!;
+  const s = (await (await request.get(`/api/sessions/${id}`)).json()).session;
+  expect(s.model).toBe("acp:standin");
+  // The picker has the agent as a model of the ACP agents provider.
+  await expect(page.getByText("not in current listing")).toHaveCount(0);
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask" } });
+  const note = join(s.workspace, "acp-note.txt");
+  rmSync(note, { force: true });
+
+  await page.getByTestId("composer").fill("hello from the e2e");
+  await page.keyboard.press("Enter");
+  // The command the agent asks to run is the gate's card (a read-only one would run): the owner allows it.
+  const card = page.getByTestId("approval").first();
+  await expect(card.getByTestId("approval-summary")).toContainText("mkdir -p build", { timeout: 30_000 });
+  await shoot(page, "acp-11-card");
+  await card.getByTestId("allow-once").click();
+  // Then the file it writes in the folder: a card too (ask mode asks for edits).
+  await expect(page.getByTestId("approval").first().getByTestId("approval-summary")).toContainText("acp-note.txt", { timeout: 30_000 });
+  await page.getByTestId("approval").first().getByTestId("allow-once").click();
+  await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 30_000 });
+  expect(readFileSync(note, "utf8")).toBe("hello from the e2e");
+  await expect(page.getByTestId("assistant-text").last()).toContainText("The note is written.");
+  await expect(page.getByTestId("tool-call").filter({ hasText: "mkdir -p build" })).toHaveAttribute("data-state", "ok");
+  await expect(page.getByTestId("plan").first()).toContainText("Write the note");
+  const after = (await (await request.get(`/api/sessions/${id}`)).json()).session;
+  expect(after.usage.cost).toBeCloseTo(0.0125, 4);
+  expect(after.usage.input).toBe(900);
+  await shoot(page, "acp-12-turn");
+
+  // The agent keeps its own history: the next turn sends only the new words.
+  await page.getByTestId("composer").fill("again");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("assistant-text").last()).toContainText("Before, you said: hello from the e2e", { timeout: 30_000 });
+
+  // Stop cancels the agent's turn; the call it left running ends with it.
+  await page.getByTestId("composer").fill("wait for me");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("tool-call").filter({ hasText: "sleep 600" })).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId("stop").click();
+  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 });
+  await expect(page.getByTestId("tool-call").filter({ hasText: "sleep 600" })).not.toHaveAttribute("data-state", "running");
+
+  // A session that talked keeps its agent: moving it to a model is refused.
+  const moved = await request.patch(`/api/sessions/${id}`, { data: { model: HAIKU } });
+  expect(moved.status()).toBe(409);
+  expect((await moved.json()).error).toContain("keeps its own history");
+  await request.delete("/api/acp/agents/standin");
 });

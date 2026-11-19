@@ -43,6 +43,7 @@ import { convoRoutes } from "./convo.ts";
 import { placesRoutes } from "./places.ts";
 import { terminalRoutes } from "./terminal.ts";
 import { remoteRoutes } from "./remote.ts";
+import { acpRoutes } from "./acp.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -61,6 +62,7 @@ export const routeModules: RouteModule[] = [
   toolRoutes,
   searchRoutes,
   providersRoutes,
+  acpRoutes, // after permissions: the gate judges what an ACP agent asks for
   profileRoutes,
   worktreeRoutes,
   reviewRoutes,

@@ -13,7 +13,7 @@ import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, toolsFor } from "../tools/registry.ts";
-import { allHooks, type ToolCall } from "./hooks.ts";
+import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
 import { checkpointAt, COMPACT_SHARE, contextTokens, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
@@ -502,8 +502,40 @@ export class Engine {
     }
   }
 
+  // A turn another agent runs (an ACP agent): it stores its own replies and calls.
+  private async external(id: string, session: Session, run: ExternalTurn, signal: AbortSignal) {
+    this.setPhase(id, "working");
+    const t0 = Date.now();
+    this.append(id, "turn_start", { model: session.model });
+    let reason = "end_turn";
+    let usage: Usage = emptyUsage();
+    try {
+      const r = await run({
+        signal,
+        events: () => this.lineage(id),
+        append: (kind, data) => this.append(id, kind, data),
+        delta: (kind, index, text) => this.bus.emit({ t: "delta", session_id: id, kind, index, text }),
+        status: (s) => this.status(id, s),
+      });
+      reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : r.reason;
+      if (r.usage) { usage = r.usage; this.store.addUsage(id, usage); this.emitSession(id); }
+    } catch (e) {
+      reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
+      if (!signal.aborted) throw e;
+    } finally {
+      const by = this.stoppedBy.get(id);
+      this.stoppedBy.delete(id);
+      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
+      for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
+    }
+  }
+
   private async loop(id: string, signal: AbortSignal) {
     let session = this.store.session(id)!;
+    for (const h of allHooks()) {
+      const run = h.external?.(session);
+      if (run) return this.external(id, session, run, signal);
+    }
     let st = await this.step(session, session.model);
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);

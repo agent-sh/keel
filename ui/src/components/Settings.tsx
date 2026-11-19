@@ -127,7 +127,7 @@ const GROUP: Record<string, string> = {
   mcp: "Toolkit", skills: "Toolkit", commands: "Toolkit", agents: "Toolkit", plugins: "Toolkit", hooks: "Toolkit", instructions: "Toolkit",
   safety: "Safety", alerts: "Safety",
   machines: "Machine", resources: "Machine", storage: "Machine", daemon: "Machine", phone: "Machine", usage: "Machine",
-  integrations: "Reach", elsewhere: "Reach", export: "Reach",
+  integrations: "Reach", "acp-agents": "Reach", elsewhere: "Reach", export: "Reach",
   about: "Keel",
 };
 const ORDER = ["Working", "Toolkit", "Safety", "Machine", "Reach", "More", "Keel"];

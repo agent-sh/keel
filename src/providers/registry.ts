@@ -17,6 +17,7 @@ import { fromHeaders, Limits, type Window } from "./limits.ts";
 import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
 import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus, SpeedOffer } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
+import { AcpProvider } from "../acp/agents.ts";
 import { runMode } from "../core/runmode.ts";
 
 const LISTING_MAX_AGE = 30 * 60_000;
@@ -67,6 +68,8 @@ export class Providers {
       new CodexProvider(),
       new GeminiProvider(),
       this.xai,
+      // ACP agents installed here (the registry and the owner's own entries), driven by src/acp/external.ts.
+      new AcpProvider(stateDir),
       // Test-only, never listed unless the daemon starts with KEEL_SCRIPTED_PROVIDER=1.
       ...(scriptedEnabled() ? [new ScriptedProvider()] : []),
     ];
