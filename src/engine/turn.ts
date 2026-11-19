@@ -707,7 +707,9 @@ export class Engine {
     const callTool = (name: string, input: any, id: string) => this.runTool(session, tools, { type: "tool_use", id, name, input }, ctx);
     const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id, callTool } };
     // An interrupt answers at once, whether or not a gate or the tool honors the signal.
-    const stopped = new Promise<null>((r) => ctx.signal.addEventListener("abort", () => r(null), { once: true }));
+    // The listener goes when the call settles: the turn's signal is shared by all its calls.
+    let onStop = () => {};
+    const stopped = new Promise<null>((r) => { onStop = () => r(null); ctx.signal.addEventListener("abort", onStop, { once: true }); });
     let result: ToolResultBlock;
     // Measured from dispatch: a call that never ran (denied, stopped at its gate) has no row.
     let t0: number | undefined;
@@ -745,6 +747,8 @@ export class Engine {
       this.errors.capture("tool", e, { tool: u.name, session: ctx.sessionId });
       const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
       return t0 === undefined ? failed : ran(failed, "error");
+    } finally {
+      ctx.signal.removeEventListener("abort", onStop);
     }
     // A hook that throws at once is caught like one that rejects.
     for (const h of allHooks()) await (async () => h.afterTool?.(session, call, result))().catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));

@@ -302,7 +302,9 @@ export class McpClient {
         reject(new Error(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`));
         this.settled();
       }, timeoutMs);
-      const done = (f: (v: any) => void) => (v: any) => { clearTimeout(timer); opt.signal?.removeEventListener("abort", onAbort); f(v); this.settled(); };
+      const ac = new AbortController();
+      const forward = () => ac.abort();
+      const done = (f: (v: any) => void) => (v: any) => { clearTimeout(timer); opt.signal?.removeEventListener("abort", onAbort); opt.signal?.removeEventListener("abort", forward); f(v); this.settled(); };
       const onAbort = () => {
         this.pending.delete(id);
         if (this.era === "legacy") this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "cancelled" } });
@@ -312,8 +314,7 @@ export class McpClient {
       this.pending.set(id, { resolve: done(resolve), reject: done(reject) });
       if (this.t.kind === "stdio") this.write(msg);
       else {
-        const ac = new AbortController();
-        opt.signal?.addEventListener("abort", () => ac.abort(), { once: true });
+        opt.signal?.addEventListener("abort", forward, { once: true });
         this.post(msg, ac.signal).then(
           () => {
             // A stream that ended without our answer loses the request.

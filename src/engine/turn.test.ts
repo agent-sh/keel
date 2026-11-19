@@ -155,3 +155,31 @@ test("idle compaction prepares while warm and applies when the cache went cold",
   expect(JSON.stringify(turn.messages.at(-1))).toContain("and now?");
   expect(store.events(s.id).find((e) => e.kind === "compaction")?.data.trigger).toBe("idle");
 });
+
+// A finished tool call takes its abort listener off the turn's shared signal,
+// whether it succeeded, failed or a gate refused it.
+test("a settled tool call leaves no abort listener on the turn's signal", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const { registerHooks } = await import("./hooks.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "listeners-"));
+  const store = new Store(dir);
+  const s = store.createSession({ model: "x:y", workspace: dir });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  registerHooks({ beforeTool: (_s, c) => (c.tool.name === "refused" ? { deny: "no" } : undefined) });
+  const tool = (name: string, run: () => Promise<any>) => ({ name, description: "", input_schema: { type: "object" }, readOnly: true, run }) as any;
+  const tools = [tool("ok", async () => ({ content: "fine" })), tool("boom", async () => { throw new Error("broke"); }), tool("refused", async () => ({ content: "never" }))];
+  const stop = new AbortController();
+  let live = 0;
+  const add = stop.signal.addEventListener.bind(stop.signal), remove = stop.signal.removeEventListener.bind(stop.signal);
+  stop.signal.addEventListener = ((t: string, f: any, o?: any) => (t === "abort" && live++, add(t, f, o))) as any;
+  stop.signal.removeEventListener = ((t: string, f: any, o?: any) => (t === "abort" && live--, remove(t, f, o))) as any;
+  const ctx = { sessionId: s.id, cwd: dir, signal: stop.signal, spillDir: dir, seen: new Map() };
+  for (const name of ["ok", "boom", "refused"]) {
+    await (engine as any).runTool(s, tools, { type: "tool_use", id: name, name, input: {} }, ctx);
+    expect(live).toBe(0);
+  }
+});
