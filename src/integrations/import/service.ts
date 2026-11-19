@@ -10,12 +10,14 @@ import type { Session } from "../../core/types.ts";
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "./claude.ts";
 import { codexFiles, codexFound, codexHome, readCodex } from "./codex.ts";
 import { keelDb, keelSessions, readKeel } from "./keel.ts";
+import { agyHome, agySessions, readAgy } from "./agy.ts";
 import type { Found, Harness, Read } from "./types.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
   { harness: "claude", label: "Claude Code", store: claudeRoot },
   { harness: "codex", label: "Codex", store: codexHome },
   { harness: "keel", label: "Keel (Rust)", store: keelDb },
+  { harness: "agy", label: "Antigravity", store: agyHome },
 ];
 
 const SCHEMA = `
@@ -54,6 +56,7 @@ export class Imports {
   private building: Promise<void> | null = null;
   private builtAt = 0;
   private keelCache: { at: number; rows: Found[] } | null = null;
+  private agyCache: { at: number; rows: Found[] } | null = null;
   complete = false;
 
   constructor(private store: Store) {
@@ -96,6 +99,7 @@ export class Imports {
 
   invalidate() {
     this.keelCache = null;
+    this.agyCache = null;
   }
 
   // Up to `ms` of a refresh before answering; the rest goes on in the background.
@@ -115,15 +119,26 @@ export class Imports {
     return rows;
   }
 
+  // Antigravity lists its conversations in its own databases: read like the
+  // Rust Keel's, cached for a few seconds.
+  private agy(): Found[] {
+    if (this.agyCache && Date.now() - this.agyCache.at < 5000) return this.agyCache.rows;
+    let rows: Found[] = [];
+    try { rows = agySessions(); } catch {}
+    this.agyCache = { at: Date.now(), rows };
+    return rows;
+  }
+
   all(harness?: Harness): Found[] {
     const out: Found[] = [];
-    if (!harness || harness !== "keel") {
+    if (!harness || (harness !== "keel" && harness !== "agy")) {
       const rows = harness
         ? this.store.db.query<{ found: string }, [string]>("SELECT found FROM import_index WHERE found IS NOT NULL AND harness = ?").all(harness)
         : this.store.db.query<{ found: string }, []>("SELECT found FROM import_index WHERE found IS NOT NULL").all();
       for (const r of rows) out.push(JSON.parse(r.found));
     }
     if (!harness || harness === "keel") out.push(...this.keel());
+    if (!harness || harness === "agy") out.push(...this.agy());
     return out;
   }
 
@@ -167,6 +182,7 @@ export class Imports {
   byPath(path: string, harness?: Harness): Found | undefined {
     const hit = this.store.db.query<{ found: string | null }, [string]>("SELECT found FROM import_index WHERE path = ?").get(path);
     if (hit?.found) return JSON.parse(hit.found);
+    if (harness === "agy" || path.endsWith("/.system_generated/logs/transcript_full.jsonl")) return this.all("agy").find((f) => f.path === path);
     let st;
     try { st = statSync(path); } catch { return undefined; }
     const h = harness ?? (/\/rollout-[^/]*\.jsonl$/.test(path) ? "codex" : path.endsWith(".jsonl") ? "claude" : undefined);
@@ -178,6 +194,7 @@ export class Imports {
   async read(f: Found): Promise<Read> {
     if (f.harness === "claude") return readClaude(f.path);
     if (f.harness === "codex") return readCodex(f.path);
+    if (f.harness === "agy") return readAgy(f);
     return readKeel(f.id);
   }
 

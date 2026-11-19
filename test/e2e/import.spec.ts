@@ -20,7 +20,7 @@ function growClaude(path: string, cwd: string, id: string) {
 // KEEL_IMPORT_KEEL_DB at scratch stores: this test writes its fixtures there.
 test("import and export", async ({ page, request }) => {
   const first = await (await request.get("/api/import/sessions?limit=1")).json();
-  const store = (h: string) => first.harnesses.find((x: any) => x.harness === h).store as string;
+  const store = (h: string) => first.harnesses.find((x: any) => x.harness === h)?.store as string;
   test.skip(!store("claude").includes("keel-work"), "needs scratch import stores (KEEL_IMPORT_*)");
   // Only this test's own failures count (the daemon may be busy with others):
   // what its page reports, and server errors of the import or of its sessions.
@@ -30,9 +30,11 @@ test("import and export", async ({ page, request }) => {
   page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") pageErrors.push(String(r.postDataJSON()?.message)); });
   page.on("framenavigated", (f) => { const m = /\/s\/([^/?#]+)/.exec(f.url()); if (m) mine.add(m[1]!); });
   const tag = String(Date.now());
+  // Antigravity's store is written only when the daemon reads a scratch one (KEEL_IMPORT_AGY_DIR).
+  const agyScratch = !!store("agy")?.includes("keel-work");
   const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `import-${tag}`);
   mkdirSync(cwd, { recursive: true });
-  const made = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/import-stores.ts"), store("claude"), store("codex"), store("keel"), cwd, tag], { encoding: "utf8" }));
+  const made = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/import-stores.ts"), store("claude"), store("codex"), store("keel"), cwd, tag, ...(agyScratch ? [store("agy")] : [])], { encoding: "utf8" }));
 
   // The sheet: harness tabs with counts, a list, a preview.
   await page.goto("/");
@@ -79,17 +81,24 @@ test("import and export", async ({ page, request }) => {
   await preview.getByTestId("import-new").click();
   await expect(page.getByText("Yellow.")).toBeVisible();
 
-  // Codex and the Rust Keel, from their own stores.
-  for (const [tab, text] of [["codex", "The code word is bramble."], ["keel", "The harbour is Kythira."]] as const) {
+  // Codex, the Rust Keel and Antigravity, from their own stores.
+  const others: [string, string, string][] = [["codex", "Pick a code word", "The code word is bramble."], ["keel", "Harbour Kythira", "The harbour is Kythira."]];
+  if (agyScratch) others.push(["agy", "Lighthouse Pharos", "The lighthouse is Pharos."]);
+  for (const [tab, row, text] of others) {
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("Import sessions");
     await page.keyboard.press("Enter");
     await page.getByTestId(`import-tab-${tab}`).click();
     await page.getByTestId("import-search").fill(tag);
-    await expect(rows.first()).toContainText(tab === "codex" ? "Pick a code word" : "Harbour Kythira");
+    await expect(rows.first()).toContainText(row);
     await rows.first().click();
     await expect(page.getByTestId("import-preview")).toContainText(text);
     if (tab === "keel") await shoot(page, "import-03-keel");
+    if (tab === "agy") {
+      // Calls and results paired by order, the parallel results written before their call.
+      await expect(page.getByTestId("import-preview").getByTestId("import-counts")).toContainText("2tool calls");
+      await shoot(page, "import-03b-agy");
+    }
     await page.getByTestId("import-go").click();
     await expect(page.getByTestId("assistant-text").last()).toContainText(text);
   }

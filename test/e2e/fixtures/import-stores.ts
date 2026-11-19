@@ -74,14 +74,43 @@ export function keelDb(path: string, cwd: string, id: string, word: string) {
   db.close();
 }
 
-// bun test/e2e/fixtures/import-stores.ts <claude projects> <codex home> <keel db> <cwd> <tag>
+// Antigravity's command line store: a row in conversation_summaries.db and the
+// transcript, with results of two parallel calls written before the step that
+// made them, as agy does.
+export function agySession(home: string, cwd: string, id: string, word: string) {
+  const store = join(home, "antigravity-cli");
+  mkdirSync(store, { recursive: true });
+  const db = new Database(join(store, "conversation_summaries.db"), { create: true });
+  db.exec("CREATE TABLE IF NOT EXISTS `conversation_summaries` (`conversation_id` text,`title` text NOT NULL DEFAULT \"\",`preview` text NOT NULL DEFAULT \"\",`step_count` integer NOT NULL DEFAULT 0,`last_modified_time` datetime NOT NULL,`workspace_uris` text NOT NULL,`parent_conversation_id` text NOT NULL DEFAULT \"\",`last_user_input_time` datetime NOT NULL, PRIMARY KEY (`conversation_id`))");
+  const t = Date.now() - 20_000;
+  const go = (ms: number) => new Date(ms).toISOString().replace("T", " ").replace("Z", "000000+00:00");
+  db.query("INSERT OR REPLACE INTO conversation_summaries (conversation_id, title, preview, step_count, last_modified_time, workspace_uris, last_user_input_time) VALUES (?, ?, ?, 6, ?, ?, ?)")
+    .run(id, `Lighthouse ${word}`, "Find the lighthouse", go(t + 6000), JSON.stringify([`file://${cwd}`]), go(t));
+  db.close();
+  const at = (i: number) => go(t + i * 1000);
+  const recs = [
+    { step_index: 0, type: "USER_INPUT", source: "USER_EXPLICIT", status: "DONE", created_at: at(0), content: "<USER_REQUEST>\nWhich lighthouse do the notes name?\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe time is now.\n</ADDITIONAL_METADATA>" },
+    { step_index: 2, type: "VIEW_FILE", source: "MODEL", status: "DONE", created_at: at(2), content: "Created At: 2026-11-19T01:00:00+00:00\nCompleted At: 2026-11-19T01:00:01+00:00\n\nlighthouse notes" },
+    { step_index: 3, type: "RUN_COMMAND", source: "MODEL", status: "DONE", created_at: at(3), content: "notes.md" },
+    { step_index: 1, type: "PLANNER_RESPONSE", source: "MODEL", status: "DONE", created_at: at(1), content: "", thinking: "read the notes", tool_calls: [{ name: "view_file", args: { AbsolutePath: `${cwd}/notes.md` } }, { name: "run_command", args: { CommandLine: "ls", Cwd: cwd } }] },
+    { step_index: 4, type: "SYSTEM_MESSAGE", source: "SYSTEM", status: "DONE", created_at: at(4), content: "harness note" },
+    { step_index: 5, type: "PLANNER_RESPONSE", source: "MODEL", status: "DONE", created_at: at(5), content: `The lighthouse is ${word}.`, tool_calls: [] },
+  ];
+  const dir = join(store, "brain", id, ".system_generated", "logs");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "transcript_full.jsonl"), recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  return join(dir, "transcript_full.jsonl");
+}
+
+// bun test/e2e/fixtures/import-stores.ts <claude projects> <codex home> <keel db> <cwd> <tag> [agy home]
 // (the e2e runs under node; bun:sqlite is bun's, so the stores are made here)
 if (import.meta.main) {
-  const [claude, codex, keel, cwd, tag] = process.argv.slice(2) as [string, string, string, string, string];
+  const [claude, codex, keel, cwd, tag, agy] = process.argv.slice(2) as [string, string, string, string, string, string | undefined];
   const out = {
     claude: claudeSession(claude, cwd, `c0ffee00-0000-4000-8000-${tag.padStart(12, "0")}`, "quince"),
     codex: codexSession(codex, cwd, `01a2c0de-0000-7000-8000-${tag.padStart(12, "0")}`, "bramble"),
     keel: (keelDb(keel, cwd, `keel-${tag}`, "Kythira"), keel),
+    agy: agy ? agySession(agy, cwd, `a9a9a9a9-0000-4000-8000-${tag.padStart(12, "0")}`, "Pharos") : undefined,
   };
   console.log(JSON.stringify(out));
 }
