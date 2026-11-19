@@ -5,7 +5,9 @@ import { HAIKU, shoot } from "./shots.ts";
 
 // The parlar stand-in the daemon runs (KEEL_PARLAR): no daemon, mic or speaker;
 // a test plays the owner's speech by writing the file `speech` beside it.
-const PARLAR = process.env.KEEL_PARLAR_DIR ?? join(process.env.HOME!, ".cache/keel-work/bun/dev-voice/parlar");
+// KEEL_PARLAR_DIR is its folder (scripts/dev.sh puts it at <dev dir>/parlar);
+// another daemon's stand-in is never used.
+const PARLAR = process.env.KEEL_PARLAR_DIR ?? "";
 const log = () => (existsSync(join(PARLAR, "parlar.log")) ? readFileSync(join(PARLAR, "parlar.log"), "utf8") : "");
 // Waits that run now (a killed wait leaves its marker behind; its process is gone).
 const waiting = () => readdirSync(PARLAR).filter((f) => f.startsWith("waiting.") && existsSync(`/proc/${f.slice(8)}`));
@@ -15,7 +17,7 @@ const waiting = () => readdirSync(PARLAR).filter((f) => f.startsWith("waiting.")
 // model's say reaches parlar for that session only; another session's say is
 // not spoken. Mute closes the mic; Stop ends the conversation and its waits.
 test("voice", async ({ page, request }) => {
-  test.skip(!existsSync(join(PARLAR, "parlar")), "needs the parlar stand-in (run the daemon with KEEL_PARLAR)");
+  test.skip(!PARLAR || !existsSync(join(PARLAR, "parlar")), "needs the daemon's parlar stand-in folder in KEEL_PARLAR_DIR");
   for (const f of ["focus", "active", "muted", "speech", "known", "parlar.log"]) rmSync(join(PARLAR, f), { force: true });
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;

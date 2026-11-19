@@ -80,6 +80,7 @@ function Bars({ rows }: { rows: { label: string; bytes: number; hint?: string }[
 
 export function StoragePanel() {
   const [r, setR] = useState<Report | null>(null);
+  const [allSessions, setAllSessions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [days, setDays] = useState("30");
   const [found, setFound] = useState<{ days: number; sessions: Candidate[]; bytes: number } | null>(null);
@@ -271,7 +272,7 @@ export function StoragePanel() {
           <span className="ml-auto text-caption font-normal text-faint">transcript, spilled output and its share of checkpoints</span>
         </div>
         <div className="-mx-5 border-t border-line">
-          {r.by_session.slice(0, 15).map((s) => (
+          {(allSessions ? r.by_session : r.by_session.slice(0, 15)).map((s) => (
             <div key={s.id} className="group flex h-9 w-full items-center gap-3 border-b border-line/60 px-5 text-ui last:border-0 hover:bg-hover" data-testid="storage-session">
               <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
               {s.archived && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>}
@@ -291,6 +292,11 @@ export function StoragePanel() {
               <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(s.bytes)}</span>
             </div>
           ))}
+          {r.by_session.length > 15 && (
+            <button type="button" data-testid="storage-sessions-more" onClick={() => setAllSessions(!allSessions)} className="h-9 w-full px-5 text-left text-caption text-muted hover:bg-hover hover:text-fg">
+              {allSessions ? "Show the largest 15" : `${r.by_session.length - 15} more`}
+            </button>
+          )}
         </div>
       </Card>
     </div>

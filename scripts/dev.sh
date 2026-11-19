@@ -12,6 +12,13 @@ fi
 export KEEL_CONFIG_DIR="${KEEL_CONFIG_DIR:-$DEV/config}"
 mkdir -p "$KEEL_CONFIG_DIR"
 export KEEL_DESKTOP_NOTIFY="${KEEL_DESKTOP_NOTIFY:-off}"
+# Voice goes to the parlar stand-in beside the state, never the owner's own
+# parlar (its mic and speaker); KEEL_PARLAR picks another.
+if [ -z "${KEEL_PARLAR:-}" ]; then
+  mkdir -p "$DEV/parlar"
+  install -m 755 "$(dirname "$0")/../test/e2e/fixtures/parlar-standin.py" "$DEV/parlar/parlar"
+  export KEEL_PARLAR="$DEV/parlar/parlar"
+fi
 cd "$(dirname "$0")/.."
 # Lanes add dependencies; a stale node_modules breaks the bundle at load.
 bun install --silent
