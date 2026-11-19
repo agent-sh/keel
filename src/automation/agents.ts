@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, hasPending, inert } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -8,6 +8,7 @@ import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { Worktrees } from "../worktree/manager.ts";
+import { contains } from "../core/paths.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. One level deep. The child gets
@@ -616,11 +617,10 @@ function outsideWorktree(a: AgentRecord, sessionId: string, input: any): string 
   const w = wts().get(sessionId);
   const parent = D().store.session(a.parent_id);
   const cwd = D().store.session(sessionId)?.workspace ?? a.worktree!;
-  const inside = (p: string, dir: string) => { const r = relative(dir, p); return r === "" || (!r.startsWith("..") && !isAbsolute(r)); };
   for (const raw of paths) {
     const p = resolve(cwd, raw);
-    if (inside(p, a.worktree!)) continue;
-    if ((w && inside(p, w.repo_root)) || (parent && inside(p, parent.workspace)))
+    if (contains(a.worktree!, p)) continue;
+    if ((w && contains(w.repo_root, p)) || (parent && contains(parent.workspace, p)))
       return `This agent works in its own worktree at ${a.worktree}; ${raw} is in the parent's checkout. Edit the same file under ${a.worktree} instead.`;
   }
   return undefined;

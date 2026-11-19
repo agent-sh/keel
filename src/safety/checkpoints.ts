@@ -10,7 +10,8 @@ import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
-import { classify, inside } from "./policy.ts";
+import { contains } from "../core/paths.ts";
+import { classify } from "./policy.ts";
 import { Shadow, type DiffResult, type FileChange } from "./shadow.ts";
 
 export type Checkpoint = {
@@ -385,5 +386,5 @@ export class Bad extends Error {
 }
 
 function rel(workspace: string, paths: string[]): string[] {
-  return paths.filter((p) => inside(p, workspace)).map((p) => relative(workspace, p)).filter(Boolean);
+  return paths.filter((p) => contains(workspace, p)).map((p) => relative(workspace, p)).filter(Boolean);
 }

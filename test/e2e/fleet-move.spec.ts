@@ -10,9 +10,11 @@ import { HAIKU, shoot } from "./shots.ts";
 // worktree it had over there.
 const PEER = process.env.KEEL_PEER_URL ?? "http://127.0.0.1:47975";
 const ROOT = process.env.KEEL_PEER_ROOT ?? `${process.env.HOME}/.cache/keel-work/bun/dev-fleet-b/root`;
-const HOME_DIR = `${process.env.HOME}/.cache/keel-work/bun/dev-fleet/move-${Date.now().toString(36)}`;
+const HOME_DIR = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/move-${Date.now().toString(36)}`;
 
 test("fleet move: there with its git state, work there, back home", async ({ page, request }) => {
+  const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
+  test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   mkdirSync(ROOT, { recursive: true });
   let { machines } = await (await request.get("/api/fleet/machines")).json();

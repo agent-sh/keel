@@ -58,7 +58,7 @@ export function shellBody(name: string, text: string): string {
   return text.replace(/^Exit code \d+\n?/, "");
 }
 
-export const stripAnsi = (s: string) => s.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g, "");
+export { stripAnsi } from "../../../src/core/text.ts";
 
 export function patchFiles(patch: string): { path: string; op: "add" | "delete" | "update"; lines: string[]; moveTo?: string }[] {
   const out: { path: string; op: "add" | "delete" | "update"; lines: string[]; moveTo?: string }[] = [];

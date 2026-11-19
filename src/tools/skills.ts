@@ -5,6 +5,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { configDir } from "../providers/config.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
 import { SessionMap } from "../core/session-map.ts";
@@ -63,7 +64,7 @@ export function skillRoots(cwd: string): { dir: string; scope: Skill["scope"] }[
   const roots: { dir: string; scope: Skill["scope"] }[] = [
     { dir: join(home, ".claude/skills"), scope: "personal" },
     { dir: join(home, ".agents/skills"), scope: "personal" },
-    { dir: join(home, ".config/keel-bun/skills"), scope: "personal" },
+    { dir: join(configDir(), "skills"), scope: "personal" },
   ];
   const top = gitRoot(cwd) ?? cwd;
   for (let d = cwd; ; d = dirname(d)) {
@@ -75,6 +76,16 @@ export function skillRoots(cwd: string): { dir: string; scope: Skill["scope"] }[
 
 // A feature may hold back a repository's skill (one changed since it was trusted).
 export const skillFilter: { allow?: (dir: string) => boolean } = {};
+
+// Other harnesses install their built-in skills into the shared personal
+// folders (~/.agents/skills): skills that drive that harness's own product,
+// settings or tools, which Keel cannot run. A personal skill is left out when
+// its name or description names such a product, or its body uses that
+// harness's own config folder or tool names. Project skills always load.
+const FOREIGN_TITLE = /\b(codex|cursor|bugbot)\b/i;
+const FOREIGN_BODY = /(^|[\s"'`(~/])\.(cursor|codex)\/|\bcursor-[a-z]+-[a-z_-]+|<\/?cursor-[a-z]/m;
+export const foreignSkill = (name: string, description: string, body: string) =>
+  FOREIGN_TITLE.test(`${name} ${description}`) || FOREIGN_BODY.test(body);
 
 export function discoverSkills(cwd: string): Skill[] {
   const out = new Map<string, Skill>();
@@ -97,6 +108,7 @@ export function discoverSkills(cwd: string): Skill[] {
       if (out.has(name) || /[<>​]/.test(name)) continue;
       const desc = [data.description || body.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") || "", data.when_to_use || ""]
         .filter(Boolean).join(" ").slice(0, 1536);
+      if (scope === "personal" && foreignSkill(name, desc, body)) continue;
       const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];
       out.set(name, {
         name, description: desc, dir: dirname(file), file, scope,
@@ -107,7 +119,8 @@ export function discoverSkills(cwd: string): Skill[] {
       });
     }
   }
-  return [...out.values()];
+  // By name: the listing in the shared, cached prompt prefix stays byte-stable.
+  return [...out.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 // Shell-style split: "hello world" second -> [hello world, second].

@@ -10,6 +10,8 @@ const PEER = process.env.KEEL_PEER_URL ?? "http://127.0.0.1:47975";
 const ROOT = process.env.KEEL_PEER_ROOT ?? `${process.env.HOME}/.cache/keel-work/bun/dev-fleet-b/root`;
 
 test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ page, request }) => {
+  const peerUp = await request.get(`${PEER}/api/health`, { timeout: 3000 }).then((r) => r.ok(), () => false);
+  test.skip(!peerUp, `no peer daemon at ${PEER}: start a second daemon and set KEEL_PEER_URL and KEEL_PEER_ROOT`);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // Start clean: no session placed on an old pairing, no old machine record.
   const { machines } = await (await request.get("/api/fleet/machines")).json();

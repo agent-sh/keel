@@ -9,7 +9,7 @@ import { exportTo, parseKeelJsonl, redact, redactDeep, toKeelJsonl, toMarkdown }
 import { HARNESSES, Imports } from "../../integrations/import/service.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, linkJson, proven } from "../../fleet/link.ts";
-import { inside } from "../../safety/policy.ts";
+import { contains } from "../../core/paths.ts";
 import { fleet } from "./fleet.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -180,7 +180,7 @@ export const importRoutes: RouteModule = (deps) => {
         const f = r.session;
         const model = b.model || (await modelFor(f));
         if (!model) return bad("no model is available: no provider has credentials", 409);
-        const workspace = f.cwd && r.session.cwd_exists && inside(f.cwd, m.workspace_root) ? f.cwd : m.workspace_root;
+        const workspace = f.cwd && r.session.cwd_exists && contains(m.workspace_root, f.cwd) ? f.cwd : m.workspace_root;
         const out = await imports.import(f, { mode: b.mode, model, workspace, title: b.title, from: { machine: m.id, read: r.read } });
         if (workspace !== f.cwd) store.append(out.session.id, "note", { text: `Its folder ${f.cwd ?? "(none)"} is not inside the directory granted on ${m.name}; it goes on in ${workspace} there.` });
         bus.emit({ t: "session", session: store.session(out.session.id)! });

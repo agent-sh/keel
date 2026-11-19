@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import * as av from "./agentview.ts";
 import { harnessCommand, outsideText, pickChoice, promptHash, type OutsideText, type Prompt } from "./text.ts";
 import { fitTurns, turnsOf, type Turn } from "./transcript.ts";
+import { stripAnsi } from "../core/text.ts";
 
 export type State = "working" | "waiting" | "scheduled" | "idle" | "done" | "ended" | "disconnected" | "unknown";
 export type Row = {
@@ -375,7 +376,6 @@ export function changedNote(b: OutsideText): string {
   return ` ${b.changed} character${b.changed === 1 ? "" : "s"} that a delivery drops or turns into a line break ${b.changed === 1 ? "was" : "were"} taken out first; the text checked and sent is the one shown.`;
 }
 
-export const stripAnsi = (s: string) => s.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-Z\\-_]/g, "");
 
 function fitLines(lines: string[], budget: number): string {
   const kept: string[] = [];

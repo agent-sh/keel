@@ -3,8 +3,9 @@
 // behind @-mentions in the message box.
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import type { RouteModule } from "../app.ts";
+import { contains } from "../../core/paths.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -13,7 +14,6 @@ const SKIP = new Set([".git", "node_modules", ".venv", "target", "dist", ".cache
 const MAX_FILES = 50_000;
 
 const isGit = (p: string) => existsSync(join(p, ".git"));
-const inside = (root: string, p: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
 // File lists are cached a few seconds per folder: typing an @-query asks per key.
 const cache = new Map<string, { at: number; files: string[] }>();
@@ -69,7 +69,7 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     const p = resolve(raw.replace(/^~(?=$|\/)/, HOME));
     let real: string;
     try { real = realpathSync(p); } catch { return null; }
-    return inside(HOME, real) || inside(resolve(workspace), real) ? real : null;
+    return contains(HOME, real) || contains(resolve(workspace), real) ? real : null;
   };
 
   return {
@@ -113,7 +113,7 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
         if (!root) return bad("outside the home directory", 403);
         let p: string;
         try { p = realpathSync(resolve(root, u.searchParams.get("path") ?? "")); } catch { return bad("no such file", 404); }
-        if (!inside(root, p)) return bad("outside the folder", 403);
+        if (!contains(root, p)) return bad("outside the folder", 403);
         const st = statSync(p);
         if (!st.isFile()) return bad("not a file", 400);
         const f = Bun.file(p);

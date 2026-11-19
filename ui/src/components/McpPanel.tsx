@@ -6,15 +6,9 @@ import { ChevronRight, Download, Globe, KeyRound, LogOut, Plug, RefreshCw, Rotat
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { McpServerState } from "../../../src/mcp/manager.ts";
 import type { ImportableServer } from "../../../src/mcp/config.ts";
-import { reportError } from "../lib/store.ts";
+import { api, reportError } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 
-async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
-  return body as T;
-}
 
 // A command line to argv: spaces split, quotes group.
 function argv(line: string): string[] {

@@ -20,7 +20,7 @@ import { bindFleetTools } from "../../fleet/tools.ts";
 import { bindNotices } from "../../fleet/notice.ts";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
 import * as alerts from "../../automation/alerts.ts";
-import { inside } from "../../safety/policy.ts";
+import { contains } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
@@ -366,7 +366,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (!m) return bad("no such machine", 400);
         if (!m.workspace_root) return bad(`${m.name} has no granted directory: set one before starting sessions there`);
         const ws = b.workspace ? (isAbsolute(b.workspace) ? b.workspace : resolve(m.workspace_root, b.workspace)) : m.workspace_root;
-        if (!inside(ws, m.workspace_root)) return bad(`${ws} is outside the directory granted on ${m.name}`);
+        if (!contains(m.workspace_root, ws)) return bad(`${ws} is outside the directory granted on ${m.name}`);
         let st: any;
         try {
           const p = await f.peer(m.id);
@@ -587,7 +587,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     "/api/fleet/hands/instructions": {
       POST: linked(async (req) => {
         const b = await body(req);
-        if (!b.cwd || !b.root || !inside(resolve(b.cwd), resolve(b.root))) return json({ text: "" });
+        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd))) return json({ text: "" });
         return json({ text: existsSync(b.cwd) ? instructionFiles(resolve(b.cwd)) : "" });
       }),
     },
@@ -596,7 +596,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       POST: linked(async (req) => {
         const b = await body(req);
         const p = resolve(String(b.path ?? ""));
-        if (!b.root || !inside(p, resolve(b.root))) return json({ exists: false, dir: false, error: "outside the granted directory" });
+        if (!b.root || !contains(resolve(b.root), p)) return json({ exists: false, dir: false, error: "outside the granted directory" });
         try {
           const st = statSync(p);
           return json({ exists: true, dir: st.isDirectory() });
@@ -612,7 +612,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       POST: linked(async (req) => {
         const b = await body(req);
         const cwd = resolve(String(b.cwd ?? ""));
-        if (!b.root || !inside(cwd, resolve(b.root)) || !existsSync(cwd)) return json({ code: 127, out: `not a directory inside the granted one: ${cwd}` });
+        if (!b.root || !contains(resolve(b.root), cwd) || !existsSync(cwd)) return json({ code: 127, out: `not a directory inside the granted one: ${cwd}` });
         return keepalive(async () => {
           const p = Bun.spawn(["bash", "-c", String(b.script ?? "")], {
             cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, signal: req.signal,
@@ -648,7 +648,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       POST: linked(async (req) => {
         const u = new URL(req.url).searchParams;
         const p = resolve(u.get("path") ?? "");
-        if (!u.get("root") || !inside(p, resolve(u.get("root")!))) return bad("outside the granted directory");
+        if (!u.get("root") || !contains(resolve(u.get("root")!), p)) return bad("outside the granted directory");
         mkdirSync(dirname(p), { recursive: true });
         await Bun.write(p, await req.arrayBuffer());
         return json({ ok: true });
@@ -658,7 +658,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       GET: linked(async (req) => {
         const u = new URL(req.url).searchParams;
         const p = resolve(u.get("path") ?? "");
-        if (!u.get("root") || !inside(p, resolve(u.get("root")!))) return bad("outside the granted directory");
+        if (!u.get("root") || !contains(resolve(u.get("root")!), p)) return bad("outside the granted directory");
         const file = Bun.file(p);
         return (await file.exists()) ? new Response(file, { headers: { "content-type": "application/octet-stream" } }) : bad("no such file", 404);
       }),

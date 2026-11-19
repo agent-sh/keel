@@ -5,7 +5,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { confine, sandboxStatus } from "../safety/sandbox.ts";
-import { inside } from "../safety/policy.ts";
+import { contains } from "../core/paths.ts";
 import { toolsFor } from "../tools/registry.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 
@@ -49,11 +49,11 @@ export function outsideRoot(input: any, cwd: string, root: string, spillDir: str
   const bad: string[] = [];
   const check = (p: string, readOnly: boolean) => {
     const full = real(isAbsolute(p) ? p : resolve(cwd, p));
-    if (inside(full, r)) return;
-    if (readOnly && inside(full, real(spillDir))) return; // "Full output: <path>" written by this connection
+    if (contains(r, full)) return;
+    if (readOnly && contains(real(spillDir), full)) return; // "Full output: <path>" written by this connection
     bad.push(p);
   };
-  if (!inside(real(cwd), r)) bad.push(cwd);
+  if (!contains(r, real(cwd))) bad.push(cwd);
   if (input && typeof input === "object") {
     for (const k of PATH_KEYS) if (typeof input[k] === "string" && input[k]) check(input[k], true);
     const patch = typeof input.patch === "string" ? input.patch : typeof input.input === "string" ? input.input : "";
@@ -61,7 +61,7 @@ export function outsideRoot(input: any, cwd: string, root: string, spillDir: str
     for (const m of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) {
       const p = (m[1] ?? m[2])!.trim();
       const full = real(isAbsolute(p) ? p : resolve(base, p));
-      if (!inside(full, r)) bad.push(p);
+      if (!contains(r, full)) bad.push(p);
     }
   }
   return bad;

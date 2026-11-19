@@ -3,17 +3,14 @@
 // stdout/stderr, and the move to the background when a foreground command
 // outlives its timeout instead of killing it.
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { join, relative, isAbsolute } from "node:path";
+import { join } from "node:path";
 import { startJob, stopJob, takeUnread, waitJob, type Job } from "./jobs.ts";
 import type { ToolContext } from "./types.ts";
 import { SessionMap } from "../core/session-map.ts";
+import { contains } from "../core/paths.ts";
 
 const cwds = new SessionMap<string>(1024);
 
-const inside = (root: string, p: string) => {
-  const r = relative(root, p);
-  return r === "" || (!r.startsWith("..") && !isAbsolute(r));
-};
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
 export const shellCwd = (ctx: ToolContext) => cwds.get(ctx.sessionId) ?? ctx.cwd;
@@ -61,7 +58,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
     rmSync(cwdFile, { force: true });
     const root = real(ctx.cwd);
     if (next && next !== real(cwd)) {
-      if (inside(root, next)) cwds.set(ctx.sessionId, next);
+      if (contains(root, next)) cwds.set(ctx.sessionId, next);
       else { cwds.set(ctx.sessionId, ctx.cwd); cwdNote = `Shell cwd was reset to ${ctx.cwd}`; }
     }
   }

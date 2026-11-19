@@ -7,7 +7,8 @@ import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
-import { classify, decide, inside, isMode, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { contains } from "../core/paths.ts";
+import { classify, decide, isMode, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
 export type SandboxProfile = "off" | "workspace-write" | "read-only";
 export type SessionPerm = { session_id: string; mode: Mode; sandbox: SandboxProfile; network: boolean };
@@ -143,7 +144,7 @@ export class Gate {
   rules(session?: Session): Rule[] {
     const all = this.store.db.query<Rule, []>("SELECT * FROM perm_rules ORDER BY created").all();
     if (!session) return all;
-    return all.filter((r) => (r.lifetime === "session" ? r.session_id === session.id : inside(session.workspace, r.scope) || inside(this.scopeOf(session.workspace), r.scope)));
+    return all.filter((r) => (r.lifetime === "session" ? r.session_id === session.id : contains(r.scope, session.workspace) || contains(r.scope, this.scopeOf(session.workspace))));
   }
 
   addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session"): Rule {

@@ -340,7 +340,7 @@ function TurnFooter({ e, reply, prompt, s, last }: { e: StoredEvent; reply: stri
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
         {u && <span>{fmtTokens(u.output)} out</span>}
-        {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
+        {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">{fmtCost(u.cost)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
       </span>
       {last && s.phase !== "working" && REASONS[e.data.reason] && (
         <button type="button" data-testid="resume" onClick={() => actions.resume(s.id).catch(reportError)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">

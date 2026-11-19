@@ -15,8 +15,9 @@
 //   on the same file, and a failing hunk leaves every file untouched;
 // - paths are resolved through symlinks and must stay inside the workspace.
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildDiff } from "./diff.ts";
+import { contains } from "../core/paths.ts";
 
 const BEGIN_PATCH = "*** Begin Patch";
 const END_PATCH = "*** End Patch";
@@ -480,7 +481,6 @@ async function realish(p: string): Promise<string> {
   }
 }
 
-const inside = (root: string, p: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
 export type PatchTarget = { raw: string; real: string; inside: boolean };
 
@@ -490,7 +490,7 @@ export async function patchTargets(root: string, base: string, text: string): Pr
   const r = await realpath(root);
   return Promise.all(patchTargetPaths(text).map(async (raw) => {
     const real = await realish(isAbsolute(raw) ? raw : resolve(base, raw));
-    return { raw, real, inside: inside(r, real) };
+    return { raw, real, inside: contains(r, real) };
   }));
 }
 
@@ -523,13 +523,13 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
 
   const resolvePath = async (raw: string) => {
     const real = await realish(isAbsolute(raw) ? raw : resolve(base, raw));
-    if (!inside(root, real) && !allowed.has(real)) throw new Error(`patch path ${raw} resolves to ${real}, which is outside the workspace`);
+    if (!contains(root, real) && !allowed.has(real)) throw new Error(`patch path ${raw} resolves to ${real}, which is outside the workspace`);
     return real;
   };
   const entry = async (real: string): Promise<Staged> => {
     let e = files.get(real);
     if (e) return e;
-    const display = inside(root, real) ? relative(root, real) || "." : real;
+    const display = contains(root, real) ? relative(root, real) || "." : real;
     let original: string | null = null;
     let mode: number | null = null;
     try {

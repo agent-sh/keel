@@ -8,7 +8,7 @@ import type { WaitRecord } from "../../../src/automation/waits.ts";
 import type { Activity } from "../../../src/automation/activity.ts";
 import type { Snooze } from "../../../src/automation/snooze.ts";
 import type { Goal, Task } from "../../../src/automation/goals.ts";
-import { onFeature, reportError } from "./store.ts";
+import { api, onFeature, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 
 export type { Goal, Task };
@@ -40,12 +40,6 @@ export function useAuto<T>(sel: (s: State) => T): T {
 }
 export const autoState = () => state;
 
-async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
-  return body as T;
-}
 const byId = <T extends { id: string }>(xs: T[]) => Object.fromEntries(xs.map((x) => [x.id, x]));
 
 export const auto = {

@@ -187,6 +187,7 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
                         value={item}
                         data-testid="model-option"
                         data-model={item.value}
+                        data-provider={item.provider}
                         className={cn(
                           "group/row grid h-8 cursor-default grid-cols-[1rem_1fr_auto] items-center gap-2 rounded-md px-2 text-ui select-none outline-none",
                           "data-highlighted:bg-hover",

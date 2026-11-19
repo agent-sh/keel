@@ -5,14 +5,14 @@ import { HAIKU, shoot } from "./shots.ts";
 // Feature: a turn that finishes while the owner looks elsewhere becomes an
 // alert: unread in the inbox and on the session row, sent to the command hook
 // (KEEL_NOTIFY_COMMAND). Reading the session clears it; mark all read is always
-// there; routes per kind are settings.
-const NOTIFY_LOG = process.env.KEEL_NOTIFY_LOG ?? `${process.env.HOME}/.cache/keel-work/bun/dev-automation/notify.log`;
+// there; routes per kind are settings. The command hook is checked when the
+// daemon runs with KEEL_NOTIFY_COMMAND=test/e2e/fixtures/notify-log.sh and this
+// spec gets the same KEEL_NOTIFY_LOG; another daemon's log is never read.
+const NOTIFY_LOG = process.env.KEEL_NOTIFY_LOG;
 
 test("alerts: inbox, unread, command hook, routes", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   await request.post("/api/alerts/read", { data: {} });
-  const lineCount = () => (existsSync(NOTIFY_LOG) ? readFileSync(NOTIFY_LOG, "utf8").trim().split("\n").filter(Boolean).length : 0);
-  const logBefore = lineCount();
   // The command hook is checked only on a daemon started with KEEL_NOTIFY_COMMAND.
   const hooked = (await (await request.get("/api/alerts/settings")).json()).channels.some((c: any) => c.id === "command" && c.available);
 
@@ -25,11 +25,12 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await expect(row.getByTestId("unread-dot")).toBeVisible();
   await shoot(page, "alerts-01-unread");
 
-  if (hooked && existsSync(NOTIFY_LOG)) {
-    await expect.poll(lineCount).toBeGreaterThan(logBefore);
-    const lines = readFileSync(NOTIFY_LOG, "utf8").trim().split("\n");
-    const last = JSON.parse(lines.at(-1)!);
-    expect(last).toMatchObject({ kind: "finished", session_id: session.id });
+  if (hooked && NOTIFY_LOG) {
+    // The hook is not waited for by the daemon: wait for this session's line.
+    const sent = () =>
+      (existsSync(NOTIFY_LOG) ? readFileSync(NOTIFY_LOG, "utf8").trim().split("\n") : [])
+        .filter(Boolean).map((l) => JSON.parse(l)).find((a) => a.session_id === session.id);
+    await expect.poll(sent, { timeout: 10_000 }).toMatchObject({ kind: "finished", session_id: session.id });
   }
 
   await page.getByTestId("inbox-button").click();

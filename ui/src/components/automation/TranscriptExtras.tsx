@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
+import { resultText } from "../../lib/tools.ts";
 import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
 import { Markdown } from "../Markdown.tsx";
@@ -144,10 +145,6 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   );
 }
 
-function resultText(r?: ToolResultBlock): string {
-  if (!r) return "";
-  return typeof r.content === "string" ? r.content : r.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
-}
 
 // The card of an Agent / spawn_agent call: the child's live state, open, stop.
 export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean }) {

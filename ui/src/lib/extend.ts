@@ -8,8 +8,15 @@ function registry<T extends { id: string }>() {
   const subs = new Set<() => void>();
   let v = 0;
   return {
+    // Module load order decides who adds first, so a listed-only entry (a
+    // slash command named before its lane builds it, no `run`) never replaces
+    // a working one, whichever order they arrive in.
     add(...list: T[]) {
-      for (const i of list) items.set(i.id, i);
+      for (const i of list) {
+        const prev = items.get(i.id) as { run?: unknown } | undefined;
+        if (prev?.run && !(i as { run?: unknown }).run) continue;
+        items.set(i.id, i);
+      }
       v++;
       subs.forEach((f) => f());
     },

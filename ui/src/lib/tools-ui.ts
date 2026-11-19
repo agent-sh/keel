@@ -23,7 +23,7 @@ export async function loadSkillCommands(workspace: string) {
     const names = byFolder.get(workspace)!;
     for (const s of skills.filter((x) => x.user_invocable)) {
       names.add(s.name);
-      if (slash.all().some((i) => i.id === s.name && !i.id.startsWith("skill:"))) continue; // a built-in command keeps its name
+      if (slash.all().some((i) => i.id === s.name && i.run)) continue; // a working built-in command keeps its name
       slash.add({
         id: s.name,
         label: s.description.slice(0, 90) || `Run the ${s.name} skill`,

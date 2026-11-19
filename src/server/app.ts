@@ -24,26 +24,41 @@ const socketKind = (ws: Bun.ServerWebSocket<any>) => (ws.data && typeof ws.data 
 
 export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string };
 
+// The core routes plus every module's. Two modules may share a path with
+// different methods; a core path, or the same path and method twice, is a
+// startup error, never a silent overwrite of one lane's handler by another's.
+// A dev daemon stops at a clash so the lane that made it sees it at once; a
+// built one records it in the errors table and keeps the first handler.
+function withModules(core: Record<string, any>, modules: RouteModule[], deps: Deps, wrap: (h: any) => any, strict: boolean) {
+  const clash = (msg: string) => {
+    if (strict) throw new Error(msg);
+    deps.errors.capture("server", new Error(msg), { at: "routes" });
+  };
+  const out: Record<string, any> = {};
+  const owner: Record<string, string> = {};
+  modules.forEach((m, i) => {
+    const name = m.name || `module ${i}`;
+    for (const [path, methods] of Object.entries(m(deps))) {
+      if (path in core) { clash(`route clash: ${name} redefines core path ${path}`); continue; }
+      const table = typeof methods === "function" ? { ALL: methods } : (methods as Record<string, any>);
+      const slot = (out[path] ??= {});
+      for (const [verb, h] of Object.entries(table)) {
+        const taken = slot[verb] ? verb : slot.ALL ? "ALL" : verb === "ALL" ? Object.keys(slot)[0] : undefined;
+        if (taken) { clash(`route clash: ${verb} ${path} in ${name}, already defined by ${owner[`${taken} ${path}`]}`); continue; }
+        slot[verb] = wrap(h);
+        owner[`${verb} ${path}`] = name;
+      }
+    }
+  });
+  // A bare handler stays a bare handler (Bun serves it for every method).
+  return { ...core, ...Object.fromEntries(Object.entries(out).map(([p, t]) => [p, t.ALL ?? t])) };
+}
+
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // Bun's default idle timeout, and the point where a handler counts as slow.
 const IDLE_S = 10;
 const SLOW_MS = 8_000;
 const bad = (message: string, status = 400) => json({ error: message }, status);
-
-// Two modules that define the same route: the later one would silently win (a
-// worktree handoff once answered as the fleet's). In development that stops
-// the start; in a live daemon it is captured and the first one is kept.
-function clashFree(entries: [string, any][], strict: boolean, errors: ErrorTracker): [string, any][] {
-  const seen = new Map<string, any>();
-  for (const [path, methods] of entries) {
-    const prev = seen.get(path);
-    if (!prev) { seen.set(path, methods); continue; }
-    const err = new Error(`route ${path} is defined by two modules`);
-    if (strict) throw err;
-    errors.capture("server", err, { at: "startup" });
-  }
-  return [...seen.entries()];
-}
 
 export function serve(deps: Deps, opts: { hostname: string; port: number; development?: boolean }, modules: RouteModule[] = []) {
   const { store, bus, engine, providers, errors } = deps;
@@ -81,7 +96,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     port: opts.port,
     idleTimeout: IDLE_S,
     development: opts.development ? { hmr: true, console: true } : false,
-    routes: {
+    routes: withModules({
       "/": index,
       "/s/:id": index,
       "/settings": index,
@@ -191,15 +206,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       },
 
       "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
-      ...Object.fromEntries(
-        clashFree(modules.flatMap((m) => Object.entries(m(deps))), opts.development ?? false, errors).map(([path, methods]) => [
-          path,
-          typeof methods === "function"
-            ? wrap(methods)
-            : Object.fromEntries(Object.entries(methods as Record<string, any>).map(([k, h]) => [k, wrap(h)])),
-        ]),
-      ),
-    },
+    }, modules, deps, wrap, !!opts.development),
 
     fetch(req, srv) {
       const url = new URL(req.url);

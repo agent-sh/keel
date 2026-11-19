@@ -13,9 +13,9 @@ test("mcp servers", async ({ page, request }) => {
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
 
+  // Opened with the slash command (the palette path is in the chrome spec).
   await page.goto("/");
-  await page.keyboard.press("Control+k");
-  await page.getByTestId("palette-input").fill("MCP servers");
+  await page.getByTestId("composer").fill("/mcp");
   await page.keyboard.press("Enter");
   const panel = page.getByTestId("mcp-panel");
   await expect(panel).toBeVisible();

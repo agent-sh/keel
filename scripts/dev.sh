@@ -7,6 +7,11 @@ mkdir -p "$DEV/ws"
 if [ -f "$HOME/.config/claude-code/bedrock.env" ]; then
   set -a; . "$HOME/.config/claude-code/bedrock.env"; set +a
 fi
+# A scratch daemon runs test turns: no desktop notifications unless asked for,
+# and its own config folder, so specs never write the owner's (mcp.json, drive.json).
+export KEEL_CONFIG_DIR="${KEEL_CONFIG_DIR:-$DEV/config}"
+mkdir -p "$KEEL_CONFIG_DIR"
+export KEEL_DESKTOP_NOTIFY="${KEEL_DESKTOP_NOTIFY:-off}"
 cd "$(dirname "$0")/.."
 # Lanes add dependencies; a stale node_modules breaks the bundle at load.
 bun install --silent

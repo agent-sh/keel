@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { configDir } from "../providers/config.ts";
 import type { OAuthConfig } from "./oauth.ts";
 
 export type McpServerConfig = {
@@ -27,7 +28,7 @@ export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: stri
 // Built-in groups and the servers Keel brings itself (bundled).
 export const RESERVED = new Set(["web", "mcp", "chrome"]);
 
-export const configPath = () => process.env.KEEL_MCP_CONFIG ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "keel-bun", "mcp.json");
+export const configPath = () => process.env.KEEL_MCP_CONFIG ?? join(configDir(), "mcp.json");
 
 // Throws with the parser's reason; the caller keeps the old config then.
 export function readConfig(path = configPath()): McpConfigFile {

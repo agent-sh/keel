@@ -190,7 +190,7 @@ export class Worktrees {
 
   // Handoff: a session in the main checkout moves to a new worktree on its own
   // branch, its uncommitted work with it (the main checkout is left at HEAD;
-  // the work is also kept on refs/keel/handoff/<session>).
+  // the work is also kept on refs/keel/worktree-handoff/<session>).
   async toWorktree(s: Session): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string; moved: number }> {
     const cur = this.get(s.id);
     if (cur && cur.state === "active") throw new GitError("the session already works in a worktree");
@@ -198,7 +198,7 @@ export class Worktrees {
     if (!repo) throw new GitError(`not a git repository: ${s.workspace}`, 400);
     if (repo.top !== repo.root) throw new GitError("the session's folder is a worktree Keel does not manage; open a session in the main checkout to move it", 400);
     const moved = await this.dirty(repo.top);
-    const ref = `refs/keel/handoff/${s.id}`;
+    const ref = `refs/keel/worktree-handoff/${s.id}`;
     if (moved) await this.saveState(repo.top, ref, `keel: work moved to a worktree from ${s.workspace}`);
     // A fresh key: an earlier handoff's branch may still exist.
     const made = await this.create(cur ? `${s.id}${Date.now().toString(36)}` : s.id, s.workspace, s.title);
@@ -217,7 +217,7 @@ export class Worktrees {
     const mainDirty = await this.dirty(w.repo_root);
     if (mainDirty) throw new GitError(`the main checkout has ${mainDirty} changed file${mainDirty === 1 ? "" : "s"} of its own: commit or stash them first`);
     const moved = await this.dirty(w.path);
-    const ref = `refs/keel/handoff/${s.id}`;
+    const ref = `refs/keel/worktree-handoff/${s.id}`;
     if (moved) await this.saveState(w.path, ref, `keel: work moved to the main checkout from ${w.branch}`);
     const previous = (await git(w.repo_root, ["symbolic-ref", "--quiet", "--short", "HEAD"], { ok: true })).trim() || null;
     await git(w.repo_root, ["worktree", "remove", "--force", w.path]);

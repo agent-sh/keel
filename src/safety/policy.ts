@@ -2,6 +2,7 @@
 // standing answers that apply. Pure: the gate supplies the facts.
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { highRisk, isReadOnly, matchRule, splitCommand, suggestRule } from "./shell.ts";
+import { contains } from "../core/paths.ts";
 
 export const MODES = [
   { id: "ask", name: "Ask", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
@@ -64,11 +65,6 @@ function shellText(input: any): string | null {
   return null;
 }
 
-export const inside = (p: string, dir: string) => {
-  const r = relative(dir, p);
-  return r === "" || (!r.startsWith("..") && !isAbsolute(r));
-};
-
 export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
 
 export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string };
@@ -100,12 +96,12 @@ export function decide(c: CallClass, f: Facts): Decision {
     const runs = c.paths.find((p) => RUNS_LATER.test(relative(f.workspace, p)));
     if (runs) return { ask: { risk: "high", why: `it changes ${relative(f.workspace, runs)}, which runs or configures things outside the sandbox later`, suggest: [] } };
     const editRules = f.rules.filter((r) => r.kind === "edit");
-    const covered = (p: string) => editRules.some((r) => inside(p, r.pattern));
+    const covered = (p: string) => editRules.some((r) => contains(r.pattern, p));
     // The repository's own metadata never edits itself in auto-edits mode.
     const protectedPath = (p: string) => /(^|\/)\.git(\/|$)/.test(relative(f.workspace, p));
-    const open = c.paths.filter((p) => !covered(p) && !(f.mode === "auto-edits" && inside(p, f.workspace) && !protectedPath(p)));
+    const open = c.paths.filter((p) => !covered(p) && !(f.mode === "auto-edits" && contains(f.workspace, p) && !protectedPath(p)));
     if (!open.length) return { allow: true };
-    const dirs = [...new Set(open.map((p) => (inside(p, f.workspace) && !protectedPath(p) ? f.workspace : dirname(p))))];
+    const dirs = [...new Set(open.map((p) => (contains(f.workspace, p) && !protectedPath(p) ? f.workspace : dirname(p))))];
     return { ask: { risk: "low", suggest: dirs.map((d) => ({ kind: "edit", pattern: d })) } };
   }
   if (f.mode === "full-auto") return { allow: true };
