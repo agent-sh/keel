@@ -232,3 +232,5 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-tick-kids [data-testid="child-session"] { width: 22px; height: 12px; padding: 0; font-size: 0; justify-content: center; gap: 0; }
 .k-tick-kids [data-testid="child-session"] > * { display: none; }
 .k-tick-kids [data-testid="child-session"]::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); }
+.k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
+@media (max-width: 767px) { .k-station-meta { display: none; } .k-station-tools { margin-left: auto; } }
