@@ -10,6 +10,7 @@ import { HARNESSES, modelFor as pickModel, sharedImports } from "../../integrati
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, linkJson, proven } from "../../fleet/link.ts";
 import { contains } from "../../core/paths.ts";
+import { attachmentPath } from "../../engine/attachments.ts";
 import { fleet } from "./fleet.ts";
 import { takeover } from "./takeover.ts";
 
@@ -307,11 +308,24 @@ export const importRoutes: RouteModule = (deps) => {
         const format = u.get("format") ?? "md";
         const include = new Set((u.get("include") ?? "").split(",").filter(Boolean));
         for (const p of include) if (!["reasoning", "tools", "diffs"].includes(p)) return bad(`unknown part ${p}`);
-        const name = (s.title || "session").replace(/[^\w.-]+/g, "-").slice(0, 60);
-        const headers = (type: string, ext: string) => ({ "content-type": type, "content-disposition": `attachment; filename="${name}.${ext}"`, "x-keel-redacted": "1" });
-        if (format === "md") return new Response(redact(toMarkdown(s, events(s.id), include)), { headers: headers("text/markdown; charset=utf-8", "md") });
+        // The download name: the title on one line, in its own script where the
+        // browser reads filename*, an ASCII name of the session's own otherwise.
+        const title = (s.title || "").replace(/\s+/g, " ").trim();
+        const ascii = title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || `session-${s.id.slice(-8)}`;
+        const headers = (type: string, ext: string) => ({
+          "content-type": type,
+          "content-disposition": `attachment; filename="${ascii}.${ext}"${title ? `; filename*=UTF-8''${encodeURIComponent(`${title.slice(0, 80)}.${ext}`)}` : ""}`,
+          "x-keel-redacted": "1",
+        });
+        const all = store.events(s.id);
+        const shown = events(s.id);
+        const leaves = all.filter((e) => !all.some((x) => x.parent === e.id)).length;
+        const otherBranches = Math.max(0, leaves - 1);
+        if (format === "md") return new Response(redact(toMarkdown(s, shown, include, { otherBranches })), { headers: headers("text/markdown; charset=utf-8", "md") });
         if (format === "jsonl") {
-          const evs = events(s.id).map((e) => ({ ...e, data: redactDeep(e.data) }));
+          // The Keel file is the whole branch, for another Keel to continue: there is no part to choose.
+          if (include.size) return bad("the Keel file always holds every part of the branch; include applies to Markdown");
+          const evs = shown.map((e) => ({ ...e, data: redactDeep(e.data) }));
           return new Response(toKeelJsonl({ ...s, title: redact(s.title) }, evs), { headers: headers("application/x-ndjson", "jsonl") });
         }
         return bad(`unknown format ${format}`);
@@ -332,15 +346,33 @@ export const importRoutes: RouteModule = (deps) => {
     "/api/sessions/import": {
       POST: async (req: Request) => {
         const parsed = parseKeelJsonl(await req.text());
-        if (!parsed) return bad("the body is not a keel-bun export");
-        const listed = await providers.models().catch(() => []);
-        const model = (listed as any[]).some((m) => m.id === parsed.header.model) ? parsed.header.model : await providers.defaultModel();
+        if (!parsed.ok) return bad(parsed.error);
+        const { header } = parsed;
+        const notes = [...parsed.notes];
+        // The exported model when this daemon lists it; else the default, said as a substitution.
+        const listed = await providers.models().then((m) => m as any[], () => null);
+        const exact = !!listed?.some((m) => m.id === header.model);
+        const model = exact ? header.model : await providers.defaultModel();
         if (!model) return bad("no model is available: no provider has credentials", 409);
-        const s = store.createSession({ title: parsed.header.title, model, workspace: isDir(parsed.header.workspace) ? parsed.header.workspace : deps.workspace });
-        for (const e of parsed.events) store.append(s.id, e.kind, e.data);
-        const out = store.session(s.id)!;
+        const reason = exact ? "listed" : listed ? "not_listed" : "listing_failed";
+        if (!exact && header.model) notes.push(`Exported with ${header.model}; the next reply will use ${model}: ${listed ? `${header.model} is not listed here` : "the model listing failed"}.`);
+        const workspace = isDir(header.workspace) ? header.workspace : deps.workspace;
+        if (header.workspace && workspace !== header.workspace) notes.push(`The folder ${header.workspace} is not on this machine: the session works in ${workspace}.`);
+        // New ids; a summary's covered event (a file ref, or a v1 file's old id) follows its event.
+        const ids = new Map<string, string>();
+        const rows = parsed.events.map((e) => {
+          const id = Bun.randomUUIDv7();
+          if (e.ref) ids.set(e.ref, id);
+          return { id, kind: e.kind, data: e.data, ts: Number.isFinite(e.ts) ? Number(e.ts) : Date.now() };
+        });
+        for (const r of rows) if (r.kind === "compaction" && r.data?.covered) r.data = { ...r.data, covered: ids.get(r.data.covered) ?? r.data.covered };
+        // Files the prompts name and this machine does not hold.
+        const missing = new Set<string>();
+        for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) if (b?.type === "attachment" && !attachmentPath(b.id)) missing.add(b.name);
+        if (missing.size) notes.push(`${[...missing].join(", ")} ${missing.size === 1 ? "is" : "are"} not stored on this machine: the model is told ${missing.size === 1 ? "it is" : "they are"} missing.`);
+        const out = store.createWithEvents({ title: header.title, model, workspace }, rows);
         bus.emit({ t: "session", session: out });
-        return json({ session: out, events_imported: parsed.events.length }, 201);
+        return json({ session: out, events_imported: rows.length, model: { exported: header.model ?? null, used: model, reason }, notes }, 201);
       },
     },
   };

@@ -6,7 +6,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Check, Copy, FileDown, FileJson, History, Terminal, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { reportError, failed } from "../lib/store.ts";
+import { reportError, failed, useStore } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 
 let current: Session | null = null;
@@ -18,7 +18,7 @@ export function ExportOverlay() {
 }
 
 type Origin = { origin: null | { label: string; harness: string; source_id: string; source_path: string; imported_ms: number; synced_ms: number }; source?: { exists: boolean; grew: boolean } };
-type Written = { format: string; target_id: string; path: string; cwd: string; resume_command: string };
+type Written = { format: string; target_id: string; path: string; cwd: string; resume_command: string; notes?: string[] };
 
 const optionClass = "flex w-full items-start gap-3 rounded-lg border border-line bg-raised px-3.5 py-3 text-left transition-colors hover:border-line-strong hover:bg-hover disabled:opacity-50";
 function Option({ icon, title, hint, onClick, href, testid, busy }: { icon: React.ReactNode; title: string; hint: string; onClick?: () => void; href?: string; testid: string; busy?: boolean }) {
@@ -44,6 +44,14 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  // What the Keel file leaves behind: other branches, and messages still waiting to run.
+  const all = useStore((st) => (session ? st.events[session.id] : undefined));
+  const pending = useStore((st) => (session ? st.queues[session.id]?.queue.length ?? 0 : 0));
+  const branches = all ? Math.max(0, all.filter((e) => !all.some((x) => x.parent === e.id)).length - 1) : 0;
+  const stays = [
+    branches ? `${branches} other branch${branches === 1 ? "" : "es"}` : "",
+    pending ? `${pending} pending message${pending === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" and ");
   useEffect(() => {
     setWritten(null);
     setErr("");
@@ -100,8 +108,9 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
                 {origin.source?.grew && <button type="button" disabled={busy} onClick={update} className="shrink-0 rounded-md px-2 py-0.5 text-accent hover:bg-accent-soft">Update</button>}
               </div>
             )}
-            <Option href={`${base}/export?format=md&include=tools`} icon={<FileDown />} title="Markdown" hint="To read or share. Tool calls included, secrets taken out." testid="export-md" />
-            <Option href={`${base}/export?format=jsonl`} icon={<FileJson />} title="Keel file" hint="JSON lines another Keel imports as a session (secrets taken out)." testid="export-jsonl" />
+            <Option href={`${base}/export?format=md&include=tools`} icon={<FileDown />} title="Markdown" hint="To read or share: the current branch with its tool calls and results; images and files named, not included; secrets taken out." testid="export-md" />
+            <Option href={`${base}/export?format=jsonl`} icon={<FileJson />} title="Keel file" hint="To continue in another Keel: the current branch whole, thinking and tool data included; secrets taken out, ids of calls kept, so it is not anonymous." testid="export-jsonl" />
+            {stays && <p className="px-1 text-caption text-faint" data-testid="export-stays">{stays} stay{branches + pending === 1 ? "s" : ""} in this session.</p>}
             <div className="pt-2 text-caption font-medium uppercase tracking-wide text-faint">Continue in another harness</div>
             <div className="grid grid-cols-2 gap-2">
               <Option icon={<Terminal />} title="Claude Code" hint="A new transcript in its store" onClick={() => to("claude_code")} testid="export-claude" busy={busy} />
@@ -117,7 +126,8 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
                     {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                   </button>
                 </div>
-                <p className="mt-1.5 truncate font-mono text-micro text-faint" title={written.path}>{written.path}</p>
+                <p className="mt-1.5 truncate font-mono text-micro text-faint" title={written.path} data-testid="export-path">{written.path}</p>
+                {written.notes?.map((n) => <p key={n} className="mt-1.5 text-caption text-warn" data-testid="export-note">{n}</p>)}
               </div>
             )}
           </div>

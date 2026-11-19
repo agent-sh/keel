@@ -257,6 +257,27 @@ export class Store {
     return r ? rowToEvent(r) : undefined;
   }
 
+  // A new session with its events, all or nothing (an import): each event keeps
+  // the id and time it is given, chained in order; the last is the head.
+  createWithEvents(s: { title?: string; model: string; workspace: string }, events: { id: string; kind: EventKind; data: unknown; ts: number }[]): Session {
+    const tx = this.db.transaction(() => {
+      const ses = this.createSession(s);
+      let prev: string | null = null;
+      let seq = 0;
+      for (const e of events) {
+        this.db
+          .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(e.id, ses.id, ++seq, prev, e.kind, JSON.stringify(this.redact(ses.id, e.kind, e.data)), e.ts);
+        prev = e.id;
+      }
+      this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, ses.id);
+      return ses.id;
+    });
+    const id = tx();
+    this.parsed.delete(id);
+    return this.session(id)!;
+  }
+
   // Copy a lineage into another session under new ids (fork). Returns the new head.
   copyEvents(session_id: string, events: StoredEvent[]): string | null {
     let prev: string | null = null;

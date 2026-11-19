@@ -6,7 +6,7 @@ import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { headTail, parseLines } from "./files.ts";
-import { Builder, clip, resultText, type Found, type Read } from "./types.ts";
+import { Builder, clip, FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN, resultText, type Found, type Read } from "./types.ts";
 
 export const codexHome = () => process.env.KEEL_IMPORT_CODEX_DIR ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
 
@@ -90,6 +90,7 @@ export async function readCodex(path: string): Promise<Read> {
       if (!notes.includes(COMPACTED)) notes.push(COMPACTED);
       continue;
     }
+    if (r.type === "event_msg" && p.type === "turn_aborted") b.interrupted();
     if (r.type === "response_item") take(p, ts);
   }
   function take(p: any, ts: number) {
@@ -97,7 +98,9 @@ export async function readCodex(path: string): Promise<Read> {
       case "message": {
         const text = textOf(p.content);
         if (p.role === "user") {
-          if (injected(text)) { b.counts.skipped++; break; }
+          if (injected(text)) { if (/^\s*<turn_aborted>/.test(text)) b.interrupted(); b.counts.skipped++; break; }
+          // A note Keel wrote for the model: read back as a note, never as the owner's words.
+          if (text.startsWith(`${NOTE_OPEN}\n`) && text.trimEnd().endsWith(NOTE_CLOSE)) { b.note(text.slice(NOTE_OPEN.length + 1, text.trimEnd().length - NOTE_CLOSE.length).replace(/\n$/, ""), ts, true); break; }
           const images = (p.content ?? []).filter((c: any) => c?.type === "input_image" && typeof c.image_url === "string" && c.image_url.startsWith("data:")).map((c: any) => {
             const [, mime, data] = c.image_url.match(/^data:([^;]+);base64,(.*)$/) ?? [];
             return { type: "image", source: { type: "base64", media_type: mime, data } };
@@ -120,7 +123,9 @@ export async function readCodex(path: string): Promise<Read> {
       case "custom_tool_call_output":
       case "local_shell_call_output": {
         const out = typeof p.output === "string" ? p.output : Array.isArray(p.output) ? resultText(p.output) : p.output?.content ?? JSON.stringify(p.output ?? "");
-        b.result({ tool_use_id: p.call_id, content: out }, ts);
+        // Codex keeps no failure flag in the file: Keel's own writer labels a failed result.
+        const failed = typeof out === "string" && out.startsWith(`${FAILED_LABEL}\n`);
+        b.result({ tool_use_id: p.call_id, content: failed ? out.slice(FAILED_LABEL.length + 1) : out, is_error: failed || undefined }, ts);
         break;
       }
       case "reasoning":

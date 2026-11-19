@@ -41,6 +41,13 @@ export const clip = (s: string, n = 200) => {
 
 // Grouping helper: assistant blocks of one reply become one event, results of
 // one round one event, so the history reads as keel-bun writes its own.
+// A note the model reads, written where a destination has only user messages:
+// labelled, so it never reads as the owner's words, and read back as a note.
+export const NOTE_OPEN = "<keel_note>";
+export const NOTE_CLOSE = "</keel_note>";
+// A failed result where the destination has no failure flag: a label line before the text.
+export const FAILED_LABEL = "[Keel: this call failed]";
+
 export class Builder {
   events: ImportedEvent[] = [];
   counts = emptyCounts();
@@ -49,12 +56,16 @@ export class Builder {
     return e && e.kind === kind ? e : undefined;
   }
   user(text: string, ts: number, images: any[] = []) {
+    // Stored as Keel stores a prompt's images (the providers' wires read that shape).
+    images = images.map((b) => (b?.type === "image" && b.source?.type === "base64" ? { type: "image", media_type: b.source.media_type, data: b.source.data } : b));
     if (!text.trim() && !images.length) return;
     this.counts.prompts++;
     this.counts.media += images.length;
     this.events.push({ kind: "user", data: { text, images: images.length ? images : undefined }, ts });
   }
-  assistant(blocks: any[], ts: number, model?: string, newMessage = false) {
+  // `stop` is a stored outcome the source says outright (an interrupted reply);
+  // without one, a reply with calls asked for tools and one without ended.
+  assistant(blocks: any[], ts: number, model?: string, newMessage = false, stop?: string) {
     if (!blocks.length) return;
     const prev = newMessage ? undefined : this.last("assistant");
     for (const b of blocks) if (b.type === "tool_use") this.counts.tool_calls++;
@@ -64,7 +75,12 @@ export class Builder {
       this.events.push({ kind: "assistant", data: { blocks: [...blocks], model, stop: blocks.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn", imported: true }, ts });
     }
     const e = this.last("assistant")!;
-    e.data.stop = e.data.blocks.some((b: any) => b.type === "tool_use") ? "tool_use" : "end_turn";
+    e.data.stop = stop ?? (e.data.blocks.some((b: any) => b.type === "tool_use") ? "tool_use" : "end_turn");
+  }
+  // The source says its last reply was stopped before completion.
+  interrupted() {
+    const e = this.events.findLast((x) => x.kind === "assistant" || x.kind === "user");
+    if (e?.kind === "assistant") e.data.stop = "interrupted";
   }
   result(r: { tool_use_id: string; content: any; is_error?: boolean }, ts: number) {
     const prev = this.last("tool_result");

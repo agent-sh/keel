@@ -110,6 +110,13 @@ test("import and export", async ({ page, request }) => {
   const keelFile = await (await request.get(`/api/sessions/${id}/export?format=jsonl`)).text();
   const again = await (await request.post("/api/sessions/import", { data: keelFile, headers: { "content-type": "application/x-ndjson" } })).json();
   expect(again.events_imported).toBeGreaterThan(3);
+  expect(again.model.reason).toBe("listed");
+  // A copy cut short is refused before any session is made; the Keel file has no parts to choose.
+  const cut = keelFile.split("\n").slice(0, 3).join("\n") + "\n";
+  const refused = await request.post("/api/sessions/import", { data: cut, headers: { "content-type": "application/x-ndjson" } });
+  expect(refused.status()).toBe(400);
+  expect((await refused.json()).error).toContain("incomplete export: expected");
+  expect((await request.get(`/api/sessions/${id}/export?format=jsonl&include=tools`)).status()).toBe(400);
   await page.goto(`/s/${id}`);
   await page.getByRole("button", { name: "Export or continue elsewhere" }).click();
   const dialog = page.getByTestId("export-dialog");
@@ -117,7 +124,7 @@ test("import and export", async ({ page, request }) => {
   await dialog.getByTestId("export-claude").click();
   await expect(dialog.getByTestId("export-command")).toContainText("claude --resume");
   await shoot(page, "import-04-export");
-  const path = (await dialog.getByTestId("export-written").locator("p").last().textContent())!.trim();
+  const path = (await dialog.getByTestId("export-path").textContent())!.trim();
   expect(path.startsWith(store("claude"))).toBe(true);
   expect(existsSync(path)).toBe(true);
   const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));

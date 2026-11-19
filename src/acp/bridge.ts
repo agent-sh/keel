@@ -7,6 +7,7 @@
 // Spec: agentclientprotocol.com/protocol/v1 (initialize, session/new, load,
 // list, prompt, cancel, set_mode, set_config_option; session/update and
 // session/request_permission toward the client).
+import { INPUT_LABEL, inputKind } from "../core/inputs.ts";
 import { lineage } from "../core/tree.ts";
 import type { StoredEvent } from "../core/types.ts";
 
@@ -111,20 +112,6 @@ export function userContent(d: Json): Json[] {
   }
   if (d.text) out.push({ type: "text", text: d.text });
   return out;
-}
-
-// Input the harness put in the conversation (a child's report, a wake, a task,
-// a peer's message, a harness note): never the owner's words. The label says
-// whose it is; the text stays as stored.
-const INPUT_LABEL: Record<string, string> = {
-  subagent: "Report from a child agent", task: "Task from the parent session", wait: "Wait update", wake: "Wait update",
-  loop: "Loop run", goal: "Goal check", steer: "Steer", harness: "Keel note", peer: "Message from another session",
-};
-export function inputKind(d: Json): string | null {
-  if (typeof d.kind === "string" && d.kind && INPUT_LABEL[d.kind]) return d.kind;
-  if (String(d.text ?? "").startsWith("<external_input")) return "peer";
-  if (d.origin === "harness" || d.origin === "restart") return "harness";
-  return null;
 }
 
 // The editor's prompt blocks as one keel-bun message: text, resource links and

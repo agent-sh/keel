@@ -5,6 +5,15 @@ import type { Session, StoredEvent } from "../core/types.ts";
 
 export type ClaudeRecord = Record<string, unknown>;
 
+// A reply's measured usage in the Messages API's names (zero where none was measured:
+// the format has no unknown).
+const usageOf = (u: any) => ({
+  input_tokens: u?.input ?? 0,
+  output_tokens: u?.output ?? 0,
+  cache_read_input_tokens: u?.cache_read ?? 0,
+  cache_creation_input_tokens: u?.cache_write ?? 0,
+});
+
 export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: string = s.id, opts: { version?: string } = {}): ClaudeRecord[] {
   const out: ClaudeRecord[] = [];
   let parent: string | null = null;
@@ -23,8 +32,10 @@ export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: st
   };
   for (const e of events) {
     if (e.kind === "user") {
-      const content = [...(e.data.images ?? []).filter((b: any) => b.type === "image"), { type: "text", text: e.data.text }];
-      push({ ...base(e.ts), type: "user", message: { role: "user", content: content.length === 1 ? e.data.text : content }, uuid: crypto.randomUUID() });
+      // Images in the Messages API's shape, as Claude Code writes them.
+      const images = (e.data.images ?? []).filter((b: any) => b.type === "image").map((b: any) => (b.source ? b : { type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } }));
+      const content = [...images, ...(e.data.text ? [{ type: "text", text: e.data.text }] : [])];
+      push({ ...base(e.ts), type: "user", message: { role: "user", content: content.length === 1 && !images.length ? e.data.text : content }, uuid: crypto.randomUUID() });
     } else if (e.kind === "note" && e.data.model) {
       push({ ...base(e.ts), type: "user", isMeta: true, message: { role: "user", content: [{ type: "text", text: e.data.text }] }, uuid: crypto.randomUUID() });
     } else if (e.kind === "assistant") {
@@ -33,7 +44,7 @@ export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: st
         push({
           ...base(e.ts),
           type: "assistant",
-          message: { id, type: "message", role: "assistant", model: String(e.data.model ?? s.model).replace(/^[\w-]+:/, ""), content: [b], stop_reason: e.data.stop ?? null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } },
+          message: { id, type: "message", role: "assistant", model: String(e.data.model ?? s.model).replace(/^[\w-]+:/, ""), content: [b], stop_reason: e.data.stop ?? null, stop_sequence: null, usage: usageOf(e.data.usage) },
           uuid: crypto.randomUUID(),
         });
       }
@@ -42,6 +53,9 @@ export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: st
       parent = null;
       push({ ...base(e.ts), type: "system", subtype: "compact_boundary", content: "Conversation compacted", level: "info", uuid: crypto.randomUUID() });
       push({ ...base(e.ts), type: "user", isCompactSummary: true, message: { role: "user", content: e.data.summary }, uuid: crypto.randomUUID() });
+    } else if (e.kind === "turn_end" && e.data.reason === "interrupted") {
+      // Claude Code's own marker of a reply the owner stopped.
+      push({ ...base(e.ts), type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] }, uuid: crypto.randomUUID() });
     } else if (e.kind === "tool_result") {
       for (const r of e.data.results ?? []) {
         push({ ...base(e.ts), type: "user", message: { role: "user", content: [r] }, uuid: crypto.randomUUID() });

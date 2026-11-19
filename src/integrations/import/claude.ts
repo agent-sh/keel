@@ -45,6 +45,7 @@ function promptOf(r: any): string | null {
   return text;
 }
 
+const INTERRUPTED = /^\[Request interrupted by user( for tool use)?\]$/;
 const commandText = (t: string) => {
   const name = t.match(/<command-name>([^<]*)<\/command-name>/)?.[1];
   if (!name) return t;
@@ -117,8 +118,16 @@ export async function readClaude(path: string): Promise<Read> {
   for (const r of chain) {
     const ts = Date.parse(r.timestamp) || st.mtimeMs;
     if (r.type === "user") {
-      if (r.isMeta) { b.counts.skipped++; continue; }
       const c = r.message?.content;
+      // A meta message is model-visible and not the owner's words: a note the model reads.
+      if (r.isMeta) {
+        const t = typeof c === "string" ? c : Array.isArray(c) ? c.filter((x: any) => x?.type === "text").map((x: any) => x.text).join("\n") : "";
+        if (t.trim()) b.note(t, ts, true);
+        else b.counts.skipped++;
+        continue;
+      }
+      // Claude Code's marker of a reply the owner stopped.
+      if (typeof c === "string" ? INTERRUPTED.test(c) : Array.isArray(c) && c.length === 1 && c[0]?.type === "text" && INTERRUPTED.test(c[0].text ?? "")) { b.interrupted(); continue; }
       if (r.isCompactSummary) {
         b.note(typeof c === "string" ? c : resultText(c) as string, ts, true);
         notes.push("Starts at Claude Code's last compaction: the summary it made is the first message.");
@@ -146,7 +155,7 @@ export async function readClaude(path: string): Promise<Read> {
         else if (blk?.type === "thinking" || blk?.type === "redacted_thinking") b.counts.thoughts_dropped++;
       }
       if (!blocks.length) continue;
-      b.assistant(blocks, ts, m.model, m.id !== lastMsg || b.events[b.events.length - 1]?.kind !== "assistant");
+      b.assistant(blocks, ts, m.model, m.id !== lastMsg || b.events[b.events.length - 1]?.kind !== "assistant", m.stop_reason === "interrupted" ? "interrupted" : undefined);
       lastMsg = m.id;
     }
   }
