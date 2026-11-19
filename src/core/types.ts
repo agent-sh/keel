@@ -43,6 +43,9 @@ export type Usage = {
   cache_write: number;
   // The part of cache_write held for an hour (priced at its own rate).
   cache_write_1h?: number;
+  // OpenAI Responses: the parts of cache_write held 30 minutes and 12 hours.
+  cache_write_30m?: number;
+  cache_write_12h?: number;
   cost?: number;
   unpriced?: number;
   speed?: string; // one call's tier when a speed was asked for: what served it, else the offer asked
@@ -57,6 +60,8 @@ export function addUsage(a: Usage, b: Partial<Usage>): Usage {
     cache_read: a.cache_read + (b.cache_read ?? 0),
     cache_write: a.cache_write + (b.cache_write ?? 0),
     cache_write_1h: (a.cache_write_1h ?? 0) + (b.cache_write_1h ?? 0) || undefined,
+    cache_write_30m: (a.cache_write_30m ?? 0) + (b.cache_write_30m ?? 0) || undefined,
+    cache_write_12h: (a.cache_write_12h ?? 0) + (b.cache_write_12h ?? 0) || undefined,
     cost: a.cost !== undefined || b.cost !== undefined ? (a.cost ?? 0) + (b.cost ?? 0) : undefined,
     unpriced: (a.unpriced ?? 0) + (b.unpriced ?? 0) || undefined,
   };

@@ -139,6 +139,9 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
               usage.input = Math.max(0, (u.input_tokens ?? 0) - cached - written);
               usage.cache_read = cached;
               usage.cache_write = written;
+              // The write lifetimes, when the model reports them (they sum to the writes).
+              const life = u.input_tokens_details?.cache_write_tokens_details;
+              if (life) { usage.cache_write_30m = life.ttl_30m_tokens || undefined; usage.cache_write_12h = life.ttl_12h_tokens || undefined; }
               usage.output = u.output_tokens ?? 0;
               if (typeof ev.response?.service_tier === "string") served = ev.response.service_tier;
               // Items the done events did not carry (some servers send them only here).

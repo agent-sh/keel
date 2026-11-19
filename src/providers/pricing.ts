@@ -22,8 +22,10 @@ export function priceOf(u: Usage, base?: Price): number | undefined {
     read = u.cache_read * rate;
   }
   // An hour-long cache write costs twice the input rate (Anthropic's rule on
-  // every platform it serves); catalogs state only the 5-minute rate.
-  const hour = u.cache_write_1h ?? 0;
-  const write = (u.cache_write - hour) * (p.cache_write ?? p.input) + hour * 2 * p.input;
+  // every platform it serves); catalogs state only the 5-minute rate. OpenAI's
+  // Responses writes cost 1.25x the input rate for 30 minutes and 2.5x for 12
+  // hours (its prompt caching guide); the parts sum to cache_write.
+  const hour = u.cache_write_1h ?? 0, m30 = u.cache_write_30m ?? 0, h12 = u.cache_write_12h ?? 0;
+  const write = (u.cache_write - hour - m30 - h12) * (p.cache_write ?? p.input) + hour * 2 * p.input + m30 * (p.cache_write ?? 1.25 * p.input) + h12 * 2.5 * p.input;
   return (u.input * p.input + u.output * p.output + read + write) / 1e6;
 }
