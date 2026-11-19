@@ -2,13 +2,20 @@
 // standing answers; what they do not settle becomes an approval card the
 // turn waits on. Cards, grants and modes are stored; a card left open by a
 // restart is cancelled (nothing waits on it any more).
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
-import { contains } from "../core/paths.ts";
+import { contains, realOf } from "../core/paths.ts";
 import { classify, decide, isMode, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+
+// An edit is judged by where it sits (its folders' links resolved) and by
+// where it lands (the file's own link followed too): a link inside the
+// workspace that points out of it, or into .git, is judged as the place it
+// names, and a link named like a file the repository runs (.envrc) stays that.
+export const landing = (c: CallClass): CallClass =>
+  c.kind === "edit" ? { kind: "edit", paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
 
 export type SandboxProfile = "off" | "workspace-write" | "read-only";
 export type SessionPerm = { session_id: string; mode: Mode; sandbox: SandboxProfile; network: boolean };
@@ -201,7 +208,8 @@ export class Gate {
 
   private evaluate(session: Session, name: string, cls: CallClass): Decision {
     const p = this.perm(session.id);
-    return decide(cls, { mode: p.mode, workspace: session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name });
+    // Edits are judged where they land (links resolved), so the workspace is too.
+    return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name });
   }
 
   // The beforeTool hook. A dispatcher (mcp_call) is judged as the tool it runs:
@@ -209,7 +217,7 @@ export class Gate {
   async check(session: Session, call: ToolCall): Promise<{ deny: string } | void> {
     const target = call.tool.target ? await call.tool.target(call.input) : null;
     const name = target?.name ?? call.tool.name;
-    const cls: CallClass = target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classify(call.tool, call.input, call.ctx.cwd);
+    const cls: CallClass = landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classify(call.tool, call.input, call.ctx.cwd));
     const d = this.evaluate(session, name, cls);
     if ("allow" in d) return;
     if ("deny" in d) return { deny: d.deny };
@@ -237,7 +245,7 @@ export class Gate {
   // A card for this one call that only the owner answers (a hook asked): no
   // grant, mode change or reviewer settles it.
   async askOnce(session: Session, call: ToolCall, name: string, why: string): Promise<{ deny: string } | void> {
-    const c = classify(call.tool, call.input, call.ctx.cwd);
+    const c = landing(classify(call.tool, call.input, call.ctx.cwd));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
     const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(call.input ?? {}).slice(0, 400);
     return this.card(session, call, name, cls, summary, { risk: "high", why, suggest: [] }, true);

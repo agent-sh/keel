@@ -1,5 +1,6 @@
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 // The daemon's state folder: --state-dir, else KEEL_STATE_DIR, else the XDG state home.
 export const defaultStateDir = () =>
@@ -11,4 +12,22 @@ export const defaultStateDir = () =>
 export function contains(root: string, p: string): boolean {
   const r = relative(root, p);
   return r === "" || (!isAbsolute(r) && r !== ".." && !r.startsWith(".." + sep));
+}
+
+// A path with its links resolved through the deepest part that exists: where a
+// write to it lands, even when the file itself does not exist yet. A dangling
+// link is followed too (a write through it creates the file it names).
+export function realOf(p: string, depth = 0): string {
+  let at = resolve(p);
+  const rest: string[] = [];
+  for (;;) {
+    try { return resolve(realpathSync(at), ...rest.reverse()); } catch {}
+    try {
+      if (depth < 40 && lstatSync(at).isSymbolicLink()) return resolve(realOf(resolve(dirname(at), readlinkSync(at)), depth + 1), ...rest.reverse());
+    } catch {}
+    const up = dirname(at);
+    if (up === at) return resolve(p);
+    rest.push(at.slice(up.length + (up.endsWith("/") ? 0 : 1)));
+    at = up;
+  }
 }
