@@ -608,7 +608,7 @@ export function stop(id: string, why = "stopped by its parent"): AgentRecord | u
   stopping.add(id);
   const { engine } = D();
   dropPending(a.session_id);
-  if (engine.isRunning(a.session_id)) engine.interrupt(a.session_id);
+  if (engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
   else onTurnEnd(a.session_id, "interrupted");
   void why;
   return get(id);
@@ -628,7 +628,7 @@ export async function send(id: string, message: string, interrupt = false): Prom
   if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title)).wt);
   const text = `Message from the session that started you:\n${message}`;
   if (a.status === "running" || a.status === "waiting") {
-    if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id);
+    if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
     deliver(a.session_id, text, { kind: "steer", agent_id: id });
     return update(id, { status: "running" })!;
   }

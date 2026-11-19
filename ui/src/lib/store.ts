@@ -201,7 +201,7 @@ export const actions = {
     api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ answers }) }),
   jobs: (id: string) => api<{ jobs: JobView[] }>(`/api/sessions/${id}/jobs`),
   stopJob: (id: string, job: string) => api(`/api/sessions/${id}/jobs/${job}/stop`, { method: "POST" }),
-  interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST" }),
+  interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST", body: JSON.stringify({ by: "owner" }) }),
   patch: async (id: string, body: Partial<Omit<Session, "settings">> & { settings?: Record<string, unknown> }) => {
     const r = await api<{ session: Session }>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) });
     // A reply that comes after a newer change (from another tab, or a later edit here) does not

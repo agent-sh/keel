@@ -52,7 +52,11 @@ registerCommand(
   { id: "sidebar", label: "Toggle the sidebar", group: "View", keys: "mod+b", inInput: true, run: () => savePref("sidebar", !getUI().sidebar) },
   { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => navigator.clipboard.writeText(lastReply(current()!.id)) },
-  { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working", run: () => actions.interrupt(current()!.id).catch(reportError) },
+  // In an agent's session Escape goes back to the session that started it, as
+  // leaving a view does; stopping the agent is its own labeled button.
+  { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working" && !current()?.parent_id, run: () => actions.interrupt(current()!.id).catch(reportError) },
+  { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", when: () => !!current()?.parent_id, run: () => navigate({ name: "session", id: current()!.parent_id! }) },
+  { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => actions.interrupt(current()!.id).catch(reportError) },
   { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { actions.patch(current()!.id, { archived: true }).catch(reportError); navigate({ name: "new" }); } },
   { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => navigator.clipboard.writeText(location.href) },
   { id: "end", label: "Go to the end and follow", group: "Session", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new Event("keel:end")) },

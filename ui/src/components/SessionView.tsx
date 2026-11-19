@@ -95,6 +95,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                 onSend={(t, images) => actions.send(session.id, t, { images })}
                 onQueue={(t, images) => actions.send(session.id, t, { mode: "queue", images })}
                 onStop={() => actions.interrupt(session.id).catch(reportError)}
+                {...(session.parent_id ? { onEscape: () => navigate({ name: "session", id: session.parent_id! }), stopLabel: "Stop this agent" } : {})}
                 focus={focus}
                 autoFocus={focus && matchMedia("(min-width: 768px)").matches}
               />

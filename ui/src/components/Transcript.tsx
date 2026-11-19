@@ -384,7 +384,7 @@ function TurnFooter({ e, reply, prompt, s, last, notes = [] }: { e: StoredEvent;
       <Extra on="assistant" e={e} s={s} />
       <TurnNotes notes={notes} working={s.phase === "working"} />
       <span className="ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
-        {REASONS[e.data.reason] && <span className={e.data.reason === "error" ? "text-st-fail" : "text-warn"}>{REASONS[e.data.reason]}</span>}
+        {REASONS[e.data.reason] && <span className={e.data.reason === "error" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{e.data.stopped_by === "owner" ? " by you" : e.data.stopped_by === "parent" ? " by the parent agent" : ""}</span>}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
         {u && <span>{fmtTokens(u.output)} out</span>}

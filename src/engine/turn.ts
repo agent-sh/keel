@@ -184,6 +184,8 @@ export class Engine {
   private held: Set<string>;
   // Queued prompts a Send now has taken and not yet appended.
   private sending = new Set<string>();
+  // Who asked a running turn to stop (the owner, the parent agent), kept on its turn_end.
+  private stoppedBy = new Map<string, string>();
   // Turns being parked for a daemon stop: their end reason is "restart".
   private parking = new Set<string>();
   private draining = false;
@@ -252,9 +254,10 @@ export class Engine {
   // Stop the running turn: the model stream and running tools are cut, the
   // queue is held (nothing starts by itself until the owner sends or resumes),
   // and steers that did not reach the turn become ordinary queued prompts.
-  async interrupt(id: string) {
+  async interrupt(id: string, by?: string) {
     const r = this.running.get(id);
     if (!r) return;
+    if (by) this.stoppedBy.set(id, by);
     this.hold(id);
     r.abort.abort();
     await r.done;
@@ -615,7 +618,9 @@ export class Engine {
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
       if (!signal.aborted) throw e;
     } finally {
-      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0 });
+      const by = this.stoppedBy.get(id);
+      this.stoppedBy.delete(id);
+      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
       // Between turns, a context past the preparing share gets its summary ready.
       if (!signal.aborted) {
         const events = this.lineage(id);

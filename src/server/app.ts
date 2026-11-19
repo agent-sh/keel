@@ -243,7 +243,9 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
 
       "/api/sessions/:id/interrupt": {
         POST: wrap(async (req) => {
-          await engine.interrupt(req.params.id);
+          // `by`: who asked (the workbench sends "owner"), kept on the turn's end.
+          const body = (await req.json().catch(() => ({}))) as { by?: unknown };
+          await engine.interrupt(req.params.id, typeof body.by === "string" && /^[a-z-]{1,24}$/.test(body.by) ? body.by : undefined);
           return json({ ok: true });
         }),
       },

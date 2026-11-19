@@ -34,7 +34,7 @@ function useSlashItems() {
 const OFF_BRANCH = "You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.";
 
 export function Composer({
-  session, onSend, onQueue, onStop, working, model, onModel, workspace, autoFocus, focus = true,
+  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true,
 }: {
   session?: Session;
   onSend: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
@@ -42,6 +42,9 @@ export function Composer({
   // call) and Tab or the queue button queues it for after the turn.
   onQueue?: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
   onStop?: () => void;
+  // What Escape does when no menu is open (default: stop a working turn).
+  onEscape?: () => void;
+  stopLabel?: string;
   working?: boolean;
   model: string;
   // A switch that asks first (the cache warning) returns its promise: until it
@@ -432,7 +435,7 @@ export function Composer({
             submit();
           }
           if (e.key === "Tab" && !e.shiftKey && working && onQueue && canSend) { e.preventDefault(); submit(true); }
-          if (e.key === "Escape" && working) { e.preventDefault(); onStop?.(); }
+          if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); (onEscape ?? onStop)?.(); }
         }}
         className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
       />
@@ -475,11 +478,12 @@ export function Composer({
               type="button"
               data-testid="stop"
               onClick={onStop}
-              title="Stop (Esc)"
-              aria-label="Stop the turn"
-              className="grid size-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover"
+              title={onEscape ? stopLabel : `${stopLabel} (Esc)`}
+              aria-label={stopLabel}
+              className={cn("grid h-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover", onEscape ? "flex gap-1.5 px-3 text-caption font-medium" : "size-8")}
             >
               <Square className="size-3 fill-current" />
+              {onEscape && <span>{stopLabel}</span>}
             </button>
           )}
           <button

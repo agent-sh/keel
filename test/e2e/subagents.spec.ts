@@ -52,6 +52,22 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   const card = page.getByTestId("agent-call").nth(2);
   await expect(card.getByTestId("agent-call-status")).toHaveText("Running in background", { timeout: 30_000 });
   await shoot(page, "agents-05-running");
+  // Reading the running agent is safe: Escape from the page or from its
+  // message box goes back to the parent and stops nothing.
+  const parentUrl = page.url();
+  for (const where of ["page", "composer"] as const) {
+    await card.getByTestId("agent-call-open").click();
+    await expect(page.getByTestId("task-notice")).toBeVisible();
+    const child = page.url().split("/s/")[1]!;
+    await expect(page.getByTestId("stop")).toHaveText("Stop this agent");
+    if (where === "page") { await shoot(page, "agents-05b-child-running"); await page.getByTestId("transcript").click(); }
+    else await page.getByTestId("composer").focus();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(parentUrl);
+    await page.waitForTimeout(1_000); // a stop request would have ended the turn by now
+    expect((await (await request.get(`/api/sessions/${child}`)).json()).running).toBe(true);
+    await expect(card.getByTestId("agent-call-status")).toHaveText("Running in background");
+  }
   await card.getByTestId("agent-call-stop").click();
   await expect(card.getByTestId("agent-call-status")).toHaveText("Stopped", { timeout: 30_000 });
   await expect(page.getByTestId("agent-report").last()).toContainText("Stopped", { timeout: 60_000 });
@@ -59,4 +75,5 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
+  await request.delete(`/api/sessions/${session.id}`);
 });
