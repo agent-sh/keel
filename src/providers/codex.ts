@@ -15,6 +15,7 @@ import { getJson, ProviderError, scrub } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
 import { fromChatgptUsage, type WindowReading } from "./limits.ts";
+import { ResponsesSockets, WsUnavailable } from "./responses-ws.ts";
 
 const REFRESH_MARGIN = 5 * 60_000;
 // The Codex CLI's public client id, used only when the file names none.
@@ -166,9 +167,25 @@ export class CodexProvider implements Provider {
     return fromChatgptUsage(d);
   }
 
+  // The Responses WebSocket of the backend (Codex main's default transport).
+  private sockets = new ResponsesSockets(this.label, () => `${this.base.replace(/^http/, "ws")}/responses`);
+
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {
     let a = await this.auth();
     const ctx = ctxFor(this.id, req, req.efforts ?? []);
+    // The routing hint (model and tier) goes with the handshake: one socket per speed too.
+    const key = `${req.sessionKey ?? ""}|${req.model}|${req.extraHeaders?.["x-codex-routing-hint"] ?? ""}`;
+    if (req.sessionKey && this.sockets.usable(key)) {
+      const headers = { ...this.headers(a, req.sessionKey), "OpenAI-Beta": "responses_websockets=2026-02-06", ...req.extraHeaders };
+      try {
+        const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, this.sockets.events(key, headers, req, (m) => this.rateEvent(m, req)));
+        delete res.served;
+        return res;
+      } catch (e) {
+        if (!(e instanceof WsUnavailable)) throw e;
+        this.sockets.disable(key);
+      }
+    }
     const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, httpEvents({
       label: this.label, url: `${this.base}/responses`, headers: this.headers(a, req.sessionKey), secrets: [a.tokens!.access_token!],
       onAuthFailure: async () => {
@@ -181,5 +198,20 @@ export class CodexProvider implements Provider {
     // echo says nothing; the tier asked for is what is recorded.
     delete res.served;
     return res;
+  }
+
+  // The plan's windows arrive on the socket as a `codex.rate_limits` event
+  // instead of the HTTP answer's headers; they are read the same way.
+  private rateEvent(m: any, req: ProviderRequest) {
+    if (m?.type !== "codex.rate_limits" || !req.onHeaders) return;
+    const h = new Headers();
+    for (const slot of ["primary", "secondary"] as const) {
+      const w = m.rate_limits?.[slot];
+      if (!w || typeof w.used_percent !== "number") continue;
+      h.set(`x-codex-${slot}-used-percent`, String(w.used_percent));
+      if (w.window_minutes) h.set(`x-codex-${slot}-window-minutes`, String(w.window_minutes));
+      if (w.reset_at) h.set(`x-codex-${slot}-reset-at`, String(w.reset_at));
+    }
+    req.onHeaders(h);
   }
 }
