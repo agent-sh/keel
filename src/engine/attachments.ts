@@ -2,7 +2,8 @@
 // <state>/attachments/<sha256>/<name>; the prompt keeps a small reference
 // (AttachmentBlock), so the history stays light and its bytes stable. Just
 // before a request each reference becomes what the model can read:
-//   - text (UTF-8, up to TEXT_INLINE bytes): the file inline, named;
+//   - text (UTF-8, or UTF-16 with its byte-order mark or declared charset, up
+//     to TEXT_INLINE bytes): the file inline, named;
 //   - a PDF, where the model's listing says it reads PDFs: a document block;
 //   - anything else (a PDF for a model without PDF input, a spreadsheet, a
 //     long log): a note with the saved path, for the model's own tools.
@@ -23,7 +24,7 @@ export const setAttachmentsRoot = (dir: string) => void (root = join(dir, "attac
 
 const safeName = (n: string) => basename(n).replace(/[^\w.\- ()+]/g, "_").slice(0, 120) || "file";
 
-export function saveAttachment(bytes: Uint8Array, name: string, mediaType: string): AttachmentBlock {
+export function saveAttachment(bytes: Uint8Array, name: string, mediaType: string, charset?: string): AttachmentBlock {
   const id = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
   const dir = join(root, id);
   const file = join(dir, safeName(name));
@@ -31,7 +32,8 @@ export function saveAttachment(bytes: Uint8Array, name: string, mediaType: strin
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, bytes);
   }
-  return { type: "attachment", id, name: safeName(name), media_type: mediaType || "application/octet-stream", size: bytes.byteLength };
+  const cs = charset?.trim().toLowerCase().replace(/^"|"$/g, "");
+  return { type: "attachment", id, name: safeName(name), media_type: mediaType || "application/octet-stream", size: bytes.byteLength, ...(cs && /^[\w.:-]{1,40}$/.test(cs) ? { charset: cs } : {}) };
 }
 
 export function attachmentPath(id: string): string | undefined {
@@ -42,9 +44,33 @@ export function attachmentPath(id: string): string | undefined {
   return f ? join(dir, f) : undefined;
 }
 
-const isText = (a: AttachmentBlock, bytes: Buffer) =>
-  (TEXT_MEDIA.test(a.media_type) || a.media_type === "application/octet-stream") &&
-  !bytes.subarray(0, 8000).includes(0);
+const textType = (a: AttachmentBlock) =>
+  TEXT_MEDIA.test(a.media_type) || a.media_type === "application/octet-stream";
+
+// A text file's characters: a byte-order mark names UTF-8 or UTF-16 (either
+// byte order), else the charset the upload declared, else UTF-8. Decoding is
+// strict. Bytes that are not text, or not valid in that encoding, give a
+// reason instead.
+export function decodeText(a: AttachmentBlock, bytes: Uint8Array): { text: string } | { why: string } {
+  if (!textType(a)) return { why: "it is not text" };
+  let enc = (a.charset ?? "utf-8").toLowerCase();
+  let body = bytes;
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) { enc = "utf-8"; body = bytes.subarray(3); }
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) { enc = "utf-16le"; body = bytes.subarray(2); }
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) { enc = "utf-16be"; body = bytes.subarray(2); }
+  if (enc === "utf8") enc = "utf-8";
+  if (enc === "utf-16") enc = "utf-16le";
+  // A zero byte in UTF-8 text marks a binary file; UTF-16 holds them by design.
+  if (!enc.startsWith("utf-16") && body.subarray(0, 8000).includes(0)) return { why: "it is not text" };
+  let text: string;
+  try {
+    text = new TextDecoder(enc, { fatal: true, ignoreBOM: true }).decode(body);
+  } catch (e) {
+    return { why: e instanceof RangeError ? `its declared encoding ${enc} is not supported` : `it is not valid ${enc.toUpperCase()} text` };
+  }
+  if (text.includes("\u0000")) return { why: "it is not text" };
+  return { text };
+}
 
 const cache = new Map<string, Buffer>();
 const read = (path: string) => {
@@ -68,8 +94,13 @@ export function resolveAttachments(messages: Message[], info: Pick<ModelInfo, "p
       if (!path) return { type: "text", text: `[Attached file ${a.name} is no longer stored.]` };
       const bytes = read(path);
       if (a.media_type === "application/pdf" && info.pdf) return { type: "document", media_type: a.media_type, data: bytes.toString("base64"), name: a.name };
-      if (a.size <= TEXT_INLINE && isText(a, bytes)) return { type: "text", text: `<attached-file name="${a.name}" path="${path}">\n${bytes.toString("utf8")}\n</attached-file>` };
-      const why = a.media_type === "application/pdf" ? `${info.name} does not read PDFs` : a.size > TEXT_INLINE ? "it is too long to inline" : "it is not text";
+      const t = a.media_type === "application/pdf" || a.size > TEXT_INLINE ? undefined : decodeText(a, bytes);
+      if (t && "text" in t) return { type: "text", text: `<attached-file name="${a.name}" path="${path}">\n${t.text}\n</attached-file>` };
+      // A PDF the listing does not say either way about is not sent inline, and
+      // the note says support is unverified rather than missing.
+      const why = a.media_type === "application/pdf"
+        ? info.pdf === false ? `${info.name} does not read PDFs` : `PDF support of ${info.name} is unverified`
+        : a.size > TEXT_INLINE ? "it is too long to inline" : t!.why;
       return { type: "text", text: `[Attached file ${a.name} (${a.media_type}, ${a.size} bytes) is saved at ${path}; it was not inlined because ${why}. Read it with your tools if it matters.]` };
     });
     return { ...m, content } as Message;

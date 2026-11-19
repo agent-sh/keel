@@ -18,8 +18,10 @@ export const attachmentRoutes: RouteModule = ({ store }) => {
         const bytes = new Uint8Array(await req.arrayBuffer());
         if (!bytes.byteLength) return json({ error: "the file is empty" }, 400);
         if (bytes.byteLength > ATTACHMENT_MAX) return json({ error: `a file can be at most ${ATTACHMENT_MAX / 1024 / 1024} MiB` }, 413);
-        const type = (req.headers.get("content-type") ?? "").split(";")[0]!.trim();
-        return json(saveAttachment(bytes, name, type), 201);
+        const ct = req.headers.get("content-type") ?? "";
+        const type = ct.split(";")[0]!.trim();
+        const charset = /;\s*charset=([^;]+)/i.exec(ct)?.[1];
+        return json(saveAttachment(bytes, name, type, charset), 201);
       },
     },
     "/api/attachments/:id": {
