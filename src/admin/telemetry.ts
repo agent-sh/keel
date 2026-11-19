@@ -4,8 +4,13 @@
 // rows stay so the totals over time do not change.
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
+import { SessionMap } from "../core/session-map.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { errorText } from "../engine/retry.ts";
+import type { ProviderRequest } from "../providers/types.ts";
+import { errorClass } from "./classes.ts";
 import { registerSettings, settings } from "./settings.ts";
+import { scaleZones, ZONES, zoneBytes, zoneCache, type Zone, type ZoneCache, type Zones } from "./zones.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS telemetry_calls (
@@ -38,7 +43,7 @@ CREATE INDEX IF NOT EXISTS telemetry_tools_ts ON telemetry_tools(ts);
 CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
-type Pending = { t0: number; first?: number };
+type Pending = { t0: number; first?: number; session: string; model: string; purpose: string; turn: string | null; bytes: Zones };
 
 // Why a request read less from the prompt cache than the one before it in the
 // same session: the cache lifetime passed (5 minutes is the default lifetime
@@ -54,35 +59,53 @@ registerSettings(
 );
 
 export class Telemetry {
-  private pending = new Map<string, Pending>();
+  // In flight, by the request object the engine passes to every measuring hook.
+  private pending = new Map<ProviderRequest, Pending>();
+  // The turn request of each session that streams now (deltas carry no request).
+  private streaming = new Map<string, Pending>();
+  // The message sizes of each session's last turn request (frozen history).
+  private prevSizes = new SessionMap<number[]>(256);
   private tools = new Map<string, number>();
 
   constructor(private store: Store, bus: Bus) {
     store.migrate(SCHEMA);
-    for (const [t, col, type] of [["telemetry_calls", "cache_break", "TEXT"], ["telemetry_tools", "call_id", "TEXT"], ["telemetry_tools", "error", "TEXT"]] as const) {
-      if (!store.columnExists(t, col)) store.db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
-    }
+    const cols = [["telemetry_calls", "cache_break", "TEXT"], ["telemetry_tools", "call_id", "TEXT"], ["telemetry_tools", "error", "TEXT"],
+      ["telemetry_calls", "purpose", "TEXT"], ["telemetry_calls", "error_class", "TEXT"], ["telemetry_calls", "turn_event", "TEXT"],
+      ...ZONES.map((z) => ["telemetry_calls", `z_${z}`, "INTEGER"])] as const;
+    for (const [t, col, type] of cols) if (!store.columnExists(t, col)) store.db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
+    store.migrate("CREATE INDEX IF NOT EXISTS telemetry_calls_session ON telemetry_calls(session_id, ts)");
     this.backfill();
     bus.on((f) => {
-      if (f.t === "delta") {
-        const p = this.pending.get(f.session_id);
-        if (p && p.first === undefined) p.first = Date.now();
-      } else if (f.t === "error" && f.error.source === "provider" && f.error.session_id) {
-        // A failed attempt (a retry follows, or the turn ends with it).
-        const p = this.pending.get(f.error.session_id);
-        if (p) this.callEnd(f.error.session_id, p, { outcome: "error", error: f.error.message.slice(0, 300) });
-      }
+      if (f.t !== "delta") return;
+      const p = this.streaming.get(f.session_id);
+      if (p && p.first === undefined) p.first = Date.now();
     });
     registerHooks({
-      beforeRequest: (s, req) => {
+      beforeRequest: (_s, req) => {
         const over = this.overBudget();
         if (over) throw Object.assign(new Error(over), { kind: "budget" });
-        this.pending.set(s.id, { t0: Date.now() });
         return req;
       },
-      afterResponse: (s, res) => {
-        const p = this.pending.get(s.id);
-        if (p) this.callEnd(s.id, p, { outcome: "ok", usage: res.usage, stop: res.stop });
+      requestSent: (s, req) => {
+        const purpose = req.purpose ?? "turn";
+        const { bytes, sizes } = zoneBytes(req, this.prevSizes.get(s.id) ?? []);
+        if (purpose === "turn") this.prevSizes.set(s.id, sizes);
+        // The model the request went to, read now: the owner may pick another before it answers.
+        const p: Pending = { t0: Date.now(), session: s.id, model: this.store.session(s.id)?.model ?? s.model, purpose, turn: this.turnOf(s.id), bytes };
+        this.pending.set(req, p);
+        if (purpose === "turn") this.streaming.set(s.id, p);
+      },
+      requestDone: (_s, req, res) => {
+        const p = this.take(req);
+        if (!p) return;
+        const cls = res.stop === "refusal" ? "refusal" : res.stop === "model_context_window_exceeded" ? "context_overflow" : null;
+        this.callEnd(p, { outcome: "ok", usage: res.usage, stop: res.stop, cls });
+      },
+      requestFailed: (_s, req, err, aborted) => {
+        const p = this.take(req);
+        if (!p) return;
+        const cls = aborted ? null : errorClass(err);
+        this.callEnd(p, aborted || !cls ? { outcome: "interrupted" } : { outcome: "error", error: errorText(err), cls });
       },
       beforeTool: (_s, call) => void this.tools.set(call.id, Date.now()),
       afterTool: (s, call, result) => {
@@ -92,24 +115,37 @@ export class Telemetry {
           .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error) VALUES (?, ?, ?, ?, ?, ?, ?)")
           .run(s.id, Date.now(), call.tool.name, t0 === undefined ? null : Date.now() - t0, result.is_error ? 1 : 0, call.id, result.is_error ? excerpt(result.content) : null);
       },
-      turnEnd: (s, reason) => {
-        const p = this.pending.get(s.id);
-        if (p) this.callEnd(s.id, p, { outcome: reason === "interrupted" ? "interrupted" : "error" });
-      },
     });
   }
 
-  private callEnd(sessionId: string, p: Pending, r: { outcome: string; usage?: any; stop?: string; error?: string }) {
-    this.pending.delete(sessionId);
+  private take(req: ProviderRequest) {
+    const p = this.pending.get(req);
+    this.pending.delete(req);
+    if (p && this.streaming.get(p.session) === p) this.streaming.delete(p.session);
+    return p;
+  }
+
+  // The turn_start event of the session's running turn.
+  private turnOf(id: string): string | null {
+    const evs = this.store.events(id);
+    for (let i = evs.length - 1; i >= 0; i--) if (evs[i]!.kind === "turn_start") return evs[i]!.id;
+    return null;
+  }
+
+  private callEnd(p: Pending, r: { outcome: string; usage?: any; stop?: string; error?: string; cls?: string | null }) {
     const now = Date.now();
     const u = r.usage ?? {};
-    const model = this.store.session(sessionId)?.model ?? "";
-    const brk = r.outcome === "ok" ? this.cacheBreak(sessionId, model, p.t0, u) : null;
+    const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
+    // Zones only where the provider counted the prompt.
+    const z = r.outcome === "ok" && prompt > 0 ? scaleZones(p.bytes, prompt) : null;
+    const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p.session, p.model, p.t0, u) : null;
     this.store.db
-      .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(sessionId, p.t0, model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
-        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error ?? null, brk);
+      .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break,
+                purpose, error_class, turn_event, z_tools, z_system, z_history, z_tail)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(p.session, p.t0, p.model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
+        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error?.slice(0, 300) ?? null, brk,
+        p.purpose, r.cls ?? null, p.turn, z?.tools ?? null, z?.system ?? null, z?.history ?? null, z?.tail ?? null);
   }
 
   // A request that read less than half of what the last one of the session
@@ -117,7 +153,7 @@ export class Telemetry {
   // the history and the clock say.
   private cacheBreak(sessionId: string, model: string, ts: number, u: any): string | null {
     const prev = this.store.db
-      .query<{ ts: number; model: string; prompt: number }, [string]>("SELECT ts, model, input + cache_read + cache_write AS prompt FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' ORDER BY ts DESC LIMIT 1")
+      .query<{ ts: number; model: string; prompt: number }, [string]>("SELECT ts, model, input + cache_read + cache_write AS prompt FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
       .get(sessionId);
     if (!prev || prev.prompt <= 0) return null;
     const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
@@ -193,20 +229,26 @@ export class Telemetry {
     })();
   }
 
-  report(q: { since?: number; until?: number; session?: string; bucket?: number }) {
-    const db = this.store.db;
+  private rows(q: Filter) {
     const where = ["1 = 1"];
     const args: (string | number)[] = [];
     if (q.session) { where.push("session_id = ?"); args.push(q.session); }
+    if (q.model) { where.push("model = ?"); args.push(q.model); }
     if (q.since !== undefined) { where.push("ts >= ?"); args.push(q.since); }
     if (q.until !== undefined) { where.push("ts < ?"); args.push(q.until); }
     const w = where.join(" AND ");
-    const calls = db.query<CallRow, any[]>(`SELECT ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, error, cache_break FROM telemetry_calls WHERE ${w} ORDER BY ts`).all(...args);
-    const tools = db.query<ToolRow, any[]>(`SELECT ts, tool, ms, is_error FROM telemetry_tools WHERE ${w} ORDER BY ts`).all(...args);
+    const calls = this.store.db.query<CallRow, any[]>(`SELECT * FROM telemetry_calls WHERE ${w} ORDER BY ts`).all(...args);
+    // A model filter keeps the tool calls of the turns that model ran.
+    const tw = q.model ? `${w.replace("model = ?", "1 = 1")} AND session_id IN (SELECT DISTINCT session_id FROM telemetry_calls WHERE model = ?)` : w;
+    const targs = q.model ? [...args.filter((x) => x !== q.model), q.model] : args;
+    const tools = this.store.db.query<ToolRow, any[]>(`SELECT ts, tool, ms, is_error FROM telemetry_tools WHERE ${tw} ORDER BY ts`).all(...targs);
     const since = q.since ?? Math.min(calls[0]?.ts ?? Date.now(), tools[0]?.ts ?? Date.now());
     const until = q.until ?? Date.now();
-    const bucket = q.bucket ?? pickBucket(until - since);
+    return { calls, tools, since, until, bucket: q.bucket ?? pickBucket(until - since) };
+  }
 
+  report(q: Filter) {
+    const { calls, tools, since, until, bucket } = this.rows(q);
     const series = new Map<number, { calls: CallRow[]; tools: ToolRow[] }>();
     const at = (ts: number) => {
       const t = Math.floor(ts / bucket) * bucket;
@@ -225,7 +267,7 @@ export class Telemetry {
       until_ms: until,
       bucket_ms: bucket,
       total: { ...callStats(calls), ...toolStats(tools) },
-      series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, b]) => ({ t_ms, ...callStats(b.calls), ...toolStats(b.tools) })),
+      series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, b]) => ({ t_ms, ...callStats(b.calls), ...toolStats(b.tools), classes: classCounts(b.calls) })),
       by_model: [...byModel.entries()].map(([model, list]) => ({ model, ...callStats(list) })).sort((a, b) => b.calls - a.calls),
       tools: [...byTool.entries()].map(([tool, list]) => ({ tool, ...toolStats(list), p50_ms: pct(list.map((t) => t.ms), 0.5), p95_ms: pct(list.map((t) => t.ms), 0.95), total_ms: list.reduce((n, t) => n + (t.ms ?? 0), 0) }))
         .sort((a, b) => b.tool_calls - a.tool_calls),
@@ -233,13 +275,156 @@ export class Telemetry {
         const list = calls.filter((c) => c.cache_break === cause);
         return { cause, count: list.length, last_ms: list.at(-1)?.ts ?? null, uncached_tokens: list.reduce((n, c) => n + c.input + c.cache_write, 0) };
       }).filter((b) => b.count),
+      // Failures by class, per provider and model: `rate` is per request of that model.
+      error_classes: [...byModel.entries()].flatMap(([model, list]) =>
+        Object.entries(classCounts(list)).map(([cls, count]) => {
+          const of = list.filter((c) => c.error_class === cls);
+          return { provider: providerOf(model), model, class: cls, count, calls: list.length, rate: count / list.length, last_ms: of.at(-1)!.ts, last_error: of.findLast((c) => c.error)?.error ?? null };
+        })).sort((a, b) => b.count - a.count),
       spend: this.spend(),
       error_kinds: [...errorKinds.entries()].map(([message, list]) => ({ message, count: list.length, last_ms: list.at(-1)!.ts })).sort((a, b) => b.count - a.count).slice(0, 10),
     };
   }
+
+  // Where the prompt tokens went: each request split into its zones (tools,
+  // system, frozen history, volatile tail) with how each zone was served
+  // (read from the cache, written to it, sent in full); in total, over time,
+  // and per turn (with a session: its last 30 turns).
+  tokens(q: Filter) {
+    const { calls, since, until, bucket } = this.rows(q);
+    const measured = calls.filter((c) => c.z_tools !== null);
+    const sum = (list: CallRow[]) => {
+      const out = Object.fromEntries(ZONES.map((z) => [z, { tokens: 0, read: 0, written: 0, fresh: 0 }])) as Record<Zone, ZoneCache>;
+      for (const c of list) {
+        const zc = zoneCache({ tools: c.z_tools!, system: c.z_system!, history: c.z_history!, tail: c.z_tail! }, c);
+        for (const z of ZONES) for (const k of ["tokens", "read", "written", "fresh"] as const) out[z][k] += zc[z][k];
+      }
+      return out;
+    };
+    const series = new Map<number, CallRow[]>();
+    for (const c of measured) {
+      const t = Math.floor(c.ts / bucket) * bucket;
+      (series.get(t) ?? series.set(t, []).get(t)!).push(c);
+    }
+    let turns: unknown[] = [];
+    if (q.session) {
+      const evs = this.store.events(q.session);
+      const byTurn = group(measured.filter((c) => c.turn_event), (c) => c.turn_event!);
+      turns = [...byTurn.entries()].map(([id, list]) => {
+        const i = evs.findIndex((e) => e.id === id);
+        const prompt = i < 0 ? undefined : evs.slice(0, i).findLast((e) => e.kind === "user");
+        return { turn_event: id, ts_ms: list[0]!.ts, prompt: String(prompt?.data.text ?? "").slice(0, 140), prompt_event: prompt?.id, requests: list.length, zones: sum(list), per_request: list.map((c) => ({ ts_ms: c.ts, purpose: c.purpose ?? "turn", zones: zoneCache({ tools: c.z_tools!, system: c.z_system!, history: c.z_history!, tail: c.z_tail! }, c) })) };
+      }).slice(-30);
+    }
+    return {
+      since_ms: since, until_ms: until, bucket_ms: bucket, zones: ZONES, estimate: true,
+      measured_calls: measured.length, calls: calls.length,
+      total: sum(measured),
+      series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, list]) => ({ t_ms, calls: list.length, zones: sum(list) })),
+      by_purpose: [...group(measured, (c) => c.purpose ?? "turn").entries()].map(([purpose, list]) => ({ purpose, calls: list.length, zones: sum(list) })),
+      turns,
+    };
+  }
+
+  // Each compaction: what started it, the context before and after (the
+  // engine's estimate before; after, what the provider counted on the next
+  // request), what the summary kept, what it cost and took, and how the
+  // requests around it read the cache: the last one before and the first
+  // AFTER_REQUESTS after.
+  compactions(q: Filter & { limit?: number }) {
+    const where = ["e.kind = 'compaction'"];
+    const args: (string | number)[] = [];
+    if (q.session) { where.push("e.session_id = ?"); args.push(q.session); }
+    if (q.since !== undefined) { where.push("e.ts >= ?"); args.push(q.since); }
+    if (q.until !== undefined) { where.push("e.ts < ?"); args.push(q.until); }
+    const rows = this.store.db.query<{ id: string; session_id: string; ts: number; seq: number; data: string; title: string | null }, any[]>(
+      `SELECT e.id, e.session_id, e.ts, e.seq, e.data, s.title FROM events e LEFT JOIN sessions s ON s.id = e.session_id WHERE ${where.join(" AND ")} ORDER BY e.ts DESC`).all(...args);
+    const turnCalls = this.store.db.query<CallRow, [string, number, number]>(
+      "SELECT * FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' AND ts >= ? ORDER BY ts LIMIT ?");
+    const before = this.store.db.query<CallRow, [string, number]>(
+      "SELECT * FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' AND ts < ? ORDER BY ts DESC LIMIT 1");
+    const cacheOf = (c: CallRow) => ({ ts_ms: c.ts, prompt_tokens: c.input + c.cache_read + c.cache_write, cache_read: c.cache_read, cache_write: c.cache_write, hit_ratio: hit(c) });
+    const list = rows.map((r) => ({ r, d: JSON.parse(r.data) })).filter(({ d }) => !q.model || d.model === q.model).map(({ r, d }) => {
+      const after = turnCalls.all(r.session_id, r.ts, AFTER_REQUESTS);
+      const prev = before.get(r.session_id, r.ts); // summary requests are not turn requests
+      const u = d.usage ?? null;
+      const mode = d.mode as string;
+      return {
+        event_id: r.id, session_id: r.session_id, session_title: r.title ?? undefined, session_gone: r.title === null && !this.store.session(r.session_id), ts_ms: r.ts,
+        mode, trigger: (d.trigger ?? (mode === "clear" ? "owner" : d.auto ? "threshold" : "owner")) as string, ahead: !!d.ahead, focus: d.focus ?? null,
+        model: d.model ?? null,
+        tokens_before: d.tokens_before ?? null,
+        tokens_after: after[0] ? after[0].input + after[0].cache_read + after[0].cache_write : null,
+        kept: mode === "summary" ? {
+          summary_tokens: Math.round(String(d.summary ?? "").length / 4),
+          owner_messages: (d.owner_messages ?? []).length,
+          owner_tokens: Math.round((d.owner_messages ?? []).reduce((n: number, t: string) => n + t.length, 0) / 4),
+          verbatim_events: d.covered ? this.keptVerbatim(r.session_id, d.covered, r.seq) : 0,
+        } : null,
+        duration_ms: d.duration_ms ?? null,
+        input_tokens: u ? u.input + u.cache_read + u.cache_write : 0, output_tokens: u?.output ?? 0, cache_read_tokens: u?.cache_read ?? 0,
+        cost_usd: u && typeof u.cost === "number" ? u.cost : null, priced: !u || typeof u.cost === "number",
+        cache: { before: prev ? cacheOf(prev) : null, after: after.map(cacheOf) },
+      };
+    });
+    const limit = Math.min(100, Math.max(0, q.limit ?? 20));
+    const total = {
+      count: list.length,
+      tokens_before: list.reduce((n, c) => n + (c.tokens_before ?? 0), 0),
+      tokens_after: list.reduce((n, c) => n + (c.tokens_after ?? 0), 0),
+      measured_after: list.filter((c) => c.tokens_after !== null).length,
+      cost_usd: list.reduce((n, c) => n + (c.cost_usd ?? 0), 0),
+      unpriced: list.filter((c) => !c.priced).length,
+      duration_p50_ms: pct(list.map((c) => c.duration_ms), 0.5),
+      after_hit_ratio: ratio(list.flatMap((c) => c.cache.after)),
+      before_hit_ratio: ratio(list.flatMap((c) => (c.cache.before ? [c.cache.before] : []))),
+      by_trigger: Object.fromEntries([...group(list, (c) => c.trigger).entries()].map(([k, v]) => [k, v.length])),
+    };
+    return { total, after_requests: AFTER_REQUESTS, compactions: list.slice(0, limit) };
+  }
+
+  // Events of the branch kept word for word after a summary prepared ahead.
+  private keptVerbatim(sessionId: string, covered: string, seq: number) {
+    const evs = this.store.events(sessionId);
+    const from = evs.find((e) => e.id === covered)?.seq;
+    return from === undefined ? 0 : evs.filter((e) => e.seq > from && e.seq < seq && ["user", "assistant", "tool_result"].includes(e.kind)).length;
+  }
+
+  // Two ranges, or two models over one range, side by side.
+  compare(a: Filter, b: Filter) {
+    const one = (q: Filter) => {
+      const { calls, tools, since, until } = this.rows(q);
+      const turn = calls.filter((c) => (c.purpose ?? "turn") === "turn");
+      return { since_ms: since, until_ms: until, model: q.model ?? null, ...callStats(calls), ...toolStats(tools), cache_hit_ratio_turns: callStats(turn).cache_hit_ratio, classes: classCounts(calls),
+        breaks: calls.filter((c) => c.cache_break).length, compactions: this.compactions({ ...q, limit: 0 }).total.count };
+    };
+    return { a: one(a), b: one(b) };
+  }
 }
 
-type CallRow = { ts: number; model: string; latency_ms: number | null; ttft_ms: number | null; input: number; output: number; cache_read: number; cache_write: number; cost: number | null; unpriced: number; outcome: string; error: string | null; cache_break: string | null };
+export type Filter = { since?: number; until?: number; session?: string; model?: string; bucket?: number };
+export const AFTER_REQUESTS = 3;
+
+type CallRow = {
+  ts: number; model: string; latency_ms: number | null; ttft_ms: number | null; input: number; output: number; cache_read: number; cache_write: number;
+  cost: number | null; unpriced: number; outcome: string; error: string | null; cache_break: string | null;
+  purpose: string | null; error_class: string | null; turn_event: string | null; z_tools: number | null; z_system: number | null; z_history: number | null; z_tail: number | null;
+};
+
+const providerOf = (model: string) => (model.includes(":") ? model.slice(0, model.indexOf(":")) : "");
+const hit = (c: { input: number; cache_read: number; cache_write: number }) => {
+  const p = c.input + c.cache_read + c.cache_write;
+  return p ? c.cache_read / p : null;
+};
+const ratio = (list: { prompt_tokens: number; cache_read: number }[]) => {
+  const p = list.reduce((n, c) => n + c.prompt_tokens, 0);
+  return p ? list.reduce((n, c) => n + c.cache_read, 0) / p : null;
+};
+function classCounts(list: CallRow[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const c of list) if (c.error_class) out[c.error_class] = (out[c.error_class] ?? 0) + 1;
+  return out;
+}
 
 export function breakCause(b: { gapMs: number; modelChanged: boolean; compacted: boolean }): (typeof BREAK_CAUSES)[number] {
   if (b.modelChanged) return "model_switch";

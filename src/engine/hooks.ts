@@ -17,6 +17,13 @@ export type TurnHooks = {
   // Change the request just before it is sent (compaction, volatile-tail notes).
   // Must keep the prefix stable: append, never rewrite earlier messages.
   beforeRequest?: (s: Session, req: ProviderRequest) => ProviderRequest | Promise<ProviderRequest>;
+  // Every provider call, turn steps, summaries and side answers alike, for
+  // measuring only: the request exactly as sent (after every beforeRequest and
+  // the attachment projection), then its answer or its failure (`aborted`: the
+  // turn was stopped; a retry may follow). `req` is the same object in all three.
+  requestSent?: (s: Session, req: ProviderRequest) => void;
+  requestDone?: (s: Session, req: ProviderRequest, res: ProviderResult) => void;
+  requestFailed?: (s: Session, req: ProviderRequest, err: unknown, aborted: boolean) => void;
   afterResponse?: (s: Session, res: ProviderResult, messages: Message[]) => void | Promise<void>;
   // Before each tool call, in registration order; may wait (an approval). The
   // first deny wins and the call does not run. Watch call.ctx.signal.

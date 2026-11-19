@@ -7,7 +7,8 @@ import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
-import { Card, Segmented } from "./Settings.tsx";
+import { Segmented } from "./Settings.tsx";
+import { CompactionsView, CompareView, ErrorsView, TokensView } from "./UsageViews.tsx";
 
 type Stats = {
   calls: number; errors: number; interrupted: number; error_rate: number;
@@ -82,14 +83,14 @@ function MoneyField({ value, onSave, label, testid }: { value: number | null; on
   );
 }
 
-const RANGES = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 } as const;
-type Range = keyof typeof RANGES;
+export const RANGES = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 } as const;
+export type Range = keyof typeof RANGES;
 
 export const fmtMs = (v: number | null | undefined) => (v == null ? "none" : v < 1000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(v < 10_000 ? 2 : 1)} s`);
-const fmtPct = (v: number | null | undefined) => (v == null ? "none" : `${(v * 100).toFixed(v > 0 && v < 0.1 ? 1 : 0)}%`);
+export const fmtPct = (v: number | null | undefined) => (v == null ? "none" : `${(v * 100).toFixed(v > 0 && v < 0.1 ? 1 : 0)}%`);
 export const fmtUsd = (v: number) => (v === 0 ? "$0" : v < 0.01 ? `$${v.toFixed(4)}` : v < 100 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`);
 
-function Tile({ label, value, sub, tone, testid }: { label: string; value: ReactNode; sub?: ReactNode; tone?: "danger"; testid?: string }) {
+export function Tile({ label, value, sub, tone, testid }: { label: string; value: ReactNode; sub?: ReactNode; tone?: "danger"; testid?: string }) {
   return (
     <div className="rounded-lg border border-line bg-raised px-4 py-3 shadow-1" data-testid={testid}>
       <div className="text-caption text-muted">{label}</div>
@@ -99,11 +100,11 @@ function Tile({ label, value, sub, tone, testid }: { label: string; value: React
   );
 }
 
-function Panel({ title, hint, children, testid }: { title: string; hint?: string; children: ReactNode; testid?: string }) {
+export function Panel({ title, hint, children, testid }: { title: string; hint?: string; children: ReactNode; testid?: string }) {
   return (
     <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid={testid}>
       <div className="mb-3 flex items-baseline gap-2">
-        <h3 className="text-base font-medium">{title}</h3>
+        <h3 className="shrink-0 text-base font-medium">{title}</h3>
         {hint && <span className="text-caption text-faint">{hint}</span>}
       </div>
       {children}
@@ -111,7 +112,7 @@ function Panel({ title, hint, children, testid }: { title: string; hint?: string
   );
 }
 
-function Table({ head, rows, align, onRow, expanded }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[]; onRow?: (i: number) => void; expanded?: (i: number) => ReactNode }) {
+export function Table({ head, rows, align, onRow, expanded }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[]; onRow?: (i: number) => void; expanded?: (i: number) => ReactNode }) {
   return (
     <div className="-mx-4 overflow-x-auto">
       <table className="w-full text-ui">
@@ -125,7 +126,7 @@ function Table({ head, rows, align, onRow, expanded }: { head: string[]; rows: R
             const more = expanded?.(i);
             return [
               <tr key={i} className={cn("border-b border-line/60 last:border-0", onRow && "cursor-default hover:bg-hover")} onClick={() => onRow?.(i)}>
-                {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums", (align?.[j] ?? (j ? "r" : "l")) === "r" ? "text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
+                {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums", (align?.[j] ?? (j ? "r" : "l")) === "r" ? "whitespace-nowrap text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
               </tr>,
               more ? <tr key={`${i}-more`} className="border-b border-line/60"><td colSpan={r.length} className="bg-sunken/50 px-4 py-2">{more}</td></tr> : null,
             ];
@@ -136,8 +137,29 @@ function Table({ head, rows, align, onRow, expanded }: { head: string[]; rows: R
   );
 }
 
+type View = "overview" | "tokens" | "errors" | "compactions" | "compare";
+
+// The sections of Settings > Usage: the overview, then one view per question.
 export function UsagePanel() {
+  const [view, setView] = useState<View>("overview");
   const [range, setRange] = useState<Range>("week");
+  return (
+    <div className="flex flex-col gap-4" data-testid="usage-panel">
+      <div className="flex flex-wrap items-center gap-3">
+        <Segmented<View> label="View" value={view} onChange={setView} options={[
+          { value: "overview", label: "Overview" }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
+          { value: "compactions", label: "Compactions" }, { value: "compare", label: "Compare" },
+        ]} />
+        {view !== "compare" && <Segmented<Range> label="Range" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />}
+        <span className="text-caption text-faint">Measured on this machine. Nothing is sent anywhere.</span>
+      </div>
+      {view === "overview" ? <Overview range={range} /> : view === "tokens" ? <TokensView range={range} /> : view === "errors" ? <ErrorsView range={range} />
+        : view === "compactions" ? <CompactionsView range={range} /> : <CompareView />}
+    </div>
+  );
+}
+
+function Overview({ range }: { range: Range }) {
   const [r, setR] = useState<Report | null>(null);
   const [openTool, setOpenTool] = useState<string | null>(null);
   const [budget, setBudget] = useState<{ daily_usd: number | null; monthly_usd: number | null } | null>(null);
@@ -171,11 +193,7 @@ export function UsagePanel() {
   const prompt = t.input_tokens + t.cache_read_tokens + t.cache_write_tokens;
 
   return (
-    <div className="flex flex-col gap-4" data-testid="usage-panel">
-      <div className="flex items-center gap-3">
-        <Segmented<Range> label="Range" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />
-        <span className="text-caption text-faint">Measured on this machine. Nothing is sent anywhere.</span>
-      </div>
+    <div className="flex flex-col gap-4" data-testid="usage-overview">
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Tile testid="tile-spend" label="Spend" value={costShown} sub={t.unpriced_calls ? `${t.unpriced_calls} calls have no known price` : `${t.calls} model calls`} />

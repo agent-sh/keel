@@ -1,6 +1,9 @@
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
 
+// The type scale of styles.css (--text-*) is font sizes: without this, a color
+// class such as text-danger beside text-title made twMerge drop the size.
+const twMerge = extendTailwindMerge({ extend: { theme: { text: ["micro", "caption", "ui", "base", "read", "title", "display"] } } });
 export const cn = (...v: ClassValue[]) => twMerge(clsx(v));
 
 export function fmtTokens(n: number): string {

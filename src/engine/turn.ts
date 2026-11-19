@@ -338,17 +338,23 @@ export class Engine {
     return { provider, info, tools: toolsFor(info.family), system: system.text, systemSplit: system.split, effort };
   }
 
+  // Measuring hooks never stop a call.
+  private measure(f: (h: ReturnType<typeof allHooks>[number]) => void) {
+    for (const h of allHooks()) try { f(h); } catch (e) { this.errors.capture("server", e, { hook: "measure" }); }
+  }
+
   // One provider call with retries for passing failures. The UI is told about
   // each wait and the half-streamed reply of a failed attempt is dropped.
-  private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false): Promise<ProviderResult> {
+  private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn"): Promise<ProviderResult> {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
-    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id };
+    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose };
     for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
     for (let attempt = 0; ; attempt++) {
       partial.clear();
+      this.measure((h) => h.requestSent?.(session, req));
       if (!quiet) this.status(id, { kind: "model", since: Date.now(), model: st.info.name });
       let first = true;
       try {
@@ -360,8 +366,10 @@ export class Engine {
           if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
         });
         if (!quiet || attempt) this.status(id, { kind: "idle" });
+        this.measure((h) => h.requestDone?.(session, req, res));
         return res;
       } catch (e) {
+        this.measure((h) => h.requestFailed?.(session, req, e, signal.aborted));
         if (signal.aborted) throw abortError();
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
         const wait = backoffMs(attempt, e);
@@ -406,7 +414,7 @@ export class Engine {
         const used = contextTokens(events).used;
         if (events.some((e) => e.kind === "assistant") && used >= limit) {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
-          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, signal, step: st });
+          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st });
           events = this.lineage(id);
         } else if (used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
@@ -419,7 +427,7 @@ export class Engine {
           // The request no longer fits the window: compact once and go on.
           if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit) {
             compactedForFit = true;
-            await this.compactNow(id, { auto: true, signal, step: st });
+            await this.compactNow(id, { auto: true, trigger: "overflow", signal, step: st });
             continue;
           }
           if (signal.aborted) {
@@ -458,7 +466,7 @@ export class Engine {
         this.append(id, "assistant", { blocks, model: st.info.id, usage: u, stop: res.stop });
 
         if (res.stop === "model_context_window_exceeded") {
-          await this.compactNow(id, { auto: true, signal, step: st });
+          await this.compactNow(id, { auto: true, trigger: "overflow", signal, step: st });
           continue;
         }
         const uses = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use" && b !== cut);
@@ -555,13 +563,14 @@ export class Engine {
     const session = this.store.session(id)!;
     const ask: Message[] = [...toMessages(events), { role: "user", content: [{ type: "text", text: summaryPrompt() }] }];
     const before = contextTokens(events).used;
-    this.call(id, st, ask, new AbortController().signal, new Map(), session, true)
+    const t0 = Date.now();
+    this.call(id, st, ask, new AbortController().signal, new Map(), session, true, "summary")
       .then((res) => {
         this.store.addUsage(id, res.usage);
         this.emitSession(id);
         const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
         if (res.stop === "refusal" || !summary) return;
-        const data = { mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), auto: true, ahead: true, covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now() };
+        const data = { mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), auto: true, ahead: true, trigger: "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
       .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
@@ -583,7 +592,8 @@ export class Engine {
 
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a
   // call that would not fit) or on the owner's request between turns.
-  async compactNow(id: string, opts: { focus?: string; auto?: boolean; signal?: AbortSignal; step?: Step } = {}) {
+  // `trigger`: what started it (the threshold, a request that did not fit, the owner).
+  async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner"; signal?: AbortSignal; step?: Step } = {}) {
     const session = this.store.session(id)!;
     const events = this.lineage(id);
     const messages = toMessages(events);
@@ -594,17 +604,18 @@ export class Engine {
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;
+    const t0 = Date.now();
     try {
       // The same tools and system as the session's turns: that prefix is read from cache.
       const ask: Message[] = [...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(opts.focus) }] }];
-      const res = await this.call(id, st, ask, signal, new Map(), session, true); // the summary is not a reply
+      const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary"); // the summary is not a reply
       const u: Usage = res.usage;
       this.store.addUsage(id, u);
       const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
       if (res.stop === "refusal" || !summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
       const ev = this.append(id, "compaction", {
         mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), focus: opts.focus, auto: !!opts.auto,
-        tokens_before: before, usage: u, model: st.info.id,
+        trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0,
       });
       this.emitSession(id);
       return ev;
