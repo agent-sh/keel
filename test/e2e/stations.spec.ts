@@ -51,6 +51,16 @@ test("keys and drafts per station", async ({ page, request }) => {
   await expect(sb.getByTestId("composer")).toHaveValue("");
   await shoot(page, "stations-01-draft-in-a");
 
+  // A reply that quotes colored terminal output: the station line has the words, not the escapes.
+  const file = (await (await request.get(`/api/sessions/${a}/export?format=jsonl`)).text()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const reply = file.findLast((r: any) => r.kind === "assistant" && r.data?.blocks?.some((b: any) => b.type === "text"));
+  reply.data.blocks = [{ type: "text", text: "\x1b[1;32mPASS\x1b[0m all colored \x1b]0;title\x07done" }];
+  const copy = await (await request.post("/api/sessions/import", { data: file.map((r) => JSON.stringify(r)).join("\n") + "\n", headers: { "content-type": "application/x-ndjson" } })).json();
+  await page.goto(`/s/${copy.session.id}`);
+  const line = page.locator(`section[data-station="${copy.session.id}"]`).getByTestId("station-head").locator(".k-station-line");
+  await expect(line).toHaveText("PASS all colored done");
+  await request.delete(`/api/sessions/${copy.session.id}`);
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

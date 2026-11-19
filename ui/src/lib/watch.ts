@@ -5,7 +5,7 @@ import { useEffect } from "react";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
 import { useSafety } from "./safety.ts";
 import { actions, getState, reportError, useStore } from "./store.ts";
-import { shortPath, toolKind, type ToolKind } from "./tools.ts";
+import { shortPath, stripAnsi, toolKind, type ToolKind } from "./tools.ts";
 
 // `stop`: the owner (or a parent) stopped the last turn; `resume`: a daemon
 // restart cut it and it waits to go on. Neither is done.
@@ -102,11 +102,16 @@ export function toolLine(name: string, input: any, cwd?: string): string {
 
 // The newest thing a session did: its last tool call, the reply it is
 // writing, or the first line of its last reply.
+// Terminal escapes a reply, a command or an error quotes are taken out.
 export function lastLine(events: StoredEvent[] | undefined, cwd?: string): string {
+  return stripAnsi(newest(events, cwd)).trim();
+}
+
+function newest(events: StoredEvent[] | undefined, cwd?: string): string {
   if (!events) return "";
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
-    if (e.kind === "error") return e.data.message;
+    if (e.kind === "error") return String(e.data.message ?? "");
     if (e.kind === "assistant") {
       const blocks = e.data.blocks as any[];
       for (let j = blocks.length - 1; j >= 0; j--) {
@@ -134,7 +139,7 @@ const taskWords = (e: StoredEvent) => {
 const OWNER = new Set([undefined, "steer", "queued", "voice", "cli"]);
 const ownWords = (e: StoredEvent) => !e.data.kind && !e.data.meta && OWNER.has(e.data.origin) && !/^\s*(<[a-z_]+[\s>]|\[harness\])/i.test(String(e.data.text ?? ""));
 // One readable line: no tags, no markdown marks.
-const clean = (t: string) => String(t).replace(/<\/?[a-z_][^>]*>/gi, " ").replace(/[*`#_]/g, "").replace(/\s+/g, " ").trim();
+const clean = (t: string) => stripAnsi(String(t)).replace(/<\/?[a-z_][^>]*>/gi, " ").replace(/[*`#_]/g, "").replace(/\s+/g, " ").trim();
 
 export type Span = { start: number; end: number | null; reason?: string };
 export type Tick = { ts: number; kind: ToolKind; error: boolean };
