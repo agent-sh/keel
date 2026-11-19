@@ -2,6 +2,7 @@
 // standing answers; what they do not settle becomes an approval card the
 // turn waits on. Cards, grants and modes are stored; a card left open by a
 // restart is cancelled (nothing waits on it any more).
+import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
@@ -145,6 +146,8 @@ export class Gate {
   scopeOf(workspace: string): string {
     const hit = this.roots.get(workspace);
     if (hit) return hit;
+    // A folder that is gone has no repository to ask (and may come back).
+    if (!existsSync(workspace)) return workspace;
     const r = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: workspace, stdout: "pipe", stderr: "ignore" });
     const out = r.success ? r.stdout.toString().trim() : "";
     const root = out ? (out.endsWith("/.git") ? dirname(out) : out) : workspace;

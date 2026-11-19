@@ -39,6 +39,7 @@ function Row({ s, active }: { s: Session; active: boolean }) {
   const restore = s.archived;
   const w = useWatch(s);
   const shown = useStations((x) => x.shown.includes(s.id));
+  const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
   return (
     <div
       role="link"
@@ -46,6 +47,7 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       data-testid="session-row"
       data-session={s.id}
       data-shown={shown || undefined}
+      data-unread={unread || undefined}
       aria-current={active ? "page" : undefined}
       onClick={() => navigate({ name: "session", id: s.id })}
       onKeyDown={(e) => e.key === "Enter" && navigate({ name: "session", id: s.id })}

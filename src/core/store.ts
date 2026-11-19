@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEvent, Usage } from "./types.ts";
 import { addUsage, emptyUsage } from "./types.ts";
@@ -64,13 +64,17 @@ function deepFreeze<T>(v: T): T {
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
 function rowToSession(r: SessionRow): Session {
-  return {
+  const s: Session = {
     ...r,
     head: r.head ?? null,
     archived: !!r.archived,
     usage: { ...emptyUsage(), ...JSON.parse(r.usage || "{}") },
     settings: JSON.parse(r.settings || "{}"),
   };
+  // A folder of this machine that is no longer on disk (deleted, a removed
+  // worktree): every view says so instead of failing on it.
+  if (!r.machine && !existsSync(r.workspace)) s.workspace_gone = true;
+  return s;
 }
 
 // Numbers, hex ids and quoted paths vary between repeats of one failure.

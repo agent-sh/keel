@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { FolderX } from "lucide-react";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { Composer } from "./Composer.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
-import { SidePanel } from "./SidePanel.tsx";
+import { openPanel, SidePanel } from "./SidePanel.tsx";
 import { LiveSourceBanner } from "./TakeOver.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
@@ -65,6 +66,7 @@ export function SessionView({ id, header, panel = true, focus = true }: { id: st
           <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
           <div className="k-compose pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
+              {session.workspace_gone && <FolderGone path={session.workspace} />}
               <LiveSourceBanner sessionId={session.id} />
               <Suspense fallback={null}><HeldMessages sessionId={session.id} /></Suspense>
               <Suspense fallback={null}><SessionDock sessionId={session.id} /></Suspense>
@@ -88,5 +90,20 @@ export function SessionView({ id, header, panel = true, focus = true }: { id: st
         {panel && <Boundary><SidePanel session={session} /></Boundary>}
       </div>
     </>
+  );
+}
+
+// The session's folder is not on disk: the transcript reads as before, and
+// the way on is to move the session to a folder that exists.
+function FolderGone({ path }: { path: string }) {
+  return (
+    <div className="mb-2 flex items-center gap-3 rounded-md border border-line border-l-[3px] border-l-st-fail bg-raised px-3 py-2 text-ui" data-testid="folder-gone" role="status">
+      <FolderX className="size-4 shrink-0 text-st-fail" aria-hidden="true" />
+      <p className="min-w-0 flex-1">
+        <span className="text-fg">The folder is gone.</span>{" "}
+        <span className="text-muted">Tools that read or change files cannot run in <code className="font-mono text-caption">{path.replace(/^\/home\/[^/]+/, "~")}</code>.</span>
+      </p>
+      <button type="button" onClick={() => openPanel("session")} className="h-7 shrink-0 rounded-md border border-line px-2.5 text-caption text-fg hover:bg-hover" data-testid="folder-gone-move">Move the session</button>
+    </div>
   );
 }

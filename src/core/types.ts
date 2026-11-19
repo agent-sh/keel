@@ -102,6 +102,8 @@ export type Session = {
   parent_id?: string | null; // a subagent's session names the session that spawned it
   // The fleet machine its tools run on (absent: this daemon's machine).
   machine?: string | null;
+  // The session's folder is not on this machine's disk any more.
+  workspace_gone?: true;
 };
 
 // Per-session turn settings. Values come from the model's listing (efforts) or

@@ -126,6 +126,9 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-row[data-shown]::before { content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px; width: 3px; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
 .k-row-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Unread: the title in ink and a little heavier, instead of a dot on every row. */
+.k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 550; }
+.k-row [data-testid="unread-dot"] { display: none; }
 .k-row-time { font: 11px var(--font-inst); font-stretch: 75%; color: var(--faint); }
 .k-row-act { width: 24px; height: 24px; place-items: center; border-radius: 3px; color: var(--faint); }
 .k-row-act:hover { background: var(--hover); color: var(--fg); }
@@ -170,6 +173,7 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
 .k-station-clock { font-family: var(--font-inst); font-stretch: 75%; font-size: 13px; color: var(--fg); }
 .k-station-meta { margin-left: auto; min-width: 0; font-family: var(--font-inst); font-stretch: 75%; font-size: 11.5px; color: var(--faint); white-space: pre; }
+.k-gone { color: var(--st-fail); }
 .k-station-tools { display: flex; gap: 1px; opacity: 0; transition: opacity 120ms; }
 .k-station:hover .k-station-tools, .k-station:focus-within .k-station-tools, .k-station[data-helm] .k-station-tools { opacity: 1; }
 .k-tool { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 3px; color: var(--faint); }

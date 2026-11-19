@@ -56,7 +56,9 @@ export class Shadow {
   }
 
   async git(args: string[], opts: { index?: string; input?: string; timeout?: number; ok?: number[] } = {}): Promise<string> {
-    const env: Record<string, string> = { ...(process.env as Record<string, string>), GIT_DIR: this.dir, GIT_WORK_TREE: this.workspace };
+    // A work tree only while the folder is there: git refuses a missing one
+    // even for what reads only the shadow (refs, trees, gc).
+    const env: Record<string, string> = { ...(process.env as Record<string, string>), GIT_DIR: this.dir, ...(existsSync(this.workspace) ? { GIT_WORK_TREE: this.workspace } : {}) };
     delete env.GIT_INDEX_FILE;
     if (opts.index) env.GIT_INDEX_FILE = opts.index;
     const p = Bun.spawn(["git", "-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "core.fsmonitor=false", ...args], {

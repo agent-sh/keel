@@ -1,12 +1,14 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Bot, CornerDownLeft, MessageSquare, Search, TextSearch, Zap } from "lucide-react";
+import { Bot, CornerDownLeft, Search, TextSearch, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { allCommands, commandsVersion, fuzzy, onCommands } from "../lib/keys.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
+import { useWatches, WATCH_LABEL } from "../lib/watch.ts";
 import { Kbd } from "./Kbd.tsx";
+import { Mark } from "./Mark.tsx";
 
 type Hit = { session_id: string; session_title: string; event_id?: string; kind: string; snippet: string };
 type Entry = { key: string; group: string; label: ReactNode; detail?: string; keys?: string; icon: ReactNode; score: number; run: () => void };
@@ -25,6 +27,8 @@ export function Palette() {
   const route = useUI((s) => s.route);
   const sessions = useStore((s) => s.sessions);
   const models = useStore((s) => s.models);
+  const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived), [sessions]);
+  const watches = useWatches(live);
   useSyncExternalStore(onCommands, commandsVersion);
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -49,11 +53,12 @@ export function Palette() {
   const entries = useMemo(() => {
     const out: Entry[] = [];
     const recent = Object.values(sessions).filter((s) => !s.archived).sort((a, b) => b.updated - a.updated);
+    const w = watches;
     for (const s of q ? recent : recent.slice(0, 6)) {
       const score = fuzzy(q, `${s.title} ${s.workspace}`);
       if (score > 0) out.push({
         key: `s:${s.id}`, group: "Sessions", label: s.title || "New session", detail: `${s.workspace.split("/").pop()}  ${ago(s.updated)}`,
-        icon: <MessageSquare className="size-4" />, score: score + 5, run: () => navigate({ name: "session", id: s.id }),
+        icon: <span className="grid size-4 place-items-center" title={WATCH_LABEL[w[s.id] ?? "idle"]}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5, run: () => navigate({ name: "session", id: s.id }),
       });
     }
     for (const c of allCommands()) {
@@ -85,7 +90,7 @@ export function Palette() {
     const best = new Map<string, number>();
     out.forEach((e, i) => best.has(e.group) || best.set(e.group, i));
     return out.sort((a, b) => (q ? best.get(a.group)! - best.get(b.group)! : order.indexOf(a.group) - order.indexOf(b.group))).slice(0, 60);
-  }, [q, sessions, models, current, hits]);
+  }, [q, sessions, models, current, hits, watches]);
 
   useEffect(() => setSel(0), [q]);
   useEffect(() => {

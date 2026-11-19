@@ -75,7 +75,7 @@ function StationHead({ s, w, helm, pinned, shown }: { s: Session; w: Watch; helm
       <div className="k-station-row">
         <span className="k-station-word"><Mark w={w} />{WATCH_LABEL[w]}</span>
         {w === "work" && start && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
-        <span className="k-station-meta truncate">{folderOf(s)}  {modelOf(s.model)}</span>
+        <span className="k-station-meta truncate">{s.workspace_gone ? <span className="k-gone" title={`${s.workspace} is not on disk`}>{folderOf(s)} gone</span> : folderOf(s)}  {modelOf(s.model)}</span>
         <span className="k-station-tools">
           {!focus && <Tool label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, shown, -1)}><ChevronLeft /></Tool>}
           {!focus && <Tool label="Move right (Alt Shift ])" onClick={() => stations.move(s.id, shown, 1)}><ChevronRight /></Tool>}

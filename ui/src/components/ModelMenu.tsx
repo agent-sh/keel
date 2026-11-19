@@ -115,7 +115,7 @@ export function ModelMenu({ value, onChange, compact, openSignal }: { value: str
       itemToStringLabel={(i: Item) => i.label}
     >
       <Combobox.Trigger data-testid="model-picker" className={triggerClass(compact)}>
-        <TriggerLabel label={selected?.label} any={all.length > 0} />
+        <TriggerLabel label={selected?.label} any={all.length > 0} value={value} />
       </Combobox.Trigger>
       <Combobox.Portal>
         <Combobox.Positioner align="start" sideOffset={6} className="z-50 outline-none">

@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: the error tracker folds a failure that repeats into one row with a
 // count, links it to the session it happened in, and a resolved kind leaves
@@ -69,4 +71,44 @@ test("a reconnect after a deletion or a failed first load records no error", asy
   await shoot(page, "errors-03-deleted-while-away");
   await page.waitForTimeout(3_500); // a network failure is posted 3 s after it happened
   expect(posted).toEqual([]);
+});
+
+// A session whose folder was deleted reads as before and says the folder is
+// gone, with the way on (move it); its permissions and its checkpoints still
+// load, and nothing lands in the error table.
+test("a session whose folder is gone is a state, not a failure", async ({ page, request }) => {
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `gone-${Date.now().toString(36)}`);
+  mkdirSync(ws, { recursive: true });
+  writeFileSync(join(ws, "notes.txt"), "one\n");
+  const s = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: ws, title: "Folder that goes away" } })).json()).session;
+  await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "full-auto" } });
+  const calls = [{ name: "Read", input: { file_path: join(ws, "notes.txt") } }, { name: "Write", input: { file_path: join(ws, "notes.txt"), content: "one\ntwo\n" } }];
+  await request.post(`/api/sessions/${s.id}/messages`, { data: { text: `Add a line. script:calls ${JSON.stringify(calls)}` } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 30_000 }).toBe(true);
+  const errorsBefore = (await (await request.get("/api/errors?resolved=0")).json()).errors.map((e: any) => `${e.id}:${e.count}`);
+  const turns = (await (await request.get(`/api/sessions/${s.id}/checkpoints`)).json()).turns;
+  const diffUrl = `/api/sessions/${s.id}/checkpoints/diff?turn=${turns[0].turn}`;
+  const diffBefore = await (await request.get(diffUrl)).json();
+  rmSync(ws, { recursive: true, force: true });
+
+  expect((await request.get(`/api/sessions/${s.id}/permissions`)).status()).toBe(200);
+  expect((await (await request.get(`/api/sessions/${s.id}`)).json()).session.workspace_gone).toBe(true);
+  // What the checkpoints hold still reads with the folder gone.
+  const diff = await request.get(diffUrl);
+  expect(diff.status()).toBe(200);
+  expect(await diff.json()).toEqual(diffBefore);
+  const posted: string[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") posted.push(r.postData() ?? ""); });
+  await page.goto(`/s/${s.id}`);
+  await expect(page.getByTestId("folder-gone")).toBeVisible();
+  await expect(page.getByTestId("station-head").first()).toContainText("gone");
+  await openPanel(page, "changes");
+  await expect(page.getByTestId("side-panel")).toContainText("notes.txt");
+  await shoot(page, "errors-04-folder-gone");
+  await page.getByTestId("folder-gone-move").click();
+  await expect(page.getByTestId("move-session")).toBeVisible();
+  expect(posted).toEqual([]);
+  const after = (await (await request.get("/api/errors?resolved=0")).json()).errors.map((e: any) => `${e.id}:${e.count}`);
+  expect(after.filter((x: string) => !errorsBefore.includes(x))).toEqual([]);
+  await request.delete(`/api/sessions/${s.id}`);
 });
