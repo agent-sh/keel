@@ -1,5 +1,5 @@
 import { ArrowLeft, Bot, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
@@ -9,7 +9,7 @@ import { ShortcutList } from "./ShortcutSheet.tsx";
 // Settings building blocks other lanes reuse for their sections.
 export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8">
+    <div className="k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8">
       <div className="min-w-0 flex-1">
         <div className="text-base font-medium">{label}</div>
         {hint && <div className="mt-0.5 text-ui text-muted">{hint}</div>}
@@ -39,7 +39,7 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
 }
 
 export function Card({ children }: { children: ReactNode }) {
-  return <div className="rounded-lg border border-line bg-raised px-5 shadow-1">{children}</div>;
+  return <div className="k-card rounded-lg border border-line bg-raised px-5 shadow-1">{children}</div>;
 }
 
 function General() {
@@ -121,20 +121,33 @@ settingsSections.add(
   { id: "about", label: "About", words: "version daemon", icon: <Info className="size-4" />, order: 100, component: About },
 );
 
+// Sections grouped by what they are about; a section another lane adds falls in by id, else under More.
+const GROUP: Record<string, string> = {
+  general: "Working", models: "Working", providers: "Working", agents: "Working", keyboard: "Working", voice: "Working",
+  safety: "Safety", hooks: "Safety", alerts: "Safety",
+  machines: "Machine", resources: "Machine", storage: "Machine", daemon: "Machine", phone: "Machine", usage: "Machine",
+  integrations: "Reach", elsewhere: "Reach", export: "Reach",
+  about: "Keel",
+};
+const ORDER = ["Working", "Safety", "Machine", "Reach", "More", "Keel"];
+const groupOf = (id?: string) => (id ? GROUP[id] ?? "More" : "");
+// Sections of figures and lists use the width; forms keep a reading measure.
+const WIDE = new Set(["usage", "resources", "storage", "machines", "models"]);
+
 export function Settings({ section }: { section: string }) {
   useSyncExternalStore(settingsSections.subscribe, settingsSections.version);
   const [q, setQ] = useState("");
   const sidebar = useUI((s) => s.sidebar);
-  const all = settingsSections.all().sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+  const all = settingsSections.all().sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (a.order ?? 50) - (b.order ?? 50));
   const shown = q ? all.filter((s) => `${s.label} ${s.words ?? ""}`.toLowerCase().includes(q.toLowerCase())) : all;
   const cur = all.find((s) => s.id === section) ?? all[0]!;
   const Body = cur.component;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="settings">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3 md:px-5">
+      <header className="k-page-head flex h-12 shrink-0 items-center gap-2 border-b border-line px-3 md:px-5">
         {!sidebar && (
-          <button type="button" aria-label="Show the sidebar" onClick={() => savePref("sidebar", true)} className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
+          <button type="button" aria-label="Show the sidebar" onClick={() => savePref("sidebar", true)} className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg md:hidden">
             <Menu className="size-4" />
           </button>
         )}
@@ -149,10 +162,11 @@ export function Settings({ section }: { section: string }) {
             <Search className="size-3.5 text-faint" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a setting" className="w-full bg-transparent outline-none placeholder:text-faint" />
           </label>
-          <div className="flex gap-1 overflow-x-auto md:flex-col md:gap-px">
-            {shown.map((s) => (
+          <div className="k-settings-nav flex gap-1 overflow-x-auto md:flex-col md:gap-px">
+            {shown.map((s, i) => (
+              <Fragment key={s.id}>
+              {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && <h3 className="k-settings-group">{groupOf(s.id)}</h3>}
               <button
-                key={s.id}
                 type="button"
                 onClick={() => navigate({ name: "settings", section: s.id }, true)}
                 aria-current={s.id === cur.id ? "page" : undefined}
@@ -164,11 +178,12 @@ export function Settings({ section }: { section: string }) {
                 <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>
                 {s.label}
               </button>
+              </Fragment>
             ))}
           </div>
         </nav>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="max-w-3xl px-4 py-6 md:px-12 md:py-10">
+          <div className="k-settings-body px-4 py-6 md:px-12 md:py-10" data-wide={WIDE.has(cur.id) || undefined}>
             <h2 className="mb-5 text-title font-semibold tracking-[-0.015em]" data-testid="settings-title">{cur.label}</h2>
             <Body />
           </div>

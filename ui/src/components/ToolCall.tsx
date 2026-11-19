@@ -100,7 +100,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
           <ChevronRight className="size-3.5 text-faint transition-transform group-data-[open]/tool:rotate-90" />
         </span>
       </Collapsible.Trigger>
-      <Collapsible.Panel className="overflow-hidden border-t border-line">
+      <Collapsible.Panel className="k-tool-panel overflow-hidden border-t border-line">
         {(kind === "shell" || kind === "stdin") && <Terminal name={use.name} input={input} out={out} error={state === "error"} />}
         {diff && <DiffView diff={diff} />}
         {kind === "write" && input.content !== undefined && <Preview text={String(input.content)} />}

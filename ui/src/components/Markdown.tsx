@@ -61,6 +61,7 @@ export const Markdown = memo(function Markdown({ text, live }: { text: string; l
     <div
       ref={ref}
       className="prose-keel"
+      data-live={live || undefined}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={(e) => {
         const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".code-copy");
