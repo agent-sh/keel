@@ -6,7 +6,7 @@
 // Mcp-Session-Id. We probe with server/discover and fall back to initialize on
 // any error that is not a recognized modern one, as the spec's dual-era client
 // section says. Most servers in use today are legacy.
-import { pumpLines, pumpText } from "../core/proc.ts";
+import { chunks, pumpLines, pumpText } from "../core/proc.ts";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
@@ -263,7 +263,7 @@ export class McpClient {
     const dec = new TextDecoder();
     let buf = "";
     let data: string[] = [];
-    for await (const chunk of res.body as ReadableStream<Uint8Array>) {
+    for await (const chunk of chunks(res.body!)) {
       buf += dec.decode(chunk, { stream: true });
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {

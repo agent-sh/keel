@@ -6,6 +6,7 @@
 //   keel debug trace TRACE_ID        one trace's spans as a waterfall
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
+import { chunks } from "../core/proc.ts";
 import { authHeaders, findDaemon } from "./client.ts";
 
 const USAGE = `keel debug [ERROR_ID] | --session ID [--turn EVENT]   the debug bundle, as Markdown
@@ -89,7 +90,7 @@ async function log(url: string, v: { follow?: boolean; level?: string; grep?: st
   const r = await get(url, `/api/logs/stream?${level.slice(1)}`);
   const dec = new TextDecoder();
   let buf = "";
-  for await (const chunk of r.body as any as AsyncIterable<Uint8Array>) {
+  for await (const chunk of chunks(r.body!)) {
     buf += dec.decode(chunk, { stream: true });
     let i;
     while ((i = buf.indexOf("\n\n")) >= 0) {

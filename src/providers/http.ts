@@ -1,5 +1,6 @@
 // One HTTP path for every fetch-based driver: the request, the classification
 // of a failed answer, and the retry of a step that has shown nothing yet.
+import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
@@ -154,7 +155,7 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   const dec = o.format === "json_array" ? new JsonArrayDecoder()
     : res.headers.get("content-type")?.includes("application/vnd.amazon.eventstream") ? new EventStreamDecoder() : new SseDecoder();
   try {
-    for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
+    for await (const chunk of chunks(res.body!)) {
       guard.touch();
       if (w) w.bytes_in = (w.bytes_in ?? 0) + chunk.length;
       for (const ev of dec.push(chunk)) {

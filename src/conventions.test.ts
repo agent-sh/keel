@@ -16,16 +16,13 @@ test("specs take test from isolate.ts, which restores daemon-wide settings", () 
   expect(offenders(files(join(ROOT, "test/e2e"), /\.spec\.ts$/), /from "@playwright\/test"/)).toEqual([]);
 });
 
-test("child process pipes are read through src/core/proc.ts", () => {
+test("byte streams (child pipes, HTTP bodies) are read through src/core/proc.ts", () => {
   const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts") && !f.endsWith("core/proc.ts"));
-  expect(offenders(src, /new Response\([\w.!]*\.std(out|err)\b|for await \([^)]*\.std(out|err)\b/)).toEqual([]);
-  // Only an HTTP body may be read with a reader of its own.
-  expect(offenders(src, /(?<!\.body)\.getReader\(\)/)).toEqual([]);
-  // Releasing a reader is Bun's only source of "Reader released", which rejects
-  // the reader's closed promise unhandled when the pipe is still open; a read
-  // that stops early cancels instead.
-  const all = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts"));
-  expect(offenders(all, /\.releaseLock\(/)).toEqual([]);
+  expect(offenders(src, /new Response\([\w.!]*\.std(out|err)\b/)).toEqual([]);
+  // A reader of its own, or `for await` over a stream, releases the reader when
+  // the read stops early, which Bun rejects unhandled ("Reader released");
+  // chunks() cancels instead.
+  expect(offenders(src, /\.getReader\(\)|\.releaseLock\(|for await \(const \w+ of [\w.!]+\.(std(out|err)|body|stream\(\))/)).toEqual([]);
 });
 
 test("path containment is contains(root, p) from src/core/paths.ts", () => {

@@ -1,26 +1,37 @@
-// Reading a child process's pipes. Every module reads child output through
-// these helpers, which take the pipe's reader and never hand it back: nothing
-// reads a pipe after them, and in Bun releasing a reader while its stream is
-// still open can reject unhandled ("Invalid state: Reader released"; see
-// server/streams.ts for where Bun does it itself). A read that stops early
-// cancels the pipe instead, which closes it and lets the child see EPIPE
-// rather than block on a full pipe.
+// Reading a byte stream: a child process's pipes and HTTP response bodies
+// (provider streams, MCP and fleet event streams). Every module reads through
+// these helpers, which take the stream's reader and never hand it back.
+// Releasing a reader while its stream is open rejects in Bun ("Invalid state:
+// Reader released"), unhandled, and `for await` over a stream releases it
+// whenever the loop is left early (a consumer that stops, a turn aborted on a
+// hot reload). A read that stops early cancels the stream instead, which
+// closes it (a child then sees EPIPE rather than blocking on a full pipe).
 
 type Pipe = ReadableStream<Uint8Array> | number | null | undefined;
 
-// Each chunk as it comes; resolves when the pipe ends. A read failure, or an
-// `onChunk` that throws, rejects, tagged with `where`.
-export async function pump(pipe: Pipe, onChunk: (c: Uint8Array) => void, where = "child pipe"): Promise<void> {
-  if (!pipe || typeof pipe === "number") return;
-  const r = pipe.getReader();
+// Each chunk as it comes, until the stream ends; leaving the loop early
+// cancels the stream.
+export async function* chunks(s: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array, void> {
+  const r = s.getReader();
+  let ended = false;
   try {
     for (;;) {
       const { done, value } = await r.read();
-      if (done) return;
-      if (value) onChunk(value);
+      if (done) { ended = true; return; }
+      if (value) yield value;
     }
+  } finally {
+    if (!ended) r.cancel().catch(() => {});
+  }
+}
+
+// Each chunk of a child pipe; resolves when the pipe ends. A read failure, or
+// an `onChunk` that throws, rejects, tagged with `where`.
+export async function pump(pipe: Pipe, onChunk: (c: Uint8Array) => void, where = "child pipe"): Promise<void> {
+  if (!pipe || typeof pipe === "number") return;
+  try {
+    for await (const c of chunks(pipe)) onChunk(c);
   } catch (e) {
-    r.cancel(e).catch(() => {});
     throw Object.assign(e instanceof Error ? e : new Error(String(e)), { where });
   }
 }

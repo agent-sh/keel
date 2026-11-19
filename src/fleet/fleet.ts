@@ -11,7 +11,7 @@ import { freeCores, localFacts, VERSION } from "./facts.ts";
 import { CONNECT_MS, freePort, LinkError, linkFetch, linkJson, listenerUids, loopbackUrl, newKey, type Peer } from "./link.ts";
 import { place, type Place, type Rule, type Want } from "./placement.ts";
 import { plainAlias, SSH_BASE, SSH_ONE_SHOT, sshHosts, sshProgram, sshReach } from "./sshconfig.ts";
-import { readText } from "../core/proc.ts";
+import { chunks, readText } from "../core/proc.ts";
 
 export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
 
@@ -313,13 +313,10 @@ export class Fleet {
       relay.live = true;
       relay.retry = 0;
       relay.retryAt = undefined;
-      const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
       let watchdog = setTimeout(() => relay.abort.abort(), RELAY_SILENCE_MS);
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
+      for await (const value of chunks(res.body)) {
         clearTimeout(watchdog);
         watchdog = setTimeout(() => relay.abort.abort(), RELAY_SILENCE_MS);
         buf += dec.decode(value, { stream: true });

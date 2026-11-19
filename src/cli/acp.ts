@@ -4,6 +4,7 @@
 import { parseArgs } from "node:util";
 import { AcpBridge, type DaemonApi } from "../acp/bridge.ts";
 import { authHeaders, findDaemon } from "./client.ts";
+import { chunks } from "../core/proc.ts";
 
 export function daemonApi(base: string): DaemonApi {
   const call = async (method: string, path: string, body?: unknown) => {
@@ -44,7 +45,7 @@ export async function acp(argv: string[]): Promise<number> {
   const inflight = new Set<Promise<void>>();
   let buf = "";
   const dec = new TextDecoder();
-  for await (const chunk of Bun.stdin.stream()) {
+  for await (const chunk of chunks(Bun.stdin.stream())) {
     buf += dec.decode(chunk, { stream: true });
     let i: number;
     while ((i = buf.indexOf("\n")) >= 0) {
