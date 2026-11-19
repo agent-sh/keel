@@ -1,8 +1,9 @@
 import { Switch } from "@base-ui/react/switch";
+import { useState } from "react";
 import { auto, useAuto, type AlertSettings as Settings } from "../../lib/automation.ts";
 import { reportError } from "../../lib/store.ts";
 import { Card, Segmented, SettingRow } from "../Settings.tsx";
-import { ALERT_LABEL } from "./bits.tsx";
+import { ALERT_LABEL, CHANNEL_NAME } from "./bits.tsx";
 
 const KINDS: (keyof Settings["routes"])[] = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over"];
 
@@ -20,16 +21,32 @@ function Toggle({ checked, onChange, label, testid }: { checked: boolean; onChan
   );
 }
 
-const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", command: "Command hook", push: "Phone" };
 
 // Settings > Alerts: where each kind of alert goes besides the inbox.
 export default function AlertSettings() {
   const settings = useAuto((s) => s.settings);
   const channels = useAuto((s) => s.channels);
+  const [tested, setTested] = useState("");
   if (!settings) return null;
-  const toggle = (kind: (typeof KINDS)[number], ch: string, on: boolean) => {
-    const cur = settings.routes[kind] ?? [];
-    auto.saveSettings({ routes: { ...settings.routes, [kind]: on ? [...new Set([...cur, ch])] : cur.filter((c) => c !== ch) } }).catch(reportError);
+  // One switch is one change: saved on its own, so two quick clicks keep both.
+  const toggle = (kind: (typeof KINDS)[number], ch: string, on: boolean) => auto.setRoute(kind, ch, on).catch(reportError);
+  // Says where the test went, or why it stayed in the inbox.
+  const test = async () => {
+    setTested("Sending…");
+    try {
+      const r = await auto.test();
+      const name = (c: string) => CHANNEL_NAME[c] ?? c;
+      const a = r.alert;
+      if (!a) return setTested("Not sent: the daemon kept no alert.");
+      if (a.channels?.length) return setTested(`Sent to ${a.channels.map(name).join(", ")}, and in the inbox.`);
+      const only = a.data?.inbox_only;
+      if (only?.not_set_up) return setTested(`Inbox only: ${only.not_set_up.map(name).join(", ")} ${only.not_set_up.length > 1 ? "are" : "is"} not set up.`);
+      if (only?.no_route) return setTested("Inbox only: no route is chosen for From the agent.");
+      setTested(a.data?.held ? "Inbox only: alerts are snoozed." : "Inbox only: you are watching that session.");
+    } catch (e) {
+      setTested("The test failed.");
+      reportError(e, { at: "alert test" });
+    }
   };
   return (
     <div className="flex flex-col gap-4" data-testid="alert-routes">
@@ -43,9 +60,12 @@ export default function AlertSettings() {
           />
         </SettingRow>
         <SettingRow label="Test" hint="An alert of the kind From the agent, through its routes.">
-          <button type="button" onClick={() => auto.test().catch(reportError)} className="h-8 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover">
-            Send a test alert
-          </button>
+          <div className="flex items-center gap-3">
+            {tested && <span role="status" data-testid="alert-test-result" className="text-caption text-muted">{tested}</span>}
+            <button type="button" data-testid="alert-test" onClick={() => void test()} className="h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover">
+              Send a test alert
+            </button>
+          </div>
         </SettingRow>
       </Card>
       <Card>

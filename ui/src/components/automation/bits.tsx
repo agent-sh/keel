@@ -24,6 +24,8 @@ export const ALERT_LABEL: Record<Alert["kind"], string> = {
   approval: "Approval", question: "Question", finished: "Finished", failed: "Failed", limit: "Usage limit", loop_failed: "Loop failed", agent: "From the agent", snooze_over: "Snooze over",
 };
 
+export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", command: "Command hook", push: "Phone" };
+
 // What each alert kind means in the Bridge's state colors: violet needs you,
 // amber is work (an agent speaking, a limit closing in), red failed, sea green done.
 export const ALERT_STATE: Record<Alert["kind"], Watch> = {

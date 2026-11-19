@@ -1,6 +1,6 @@
 import { Bell, Bot, Coffee, Hand, Moon, Repeat, Search, Timer, Workflow } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { auto, openSession, useAuto, type Activity } from "../../lib/automation.ts";
+import { useEffect, useRef, useState } from "react";
+import { activityTarget, auto, openSession, placeName, useAuto, type Activity } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { Empty } from "./bits.tsx";
@@ -20,27 +20,79 @@ const KINDS = Object.keys(KIND) as Activity["kind"][];
 const bad = (a: Activity) => /fail|error|refused/.test(a.sub) || a.sub === "denied";
 
 // Everything that happened, across sessions, newest first: filter by kind,
-// session and words; a row opens its session.
+// session and words; a row opens its session (or the agent inside it).
 export function ActivityList({ onClose }: { onClose: () => void }) {
   const [kinds, setKinds] = useState<Activity["kind"][]>([]);
   const [sid, setSid] = useState("");
   const [q, setQ] = useState("");
   const [items, setItems] = useState<Activity[]>([]);
   const [more, setMore] = useState(false);
-  const tick = useAuto((s) => s.activityTick);
+  const [notes, setNotes] = useState<Record<string, { text: string; parent?: string | null }>>({});
+  const [places, setPlaces] = useState<{ session_id: string; last: number }[]>([]);
+  const last = useAuto((s) => s.lastActivity);
   const sessions = useStore((s) => s.sessions);
-  const tops = useMemo(() => Object.values(sessions).filter((s) => !s.parent_id).sort((a, b) => b.updated - a.updated).slice(0, 100), [sessions]);
+  // The filter as one query: a reply is taken only while its query is current.
+  const query = useRef({ kinds, sid, q, gen: 0 });
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      auto.activity({ kind: kinds, session_id: sid || undefined, q: q || undefined }).then((r) => { setItems(r.items); setMore(r.has_more); }).catch(reportError);
-    }, q ? 200 : 0);
-    return () => clearTimeout(t);
-  }, [kinds, sid, q, tick]);
+    auto.activitySessions().then((r) => setPlaces(r.sessions)).catch(reportError);
+  }, []);
 
-  const loadMore = () =>
-    auto.activity({ kind: kinds, session_id: sid || undefined, q: q || undefined, before: items.at(-1)?.ts }).then((r) => { setItems([...items, ...r.items]); setMore(r.has_more); }).catch(reportError);
+  useEffect(() => {
+    const gen = ++query.current.gen;
+    query.current = { kinds, sid, q, gen };
+    const ctl = new AbortController();
+    const t = setTimeout(() => {
+      auto.activity({ kind: kinds, session_id: sid || undefined, q: q || undefined }, { signal: ctl.signal })
+        .then((r) => { if (query.current.gen === gen) { setItems(r.items); setMore(r.has_more); } })
+        .catch((e) => { if (!ctl.signal.aborted) reportError(e); });
+    }, q ? 200 : 0);
+    return () => { clearTimeout(t); ctl.abort(); };
+  }, [kinds, sid, q]);
+
+  // A new row joins the list when it matches the filter; anything else leaves
+  // the loaded pages as they are.
+  useEffect(() => {
+    if (!last) return;
+    const f = query.current;
+    if (f.kinds.length && !f.kinds.includes(last.kind)) return;
+    if (f.sid && last.session_id !== f.sid) return;
+    if (f.q.trim() && !last.text.toLowerCase().includes(f.q.trim().toLowerCase())) return;
+    setItems((cur) => (cur.some((x) => x.id === last.id) ? cur : [last, ...cur]));
+    if (last.session_id && !places.some((p) => p.session_id === last.session_id)) setPlaces((p) => [{ session_id: last.session_id!, last: last.ts }, ...p]);
+  }, [last]);
+
+  const loadMore = () => {
+    const gen = query.current.gen;
+    const end = items.at(-1);
+    auto.activity({ kind: kinds, session_id: sid || undefined, q: q || undefined, before: end ? `${end.ts}:${end.id}` : undefined })
+      .then((r) => {
+        if (query.current.gen !== gen) return;
+        setItems((cur) => { const have = new Set(cur.map((x) => x.id)); return [...cur, ...r.items.filter((x) => !have.has(x.id))]; });
+        setMore(r.has_more);
+      })
+      .catch(reportError);
+  };
   const toggle = (k: Activity["kind"]) => setKinds(kinds.includes(k) ? kinds.filter((x) => x !== k) : [...kinds, k]);
+
+  // Where the row leads is checked first: a deleted agent offers its parent
+  // instead, and the panel stays open to say so.
+  const open = async (a: Activity) => {
+    setNotes(({ [a.id]: _, ...rest }) => rest);
+    try {
+      const t = await activityTarget(a.id);
+      const say = (text: string, parent?: string | null) => setNotes((n) => ({ ...n, [a.id]: { text, parent } }));
+      if (t.child_deleted) return say("This agent was deleted.", t.parent);
+      if (!t.open) return say("This session was deleted.");
+      openSession(t.open);
+      onClose();
+    } catch (e) {
+      reportError(e, { at: "activity open" });
+    }
+  };
+
+  const options = places.filter((p) => !sessions[p.session_id]?.parent_id);
+  if (sid && !options.some((p) => p.session_id === sid)) options.unshift({ session_id: sid, last: 0 });
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="activity">
@@ -52,12 +104,13 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           </label>
           <select
             data-testid="activity-session"
+            aria-label="Session"
             value={sid}
             onChange={(e) => setSid(e.target.value)}
-            className="h-8 w-40 rounded-lg border border-line bg-bg px-2 text-caption text-muted outline-none focus:border-line-strong"
+            className="h-8 w-44 rounded-lg border border-line bg-bg px-2 text-caption text-muted outline-none focus:border-line-strong"
           >
             <option value="">All sessions</option>
-            {tops.map((s) => <option key={s.id} value={s.id}>{(s.title || "Untitled").slice(0, 40)}</option>)}
+            {options.map((p) => <option key={p.session_id} value={p.session_id}>{(sessions[p.session_id]?.title || `Session ${p.session_id.slice(-6)}`).slice(0, 40)}</option>)}
           </select>
         </div>
         <div className="flex flex-wrap gap-1">
@@ -79,37 +132,52 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           })}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5" data-testid="activity-list">
-        {items.length === 0 && <Empty>Nothing yet.</Empty>}
+      <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5" data-testid="activity-list">
+        {items.length === 0 && <li><Empty>Nothing yet.</Empty></li>}
         {items.map((a) => {
           const Icon = KIND[a.kind]?.icon ?? Bell;
-          const title = a.session_id ? sessions[a.session_id]?.title : undefined;
-          return (
-            <div
-              key={a.id}
-              role={a.session_id ? "button" : undefined}
-              tabIndex={a.session_id ? 0 : undefined}
-              data-testid="activity-item"
-              data-kind={a.kind}
-              onClick={() => { if (a.session_id) { openSession(a.data?.child_session ?? a.session_id); onClose(); } }}
-              onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLElement).click()}
-              className={cn("flex gap-2.5 rounded-lg px-2.5 py-1.5 outline-none", a.session_id && "cursor-default hover:bg-hover")}
-            >
-              <Icon className={cn("mt-0.5 size-3.5 shrink-0", bad(a) ? "text-danger" : "text-faint")} />
-              <div className="min-w-0 flex-1">
-                <p className="text-caption leading-snug">{a.text}</p>
-                {title && <p className="truncate text-micro text-faint">{title}</p>}
-              </div>
+          const place = a.session_id ? placeName(sessions, a.session_id, a.data?.child_session, { child_title: a.data?.child_title }) : "";
+          const body = (
+            <>
+              <Icon className={cn("mt-0.5 size-3.5 shrink-0", bad(a) ? "text-danger" : "text-faint")} aria-hidden />
+              <span className="min-w-0 flex-1">
+                <span className="block text-caption leading-snug">{a.text}</span>
+                {place && <span className="block truncate text-micro text-faint" data-testid="activity-place">{place}</span>}
+              </span>
               <span className="shrink-0 text-micro text-faint tabular-nums" title={new Date(a.ts).toLocaleString()}>{ago(a.ts)}</span>
-            </div>
+            </>
+          );
+          const n = notes[a.id];
+          return (
+            <li key={a.id} data-testid="activity-item" data-kind={a.kind} data-activity={a.id}>
+              {a.session_id ? (
+                <button type="button" onClick={() => void open(a)} className="flex w-full gap-2.5 rounded-lg px-2.5 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
+                  {body}
+                </button>
+              ) : (
+                <div className="flex gap-2.5 px-2.5 py-1.5">{body}</div>
+              )}
+              {n && (
+                <p role="status" data-testid="activity-note" className="flex items-center gap-2 px-2.5 pb-1.5 pl-8 text-caption text-muted">
+                  {n.text}
+                  {n.parent && (
+                    <button type="button" onClick={() => { openSession(n.parent!); onClose(); }} className="rounded-md px-1.5 py-0.5 text-accent hover:bg-raised outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      Open parent
+                    </button>
+                  )}
+                </p>
+              )}
+            </li>
           );
         })}
         {more && (
-          <button type="button" onClick={loadMore} className="mx-auto my-2 block rounded-md px-3 py-1 text-caption text-muted hover:bg-hover hover:text-fg">
-            Older
-          </button>
+          <li>
+            <button type="button" onClick={loadMore} className="mx-auto my-2 block rounded-md px-3 py-1 text-caption text-muted hover:bg-hover hover:text-fg">
+              Older
+            </button>
+          </li>
         )}
-      </div>
+      </ul>
     </div>
   );
 }

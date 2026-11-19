@@ -15,6 +15,8 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const onPick = openSession;
   const all = useAuto((s) => s.agents);
   const sessions = useStore((s) => s.sessions);
+  // Which agent the parent's unread alerts came from (looking is not reading).
+  const unread = useAuto((s) => s.unread.children ?? {});
   const kids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
   const live = kids.filter(isLive).length;
   const holdsCurrent = kids.some((k) => k.session_id === current);
@@ -39,7 +41,11 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
           tabIndex={0}
           data-testid="child-session"
           onClick={() => onPick(a.session_id)}
-          onKeyDown={(e) => e.key === "Enter" && onPick(a.session_id)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            onPick(a.session_id);
+          }}
           className={cn(
             "group/child flex items-center gap-2 rounded-md px-1.5 py-1 text-caption cursor-default outline-none",
             "hover:bg-raised",
@@ -47,7 +53,13 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
           )}
         >
           <AgentStatus status={a.status} />
-          <span className={cn("min-w-0 flex-1 truncate", !isLive(a) && "text-muted")}>{sessions[a.session_id]?.title || a.title}</span>
+          <span className={cn("min-w-0 flex-1 truncate", !isLive(a) && !unread[a.session_id] && "text-muted", unread[a.session_id] && "font-medium text-fg")}>{sessions[a.session_id]?.title || a.title}</span>
+          {unread[a.session_id] ? (
+            <span data-testid="child-unread" title={`${unread[a.session_id]} unread`} className="flex shrink-0 items-center">
+              <span className="size-1.5 rounded-full bg-accent" aria-hidden />
+              <span className="sr-only">{unread[a.session_id]} unread</span>
+            </span>
+          ) : null}
           {isLive(a) && (
             <span className="hidden group-hover/child:block">
               <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(a)} testid="child-stop"><StopIcon /></IconButton>

@@ -109,6 +109,7 @@ function Card({ a, first, asker, list }: { a: Approval; first: boolean; asker?: 
       aria-labelledby={`${ids}-title`}
       aria-describedby={`${ids}-summary`}
       data-testid="approval"
+      data-approval-id={a.id}
       data-risk={a.risk}
       className={cn(
         "animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
