@@ -185,7 +185,9 @@ export const actions = {
     set({ errors: r.errors });
   },
   resolveError: (id: string, resolved: boolean) => api(`/api/errors/${id}`, { method: "PATCH", body: JSON.stringify({ resolved }) }),
-  resolveAllErrors: () => api("/api/errors/resolve-all", { method: "POST" }),
+  // Only the kinds on screen, at the counts shown: one that happened again stays open.
+  resolveAllErrors: (seen: { id: string; count?: number }[]) =>
+    api<{ resolved: number; changed: string[] }>("/api/errors/resolve-all", { method: "POST", body: JSON.stringify({ seen: seen.map((e) => ({ id: e.id, count: e.count ?? 1 })) }) }),
   async create(text: string, model?: string, workspace?: string, images?: PromptBlock[]): Promise<Session> {
     const r = await api<{ session: Session }>("/api/sessions", { method: "POST", body: JSON.stringify({ text, model, workspace, images }) });
     set({ sessions: { ...state.sessions, [r.session.id]: r.session } });

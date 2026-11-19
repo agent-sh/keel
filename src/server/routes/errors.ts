@@ -28,11 +28,23 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => ({
       return json({ record: rec });
     },
   },
+  // { seen: [{ id, count }] }: resolve the kinds the owner saw, as they were
+  // seen. A kind that happened again since (its count moved) stays open and
+  // is named in `changed`. With no body every open kind is resolved.
   "/api/errors/resolve-all": {
-    POST: () => {
+    POST: async (req: Request) => {
+      const b = (await req.json().catch(() => null)) as { seen?: { id: string; count: number }[] } | null;
       const open = store.errors(5000, { resolved: false });
-      for (const e of open) bus.emit({ t: "error", error: store.resolveError(e.id, true)! });
-      return json({ resolved: open.length });
+      const seen = Array.isArray(b?.seen) ? new Map(b.seen.map((x) => [String(x.id), Number(x.count)])) : undefined;
+      const changed: string[] = [];
+      let resolved = 0;
+      for (const e of open) {
+        if (seen && !seen.has(e.id)) continue;
+        if (seen && seen.get(e.id) !== (e.count ?? 1)) { changed.push(e.id); continue; }
+        bus.emit({ t: "error", error: store.resolveError(e.id, true)! });
+        resolved++;
+      }
+      return json({ resolved, changed });
     },
   },
 });

@@ -20,7 +20,8 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await expect(row).toHaveCount(1);
   await expect(row.getByTestId("error-count")).toHaveText("3x");
   await row.locator("summary").click();
-  await expect(row.getByTestId("error-session")).toContainText("Error tracker check");
+  // The link is where it last happened, not where all three did.
+  await expect(row.getByTestId("error-session")).toContainText("Last in Error tracker check");
   await shoot(page, "errors-01-open");
 
   await row.getByTestId("error-resolve").click();
@@ -39,9 +40,13 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await again.getByTestId("error-session").click();
   await expect(page).toHaveURL(new RegExp(`/s/${s.id}`));
 
-  // Leave nothing open behind for the other specs' error counts.
+  // Resolve all resolves what was seen: a kind that happened again since
+  // stays open and is named.
   const id = (await (await request.get("/api/errors?resolved=0")).json()).errors.find((e: any) => e.message.startsWith(tag)).id;
-  await request.patch(`/api/errors/${id}`, { data: { resolved: true } });
+  await request.post("/api/errors", { data: { message: `${tag}: request 10 timed out after 1000 ms`, context: { url: `/s/${s.id}` } } });
+  const stale = await (await request.post("/api/errors/resolve-all", { data: { seen: [{ id, count: 4 }] } })).json();
+  expect(stale).toEqual({ resolved: 0, changed: [id] });
+  expect((await (await request.post("/api/errors/resolve-all", { data: { seen: [{ id, count: 5 }] } })).json()).resolved).toBe(1);
   await request.delete(`/api/sessions/${s.id}`);
 });
 

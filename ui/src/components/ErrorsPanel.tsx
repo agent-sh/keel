@@ -39,7 +39,7 @@ function Row({ e }: { e: ErrorRecord }) {
           {e.session_id && (
             <button type="button" onClick={open} className="flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="error-session">
               <CornerDownRight className="size-3.5 shrink-0" />
-              <span className="truncate">{session?.title || "Open the session"}</span>
+              <span className="truncate">{n > 1 ? "Last in " : ""}{session?.title || (n > 1 ? "its session" : "Open the session")}</span>
               {e.turn_event && <span className="shrink-0 text-faint">at its turn</span>}
             </button>
           )}
@@ -102,7 +102,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               ))}
             </div>
             {tab === "open" && openList.length > 1 && (
-              <button type="button" onClick={() => actions.resolveAllErrors().catch(reportError)} className="ml-auto h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">
+              <button type="button" onClick={() => actions.resolveAllErrors(openList).catch(reportError)} className="ml-auto h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">
                 Resolve all
               </button>
             )}
