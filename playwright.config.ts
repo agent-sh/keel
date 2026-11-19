@@ -1,3 +1,4 @@
+import { resolve, relative } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 // One e2e per feature, driving the real daemon and a real model (Haiku, the
@@ -13,7 +14,16 @@ if (!url) throw new Error("Set KEEL_URL to the scratch dev daemon the specs driv
 // its settings), and no folder sits inside another run's: a run with a shared
 // or parent folder deletes the traces of a run still writing them (ENOENT on
 // a .trace or .network file at context close).
-const outputDir = `${process.env.HOME}/.cache/keel-work/bun/e2e-out/${new URL(url).port || "80"}`;
+const shared = resolve(`${process.env.HOME}/.cache/keel-work/bun/e2e-out`);
+const outputDir = `${shared}/${new URL(url).port || "80"}`;
+// --output naming the shared folder (or one above it) would empty every
+// other run's folder: refused, as the config default once did.
+const argv = process.argv;
+const i = argv.findIndex((a) => a === "--output" || a.startsWith("--output="));
+const given = i < 0 ? null : argv[i]!.includes("=") ? argv[i]!.slice(9) : argv[i + 1];
+if (given && !relative(resolve(given), shared).startsWith("..")) {
+  throw new Error(`--output ${given} holds other runs' output folders, which Playwright empties when a run starts; use a folder of this run's own (the default is ${outputDir}).`);
+}
 
 export default defineConfig({
   testDir: "test/e2e",
