@@ -1,6 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
-import { Bridge } from "./components/Bridge.tsx";
 import { Boundary } from "./components/SessionView.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import "./lib/builtins.ts";
@@ -18,6 +17,8 @@ const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ def
 const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
 const McpPanel = lazy(() => import("./components/McpPanel.tsx").then((m) => ({ default: m.McpPanel })));
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
+// The bridge (stations, sessions) is its own chunk, fetched with the page.
+const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
 const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
 
 // Mounts its child the first time `open` is true, then keeps it (for close animations).
@@ -57,7 +58,7 @@ export function App() {
         {sidebar && <div className="k-scrim" onClick={() => savePref("sidebar", false)} aria-hidden="true" />}
         {page ? (
           <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}</Suspense></main>
-        ) : <Bridge />}
+        ) : <Suspense fallback={null}><Bridge /></Suspense>}
       </div>
       <Overlays />
       <ConfirmHost />
