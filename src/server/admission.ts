@@ -12,7 +12,9 @@ type Check = (req: Request, path: string) => Response | undefined;
 const checks: Check[] = [];
 export const addAdmission = (c: Check) => void checks.push(c);
 
-const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/i;
+// A name under .localhost is loopback too: browsers resolve it to 127.0.0.1
+// themselves and no DNS answer can say otherwise, so it cannot be rebound.
+const LOOPBACK = /^((?:[a-z0-9-]+\.)*localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/i;
 
 function hostName(host: string): string {
   if (host.startsWith("[")) return host.slice(0, host.indexOf("]") + 1);

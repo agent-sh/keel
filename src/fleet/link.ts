@@ -20,12 +20,21 @@ export type Peer = { url: string; myId: string; key: string; daemonId: string };
 
 export class LinkError extends Error {}
 
+// The standing of the person behind a forwarded request (the desk or a remote
+// device, see safety/presence.ts), signed with the link key over the nonce.
+const standingSig = (key: string, nonce: string, standing: string) => createHmac("sha256", key).update(`${nonce}|standing|${standing}`).digest("hex");
+
 // One request over a paired link. Never follows a redirect; checks the proof.
-export async function linkFetch(p: Peer, path: string, init: RequestInit & { timeout?: number } = {}): Promise<Response> {
+export async function linkFetch(p: Peer, path: string, init: RequestInit & { timeout?: number; standing?: object } = {}): Promise<Response> {
   const nonce = Bun.randomUUIDv7();
   const headers = new Headers(init.headers);
   headers.set("x-keel-link", `${p.myId} ${p.key}`);
   headers.set("x-keel-nonce", nonce);
+  if (init.standing) {
+    const s = Buffer.from(JSON.stringify(init.standing)).toString("base64url");
+    headers.set("x-keel-link-standing", s);
+    headers.set("x-keel-link-standing-sig", standingSig(p.key, nonce, s));
+  }
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
   const signal = init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(init.timeout ?? READ_MS)]) : AbortSignal.timeout(init.timeout ?? READ_MS);
   let r: Response;
@@ -61,6 +70,14 @@ export function callerOf(req: Request, keyOf: (daemonId: string) => string | und
   if (!id || !key || !nonce) return null;
   const want = keyOf(id);
   return want && same(want, key) ? { daemonId: id, key: want, nonce } : null;
+}
+
+// The standing a paired caller signed for its request; null when missing or forged.
+export function standingFrom(req: Request, c: Caller): Record<string, unknown> | null {
+  const s = req.headers.get("x-keel-link-standing") ?? "";
+  const sig = req.headers.get("x-keel-link-standing-sig") ?? "";
+  if (!s || !same(sig, standingSig(c.key, c.nonce, s))) return null;
+  try { return JSON.parse(Buffer.from(s, "base64url").toString()); } catch { return null; }
 }
 
 export function proven(res: Response, c: Caller | null, myId: string): Response {

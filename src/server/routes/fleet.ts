@@ -10,7 +10,8 @@ import { localFacts } from "../../fleet/facts.ts";
 import { Fleet } from "../../fleet/fleet.ts";
 import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { listJobs, logPath, ownerRun, readJobLog, stopOne, waitOne } from "../../tools/terminal.ts";
-import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven } from "../../fleet/link.ts";
+import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven, standingFrom } from "../../fleet/link.ts";
+import { innerHeaders, isLocal, type Standing } from "../../safety/presence.ts";
 import { remoteRun } from "../../fleet/remote.ts";
 import { Handoffs, MoveError } from "../../fleet/handoff.ts";
 import { forgetOwnership, portalOf, portalPath, sessionPorts, setOpen } from "../../fleet/portal.ts";
@@ -26,7 +27,7 @@ import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { contains } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
-import { gate } from "./permissions.ts";
+import { gate, presence } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
 import { readText } from "../../core/proc.ts";
 
@@ -348,11 +349,15 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       }
       try {
         const p = await f.peer(id);
+        // Who is asking travels with it: the far daemon applies its presence
+        // rules to a remote device as remote, not as its own loopback caller.
+        const standing: Standing = presence ? presence.standing(req) : { local: isLocal(req), enrolled: true, present: null };
         const r = await linkFetch(p, `/api/fleet/linked/${rest}${url.search}`, {
           method: req.method,
           body: ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer(),
           headers: { "content-type": req.headers.get("content-type") ?? "application/json" },
           timeout: 60_000,
+          standing,
         });
         const h = new Headers();
         const type = r.headers.get("content-type") ?? "";
@@ -720,14 +725,18 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     // Any /api route of this daemon, for a paired daemon's forwarder.
     // Its own port, not the request's host: through an ssh tunnel the host is
     // the far end's local port, which means nothing here.
-    "/api/fleet/linked/*": async (req: any, srv: any) => linked(async (req) => {
+    "/api/fleet/linked/*": async (req: any, srv: any) => linked(async (req, c) => {
       const url = new URL(req.url);
       const rest = url.pathname.slice("/api/fleet/linked/".length);
       if (/^fleet\/(machines|linked)\b/.test(decodeURIComponent(rest))) return bad("not through to a third daemon");
+      // The caller's standing over there, as it signed it; none (an older
+      // daemon) or a bad signature counts as a remote device with passkeys.
+      const st = standingFrom(req, c);
+      const standing: Standing = st ? { local: st.local === true, enrolled: st.enrolled !== false, present: typeof st.present === "string" ? st.present : null } : { local: false, enrolled: true, present: null };
       const r = await fetch(`http://127.0.0.1:${srv.port}/api/${rest}${url.search}`, {
         method: req.method,
         body: ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer(),
-        headers: { "content-type": req.headers.get("content-type") ?? "application/json" },
+        headers: { "content-type": req.headers.get("content-type") ?? "application/json", ...innerHeaders(standing) },
         redirect: "manual",
       });
       return new Response(r.body, { status: r.status, headers: { "content-type": r.headers.get("content-type") ?? "application/octet-stream" } });

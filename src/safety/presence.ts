@@ -5,7 +5,7 @@
 // the gate's settings) need a fresh assertion signed over that exact action:
 // the challenge is the hash of the action and a nonce, a receipt covers that
 // one action once, within the ceremony's timeout. Only public keys are stored.
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
 } from "@simplewebauthn/server";
@@ -17,9 +17,37 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, rp_id 
 export type Passkey = { id: string; rp_id: string; origin: string; label: string | null; created: number; used: number | null };
 type Ceremony = { kind: "register" | "authenticate"; challenge: string; origin: string; rpID: string; action?: string; expires: number };
 
+// A request another daemon forwarded (the fleet forwarder) reaches this one's
+// API as a loopback call from itself, which alone would count as the desk. The
+// caller's standing over there travels with it instead (signed by the link
+// key, checked by the linked route) and is handed to the inner call under a
+// key only this process knows: a standing header without that key is a
+// forgery and counts as a remote device with passkeys enrolled.
+export type Standing = { local: boolean; enrolled: boolean; present: string | null };
+const g = globalThis as { __keelInnerKey?: string };
+const INNER = (g.__keelInnerKey ??= randomBytes(32).toString("hex"));
+const FORGED: Standing = { local: false, enrolled: true, present: null };
+
+export const innerHeaders = (s: Standing): Record<string, string> => ({ "x-keel-standing": JSON.stringify(s), "x-keel-standing-key": INNER });
+
+export function forwardedStanding(req: Request): Standing | null {
+  const raw = req.headers.get("x-keel-standing");
+  if (raw === null) return null;
+  const key = req.headers.get("x-keel-standing-key") ?? "";
+  if (key.length !== INNER.length || !timingSafeEqual(Buffer.from(key), Buffer.from(INNER))) return FORGED;
+  try {
+    const s = JSON.parse(raw);
+    return { local: s.local === true, enrolled: s.enrolled !== false, present: typeof s.present === "string" ? s.present : null };
+  } catch {
+    return FORGED;
+  }
+}
+
 // The desk: the page was opened at localhost (or the loopback address) and no
 // proxy stands between. Everything else is a remote device.
 export function isLocal(req: Request): boolean {
+  const fwd = forwardedStanding(req);
+  if (fwd) return fwd.local;
   if (req.headers.get("x-forwarded-for") || req.headers.get("forwarded")) return false;
   const host = (req.headers.get("host") ?? "").replace(/:\d+$/, "").toLowerCase();
   const local = (h: string) => h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
@@ -137,12 +165,27 @@ export class Presence {
 
   // Whether the request may do `action`: from the desk, before any passkey is
   // enrolled, or with a receipt for exactly that action (used up here).
+  // A forwarded request: its own daemon's desk, a receipt redeemed there for
+  // exactly this action, or no passkey enrolled on either daemon.
   allows(req: Request, action: string): boolean {
+    const fwd = forwardedStanding(req);
+    if (fwd) return fwd.local || fwd.present === action || (!fwd.enrolled && !this.enrolled());
     if (isLocal(req) || !this.enrolled()) return true;
+    return this.redeem(req) === action;
+  }
+
+  // The action of the request's receipt, used up here; null for none.
+  redeem(req: Request): string | null {
     const token = req.headers.get("x-keel-presence");
-    if (!token) return false;
+    if (!token) return null;
     const r = this.receipts.get(token);
     this.receipts.delete(token);
-    return !!r && r.action === action && r.expires >= Date.now();
+    return r && r.expires >= Date.now() ? r.action : null;
+  }
+
+  // What the forwarder tells the other daemon about this request's caller.
+  standing(req: Request): Standing {
+    const local = isLocal(req);
+    return { local, enrolled: this.enrolled(), present: local ? null : this.redeem(req) };
   }
 }
