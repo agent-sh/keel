@@ -23,7 +23,9 @@ export KEEL_IMPORT_CLAUDE_DIR="${KEEL_IMPORT_CLAUDE_DIR:-$DEV/import/claude}"
 export KEEL_IMPORT_CODEX_DIR="${KEEL_IMPORT_CODEX_DIR:-$DEV/import/codex}"
 export KEEL_IMPORT_AGY_DIR="${KEEL_IMPORT_AGY_DIR:-$DEV/import/agy}"
 export KEEL_IMPORT_KEEL_DB="${KEEL_IMPORT_KEEL_DB:-$DEV/import/keel.db}"
-mkdir -p "$DEV/import"
+# The other agents' MCP configs are read from a scratch home (the MCP import e2e writes them there).
+export KEEL_IMPORT_HOME="${KEEL_IMPORT_HOME:-$DEV/import/home}"
+mkdir -p "$DEV/import/home"
 # The tacit stand-in (never the owner's memory store) and the scripted
 # provider for the paths a real model cannot be made to take. The owner hooks
 # file lives in the scratch config folder.

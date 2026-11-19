@@ -4,6 +4,7 @@ import { installMcpTools } from "../../mcp/tools.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { readConfig, type McpServerConfig } from "../../mcp/config.ts";
+import { importHome } from "../../mcp/sources.ts";
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
 import { presence } from "./permissions.ts";
@@ -49,7 +50,9 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (b.command) { const guard = needs(req); if (guard) return guard; }
         const cfg: McpServerConfig = b.command
           ? { command: b.command, args: b.args, env: b.env, cwd: b.cwd }
-          : { url: b.url, headers: b.headers, bearer_env: b.bearer_env, oauth: b.oauth };
+          : { url: b.url, headers: b.headers, bearer_env: b.bearer_env, oauth: b.oauth, headers_helper: typeof b.headers_helper === "string" && b.headers_helper.trim() ? b.headers_helper : undefined };
+        // A headers helper is a command too: from a remote device it takes the passkey.
+        if (cfg.headers_helper) { const guard = needs(req); if (guard) return guard; }
         if (b.enabled === false) cfg.enabled = false;
         if (b.timeout_secs) cfg.timeout_secs = Number(b.timeout_secs);
         if (b.tool_timeout_secs ?? b.max_timeout_secs) cfg.tool_timeout_secs = Number(b.tool_timeout_secs ?? b.max_timeout_secs);
@@ -165,20 +168,38 @@ export const mcpRoutes: RouteModule = (deps) => {
     },
     // Env values can hold secrets: the listing names the keys, import copies the values server-side.
     "/api/mcp/importable": {
-      GET: () => json({
-        servers: m.importable().map((i) => ({
+      // A listing also brings the copies in step (the watch can miss a folder made since).
+      GET: () => { m.syncSources(); const failed: { file: string; error: string }[] = []; return json({
+        failed,
+        home: importHome(),
+        servers: m.importable(failed).map((i) => ({
           ...i,
           config: { ...i.config, env: i.config.env ? Object.fromEntries(Object.keys(i.config.env).map((k) => [k, "***"])) : undefined, headers: i.config.headers ? Object.fromEntries(Object.keys(i.config.headers).map((k) => [k, "***"])) : undefined },
         })),
-      }),
+      }); },
     },
     "/api/mcp/import": {
       POST: async (req: Request) => {
         const guard = needs(req);
         if (guard) return guard;
         const b = await body(req);
-        const err = m.importFrom(String(b.source ?? ""), String(b.name ?? ""));
+        const err = m.importFrom(String(b.source ?? ""), String(b.name ?? ""), b.as ? String(b.as) : undefined);
         return err ? bad(err) : servers();
+      },
+    },
+    // Every server the other agents hold that Keel does not, in one step.
+    "/api/mcp/import-all": {
+      POST: (req: Request) => {
+        const guard = needs(req);
+        if (guard) return guard;
+        return json({ ...m.importAll(), servers: m.list() });
+      },
+    },
+    // Read the other agents' files now (the daemon also watches them).
+    "/api/mcp/sync": {
+      POST: () => {
+        const changed = m.syncSources();
+        return json({ changed, servers: m.list() });
       },
     },
     "/api/mcp/servers/:name/resources": {

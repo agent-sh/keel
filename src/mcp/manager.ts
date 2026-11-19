@@ -3,15 +3,17 @@
 // Servers connect in the background after startup and on first use; a reload
 // restarts only the servers whose config changed, and never touches a session's
 // request prefix (MCP tools are deferred, so the eager tool list is fixed).
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpClient, RpcError, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
+import { readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
+import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { runMode } from "../core/runmode.ts";
 
@@ -61,6 +63,7 @@ export type McpServerState = {
   prompts: boolean;   // the connected server offers prompt templates
   resources_rev: number; // goes up when its resource list changed (a list read again shows it)
   resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
+  sync?: { source: string; name: string; label: string; gone: boolean }; // follows another agent's entry
 };
 
 // One item of a resources/read result, as the server gave it (a body is never fetched beyond it).
@@ -118,6 +121,23 @@ function serverEnv(c: McpServerConfig): Record<string, string> {
   for (const k of c.env_vars ?? []) if (process.env[k] !== undefined) env[k] = process.env[k]!;
   for (const [k, v] of Object.entries(c.env ?? {})) env[k] = expand(String(v));
   return env;
+}
+
+// Key order is the writer's: compare with keys sorted.
+const canon = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().filter((k) => x[k] !== undefined).map((k) => [k, x[k]])) : x));
+
+// A headers helper prints a JSON object of header names and values (Claude
+// Code's headersHelper, Codex's http_headers_helper). Run at each connect;
+// the values never reach a log.
+async function helperHeaders(cmd: string, timeoutMs = 10_000): Promise<Record<string, string>> {
+  const p = Bun.spawn(["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const timer = setTimeout(() => p.kill(), timeoutMs);
+  const [out, err, code] = await Promise.all([readText(p.stdout, "mcp headers helper"), readText(p.stderr, "mcp headers helper"), p.exited]).finally(() => clearTimeout(timer));
+  if (code !== 0) throw new Error(`the headers helper exited with ${code}${err.trim() ? `: ${err.trim().slice(0, 200)}` : ""}`);
+  let h: unknown;
+  try { h = JSON.parse(out); } catch { throw new Error("the headers helper did not print a JSON object"); }
+  if (!h || typeof h !== "object" || Array.isArray(h) || Object.values(h).some((v) => typeof v !== "string")) throw new Error("the headers helper did not print a JSON object of strings");
+  return h as Record<string, string>;
 }
 
 const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined }) === JSON.stringify({ ...b, enabled: undefined });
@@ -189,6 +209,10 @@ export class McpManager {
       }
       this.addEntry(name, c);
     }
+    if (!runMode.client) {
+      try { this.syncSources(); } catch (e) { this.errors.capture("server", e, { at: "mcp sources sync" }); }
+      this.watchSources();
+    }
     // Connect in the background so the panel shows real states; nothing waits on it.
     // A command's own daemon connects a server only when a turn uses it.
     if (!runMode.client) setTimeout(() => {
@@ -198,6 +222,9 @@ export class McpManager {
 
   dispose() {
     this.disposed = true;
+    for (const { w } of this.watchers.values()) w.close();
+    this.watchers.clear();
+    clearTimeout(this.syncTimer);
     for (const e of this.entries.values()) {
       e.client?.close();
       unregisterCatalog(e.name);
@@ -272,6 +299,13 @@ export class McpManager {
       e.error = undefined;
       const t = this.transport(e);
       e.connecting = (async () => {
+        if (e.config.transport === "sse") throw new Error("this server uses the older SSE transport, which Keel does not speak; give its Streamable HTTP address instead");
+        if (t.kind === "http" && e.config.headers_helper) {
+          const h = await helperHeaders(expand(e.config.headers_helper));
+          Object.assign(t.headers, h);
+          // The helper's own Authorization wins over a stored sign-in.
+          if (Object.keys(h).some((k) => k.toLowerCase() === "authorization")) t.token = undefined;
+        }
         const client = await McpClient.connect(t, (e.config.timeout_secs ?? 30) * 1000, e.era);
         // Removed, turned off or replaced meanwhile: this client is nobody's.
         const stale = () => this.entries.get(name) !== e || e.state === "disabled" || this.disposed;
@@ -400,8 +434,10 @@ export class McpManager {
       last_connected: e.last,
       era: e.client?.era,
       version: e.client?.version,
-      server_info: e.client?.serverInfo,
-      sign_in: !!e.config.url && !e.config.bearer_env,
+      // Name, title and version; icons (data URIs of kilobytes) stay out of a list polled every second or two.
+      server_info: e.client?.serverInfo ? { name: e.client.serverInfo.name, title: (e.client.serverInfo as any).title, version: e.client.serverInfo.version } : undefined,
+      sign_in: !!e.config.url && !e.config.bearer_env && !e.config.headers_helper,
+      sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,
       signed_in: !!e.config.url && this.oauth.signedIn(e.name),
       bundled: e.bundled?.label,
       resources: !!e.client?.capabilities.resources,
@@ -556,15 +592,106 @@ export class McpManager {
     }
   }
 
-  importable() {
-    return importable(this.workspace, this.cfg.servers);
+  // ---- other agents' servers: import, and keep the copies in step ----
+
+  importable(failed?: { file: string; error: string }[]) {
+    this.watchSources();
+    return importable(this.workspace, this.cfg.servers, failed);
   }
 
-  importFrom(source: string, name: string): string | null {
+  // An import follows its source from then on (sync), under the name given.
+  importFrom(source: string, name: string, as = name): string | null {
     const hit = this.importable().find((i) => i.source === source && i.name === name);
     if (!hit) return `${source} has no server named ${name}`;
-    return this.add(name, hit.config);
+    if (as in this.cfg.servers) return `Keel already has a server named ${as}`;
+    return this.add(as, { ...hit.config, sync: { source, name } });
   }
+
+  // Everything the other agents hold that Keel does not, in one step: one
+  // copy per endpoint, from the first agent that has it (this folder's own
+  // files stay a per-server choice, since Keel's mcp.json serves every folder).
+  importAll(): { imported: string[]; skipped: { name: string; source: string; why: string }[] } {
+    const imported: string[] = [], skipped: { name: string; source: string; why: string }[] = [];
+    const seen = new Set<string>();
+    for (const i of this.importable()) {
+      if (i.configured || i.project || seen.has(i.endpoint)) continue;
+      seen.add(i.endpoint);
+      const err = this.importFrom(i.source, i.name);
+      if (err) skipped.push({ name: i.name, source: i.label, why: err });
+      else imported.push(i.name);
+    }
+    return { imported, skipped };
+  }
+
+  private gone = new Set<string>();
+  private labels = new Map<string, string>();
+
+  // Read the sources again; a copy whose source changed takes the change
+  // (only what the source decides; on/off and reads stay the owner's), and
+  // restarts. A copy whose source no longer has it stays, marked.
+  syncSources(): McpReloadedServer[] {
+    const failed: { file: string; error: string }[] = [];
+    const src = readSources(this.workspace, failed);
+    for (const f of failed) this.errors.capture("server", new Error(`${f.file}: ${f.error}`), { at: "mcp sources" });
+    for (const s of src) this.labels.set(s.source, s.label);
+    const out: McpReloadedServer[] = [];
+    for (const [name, c] of Object.entries(this.cfg.servers)) {
+      if (!c.sync) continue;
+      const hit = src.find((s) => s.source === c.sync!.source && s.name === c.sync!.name);
+      // A source file that failed to read says nothing about its servers.
+      if (!hit) { if (!failed.length) this.gone.add(name); continue; }
+      this.gone.delete(name);
+      if (canon(sourced(c)) === canon({ ...sourced(hit.config), sync: undefined })) continue;
+      const next: McpServerConfig = { ...sourced(hit.config), sync: c.sync };
+      if (c.enabled === false) next.enabled = false;
+      if (c.read_tools) next.read_tools = c.read_tools;
+      if (validate(name, next)) continue;
+      this.cfg.servers[name] = next;
+      this.drop(name);
+      this.addEntry(name, next);
+      if (next.enabled !== false) this.ensure(name).catch(() => {});
+      out.push({ name, change: "changed" });
+    }
+    if (out.length) writeConfig(this.cfg);
+    return out;
+  }
+
+  // Agents replace their files by rename: watch the folders, debounced. A
+  // folder that appears later (an agent installed since) is watched from the
+  // next listing of importable servers on.
+  private watchers = new Map<string, { w: FSWatcher; ino: string }>();
+  private syncTimer?: ReturnType<typeof setTimeout>;
+  watchSources() {
+    if (runMode.client || this.disposed) return;
+    const byDir = new Map<string, Set<string>>();
+    for (const f of sourceFiles(this.workspace)) (byDir.get(dirname(f)) ?? byDir.set(dirname(f), new Set()).get(dirname(f))!).add(basename(f));
+    for (const [dir, names] of byDir) {
+      // A folder removed or made anew since is watched again (a new folder often
+      // gets the old one's inode back; its birth time tells them apart).
+      const ino = (() => { try { const st = statSync(dir); return `${st.ino}:${st.birthtimeMs}`; } catch { return null; } })();
+      const had = this.watchers.get(dir);
+      if (had && had.ino === ino) continue;
+      had?.w.close();
+      this.watchers.delete(dir);
+      if (ino === null) continue;
+      try {
+        const w = watch(dir, (_ev, file) => {
+          if (!file || !names.has(String(file)) || this.disposed) return;
+          clearTimeout(this.syncTimer);
+          this.syncTimer = setTimeout(() => {
+            try {
+              const changed = this.syncSources();
+              if (changed.length) this.onSynced?.(changed);
+            } catch (e) { this.errors.capture("server", e, { at: "mcp sources sync" }); }
+          }, 800);
+        });
+        // A removed folder ends its watch; a new one is armed again later.
+        w.on("error", () => { w.close(); if (this.watchers.get(dir)?.w === w) this.watchers.delete(dir); });
+        this.watchers.set(dir, { w, ino });
+      } catch (e) { this.errors.capture("server", e, { at: "mcp sources watch", dir }); }
+    }
+  }
+  onSynced?: (changed: McpReloadedServer[]) => void;
 
   // ---- resources and prompts ----
 

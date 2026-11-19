@@ -150,3 +150,81 @@ test("mcp servers", async ({ page, request }) => {
   expect(errorsAfter).toBe(errorsBefore);
   await request.delete("/api/mcp/servers/echo");
 });
+
+// Feature: the other agents' servers in one step. Codex, Hermes and Gemini
+// hold the same server under different names, and one server of their own
+// each: one row per endpoint, Import all brings each in once, and a copy
+// follows its source (a change in Codex's file reaches Keel; a server Codex
+// drops is marked, not removed). Their files are never written.
+test("mcp import from other agents", async ({ page, request }) => {
+  const imp = await (await request.get("/api/mcp/importable")).json();
+  test.skip(!String(imp.home).includes("keel-work"), "needs a scratch import home (KEEL_IMPORT_HOME)");
+  const { mkdirSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+  const bun = execFileSync("sh", ["-c", "command -v bun"], { encoding: "utf8" }).trim();
+  const home = imp.home as string;
+  const tag = Date.now().toString(36);
+  const names = [`ec${tag}`, `cx${tag}`, `hm${tag}`, `gm${tag}`];
+  // Every copy that follows a source on this scratch daemon is this spec's (an earlier run's included).
+  const clear = async () => {
+    const all = (await (await request.get("/api/mcp/servers")).json()).servers as any[];
+    for (const s of all) if (s.sync || names.includes(s.name)) await request.delete(`/api/mcp/servers/${s.name}`).catch(() => {});
+  };
+  await clear();
+  rmSync(join(home, ".codex"), { recursive: true, force: true });
+  rmSync(join(home, ".hermes"), { recursive: true, force: true });
+  rmSync(join(home, ".gemini"), { recursive: true, force: true });
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const codexToml = (extra: string) => `[mcp_servers.ec${tag}]\ncommand = "bun"\nargs = ["${FIXTURE}"]\n\n${extra}`;
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  writeFileSync(join(home, ".codex", "config.toml"), codexToml(`[mcp_servers.cx${tag}]\ncommand = "bun"\nargs = ["${FIXTURE}", "codex"]\nenv_vars = ["LANG"]\n`));
+  mkdirSync(join(home, ".hermes"), { recursive: true });
+  writeFileSync(join(home, ".hermes", "config.yaml"), `mcp_servers:\n  echo-${tag}:\n    command: ${bun}\n    args: ["${FIXTURE}"]\n  hm${tag}:\n    command: bun\n    args: ["${FIXTURE}", "hermes"]\n    enabled: false\n`);
+  mkdirSync(join(home, ".gemini"), { recursive: true });
+  writeFileSync(join(home, ".gemini", "settings.json"), `{\n  // Gemini's file takes comments\n  "mcpServers": { "gm${tag}": { "command": "bun", "args": ["${FIXTURE}", "gemini"], "timeout": 30000 }, "ec${tag}": { "command": "bun", "args": ["${FIXTURE}"] } }\n}\n`);
+
+  await page.goto("/");
+  await page.getByTestId("composer").fill("/mcp");
+  await page.keyboard.press("Enter");
+  const panel = page.getByTestId("mcp-panel");
+  await panel.getByTestId("toolkit-add-+import").click();
+  // The echo server is one row however many agents hold it.
+  const echo = panel.locator(`[data-testid="mcp-import-row"][data-name="ec${tag}"]`);
+  await expect(echo).toHaveCount(1);
+  await expect(echo).toContainText("Codex");
+  await expect(echo).toContainText("Gemini CLI");
+  await expect(echo).toContainText(`also echo-${tag}`);
+  await expect(panel.locator(`[data-testid="mcp-import-row"][data-name="hm${tag}"]`)).toContainText("off");
+  await shoot(page, "mcp-07-import-list");
+
+  await panel.getByTestId("mcp-import-all").click();
+  await expect(panel.getByTestId("mcp-note")).toContainText(`ec${tag}`);
+  for (const n of [`ec${tag}`, `cx${tag}`, `gm${tag}`]) await expect(panel.locator(`[data-testid="mcp-import-row"][data-name="${n}"]`)).toContainText("In Keel");
+  const list = async () => (await (await request.get("/api/mcp/servers")).json()).servers as any[];
+  const one = async (n: string) => (await list()).find((s) => s.name === n);
+  expect((await one(`ec${tag}`)).sync).toMatchObject({ source: "codex", name: `ec${tag}`, gone: false });
+  expect((await one(`hm${tag}`)).enabled).toBe(false); // off there, off here
+  expect((await one(`gm${tag}`)).sync.source).toBe("gemini");
+
+  // Codex's file changes: its copy follows (the daemon watches the folder), and restarts ready.
+  writeFileSync(join(home, ".codex", "config.toml"), codexToml(`[mcp_servers.cx${tag}]\ncommand = "bun"\nargs = ["${FIXTURE}", "codex", "v2"]\n`));
+  await expect.poll(async () => (await one(`cx${tag}`)).target, { timeout: 10_000 }).toContain("codex v2");
+  await expect.poll(async () => (await one(`cx${tag}`)).state, { timeout: 20_000 }).toBe("ready");
+  // The owner's own choices in Keel stay when the source changes.
+  await request.post(`/api/mcp/servers/ec${tag}/toggle`, { data: { enabled: false } });
+  writeFileSync(join(home, ".codex", "config.toml"), `[mcp_servers.ec${tag}]\ncommand = "bun"\nargs = ["${FIXTURE}", "moved"]\n`);
+  await expect.poll(async () => (await one(`ec${tag}`)).target, { timeout: 10_000 }).toContain("moved");
+  expect((await one(`ec${tag}`)).enabled).toBe(false);
+  // cx is gone from Codex's file now: kept, and marked.
+  await expect.poll(async () => (await one(`cx${tag}`)).sync?.gone, { timeout: 10_000 }).toBe(true);
+  await panel.locator(`[data-testid="mcp-entry"]`).filter({ hasText: `cx${tag}` }).first().click();
+  await expect(panel.getByTestId("mcp-sync")).toContainText("Codex, which no longer has it");
+  await shoot(page, "mcp-08-follows");
+
+  // Keel never wrote the other agents' files: each holds the spec's own last write.
+  expect(readFileSync(join(home, ".codex", "config.toml"), "utf8")).toBe(`[mcp_servers.ec${tag}]\ncommand = "bun"\nargs = ["${FIXTURE}", "moved"]\n`);
+  await clear();
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
+});

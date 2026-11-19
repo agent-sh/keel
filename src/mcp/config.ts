@@ -1,11 +1,12 @@
-// MCP server config: keel's own mcp.json, plus entries other agents' configs
-// hold (Claude Code's ~/.claude.json and .mcp.json, Codex's config.toml) that
-// the owner can import with one click. Import copies; the source stays as is.
+// MCP server config: keel's own mcp.json, plus the entries other agents'
+// configs hold (sources.ts reads them) that the owner imports in one step.
+// Import copies and keeps the copy in step with its source; the source file
+// is never written.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import type { OAuthConfig } from "./oauth.ts";
+import { endpoint, readSources, type SourceServer } from "./sources.ts";
 
 export type McpServerConfig = {
   command?: string;
@@ -24,6 +25,10 @@ export type McpServerConfig = {
   // Tools of this server the owner marked as reads: they run without asking.
   // A server's own readOnlyHint does not count; it is the server's word.
   read_tools?: string[];
+  transport?: "sse";                   // the deprecated HTTP+SSE transport (the default is Streamable HTTP)
+  headers_helper?: string;             // a command printing a JSON object of headers, run at each connect
+  // Imported from another agent and kept in step with it: the source and its name for the server there.
+  sync?: { source: string; name: string };
 };
 
 export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: string]: unknown };
@@ -84,25 +89,11 @@ function normalize(c: any): McpServerConfig {
   if (c.tool_timeout_secs) out.tool_timeout_secs = Number(c.tool_timeout_secs);
   if (c.oauth && typeof c.oauth === "object") out.oauth = c.oauth;
   if (Array.isArray(c.read_tools)) out.read_tools = c.read_tools.map(String);
+  if (c.transport === "sse" || c.type === "sse") out.transport = "sse";
+  if (typeof c.headers_helper === "string") out.headers_helper = c.headers_helper;
+  else if (typeof c.headersHelper === "string") out.headers_helper = c.headersHelper;
+  if (c.sync && typeof c.sync.source === "string" && typeof c.sync.name === "string") out.sync = { source: c.sync.source, name: c.sync.name };
   return out;
-}
-
-// Codex's [mcp_servers.<name>] table.
-function fromCodex(c: any): McpServerConfig {
-  return normalize({
-    command: c.command,
-    args: c.args,
-    env: c.env,
-    env_vars: c.env_vars,
-    cwd: c.cwd,
-    url: c.url,
-    headers: c.http_headers,
-    headers_env: c.env_http_headers,
-    bearer_env: c.bearer_token_env_var,
-    enabled: c.enabled,
-    timeout_secs: c.startup_timeout_sec,
-    tool_timeout_secs: c.tool_timeout_sec,
-  });
 }
 
 // `${VAR}` and `${VAR:-default}`, as Claude Code expands them in .mcp.json.
@@ -110,33 +101,18 @@ export function expand(s: string, env: Record<string, string | undefined> = proc
   return s.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_, k, d) => env[k] ?? d ?? "");
 }
 
-export type ImportableServer = { source: string; label: string; name: string; config: McpServerConfig; configured: boolean };
+export type ImportableServer = SourceServer & { endpoint: string; configured: boolean };
 
-export function importable(cwd: string, configured: Record<string, McpServerConfig>): ImportableServer[] {
-  const out: ImportableServer[] = [];
-  const add = (source: string, label: string, servers: Record<string, any> | undefined, conv = normalize) => {
-    for (const [name, c] of Object.entries(servers ?? {})) {
-      if (!c || typeof c !== "object") continue;
-      const config = conv(c);
-      if (!config.command && !config.url) continue;
-      // The Chrome bridge is built in: another agent's entry for it is already here.
-      const bundled = /agent-chrome-bridge|chrome-bridge/.test([config.command, ...(config.args ?? [])].join(" "));
-      out.push({ source, label, name, config, configured: name in configured || bundled });
-    }
-  };
-  const home = homedir();
-  try {
-    const cj = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
-    add("claude:user", "Claude Code (user)", cj.mcpServers);
-    add("claude:local", "Claude Code (this folder)", cj.projects?.[cwd]?.mcpServers);
-  } catch {}
-  try {
-    const mj = JSON.parse(readFileSync(join(cwd, ".mcp.json"), "utf8"));
-    add("claude:project", "Claude Code (.mcp.json)", mj.mcpServers);
-  } catch {}
-  try {
-    const ct = Bun.TOML.parse(readFileSync(join(process.env.CODEX_HOME ?? join(home, ".codex"), "config.toml"), "utf8")) as any;
-    add("codex", "Codex", ct.mcp_servers, fromCodex);
-  } catch {}
-  return out;
+// The same server is often set up in several agents (under one name or
+// another): configured means Keel already has a server at that endpoint.
+export function importable(cwd: string, configured: Record<string, McpServerConfig>, failed?: { file: string; error: string }[]): ImportableServer[] {
+  const have = new Set(Object.values(configured).map(endpoint));
+  return readSources(cwd, failed).flatMap((s) => {
+    if (RESERVED.has(s.name.toLowerCase())) return [];
+    const config = s.config;
+    // The Chrome bridge is built in: another agent's entry for it is already here.
+    const bundled = /agent-chrome-bridge|chrome-bridge/.test([config.command, ...(config.args ?? [])].join(" "));
+    const ep = endpoint(config);
+    return [{ ...s, endpoint: ep, configured: bundled || have.has(ep) || (s.name in configured && endpoint(configured[s.name]!) === ep) }];
+  });
 }

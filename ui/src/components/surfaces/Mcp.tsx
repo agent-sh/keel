@@ -62,6 +62,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           ["Tools", <span data-testid="mcp-tool-count">{toolCount(s)}</span>],
           ["Transport", s.transport],
           ...(s.bundled ? [["Source", <span data-testid="mcp-bundled">Built in · {s.bundled}</span>] as [string, React.ReactNode]] : []),
+          ...(s.sync ? [["Follows", <span data-testid="mcp-sync" data-gone={s.sync.gone || undefined}>{s.sync.label}{s.sync.name !== s.name ? ` (${s.sync.name})` : ""}{s.sync.gone ? ", which no longer has it" : ""}</span>] as [string, React.ReactNode]] : []),
           ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),
           ...(s.state === "ready" && s.last_connected ? [["Connected", ago(s.last_connected)] as [string, string]] : []),
         ]}
@@ -383,31 +384,43 @@ function AddServer({ onAdded }: { onAdded: (servers: McpServerState[], name: str
   );
 }
 
-// The same server is often configured in several agents: one row each, with the agents that hold it.
-function ImportList({ items, onImport }: { items: ImportableServer[]; onImport: (i: ImportableServer) => void }) {
-  const target = (i: ImportableServer) => i.config.url ?? [i.config.command, ...(i.config.args ?? [])].join(" ");
-  const rows = new Map<string, { first: ImportableServer; labels: string[]; configured: boolean }>();
+// The same server is often set up in several agents, under one name or
+// another: one row per endpoint, with the agents (and names) that hold it.
+type Row = { first: ImportableServer; holders: { label: string; name: string }[]; configured: boolean };
+function importRows(items: ImportableServer[]): Row[] {
+  const rows = new Map<string, Row>();
   for (const i of items) {
-    const k = `${i.name}\u0000${target(i)}`;
+    const k = `${i.project ? "p" : "u"}\u0000${i.endpoint}`;
     const r = rows.get(k);
-    if (r) { r.labels.push(i.label); r.configured ||= i.configured; }
-    else rows.set(k, { first: i, labels: [i.label], configured: i.configured });
+    if (r) { r.holders.push({ label: i.label, name: i.name }); r.configured ||= i.configured; }
+    else rows.set(k, { first: i, holders: [{ label: i.label, name: i.name }], configured: i.configured });
   }
-  const list = [...rows.values()].sort((a, b) => Number(a.configured) - Number(b.configured) || a.first.name.localeCompare(b.first.name));
-  if (!list.length) return <p className="text-caption text-faint">Claude Code, Codex and the others hold no servers Keel can read.</p>;
+  return [...rows.values()].sort((a, b) => Number(a.configured) - Number(b.configured) || Number(!!a.first.project) - Number(!!b.first.project) || a.first.name.localeCompare(b.first.name));
+}
+
+function ImportList({ rows, taken, onImport }: { rows: Row[]; taken: Set<string>; onImport: (i: ImportableServer, as?: string) => void }) {
+  const target = (i: ImportableServer) => i.config.url ?? [i.config.command, ...(i.config.args ?? [])].join(" ");
+  if (!rows.length) return <p className="text-caption text-faint">The other agents on this machine hold no servers Keel can read.</p>;
   return (
     <div data-testid="mcp-importable">
-      {list.map(({ first: i, labels, configured }) => (
-        <div key={i.source + i.name} className="flex items-center gap-2.5 border-b border-line py-2.5 last:border-0">
-          {i.config.url ? <Globe className="size-3.5 shrink-0 text-faint" /> : <SquareTerminal className="size-3.5 shrink-0 text-faint" />}
-          <span className="shrink-0 text-ui font-medium">{i.name}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" title={target(i)}>{target(i)}</span>
-          {labels.map((l) => <span key={l} className="k-chip">{l.replace(/^Claude Code \((.*)\)$/, "Claude · $1")}</span>)}
-          {configured ? <span className="w-20 shrink-0 text-right text-caption text-faint">Added</span> : (
-            <button type="button" data-testid="mcp-import" onClick={() => onImport(i)} className="k-btn w-20 justify-center"><Download /> Import</button>
-          )}
-        </div>
-      ))}
+      {rows.map(({ first: i, holders, configured }) => {
+        // A name Keel already uses for another server: import under the source's name for it.
+        const as = taken.has(i.name) ? `${i.name}-${(i.source.split(":")[0] ?? i.source).replace(/^claude-desktop$/, "desktop")}` : undefined;
+        const names = [...new Set(holders.map((h) => h.name))];
+        return (
+          <div key={i.source + i.name} className="flex items-center gap-2.5 border-b border-line py-2.5 last:border-0" data-testid="mcp-import-row" data-name={i.name}>
+            {i.config.url ? <Globe className="size-3.5 shrink-0 text-faint" /> : <SquareTerminal className="size-3.5 shrink-0 text-faint" />}
+            <span className="shrink-0 text-ui font-medium">{i.name}</span>
+            {names.length > 1 && <span className="shrink-0 text-caption text-faint">also {names.filter((n) => n !== i.name).join(", ")}</span>}
+            <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" title={target(i)}>{tilde(target(i))}</span>
+            {[...new Set(holders.map((h) => h.label))].map((l) => <span key={l} className="k-chip">{l}</span>)}
+            {i.config.enabled === false && <span className="k-chip" title="Turned off there; imported off">off</span>}
+            {configured ? <span className="w-24 shrink-0 text-right text-caption text-faint">In Keel</span> : (
+              <button type="button" data-testid="mcp-import" title={as ? `Keel has a server named ${i.name}: this one comes in as ${as}` : undefined} onClick={() => onImport(i, as)} className="k-btn w-24 justify-center"><Download /> {as ? "As new" : "Import"}</button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -415,10 +428,11 @@ function ImportList({ items, onImport }: { items: ImportableServer[]; onImport: 
 export default function McpServers() {
   const [servers, setServers] = useState<McpServerState[] | null>(null);
   const [importable, setImportable] = useState<ImportableServer[]>([]);
+  const [unread, setUnread] = useState<{ file: string; error: string }[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const load = useCallback(() => api<{ servers: McpServerState[] }>("/api/mcp/servers").then((r) => setServers(r.servers)).catch(reportError), []);
-  const loadImportable = useCallback(() => api<{ servers: ImportableServer[] }>("/api/mcp/importable").then((r) => setImportable(r.servers)).catch(reportError), []);
+  const loadImportable = useCallback(() => api<{ servers: ImportableServer[]; failed: { file: string; error: string }[] }>("/api/mcp/importable").then((r) => { setImportable(r.servers); setUnread(r.failed ?? []); }).catch(reportError), []);
   // States change on the daemon (connects, crashes): read them again while the page is open.
   useEffect(() => {
     load();
@@ -447,7 +461,10 @@ export default function McpServers() {
   const ready = all.filter((s) => s.state === "ready" || s.state === "idle" || s.state === "armed");
   const waiting = all.filter((s) => s.state === "needs_auth").length;
   const failing = all.filter((s) => mcpMark(s) === "fail").length;
-  const fresh = importable.filter((i) => !i.configured).length;
+  const rows = importRows(importable);
+  const fresh = rows.filter((r) => !r.configured).length;
+  const freshAll = rows.filter((r) => !r.configured && !r.first.project).length;
+  const taken = new Set(all.filter((s) => !s.bundled).map((s) => s.name));
 
   return (
     <div data-testid="mcp-panel">
@@ -473,16 +490,29 @@ export default function McpServers() {
           </>
         ) : sel === "+import" ? (
           <>
-            <ReaderHead title="Import from other agents" desc="The servers Claude Code, Codex and the others are set up with, read from their own files. Importing copies one into Keel's mcp.json." right={
-              <button type="button" className="k-btn" data-testid="mcp-reload" onClick={async () => {
-                try {
-                  const r = await api<{ line: string; servers: McpServerState[] }>("/api/mcp/reload", { method: "POST", body: "{}" });
-                  setServers(r.servers);
-                  setNote(r.line);
-                } catch (e) { setNote(failed(e, { at: "Mcp" })); }
-              }}><RefreshCw /> Read mcp.json again</button>
+            <ReaderHead title="Import from other agents" desc="The servers Claude Code, Codex, Gemini, Antigravity, Cursor, OpenCode, Hermes and Zed are set up with, read from their own files. An import is a copy in Keel's mcp.json that follows its source: a change there reaches Keel; their files are never written." right={
+              <div className="flex items-center gap-2">
+                <button type="button" className="k-btn" data-testid="mcp-reload" onClick={async () => {
+                  try {
+                    const r = await api<{ line: string; servers: McpServerState[] }>("/api/mcp/reload", { method: "POST", body: "{}" });
+                    setServers(r.servers);
+                    setNote(r.line);
+                  } catch (e) { setNote(failed(e, { at: "Mcp" })); }
+                }}><RefreshCw /> Read mcp.json again</button>
+                <button type="button" className="k-btn" data-ink data-testid="mcp-import-all" disabled={!freshAll} onClick={async () => {
+                  try {
+                    const r = await api<{ imported: string[]; skipped: { name: string; source: string; why: string }[]; servers: McpServerState[] }>("/api/mcp/import-all", { method: "POST", body: "{}" });
+                    setServers(r.servers);
+                    loadImportable();
+                    setNote(`Imported ${r.imported.length}${r.imported.length ? `: ${r.imported.join(", ")}` : ""}.${r.skipped.length ? ` Not imported: ${r.skipped.map((x) => `${x.name} from ${x.source} (${x.why})`).join("; ")}.` : ""}`);
+                  } catch (e) { setNote(failed(e, { at: "Mcp" })); }
+                }}><Download /> Import all{freshAll ? ` ${freshAll}` : ""}</button>
+              </div>
             } />
-            <div className="k-reader-body"><ImportList items={importable} onImport={async (i) => { await act("/api/mcp/import", { source: i.source, name: i.name }); loadImportable(); setSel(i.name); }} /></div>
+            <div className="k-reader-body">
+              {unread.map((u) => <div key={u.file} className="k-issue mb-3" data-tone="quiet" data-testid="mcp-source-unread">{tilde(u.file)} could not be read: {u.error}</div>)}
+              <ImportList rows={rows} taken={taken} onImport={async (i, as) => { await act("/api/mcp/import", { source: i.source, name: i.name, as }); loadImportable(); setSel(as ?? i.name); }} />
+            </div>
           </>
         ) : cur ? <ServerReader key={cur.name} s={cur} act={act} /> : <Blank title={servers ? "No server picked" : "Reading the servers"} />}
       </Ledger>

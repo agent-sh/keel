@@ -215,7 +215,8 @@ export class McpClient {
     const h: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      "mcp-protocol-version": this.version,
+      // A modern request names its version in _meta; the header must match it (the probe runs before the era is known).
+      "mcp-protocol-version": params?._meta?.["io.modelcontextprotocol/protocolVersion"] ?? this.version,
       "mcp-method": method,
       ...t.headers,
     };
