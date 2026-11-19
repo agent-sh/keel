@@ -3,7 +3,7 @@
 // the scripted stand-in model, so every path is deterministic and free.
 // Run: bun test ./test/cli   (builds dist-cli/keel first)
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -259,5 +259,54 @@ describe("client commands against a running daemon", () => {
     expect(ro.out).toMatch(/^deny: edit notes\.txt/);
     const badMode = await k(["rules", "check", "ls", "--mode", "yolo"]);
     expect(badMode.code).toBe(3);
+  }, 60_000);
+});
+
+// A secret's value reaches the command that uses it and nothing else: not the
+// job's record, its log or the routes, before or after the daemon restarts
+// under a running job (the next daemon adopts it, with an empty vault).
+describe("a secret in a background job across a restart", () => {
+  const state = join(SCRATCH, "state-secret");
+  const serve = async () => {
+    const d = Bun.spawn([BIN, "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", WS], { cwd: WS, env: ENV, stdout: "pipe", stderr: "ignore" });
+    const reader = d.stdout.getReader();
+    let seen = "";
+    while (!seen.includes("listening")) seen += new TextDecoder().decode((await reader.read()).value);
+    reader.releaseLock();
+    return { d, url: json(readFileSync(join(state, "daemon.lock"), "utf8")).url as string };
+  };
+  test("no value in any file of the state folder or any job route", async () => {
+    let { d, url } = await serve();
+    const api = async (path: string, init?: RequestInit) => (await fetch(url + path, { ...init, headers: { "content-type": "application/json" } })).json() as Promise<any>;
+    const turns = async (id: string, n: number) => {
+      for (let i = 0; i < 200; i++) { const s = await api(`/api/sessions/${id}`); if (!s.running && s.events.filter((e: any) => e.kind === "turn_end").length >= n) return; await Bun.sleep(100); }
+      throw new Error(`turn ${n} did not end`);
+    };
+    const token = `ghp_${crypto.randomUUID().replace(/-/g, "")}Ab12`.slice(0, 40);
+    const { session } = await api("/api/sessions", { method: "POST", body: JSON.stringify({ model: "scripted:stand-in", workspace: WS }) });
+    await api(`/api/sessions/${session.id}/permissions`, { method: "PUT", body: JSON.stringify({ mode: "full-auto" }) });
+    await api(`/api/sessions/${session.id}/messages`, { method: "POST", body: JSON.stringify({ text: `Keep this for later: ${token}` }) });
+    await turns(session.id, 1);
+    const sec = (await api("/api/secrets")).secrets.find((s: any) => s.sessions.includes(session.id));
+    await api(`/api/secrets/${sec.id}`, { method: "PATCH", body: JSON.stringify({ name: "CLI_SECRET" }) });
+    // The command and its description name the placeholder; the command prints the value, split by a pause.
+    const call = { name: "Bash", input: { command: 'test "[value of $CLI_SECRET]" = "$CLI_SECRET" && echo "same"; printf %s "${CLI_SECRET:0:9}"; sleep 2; echo "${CLI_SECRET:9}"', description: "check [value of $CLI_SECRET]", run_in_background: true } };
+    await api(`/api/sessions/${session.id}/messages`, { method: "POST", body: JSON.stringify({ text: `script:calls ${JSON.stringify([call])}` }) });
+    await turns(session.id, 2);
+    d.kill("SIGTERM");
+    await d.exited;
+    ({ d, url } = await serve());
+    try {
+      let jobs: any[] = [];
+      for (let i = 0; i < 100; i++) { jobs = (await api(`/api/sessions/${session.id}/jobs`)).jobs; if (jobs.length && jobs.every((j) => !j.running)) break; await Bun.sleep(100); }
+      expect(jobs.length).toBe(1);
+      const answers = [JSON.stringify(jobs), JSON.stringify(await api(`/api/sessions/${session.id}/terminal`)), JSON.stringify(await api(`/api/sessions/${session.id}`)),
+        JSON.stringify(await api(`/api/sessions/${session.id}/jobs/${jobs[0].id}/log`)), JSON.stringify(await api(`/api/sessions/${session.id}/terminal/${jobs[0].id}/log`))];
+      expect(answers[3]).toContain("same\\n[value of $CLI_SECRET]");
+      expect(jobs[0].description).toBe("check [value of $CLI_SECRET]");
+      for (const a of answers) expect(a).not.toContain(token);
+      const walk = (p: string): string[] => readdirSync(p, { withFileTypes: true }).flatMap((f) => (f.isDirectory() ? walk(join(p, f.name)) : f.isFile() ? [join(p, f.name)] : []));
+      expect(walk(state).filter((f) => readFileSync(f).includes(token))).toEqual([]);
+    } finally { d.kill("SIGTERM"); await d.exited; }
   }, 60_000);
 });

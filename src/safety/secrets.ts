@@ -73,6 +73,8 @@ export function detect(text: string): Hit[] {
 }
 
 const KEY = randomBytes(32);
+// Tool input fields that describe a call to the owner and run nothing.
+const DESCRIBES = new Set(["description"]);
 const PLACE = /\[secret:([0-9a-f]{8})\]|\[value of \$([A-Za-z_][A-Za-z0-9_]*)\]/g;
 const RESERVED = /^(PATH|HOME|USER|SHELL|PWD|OLDPWD|TERM|LANG|LC_\w*|TZ|TMPDIR|IFS|PS\d|BASH_ENV|ENV|BASH_\w*|LD_\w*|DYLD_\w*|GIT_\w*|SSH_\w*|PYTHON\w*|NODE_OPTIONS|NODE_PATH|PERL5\w*|RUBY\w*|KEEL_\w*|XDG_\w*|DISPLAY|WAYLAND_\w*|DBUS_\w*)$/;
 
@@ -216,8 +218,9 @@ export class Vault {
       used.push(e.id);
       return e.value;
     });
+    // A field that only describes the call (a command's description) is shown and kept, never run: it keeps the placeholder.
     const walk = (x: any): any =>
-      typeof x === "string" ? sub(x) : Array.isArray(x) ? x.map(walk) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y)])) : x;
+      typeof x === "string" ? sub(x) : Array.isArray(x) ? x.map(walk) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, DESCRIBES.has(k) ? y : walk(y)])) : x;
     return { value: walk(v), used };
   }
 

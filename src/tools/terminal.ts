@@ -4,7 +4,7 @@
 // The same functions answer for a session placed here by another daemon.
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
-import { conceal } from "../core/conceal.ts";
+import { conceal, concealDeep } from "../core/conceal.ts";
 import { findJob, jobsOf, lastLine, type Meta, running, startJob, stopJob, toolEnv, waitJob } from "./jobs.ts";
 
 export type TermJob = {
@@ -59,10 +59,10 @@ export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
     const t = slice(log, 0, TAIL);
     const code = m.ended !== undefined ? m.exit_code : exitOf(log);
     out.set(m.id, {
-      id: m.id, call_id: m.call_id, by: m.by, command: conceal(m.command, sessionId), description: m.description, cwd: m.cwd, started: m.started,
+      id: m.id, call_id: m.call_id, by: m.by, command: m.command, description: m.description, cwd: m.cwd, started: m.started,
       ended: m.ended, exit_code: code, signal: m.signal, stop_reason: m.stop_reason, background: m.background,
       // A record with no end and no live job here: its daemon went before it ended.
-      running: false, pty: !!m.pty, bytes: t.size, last: lastLine(log), tail: conceal(t.text, sessionId), tail_from: t.from, log_missing: !existsSync(log) || undefined,
+      running: false, pty: !!m.pty, bytes: t.size, last: lastLine(log), tail: t.text, tail_from: t.from, log_missing: !existsSync(log) || undefined,
     });
   }
   for (const j of jobsOf(sessionId)) {
@@ -70,10 +70,11 @@ export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
     out.set(j.id, {
       id: j.id, call_id: j.callId, by: j.by, command: j.command, description: j.description, cwd: j.cwd, started: j.started,
       ended: j.ended, exit_code: j.exitCode, signal: j.signal, stop_reason: j.stopReason, background: j.background,
-      running: running(j), pty: j.pty, bytes: t.size, last: lastLine(j.log), tail: conceal(t.text, sessionId), tail_from: t.from, log_missing: !existsSync(j.log) || undefined,
+      running: running(j), pty: j.pty, bytes: t.size, last: lastLine(j.log), tail: t.text, tail_from: t.from, log_missing: !existsSync(j.log) || undefined,
     });
   }
-  return [...out.values()].sort((a, b) => a.started - b.started).slice(-LISTED);
+  // The whole record as the routes send it: secrets as placeholders.
+  return concealDeep([...out.values()].sort((a, b) => a.started - b.started).slice(-LISTED), sessionId);
 }
 
 // The log from `from` on, at most LOG_READ bytes of it, ending on a whole

@@ -11,6 +11,13 @@ export type Concealer = {
 let current: Concealer | null = null;
 export const setConcealer = (c: Concealer) => void (current = c);
 export const conceal = (s: string, sessionId: string | null = null): string => (current && s ? current.text(s, sessionId) : s);
+// Every string of a JSON value concealed (a record written to disk or sent whole).
+export function concealDeep<T>(v: T, sessionId: string | null = null): T {
+  if (!current) return v;
+  const walk = (x: any): any =>
+    typeof x === "string" ? conceal(x, sessionId) : Array.isArray(x) ? x.map(walk) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y)])) : x;
+  return walk(v);
+}
 export const secretPairs = (): [string, string][] => current?.pairs() ?? [];
 
 // A byte stream with known values replaced as it passes, a value split across

@@ -11,7 +11,7 @@
 import type { Subprocess } from "bun";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { conceal, secretPairs, streamConcealer } from "../core/conceal.ts";
+import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
 
 export type Job = {
@@ -114,7 +114,7 @@ export function startJob(o: StartOpts): Job {
   const env = o.env ?? toolEnv(o.sessionId);
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
-  const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description, cwd: o.cwd, pty: !!o.pty,
+  const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
     log, started: Date.now(), background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by } as Job;
   // Known secret values never reach the log: its output is filtered on the way in.
   const pairs = secretPairs();
@@ -143,7 +143,7 @@ export function startJob(o: StartOpts): Job {
     } finally { closeSync(fd); }
   }
   // A PTY's record is history only: it never outlives its daemon to be adopted.
-  writeFileSync(metaPath(log), JSON.stringify({ ...meta(job, job.proc.pid), ...(o.pty ? { pty: true, reported: true } : {}) }));
+  writeMeta(log, { ...meta(job, job.proc.pid), ...(o.pty ? { pty: true, reported: true } : {}) });
   job.pid = job.proc.pid;
   const proc = job.proc;
   job.exited = proc.exited.then((code) => {
@@ -171,11 +171,12 @@ const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
   started: j.started, background: j.background, pid, boot: procStart(pid), call_id: j.callId, by: j.by, read_off: j.readOff,
 });
+// Every sidecar write goes through here: the whole record with secrets as placeholders.
+function writeMeta(log: string, m: Meta) {
+  writeFileSync(metaPath(log), JSON.stringify(concealDeep(m, m.sessionId)));
+}
 function patchMeta(log: string, patch: Partial<Meta>) {
-  try {
-    const p = metaPath(log);
-    writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, "utf8")), ...patch }));
-  } catch {}
+  try { writeMeta(log, { ...JSON.parse(readFileSync(metaPath(log), "utf8")), ...patch }); } catch {}
 }
 
 // The start time of a process (Linux), so a reused pid is not taken for the job.
@@ -196,7 +197,7 @@ function finish(job: Job, code: number | null, signal: string | null) {
   // A background job's end counts as reported once its note is stored (ackNotices), not before:
   // a restart between the two reports it again.
   try {
-    writeFileSync(metaPath(job.log), JSON.stringify({ ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason }));
+    writeMeta(job.log, { ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason });
   } catch {}
   if (job.background) {
     const what = job.description ? `"${job.description}"` : `\`${job.command.slice(0, 80)}\``;
@@ -227,9 +228,9 @@ export function adoptJobs(spillRoot: string): number {
       counter = Math.max(counter, m.num ?? 0);
       if (jobs.has(m.id)) continue;
       const log = join(dir, `${m.id}.log`);
-      // A sidecar an older daemon wrote with a value in its command: rewritten with the placeholder.
-      const shown = conceal(m.command ?? "", m.sessionId);
-      if (shown !== m.command) { m.command = shown; patchMeta(log, { command: shown }); }
+      // A sidecar an older daemon wrote with a value in it: rewritten with placeholders.
+      const shown = concealDeep(m, m.sessionId);
+      if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
       const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
         pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
         callId: m.call_id, by: m.by };
@@ -360,11 +361,12 @@ export function ackNotices(list: Notice[]) {
   for (const n of list) if (n.log) patchMeta(n.log, { reported: true });
 }
 
-export const jobView = (j: Job) => ({
+// What routes send of a job: the whole view with secrets as placeholders.
+export const jobView = (j: Job) => concealDeep({
   id: j.id, num: j.num, command: j.command, description: j.description, cwd: j.cwd, pty: j.pty, log: j.log,
   started: j.started, ended: j.ended, exit_code: j.exitCode, signal: j.signal, background: j.background, bytes: size(j.log),
   running: running(j), last: lastLine(j.log), call_id: j.callId, by: j.by, stop_reason: j.stopReason,
-});
+}, j.sessionId);
 
 // The last line a job printed (a progress line, an ETA), for the owner's view
 // of what a background run is doing without opening its log.
