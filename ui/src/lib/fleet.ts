@@ -63,7 +63,15 @@ export const fleet = {
       }
     }
     for (const s of Object.values(next)) apply({ t: "session", session: s });
-    for (const id of Object.keys(cur)) if (splitId(id) && !next[id]) apply({ t: "session", session: { ...cur[id]!, archived: true } });
+    // A machine that shows nothing current keeps the rows it last showed; only a
+    // fresh list says a session is gone from it.
+    const fresh = new Set(r.machines.filter((m) => !m.stale).map((m) => m.id));
+    for (const id of Object.keys(cur)) {
+      const sid = splitId(id);
+      if (!sid || next[id]) continue;
+      if (fresh.has(sid.machine) || !r.machines.some((m) => m.id === sid.machine)) apply({ t: "session", session: { ...cur[id]!, archived: true } });
+      else apply({ t: "session", session: cur[id]! });
+    }
   },
   async loadSteps(sessionId: string) {
     if (splitId(sessionId)) return;

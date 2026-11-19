@@ -47,3 +47,37 @@ test("placement: explicit wins, first matching rule, never an offline machine, e
   expect(place({ kind: "session" }, rules, ctx)).toMatchObject({ machine_id: "local", explicit: false });
   expect(place({ kind: "run" }, rules, { ...ctx, localBusy: false })).toMatchObject({ machine_id: "local" });
 });
+
+test("the outbox: handed out until acknowledged, and kept once however often it comes", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Messages } = await import("./messages.ts");
+  const { migrate } = await import("./db.ts");
+  const engine: any = { isHeld: () => true, emitQueue() {}, isRunning: () => false, send() { return {}; } };
+  const daemon = (id: string) => {
+    const store = new Store(mkdtempSync(join(tmpdir(), `keel-msg-${id}-`)));
+    migrate(store);
+    const f: any = { id, name: id, rows: () => [], pairs: () => [] };
+    const perm = () => ({ mode: "full-auto", sandbox: "off" });
+    return { store, msgs: new Messages(store, new Bus(), engine, f, perm, () => {}) };
+  };
+  const a = daemon("dA"), b = daemon("dB");
+  const ws = mkdtempSync(join(tmpdir(), "keel-ws-"));
+  const from = a.store.createSession({ model: "m", workspace: ws });
+  const to = b.store.createSession({ model: "m", workspace: ws });
+  a.msgs.queueOutbound("dB", to.id, "hello", a.msgs.senderOf(from), true);
+  // The first answer is lost on the way: it is handed out again.
+  expect(a.msgs.pendingOutbound("dB")).toHaveLength(1);
+  const [m] = a.msgs.pendingOutbound("dB");
+  // Received, then the acknowledgement is lost: received again, kept once.
+  b.msgs.receiveOutbound(to, m!, true);
+  b.msgs.receiveOutbound(to, a.msgs.pendingOutbound("dB")[0]!, true);
+  expect(b.msgs.list({ session_id: to.id })).toHaveLength(1);
+  a.msgs.ackOutbound("dB", [m!.id]);
+  expect(a.msgs.pendingOutbound("dB")).toHaveLength(0);
+  expect(a.msgs.get(m!.id)!.state).toBe("delivered");
+  // Another daemon's acknowledgement does nothing to it.
+  a.msgs.queueOutbound("dB", to.id, "again", a.msgs.senderOf(from), true);
+  a.msgs.ackOutbound("dC", a.msgs.pendingOutbound("dB").map((x) => x.id));
+  expect(a.msgs.pendingOutbound("dB")).toHaveLength(1);
+});

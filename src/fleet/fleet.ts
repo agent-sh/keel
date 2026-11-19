@@ -119,6 +119,7 @@ export class Fleet {
 
   async localView() {
     this.localFactsCache = await localFacts();
+    this.localFactsAt = Date.now();
     return { id: "local", name: this.name, source: "local", enabled: true, state: "ready", auto_connect: true, messages: "allow", queue: { running: 0, waiting: 0 }, facts: this.localFactsCache, daemon: { state: "linked", daemon_id: this.id, server_name: this.name, version: VERSION } };
   }
 
@@ -371,9 +372,10 @@ export class Fleet {
     this.store.db.query("INSERT OR REPLACE INTO fleet_meta (key, value) VALUES ('placement', ?)").run(JSON.stringify(rules));
   }
   async placeWork(want: Want): Promise<Place | string> {
-    const lf = this.localFactsCache && Date.now() - (this.localFactsAt ?? 0) < FACTS_FRESH_MS ? this.localFactsCache : await localFacts();
-    this.localFactsCache = lf;
-    this.localFactsAt = Date.now();
+    // The age of a reading is from when it was taken, not from when it was last used.
+    const fresh = this.localFactsCache && Date.now() - (this.localFactsAt ?? 0) < FACTS_FRESH_MS;
+    const lf = fresh ? this.localFactsCache! : await localFacts();
+    if (!fresh) { this.localFactsCache = lf; this.localFactsAt = Date.now(); }
     return place(want, this.rules(), {
       local: { id: "local", name: this.name, state: "ready" },
       localBusy: lf.load1 >= lf.cpus,

@@ -66,11 +66,15 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     (async () => {
       const p = await f.peer(machineId);
       const r = await linkJson<{ messages: Message[] }>(p, "/api/fleet/outbox", { method: "POST", body: JSON.stringify({ daemon_id: f.id, name: f.name }) });
+      const kept: string[] = [];
       for (const m of r.messages) {
         const to = store.session(m.to_session);
         // Proven by the link's answer; it counts as that daemon's when it says it was written there.
-        if (to) try { msgs.receive(to, m.text, m.from, m.wake, m.from.daemon_id === p.daemonId); } catch (e) { if (!(e instanceof HttpError)) throw e; }
+        // Refused (gone, archived, rate) is an answer too: it is not handed out again.
+        if (to) try { msgs.receiveOutbound(to, m, m.from.daemon_id === p.daemonId); } catch (e) { if (!(e instanceof HttpError)) throw e; }
+        kept.push(m.id);
       }
+      if (kept.length) await linkJson(p, "/api/fleet/outbox/ack", { method: "POST", body: JSON.stringify({ daemon_id: f.id, ids: kept }) });
     })().catch((e) => { if (!(e instanceof LinkError)) errors.capture("server", e, { at: "fleet outbox", machine: machineId }); });
   };
   if (!runMode.client) f.start();
@@ -439,7 +443,16 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const b = await body(req);
         if (!String(b.daemon_id ?? "")) return proven(bad("daemon_id cannot be empty"), c, f.id);
         if (!c || c.daemonId !== b.daemon_id) return proven(json({ messages: [] }), c, f.id);
-        return proven(json({ messages: msgs.takeOutbound(c.daemonId) }), c, f.id);
+        return proven(json({ messages: msgs.pendingOutbound(c.daemonId) }), c, f.id);
+      },
+    },
+    "/api/fleet/outbox/ack": {
+      POST: async (req: Request) => {
+        const c = paired(req);
+        const b = await body(req);
+        if (!c || c.daemonId !== b.daemon_id) return proven(bad("not a paired daemon", 403), c, f.id);
+        msgs.ackOutbound(c.daemonId, Array.isArray(b.ids) ? b.ids.map(String).slice(0, 500) : []);
+        return proven(json({ ok: true }), c, f.id);
       },
     },
 

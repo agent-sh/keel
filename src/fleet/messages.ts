@@ -20,7 +20,7 @@ const DUP_MS = 60_000;
 const PER_MINUTE = Number(process.env.KEEL_PEER_MESSAGES_PER_MINUTE ?? 10);
 const PEER_TURNS = Number(process.env.KEEL_PEER_TURNS ?? 50); // turns other sessions may start since the owner last spoke
 
-export type Sender = { session_id: string; title?: string; daemon_id: string; machine?: string; mode?: string; sandbox?: string; limited?: boolean };
+export type Sender = { session_id: string; title?: string; daemon_id: string; machine?: string; mode?: string; sandbox?: string; limited?: boolean; outbox_id?: string };
 export type Message = {
   id: string; created_ms: number; state: "delivered" | "queued" | "held" | "outbound" | "dropped";
   to_session: string; to_daemon?: string | null; text: string; wake: boolean; from: Sender; reason?: string | null;
@@ -290,10 +290,21 @@ export class Messages {
     return { state: m.state, handled: seen && !waiting && s.phase !== "working" && !this.engine.isRunning(s.id), session: s.id, phase: s.phase };
   }
 
-  takeOutbound(daemonId: string): Message[] {
-    const out = this.list({ state: "outbound" }).filter((m) => m.to_daemon === daemonId).reverse();
-    for (const m of out) this.store.db.query("UPDATE fleet_messages SET state = 'delivered', reason = 'fetched by its daemon' WHERE id = ?").run(m.id);
-    return out;
+  // What waits for a daemon: handed out until that daemon acknowledges it
+  // (after it kept it), so an answer lost on the way is handed out again.
+  pendingOutbound(daemonId: string): Message[] {
+    return this.list({ state: "outbound" }).filter((m) => m.to_daemon === daemonId).reverse();
+  }
+  ackOutbound(daemonId: string, ids: string[]) {
+    for (const id of ids) this.store.db.query("UPDATE fleet_messages SET state = 'delivered', reason = 'received by its daemon' WHERE id = ? AND state = 'outbound' AND to_daemon = ?").run(id, daemonId);
+  }
+
+  // The receiving side of an outbox: each message once, whatever number of
+  // times it is handed out (the sender's id is kept with it).
+  receiveOutbound(to: Session, m: Message, trusted: boolean): Message {
+    const had = this.store.db.query<Row, [string, string]>("SELECT * FROM fleet_messages WHERE json_extract(sender, '$.outbox_id') = ? AND json_extract(sender, '$.daemon_id') = ?").get(m.id, m.from.daemon_id);
+    if (had) return toMessage(had);
+    return this.receive(to, m.text, { ...m.from, outbox_id: m.id }, m.wake, trusted);
   }
 }
 
