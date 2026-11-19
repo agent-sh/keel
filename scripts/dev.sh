@@ -12,6 +12,15 @@ fi
 export KEEL_CONFIG_DIR="${KEEL_CONFIG_DIR:-$DEV/config}"
 mkdir -p "$KEEL_CONFIG_DIR"
 export KEEL_DESKTOP_NOTIFY="${KEEL_DESKTOP_NOTIFY:-off}"
+# Stand-ins and scratch stores for what a scratch daemon would otherwise reach
+# on the machine: gh, and the other harnesses' session stores for import.
+# Each is kept when already set.
+export KEEL_GH_BIN="${KEEL_GH_BIN:-$(cd "$(dirname "$0")/.." && pwd)/test/e2e/fixtures/gh-standin.sh}"
+export KEEL_IMPORT_CLAUDE_DIR="${KEEL_IMPORT_CLAUDE_DIR:-$DEV/import/claude}"
+export KEEL_IMPORT_CODEX_DIR="${KEEL_IMPORT_CODEX_DIR:-$DEV/import/codex}"
+export KEEL_IMPORT_AGY_DIR="${KEEL_IMPORT_AGY_DIR:-$DEV/import/agy}"
+export KEEL_IMPORT_KEEL_DB="${KEEL_IMPORT_KEEL_DB:-$DEV/import/keel.db}"
+mkdir -p "$DEV/import"
 # Voice goes to the parlar stand-in beside the state, never the owner's own
 # parlar (its mic and speaker); KEEL_PARLAR picks another.
 if [ -z "${KEEL_PARLAR:-}" ]; then
