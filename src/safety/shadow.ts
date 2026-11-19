@@ -18,7 +18,8 @@ const DIFF_CAP = 400_000;
 // A file over this is left out of a snapshot (model weights, archives, media);
 // a snapshot that would add more than SNAP_CAP falls back to the files the
 // session's tools write. Both are owner-settable.
-export const FILE_CAP = Number(process.env.KEEL_CHECKPOINT_FILE_MB ?? 10) * 1024 * 1024;
+// Read when used, so a setting made after this module loaded applies.
+export const fileCap = () => Number(process.env.KEEL_CHECKPOINT_FILE_MB ?? 10) * 1024 * 1024;
 const SNAP_CAP = Number(process.env.KEEL_CHECKPOINT_SNAPSHOT_MB ?? 1024) * 1024 * 1024;
 // Never snapshotted, in any folder: dependency, cache and build trees that are
 // rebuilt, not written by hand (most are gitignored anyway; a folder without a
@@ -33,7 +34,7 @@ export class Shadow {
   // session's tools write (a workspace too large to snapshot, like the home).
   mode: "tree" | "written" = "tree";
   reason?: string;
-  skipped: string[] = []; // files over FILE_CAP left out of the last snapshot
+  skipped: string[] = []; // files over fileCap() left out of the last snapshot
   // Keel's own state folder, when it sits inside the workspace: never snapshotted
   // (the checkpoint store would copy itself on every turn).
   private own: string | null = null;
@@ -101,11 +102,12 @@ export class Shadow {
     this.writeExcludes([]);
     const list = (await this.git(["ls-files", "-z", "--others", "--modified", "--exclude-standard"], { index, timeout: 30_000 })).split("\0").filter(Boolean);
     const big: string[] = [];
+    const cap = fileCap();
     let total = 0;
     for (const p of list) {
       let size = 0;
       try { const st = lstatSync(join(this.workspace, p)); if (!st.isFile()) continue; size = st.size; } catch { continue; }
-      if (size > FILE_CAP) big.push(p);
+      if (size > cap) big.push(p);
       else total += size;
     }
     this.skipped = big;
