@@ -1,8 +1,9 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
+import { Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Network, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
 import { useMemo } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
+import { machineName } from "../../lib/fleet.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { resultText } from "../../lib/tools.ts";
 import { savePref } from "../../lib/ui.ts";
@@ -173,6 +174,11 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
             <GitBranch className="size-3" />{agent.branch}
           </span>
         )}
+        {(agent?.machine || input.machine) && (
+          <span data-testid="agent-call-machine" title="Its tools run on this machine" className="flex shrink-0 items-center gap-1 rounded bg-panel px-1.5 py-px text-micro text-muted">
+            <Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}
+          </span>
+        )}
         {agent?.structured && <span data-testid="agent-call-structured" className="shrink-0 rounded bg-panel px-1.5 py-px font-mono text-micro text-muted">json</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {agent ? (
@@ -180,7 +186,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
               <AgentStatus status={agent.status} />
               <span className="text-micro text-faint" data-testid="agent-call-status">{STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}</span>
               {isLive(agent) && <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(agent).catch(reportError)} testid="agent-call-stop"><StopIcon /></IconButton>}
-              {!isLive(agent) && agent.branch && (
+              {!isLive(agent) && agent.branch && !agent.machine && (
                 <IconButton title="Review this agent's work" onClick={() => auto.reviewAgent(agent).then(() => savePref("panel", "review")).catch(reportError)} testid="agent-call-review"><ScanSearch className="size-3.5" /></IconButton>
               )}
               <IconButton title="Open the agent's session" onClick={() => openSession(agent.session_id)} testid="agent-call-open"><ExternalLink className="size-3.5" /></IconButton>

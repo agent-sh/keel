@@ -9,6 +9,7 @@ import { instructionFiles } from "../../engine/turn.ts";
 import { localFacts } from "../../fleet/facts.ts";
 import { Fleet } from "../../fleet/fleet.ts";
 import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
+import { listJobs, logPath, ownerRun, readJobLog, stopOne, waitOne } from "../../tools/terminal.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven } from "../../fleet/link.ts";
 import { remoteRun } from "../../fleet/remote.ts";
 import { Handoffs, MoveError } from "../../fleet/handoff.ts";
@@ -18,6 +19,9 @@ import { validate as validatePlacement } from "../../fleet/placement.ts";
 import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
 import { bindNotices } from "../../fleet/notice.ts";
+import { registerSendFiles, RemoteAgents } from "../../fleet/agents.ts";
+import { setRemotePlacer } from "../../automation/agents.ts";
+import { realpathSync } from "node:fs";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { contains } from "../../core/paths.ts";
@@ -27,6 +31,19 @@ import { runMode } from "../../core/runmode.ts";
 import { readText } from "../../core/proc.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+// A path with its links resolved, through the deepest part that exists: a link
+// inside the granted directory cannot carry a write out of it.
+function realOf(p: string): string {
+  let at = resolve(p);
+  const rest: string[] = [];
+  for (;;) {
+    try { return resolve(realpathSync(at), ...rest.reverse()); } catch {}
+    const up = dirname(at);
+    if (up === at) return resolve(p);
+    rest.push(at.slice(up.length + (up.endsWith("/") ? 0 : 1)));
+    at = up;
+  }
+}
 const bad = (error: string, status = 400) => json({ error }, status);
 const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
 const COLOUR = /^(#[0-9a-f]{3,8}|[a-z]+|(rgb|hsl|oklch)a?\([^)]*\))$/i;
@@ -61,9 +78,15 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   });
   bindFleetTools(f, msgs, (id) => store.session(id), bindNotices(f, msgs, store, engine));
   const moves = new Handoffs(store, bus, engine, f);
-  // A deleted session takes what its moves left with it.
+  const remoteAgents = new RemoteAgents(store, f, errors, (id) => gate?.perm(id).sandbox ?? "off");
+  setRemotePlacer(remoteAgents);
+  registerSendFiles(() => remoteAgents, (id) => store.session(id), (id) => gate?.perm(id).mode ?? "ask");
+  // A deleted session takes what its moves and its agents there left with it.
   bus.on((fr) => {
-    if (fr.t === "session" && fr.session.archived && !store.session(fr.session.id)) moves.cleanup(fr.session.id).catch((e) => errors.capture("server", e, { at: "handoff cleanup" }));
+    if (fr.t === "session" && fr.session.archived && !store.session(fr.session.id)) {
+      moves.cleanup(fr.session.id).catch((e) => errors.capture("server", e, { at: "handoff cleanup" }));
+      remoteAgents.sweep().catch((e) => errors.capture("server", e, { at: "remote agent sweep" }));
+    }
   });
   // A linked daemon's outbox: messages its sessions wrote for this daemon's.
   f.onOutbox = (machineId) => {
@@ -256,6 +279,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           const name = String(b.name ?? "").trim();
           if (!name) return bad("a machine needs a name");
           if (f.rows().some((r) => r.name.toLowerCase() === name.toLowerCase())) return bad(`a machine is already named ${name}`);
+          // One record per daemon: a second pairing would replace the first one's key there.
+          const same = f.rows().find((r) => r.daemon_url === url.origin);
+          if (same) return bad(`that daemon is already enabled as ${same.name}`);
           m = f.add({ name, source: "daemon", daemon_url: url.origin, workspace_root: root });
         }
         await f.check(m.id);
@@ -585,6 +611,32 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       }),
     },
 
+    // The terminal pane of a paired daemon's session placed here: its jobs on
+    // this machine, a log read, a stop, the owner's command and waiting for it.
+    "/api/fleet/hands/terminal": {
+      POST: linked(async (req) => {
+        const b = await body(req);
+        const sid = String(b.session ?? "");
+        if (!/^[\w-]+$/.test(sid)) return bad("no session");
+        switch (b.op) {
+          case "list": return json({ jobs: listJobs(spillRoot, sid) });
+          case "log": return json({ log: readJobLog(spillRoot, sid, String(b.job ?? ""), Number(b.from ?? 0)) });
+          case "stop": return json({ stopped: await stopOne(sid, String(b.job ?? "")) });
+          case "run": {
+            const cwd = resolve(String(b.cwd ?? ""));
+            if (!b.root || !contains(resolve(b.root), cwd) || !existsSync(cwd)) return bad(`not a directory inside the granted one: ${cwd}`);
+            const j = ownerRun(spillRoot, sid, String(b.command ?? ""), cwd);
+            return json({ job: { id: j.id, command: j.command, cwd } });
+          }
+          case "wait": {
+            const id = String(b.job ?? "");
+            return keepalive(async () => ({ job: await waitOne(spillRoot, sid, id, 5 * 60_000, req.signal), log: logPath(spillRoot, sid, id) }));
+          }
+          default: return bad("unknown op");
+        }
+      }),
+    },
+
     "/api/fleet/hands/instructions": {
       POST: linked(async (req) => {
         const b = await body(req);
@@ -649,7 +701,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       POST: linked(async (req) => {
         const u = new URL(req.url).searchParams;
         const p = resolve(u.get("path") ?? "");
-        if (!u.get("root") || !contains(resolve(u.get("root")!), p)) return bad("outside the granted directory");
+        if (!u.get("root") || !contains(resolve(u.get("root")!), p) || !contains(realOf(u.get("root")!), realOf(p))) return bad("outside the granted directory");
         mkdirSync(dirname(p), { recursive: true });
         await Bun.write(p, await req.arrayBuffer());
         return json({ ok: true });

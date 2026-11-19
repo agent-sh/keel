@@ -24,7 +24,9 @@ export type CallClass =
   | { kind: "shell"; command: string; escalate?: boolean }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
   | { kind: "edit"; paths: string[] }
-  | { kind: "other" }
+  // `grant` names the standing answer that covers it when the tool's name is
+  // too wide (keel__spawn_on_machine:<machine>: one machine, not all of them).
+  | { kind: "other"; grant?: string }
   // A message, answer or model command into another session. `resource` names
   // the tool and the target (keel__session_send:claude:abc); `owner` says why
   // only the owner may allow it.
@@ -106,8 +108,9 @@ export function decide(c: CallClass, f: Facts): Decision {
   }
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
-  if (f.rules.some((r) => r.kind === "tool" && r.pattern === f.tool)) return { allow: true };
-  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: f.tool }] } };
+  const grant = (c.kind === "other" && c.grant) || f.tool;
+  if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant)) return { allow: true };
+  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant }] } };
 }
 
 function decideShell(command: string, f: Facts): Decision {

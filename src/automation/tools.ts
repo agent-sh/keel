@@ -39,6 +39,24 @@ function waitResult(w: waits.WaitRecord, extra = "") {
 
 // --- subagents ---------------------------------------------------------------
 
+// An agent on another machine of the fleet. Starting work there is the gate's
+// call as keel__spawn_on_machine, and a standing answer covers one machine.
+const MACHINE_PROPS = {
+  machine: { type: "string", description: "Run the agent's tools on this machine of the fleet (a name from keel__machines_list). Omit to run where you run. Send it files with keel__send_files." },
+  cwd: { type: "string", description: "With machine: the directory there, inside its granted directory (default: the granted directory)" },
+};
+async function onMachine(input: any, prompt: unknown) {
+  const m = typeof input?.machine === "string" ? input.machine.trim() : "";
+  if (!m) return null;
+  const isolation = input.isolation ?? "worktree";
+  return {
+    name: "keel__spawn_on_machine",
+    readOnly: false,
+    input: { machine: m, worktree: isolation === "worktree", cwd: input.cwd, prompt: String(prompt ?? "").slice(0, 400) },
+    cls: { kind: "other" as const, grant: `keel__spawn_on_machine:${agents.machineKey(m)}` },
+  };
+}
+
 const Agent: Tool = {
   name: "Agent",
   families: CLAUDE,
@@ -60,11 +78,13 @@ const Agent: Tool = {
       run_in_background: { type: "boolean", description: "Return at once; the report arrives later as a message" },
       isolation: { type: "string", enum: ["worktree", "none"], description: "worktree (the default for agents that edit, in a git repository): its own checkout and branch; none: it edits your checkout" },
       output_schema: { type: "object", description: "A JSON schema the report must match; the report is then that JSON value" },
+      ...MACHINE_PROPS,
     },
     required: ["description", "prompt"],
   },
+  target: (input) => onMachine(input, input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: input.subagent_type, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: input.subagent_type, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd }, ctx.signal);
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report arrives as a message when it finishes; do other work or end your turn.`);
     if (a.status === "waiting") return ok(`Agent ${a.id} is waiting on a scheduled wait and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
     return a.status === "completed" ? ok(agents.reportBlock(a)) : fail(agents.reportBlock(a));
@@ -127,11 +147,13 @@ const spawn_agent: Tool = {
       model: { type: "string", description: "Model override for the new agent. Omit unless an explicit override is needed." },
       isolation: { type: "string", enum: ["worktree", "none"], description: "worktree (default for agents that edit, in a git repository) or none (edit this checkout)." },
       output_schema: { type: "object", description: "JSON schema the agent's final answer must match." },
+      ...MACHINE_PROPS,
     },
     required: ["message"],
   },
+  target: (input) => onMachine(input, input.message ?? input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd }, ctx.signal);
     return ok(JSON.stringify({ agent_id: a.id, nickname: a.title }));
   }),
 };

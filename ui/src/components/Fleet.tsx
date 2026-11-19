@@ -11,11 +11,12 @@ import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 
 // Names and one-line summaries of the fleet's tools on their rows.
-export const FLEET_LABEL: Record<string, string> = { keel__session_send: "Message", keel__sessions_list: "Sessions", keel__machines_list: "Machines" };
+export const FLEET_LABEL: Record<string, string> = { keel__session_send: "Message", keel__sessions_list: "Sessions", keel__machines_list: "Machines", keel__send_files: "Send files" };
 export function fleetSummary(name: string, input: any): string | undefined {
   if (name === "keel__session_send") return `to ${input.to ?? "?"}${input.wake === false ? " (queued)" : ""}: ${String(input.text ?? "").slice(0, 120)}`;
   if (name === "keel__sessions_list") return input.machine ? `on ${input.machine}` : "every machine";
   if (name === "keel__machines_list") return "the fleet";
+  if (name === "keel__send_files") return `${(Array.isArray(input.paths) ? input.paths : []).join(", ")} to ${input.agent_id ?? "?"}`;
   return undefined;
 }
 

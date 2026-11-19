@@ -33,6 +33,7 @@ export type AgentRecord = {
   restarts: number;
   worktree?: string | null; // the folder of its own git worktree, when it has one
   branch?: string | null;
+  machine?: string | null; // the fleet machine its tools run on, when not this one
   structured?: boolean; // its result is one JSON value matching the schema it was given
 };
 
@@ -89,7 +90,7 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS agents_parent ON agents(parent_id);
 CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
 }
@@ -282,7 +283,22 @@ function wake(id: string) {
 export type SpawnInput = {
   title?: string; prompt: string; type?: string; model?: string; background?: boolean; fork?: boolean;
   isolation?: "worktree" | "none"; output_schema?: unknown;
+  machine?: string; cwd?: string; // another machine of the fleet, and a directory there
 };
+
+// Agents on another machine: the fleet places them (a directory there, its own
+// worktree for one that edits) and says what is left there when they end.
+export type RemotePlace = { machine: string; name: string; cwd: string; worktree?: string; branch?: string; base?: string };
+export type RemotePlacer = {
+  // null: the agent runs on this daemon's machine like any other. Throws the refusal.
+  place(parent: Session, o: { machine?: string; cwd?: string; worktree: boolean; key: string; title: string }): Promise<RemotePlace | null>;
+  finished(a: AgentRecord): Promise<string>;
+  revive(a: AgentRecord): Promise<void>;
+  key(machine: string): string; // the machine's name as a standing answer names it
+};
+let remote: RemotePlacer | undefined;
+export const setRemotePlacer = (p: RemotePlacer) => void (remote = p);
+export const machineKey = (m: string) => remote?.key(m) ?? m.toLowerCase();
 
 // Several agents started together on a model whose prompt cache the parent has
 // not warmed (another model, or the parent's last call is past the cache's
@@ -355,9 +371,14 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   await D().providers.resolve(model);
   const title = (input.title || input.prompt.split("\n")[0]!).slice(0, 80);
   const id = Bun.randomUUIDv7().slice(-12);
-  const iso = await isolate(parent, def, input, title, id);
-  const child = store.createSession({ model, workspace: iso?.cwd ?? parent.workspace, title });
-  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parentId, child.id);
+  const wantWorktree = (input.isolation ?? def.isolation ?? (def.readOnly ? "none" : "worktree")) === "worktree" && !def.readOnly;
+  const placed = input.machine || parent.machine
+    ? await (remote ?? { place: async () => { throw new Error("the fleet is not running: no agent can start on another machine"); } })
+      .place(parent, { machine: input.machine, cwd: input.cwd, worktree: wantWorktree, key: id, title })
+    : null;
+  const iso = placed ? null : await isolate(parent, def, input, title, id);
+  const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title });
+  store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
   if (iso) wts().adopt(child.id, iso.wt);
   inheritPermissions(parentId, child.id, def);
   bus.emit({ t: "session", session: store.session(child.id)! });
@@ -374,13 +395,14 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   const now = Date.now();
   const schema = input.output_schema === undefined ? null : JSON.stringify(input.output_schema);
   store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, output_schema) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
-  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? null, iso?.wt.branch ?? null, schema);
-  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model})`, { agent_id: id, child_session: child.id });
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
+  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema);
+  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})`, { agent_id: id, child_session: child.id });
   const task = [
     PREAMBLE, def.body,
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Edit only there and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
+    placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Edit only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
     schema ? `Your final message must be only one JSON value that matches this JSON schema, with no other text:\n${schema}` : "",
     `Task:\n${input.prompt}`,
   ].filter(Boolean).join("\n\n");
@@ -507,7 +529,8 @@ async function finish(a: AgentRecord, status: AgentStatus) {
       result = `The report never matched its schema (${why}). Its last answer:\n${text}`;
     }
   }
-  if (a.worktree) result += await worktreeNote(a);
+  if (a.machine) result += remote ? await remote.finished(a) : "";
+  else if (a.worktree) result += await worktreeNote(a);
   const silent = !!defOf(a.id)?.silent;
   const blocked = silent || (!a.background && (waiters.get(a.id)?.length ?? 0) > 0);
   const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked })!;
@@ -553,7 +576,8 @@ export async function send(id: string, message: string, interrupt = false): Prom
   const { engine, store } = D();
   if (!store.session(a.session_id)) throw new Error("the agent's session is gone");
   // A finished work agent whose empty worktree went gets a fresh one at the same place.
-  const w = a.worktree ? wts().get(a.session_id) : undefined;
+  if (a.machine && remote) await remote.revive(a);
+  const w = a.worktree && !a.machine ? wts().get(a.session_id) : undefined;
   const parent = store.session(a.parent_id);
   if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title)).wt);
   const text = `Message from the session that started you:\n${message}`;
