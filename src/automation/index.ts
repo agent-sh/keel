@@ -136,6 +136,9 @@ function init(deps: Deps) {
 
   clearInterval(g.__keelAutomationTick);
   g.__keelAutomationTick = setInterval(() => {
+    // Most seconds nothing is active: one indexed query says so and the
+    // tick ends there (each step below would find nothing to do).
+    if (!busy(deps)) return;
     waits.tick().catch((e) => capture(e, { at: "waits tick" }));
     try {
       if (!runMode.client) loops.tick(); // a command's own daemon claims no Loop
@@ -147,6 +150,15 @@ function init(deps: Deps) {
       capture(e, { at: "tick" });
     }
   }, 1000);
+}
+
+function busy(deps: Deps): boolean {
+  const now = Date.now();
+  return !!deps.store.db.query<{ n: number }, [number, number]>(`SELECT
+    EXISTS (SELECT 1 FROM waits WHERE status = 'active') OR
+    EXISTS (SELECT 1 FROM agents WHERE status IN ('running', 'waiting')) OR
+    EXISTS (SELECT 1 FROM loops WHERE enabled = 1 AND next_ms IS NOT NULL AND next_ms <= ?) OR
+    EXISTS (SELECT 1 FROM snoozes WHERE until_ms IS NOT NULL AND until_ms <= ?) AS n`).get(now, now)?.n;
 }
 
 // An archived session runs neither its agents nor its waits.
