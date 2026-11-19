@@ -13,7 +13,7 @@ import { ownerHooksPath, parseHooks } from "../../integrations/hooks.ts";
 import { configDir } from "../../providers/config.ts";
 import { pluginsFile } from "../../providers/plugins/config.ts";
 import { rootOf } from "../../safety/trust.ts";
-import { discoverSkills, setSkillOff, type Skill } from "../../tools/skills.ts";
+import { discoverSkills, listingOf, setSkillOff, setSkillUsage, type Skill } from "../../tools/skills.ts";
 import { presence } from "./permissions.ts";
 import { trustRef } from "./trust.ts";
 
@@ -55,12 +55,21 @@ export const surfaceRoutes: RouteModule = (deps) => {
   };
 
   // --- skills
-  const skillView = (cwd: string) => (s: Skill) => ({
+  // How often each skill was loaded: the listing keeps the descriptions of the ones in use.
+  const { store } = deps;
+  store.migrate("CREATE TABLE IF NOT EXISTS skill_uses (name TEXT PRIMARY KEY, count INTEGER NOT NULL, last INTEGER NOT NULL)");
+  setSkillUsage({
+    uses: () => new Map(store.db.query<{ name: string; count: number }, []>("SELECT name, count FROM skill_uses").all().map((r) => [r.name, r.count])),
+    record: (name) => void store.db.query("INSERT INTO skill_uses (name, count, last) VALUES (?, 1, ?) ON CONFLICT(name) DO UPDATE SET count = count + 1, last = excluded.last").run(name, Date.now()),
+  });
+  const skillView = (cwd: string, nameOnly: Set<string> = new Set(listingOf(cwd).nameOnly)) => (s: Skill) => ({
     name: s.name, description: s.description, scope: s.scope, kind: s.kind, root: s.root, dir: s.dir, file: s.file, enabled: s.enabled,
     user_invocable: s.userInvocable, model_invocable: s.modelInvocable, argument_hint: s.argumentHint,
     trust: s.scope === "project" ? trustOf(cwd, held(s)) : null,
     // What it costs: its line in every session's listing, and its body when loaded (about 4 characters a token).
     listing_tokens: s.modelInvocable ? Math.ceil((s.name.length + s.description.length + 4) / 4) : 0,
+    // Past the listing's budget its description is left out (the least loaded first).
+    name_only: s.modelInvocable && s.enabled && nameOnly.has(s.name),
   });
   const held = (s: Skill) => (s.kind === "command" ? s.file : s.dir);
   const skillHome = (cwd: string, scope: string) => (scope === "project" ? join(rootOf(cwd) ?? cwd, ".agents", "skills") : join(configDir(), "skills"));

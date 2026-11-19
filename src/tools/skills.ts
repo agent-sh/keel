@@ -281,6 +281,7 @@ export function loadSkill(name: string, args: string, ctx: ToolContext) {
   loaded.set(ctx.sessionId, sent);
   if (sent.has(text)) return ok(`The skill "${skill.name}" is already loaded above; follow it.`);
   sent.add(text);
+  usage?.record(skill.name);
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}`);
 }
 
@@ -296,23 +297,49 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
     CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root } : {}), CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
     CLAUDE_SESSION_ID: sessionId, KEEL_SESSION_ID: sessionId,
   });
+  usage?.record(skill.name);
   return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}` };
 }
 
-// The listing: every name, descriptions while they fit the budget.
-const LISTING_BUDGET = 8_000;
-export function skillListing(cwd: string): string {
-  const skills = discoverSkills(cwd).filter((s) => s.modelInvocable && s.enabled);
-  if (!skills.length) return "";
-  let used = 0;
-  const lines = skills.map((s) => {
-    const d = s.description.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\s+/g, " ");
-    const line = `- ${s.name}: ${d}`;
-    if (used + line.length > LISTING_BUDGET) return `- ${s.name}`;
-    used += line.length;
-    return line;
+// The listing, as Claude Code keeps it (code.claude.com/docs/en/skills,
+// 2026-11-19): every name always; each description cut at 1,536 characters;
+// past the budget, descriptions go first from the skills loaded least, so the
+// ones in use keep their text; and a line says some are listed by name only.
+export const LISTING_BUDGET = 8_000;
+export const DESCRIPTION_CAP = 1_536;
+export type ListingEntry = { name: string; description: string; uses: number };
+export function fitListing(entries: ListingEntry[], budget = LISTING_BUDGET): { lines: string[]; nameOnly: string[] } {
+  const full = entries.map((e) => {
+    const d = e.description.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\s+/g, " ").trim();
+    return `- ${e.name}: ${d.length > DESCRIPTION_CAP ? `${d.slice(0, DESCRIPTION_CAP - 3)}...` : d}`;
   });
-  return `Skills you can load with the skill tool when a task matches one (the body comes back as its result):\n${lines.join("\n")}`;
+  // Every name is kept; the budget is spent on descriptions, most used first.
+  let used = entries.reduce((n, e) => n + e.name.length + 3, 0);
+  const keep = new Set<number>();
+  for (const i of entries.map((_, i) => i).sort((a, b) => entries[b]!.uses - entries[a]!.uses || a - b)) {
+    const extra = full[i]!.length - (entries[i]!.name.length + 2);
+    if (used + extra > budget) continue;
+    used += extra;
+    keep.add(i);
+  }
+  return { lines: entries.map((e, i) => (keep.has(i) ? full[i]! : `- ${e.name}`)), nameOnly: entries.filter((_, i) => !keep.has(i)).map((e) => e.name) };
+}
+
+// How often each skill was loaded (the daemon keeps the counts; none: all equal).
+let usage: { uses(): Map<string, number>; record(name: string): void } | null = null;
+export const setSkillUsage = (u: typeof usage) => void (usage = u);
+
+export function listingOf(cwd: string) {
+  const skills = discoverSkills(cwd).filter((s) => s.modelInvocable && s.enabled);
+  const uses = usage?.uses() ?? new Map<string, number>();
+  return fitListing(skills.map((s) => ({ name: s.name, description: s.description, uses: uses.get(s.name) ?? 0 })));
+}
+
+export function skillListing(cwd: string): string {
+  const { lines, nameOnly } = listingOf(cwd);
+  if (!lines.length) return "";
+  const note = nameOnly.length ? `\n(${nameOnly.length} of them are listed by name only, to keep this list short: load one by name to read what it is for.)` : "";
+  return `Skills you can load with the skill tool when a task matches one (the body comes back as its result):\n${lines.join("\n")}${note}`;
 }
 
 registerHooks({ system: (s) => skillListing(s.workspace) });
