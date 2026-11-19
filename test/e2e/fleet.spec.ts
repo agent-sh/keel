@@ -45,7 +45,7 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     // A placement rule: sessions go to the other machine when Auto is picked.
     await page.getByLabel("Kind of work").selectOption("session");
     await page.getByTestId("placement-machine").selectOption({ label: "devbox" });
-    await page.getByLabel("Note").fill("work lives there");
+    await page.getByLabel("Note", { exact: true }).fill("work lives there");
     await page.getByTestId("placement-add").click();
     await expect(page.getByTestId("placement-rule")).toContainText("When a session, run it on devbox");
     await shoot(page, "fleet-01-machines");
@@ -73,6 +73,23 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(page.locator('[data-testid="machine-option"]').filter({ hasText: "devbox" })).toBeVisible();
     await page.locator('[data-testid="machine-option"][data-machine="auto"]').click();
     await expect(page.getByTestId("machine-picker")).toContainText("Auto");
+    // Before sending, the start box says where Auto puts it: the other
+    // machine's directory, not a folder of this machine (no folder picker).
+    await expect(page.getByTestId("auto-place")).toContainText(/places it on\s*devbox/);
+    await expect(page.getByTestId("auto-place")).toContainText(ROOT);
+    await expect(page.getByTestId("workspace-picker")).toHaveCount(0);
+    await shoot(page, "fleet-03a-auto-place");
+    // A request with a folder of this machine is not moved onto that one.
+    const kept = await request.post("/api/fleet/sessions", { data: { machine: "auto", text: "", model: HAIKU, local_workspace: `${process.env.HOME}/.cache/keel-work/bun/e2e-ws` } });
+    expect(kept.status()).toBe(409);
+    expect((await kept.json()).error).toContain("not in");
+    // A model this daemon cannot use is refused the same way wherever Auto goes, before any session.
+    const before = (await (await request.get("/api/sessions")).json()).sessions.length;
+    for (const machine of ["auto", "local-none"]) {
+      const r = await request.post("/api/fleet/sessions", { data: { machine, text: "hi", model: "nosuch:model" } });
+      expect(r.status()).toBe(409);
+    }
+    expect((await (await request.get("/api/sessions")).json()).sessions.length).toBe(before);
     await page.getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill("haiku 5.5");
     await page.getByRole("option").first().click();
@@ -87,6 +104,17 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(tool).toContainText(token);
     await expect(tool).toContainText(ROOT);
     await shoot(page, "fleet-03-tool-on-peer");
+    // A checklist item of this session taken into a session of its own keeps
+    // the machine its folder is on.
+    const placedId = new URL(page.url()).pathname.split("/").pop()!;
+    const placedMachine = (await (await request.get(`/api/sessions/${placedId}`)).json()).session.machine;
+    expect(placedMachine).toBeTruthy();
+    await request.post(`/api/sessions/${placedId}/tasks`, { data: { text: "Reply with the single word: ok" } });
+    const task = (await (await request.get(`/api/sessions/${placedId}/tasks`)).json()).tasks[0];
+    const started = await (await request.post(`/api/sessions/${placedId}/tasks/${task.id}/start`)).json();
+    expect((await (await request.get(`/api/sessions/${started.session_id}`)).json()).session.machine).toBe(placedMachine);
+    await request.post(`/api/sessions/${started.session_id}/interrupt`);
+    await request.delete(`/api/sessions/${started.session_id}`);
 
     // One command on the other machine from a session that stays here.
     await page.getByTestId("new-session").click();

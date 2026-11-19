@@ -10,6 +10,7 @@ import type { Snooze } from "../../../src/automation/snooze.ts";
 import type { Goal, Task } from "../../../src/automation/goals.ts";
 import { api, onFeature, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
+import { remoteId, splitId } from "./fleet-ids.ts";
 
 export type { Goal, Task };
 export type { Activity, AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, Snooze, WaitRecord };
@@ -145,7 +146,12 @@ export const auto = {
   addTask: (sid: string, text: string) => api(`/api/sessions/${sid}/tasks`, { method: "POST", body: JSON.stringify({ text }) }),
   editTask: (sid: string, id: string, body: Partial<Pick<Task, "text" | "status">>) => api(`/api/sessions/${sid}/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   removeTask: (sid: string, id: string) => api(`/api/sessions/${sid}/tasks/${id}`, { method: "DELETE" }),
-  startTask: (sid: string, id: string) => api<{ session_id: string }>(`/api/sessions/${sid}/tasks/${id}/start`, { method: "POST" }),
+  // The new session is on the daemon that owns the source session.
+  startTask: (sid: string, id: string) =>
+    api<{ session_id: string }>(`/api/sessions/${sid}/tasks/${id}/start`, { method: "POST" }).then((r) => {
+      const from = splitId(sid);
+      return from ? { ...r, session_id: remoteId(from.machine, r.session_id) } : r;
+    }),
   advisor: () => api<{ model: string | null }>("/api/advisor"),
   setAdvisor: (model: string | null) => api<{ model: string | null }>("/api/advisor", { method: "PUT", body: JSON.stringify({ model }) }),
   sessionAdvisor: (sid: string) => api<{ model: string | null; own: string | null; default: string | null }>(`/api/sessions/${sid}/advisor`),

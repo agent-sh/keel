@@ -14,7 +14,8 @@ export function splitId(id: string): { machine: string; id: string } | null {
 
 export const apiPath = (p: string) => p.replace(/^\/api\/sessions\/([A-Za-z0-9]+)--([\w-]+)/, "/api/fleet/machines/$1/api/sessions/$2");
 
-export const asRemote = (machine: string, s: Session): Session => ({ ...s, id: remoteId(machine, s.id), machine });
+// Its parent is a session of that daemon too: the backlink opens it there.
+export const asRemote = (machine: string, s: Session): Session => ({ ...s, id: remoteId(machine, s.id), machine, ...(s.parent_id ? { parent_id: remoteId(machine, s.parent_id) } : {}) });
 
 // What the API answered for a session, keyed as the page knows it.
 export function localize(id: string, s: Session, events?: StoredEvent[]) {
@@ -30,7 +31,18 @@ export function relayed(machine: string, f: Frame): Frame | null {
     case "session": return { ...f, session: asRemote(machine, f.session) };
     case "event": return { t: "event", event: { ...f.event, session_id: map(f.event.session_id)! } };
     case "delta": return { ...f, session_id: map(f.session_id)! };
-    case "feature": return { ...f, session_id: map(f.session_id) };
+    case "queue": return { ...f, session_id: map(f.session_id)! };
+    case "status": return { ...f, session_id: map(f.session_id)! };
+    case "feature": {
+      // An automation update names its sessions inside the payload (a goal's or
+      // a checklist's session, an agent's parent): those are the other daemon's too.
+      const d = f.name === "automation" ? (f.data as { kind: string; data: any }) : null;
+      const q = (v: unknown) => (typeof v === "string" ? map(v) : v);
+      const inner = d?.data && typeof d.data === "object" && ("session_id" in d.data || "parent_id" in d.data)
+        ? { ...d, data: { ...d.data, ...("session_id" in d.data ? { session_id: q(d.data.session_id) } : {}), ...("parent_id" in d.data ? { parent_id: q(d.data.parent_id) } : {}) } }
+        : f.data;
+      return { ...f, session_id: map(f.session_id), data: inner };
+    }
     default: return null;
   }
 }
