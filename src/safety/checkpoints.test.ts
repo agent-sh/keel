@@ -2,7 +2,7 @@
 // e2e cannot stage (a git step that fails, retention, an edit landing between
 // two tool calls of one turn, a restore cut before its result was recorded).
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `ckpt-${process.pid}`);
@@ -101,6 +101,26 @@ test("an edit landing while a file edit tool runs is outside work; while a shell
     const p = await t.c.rewind(t.s, { turn: Math.max(...t.c.list(t.s.id).map((x) => x.turn)), preview: true });
     expect([p.files, p.skipped]).toEqual(shell ? [["A", "B"], []] : [["A"], ["B"]]);
   }
+});
+
+test("written-only checkpoints keep a file's executable bit and follow a write through a link", async () => {
+  const t = setup({ "tool.sh": "echo a\n", "real.txt": "a\n" });
+  chmodSync(join(t.ws, "tool.sh"), 0o755);
+  symlinkSync(join(t.ws, "real.txt"), join(t.ws, "alias.txt"));
+  t.c.shadow(t.ws).mode = "written";
+  t.store.append(t.s.id, "user", { text: "edit" });
+  t.store.append(t.s.id, "turn_start", {});
+  for (const f of ["tool.sh", "alias.txt"]) {
+    const call = { id: f, tool: { name: "Edit", readOnly: false, kind: "edit" }, input: { file_path: join(t.ws, f) }, ctx: { cwd: t.ws } } as any;
+    await t.c.before(t.s, call);
+    t.write(f, "changed\n");
+    await t.c.after(t.s, call);
+  }
+  await t.c.end(t.s);
+  const turn = Math.max(...t.c.list(t.s.id).map((x) => x.turn));
+  expect((await t.c.rewind(t.s, { turn, preview: true })).files.sort()).toEqual(["real.txt", "tool.sh"]);
+  await t.c.rewind(t.s, { turn });
+  expect([t.read("tool.sh"), t.read("real.txt"), statSync(join(t.ws, "tool.sh")).mode & 0o111]).toEqual(["echo a\n", "a\n", 0o111]);
 });
 
 test("a confirmed restore takes only what the preview showed, at the version it showed", async () => {

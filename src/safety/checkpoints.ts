@@ -10,7 +10,7 @@ import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
-import { contains } from "../core/paths.ts";
+import { contains, realOf } from "../core/paths.ts";
 import { classifyCall } from "./gate.ts";
 import { Shadow, type DiffResult, type FileChange } from "./shadow.ts";
 import { hunkPatch } from "./patch.ts";
@@ -599,6 +599,9 @@ export class Bad extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
 }
 
+// Workspace-relative paths of the files a call writes, where the writes land:
+// a link in the workspace is its target (when that is in the workspace too).
 function rel(workspace: string, paths: string[]): string[] {
-  return paths.filter((p) => contains(workspace, p)).map((p) => relative(workspace, p)).filter(Boolean);
+  const root = realOf(workspace);
+  return paths.map((p) => realOf(p)).filter((p) => contains(root, p)).map((p) => relative(root, p)).filter(Boolean);
 }

@@ -3,7 +3,7 @@
 // own repository (its index, refs and objects stay as they were). Every
 // operation on one shadow runs one at a time.
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { readText } from "../core/proc.ts";
@@ -164,7 +164,9 @@ export class Shadow {
       const present = paths.filter((p) => { try { return lstatSync(join(this.workspace, p)).isFile(); } catch { return false; } });
       if (present.length) {
         const shas = (await this.git(["hash-object", "-w", "--stdin-paths"], { input: present.join("\n") + "\n" })).trim().split("\n");
-        const info = present.map((p, i) => `100644 ${shas[i]}\t${p}`).join("\n") + "\n";
+        // The file's mode as git records it: executable or not.
+        const mode = (p: string) => (statSync(join(this.workspace, p)).mode & 0o111 ? "100755" : "100644");
+        const info = present.map((p, i) => `${mode(p)} ${shas[i]}\t${p}`).join("\n") + "\n";
         await this.git(["update-index", "--add", "--index-info"], { index, input: info });
       } else return EMPTY_TREE;
       return (await this.git(["write-tree"], { index })).trim();
