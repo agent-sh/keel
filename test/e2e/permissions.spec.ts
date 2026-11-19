@@ -110,3 +110,36 @@ test("permission gate", async ({ page, request }) => {
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// A permissions read held back past a newer change (a slow reconnect) never
+// puts the older mode back on screen, whichever way the change went.
+test("a late permissions read never brings back an older mode", async ({ page, request }) => {
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `perm-late-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  const label: Record<string, string> = { "full-auto": "Full auto", "read-only": "Read only" };
+  for (const [from, to] of [["full-auto", "read-only"], ["read-only", "full-auto"]] as const) {
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: from } });
+    let release = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    let read = () => {};
+    const readDone = new Promise<void>((r) => (read = r));
+    await page.route(`**/api/sessions/${session.id}/permissions`, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const stale = await route.fetch(); // read now, delivered after the change
+      read();
+      await held;
+      await route.fulfill({ response: stale });
+    });
+    await page.goto(`/s/${session.id}`);
+    await readDone;
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: to } });
+    await expect(page.getByTestId("permission-mode")).toHaveText(label[to]!);
+    release();
+    await page.waitForResponse((r) => r.url().endsWith(`/api/sessions/${session.id}/permissions`));
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId("permission-mode")).toHaveText(label[to]!);
+    await page.unroute(`**/api/sessions/${session.id}/permissions`);
+  }
+  await request.delete(`/api/sessions/${session.id}`);
+});

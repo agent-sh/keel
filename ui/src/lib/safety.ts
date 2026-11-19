@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { Approval, SessionPerm } from "../../../src/safety/gate.ts";
 import type { Rule, Suggest } from "../../../src/safety/policy.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { api, newer, onFeature, reportError } from "./store.ts";
 
 export type { Approval, Rule, SessionPerm, Suggest };
 export type ModeInfo = { id: SessionPerm["mode"]; name: string; description: string };
@@ -66,9 +66,12 @@ export const safety = {
     try {
       const [[a, p], seen] = await hydrate(() => Promise.all([
         api<{ approvals: Approval[] }>(`/api/sessions/${id}/approvals`),
-        api<{ perm: SessionPerm }>(`/api/sessions/${id}/permissions`),
+        api<{ perm: SessionPerm; rev?: number }>(`/api/sessions/${id}/permissions`),
       ]));
-      set({ approvals: { ...state.approvals, [id]: replay(a.approvals, seen, id) }, perms: { ...state.perms, [id]: p.perm } });
+      // The mode is ordered by the bus rev: a snapshot read before a newer
+      // perm frame never puts back the mode that frame replaced (a stale
+      // read must not loosen what the owner just set, or tighten it back).
+      set({ approvals: { ...state.approvals, [id]: replay(a.approvals, seen, id) }, perms: newer(`${id}:perm`, p.rev, true) ? { ...state.perms, [id]: p.perm } : state.perms });
     } catch (e) {
       if ((e as { status?: number }).status !== 404) throw e;
       shown.delete(id);
@@ -105,8 +108,8 @@ export const safety = {
     set({ grants: r.grants });
   },
   setPerm: async (id: string, patch: Partial<Omit<SessionPerm, "session_id">>) => {
-    const r = await api<{ perm: SessionPerm }>(`/api/sessions/${id}/permissions`, { method: "PUT", body: JSON.stringify(patch) });
-    set({ perms: { ...state.perms, [id]: r.perm } });
+    const r = await api<{ perm: SessionPerm; rev?: number }>(`/api/sessions/${id}/permissions`, { method: "PUT", body: JSON.stringify(patch) });
+    if (newer(`${id}:perm`, r.rev, true)) set({ perms: { ...state.perms, [id]: r.perm } });
   },
   answer: (sessionId: string, approvalId: string, body: { choice: string; reason?: string; rules?: Suggest[] }) =>
     api(`/api/sessions/${sessionId}/approvals/${approvalId}`, { method: "POST", body: JSON.stringify(body) }),
@@ -128,7 +131,7 @@ onFeature({
       set({ approvals: { ...state.approvals, [a.session_id]: put(state.approvals[a.session_id] ?? [], a) } });
     } else if (f.name === "perm") {
       const p = f.data as SessionPerm;
-      set({ perms: { ...state.perms, [p.session_id]: p } });
+      if (newer(`${p.session_id}:perm`, f.rev)) set({ perms: { ...state.perms, [p.session_id]: p } });
     } else if (f.name === "grants") {
       safety.loadGrants().catch(reportError);
     }

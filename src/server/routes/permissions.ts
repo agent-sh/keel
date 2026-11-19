@@ -68,7 +68,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     "/api/sessions/:id/permissions": {
       GET: (req: any) => {
         const s = store.session(req.params.id);
-        return s ? json({ perm: g.perm(s.id), scope: g.scopeOf(s.workspace) }) : bad("no such session", 404);
+        // `rev`: the bus frame this read reflects, so a page orders it against perm frames.
+        return s ? json({ perm: g.perm(s.id), scope: g.scopeOf(s.workspace), rev: deps.bus.rev() }) : bad("no such session", 404);
       },
       PUT: async (req: any) => {
         const s = store.session(req.params.id);
@@ -85,7 +86,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         if (b.mode !== undefined) patch.mode = b.mode;
         if (b.sandbox !== undefined) patch.sandbox = b.sandbox;
         if (b.network !== undefined) patch.network = !!b.network;
-        return json({ perm: g.setPerm(s.id, patch) });
+        const perm = g.setPerm(s.id, patch);
+        return json({ perm, rev: deps.bus.rev() });
       },
     },
     // What the reviewer of reviewer mode refused, newest first; the owner can let one retry through.

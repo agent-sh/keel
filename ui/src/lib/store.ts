@@ -266,7 +266,7 @@ export type ContextInfo = {
 // older daemon) always applies, as before. `tie`: a snapshot read at a frame's
 // rev already reflects that frame.
 const revs = new Map<string, number>();
-function newer(key: string, rev: number | undefined, tie = false): boolean {
+export function newer(key: string, rev: number | undefined, tie = false): boolean {
   if (rev === undefined) return true;
   const cur = revs.get(key) ?? 0;
   if (tie ? rev < cur : rev <= cur) return false;
