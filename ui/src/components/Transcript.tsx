@@ -1,6 +1,6 @@
 import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Fragment, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
@@ -443,6 +443,8 @@ function Live({ sessionId, working, asking, since, previewing }: { sessionId: st
   );
 }
 
+const TAIL = 150; // events rendered first when a long session opens
+
 export function Transcript({ sessionId }: { sessionId: string }) {
   const all = useStore((s) => s.events[sessionId]);
   const session = useStore((s) => s.sessions[sessionId])!;
@@ -523,7 +525,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const el = scroller.current;
       if (!el) return;
       // The message box keeps the column's edges: it gets the scroll bar's width as padding.
-      document.documentElement.style.setProperty("--sbw", `${el.offsetWidth - el.clientWidth}px`);
+      // Set on this session's own column, and only when it changes: a write on the
+      // document restyled every station's transcript at each streamed line.
+      const box = el.closest<HTMLElement>(".k-session");
+      const sbw = `${el.offsetWidth - el.clientWidth}px`;
+      if (box && box.style.getPropertyValue("--sbw") !== sbw) box.style.setProperty("--sbw", sbw);
       if (stick.current) el.scrollTop = el.scrollHeight;
       else if (anchor.current?.el.isConnected) {
         const moved = anchor.current.el.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.current.top;
@@ -566,6 +572,24 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => cancelAnimationFrame(raf);
   }, [focus, events]);
 
+  // A long session opens at its end: its newest events render first, from the
+  // turn they belong to, and the rest join in a transition right after (input
+  // and streaming keep the main thread meanwhile). Everything ends up mounted,
+  // so the browser's find and a jump to any event still work.
+  const [whole, setWhole] = useState(false);
+  useEffect(() => setWhole(false), [sessionId]);
+  const cut = useMemo(() => {
+    if (!events || events.length <= TAIL) return 0;
+    for (let i = events.length - TAIL; i > 0; i--) if (events[i]!.kind === "user" && !events[i]!.data.origin) return i;
+    return 0;
+  }, [events]);
+  const from = whole || (focus && events?.findIndex((e) => e.id === focus)! < cut) ? 0 : cut;
+  useEffect(() => {
+    if (from === 0) return;
+    const t = setTimeout(() => startTransition(() => setWhole(true)), 0);
+    return () => clearTimeout(t);
+  }, [from]);
+
   if (!events) return <div className="flex-1" />;
   const lastStart = [...events].reverse().find((e) => e.kind === "turn_start");
   // A question card waiting on the owner says so itself; no "Working" under it.
@@ -602,7 +626,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             </div>
           )}
           {events.length === 0 && session.phase !== "working" && <p className="py-10 text-center text-ui text-faint">No messages yet.</p>}
-          {events.map((e, idx) => {
+          {events.slice(from).map((e, i) => {
+            const idx = from + i;
             if (e.kind === "user") {
               // Folded into the turn's notes (the footer); the cut itself shows on the footer.
               if (e.data.origin === "restart") { notes.push(e); return null; }

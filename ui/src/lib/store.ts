@@ -140,6 +140,8 @@ export const actions = {
   grokSignIn: () => api<any>("/api/providers/grok/sign-in", { method: "POST" }),
   grokSignInState: () => api<any>("/api/providers/grok/sign-in"),
   async loadSession(id: string) {
+    // The page's first session load started at boot (see preloadSession) is taken once.
+    if (preload?.id === id) { const p = preload.p; preload = null; return p; }
     // Events that arrive while the snapshot is on its way are kept and merged:
     // the snapshot may be older or newer than any of them.
     if (!state.events[id]) loading.set(id, loading.get(id) ?? []);
@@ -373,6 +375,20 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
 // is closed and opened again.
 let retry = 500;
 let socket: WebSocket | undefined;
+// The session in the address is asked for at boot, with the page's first
+// loads, not once its view mounts (after the lazy chunks and the first render).
+let preload: { id: string; p: Promise<void> } | null = null;
+export function preloadSession(id: string) {
+  const p = actions.loadSession(id);
+  p.catch(() => {}); // its view takes this promise and reports a failure
+  preload = { id, p };
+}
+// The page's first socket open does not load the sessions, models and errors
+// the page is loading at start; it does when those loads failed (the daemon
+// was not up yet).
+let opened = false;
+let bootLoad: Promise<unknown> | null = null;
+export const setBootLoad = (p: Promise<unknown>) => { bootLoad = p; };
 let onReplayed: (() => void) | undefined;
 export function connect() {
   const ws = (socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`));
@@ -388,9 +404,14 @@ export function connect() {
     ws.send(JSON.stringify({ op: "resume", cursors }));
     // What the page loads at start is loaded again: a first load the daemon
     // was not up for (a restart under the page) comes in now, quietly.
-    const loads: Promise<unknown>[] = [actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }))];
-    if (!state.loaded.models) actions.loadModels().catch((e) => reportError(e, { at: "reconnect" }));
-    actions.loadErrors().catch((e) => reportError(e, { at: "reconnect" }));
+    const reload = () => {
+      if (!state.loaded.models) actions.loadModels().catch((e) => reportError(e, { at: "reconnect" }));
+      actions.loadErrors().catch((e) => reportError(e, { at: "reconnect" }));
+      return actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }));
+    };
+    const first = !opened && bootLoad;
+    opened = true;
+    const loads: Promise<unknown>[] = [first ? first.then(() => {}, reload) : reload()];
     // Queue and status of the open sessions moved meanwhile (their events come by the
     // replay); one deleted meanwhile is dropped.
     for (const id of Object.keys(cursors)) {
@@ -405,6 +426,7 @@ export function connect() {
     // answer from a socket that dropped meanwhile declares nothing.
     const replayed = new Promise<void>((done) => (onReplayed = done));
     Promise.all([replayed, ...loads]).then(() => { if (socket === ws && state.connected) set({ synced: true }); });
+    // Features load their own state here, the first open included.
     for (const l of features) l.reconnect?.();
     pinger = setInterval(() => {
       ws.send(JSON.stringify({ op: "ping", nonce: Date.now() }));

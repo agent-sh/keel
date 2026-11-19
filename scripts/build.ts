@@ -9,6 +9,7 @@ const res = await Bun.build({
   entrypoints: ["src/main.ts"],
   compile: target ? { outfile: out, target } : { outfile: out },
   minify: true,
+  splitting: true,
   sourcemap: "none",
   plugins: [tailwind],
   define: { "process.env.NODE_ENV": '"production"' },

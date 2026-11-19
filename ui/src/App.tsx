@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
+import { Attention, setBaseTitle } from "./components/Attention.tsx";
 import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import "./lib/builtins.ts";
@@ -10,8 +11,8 @@ import { AdminBand } from "./components/AdminBand.tsx";
 import "./lib/integrations-ui.ts";
 import "./lib/surfaces-ui.ts";
 import { installKeymap } from "./lib/keys.ts";
-import { actions, connect, reportError } from "./lib/store.ts";
-import { phone, savePref, setUI, useUI } from "./lib/ui.ts";
+import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
+import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
 
 // Overlays and Settings load on first use; the first page carries the shell only.
 const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
@@ -32,18 +33,23 @@ export function App() {
   const route = useUI((s) => s.route);
 
   useEffect(() => {
+    const at = getUI().route;
+    if (at.name === "session") preloadSession(at.id);
+    const boot = actions.loadSessions();
+    setBootLoad(boot);
+    boot.catch(reportError);
     connect();
-    actions.loadSessions().catch(reportError);
     actions.loadModels().catch(reportError);
     actions.loadErrors().catch(reportError);
     return installKeymap();
   }, []);
-  useEffect(() => { if (route.name !== "session") document.title = route.name === "settings" ? "Settings - Keel" : "Keel"; }, [route]);
+  useEffect(() => { if (route.name !== "session") setBaseTitle(route.name === "settings" ? "Settings - Keel" : "Keel"); }, [route]);
 
   const sidebar = useUI((s) => s.sidebar);
   const page = route.name === "settings";
   return (
     <Boundary>
+      <Attention />
       <div
         className="k-app"
         onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()}
