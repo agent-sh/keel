@@ -21,7 +21,7 @@ import { buildBundle } from "../../admin/bundle.ts";
 import { installLogs, LEVELS, logDir, logLines, onLog } from "../../admin/logs.ts";
 import { endpointOf, headersOf, OtlpExporter } from "../../admin/otlp.ts";
 import { onSettings, registerSettings, settings } from "../../admin/settings.ts";
-import { traceIdOf, Tracer, turnSpanId } from "../../admin/trace.ts";
+import { traceparent, Tracer } from "../../admin/trace.ts";
 import { registerEnv } from "../../tools/jobs.ts";
 import { errorClass } from "../../admin/classes.ts";
 import { errorText } from "../../engine/retry.ts";
@@ -69,10 +69,8 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   // A command a turn runs joins the turn's trace (W3C trace context), as Claude Code's shells do, when traces go out.
   registerEnv((sid): Record<string, string> => {
     if (!exporter.state.endpoint || !engine.isRunning(sid)) return {};
-    const turn = store.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(sid);
-    if (!turn) return {};
-    const trace = traceIdOf(turn.id);
-    return { TRACEPARENT: `00-${trace}-${turnSpanId(trace)}-01` };
+    const c = t.context(sid);
+    return c ? { TRACEPARENT: traceparent(c.trace, c.span) } : {};
   });
   clearInterval(G.__keelSpanPrune);
   G.__keelSpanPrune = setInterval(() => t.prune(), 6 * 3600_000);

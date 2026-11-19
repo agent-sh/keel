@@ -11,7 +11,7 @@ import { ago, cn, when } from "../lib/utils.ts";
 
 const tone = (s: Span["status"]) => ({ ok: "bg-ok", error: "bg-danger", running: "bg-accent", interrupted: "bg-line-strong" })[s];
 const btn = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
-const label = (s: Span) => (s.kind === "turn" ? `Turn on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
+const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Subagent turn" : "Turn"} on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
 
 export function TracesPanel({ session }: { session: Session }) {
   const [list, setList] = useState<Span[] | null>(null);
@@ -55,12 +55,28 @@ export function TracesPanel({ session }: { session: Session }) {
           </button>
         ))}
       </div>
-      {open && <Trace key={open} id={open} />}
+      {open && <Trace key={open} id={open} onOpen={setOpen} />}
     </div>
   );
 }
 
-function Trace({ id }: { id: string }) {
+// Depth first, children by start: a subagent's turn comes right under the call that started it.
+function tree(spans: Span[]): { s: Span; depth: number }[] {
+  const ids = new Set(spans.map((s) => s.span_id));
+  const kids = new Map<string | null, Span[]>();
+  for (const s of spans) {
+    const p = s.parent_id && ids.has(s.parent_id) ? s.parent_id : null;
+    kids.set(p, [...(kids.get(p) ?? []), s]);
+  }
+  const out: { s: Span; depth: number }[] = [];
+  const walk = (p: string | null, depth: number) => {
+    for (const s of kids.get(p) ?? []) { out.push({ s, depth }); walk(s.span_id, depth + 1); }
+  };
+  walk(null, 0);
+  return out;
+}
+
+function Trace({ id, onOpen }: { id: string; onOpen: (trace: string) => void }) {
   const [spans, setSpans] = useState<Span[] | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const load = useCallback(() => {
@@ -77,7 +93,7 @@ function Trace({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto" data-testid="trace-view">
       <div className="flex flex-col gap-px p-1.5" role="list" aria-label="Spans">
-        {spans.map((s) => (
+        {tree(spans).map(({ s, depth }) => (
           <button
             key={s.span_id}
             type="button"
@@ -85,9 +101,11 @@ function Trace({ id }: { id: string }) {
             onClick={() => setSel(s.span_id)}
             data-testid="span-row"
             data-status={s.status}
+            data-kind={s.kind}
+            data-depth={depth}
             className={cn("grid grid-cols-[minmax(0,11rem)_1fr_4.5rem] items-center gap-2 rounded-sm px-2 py-1 text-left text-caption hover:bg-hover", sel === s.span_id && "bg-sunken")}
           >
-            <span className={cn("truncate", s.parent_id ? "pl-3 text-muted" : "font-medium", s.status === "error" && "text-danger")}>{label(s)}</span>
+            <span className={cn("truncate", depth ? "text-muted" : "font-medium", s.kind === "turn" && depth > 0 && "text-fg", s.status === "error" && "text-danger")} style={{ paddingLeft: `${depth * 0.75}rem` }}>{label(s)}</span>
             <span className="relative h-2.5 rounded-xs bg-sunken">
               <span
                 className={cn("absolute inset-y-0 rounded-xs", tone(s.status), s.kind === "turn" && "opacity-40")}
@@ -98,7 +116,7 @@ function Trace({ id }: { id: string }) {
           </button>
         ))}
       </div>
-      {pick && <Detail s={pick} onReplayed={load} />}
+      {pick && <Detail s={pick} onReplayed={load} onOpen={onOpen} />}
     </div>
   );
 }
@@ -113,7 +131,7 @@ function Fact({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
   );
 }
 
-function Detail({ s, onReplayed }: { s: Span; onReplayed: () => void }) {
+function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; onOpen: (trace: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [replay, setReplay] = useState<{ ok: boolean; error?: string; text?: string; span: Span } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -152,6 +170,14 @@ function Detail({ s, onReplayed }: { s: Span; onReplayed: () => void }) {
         <Fact k="Sent" v={a.shape ? `${a.shape.messages} message${a.shape.messages === 1 ? "" : "s"}, ${a.shape.tools} tools, ${a.shape.system_chars} system chars${a.shape.effort ? `, effort ${a.shape.effort}` : ""}` : undefined} />
         <Fact k="Tool input" v={a.input_keys ? `${a.input_keys.join(", ") || "none"} (${a.input_bytes} chars), ${a.result_bytes} chars out` : undefined} />
         <Fact k="Span" v={s.span_id} mono />
+        <Fact
+          k="Started by"
+          v={(a.links as { trace_id: string; span_id: string }[] | undefined)?.length && a.links.map((l: { trace_id: string; span_id: string }) => (
+            <button key={l.span_id} type="button" className="text-accent hover:underline" onClick={() => onOpen(l.trace_id)} data-testid="span-link">
+              the parent's spawn call
+            </button>
+          ))}
+        />
       </dl>
       {w.error_body && <pre className="max-h-32 overflow-auto rounded-md border border-line bg-code p-2 font-mono text-micro whitespace-pre-wrap break-all text-muted">{w.error_body}</pre>}
       <div className="flex flex-wrap gap-2">

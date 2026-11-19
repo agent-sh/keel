@@ -83,6 +83,7 @@ export function toOtlp(spans: Span[], resource: Record<string, unknown>) {
           traceId: s.trace_id,
           spanId: s.span_id,
           ...(s.parent_id ? { parentSpanId: s.parent_id } : {}),
+          ...(Array.isArray(s.attrs.links) && s.attrs.links.length ? { links: s.attrs.links.map((l: { trace_id: string; span_id: string }) => ({ traceId: l.trace_id, spanId: l.span_id })) } : {}),
           name: s.kind === "turn" ? "invoke_agent keel" : s.name,
           kind: s.kind === "request" ? 3 : 1, // CLIENT for a call out, INTERNAL otherwise
           startTimeUnixNano: nanos(s.start_ms),

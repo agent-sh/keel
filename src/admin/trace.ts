@@ -64,6 +64,33 @@ const hex = (n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n)),
 export const traceIdOf = (turnEvent: string) => turnEvent.replace(/-/g, "").toLowerCase();
 export const turnSpanId = (traceId: string) => traceId.slice(16);
 export const newSpanId = () => hex(8);
+// A tool call's span id comes from its call, so a subagent the call starts can
+// name it as its parent before the call has ended.
+export const toolSpanId = (sessionId: string, callId: string) => new Bun.CryptoHasher("sha256").update(`${sessionId}\0${callId}`).digest("hex").slice(0, 16);
+
+// W3C trace context: `00-<trace id>-<parent span id>-<flags>`.
+export const traceparent = (trace: string, span: string) => `00-${trace}-${span}-01`;
+export function parseTraceparent(v: unknown): { trace: string; span: string } | null {
+  const m = typeof v === "string" ? /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/.exec(v) : null;
+  if (!m || /^0+$/.test(m[1]!) || /^0+$/.test(m[2]!)) return null;
+  return { trace: m[1]!, span: m[2]! };
+}
+
+export type Place = { trace: string; span: string; parent: string | null; links: { trace_id: string; span_id: string }[] };
+// Where a turn's span sits. A turn's span id always comes from its turn_start
+// event. A plain turn is the root of its own trace. The turn a spawn call
+// started is a child of that call in the parent's trace (the call starts it
+// and it is the call's work), so one trace holds the parent turn, the call and
+// the child's turn. A later turn of the same child (a message woke it) runs on
+// its own time: its own trace, with a link to the call, as OpenTelemetry links
+// asynchronous work to what caused it.
+export function turnPlace(turnEvent: string, spawn: { trace: string; span: string } | null, first: boolean): Place {
+  const own = traceIdOf(turnEvent);
+  const span = turnSpanId(own);
+  if (!spawn) return { trace: own, span, parent: null, links: [] };
+  if (first) return { trace: spawn.trace, span, parent: spawn.span, links: [] };
+  return { trace: own, span, parent: null, links: [{ trace_id: spawn.trace, span_id: spawn.span }] };
+}
 
 // What a request carries, by count and size, never its text.
 export function requestShape(req: Pick<ProviderRequest, "system" | "messages" | "tools" | "effort" | "maxTokens" | "purpose" | "speed">) {
@@ -115,6 +142,7 @@ const row = (r: any): Span => ({
 // A retry sends the same request object again: its bytes are kept once, on the first failed attempt, and later attempts point there.
 const COLS = "span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, error_id, attrs, (request IS NOT NULL OR json_extract(attrs, '$.request_in') IS NOT NULL) AS replayable";
 
+type Turn = { id: string; ts: number; seq: number };
 type Open = { span: string; trace: string; t0: number; first?: number; attempt: number };
 
 export class Tracer {
@@ -156,19 +184,44 @@ export class Tracer {
   }
 
   // The open turn of a running session: its turn_start event.
-  private turnOf(s: Session, purpose: string): { id: string; ts: number } | null {
+  private turnOf(s: Session, purpose: string): Turn | null {
     if (purpose === "side" || !this.isRunning(s.id)) return null;
-    return this.store.db.query<{ id: string; ts: number }, [string]>("SELECT id, ts FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(s.id);
+    return this.lastTurn(s.id);
   }
 
-  private ensureTurn(s: Session, turn: { id: string; ts: number }) {
-    const trace = traceIdOf(turn.id);
-    const span = turnSpanId(trace);
+  private lastTurn(sessionId: string): Turn | null {
+    return this.store.db.query<Turn, [string]>("SELECT id, ts, seq FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(sessionId);
+  }
+
+  // A subagent's turns: the spawn call's context rides on its task prompt.
+  private places = new Map<string, Place>();
+  place(sessionId: string, turn: Turn): Place {
+    const hit = this.places.get(turn.id);
+    if (hit) return hit;
+    const task = this.store.db.query<{ seq: number; tp: string }, [string]>(
+      "SELECT seq, json_extract(data, '$.traceparent') AS tp FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.traceparent') IS NOT NULL ORDER BY seq LIMIT 1",
+    ).get(sessionId);
+    const spawn = task && task.seq < turn.seq ? parseTraceparent(task.tp) : null;
+    const first = !!spawn && !this.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' AND seq > ? AND seq < ? LIMIT 1").get(sessionId, task!.seq, turn.seq);
+    const p = turnPlace(turn.id, spawn, first);
+    if (this.places.size > 500) this.places.clear();
+    this.places.set(turn.id, p);
+    return p;
+  }
+
+  // The trace context of a session's open turn (for TRACEPARENT in its commands).
+  context(sessionId: string): { trace: string; span: string } | null {
+    const turn = this.lastTurn(sessionId);
+    return turn ? this.place(sessionId, turn) : null;
+  }
+
+  private ensureTurn(s: Session, turn: Turn) {
+    const p = this.place(s.id, turn);
     this.store.db.run(
-      "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, NULL, ?, 'turn', 'invoke_agent', ?, 'running', ?)",
-      [span, trace, s.id, turn.ts, JSON.stringify({ turn_event: turn.id, model: s.model, ...(s.parent_id ? { parent_session: s.parent_id } : {}) })],
+      "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'turn', 'invoke_agent', ?, 'running', ?)",
+      [p.span, p.trace, p.parent, s.id, turn.ts, JSON.stringify({ turn_event: turn.id, model: s.model, ...(s.parent_id ? { parent_session: s.parent_id } : {}), ...(p.links.length ? { links: p.links } : {}) })],
     );
-    return { trace, span };
+    return { trace: p.trace, span: p.span };
   }
 
   private sent(s: Session, req: ProviderRequest) {
@@ -239,12 +292,12 @@ export class Tracer {
   private tool(s: Session, callId: string, name: string, input: unknown, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted" }) {
     const turn = this.turnOf(s, "turn");
     const parent = turn ? this.ensureTurn(s, turn) : null;
-    const span = newSpanId();
+    const span = toolSpanId(s.id, callId);
     const now = Date.now();
     const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
     const inputJson = JSON.stringify(input ?? {});
     this.store.db.run(
-      "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
       [span, parent?.trace ?? hex(16), parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? content.slice(0, 1000) : null,
         ran.outcome === "error" ? "tool_error" : null,
         JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: inputJson.length, result_bytes: content.length, ...(turn ? { turn_event: turn.id } : {}) })],
@@ -253,7 +306,7 @@ export class Tracer {
   }
 
   private turnEnd(s: Session, reason: string) {
-    const turn = this.store.db.query<{ id: string; ts: number }, [string]>("SELECT id, ts FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(s.id);
+    const turn = this.lastTurn(s.id);
     if (!turn) return;
     const { span } = this.ensureTurn(s, turn);
     const status: SpanStatus = reason === "error" ? "error" : reason === "interrupted" || reason === "restart" ? "interrupted" : "ok";
@@ -266,13 +319,20 @@ export class Tracer {
     return r ? row(r) : undefined;
   }
 
+  // A trace's spans. A turn's own id (its turn_start without dashes) also finds
+  // it when the turn sits in another trace: a subagent's first turn is in its parent's.
   trace(traceId: string): Span[] {
-    return this.store.db.query<any, [string]>(`SELECT ${COLS} FROM spans WHERE trace_id = ? ORDER BY start_ms, rowid`).all(traceId).map(row);
+    const all = (id: string) => this.store.db.query<any, [string]>(`SELECT ${COLS} FROM spans WHERE trace_id = ? ORDER BY start_ms, rowid`).all(id).map(row);
+    const spans = all(traceId);
+    if (spans.length || traceId.length !== 32) return spans;
+    const host = this.store.db.query<{ trace_id: string }, [string]>("SELECT trace_id FROM spans WHERE span_id = ? AND kind = 'turn'").get(turnSpanId(traceId));
+    return host ? all(host.trace_id) : [];
   }
 
-  // A session's traces, newest first: the turn span of each, or the lone request of a side answer.
+  // A session's traces, newest first: the span of each turn (a subagent's first
+  // turn sits under its spawn call), or the lone request of a side answer.
   traces(sessionId: string, limit = 50): Span[] {
-    return this.store.db.query<any, [string, number]>(`SELECT ${COLS} FROM spans WHERE session_id = ? AND parent_id IS NULL ORDER BY start_ms DESC LIMIT ?`).all(sessionId, limit).map(row);
+    return this.store.db.query<any, [string, number]>(`SELECT ${COLS} FROM spans WHERE session_id = ? AND (parent_id IS NULL OR kind = 'turn') ORDER BY start_ms DESC LIMIT ?`).all(sessionId, limit).map(row);
   }
 
   // The request a failed span sent, as sent.

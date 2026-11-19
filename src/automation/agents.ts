@@ -14,6 +14,7 @@ import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
 import { carriedPlugins } from "../tools/skills.ts";
 import { checkpointAt } from "../engine/compact.ts";
+import { toolSpanId, traceIdOf, traceparent } from "../admin/trace.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. One level deep. The child gets
@@ -493,7 +494,10 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   if (waited) activity.record("agent", "staggered", parentId, `Agent "${title}" started ${Math.round(waited / 100) / 10} s after the first one on ${model}, to read its prompt cache`, { agent_id: id });
   if (settling.has(id) || get(id)?.status !== "running") return get(id)!; // stopped while it waited
   // task_at: where the parent's own words start, so the page shows them verbatim.
-  const ev = engine.send(child.id, task, { meta: { kind: "task", agent_id: id, task_at: task.length - input.prompt.length } }).event!;
+  // traceparent: the spawn call's span, so the child's turns trace under it.
+  const parentTurn = input.call_id ? store.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(parentId) : null;
+  const tp = parentTurn ? { traceparent: traceparent(traceIdOf(parentTurn.id), toolSpanId(parentId, input.call_id!)) } : {};
+  const ev = engine.send(child.id, task, { meta: { kind: "task", agent_id: id, task_at: task.length - input.prompt.length, ...tp } }).event!;
   const rec = update(id, { first_seq: ev.seq - 1 })!;
   if (input.background === false) {
     const onAbort = () => stop(id, "parent_turn");
