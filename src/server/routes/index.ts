@@ -32,6 +32,7 @@ import { switchRoutes } from "./switch.ts";
 import { sideRoutes } from "./side.ts";
 import { treeRoutes } from "./tree.ts";
 import { attachmentRoutes } from "./attachments.ts";
+import { runRoutes } from "./run.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -66,6 +67,7 @@ export const routeModules: RouteModule[] = [
   draftRoutes,
   importRoutes,
   hookRoutes,
+  runRoutes, // the command line: keel run, keel send
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
   telemetryRoutes, // last: its tool timing starts after every gate
 ];

@@ -3,6 +3,7 @@
 // Zed: "agent_servers": { "Keel": { "command": "keel", "args": ["acp"] } }.
 import { parseArgs } from "node:util";
 import { AcpBridge, type DaemonApi } from "../acp/bridge.ts";
+import { findDaemon } from "./client.ts";
 
 export function daemonApi(base: string): DaemonApi {
   const call = async (method: string, path: string, body?: unknown) => {
@@ -28,7 +29,7 @@ export function daemonApi(base: string): DaemonApi {
 export async function acp(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: { url: { type: "string" }, help: { type: "boolean" } } });
   if (values.help) return (console.log("keel acp [--url http://127.0.0.1:47960]: an editor drives Keel over ACP on stdio"), 0);
-  const base = (values.url ?? process.env.KEEL_URL ?? "http://127.0.0.1:47960").replace(/\/+$/, "");
+  const base = findDaemon({ url: values.url }).url;
   const bridge = new AcpBridge(daemonApi(base), (msg) => process.stdout.write(JSON.stringify(msg) + "\n"), (m) => process.stderr.write(`keel acp: ${m}\n`));
   const inflight = new Set<Promise<void>>();
   let buf = "";

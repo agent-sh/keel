@@ -22,6 +22,7 @@ import { loadSettings, onSettings, patchSettings, settings } from "../../admin/s
 import { Storage } from "../../admin/storage.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
+import { runMode } from "../../core/runmode.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const body = async (req: Request) => (await req.json().catch(() => undefined)) as any;
@@ -72,7 +73,7 @@ export const adminRoutes: RouteModule = (deps) => {
   G.__keelAdmin = { awake, daily, daemon };
 
   // Once per process start: the archive policy. (SIGINT and SIGTERM drain in main.ts.)
-  if (!prev) queueMicrotask(policy);
+  if (!prev && !runMode.client) queueMicrotask(policy);
   // A stop by signal drains in main.ts; new work is turned away meanwhile.
   if (!G.__keelAdminSignals) {
     G.__keelAdminSignals = true;

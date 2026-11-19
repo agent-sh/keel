@@ -17,6 +17,7 @@ import { fromHeaders, Limits, type Window } from "./limits.ts";
 import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
 import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
+import { runMode } from "../core/runmode.ts";
 
 const LISTING_MAX_AGE = 30 * 60_000;
 
@@ -217,6 +218,8 @@ export class Providers {
   }
 
   async models(force = false): Promise<ModelInfo[]> {
+    // A command's own daemon reads the stored listings; resolve() still asks one provider for a model they lack.
+    if (!force && runMode.client && [...this.listings.values()].some((l) => l.models.length)) return this.current();
     if (force || Date.now() - this.refreshedAt > LISTING_MAX_AGE) {
       this.pending ??= this.refresh().finally(() => (this.pending = null));
       // A first read waits; later reads answer from the last lists meanwhile.

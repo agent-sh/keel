@@ -36,6 +36,25 @@ export function acquireLock(stateDir: string) {
   });
 }
 
+// The address the daemon answers at, kept in its lock so a client command
+// finds it from the state folder alone. `client` marks a daemon a command
+// started inside its own process (it ends with the command).
+export function recordUrl(stateDir: string, url: string, client = false) {
+  const path = join(stateDir, LOCK);
+  try {
+    const held = JSON.parse(readFileSync(path, "utf8"));
+    if (held.pid !== process.pid) return;
+    writeFileSync(path, JSON.stringify({ ...held, url, ...(client ? { client: true } : {}) }), { mode: 0o600 });
+  } catch {}
+}
+
+export function lockedDaemon(stateDir: string): { pid: number; url?: string; client?: boolean } | undefined {
+  try {
+    const held = JSON.parse(readFileSync(join(stateDir, LOCK), "utf8"));
+    return held.pid && alive(held.pid) ? held : undefined;
+  } catch { return undefined; }
+}
+
 export function lockHolder(stateDir: string): number | undefined {
   try {
     const pid = JSON.parse(readFileSync(join(stateDir, LOCK), "utf8")).pid as number;

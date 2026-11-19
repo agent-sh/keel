@@ -12,6 +12,7 @@ import { AuthRequired, McpClient, type McpCallResult, type McpTool, type Transpo
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { OAuthStore } from "./oauth.ts";
 import { toOutput } from "./result.ts";
+import { runMode } from "../core/runmode.ts";
 
 export type McpState = "disabled" | "connecting" | "ready" | "error" | "needs_auth" | "idle" | "missing";
 
@@ -128,7 +129,8 @@ export class McpManager {
       this.addEntry(name, c);
     }
     // Connect in the background so the panel shows real states; nothing waits on it.
-    setTimeout(() => {
+    // A command's own daemon connects a server only when a turn uses it.
+    if (!runMode.client) setTimeout(() => {
       for (const e of this.entries.values()) if (e.state !== "disabled" && !e.bundled) this.ensure(e.name).catch(() => {});
     }, 50);
   }

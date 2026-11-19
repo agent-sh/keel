@@ -9,9 +9,11 @@ import { parseArgs } from "node:util";
 import { unitTemplate } from "../admin/unit.ts";
 import { lockHolder } from "../admin/daemon.ts";
 import { restore as restoreBackup } from "../admin/storage.ts";
+import { findDaemon } from "./client.ts";
 
 const stateDirOf = (v?: string) => resolve(v ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
-const urlOf = (v?: string) => (v ?? process.env.KEEL_URL ?? "http://127.0.0.1:47960").replace(/\/+$/, "");
+// --url, KEEL_URL, the address the state folder's daemon recorded, the default bind.
+const urlOf = (v?: string) => findDaemon({ url: v }).url;
 const common = { url: { type: "string" }, json: { type: "boolean" }, help: { type: "boolean" } } as const;
 
 const mb = (b: number) => (b < 1 << 20 ? `${(b / 1024).toFixed(1)} KB` : b < 1 << 30 ? `${(b / (1 << 20)).toFixed(1)} MB` : `${(b / (1 << 30)).toFixed(2)} GB`);

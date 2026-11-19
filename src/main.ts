@@ -1,53 +1,46 @@
 #!/usr/bin/env bun
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { Bus } from "./core/bus.ts";
-import { ErrorTracker } from "./core/errors.ts";
-import { Store } from "./core/store.ts";
-import { Engine } from "./engine/turn.ts";
-import { Providers } from "./providers/registry.ts";
-import { serve } from "./server/app.ts";
-import { routeModules } from "./server/routes/index.ts";
 import { commands } from "./cli/index.ts";
+import { topHelp, unknownCommand } from "./cli/help.ts";
+import { startDaemon } from "./server/start.ts";
 
-// Client commands (keel pair, keel notify, ...) parse their own options.
 const sub = Bun.argv[2];
+if (sub === undefined || sub === "-h" || sub === "--help" || sub === "help") {
+  const of = sub === "help" ? Bun.argv[3] : undefined;
+  if (of && commands[of]) process.exit(await commands[of](["--help"]));
+  process.exit((console.log(topHelp()), 0));
+}
+// Client commands (keel run, keel send, keel pair, ...) parse their own options.
 if (sub && commands[sub]) process.exit(await commands[sub](Bun.argv.slice(3)));
 
-const { values, positionals } = parseArgs({
-  args: Bun.argv.slice(2),
-  allowPositionals: true,
-  options: {
-    bind: { type: "string", default: "127.0.0.1:47960" },
-    "state-dir": { type: "string" },
-    workspace: { type: "string" },
-    dev: { type: "boolean", default: false },
-  },
-});
-
-const cmd = positionals[0] ?? "serve";
-if (cmd !== "serve") {
-  console.error(`unknown command: ${cmd}\nusage: keel serve [--bind host:port] [--state-dir DIR] [--workspace DIR] [--dev]\n       keel ${Object.keys(commands).join("|")} --help`);
-  process.exit(2);
+const SERVE_USAGE = "keel serve [--bind HOST:PORT] [--state-dir DIR] [--workspace DIR] [--dev]\n  Runs the daemon: the agent loop, the HTTP API and the workbench (default bind 127.0.0.1:47960).";
+const args = Bun.argv.slice(2);
+if (args[0] && args[0] !== "serve" && !args[0].startsWith("-")) process.exit(unknownCommand(args[0]));
+let parsed;
+try {
+  parsed = parseArgs({
+    args: args[0] === "serve" ? args.slice(1) : args,
+    options: {
+      bind: { type: "string", default: "127.0.0.1:47960" },
+      "state-dir": { type: "string" },
+      workspace: { type: "string" },
+      dev: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+} catch (e) {
+  console.error(`keel serve: ${(e as Error).message}\n${SERVE_USAGE}`);
+  process.exit(3);
 }
+const { values } = parsed;
+if (values.help) process.exit((console.log(SERVE_USAGE), 0));
 
-const stateDir = resolve(values["state-dir"] ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
-const [hostname, portStr] = values.bind!.split(/:(?=\d+$)/);
-const store = new Store(stateDir);
-const bus = new Bus();
-const errors = new ErrorTracker(store, bus);
-errors.installGlobal();
-const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
-providers.start();
-const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
+const d = await startDaemon({ stateDir: values["state-dir"], bind: values.bind!, workspace: values.workspace, dev: values.dev });
 // Running turns get this long to end by themselves when the daemon stops; the
 // rest are parked and the next daemon continues them.
 const DRAIN_MS = Number(process.env.KEEL_DRAIN_MS ?? 10_000);
-const g = globalThis as { __keelEngine?: Engine; __keelSignals?: boolean };
-// A hot reload builds a new engine in the same process: the old one parks its turns first.
-if (g.__keelEngine) await g.__keelEngine.drain(0);
-g.__keelEngine = engine;
+const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void> };
+g.__keelStop = d.stop;
 if (!g.__keelSignals) {
   g.__keelSignals = true;
   let stopping = false;
@@ -55,25 +48,9 @@ if (!g.__keelSignals) {
     process.on(sig, async () => {
       if (stopping) return process.exit(0); // a second signal stops at once
       stopping = true;
-      await g.__keelEngine!.drain(DRAIN_MS).catch((e) => errors.capture("server", e, { at: "drain" }));
-      providers.shutdown();
+      await g.__keelStop!(DRAIN_MS);
       setTimeout(() => process.exit(0), 300);
     });
   }
 }
-process.on("exit", () => providers.plugins.killAll());
-const server = serve(
-  { store, bus, engine, providers, errors, workspace: resolve(values.workspace ?? process.cwd()) },
-  { hostname: hostname!, port: Number(portStr), development: values.dev },
-  routeModules,
-);
-providers.models().catch((e) => errors.capture("provider", e, { at: "startup listing" }));
-// Turns the last daemon left open or parked continue; a model whose provider is
-// still starting (a plugin) is waited for, up to a minute.
-void engine.recover(store.bootWorking, async (model) => {
-  for (let i = 0; ; i++) {
-    try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
-    await Bun.sleep(5_000);
-  }
-}).catch((e) => errors.capture("server", e, { at: "recover" }));
-console.log(`keel listening on ${server.url} (state ${stateDir})`);
+console.log(`keel listening on ${d.url} (state ${d.stateDir})`);

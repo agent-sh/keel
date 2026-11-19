@@ -23,6 +23,7 @@ import * as alerts from "../../automation/alerts.ts";
 import { inside } from "../../safety/policy.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate } from "./permissions.ts";
+import { runMode } from "../../core/runmode.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -72,7 +73,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       }
     })().catch((e) => { if (!(e instanceof LinkError)) errors.capture("server", e, { at: "fleet outbox", machine: machineId }); });
   };
-  f.start();
+  if (!runMode.client) f.start();
   const spillRoot = `${store.stateDir}/spill`;
 
   // A session placed on another machine: its workspace tools run there.

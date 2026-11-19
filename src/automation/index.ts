@@ -13,6 +13,7 @@ import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop } from "./tools.ts";
 import * as waits from "./waits.ts";
+import { runMode } from "../core/runmode.ts";
 
 // Subagents, waits, loops and alerts: tables, tools, turn hooks, the scheduler
 // and the HTTP routes, joined to the daemon from this one module.
@@ -121,7 +122,7 @@ function init(deps: Deps) {
     activity.record("awake", "hold", null, `Kept the machine awake for ${mins < 1 ? "under a minute" : `${mins} min`} (${reason || "working"})`, { ms });
   };
 
-  if (!g.__keelAutomationRecovered) {
+  if (!g.__keelAutomationRecovered && !runMode.client) {
     g.__keelAutomationRecovered = true;
     try {
       waits.recover();
@@ -137,7 +138,7 @@ function init(deps: Deps) {
   g.__keelAutomationTick = setInterval(() => {
     waits.tick().catch((e) => capture(e, { at: "waits tick" }));
     try {
-      loops.tick();
+      if (!runMode.client) loops.tick(); // a command's own daemon claims no Loop
       agents.tick();
       alerts.tickSnoozes();
       if (++ticks % 30 === 0) recheckAwake();

@@ -37,7 +37,7 @@ under `~/.cache/keel-work/bun/research/`.
 
 | Path | What |
 | --- | --- |
-| `src/main.ts` | CLI: `keel serve` |
+| `src/main.ts` | CLI entry: `keel serve` and the client commands in `src/cli/` |
 | `src/core/` | types, SQLite store, bus, error tracker |
 | `src/engine/turn.ts` | the turn loop, history projection, system prompt |
 | `src/providers/` | provider drivers, listing registry, catalog |
@@ -53,5 +53,6 @@ bun install
 scripts/dev.sh [port]          # dev daemon with hot reload on Bedrock, scratch state
 bunx tsc --noEmit -p .          # typecheck
 bunx playwright test            # e2e (needs the dev daemon on 47961)
+bun test ./test/cli              # the command line e2e (builds the binary, scripted model)
 bun scripts/build.ts            # dist/keel, one binary
 ```
