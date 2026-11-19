@@ -160,6 +160,62 @@ test("a report a wait returned is delivered once when the daemon dies mid-step",
   busy.delete(parent.id);
 });
 
+// State written before acks went with the result: the wait's result holding
+// a report is stored, the child still marked owed. The next start sees the
+// report in the parent's history and does not send it again; a wait whose
+// result was cut keeps its report owed.
+test("at start, a report a stored wait result holds is not delivered again", async () => {
+  busy.add(parent.id);
+  const [a, b] = [await spawn(), await spawn()];
+  end(a, "end_turn", "report E");
+  end(b, "end_turn", "report F");
+  await settled();
+  const out = await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: "we" });
+  await tool("wait_agent").run({ targets: [b.id] }, { ...ctx, callId: "wf" });
+  store.append(parent.id, "assistant", { blocks: [
+    { type: "tool_use", id: "we", name: "wait_agent", input: { targets: [a.id] } },
+    { type: "tool_use", id: "wf", name: "wait_agent", input: { targets: [b.id] } },
+  ], stop: "tool_use" });
+  store.append(parent.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "we", content: out.content }] });
+  store.append(parent.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "wf", content: "Interrupted by a daemon restart while this tool ran.", is_error: true }] });
+  expect([agents.get(a.id)!.handback, agents.get(b.id)!.handback]).toEqual([true, true]);
+  dropPending(parent.id); // a new process
+  agents.recover();
+  busy.delete(parent.id);
+  sends.length = 0;
+  flush(parent.id);
+  const to = sends.filter((x) => x.id === parent.id).map((x) => x.text).join("\n");
+  expect(to).not.toContain("report E");
+  expect(to).toContain("report F");
+  expect(agents.get(a.id)!.handback).toBeFalsy();
+});
+
+// Call ids are unique only within a session: two parents whose waits share
+// one each get their own report marked delivered.
+test("waits with the same call id in two sessions each mark their own report delivered", async () => {
+  const other = store.createSession({ model: "m:x", workspace: dir, title: "other parent" });
+  store.append(other.id, "assistant", { blocks: [] });
+  busy.add(parent.id);
+  busy.add(other.id);
+  const a = await spawn();
+  const b = await agents.spawn(other.id, { prompt: "do it", isolation: "none", background: true });
+  end(a, "end_turn", "report G");
+  end(b, "end_turn", "report H");
+  await settled();
+  const outA = await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: "same" });
+  const outB = await tool("wait_agent").run({ targets: [b.id] }, { ...ctx, sessionId: other.id, callId: "same" });
+  ackStoredWaits(parent.id, [{ tool_use_id: "same", content: outA.content }]);
+  ackStoredWaits(other.id, [{ tool_use_id: "same", content: outB.content }]);
+  busy.delete(parent.id);
+  busy.delete(other.id);
+  sends.length = 0;
+  flush(parent.id);
+  flush(other.id);
+  const to = sends.map((x) => x.text).join("\n");
+  expect(to).not.toContain("report G");
+  expect(to).not.toContain("report H");
+});
+
 test("forked context is the parent's selected branch as its next request reads it", async () => {
   const p = store.createSession({ model: "m:x", workspace: dir, title: "fork" });
   const u1 = store.append(p.id, "user", { text: "old question" });

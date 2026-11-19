@@ -207,20 +207,23 @@ const wait_agent: Tool = {
               : { incomplete: { reason: a.end_reason ?? null, report: a.result } };
     }
     const text = JSON.stringify({ status, timed_out: res.length > 0 && !res.some((a) => agents.isEnded(a)) });
-    // Acked when this result is stored as it is (stepDone), not when the turn
+    // Acked when this result is stored as it is (resultStored), not when the turn
     // was stopped and its result says so instead.
-    if (ctx.callId) waited.set(ctx.callId, { parent: ctx.sessionId, ids: res.filter((a) => agents.isEnded(a)).map((a) => a.id), text });
+    if (ctx.callId) waited.set(waitKey(ctx.sessionId, ctx.callId), { ids: res.filter((a) => agents.isEnded(a)).map((a) => a.id), text });
     return ok(text);
   }),
 };
 
-// wait_agent results not yet seen stored, by tool call id.
-const waited = new Map<string, { parent: string; ids: string[]; text: string }>();
+// wait_agent results not yet seen stored, by session and tool call id (a call
+// id is unique only within its session: providers and the scripted one reuse them).
+const waited = new Map<string, { ids: string[]; text: string }>();
+const waitKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
 export function ackStoredWaits(sessionId: string, results: { tool_use_id: string; content: unknown }[]) {
   for (const r of results) {
-    const w = waited.get(r.tool_use_id);
-    if (!w || w.parent !== sessionId) continue;
-    waited.delete(r.tool_use_id);
+    const key = waitKey(sessionId, r.tool_use_id);
+    const w = waited.get(key);
+    if (!w) continue;
+    waited.delete(key);
     const stored = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
     if (stored.includes(w.text)) agents.ackWaited(sessionId, w.ids);
   }
