@@ -13,7 +13,7 @@ import type { WindowReading } from "../limits.ts";
 
 const FAMILIES = new Set(["claude", "gpt", "gemini"]);
 
-function codecFor(d: PluginProviderDecl, thinks: boolean): WireCodec {
+export function codecFor(d: PluginProviderDecl, thinks: boolean): WireCodec {
   const prefix = d.system_prefix;
   switch (d.wire) {
     case "anthropic_messages":

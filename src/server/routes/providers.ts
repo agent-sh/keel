@@ -3,6 +3,8 @@
 import { registerHooks } from "../../engine/hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { CLOSE_PERCENT, isClose } from "../../providers/limits.ts";
+import { Check } from "../../providers/plugins/check.ts";
+import { readPlugins } from "../../providers/plugins/config.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -96,6 +98,23 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
         }
         providers.setChoices(c);
         return json(await report());
+      },
+    },
+
+    // The conformance check of a configured plugin (what `keel plugin check <id>`
+    // runs): a scratch process with fake credentials against a fake vendor.
+    "/api/plugins/:id/check": {
+      POST: async (req: Request & { params: { id: string } }) => {
+        const e = readPlugins().entries.find((x) => x.id === req.params.id);
+        if (!e) return json({ error: `no [plugins.${req.params.id}] in plugins.toml` }, 404);
+        if (e.problem) return json({ error: e.problem }, 400);
+        const c = new Check({
+          id: e.id, command: e.command, args: e.args, env: e.env, settings: e.settings,
+          providerSettings: Object.fromEntries(Object.entries(e.providers).map(([k, v]) => [k, v.settings ?? {}])),
+        }, providers.stateDir);
+        await c.run();
+        const count = (r: string) => c.rows.filter((x) => x.result === r).length;
+        return json({ rows: c.rows, summary: { passed: count("pass"), failed: count("fail"), not_applicable: count("n/a") } });
       },
     },
 

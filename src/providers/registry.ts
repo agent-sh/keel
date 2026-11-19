@@ -52,7 +52,7 @@ export class Providers {
   private usageAt = new Map<string, number>();
   private problems = new Map<string, Problem>();
 
-  constructor(private stateDir: string, private opts: Opts = {}) {
+  constructor(readonly stateDir: string, private opts: Opts = {}) {
     this.catalog = new Catalog(stateDir);
     this.fixed = opts.providers ?? null;
     this.builtins = [
