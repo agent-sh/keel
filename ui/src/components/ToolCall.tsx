@@ -1,7 +1,7 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
 import {
-  Check, ChevronRight, Circle, CircleDot, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
+  Brain, Check, ChevronRight, Circle, CircleDot, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
   ListChecks, MessageCircleQuestion, NotebookPen, Plug, Search, Sparkles, SquareTerminal, Square, Wrench, X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -10,7 +10,7 @@ import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { actions, failed } from "../lib/store.ts";
 import {
-  patchFiles, planItems, questions, resultImages, resultText, shellBody, splitNested, shellStatus, shortPath, toolKind,
+  patchFiles, planItems, questions, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind,
   type PlanItem, type ToolKind,
 } from "../lib/tools.ts";
 import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
@@ -78,7 +78,7 @@ export function ToolCall({ use, result, live, sessionId, cwd, waiting }: Props) 
 
 function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props & { kind: ToolKind; input: any }) {
   const Icon = ICONS[kind];
-  const { text: out, nested } = useMemo(() => splitNested(resultText(result)), [result]);
+  const { text: out, nested, memory } = useMemo(() => { const m = splitMemory(resultText(result)); return { ...splitNested(m.text), memory: m.memory }; }, [result]);
   const images = resultImages(result);
   const state = !result ? "running" : result.is_error ? "error" : "ok";
   const diff = useMemo(() => editDiff(kind, input), [kind, input]);
@@ -133,6 +133,12 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
           <details key={n.path} className="mx-2.5 mb-2.5 rounded-md border border-line bg-sunken" data-testid="nested-instructions">
             <summary className="cursor-pointer px-2.5 py-1.5 text-caption text-muted">Instructions loaded: <span className="font-mono">{shortPath(n.path, cwd)}</span></summary>
             <pre className="max-h-64 overflow-auto border-t border-line p-2.5 font-mono text-caption leading-relaxed whitespace-pre-wrap break-words text-muted">{n.body}</pre>
+          </details>
+        ))}
+        {memory.map((m, i) => (
+          <details key={i} className="mx-2.5 mb-2.5 rounded-md border border-line bg-sunken" data-testid="tool-memory">
+            <summary className="flex cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-caption text-muted"><Brain className="size-3.5 text-faint" />Memory from {m.source}<span className="text-faint">· {m.hook}</span></summary>
+            <pre className="max-h-64 overflow-auto border-t border-line p-2.5 font-mono text-caption leading-relaxed whitespace-pre-wrap break-words text-muted">{m.body}</pre>
           </details>
         ))}
         {images.length > 0 && (

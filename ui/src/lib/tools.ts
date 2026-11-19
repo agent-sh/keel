@@ -57,6 +57,19 @@ export function splitNested(text: string): { text: string; nested: { path: strin
   return { text: nested.length ? rest.trimEnd() : text, nested };
 }
 
+// A memory block an integration appended to a tool's result (tacit's
+// pre-tool hook): shown apart as the note it is, labelled with its source. The
+// model's input keeps it as it was.
+export type ResultMemory = { source: string; hook: string; body: string };
+export function splitMemory(text: string): { text: string; memory: ResultMemory[] } {
+  const memory: ResultMemory[] = [];
+  const rest = text.replace(/\n*<memory source="([^"]+)" hook="([^"]+)">\n([\s\S]*?)\n<\/memory>/g, (_m, source: string, hook: string, body: string) => {
+    memory.push({ source, hook, body: body.replace(/^From the owner's memory store.*\n/, "").trim() });
+    return "";
+  });
+  return { text: memory.length ? rest.trimEnd() : text, memory };
+}
+
 export const resultImages = (r?: ToolResultBlock) =>
   !r || typeof r.content === "string" ? [] : r.content.filter((c): c is { type: "image"; media_type: string; data: string } => c.type === "image");
 

@@ -52,7 +52,14 @@ test("tacit and momentum", async ({ page, request }) => {
   const events = (await (await request.get(`/api/sessions/${session.id}`)).json()).events;
   const results = events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results);
   expect(JSON.stringify(results)).toContain('hook=\\"pre-tool\\"');
-  await page.getByTestId("tool-call").first().click();
+  // On the tool card the pre-tool block shows apart, as a memory note with its source, not inside the output.
+  const tool = page.getByTestId("tool-call").first();
+  await tool.click();
+  const mem = tool.getByTestId("tool-memory");
+  await expect(mem).toContainText("Memory from tacit");
+  await mem.locator("summary").click();
+  await expect(mem).toContainText("echo-rule");
+  await expect(tool.locator(".k-tool-panel")).not.toContainText("<memory");
   await shoot(page, "integ-02-memory");
 
   // momentum: the session is listed with its phase, and a queued message runs a turn.
