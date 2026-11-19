@@ -79,7 +79,7 @@ test("import and export", async ({ page, request }) => {
   await expect(preview).toContainText("the copy went on here and the original too");
   await expect(preview.getByTestId("import-update")).toHaveCount(0);
   await preview.getByTestId("import-new").click();
-  await expect(page.getByText("Yellow.")).toBeVisible();
+  await expect(page.getByTestId("transcript").getByText("Yellow.")).toBeVisible();
 
   // Codex, the Rust Keel and Antigravity, from their own stores.
   const others: [string, string, string][] = [["codex", "Pick a code word", "The code word is bramble."], ["keel", "Harbour Kythira", "The harbour is Kythira."]];
