@@ -18,16 +18,21 @@ const size = (v: unknown) =>
   JSON.stringify(v, (k, x) => (k === "data" && typeof x === "string" && x.length > BLOB_BYTES ? " ".repeat(BLOB_BYTES) : x))?.length ?? 0;
 
 export const messageSizes = (messages: Message[]) => messages.map(size);
+// What each message holds, as a short fingerprint (never its text): an edit of
+// the same length is a different message.
+const mark = (m: Message) => Bun.hash(JSON.stringify(m)).toString(36);
 
-// `prev`: the sizes of the messages the previous turn request carried. The
+// `prev`: the marks of the messages the previous turn request carried. The
 // leading messages of this request that match them are frozen history.
-export function zoneBytes(req: Pick<ProviderRequest, "tools" | "system" | "messages">, prev: number[]): { bytes: Zones; sizes: number[] } {
+export function zoneBytes(req: Pick<ProviderRequest, "tools" | "system" | "messages">, prev: string[]): { bytes: Zones; sizes: number[]; marks: string[] } {
   const sizes = messageSizes(req.messages);
+  const marks = req.messages.map(mark);
   let frozen = 0;
-  while (frozen < sizes.length - 1 && frozen < prev.length && sizes[frozen] === prev[frozen]) frozen++;
+  while (frozen < sizes.length - 1 && frozen < prev.length && marks[frozen] === prev[frozen]) frozen++;
   const sum = (a: number[]) => a.reduce((n, x) => n + x, 0);
   return {
     sizes,
+    marks,
     bytes: {
       tools: size(req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema }))),
       system: req.system.length,
@@ -37,15 +42,19 @@ export function zoneBytes(req: Pick<ProviderRequest, "tools" | "system" | "messa
   };
 }
 
-// Bytes to tokens: each zone's share of the provider's prompt count, summing to it exactly.
+// Bytes to tokens: each zone's share of the provider's prompt count, summing
+// to it exactly. Shares are floored and the tokens left go to the largest
+// remainders (ties to the earlier zone), so no zone is negative and an empty
+// zone gets nothing.
 export function scaleZones(bytes: Zones, prompt: number): Zones {
   const total = ZONES.reduce((n, z) => n + bytes[z], 0);
   const out = { tools: 0, system: 0, history: 0, tail: 0 } as Zones;
   if (!total || prompt <= 0) return out;
-  let given = 0;
-  for (const z of ZONES) given += out[z] = Math.round((bytes[z] / total) * prompt);
-  out.tail += prompt - given; // rounding goes to the last zone
-  if (out.tail < 0) { out.history += out.tail; out.tail = 0; }
+  const exact = ZONES.map((z) => (bytes[z] / total) * prompt);
+  ZONES.forEach((z, i) => (out[z] = Math.floor(exact[i]!)));
+  let left = prompt - ZONES.reduce((n, z) => n + out[z], 0);
+  const order = ZONES.map((z, i) => ({ z, r: exact[i]! - out[z] })).filter((x) => bytes[x.z] > 0).sort((a, b) => b.r - a.r);
+  for (let i = 0; left > 0; i = (i + 1) % order.length, left--) out[order[i]!.z]++;
   return out;
 }
 

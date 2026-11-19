@@ -63,8 +63,8 @@ export class Telemetry {
   private pending = new Map<ProviderRequest, Pending>();
   // The turn request of each session that streams now (deltas carry no request).
   private streaming = new Map<string, Pending>();
-  // The message sizes of each session's last turn request (frozen history).
-  private prevSizes = new SessionMap<number[]>(256);
+  // The message marks of each session's last turn request (frozen history).
+  private prevMarks = new SessionMap<string[]>(256);
   private tools = new Map<string, number>();
 
   constructor(private store: Store, bus: Bus) {
@@ -88,8 +88,8 @@ export class Telemetry {
       },
       requestSent: (s, req) => {
         const purpose = req.purpose ?? "turn";
-        const { bytes, sizes } = zoneBytes(req, this.prevSizes.get(s.id) ?? []);
-        if (purpose === "turn") this.prevSizes.set(s.id, sizes);
+        const { bytes, marks } = zoneBytes(req, this.prevMarks.get(s.id) ?? []);
+        if (purpose === "turn") this.prevMarks.set(s.id, marks);
         // The model the request went to, read now: the owner may pick another before it answers.
         const p: Pending = { t0: Date.now(), session: s.id, model: this.store.session(s.id)?.model ?? s.model, purpose, turn: this.turnOf(s.id), bytes };
         this.pending.set(req, p);
