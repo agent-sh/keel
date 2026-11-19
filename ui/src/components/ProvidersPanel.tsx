@@ -72,6 +72,28 @@ function GrokSignIn() {
   );
 }
 
+// An entry of the owner's providers.toml is read only here; moved to a file of
+// its own (the entry stays there as comments), it can be edited.
+function MoveOut({ id }: { id: string }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const move = async () => {
+    setBusy(true); setErr("");
+    try { await api(`/api/providers/endpoints/${id}/move`, { method: "POST" }); await actions.loadProviders(); }
+    catch (e) { setErr(failed(e, { at: "moving an endpoint to its own file" })); } finally { setBusy(false); }
+  };
+  return (
+    <>
+      <button type="button" data-testid="provider-move-out" disabled={busy} onClick={move}
+        title="Copies this entry to endpoints/ where it can be edited here; providers.toml keeps it as comments"
+        className="rounded-md px-1.5 text-micro text-accent-ink hover:bg-hover disabled:opacity-50">
+        {busy ? "Moving" : "Move to its own file"}
+      </button>
+      {err && <span className="text-micro text-danger" data-testid="provider-move-error">{err}</span>}
+    </>
+  );
+}
+
 function ProviderRow({ p }: { p: Row }) {
   const l = p.listing;
   const [open, setOpen] = useState(false);
@@ -90,6 +112,7 @@ function ProviderRow({ p }: { p: Row }) {
           <span className="rounded-xs bg-sunken px-1.5 text-micro uppercase tracking-wide text-faint">{WIRE[p.wire] ?? p.wire}</span>
           {p.kind !== "builtin" && <span className="text-micro text-faint">{p.server ?? p.kind}</span>}
           {p.source === "providers.toml" && <span className="text-micro text-faint">providers.toml</span>}
+          {p.source === "providers.toml" && p.kind === "endpoint" && <MoveOut id={p.id} />}
           <span className="ml-auto flex shrink-0 items-center gap-1 text-caption tabular-nums text-muted">
             {p.available && l.models > 0 ? (
               <button type="button" data-testid="provider-models-toggle" aria-expanded={open} onClick={() => setOpen(!open)} className="inline-flex items-center gap-0.5 rounded-md px-1.5 hover:bg-hover hover:text-fg">

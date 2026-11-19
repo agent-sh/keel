@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { FAKE_KEY, FAKE_MODEL, FAKE_TEXT_MODEL, startFake } from "./fixtures/fake-endpoint.ts";
 import { shoot } from "./shots.ts";
@@ -129,6 +131,48 @@ test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", a
     expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
   } finally {
     await request.delete(`/api/providers/endpoints/${id}?forget_key=1`);
+    fake.server.close();
+  }
+});
+
+// An endpoint of the owner's providers.toml is read only in the UI until it is
+// moved to a file of its own: the entry goes there with its comments, and
+// providers.toml keeps it as comments under a note, the rest untouched.
+test("a providers.toml endpoint moves to its own file and becomes editable", async ({ page, request }) => {
+  const fake = await startFake();
+  const id = "lab-toml-e2e";
+  // dev.sh keeps the scratch config folder beside the state folder.
+  const { state_dir } = await (await request.get("/api/daemon")).json();
+  const cfg = join(dirname(state_dir), "config");
+  const toml = join(cfg, "providers.toml");
+  const before = existsSync(toml) ? readFileSync(toml, "utf8") : null;
+  const mine = `# Owner's note: keep this one local\n[[endpoint]]\nid = "${id}"\n# the bench box\nlabel = "Lab toml"\nbase_url = "${fake.url}/v1"\nkey_env = "LAB_TOML_KEY"\n`;
+  try {
+    rmSync(join(cfg, "endpoints", `${id}.toml`), { force: true });
+    writeFileSync(toml, (before ?? "") + "\n" + mine);
+    await request.post("/api/providers/refresh", { data: {}, timeout: 60_000 });
+    await page.goto("/settings/providers");
+    const row = page.locator(`[data-testid="provider-row"][data-provider="${id}"]`);
+    await expect(row).toContainText("providers.toml");
+    await expect(row.getByTestId("provider-edit")).toHaveCount(0);
+    await row.scrollIntoViewIfNeeded();
+    await shoot(page, "add-provider-06-toml-entry");
+    await row.getByTestId("provider-move-out").click();
+    await expect(row.getByTestId("provider-edit")).toBeVisible();
+    await expect(row.getByTestId("provider-move-out")).toHaveCount(0);
+    const own = readFileSync(join(cfg, "endpoints", `${id}.toml`), "utf8");
+    expect(own).toContain("# the bench box");
+    expect(own).toContain(`base_url = "${fake.url}/v1"`);
+    const left = readFileSync(toml, "utf8");
+    expect(left).toContain(`# Moved to endpoints/${id}.toml`);
+    expect(left).toContain("# Owner's note: keep this one local");
+    expect(left).toContain(`# id = "${id}"`);
+    if (before) expect(left.startsWith(before)).toBe(true);
+    await row.scrollIntoViewIfNeeded();
+    await shoot(page, "add-provider-07-moved");
+  } finally {
+    await request.delete(`/api/providers/endpoints/${id}`);
+    if (before === null) rmSync(toml, { force: true }); else writeFileSync(toml, before);
     fake.server.close();
   }
 });

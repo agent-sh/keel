@@ -2,7 +2,7 @@
 // scan for local servers, writing and removing an endpoint (its key goes to
 // the keyring, never to a file), and probing what a model can do.
 import { catalogTemplates, LOCAL_SERVERS, scanLocal, testEndpoint } from "../../providers/connect.ts";
-import { checkEndpoint, endpoints, endpointsDir, providersFile, removeEndpoint, writeEndpoint, type EndpointConfig } from "../../providers/config.ts";
+import { checkEndpoint, endpoints, endpointsDir, moveEndpoint, providersFile, removeEndpoint, writeEndpoint, type EndpointConfig } from "../../providers/config.ts";
 import { deleteKey, keyringService, saveKey } from "../../providers/creds.ts";
 import { EndpointProvider } from "../../providers/endpoint.ts";
 import { probe, type Cap } from "../../providers/probe.ts";
@@ -118,6 +118,18 @@ export const providerSetupRoutes: RouteModule = ({ providers, errors }) => {
         if (new URL(req.url).searchParams.get("forget_key") === "1" && e.key_cred) forgot = await deleteKey(e.key_cred);
         providers.probes.forget(id);
         return json({ removed: id, key_forgotten: forgot });
+      },
+    },
+
+    // An endpoint of providers.toml moves to endpoints/<id>.toml, where the UI
+    // edits it; the entry stays in providers.toml as comments under a note.
+    "/api/providers/endpoints/:id/move": {
+      POST: async (req: Request & { params: { id: string } }) => {
+        const id = req.params.id;
+        if (sourceOf(id) !== "providers.toml") return bad(`${id} is not an entry of providers.toml`, 409);
+        try { moveEndpoint(id); } catch (e) { return bad((e as Error).message, 409); }
+        await providers.refresh(id);
+        return json({ config: endpoints().find((e) => e.id === id) });
       },
     },
 

@@ -180,6 +180,62 @@ export function removeEndpoint(id: string): boolean {
   return true;
 }
 
+// ---- moving a providers.toml entry to its own file ----
+
+const canonJson = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
+
+// providers.toml's [[endpoint]] entry `id` as a file of its own, and the
+// providers.toml text with that entry commented out under a note. The entry's
+// lines move as written, comments included; nothing else changes. Both texts
+// are parsed back and compared with the original, so a layout this cannot
+// cut cleanly is refused instead of guessed.
+export function splitEndpoint(text: string, id: string, today = new Date().toISOString().slice(0, 10)): { file: string; rest: string } {
+  const doc = Bun.TOML.parse(text) as any;
+  const list: any[] = doc.endpoint ?? [];
+  const k = list.findIndex((e) => e?.id === id);
+  if (k < 0) throw new Error(`providers.toml has no [[endpoint]] with id = "${id}"`);
+  const lines = text.split("\n");
+  const header = /^\s*\[\[\s*endpoint\s*\]\]\s*(#.*)?$/;
+  const sub = /^\s*\[{1,2}\s*endpoint\s*\./;
+  const starts = lines.flatMap((l, i) => (header.test(l) ? [i] : []));
+  if (starts.length !== list.length) throw new Error("providers.toml declares endpoints in a form Keel cannot move (inline or dotted): move it by hand");
+  const from = starts[k]!;
+  let to = from + 1;
+  while (to < lines.length && !(/^\s*\[/.test(lines[to]!) && !sub.test(lines[to]!))) to++;
+  // Comments and blank lines just above the next table belong to it.
+  while (to > from + 1 && /^\s*(#.*)?$/.test(lines[to - 1]!)) to--;
+  const block = lines.slice(from, to);
+  const body = block.slice(1).filter((l) => !/^\s*id\s*=/.test(l)).map((l) => l.replace(/^(\s*\[{1,2})\s*endpoint\s*\./, "$1"));
+  const file = [`# Moved from providers.toml by Keel on ${today}. Edit freely.`, ...body].join("\n").replace(/\n*$/, "\n");
+  const rest = [
+    ...lines.slice(0, from),
+    `# Moved to endpoints/${id}.toml by Keel on ${today}: edit it there. Kept here as comments only.`,
+    ...block.map((l) => (/^\s*(#.*)?$/.test(l) ? l : `# ${l}`)),
+    ...lines.slice(to),
+  ].join("\n");
+  const { id: _id, ...entry } = list[k];
+  if (canonJson(Bun.TOML.parse(file)) !== canonJson(entry)) throw new Error(`the ${id} entry did not read back the same from its own file: move it by hand`);
+  const left = Bun.TOML.parse(rest) as any;
+  const want = { ...doc, endpoint: list.filter((_, i) => i !== k) };
+  if (!want.endpoint.length) delete want.endpoint;
+  if (canonJson({ ...left, endpoint: left.endpoint?.length ? left.endpoint : undefined }) !== canonJson({ ...want, endpoint: want.endpoint })) throw new Error("providers.toml would change beyond that entry: move it by hand");
+  return { file, rest };
+}
+
+// Writes endpoints/<id>.toml from the entry, then providers.toml with the entry commented out.
+export function moveEndpoint(id: string) {
+  if (!ID_RE.test(id)) throw new Error(`the id "${id}" is not a name`);
+  const src = join(configDir(), "providers.toml");
+  const dest = join(endpointsDir(), `${id}.toml`);
+  if (existsSync(dest)) throw new Error(`endpoints/${id}.toml already exists: it is the one in use`);
+  const { file, rest } = splitEndpoint(readFileSync(src, "utf8"), id);
+  mkdirSync(endpointsDir(), { recursive: true });
+  writeFileSync(`${dest}.tmp`, file);
+  renameSync(`${dest}.tmp`, dest);
+  writeFileSync(`${src}.tmp`, rest);
+  renameSync(`${src}.tmp`, src);
+}
+
 // ---- checking an endpoint before it is written ----
 
 const WIRES = ["chat_completions", "anthropic_messages", "gemini_generate_content", "openai_responses"];
