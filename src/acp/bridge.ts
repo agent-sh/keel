@@ -5,9 +5,12 @@
 // becomes the editor's permission request (answered in either place).
 //
 // Spec: agentclientprotocol.com/protocol/v1 (initialize, session/new, load,
-// list, prompt, cancel, set_mode, set_config_option; session/update and
-// session/request_permission toward the client).
+// resume, close, list, prompt, cancel, set_mode, set_config_option;
+// session/update (usage_update and available_commands_update among them),
+// session/request_permission and elicitation/create toward the client).
 import { INPUT_LABEL, inputKind } from "../core/inputs.ts";
+import { contextTokens } from "../engine/compact.ts";
+import { questions } from "../../ui/src/lib/tools.ts";
 import { lineage } from "../core/tree.ts";
 import type { StoredEvent } from "../core/types.ts";
 
@@ -141,6 +144,30 @@ export async function promptOf(blocks: Json[], upload?: (name: string, type: str
   return { text: parts.join("\n\n"), images };
 }
 
+// Keel's question tools, answered through an elicitation form when the editor offers one.
+const ASK_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_user"]);
+
+// A question card as an elicitation form: one field per question, its options
+// as an enum (a list of them when several may be picked), "other" as free text.
+export function questionForm(name: string, input: Json): { message: string; requestedSchema: Json; ids: string[] } | null {
+  const qs = questions(name, input);
+  if (!qs.length || qs.some((q) => !q.options.length)) return null;
+  const properties: Json = {};
+  for (const q of qs) {
+    const values = q.options.map((o) => o.label);
+    properties[q.id] = q.multi
+      ? { type: "array", title: q.header || q.question, description: q.question, items: { type: "string", enum: values } }
+      : { type: "string", title: q.header || q.question, description: q.question, enum: values };
+  }
+  return { message: qs.length === 1 ? qs[0]!.question : "Keel asks:", requestedSchema: { type: "object", properties, required: qs.map((q) => q.id) }, ids: qs.map((q) => q.id) };
+}
+
+// What the context holds now and what it can hold, for usage_update.
+export function usageOf(events: StoredEvent[], context: number | undefined, cost: number | undefined): Json | null {
+  if (!context) return null;
+  return { sessionUpdate: "usage_update", used: contextTokens(events).used, size: context, ...(typeof cost === "number" ? { cost: { amount: Number(cost.toFixed(6)), currency: "USD" } } : {}) };
+}
+
 export type DaemonApi = {
   get(path: string): Promise<Json>;
   send(method: string, path: string, body?: Json): Promise<Json>;
@@ -243,7 +270,7 @@ export class AcpBridge {
             loadSession: true,
             promptCapabilities: { image: true, audio: false, embeddedContext: true },
             mcpCapabilities: { http: false, sse: false },
-            sessionCapabilities: { list: {} },
+            sessionCapabilities: { list: {}, resume: {}, close: {} },
           },
           agentInfo: { name: "keel", title: "Keel", version: "0.1.0" },
           authMethods: [],
@@ -261,6 +288,7 @@ export class AcpBridge {
           // After the answer, so the editor knows the session first.
           queueMicrotask(() => this.notify(session.id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not connect the editor's MCP servers (${names}): it uses the servers set up in its own MCP panel.\n\n` } }));
         }
+        setTimeout(() => void this.commands(session.id), 0); // after the answer
         return { sessionId: session.id, ...setup };
       }
       case "session/load": {
@@ -270,7 +298,27 @@ export class AcpBridge {
         const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
         const setup = await this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
         this.replay(p.sessionId, lineage(r.events ?? [], r.session.head ?? null), !!r.running);
+        setTimeout(() => void this.commands(p.sessionId), 0); // after the answer
         return setup;
+      }
+      case "session/resume": {
+        // As load, without the history replay.
+        const r = await this.daemon.get(`/api/sessions/${p.sessionId}`).catch(() => null);
+        if (!r?.session) throw Object.assign(new Error(`no session ${p.sessionId}`), { code: -32002 });
+        await this.ensureFrames();
+        const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
+        setTimeout(() => void this.commands(p.sessionId), 0); // after the answer
+        return this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
+      }
+      case "session/close": {
+        // Ends this editor's hold on the session: a running turn is stopped; the session stays in Keel.
+        const id = String(p.sessionId);
+        const t = this.turns.get(id);
+        if (t) {
+          t.cancelled = true;
+          await this.daemon.send("POST", `/api/sessions/${id}/interrupt`, {}).catch(() => {});
+        }
+        return {};
       }
       case "session/list": {
         // Pages of LIST_PAGE; the cursor is the next row's offset, opaque to the editor.
@@ -295,8 +343,12 @@ export class AcpBridge {
         if (!text.trim() && !images.length) throw Object.assign(new Error("the prompt is empty"), { code: -32602 });
         await this.ensureFrames();
         const done = new Promise<Json>((resolve, reject) => this.turns.set(id, { resolve, reject, streamed: "", cancelled: false }));
+        // An advertised command (/server:prompt args) runs as the workbench runs it.
+        const cmd = /^\/([\w.-]+):(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+        const known = cmd && this.commandsOf.get(id)?.has(`${cmd[1]}:${cmd[2]}`);
         try {
-          await this.daemon.send("POST", `/api/sessions/${id}/messages`, { text, images });
+          if (known) await this.daemon.send("POST", `/api/sessions/${id}/mcp-prompt`, { server: cmd![1], prompt: cmd![2], args: cmd![3] ?? "" });
+          else await this.daemon.send("POST", `/api/sessions/${id}/messages`, { text, images });
         } catch (e) {
           this.turns.delete(id);
           throw e;
@@ -373,6 +425,7 @@ export class AcpBridge {
       for (const b of e.data.blocks ?? []) {
         if (b.type !== "tool_use") continue;
         this.tools.set(b.id, b.name);
+        if (!replay && ASK_TOOLS.has(b.name) && this.caps?.elicitation?.form) void this.elicit(sessionId, b);
         const plan = planOf(b.name, b.input);
         if (plan) this.notify(sessionId, { sessionUpdate: "plan", entries: plan });
         const r = replay?.results.get(b.id);
@@ -395,7 +448,8 @@ export class AcpBridge {
       if (reason === "error" && !t.cancelled) return t.reject(Object.assign(new Error(t.error ?? "the turn failed"), { code: -32603 }));
       const stopReason = t.cancelled || reason === "interrupted" || reason === "restart" ? "cancelled"
         : reason === "max_tokens" ? "max_tokens" : reason === "refusal" ? "refusal" : reason === "max_steps" ? "max_turn_requests" : "end_turn";
-      t.resolve({ stopReason });
+      // The context and cost as the turn left them, before the turn's answer.
+      void this.usage(sessionId).finally(() => t.resolve({ stopReason }));
     } else if (e.kind === "error" && !replay) {
       const t = this.turns.get(sessionId);
       if (t) t.error = String(e.data.message ?? "the turn failed");
@@ -426,6 +480,50 @@ export class AcpBridge {
       this.pending.delete(requestId);
       this.notify(f.data.session_id, { sessionUpdate: "tool_call_update", toolCallId: f.data.call_id, status: f.data.state === "allowed" ? "in_progress" : "failed" });
     }
+  }
+
+  // MCP prompts of the daemon's servers, as the editor's slash commands.
+  private commandsOf = new Map<string, Set<string>>();
+  private async commands(sessionId: string) {
+    const r = await this.daemon.get("/api/mcp/prompts").catch(() => ({ prompts: [] }));
+    const list: Json[] = r.prompts ?? [];
+    this.commandsOf.set(sessionId, new Set(list.map((p) => `${p.server}:${p.name}`)));
+    this.notify(sessionId, {
+      sessionUpdate: "available_commands_update",
+      availableCommands: list.map((p) => ({
+        name: `${p.server}:${p.name}`,
+        description: p.description || `The ${p.name} prompt of ${p.server}`,
+        ...(p.arguments?.length ? { input: { hint: p.arguments.map((a: Json) => `<${a.name}>`).join(" ") } } : {}),
+      })),
+    });
+  }
+
+  private async usage(sessionId: string) {
+    try {
+      const r = await this.daemon.get(`/api/sessions/${sessionId}`);
+      if (!this.models) await this.modelOptions();
+      const m = this.models!.find((x) => x.id === r.session.model);
+      const u = usageOf(lineage(r.events ?? [], r.session.head ?? null), m?.context, r.session.usage?.cost);
+      if (u) this.notify(sessionId, u);
+    } catch (e) {
+      this.log(`usage of ${sessionId}: ${(e as Error).message}`);
+    }
+  }
+
+  // A question card as an elicitation form; accepted answers go to the card,
+  // a declined or cancelled form leaves the card for the workbench.
+  private async elicit(sessionId: string, b: Json) {
+    const form = questionForm(b.name, b.input);
+    if (!form) return;
+    const msg = await this.request("elicitation/create", { sessionId, toolCallId: b.id, mode: "form", message: form.message, requestedSchema: form.requestedSchema });
+    const r = msg.result;
+    if (r?.action !== "accept" || !r.content) return;
+    const answers: Json = {};
+    for (const id of form.ids) {
+      const v = r.content[id];
+      answers[id] = { picked: Array.isArray(v) ? v.map(String) : v == null ? [] : [String(v)] };
+    }
+    await this.daemon.send("POST", `/api/sessions/${sessionId}/questions/${b.id}`, { answers }).catch((e) => this.log(`answers of ${b.id}: ${(e as Error).message}`));
   }
 
   // An approval card of the gate as the editor's permission request. The card

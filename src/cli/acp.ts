@@ -1,6 +1,6 @@
 // `keel acp [--url http://127.0.0.1:47960]`: speak the Agent Client Protocol on
 // stdio for an editor, driving the running daemon at --url (or KEEL_URL).
-// Zed: "agent_servers": { "Keel": { "command": "keel", "args": ["acp"] } }.
+// Zed: "agent_servers": { "Keel": { "type": "custom", "command": "keel", "args": ["acp"] } }.
 import { parseArgs } from "node:util";
 import { AcpBridge, type DaemonApi } from "../acp/bridge.ts";
 import { authHeaders, findDaemon } from "./client.ts";
