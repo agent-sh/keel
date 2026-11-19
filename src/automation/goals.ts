@@ -1,6 +1,8 @@
 import * as activity from "./activity.ts";
 import { D, capture, deliver, emit } from "./core.ts";
 import { check, extractJson } from "./schema.ts";
+import { verify } from "./verify.ts";
+import * as agents from "./agents.ts";
 
 // Goals and the shared task list.
 //
@@ -24,7 +26,11 @@ export type Goal = {
   session_id: string; objective: string; status: GoalStatus; status_reason?: string | null;
   token_budget?: number | null; max_turns?: number | null; tokens_used: number; turns: number; idle_turns: number;
   started_ms: number; updated_ms: number; last_verdict?: string | null; last_reason?: string | null; judge_model?: string | null; judged_by?: string | null;
+  verifier_model?: string | null; // the verifier's model when not the judge's (another family is a second opinion)
   rev?: number; // a new goal or a changed objective: a check of the old one never decides this one
+  // The independent check of a "met" (verify.ts): its child session, while it
+  // runs and after; what it saw; met only once it agreed.
+  verifier_session?: string | null; verifying?: boolean; evidence?: string[] | null; verified?: boolean;
 };
 export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
 // dest_session: the session the task was taken out into, once it was.
@@ -79,7 +85,7 @@ const checkBudget = (n: unknown, what: string) => {
   return v;
 };
 
-export async function set(sessionId: string, input: { objective: string; token_budget?: number | null; max_turns?: number | null; judge_model?: string | null; replace?: boolean }): Promise<Goal> {
+export async function set(sessionId: string, input: { objective: string; token_budget?: number | null; max_turns?: number | null; judge_model?: string | null; verifier_model?: string | null; replace?: boolean }): Promise<Goal> {
   const s = D().store.session(sessionId);
   if (!s) throw Object.assign(new Error("no such session"), { status: 404 });
   if (s.parent_id) throw new Error("a subagent works to its parent's goal");
@@ -90,13 +96,14 @@ export async function set(sessionId: string, input: { objective: string; token_b
   const cur = get(sessionId);
   if (open(cur) && !input.replace) throw Object.assign(new Error("the session has a goal already: replace it, or clear it first"), { status: 409 });
   if (input.judge_model) await D().providers.resolve(input.judge_model);
+  if (input.verifier_model) await D().providers.resolve(input.verifier_model);
   const now = Date.now();
   const g = save({
     session_id: sessionId, objective, status: "pursuing", token_budget: checkBudget(input.token_budget, "token_budget"), max_turns: checkBudget(input.max_turns, "max_turns"),
-    tokens_used: 0, turns: 0, idle_turns: 0, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, rev: (cur?.rev ?? 0) + 1,
+    tokens_used: 0, turns: 0, idle_turns: 0, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, verifier_model: input.verifier_model ?? null, rev: (cur?.rev ?? 0) + 1,
   });
   activity.record("turn", "goal", sessionId, `Goal set: ${objective.slice(0, 200)}`);
-  deliver(sessionId, `${objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation and decides whether it is met, so show the evidence: run the test, print the file.)`, { kind: "goal", goal: "start" });
+  deliver(sessionId, `${objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation, and before it counts as met an independent verifier checks the files and reruns what proves it, so leave evidence it can check: run the test, print the file.)`, { kind: "goal", goal: "start" });
   return g;
 }
 
@@ -165,17 +172,32 @@ function turnFacts(sessionId: string): { tokens: number; tools: boolean } {
 
 const judging = new Set<string>();
 
+// After a restart: a verification the daemon was waiting on has no waiter any
+// more; the last turn is checked again (judge, then a new verifier), not counted again.
+export function recover() {
+  for (const r of db().query<{ data: string }, []>("SELECT data FROM goals").all()) {
+    const g = JSON.parse(r.data) as Goal;
+    if (!g.verifying) continue;
+    const old = g.verifier_session ? agents.byChild(g.verifier_session) : undefined;
+    if (old && !agents.isEnded(old)) agents.stop(old.id, "parent"); // its answer has no one to go to
+    save({ ...g, verifying: false });
+    if (active(g) && !D().engine.isRunning(g.session_id)) afterTurn(g.session_id, "end_turn", { recheck: true }).catch((e) => capture(e, { at: "goal recheck" }));
+  }
+}
+
 // After each turn of a session with an active goal: the turn is counted and a
 // stop pauses the goal at once; the check waits (`judge` false) while more
 // work is lined up (an agent's report, a wait), as Claude Code defers it.
-export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean } = {}) {
+export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean; recheck?: boolean } = {}) {
   const g = get(sessionId);
   if (!active(g) || judging.has(sessionId)) return;
   const rev = g!.rev ?? 0;
-  const facts = turnFacts(sessionId);
-  g!.turns++;
-  g!.tokens_used += facts.tokens;
-  g!.idle_turns = facts.tools ? 0 : g!.idle_turns + 1;
+  if (!opts.recheck) {
+    const facts = turnFacts(sessionId);
+    g!.turns++;
+    g!.tokens_used += facts.tokens;
+    g!.idle_turns = facts.tools ? 0 : g!.idle_turns + 1;
+  }
   if (reason === "error" || reason === "max_tokens") return void save({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
   if (reason === "interrupted") return void save({ ...g!, status: "paused", status_reason: "the turn was stopped" });
   if (opts.judge === false) return void save(g!);
@@ -192,14 +214,28 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     if (!active(now) || (now!.rev ?? 0) !== rev) return; // paused, cleared or replaced while it judged
     const u = res.usage as any;
     const judgeTokens = (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
-    const next: Goal = { ...now!, turns: g!.turns, tokens_used: g!.tokens_used + judgeTokens, idle_turns: g!.idle_turns, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id };
+    let next: Goal = { ...now!, turns: g!.turns, tokens_used: g!.tokens_used + judgeTokens, idle_turns: g!.idle_turns, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id, evidence: null };
     activity.record("turn", "goal", sessionId, `Goal check: ${v.verdict.replace("_", " ")}. ${v.reason}`.slice(0, 400));
-    if (v.verdict === "met") return void save({ ...next, status: "achieved", status_reason: v.reason });
+    if (v.verdict === "met") {
+      // Met by the judge: the verifier checks the work before it counts.
+      save({ ...next, verifying: true, evidence: null });
+      const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (c && (c.rev ?? 0) === rev) save({ ...c, verifier_session: child }); });
+      const after = get(sessionId);
+      if (!active(after) || (after!.rev ?? 0) !== rev) return void (after && save({ ...after, verifying: false })); // paused, cleared or replaced meanwhile
+      next = { ...after!, verifying: false, verifier_session: out.child_id, tokens_used: after!.tokens_used + out.tokens };
+      if ("error" in out.result) return void save({ ...next, status: "paused", status_reason: `the judge said met; ${out.result.error}. Resume to try again.` });
+      const r = out.result;
+      activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400));
+      next = { ...next, last_verdict: r.verdict, last_reason: r.reason, evidence: r.evidence };
+      if (r.verdict === "met") return void save({ ...next, status: "achieved", status_reason: r.reason, verified: true });
+      v.reason = `${r.reason}${r.evidence.length ? `\n${r.evidence.map((e) => `- ${e}`).join("\n")}` : ""}`;
+      v.verdict = "not_met";
+    }
     if (v.verdict === "impossible") return void save({ ...next, status: "impossible", status_reason: v.reason });
     if (spent(next)) return void save({ ...next, status: "budget", status_reason: next.max_turns != null && next.turns >= next.max_turns ? `ran its ${next.max_turns} turns` : `spent its ${next.token_budget} tokens` });
     if (next.idle_turns >= STALL_TURNS) return void save({ ...next, status: "stalled", status_reason: `${STALL_TURNS} turns in a row used no tool` });
     save(next);
-    deliver(sessionId, `[harness] The goal is not met yet: ${v.reason}\nContinue toward it.`, { kind: "goal", goal: "continue" });
+    deliver(sessionId, `[harness] The goal is not met yet${next.evidence ? " (an independent check of the work found this)" : ""}: ${v.reason}\nContinue toward it.`, { kind: "goal", goal: "continue" });
   } catch (e) {
     capture(e, { at: "goal check", session: sessionId });
     const now = get(sessionId);

@@ -150,6 +150,7 @@ function init(deps: Deps) {
       waits.recover();
       loops.recover();
       agents.recover();
+      goals.recover();
     } catch (e) {
       capture(e, { at: "recover" });
     }

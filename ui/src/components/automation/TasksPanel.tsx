@@ -44,7 +44,7 @@ function NewGoal({ sid, replace }: { sid: string; replace: boolean }) {
         </button>
       </div>
       {err && <p className="text-caption text-danger">{err}</p>}
-      <p className="text-micro text-faint">Setting a goal starts a turn. After each turn a judge on this session's model reads the conversation and says whether it is met; if not, the next turn starts.</p>
+      <p className="text-micro text-faint">Setting a goal starts a turn. After each turn a judge on this session's model reads the conversation; when it says met, an independent verifier checks the work itself before the goal counts. Until then the next turn starts.</p>
     </form>
   );
 }
@@ -71,6 +71,22 @@ function GoalCard({ g, sid }: { g: Goal; sid: string }) {
         <p className="mt-1.5 text-caption text-muted" data-testid="goal-reason">
           {g.status_reason && g.status !== "pursuing" ? g.status_reason : g.last_reason}
         </p>
+      )}
+      {(g.verifying || g.evidence?.length || g.verified) && (
+        <div className="mt-2 border-t border-line pt-2" data-testid="goal-verify" data-state={g.verifying ? "running" : g.verified ? "met" : "not_met"}>
+          <div className="flex items-center gap-1.5 text-caption">
+            {g.verifying ? <CircleDot className="size-3.5 text-brass animate-pulse-dot" /> : g.verified ? <Check className="size-3.5 text-ok" /> : <X className="size-3.5 text-warn" />}
+            <span className={g.verified ? "text-fg" : "text-muted"}>{g.verifying ? "An independent check of the work is running" : g.verified ? "Confirmed by an independent check of the work" : "The independent check found work missing"}</span>
+            {g.verifier_session && (
+              <button type="button" onClick={() => openSession(g.verifier_session!)} title="Open the verifier's session" className="ml-auto text-faint hover:text-fg" data-testid="goal-verifier-open"><ExternalLink className="size-3.5" /></button>
+            )}
+          </div>
+          {!!g.evidence?.length && (
+            <ul className="mt-1 flex flex-col gap-0.5 pl-5 text-micro text-muted" data-testid="goal-evidence">
+              {g.evidence.map((e, i) => <li key={i} className="list-disc break-words font-mono">{e}</li>)}
+            </ul>
+          )}
+        </div>
       )}
       {!open && <button type="button" onClick={() => setEdit(true)} className="mt-2 text-caption text-accent hover:underline">Set a new goal</button>}
     </div>

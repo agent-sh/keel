@@ -97,6 +97,11 @@ export class ScriptedProvider implements Provider {
         const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
         return reply(`Done with ${calls.length} call${calls.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
       }
+      case "liar":
+        // A worker that says it finished without doing anything, and a judge
+        // that believes it: what the independent goal check exists for.
+        if (lastText.includes("[harness] Goal check")) return reply('{"verdict": "met", "reason": "The reply says goal.txt holds the word ready."}');
+        return reply("Done: goal.txt holds the word ready.");
       case "rate-limit-long":
         throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 15 min", 429, 15 * 60_000);
       case "rate-limit":

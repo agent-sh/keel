@@ -1,12 +1,14 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot } from "./shots.ts";
 
 const DEV = process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bun/dev-automation2`;
 
 // Feature: /goal sets a finish line; after each turn a judge reads the
-// conversation and the goal ends when it is met. The task list is shared: the
+// conversation, and when it says met an independent verifier checks the work
+// on disk; the goal ends when the verifier agrees, and a claim the files do
+// not back sends the next turn what is missing. The task list is shared: the
 // owner adds and ticks items in the panel, the model is told and keeps them
 // with its own plan tool, and an item can go to a session of its own.
 test("goals and the shared task list", async ({ page, request }) => {
@@ -30,6 +32,12 @@ test("goals and the shared task list", async ({ page, request }) => {
   await shoot(page, "goals-01-pursuing");
   await expect(page.getByTestId("goal-status")).toHaveText("Met", { timeout: 200_000 });
   await expect(page.getByTestId("goal-reason")).not.toBeEmpty();
+  // Met only after an independent verifier (a read-only child session) checked the work.
+  await expect(page.getByTestId("goal-verify")).toHaveAttribute("data-state", "met");
+  const met = (await (await request.get(`/api/sessions/${session.id}/goal`)).json()).goal;
+  expect(met.verified).toBe(true);
+  expect(met.evidence.length).toBeGreaterThan(0);
+  expect((await (await request.get(`/api/sessions/${met.verifier_session}`)).json()).session.parent_id).toBe(session.id);
   await expect.poll(idle, { timeout: 60_000 }).toBe(true);
   await shoot(page, "goals-02-met");
 
@@ -95,4 +103,27 @@ test("goals and the shared task list", async ({ page, request }) => {
   await request.delete(`/api/sessions/${session.id}/goal`);
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
+});
+
+test("goal: a claim the files do not back is not met", async ({ page, request }) => {
+  const ids = ((await (await request.get("/api/models")).json()).models as any[]).map((m) => m.id);
+  test.skip(!ids.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const dir = join(DEV, `goal-liar-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  // The worker and its judge are a stand-in that says done without doing it; the verifier is a real model.
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: dir } })).json();
+  await request.put(`/api/sessions/${session.id}/goal`, { data: { objective: "script:liar goal.txt in the working directory holds the word ready.", verifier_model: HAIKU } });
+  await page.goto(`/s/${session.id}`);
+  await openPanel(page, "tasks");
+  await expect(page.getByTestId("goal-verify")).toHaveAttribute("data-state", "not_met", { timeout: 200_000 });
+  const g = (await (await request.get(`/api/sessions/${session.id}/goal`)).json()).goal;
+  expect(g.verified).not.toBe(true);
+  expect(g.status).not.toBe("achieved");
+  expect(g.last_verdict).toBe("not_met");
+  // The next turn was told what the check found.
+  const evs = (await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[];
+  expect(evs.some((e) => e.kind === "user" && String(e.data.text).includes("an independent check of the work found this"))).toBe(true);
+  await expect(page.getByTestId("goal-evidence")).toBeVisible();
+  await shoot(page, "goals-05-refuted");
+  await request.delete(`/api/sessions/${session.id}/goal`);
 });
