@@ -218,3 +218,49 @@ test("freeform tools are Responses custom tools, except on xAI", () => {
   p.event({ data: JSON.stringify({ type: "response.completed", response: { usage: {} } }) } as any);
   expect(p.result().blocks).toEqual([{ type: "tool_use", id: "c2", name: "exec", input: { input: "text(2)" }, origin: "p:m" }]);
 });
+
+// GPT's deferred tools on the Responses wire: only the client tool_search is
+// declared; its call and answer replay as tool_search_call and a
+// tool_search_output loading the named tools (an MCP server's as functions of
+// its namespace), and a namespaced call comes back as the tool's own name.
+test("deferred tools on the Responses wire: client tool_search, namespaces, round trip", () => {
+  const tools = [
+    { name: "exec_command", description: "run", input_schema: { type: "object" } },
+    { name: "tool_search", description: "find tools", input_schema: { type: "object", properties: { query: { type: "string" } } }, search: true as const },
+    { name: "mcp__echo__say", description: "say it", input_schema: { type: "object", properties: { text: { type: "string" } } }, defer: true, namespace: "mcp__echo" },
+    { name: "request_secret", description: "ask for a secret", input_schema: { type: "object" }, defer: true },
+  ];
+  const history: Message[] = [
+    { role: "user", content: [{ type: "text", text: "go" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "s1", name: "tool_search", input: { query: "echo" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: [{ type: "tool_reference", tool_name: "mcp__echo__say" }, { type: "tool_reference", tool_name: "request_secret" }] }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "mcp__echo__say", input: { text: "hi" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "hi" }] },
+  ];
+  const b = responsesBody({ ...req, messages: history, tools }, ctx, "codex");
+  expect(b.tools.map((t: any) => [t.type, t.name ?? null, t.execution ?? null])).toEqual([["function", "exec_command", null], ["tool_search", null, "client"]]);
+  expect(b.input.slice(1)).toEqual([
+    { type: "tool_search_call", call_id: "s1", execution: "client", status: "completed", arguments: { query: "echo" } },
+    {
+      type: "tool_search_output", call_id: "s1", execution: "client", status: "completed", tools: [
+        { type: "namespace", name: "mcp__echo", description: "Tools in the mcp__echo namespace.", tools: [{ type: "function", name: "say", description: "say it", strict: false, defer_loading: true, parameters: tools[2]!.input_schema }] },
+        { type: "function", name: "request_secret", description: "ask for a secret", strict: false, defer_loading: true, parameters: { type: "object" } },
+      ],
+    },
+    { type: "function_call", call_id: "c1", namespace: "mcp__echo", name: "say", arguments: '{"text":"hi"}' },
+    { type: "function_call_output", call_id: "c1", output: "hi" },
+  ]);
+  const parse = (item: any) => {
+    const p = responsesWire("codex").parser({ ...req, tools } as any, ctx, () => {});
+    p.event({ data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item }) } as any);
+    p.event({ data: JSON.stringify({ type: "response.completed", response: { usage: {} } }) } as any);
+    return p.result();
+  };
+  const searched = parse({ type: "tool_search_call", execution: "client", call_id: "s2", status: "completed", arguments: { query: "say", limit: 3 } });
+  expect(searched.blocks).toMatchObject([{ type: "tool_use", id: "s2", name: "tool_search", input: { query: "say", limit: 3 } }]);
+  expect(searched.stop).toBe("tool_use");
+  expect(parse({ type: "function_call", call_id: "c2", namespace: "mcp__echo", name: "say", arguments: "{}" }).blocks).toMatchObject([{ type: "tool_use", name: "mcp__echo__say" }]);
+  expect(parse({ type: "function_call", call_id: "c3", namespace: "request_secret", name: "request_secret", arguments: "{}" }).blocks).toMatchObject([{ type: "tool_use", name: "request_secret" }]);
+  // Without a search tool (a route that refused it) nothing changes.
+  expect(responsesBody({ ...req, messages: [], tools: tools.slice(0, 1) }, ctx, "codex").tools).toEqual([{ type: "function", name: "exec_command", description: "run", parameters: { type: "object" }, strict: false }]);
+});

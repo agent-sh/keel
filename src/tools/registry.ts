@@ -2,7 +2,7 @@ import type { ModelInfo } from "../providers/types.ts";
 import { claudeTools } from "./claude.ts";
 import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
-import { DEFERRED_BUILTINS, toolSearch } from "./defer.ts";
+import { DEFERRED_BUILTINS, gptToolSearch, toolSearch } from "./defer.ts";
 import "./web.ts";
 import type { Tool } from "./types.ts";
 
@@ -49,7 +49,8 @@ export function toolsFor(family: ModelInfo["family"], native = false): Tool[] {
 const searches = new Map<string, Tool>();
 function searchFor(family: ModelInfo["family"]): Tool {
   let s = searches.get(family);
-  if (!s) searches.set(family, (s = toolSearch(() => deferredOf(family))));
+  // Each family searches with the tool it was trained on: ToolSearch for Claude, tool_search for GPT.
+  if (!s) searches.set(family, (s = (family === "gpt" ? gptToolSearch : toolSearch)(() => deferredOf(family))));
   return s;
 }
 const deferredOf = (family: ModelInfo["family"]) => toolsFor(family, false).filter((t) => DEFERRED_BUILTINS.has(t.name));

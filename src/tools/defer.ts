@@ -35,8 +35,10 @@ const refused = new Set<string>();
 export const deferRefused = (route: string) => refused.has(route);
 // Whether a model's requests carry deferred tools: Claude on the Anthropic wire,
 // unless that route refused them.
+// GPT on the Responses wire too (its client tool_search, as Codex runs it).
+// A route that refuses either answers once and keeps the search pair after.
 export const loadsNatively = (wire: string | undefined, info: { id: string; family: string }) =>
-  info.family === "claude" && wire === "anthropic_messages" && !refused.has(info.id);
+  ((info.family === "claude" && wire === "anthropic_messages") || (info.family === "gpt" && wire === "openai_responses")) && !refused.has(info.id);
 export function refuseDefer(route: string) { refused.add(route); }
 // The provider's 400 for a request it cannot take with deferred tools.
 export const isDeferError = (e: unknown) =>
@@ -61,10 +63,18 @@ type Deferred = Tool & { catalog?: string };
 // while the card waited makes the answer one for another tool.
 const judged = new WeakMap<object, Judged>();
 
+// The namespace a tool loads under where the wire groups deferred tools: its
+// server's (mcp__<server> for an MCP server, as Codex names them), when its
+// native name is that prefix and a name of its own.
+function namespaceOf(t: CatalogTool, name: string): string | undefined {
+  const ns = t.mcp ? `mcp__${t.server}` : t.server;
+  return name.startsWith(`${ns}__`) && name.length > ns.length + 2 ? ns : undefined;
+}
+
 function wrap(t: CatalogTool): Deferred {
   const name = nativeName(t);
   return {
-    name, description: t.description, input_schema: t.input_schema, defer: true, readOnly: !!t.readOnly, catalog: t.qualified,
+    name, description: t.description, input_schema: t.input_schema, defer: true, readOnly: !!t.readOnly, catalog: t.qualified, namespace: namespaceOf(t, name),
     // Judged and granted as the catalog tool, the name mcp_call uses too.
     async target(input) {
       const j = judgedOf(t);
@@ -126,6 +136,32 @@ export async function withCatalog(tools: Tool[], family: string, messages: Messa
   }
   for (const n of referenced(messages)) if (!names.has(n)) { names.add(n); cat.push(gone(n)); }
   return [...own, ...cat];
+}
+
+// Codex's tool_search for GPT on the Responses wire: the model sends a query,
+// Keel ranks the deferred tools and answers with the ones that match, which
+// the wire sends back as the loaded namespaces (tool_search_output). Same
+// ranking as ToolSearch; Codex's name, words and arguments.
+export function gptToolSearch(builtins: () => Tool[]): Tool {
+  const inner = toolSearch(builtins);
+  return {
+    name: "tool_search",
+    search: true,
+    readOnly: true,
+    description: "# Tool discovery\n\nSearches over deferred tool metadata and exposes matching tools for the next model call.\n\n" +
+      "Some of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools: " +
+      "every MCP server's tools (each server is a namespace mcp__<server>) and other tools used less often. For MCP tool discovery, always use `tool_search` instead of listing MCP resources.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query for deferred tools." },
+        limit: { type: "number", description: "Maximum number of tools to return. Defaults to 8." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    run: (input, ctx) => inner.run({ query: String(input?.query ?? "").replace(/^select:/, ""), max_results: Number(input?.limit) || 8 }, ctx),
+  };
 }
 
 // Claude Code's ToolSearch: `select:A,B` for exact names, `+word rest` to

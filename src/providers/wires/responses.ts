@@ -37,11 +37,39 @@ const customOf = (req: ProviderRequest, d: ResponsesDialect) =>
   new Set(d === "xai" ? [] : req.tools.filter((t) => t.freeform).map((t) => t.name));
 const rawInput = (input: unknown) => (typeof input === "string" ? input : typeof (input as any)?.input === "string" ? (input as any).input : undefined);
 
+// Deferred tools (src/tools/defer.ts): the request declares the client
+// tool_search and none of them. A search call is a tool_search_call item, its
+// answer a tool_search_output that loads the tools it named, an MCP server's
+// as functions of its namespace (mcp__<server>), as Codex does it. The items
+// stay in the history, so a loaded tool stays loaded and the prefix stays.
+const searchOf = (req: ProviderRequest) => req.tools.find((t) => t.search);
+const memberOf = (t: { name: string; namespace?: string }) => (t.namespace ? t.name.slice(t.namespace.length + 2) : t.name);
+// A function call's tool, by its namespace and name there.
+const calledName = (it: { name?: string; namespace?: string }) =>
+  it.namespace && it.namespace !== it.name ? `${it.namespace}__${it.name}` : String(it.name ?? "");
+
+function loaded(req: ProviderRequest, names: string[]): any[] {
+  const out: any[] = [];
+  const spaces = new Map<string, any>();
+  for (const n of names) {
+    const t = req.tools.find((x) => x.name === n && x.defer);
+    if (!t) continue;
+    const fn = { type: "function", name: memberOf(t), description: t.description, strict: false, defer_loading: true, parameters: t.input_schema };
+    if (!t.namespace) { out.push(fn); continue; }
+    let ns = spaces.get(t.namespace);
+    if (!ns) { ns = { type: "namespace", name: t.namespace, description: `Tools in the ${t.namespace} namespace.`, tools: [] }; spaces.set(t.namespace, ns); out.push(ns); }
+    ns.tools.push(fn);
+  }
+  return out;
+}
+
 export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: ResponsesDialect, systemPrefix?: string) {
   const input: any[] = [];
   const custom = customOf(req, dialect);
   const customCalls = new Set<string>();
-  for (const m of project(req.messages, ctx)) {
+  const search = searchOf(req);
+  const searches = new Set<string>();
+  for (const m of project(req.messages, { ...ctx, toolRefs: !!search })) {
     let texts: any[] = [];
     const flush = () => {
       if (texts.length) input.push({ type: "message", role: m.role, content: texts });
@@ -57,8 +85,15 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
       } else if (b.type === "tool_use") {
         flush();
         const raw = custom.has(b.name) ? rawInput(b.input) : undefined;
-        if (raw !== undefined) { customCalls.add(b.id); input.push({ type: "custom_tool_call", call_id: b.id, name: b.name, input: raw }); }
+        const t = req.tools.find((x) => x.name === b.name);
+        if (search && b.name === search.name) { searches.add(b.id); input.push({ type: "tool_search_call", call_id: b.id, execution: "client", status: "completed", arguments: b.input ?? {} }); }
+        else if (raw !== undefined) { customCalls.add(b.id); input.push({ type: "custom_tool_call", call_id: b.id, name: b.name, input: raw }); }
+        else if (search && t?.namespace) input.push({ type: "function_call", call_id: b.id, namespace: t.namespace, name: memberOf(t), arguments: JSON.stringify(b.input ?? {}) });
         else input.push({ type: "function_call", call_id: b.id, name: wireName(dialect, b.name), arguments: JSON.stringify(b.input ?? {}) });
+      } else if (b.type === "tool_result" && searches.has(b.tool_use_id)) {
+        flush();
+        const names = typeof b.content === "string" ? [] : b.content.flatMap((c) => (c.type === "tool_reference" ? [c.tool_name] : []));
+        input.push({ type: "tool_search_output", call_id: b.tool_use_id, execution: "client", status: "completed", tools: loaded(req, names) });
       } else if (b.type === "tool_result") {
         flush();
         const output = typeof b.content === "string"
@@ -69,7 +104,9 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
     }
     flush();
   }
-  const tools = req.tools.map((t) => custom.has(t.name)
+  const tools = req.tools.filter((t) => !(search && t.defer)).map((t) => t.search
+    ? { type: "tool_search", execution: "client", description: t.description, parameters: t.input_schema }
+    : custom.has(t.name)
     ? { type: "custom", name: t.name, description: t.description, format: { type: "grammar", syntax: t.freeform!.syntax, definition: t.freeform!.definition } }
     : {
       type: "function",
@@ -123,7 +160,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
           switch (ev.type) {
             case "response.output_item.added":
               if (ev.item?.type === "function_call" || ev.item?.type === "custom_tool_call") {
-                names.set(i, localName(dialect, ev.item.name));
+                names.set(i, localName(dialect, calledName(ev.item)));
                 onDelta({ kind: "tool_input", index: i, text: "", name: names.get(i) });
               }
               break;
@@ -195,7 +232,12 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
             } else if (it.type === "custom_tool_call") {
               blocks.push({ type: "tool_use", id: it.call_id ?? it.id, name: it.name, input: { input: String(it.input ?? "") }, origin: ctx.origin });
             } else if (it.type === "function_call") {
-              blocks.push({ type: "tool_use", id: it.call_id ?? it.id, name: localName(dialect, it.name), input: parseArgs(it.arguments ?? ""), origin: ctx.origin });
+              blocks.push({ type: "tool_use", id: it.call_id ?? it.id, name: localName(dialect, calledName(it)), input: parseArgs(it.arguments ?? ""), origin: ctx.origin });
+            } else if (it.type === "tool_search_call" && it.execution === "client") {
+              // A search the model asked Keel to run: the family's search tool.
+              const s = searchOf(req);
+              const args = typeof it.arguments === "string" ? parseArgs(it.arguments) : it.arguments ?? {};
+              if (s) blocks.push({ type: "tool_use", id: it.call_id ?? it.id, name: s.name, input: args, origin: ctx.origin });
             }
           }
           if (stop === "end_turn" && blocks.some((b) => b.type === "tool_use")) stop = "tool_use";

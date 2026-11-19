@@ -9,8 +9,14 @@ export type ToolSpec = {
   // `{ input }`; others send input_schema.
   freeform?: { syntax: "lark" | "regex"; definition: string };
   // Sent with defer_loading: not in the prompt until a tool search names it
-  // (the Anthropic wire only; see src/tools/defer.ts).
+  // (the Anthropic wire and the Responses wire; see src/tools/defer.ts).
   defer?: boolean;
+  // A deferred tool's group on the Responses wire (mcp__<server>): it loads
+  // there as a function of that namespace, named by the rest of its name.
+  namespace?: string;
+  // The tool search of a family whose wire runs it as its own item (the
+  // Responses wire's client tool_search) rather than as a function.
+  search?: true;
 };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
