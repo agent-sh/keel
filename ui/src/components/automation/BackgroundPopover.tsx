@@ -15,6 +15,7 @@ export function waitLabel(w: WaitRecord): string {
     case "http": return `HTTP ${s.url}${s.status ? ` = ${s.status}` : ""}`;
     case "process": return `Process ${s.pid}`;
     case "monitor": return `Monitor ${s.command}`;
+    case "session": return `${s.message_id ? "Handled by" : "Idle"} ${s.title || s.session}`;
   }
 }
 

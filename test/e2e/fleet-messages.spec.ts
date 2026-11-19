@@ -72,3 +72,47 @@ test("fleet messages: across machines, and held for the owner", async ({ page, r
     await request.delete(`${PEER}/api/sessions/${receiver.id}`);
   }
 });
+
+// notify_when_idle across daemons: the sender gets one notice when the session
+// on the other machine has handled its message, from the receiver's record.
+test("fleet messages: a notice when the other machine's session has handled it", async ({ page, request }) => {
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  mkdirSync(ROOT, { recursive: true });
+  let { machines } = await (await request.get("/api/fleet/machines")).json();
+  let peer = machines.find((m: any) => m.daemon_url === PEER);
+  if (!peer) {
+    const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
+    peer = r.machines.find((m: any) => m.id === r.id);
+  }
+  const receiver = (await (await request.post(`${PEER}/api/sessions`, { data: { workspace: ROOT, title: "Worker on devbox", model: HAIKU } })).json()).session;
+  const sender = (await (await request.post("/api/sessions", { data: { title: "Waiting sender", model: HAIKU } })).json()).session;
+  await request.put(`/api/sessions/${sender.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  try {
+    await page.goto(`/s/${sender.id}`);
+    await page.getByTestId("composer").fill(
+      `Make one keel__session_send call to "${peer.name}/${receiver.id}" with notify_when_idle true and text ` +
+      `"Answer right in your own conversation, without any tool, with the single word: done". Then reply "waiting" and stop. ` +
+      `When the notice comes, reply with the single word: notified.`,
+    );
+    await page.keyboard.press("Enter");
+    const send = page.locator('[data-tool="keel__session_send"]');
+    await expect(send).toHaveCount(1, { timeout: 120_000 });
+    // The notice wakes the sender once, after the other side's turn ended.
+    await expect(page.getByTestId("wake-notice")).toHaveCount(1, { timeout: 150_000 });
+    await expect(page.getByTestId("wake-notice")).toContainText("session fired");
+    await page.getByTestId("wake-notice").click();
+    await expect(page.getByTestId("wake-notice")).toContainText("handled your message and is idle");
+    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 90_000 });
+    await shoot(page, "fleet-msg-04-notice");
+
+    const events = (await (await request.get(`${PEER}/api/sessions/${receiver.id}/events`)).json()).events;
+    expect(events.filter((e: any) => e.kind === "user")).toHaveLength(1); // the watch cost the receiver no turn
+    const waits = (await (await request.get("/api/waits")).json()).waits.filter((w: any) => w.session_id === sender.id);
+    expect(waits.filter((w: any) => w.kind === "session").map((w: any) => w.status)).toEqual(["fired"]);
+    const errors = (await (await request.get("/api/errors")).json()).errors;
+    expect(errors.slice(0, errors.length - errorsBefore).filter((e: any) => e.source !== "provider")).toEqual([]);
+  } finally {
+    await request.delete(`/api/sessions/${sender.id}`);
+    await request.delete(`${PEER}/api/sessions/${receiver.id}`);
+  }
+});

@@ -17,6 +17,7 @@ import { bridge, isUpgrade, present, sameText, upHeaders, upstream } from "../..
 import { validate as validatePlacement } from "../../fleet/placement.ts";
 import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
+import { bindNotices } from "../../fleet/notice.ts";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { inside } from "../../safety/policy.ts";
@@ -53,7 +54,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   const msgs = new Messages(store, bus, engine, f, (id) => (gate ? gate.perm(id) : undefined), (m, s) => {
     alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
   });
-  bindFleetTools(f, msgs, (id) => store.session(id));
+  bindFleetTools(f, msgs, (id) => store.session(id), bindNotices(f, msgs, store, engine));
   const moves = new Handoffs(store, bus, engine, f);
   // A deleted session takes what its moves left with it.
   bus.on((fr) => {
@@ -402,6 +403,17 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           if (e instanceof HttpError) return proven(bad(e.message, e.status), c, f.id);
           throw e;
         }
+      },
+    },
+
+    // Where one message stands (held, dropped, waiting, handled): for this
+    // page, and for the paired daemon that sent it and waits for a notice.
+    "/api/fleet/messages/:id/disposition": {
+      GET: (req: any) => {
+        const c = paired(req);
+        const m = msgs.get(req.params.id);
+        if (c && m && m.from.daemon_id !== c.daemonId) return proven(bad("no such message", 404), c, f.id);
+        return proven(m ? json(msgs.disposition(m.id)) : bad("no such message", 404), c, f.id);
       },
     },
 

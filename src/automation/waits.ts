@@ -14,7 +14,15 @@ export type WaitSpec =
   | { kind: "log"; path: string; match: string }
   | { kind: "http"; url: string; status?: number }
   | { kind: "process"; pid: number }
-  | { kind: "monitor"; command: string; match?: string; coalesce_ms?: number; max_events?: number };
+  | { kind: "monitor"; command: string; match?: string; coalesce_ms?: number; max_events?: number }
+  | { kind: "session"; machine: string; session: string; title?: string; message_id?: string };
+
+// A wait kind another module probes (the fleet's session notices): how a spec
+// is read, how often it is probed, and the probe itself (an outcome fires it;
+// a thrown error is kept as the last probe's error).
+export type WaitKind = { normalize(spec: any, cwd: string): WaitSpec; every: number; probe(w: WaitRecord): Promise<string | undefined> | string | undefined };
+const kinds = new Map<string, WaitKind>();
+export const registerWaitKind = (kind: string, k: WaitKind) => void kinds.set(kind, k);
 
 export type WaitRecord = {
   id: string;
@@ -118,6 +126,8 @@ function startTime(pid: number): string | undefined {
 export function normalize(raw: any, cwd: string): WaitSpec {
   const spec = raw?.spec && typeof raw.spec === "object" ? raw.spec : raw;
   const kind = spec?.kind ?? (spec?.command ? "monitor" : spec?.pid ? "process" : spec?.url ? "http" : spec?.match && spec?.path ? "log" : spec?.path ? "file" : spec?.seconds || spec?.at_ms ? "timer" : undefined);
+  const custom = kinds.get(kind);
+  if (custom) return custom.normalize(spec, cwd);
   switch (kind) {
     case "timer": {
       const at = spec.at_ms ? Number(spec.at_ms) : Date.now() + Number(spec.seconds) * 1000;
@@ -222,6 +232,8 @@ const PROBE_MS: Partial<Record<WaitSpec["kind"], number>> = { file: 1000, log: 1
 
 async function probe(w: WaitRecord): Promise<string | undefined> {
   const s = w.spec;
+  const custom = kinds.get(s.kind);
+  if (custom) return custom.probe(w);
   switch (s.kind) {
     case "timer":
       return Date.now() >= s.at_ms! ? "The timer is up." : undefined;
@@ -368,7 +380,7 @@ export async function tick() {
       }
       const st = live.get(w.id) ?? {};
       live.set(w.id, st);
-      const every = PROBE_MS[w.kind] ?? 0;
+      const every = kinds.get(w.kind)?.every ?? PROBE_MS[w.kind] ?? 0;
       const due = w.kind === "timer" || now >= w.deadline || !st.lastProbe || now - st.lastProbe >= every;
       if (!due) continue;
       st.lastProbe = now;
