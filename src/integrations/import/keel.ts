@@ -61,17 +61,24 @@ export async function readKeel(id: string, path = keelDb()): Promise<Read> {
   if (!found) throw new Error(`the Rust Keel has no session ${id}`);
   const head = d.query<{ head_event_id: string | null }, [string]>("SELECT head_event_id FROM sessions WHERE id = ?").get(id)?.head_event_id;
   const rows = d.query<{ id: string; parent_id: string | null; ts_ms: number; event_json: string }, [string]>("SELECT id, parent_id, ts_ms, event_json FROM events WHERE session_id = ? ORDER BY seq").all(id);
-  let chain = rows;
-  if (head) {
-    const byId = new Map(rows.map((r) => [r.id, r]));
-    const path: typeof rows = [];
-    const seen = new Set<string>();
-    for (let r = byId.get(head); r && !seen.has(r.id); r = r.parent_id ? byId.get(r.parent_id) : undefined) {
-      seen.add(r.id);
-      path.push(r);
-    }
-    if (path.length) chain = path.reverse();
+  // The branch from the head back to the root. A head that names no event
+  // would leave every branch, read one after another as one conversation:
+  // that is refused, never guessed. With no head the newest event is the leaf.
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const leaf = head ? byId.get(head) : rows[rows.length - 1];
+  if (head && !leaf) {
+    const leaves = rows.filter((r) => !rows.some((c) => c.parent_id === r.id)).length;
+    throw Object.assign(new Error(`the Rust Keel's session ${id} names a current event (${head}) it does not hold, and it has ${leaves} branch${leaves === 1 ? "" : "es"}: no copy is made, since which branch is the conversation is unknown. Open the session in the Rust Keel and pick its branch, then import again.`), { status: 409 });
   }
+  let chain: typeof rows = [];
+  const seen = new Set<string>();
+  for (let r = leaf; r && !seen.has(r.id); r = r.parent_id ? byId.get(r.parent_id) : undefined) {
+    seen.add(r.id);
+    chain.push(r);
+  }
+  chain.reverse();
+  // Events with no links at all are one line in their order.
+  if (!head && !rows.some((r) => r.parent_id)) chain = rows;
   // From the last summary compaction on.
   const notes: string[] = [];
   let start = 0;

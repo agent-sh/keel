@@ -7,7 +7,7 @@ import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Builder, clip, resultText, type Found, type Read } from "./types.ts";
-import { headTail, parseLines } from "./files.ts";
+import { damageNotes, headTail, readLines, scanFor } from "./files.ts";
 
 export const claudeRoot = () => process.env.KEEL_IMPORT_CLAUDE_DIR ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
 
@@ -37,13 +37,21 @@ export function* claudeFiles(root = claudeRoot()): Generator<{ path: string; siz
 }
 
 // The words of a user record the owner typed, or null for a record that is not that.
+// A question of only images (no caption) is a prompt too: its words are "Image prompt".
 function promptOf(r: any): string | null {
   if (r?.type !== "user" || r.isMeta || r.isCompactSummary) return null;
   const c = r.message?.content;
-  const text = typeof c === "string" ? c : Array.isArray(c) && !c.some((b: any) => b?.type === "tool_result") ? c.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n") : "";
-  if (!text.trim() || /^<(local-command|command-stdout|bash-stdout|system-reminder)/.test(text.trim())) return null;
+  const blocks = Array.isArray(c) && !c.some((b: any) => b?.type === "tool_result") ? c : [];
+  const text = typeof c === "string" ? c : blocks.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n");
+  if (!text.trim()) return blocks.some((b: any) => b?.type === "image") ? IMAGE_PROMPT : null;
+  if (/^<(local-command|command-stdout|bash-stdout|system-reminder)/.test(text.trim())) return null;
   return text;
 }
+const IMAGE_PROMPT = "Image prompt";
+
+// How Claude Code (or a writer of its format) recorded a reply that did not
+// simply finish; null and the plain endings say nothing more.
+const shortStop = (s: unknown) => (typeof s === "string" && !["end_turn", "tool_use", "stop_sequence", "pause_turn"].includes(s) ? s : undefined);
 
 const INTERRUPTED = /^\[Request interrupted by user( for tool use)?\]$/;
 const commandText = (t: string) => {
@@ -72,6 +80,12 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     else { const p = promptOf(r); if (p) last = commandText(p); }
     cwd ??= r.cwd;
   }
+  // A Claude Code transcript whose head and tail hold no prompt (long tool
+  // outputs around it) is read through for its first one.
+  if (!first && !last) {
+    const hit = scanFor(path, (r) => { const p = promptOf(r); return p && !/^\/(clear|exit|resume)\b/.test(commandText(p)) ? { text: commandText(p), r } : undefined; });
+    if (hit) { first = hit.text; cwd ??= hit.r.cwd; sid ??= hit.r.sessionId; }
+  }
   if (!first && !last) return null; // no conversation in it
   const sub = basename(dirname(path)) === "subagents";
   return {
@@ -94,7 +108,8 @@ export async function readClaude(path: string): Promise<Read> {
   const st = statSync(path);
   const found = claudeFound(path, st.size, st.mtimeMs);
   if (!found) throw new Error("this transcript holds no conversation");
-  const records = parseLines(await Bun.file(path).text());
+  const lines = readLines(await Bun.file(path).text());
+  const records = lines.records;
   const byId = new Map<string, any>();
   let leaf: any;
   // Every record with a uuid is a link of the chain (attachments and progress
@@ -155,10 +170,11 @@ export async function readClaude(path: string): Promise<Read> {
         else if (blk?.type === "thinking" || blk?.type === "redacted_thinking") b.counts.thoughts_dropped++;
       }
       if (!blocks.length) continue;
-      b.assistant(blocks, ts, m.model, m.id !== lastMsg || b.events[b.events.length - 1]?.kind !== "assistant", m.stop_reason === "interrupted" ? "interrupted" : undefined);
+      b.assistant(blocks, ts, m.model, m.id !== lastMsg || b.events[b.events.length - 1]?.kind !== "assistant", shortStop(m.stop_reason));
       lastMsg = m.id;
     }
   }
+  notes.push(...damageNotes(lines));
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} thinking block${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: signatures belong to the model that wrote them.`);
   return { found, events: b.events, counts: b.counts, notes };
 }

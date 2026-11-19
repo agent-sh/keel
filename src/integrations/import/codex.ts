@@ -5,7 +5,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { headTail, parseLines } from "./files.ts";
+import { damageNotes, headTail, readLines, scanFor } from "./files.ts";
 import { Builder, clip, FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN, resultText, type Found, type Read } from "./types.ts";
 
 export const codexHome = () => process.env.KEEL_IMPORT_CODEX_DIR ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
@@ -46,6 +46,8 @@ export function codexFound(path: string, size: number, mtime: number): Found | n
     if (p && !injected(p)) last = p;
     if (r.type === "turn_context" && r.payload?.model) model = r.payload.model;
   }
+  // A rollout whose head and tail hold no prompt (long tool outputs around it) is read through for its first one.
+  if (!first && !last) first = scanFor(path, (r) => { const p = prompt(r); return p && !injected(p) ? p : undefined; });
   if (!first && !last) return null;
   const sub = meta.source && typeof meta.source === "object" && "subagent" in meta.source;
   return {
@@ -78,7 +80,8 @@ export async function readCodex(path: string): Promise<Read> {
   const b = new Builder();
   const notes: string[] = [];
   let model = found.model;
-  for (const r of parseLines(await Bun.file(path).text())) {
+  const lines = readLines(await Bun.file(path).text());
+  for (const r of lines.records) {
     const ts = Date.parse(r.timestamp) || st.mtimeMs;
     const p = r.payload ?? {};
     if (r.type === "turn_context" && p.model) model = p.model;
@@ -135,6 +138,7 @@ export async function readCodex(path: string): Promise<Read> {
         b.counts.skipped++;
     }
   }
+  notes.push(...damageNotes(lines));
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} reasoning item${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: encrypted for the model that wrote them.`);
   return { found, events: b.events, counts: b.counts, notes };
 }

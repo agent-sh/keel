@@ -3,13 +3,68 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 export function parseLines(text: string): any[] {
-  const out: any[] = [];
-  for (const line of text.split("\n")) {
+  return readLines(text).records;
+}
+
+// A whole file's records, with what could not be read: a damaged record (its
+// line number, never its text) and a last record still being written (no
+// newline after it and not whole JSON yet), which a later read may find whole.
+export function readLines(text: string): { records: any[]; bad: number[]; unfinished: boolean } {
+  const records: any[] = [];
+  const bad: number[] = [];
+  let unfinished = false;
+  const lines = text.split("\n");
+  lines.forEach((line, i) => {
     const l = line.trim();
-    if (!l) continue;
-    try { out.push(JSON.parse(l)); } catch {}
+    if (!l) return;
+    try { records.push(JSON.parse(l)); } catch {
+      if (i === lines.length - 1) unfinished = true;
+      else bad.push(i + 1);
+    }
+  });
+  return { records, bad, unfinished };
+}
+
+// What a preview says about records a full read could not use.
+export function damageNotes(r: { records: any[]; bad: number[]; unfinished: boolean }): string[] {
+  const out: string[] = [];
+  if (r.bad.length) {
+    const at = r.bad.slice(0, 5).join(", ") + (r.bad.length > 5 ? ", ..." : "");
+    out.push(`${r.records.length} records read; ${r.bad.length} damaged record${r.bad.length === 1 ? "" : "s"} could not be read (line ${at}) and ${r.bad.length === 1 ? "is" : "are"} left out.`);
   }
+  if (r.unfinished) out.push("The last record is still being written: read again after the writer finishes.");
   return out;
+}
+
+// The first record of a file that `match` accepts, reading it in pieces (a
+// file whose sampled head and tail hold no prompt may hold one in between).
+export function scanFor<T>(path: string, match: (r: any) => T | undefined): T | undefined {
+  let fd: number;
+  try { fd = openSync(path, "r"); } catch { return undefined; }
+  try {
+    const buf = Buffer.alloc(1 << 20);
+    let at = 0;
+    let rest = "";
+    const dec = new TextDecoder();
+    for (;;) {
+      const got = readSync(fd, buf, 0, buf.length, at);
+      if (!got) break;
+      at += got;
+      const lines = (rest + dec.decode(buf.subarray(0, got), { stream: true })).split("\n");
+      rest = lines.pop() ?? "";
+      for (const l of lines) {
+        if (!l.trim()) continue;
+        let r;
+        try { r = JSON.parse(l); } catch { continue; }
+        const hit = match(r);
+        if (hit !== undefined) return hit;
+      }
+    }
+    if (rest.trim()) { try { return match(JSON.parse(rest)); } catch {} }
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 // The whole records in the first and last `n` bytes of a file (a cut line at

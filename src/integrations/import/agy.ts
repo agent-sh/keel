@@ -19,7 +19,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { headTail, parseLines } from "./files.ts";
+import { damageNotes, headTail, readLines } from "./files.ts";
 import { Builder, clip, type Found, type Read } from "./types.ts";
 
 export const agyHome = () => process.env.KEEL_IMPORT_AGY_DIR ?? join(homedir(), ".gemini");
@@ -35,12 +35,20 @@ const timeMs = (t: unknown) => {
   return m ? Date.parse(`${m[1]}T${m[2]}${m[3] ? m[3].slice(0, 4) : ""}${m[4] ?? "Z"}`) || 0 : 0;
 };
 
-// What the person asked, without what the harness adds around it.
+// What the person asked, without what the harness adds around it. The request is everything between the first opening tag and the last closing
+// one, kept as written (it may quote the tags or metadata-shaped text); the
+// harness's metadata sits outside it. Input without the wrapper loses only the
+// metadata elements it starts or ends with.
+const LEAD = /^<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|USER_SETTINGS)>[\s\S]*?<\/\1>/;
+const TRAIL = /<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|USER_SETTINGS)>(?:(?!<\1>)[\s\S])*<\/\1>$/;
 export function requestText(content: string): string {
   const a = content.indexOf("<USER_REQUEST>");
-  const b = content.indexOf("</USER_REQUEST>");
-  const inner = a >= 0 && b > a ? content.slice(a + "<USER_REQUEST>".length, b) : content;
-  return inner.replace(/<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>[\s\S]*?<\/\1>/g, "").trim();
+  const b = content.lastIndexOf("</USER_REQUEST>");
+  if (a >= 0 && b > a) return content.slice(a + "<USER_REQUEST>".length, b).trim();
+  let t = content.trim();
+  for (let m; (m = LEAD.exec(t)); ) t = t.slice(m[0].length).trim();
+  for (let m; (m = TRAIL.exec(t)); ) t = t.slice(0, m.index).trim();
+  return t;
 }
 
 // A tool result without the times the harness puts first.
@@ -128,7 +136,8 @@ export async function readAgy(f: Found): Promise<Read> {
   };
   // Steps are numbered; a parallel call's results can be written before the
   // step that made the calls, so the order is the numbering.
-  const steps = parseLines(await Bun.file(f.path).text()).map((r, i) => ({ r, k: Number.isInteger(r.step_index) ? r.step_index : i }));
+  const lines = readLines(await Bun.file(f.path).text());
+  const steps = lines.records.map((r, i) => ({ r, k: Number.isInteger(r.step_index) ? r.step_index : i }));
   steps.sort((a, b) => a.k - b.k);
   for (const { r } of steps) {
     const ts = timeMs(r.created_at) || st.mtimeMs;
@@ -171,6 +180,7 @@ export async function readAgy(f: Found): Promise<Read> {
     }
   }
   settle(st.mtimeMs);
+  notes.push(...damageNotes(lines));
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} reasoning step${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: another model's thinking is not sent to this one.`);
   if (compacted) notes.push("Antigravity's compaction summaries are kept as notes where they happened.");
   notes.push("Antigravity records no call ids and no model name: calls and results are paired by order.");
