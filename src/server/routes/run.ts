@@ -59,6 +59,10 @@ const lastSeq = (deps: Deps, id: string) =>
 export const runRoutes: RouteModule = (deps) => {
   const { store, bus, engine, providers } = deps;
   store.migrate(SCHEMA);
+  // What the first request with a key asked for (a retry must ask the same),
+  // and the queued prompt it became when the session was busy.
+  if (!store.columnExists("cli_runs", "fingerprint")) store.migrate("ALTER TABLE cli_runs ADD COLUMN fingerprint TEXT");
+  if (!store.columnExists("cli_runs", "queue_id")) store.migrate("ALTER TABLE cli_runs ADD COLUMN queue_id TEXT");
 
   const model = async (want?: string, provider?: string) => {
     if (!want) {
@@ -117,9 +121,19 @@ export const runRoutes: RouteModule = (deps) => {
         const text = typeof b.text === "string" ? b.text.trim() : "";
         if (!text) throw fail("the prompt is empty");
         const key = typeof b.idempotency_key === "string" && b.idempotency_key ? b.idempotency_key.slice(0, 200) : null;
+        // The caller's request as given (not the defaults it resolves to): a
+        // retry sends the same, a reused key with another prompt or place is a
+        // mistake to refuse, as Stripe's idempotency keys do.
+        const fingerprint = key
+          ? String(Bun.hash(JSON.stringify([text, b.images ?? [], b.session_id ?? null, !!b.continue, b.session_id ? null : resolve(b.cwd || deps.workspace), b.model ?? null, b.provider ?? null, b.permission_mode ?? null, b.effort ?? null, b.worktree ?? null, b.peer ?? null, b.mode ?? null])))
+          : null;
         if (key) {
-          const prior = store.db.query<{ session_id: string; after_seq: number; event_id: string | null }, [string]>("SELECT session_id, after_seq, event_id FROM cli_runs WHERE key = ?").get(key);
-          if (prior && store.session(prior.session_id)) return json({ ...prior, replayed: true });
+          const prior = store.db.query<{ session_id: string; after_seq: number; event_id: string | null; queue_id: string | null; fingerprint: string | null }, [string]>("SELECT session_id, after_seq, event_id, queue_id, fingerprint FROM cli_runs WHERE key = ?").get(key);
+          if (prior && store.session(prior.session_id)) {
+            if (prior.fingerprint && prior.fingerprint !== fingerprint) throw fail("this idempotency key was used for a different request (another prompt, files, session or option); use a new key", 409);
+            const { fingerprint: _f, queue_id, ...receipt } = prior;
+            return json({ ...receipt, ...(queue_id ? { queue_id, queued: true } : {}), replayed: true });
+          }
         }
         if (b.permission_mode !== undefined && !isMode(b.permission_mode)) throw fail(`unknown permission mode ${b.permission_mode}`);
         if (b.mode !== undefined && !["send", "steer", "queue"].includes(b.mode)) throw fail(`unknown mode ${b.mode}`);
@@ -189,8 +203,9 @@ export const runRoutes: RouteModule = (deps) => {
         const after_seq = lastSeq(deps, s.id);
         const r = engine.send(s.id, text, { mode: b.mode, images: Array.isArray(b.images) ? b.images : [] });
         const event_id = "event" in r && r.event ? r.event.id : null;
-        if (key) store.db.run("INSERT OR REPLACE INTO cli_runs (key, session_id, after_seq, event_id, created) VALUES (?, ?, ?, ?, ?)", [key, s.id, after_seq, event_id, Date.now()]);
-        return json({ session_id: s.id, replayed: false, after_seq, event_id, queued: "queued" in r ? true : undefined }, 201);
+        const queue_id = "queued" in r && r.queued ? r.queued.id : null;
+        if (key) store.db.run("INSERT OR REPLACE INTO cli_runs (key, session_id, after_seq, event_id, created, fingerprint, queue_id) VALUES (?, ?, ?, ?, ?, ?, ?)", [key, s.id, after_seq, event_id, Date.now(), fingerprint, queue_id]);
+        return json({ session_id: s.id, replayed: false, after_seq, event_id, ...(queue_id ? { queue_id, queued: true } : {}) }, 201);
       },
     },
   };

@@ -79,6 +79,8 @@ export type Watch = {
   sessionId: string;
   afterSeq: number;
   eventId: string | null;
+  // A prompt the daemon queued: its event carries this id once it is sent.
+  queueId?: string | null;
   prompt: string;
   stay: "turn" | "all"; // the turn, or the turn and the work it left running
   onAsk: "exit" | "deny" | "wait";
@@ -105,8 +107,14 @@ export async function watch(w: Watch): Promise<Watched> {
   let ours = false;
   let ended = false;
   let lastAnswer = "";
+  // Staying for one turn, what that turn said is final once it ended: a later
+  // prompt's turn read in the same batch is not this one's.
+  let frozen = false;
+  const mine = (e: StoredEvent) =>
+    e.id === w.eventId || (!!w.queueId && e.data?.queue_id === w.queueId) || (!w.eventId && !w.queueId && String(e.data?.text ?? "").trim() === w.prompt.trim());
   const f = new Follower(w.c, w.sessionId, w.afterSeq, (e) => {
-    if (!ours && e.kind === "user" && (e.id === w.eventId || (!w.eventId && String(e.data?.text ?? "").trim() === w.prompt.trim()))) ours = true;
+    if (frozen) return;
+    if (!ours && e.kind === "user" && mine(e)) ours = true;
     if (!ours) return;
     w.onEvent?.(e);
     if (e.kind === "assistant") {
@@ -124,17 +132,37 @@ export async function watch(w: Watch): Promise<Watched> {
       r.usage.cache_write += u.cache_write ?? 0;
       r.usage.cost += u.cost ?? 0;
       r.usage.unpriced += u.unpriced ?? (u.cost === undefined && (u.input || u.output) ? 1 : 0);
+      if (w.stay === "turn") frozen = true;
     } else if (e.kind === "turn_start") ended = false;
-  }, w.onDelta);
-  await f.connect();
+  }, (d) => { if (!frozen) w.onDelta?.(d); });
+  // The deadline counts from now, and the socket (streamed text, early wakes)
+  // is not waited for: stored events are read by seq whether it opens or not.
   const deadline = w.timeoutS !== undefined ? Date.now() + w.timeoutS * 1000 : Infinity;
+  void f.connect();
   const answered = new Set<string>();
+  // A read that hangs does not hold the command past its deadline.
+  const late = Symbol("late");
+  const within = <T>(p: Promise<T>): Promise<T | typeof late> => {
+    if (deadline === Infinity) return p;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([p, new Promise<typeof late>((r) => { t = setTimeout(() => r(late), Math.max(0, deadline - Date.now())); })]).finally(() => clearTimeout(t));
+  };
   try {
     for (;;) {
-      await f.read();
-      const st = await w.c.get<any>(`/api/cli/state/${w.sessionId}`);
+      const read = await within(f.read());
+      if (frozen) break; // the turn this command stays for has ended
+      const st = read === late ? late : await within(w.c.get<any>(`/api/cli/state/${w.sessionId}`));
+      if (st === late) {
+        r.subtype = "timeout";
+        r.outcome = null;
+        break;
+      }
       // Read once more: a turn that ended between the two reads is seen now.
-      if (!st.running && st.last_seq > f.seq) await f.read();
+      if (!st.running && st.last_seq > f.seq && (await within(f.read())) === late) {
+        r.subtype = "timeout";
+        r.outcome = null;
+        break;
+      }
       const cards = [...st.approvals.map((a: any) => ({ ...a, card: "approval" })), ...st.questions.map((q: any) => ({ ...q, id: q.call_id, card: "question" }))];
       if (cards.length && w.onAsk === "exit") {
         r.subtype = "needs_input";
@@ -280,7 +308,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
     const url = (own ? c0 : c).url(sessionId);
 
     if (!stay) {
-      if (v.json) console.log(JSON.stringify({ session_id: sessionId, replayed: !!sent.replayed, url }));
+      if (v.json) console.log(JSON.stringify({ session_id: sessionId, replayed: !!sent.replayed, url, ...(sent.queued ? { queued: true } : {}) }));
       else {
         console.log(`session ${sessionId}`);
         console.error(`${sent.replayed ? "already sent with this key; " : ""}follow it: keel logs ${sessionId} -f`);
@@ -297,7 +325,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
     }
     const partial = stream && v["include-partial-messages"];
     const w = await watch({
-      c, sessionId, afterSeq: sent.after_seq, eventId: sent.event_id, prompt, stay, onAsk, timeoutS,
+      c, sessionId, afterSeq: sent.after_seq, eventId: sent.event_id, queueId: sent.queue_id, prompt, stay, onAsk, timeoutS,
       onEvent: stream ? (e) => console.log(JSON.stringify(streamLine(e))) : undefined,
       onDelta: partial ? (d) => console.log(JSON.stringify({ type: "stream_event", session_id: sessionId, event: { type: "content_block_delta", delta: { type: d.kind === "thinking" ? "thinking_delta" : d.kind === "text" ? "text_delta" : "input_json_delta", text: d.text } } })) : undefined,
       t0,

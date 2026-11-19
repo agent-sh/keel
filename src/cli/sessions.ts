@@ -224,7 +224,7 @@ const send = command("send", SEND_USAGE, {
   let live = "";
   const tty = !v.json;
   const w = await watch({
-    c, sessionId: s.id, afterSeq: before.last_seq, eventId: r.event?.id ?? null, prompt: body, stay: "turn", onAsk, t0,
+    c, sessionId: s.id, afterSeq: before.last_seq, eventId: r.event?.id ?? null, queueId: r.queued?.id ?? null, prompt: body, stay: "turn", onAsk, t0,
     timeoutS: v.timeout ? Number(v.timeout) : undefined,
     onDelta: tty ? (d) => { if (d.kind === "text") { live += d.text; out(clean(d.text)); } } : undefined,
     onEvent: tty ? (e) => {

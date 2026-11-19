@@ -142,6 +142,17 @@ describe("client commands against a running daemon", () => {
     const again = await k(["run", "--json", "--idempotency-key", "k1", "keyed"]);
     const replay = await k(["run", "--json", "--idempotency-key", "k1", "keyed"]);
     expect(json(replay.out)).toMatchObject({ session_id: json(again.out).session_id, replayed: true });
+    // The same key with another prompt is refused, and nothing is sent.
+    const reused = await k(["run", "--json", "--idempotency-key", "k1", "not keyed"]);
+    expect([reused.code, reused.err]).toEqual([3, expect.stringContaining("different request")]);
+
+    // A run's result is its own turn's, also when later turns are read in the same batch.
+    const own = json((await k(["run", "--json", "--idempotency-key", "q1", "first"])).out).session_id;
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    await fetch(`${url}/api/sessions/${own}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "script:refuse", mode: "queue" }) });
+    expect((await k(["run", "--wait", "--json", "-r", own, "last"])).code).toBe(0);
+    const mine = await k(["run", "--wait", "--json", "--idempotency-key", "q1", "first"]);
+    expect([mine.code, json(mine.out)]).toEqual([0, expect.objectContaining({ replayed: true, num_turns: 1, outcome: "success", result: "Scripted reply." })]);
 
     // A refused run changes nothing: no new session (also on a keyed retry),
     // no new model on the session it named.
