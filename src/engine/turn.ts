@@ -18,7 +18,7 @@ import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/
 import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
+import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
 import { retention } from "./cachewarn.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
@@ -892,6 +892,10 @@ export class Engine {
       this.store.addUsage(id, u);
       const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
       if (res.stop === "refusal" || !summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
+      // Bound to the branch it summarized; the owner's compaction also to no turn having started since.
+      const moved = headMoved(events.at(-1)?.id, this.store.session(id)?.head);
+      if (moved) throw moved;
+      if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
         mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0,

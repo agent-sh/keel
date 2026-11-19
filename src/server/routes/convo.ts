@@ -6,7 +6,7 @@
 // prefix (Engine.ask), so it reads the cache the turns wrote; nothing earlier
 // is rewritten: a summary is a new event, the old branch stays.
 import type { Message, Session, StoredEvent } from "../../core/types.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, ownerMedia, ownerWords } from "../../engine/compact.ts";
+import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, ownerMedia, ownerWords } from "../../engine/compact.ts";
 import { CACHE_TTL_MS } from "../../engine/cachewarn.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerShared } from "../../tools/registry.ts";
@@ -177,6 +177,8 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           const rec = errors.capture("provider", e, { session: s.id, at: "recap" });
           return json({ error: `the recap call failed: ${rec.message}`, error_id: rec.id }, 502);
         }
+        // A recap of a branch no longer shown (or of a context a turn has since moved on) is not kept.
+        if (store.session(s.id)?.head !== (line.at(-1)?.id ?? null)) return bad("the conversation changed while the recap was written: write it again", 409);
         const d = parseDigest(textOf(res.blocks));
         const digest: Digest = { recap: d.recap, recap_seq: line.at(-1)?.seq ?? 0, next_prompt: d.next, ts_ms: Date.now(), cost_usd: res.usage.cost, model: res.model_id };
         store.db.run("INSERT OR REPLACE INTO session_digests (session_id, data) VALUES (?, ?)", [s.id, JSON.stringify(digest)]);
@@ -213,6 +215,8 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
         const summary = textOf(res.blocks);
         if (res.stop === "refusal" || !summary) return bad("the model wrote no summary", 502);
         if (engine.isRunning(s.id)) return bad("a turn started meanwhile: summarize when it has ended", 409);
+        const moved = headMoved(line.at(-1)!.id, store.session(s.id)?.head);
+        if (moved) return json({ error: moved.message, code: "head_moved" }, 409);
         const usage = res.usage;
         let head: StoredEvent;
         if (b.direction === "from") {

@@ -26,6 +26,21 @@ export function checkpointAt(lineage: StoredEvent[]): { at: number; keepFrom: nu
   return { at: -1, keepFrom: 0 };
 }
 
+// A summary is written from one branch and applies only to it. Events never
+// change and each points to its parent, so the head names the whole lineage:
+// when the head is not the one the summary was written from (the owner showed
+// another branch, or a prompt, a turn or another summary landed meanwhile),
+// nothing is applied. Storing it off the branch instead would make it the newest
+// end under the old branch, so showing that branch again would open on a summary
+// the owner never applied.
+export function headMoved(written: string | null | undefined, now: string | null | undefined): Error | null {
+  if ((written ?? null) === (now ?? null)) return null;
+  return Object.assign(
+    new Error("the conversation changed while the summary was written (another branch is shown, or a prompt or another summary landed): nothing was applied; summarize again on the branch shown now"),
+    { status: 409, code: "head_moved" },
+  );
+}
+
 // Share of the window at which a summary is prepared in the background, so the
 // turn that reaches COMPACT_SHARE swaps it in without waiting for a model call.
 export const PREPARE_SHARE = 0.7;

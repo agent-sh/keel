@@ -40,3 +40,93 @@ test("cleanTags trims, drops repeats and refuses control characters", () => {
   expect(() => cleanTags(["bad\u0007"])).toThrow();
   expect(() => cleanTags("a")).toThrow();
 });
+
+// A summary written on one branch never lands on another: the owner switches
+// branch (or a turn moves the head) while the summary call is out. The route and
+// the engine are real; only the model's answer is held until the test releases it.
+describe("a summary is bound to the branch it was written from", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../../core/store.ts");
+  const { Bus } = await import("../../core/bus.ts");
+  const { ErrorTracker } = await import("../../core/errors.ts");
+  const { Engine, toMessages } = await import("../../engine/turn.ts");
+  const { convoRoutes } = await import("./convo.ts");
+  const { turnRoutes } = await import("./turns.ts");
+  const answer = { blocks: [{ type: "text", text: "SUMMARY OF A" }], usage: { input: 0, output: 0 }, model_id: "p:m", stop: "end_turn" };
+  const setup = () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "summary-branch-"));
+    const store = new Store(dir);
+    const bus = new Bus();
+    const errors = new ErrorTracker(store, bus);
+    const engine = new Engine(store, bus, {} as any, errors, join(dir, "spill"));
+    const s = store.createSession({ workspace: dir, model: "p:m" });
+    store.append(s.id, "user", { text: "COMMON" });
+    const common = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "COMMON REPLY" }] });
+    store.append(s.id, "user", { text: "A EARLIER" });
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "A EARLIER REPLY" }] });
+    const ua = store.append(s.id, "user", { text: "A QUESTION" });
+    const aa = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "A REPLY" }] });
+    store.append(s.id, "user", { text: "B QUESTION" }, common.id);
+    const ab = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "B REPLY" }] });
+    store.updateSession(s.id, { head: aa.id });
+    let release!: () => void;
+    let started!: () => void;
+    const out = new Promise<void>((r) => (started = r));
+    const held = new Promise<void>((r) => (release = r));
+    const hold = async () => { started(); await held; };
+    (engine as any).ask = async () => { await hold(); return answer; };
+    (engine as any).step = async () => ({ info: { id: "p:m" } });
+    (engine as any).call = async () => { await hold(); return answer; };
+    const deps = { store, bus, engine, providers: {}, errors } as any;
+    const routes = { ...(convoRoutes(deps) as any), ...(turnRoutes(deps) as any) };
+    const post = (path: string, body: unknown) => {
+      const r = new Request(`http://x/api/sessions/${s.id}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) as any;
+      r.params = { id: s.id };
+      return routes[`/api/sessions/:id/${path}`].POST(r) as Promise<Response>;
+    };
+    const input = () => JSON.stringify(toMessages(engine.lineage(s.id)));
+    return { store, engine, s, ua, ab, out, release, post, input };
+  };
+  for (const direction of ["from", "up_to"] as const) {
+    test(`${direction}: unchanged head applies the summary`, async () => {
+      const t = setup();
+      const pending = t.post("summarize", { direction, event_id: t.ua.id });
+      await t.out;
+      t.release();
+      expect((await pending).status).toBe(200);
+      expect(t.input()).toContain("SUMMARY OF A");
+    });
+    test(`${direction}: a switch to B meanwhile is refused and B stays as it was`, async () => {
+      const t = setup();
+      const pending = t.post("summarize", { direction, event_id: t.ua.id });
+      await t.out;
+      expect((await t.post("head", { head_event_id: t.ab.id, leaf: false })).status).toBe(200);
+      const before = t.input();
+      const events = t.store.events(t.s.id).length;
+      t.release();
+      const r = await pending;
+      expect(r.status).toBe(409);
+      expect(((await r.json()) as any).code).toBe("head_moved");
+      expect(t.store.session(t.s.id)!.head).toBe(t.ab.id);
+      expect(t.input()).toBe(before);
+      expect(t.input()).toContain("B REPLY");
+      expect(t.store.events(t.s.id)).toHaveLength(events);
+    });
+  }
+  test("the owner's compaction: a switch meanwhile is refused, else it applies", async () => {
+    const t = setup();
+    const pending = t.engine.compactNow(t.s.id);
+    await t.out;
+    await t.post("head", { head_event_id: t.ab.id, leaf: false });
+    const before = t.input();
+    t.release();
+    await expect(pending).rejects.toMatchObject({ status: 409, code: "head_moved" });
+    expect(t.input()).toBe(before);
+    const ok = setup();
+    const done = ok.engine.compactNow(ok.s.id);
+    await ok.out;
+    ok.release();
+    expect((await done).kind).toBe("compaction");
+  });
+});
