@@ -77,12 +77,16 @@ function without(r: Record<string, number>, id: string) {
 export function pickStations(live: Session[], watches: Record<string, Watch>, helm: string | null, room: number, s: State): Session[] {
   const by = new Map(live.map((x) => [x.id, x]));
   const closedNow = (x: Session) => {
-    const at = s.closed[x.id];
+    // A session marked done leaves the bridge as a closed one does.
+    const at = s.closed[x.id] ?? x.settings.done_ms;
     if (!at) return false;
     // Something new that needs him brings it back.
     return !(x.updated > at && (watches[x.id] === "need" || watches[x.id] === "work"));
   };
-  const pinned = s.pinned.map((id) => by.get(id)).filter((x): x is Session => !!x);
+  // Pinned here first, in the order the owner put them, then the sessions
+  // pinned on the daemon (from another device), in the order they were pinned.
+  const daemonPinned = live.filter((x) => x.settings.pinned_ms && !s.pinned.includes(x.id)).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!).map((x) => x.id);
+  const pinned = [...s.pinned, ...daemonPinned].map((id) => by.get(id)).filter((x): x is Session => !!x);
   const chosen = new Set(pinned.map((x) => x.id));
   if (helm && by.has(helm)) chosen.add(helm);
   const rest = live
@@ -92,6 +96,6 @@ export function pickStations(live: Session[], watches: Record<string, Watch>, he
     if (chosen.size >= room) break;
     chosen.add(x.id);
   }
-  const loose = [...chosen].filter((id) => !s.pinned.includes(id)).map((id) => by.get(id)!).sort((a, b) => a.created - b.created);
+  const loose = [...chosen].filter((id) => !s.pinned.includes(id) && !daemonPinned.includes(id)).map((id) => by.get(id)!).sort((a, b) => a.created - b.created);
   return [...pinned, ...loose];
 }

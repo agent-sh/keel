@@ -39,7 +39,7 @@ export function pairLink(base: string, code: string) {
 // --- shapes the app reads ---------------------------------------------------------
 
 export function chatOf(s: Session, lastSeq = 0) {
-  return { id: s.id, title: s.title || "New chat", kind: "chat", created: secs(s.created), updated: secs(s.updated), unread: 0, pinned: 0, archived: s.archived ? 1 : 0, seq: lastSeq };
+  return { id: s.id, title: s.title || "New chat", kind: "chat", created: secs(s.created), updated: secs(s.updated), unread: 0, pinned: s.settings.pinned_ms ? 1 : 0, archived: s.archived ? 1 : 0, seq: lastSeq };
 }
 
 export function messageOf(e: StoredEvent, gseq: number) {
