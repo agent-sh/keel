@@ -67,6 +67,25 @@ function labelOf(name: string, args: string[]): string {
   return [bin, ...args.slice(1).map((a) => (a.length > 60 && a.includes("/") ? a.split("/").pop()! : a))].join(" ").slice(0, 200);
 }
 
+// CPU ms used between two samples: each process's own growth, keyed by pid
+// and start time; one born since the last sample counts whole. A process gone
+// since then is counted in `gone` (its last interval is unknown), never
+// subtracted from the others.
+export function intervalCpu(prev: Map<string, number>, now: { pid: number; started_ms: number; cpu: number }[], lastTs: number | undefined) {
+  const at = new Map<string, number>();
+  let used = 0;
+  for (const p of now) {
+    const key = `${p.pid}:${p.started_ms}`;
+    at.set(key, p.cpu);
+    const was = prev.get(key);
+    if (was !== undefined) used += Math.max(0, p.cpu - was);
+    else if (lastTs !== undefined && p.started_ms >= lastTs) used += p.cpu;
+  }
+  let gone = 0;
+  for (const key of prev.keys()) if (!at.has(key)) gone++;
+  return { used, at, gone };
+}
+
 export class Resources {
   private last = new Map<number, { cpu: number; ts: number }>();
   private prev = new Map<number, { cpu: number; ts: number }>();
@@ -160,22 +179,7 @@ export class Resources {
     const daemonMs = d.cpu_user_ms + d.cpu_system_ms;
     const before = this.history.at(-1);
     const dt = before ? now - before.ts_ms : 0;
-    // The CPU of the interval: each process's own growth since the last
-    // sample (a process born since then counts whole). A process that ended
-    // in between has an unknown last interval: counted in unmeasured_ended,
-    // never subtracted from the others.
-    const at = new Map<string, number>();
-    let used = 0;
-    const self = { pid: process.pid, started_ms: this.started, cpu: daemonMs };
-    for (const p of [self, ...procs.map((p) => ({ pid: p.pid, started_ms: p.started_ms, cpu: p.cpu_user_ms + p.cpu_system_ms }))]) {
-      const key = `${p.pid}:${p.started_ms}`;
-      at.set(key, p.cpu);
-      const was = this.cpuAt.get(key);
-      if (was !== undefined) used += Math.max(0, p.cpu - was);
-      else if (before && p.started_ms >= before.ts_ms) used += p.cpu;
-    }
-    let gone = 0;
-    for (const key of this.cpuAt.keys()) if (!at.has(key)) gone++;
+    const { used, at, gone } = intervalCpu(this.cpuAt, [{ pid: process.pid, started_ms: this.started, cpu: daemonMs }, ...procs.map((p) => ({ pid: p.pid, started_ms: p.started_ms, cpu: p.cpu_user_ms + p.cpu_system_ms }))], before?.ts_ms);
     this.cpuAt = at;
     this.history.push({
       ts_ms: now,
