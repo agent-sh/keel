@@ -26,3 +26,11 @@ test("a 30-minute Responses prefix still warns at six minutes; an undocumented o
   // A route that documents nothing: maybe, for five minutes.
   expect(at(6, "chat_completions", { cache_read: 4096 })).toBeNull();
 });
+
+test("the cost of losing a prefix past a context tier is priced at that tier", () => {
+  const tiered = { ...to, price: { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125, tiers: [{ above: 100_000, input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 }] } } as unknown as ModelInfo;
+  const w = (n: number) => switchWarning({ lineage: history({ cache_write: n }), now: 2 * MIN, from: tiered, to: tiered, toWire: "anthropic_messages", fromWire: "anthropic_messages", toEffort: "max" }).warning;
+  const big = w(200_000)!, small = w(50_000)!;
+  expect([big.cost_usd, big.cached_cost_usd]).toEqual([(200_000 * 0.625) / 1e6, (200_000 * 0.05) / 1e6]);
+  expect(small.cost_usd).toBe((50_000 * 0.125) / 1e6);
+});

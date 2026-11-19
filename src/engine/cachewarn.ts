@@ -7,6 +7,7 @@
 // context is empty (fresh or just cleared), or the switch goes back to what
 // the last request already used.
 import type { StoredEvent } from "../core/types.ts";
+import { priceOf } from "../providers/pricing.ts";
 import type { ModelInfo, Wire } from "../providers/types.ts";
 
 // Anthropic's default cache lifetime, measured from the start of the request;
@@ -97,8 +98,11 @@ export function switchWarning(o: {
   if (!sure) certain = false;
   // The reusable prefix is what loses its cache; what was added since is new input either way.
   const tokens = cached;
-  const rate = o.to.price ? o.to.price.cache_write ?? o.to.price.input : undefined;
-  const readRate = o.from?.price?.cache_read;
+  // Priced the way the request will be: a prefix past a context tier is
+  // written (or read) at that tier's rate.
+  const none = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+  const cost = priceOf({ ...none, cache_write: tokens }, o.to.price);
+  const cachedCost = o.from?.price?.cache_read !== undefined ? priceOf({ ...none, cache_read: tokens }, o.from.price) : undefined;
   return {
     cached_tokens: cached,
     warm_until: warmUntil,
@@ -106,8 +110,8 @@ export function switchWarning(o: {
       cause,
       certain,
       uncached_tokens: tokens,
-      cost_usd: rate !== undefined ? (tokens * rate) / 1e6 : undefined,
-      cached_cost_usd: readRate !== undefined ? (tokens * readRate) / 1e6 : undefined,
+      cost_usd: cost,
+      cached_cost_usd: cachedCost,
       cost_estimated: true,
     },
   };
