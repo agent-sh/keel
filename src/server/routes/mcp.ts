@@ -6,6 +6,7 @@ import { installPhone } from "../../integrations/phone.ts";
 import { readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
+import { presence } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -37,12 +38,15 @@ export const mcpRoutes: RouteModule = (deps) => {
   const servers = () => json({ servers: m.list() });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
+  // A server that is a command runs a program as the owner: from a remote device that takes the passkey.
+  const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));
 
   return {
     "/api/mcp/servers": {
       GET: servers,
       POST: async (req: Request) => {
         const b = await body(req);
+        if (b.command) { const guard = needs(req); if (guard) return guard; }
         const cfg: McpServerConfig = b.command
           ? { command: b.command, args: b.args, env: b.env, cwd: b.cwd }
           : { url: b.url, headers: b.headers, bearer_env: b.bearer_env, oauth: b.oauth };
@@ -157,6 +161,8 @@ export const mcpRoutes: RouteModule = (deps) => {
     },
     "/api/mcp/import": {
       POST: async (req: Request) => {
+        const guard = needs(req);
+        if (guard) return guard;
         const b = await body(req);
         const err = m.importFrom(String(b.source ?? ""), String(b.name ?? ""));
         return err ? bad(err) : servers();

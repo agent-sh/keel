@@ -240,6 +240,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     // Another daemon links to this one: a secret made for it, kept here.
     "/api/fleet/pair": {
       POST: async (req: Request) => {
+        // A pairing hands out a key that runs commands here (hands): from a
+        // remote device it takes the passkey, like any authority change.
+        if (presence && !presence.allows(req, "fleet-pair")) return json({ error: "this needs your passkey from a remote device", presence: { action: "fleet-pair" } }, 428);
         const b = await body(req);
         const id = String(b.daemon_id ?? "");
         if (!id || /\s/.test(id)) return bad("daemon_id must be a non-empty word");
