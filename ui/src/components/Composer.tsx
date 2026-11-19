@@ -70,6 +70,7 @@ export function Composer({
   }, [modelSignal]);
   const seed = useUI((s) => (s.composerSeed && s.composerSeed.session === session?.id ? s.composerSeed : null)); // only this box's
   const connected = useStore((s) => s.connected);
+  const synced = useStore((s) => s.synced);
   const slashItems = useSlashItems();
 
   // Each session keeps its own unsent text.
@@ -413,7 +414,7 @@ export function Composer({
         {session && <FallbackChip session={session} />}
         {model && <LimitChip model={model} />}
         {notice && <span className="ml-1 min-w-0 truncate text-caption text-warn animate-in" role="status" data-testid="composer-notice">{notice}</span>}
-        {!connected && !notice && <span className="ml-1 truncate text-caption text-faint">Reconnecting</span>}
+        {!synced && !notice && <span className="ml-1 truncate text-caption text-faint" role="status" data-testid="sync-state">{connected ? "Catching up" : "Reconnecting"}</span>}
         <div className="ml-auto flex items-center gap-1.5">
           {sid && <ContextMeter sessionId={sid} />}
           {working && onQueue && (

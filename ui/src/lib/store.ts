@@ -43,6 +43,9 @@ type State = {
   limits: Limits | null;
   errors: ErrorRecord[];
   connected: boolean;
+  // The socket is open and the open sessions are restored on it (the replay
+  // came and their snapshots landed): until then the page is catching up.
+  synced: boolean;
   loaded: { sessions: boolean; models: boolean }; // the first listing of each arrived (first-run screens wait for it)
   providers: ProvidersReport | null;
   queues: Record<string, { queue: QueueItem[]; held: boolean }>;
@@ -52,7 +55,7 @@ type State = {
 };
 
 let state: State = { loaded: { sessions: false, models: false },
-  sessions: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, providers: null, queues: {}, status: {}, composer: {},
+  sessions: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {}, composer: {},
 };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => {
@@ -136,21 +139,37 @@ export const actions = {
     // Events that arrive while the snapshot is on its way are kept and merged:
     // the snapshot may be older or newer than any of them.
     if (!state.events[id]) loading.set(id, loading.get(id) ?? []);
-    let r: { session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus };
+    // What changes the draft while the snapshot is on its way, to replay over the snapshot's draft.
+    const log = draftLog.get(id) ?? { n: 0, frames: [] };
+    log.n++;
+    draftLog.set(id, log);
+    let r: { session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number };
     try {
       r = await api(`/api/sessions/${id}`);
     } catch (e) {
       loading.delete(id);
       throw e;
+    } finally {
+      if (--log.n === 0) draftLog.delete(id);
     }
     const early = loading.get(id) ?? [];
     loading.delete(id);
     const loc = localize(id, r.session, r.events);
+    // Each mutable part is taken from the snapshot only when no newer live
+    // frame set it while the request was out: a late snapshot never brings back
+    // an old head, queue or retry countdown.
+    let drafts = state.drafts;
+    if (r.draft && r.rev !== undefined && newer(`${id}:draft`, r.rev, true)) {
+      let d: Record<number, DraftBlock> = r.draft;
+      for (const f of log.frames) if ((f.rev ?? 0) > r.rev) d = draftStep(d, f) ?? d;
+      drafts = { ...drafts, [id]: d };
+    }
     set({
-      sessions: { ...state.sessions, [id]: loc.session },
+      sessions: newer(`${id}:session`, r.rev, true) ? { ...state.sessions, [id]: loc.session } : state.sessions,
       events: { ...state.events, [id]: mergeEvents(mergeEvents(state.events[id] ?? [], loc.events!), early) },
-      queues: { ...state.queues, [id]: { queue: r.queue, held: r.held } },
-      status: r.status ? { ...state.status, [id]: r.status } : state.status,
+      queues: newer(`${id}:queue`, r.rev, true) ? { ...state.queues, [id]: { queue: r.queue, held: r.held } } : state.queues,
+      status: r.status && newer(`${id}:status`, r.rev, true) ? { ...state.status, [id]: r.status } : state.status,
+      drafts,
     });
   },
   async loadArchived() {
@@ -238,9 +257,39 @@ export type ContextInfo = {
 };
 
 
+// The newest rev applied to each session's mutable part (`id:session`,
+// `id:queue`, `id:status`, and `id:draft` for a whole draft: the replay's or a
+// snapshot's, which then replays the deltas that came after it). A frame without a rev (a replay, an
+// older daemon) always applies, as before. `tie`: a snapshot read at a frame's
+// rev already reflects that frame.
+const revs = new Map<string, number>();
+function newer(key: string, rev: number | undefined, tie = false): boolean {
+  if (rev === undefined) return true;
+  const cur = revs.get(key) ?? 0;
+  if (tie ? rev < cur : rev <= cur) return false;
+  revs.set(key, rev);
+  return true;
+}
+const draftLog = new Map<string, { n: number; frames: Frame[] }>();
+
+// How a frame changes a session's streamed draft (undefined: it does not).
+function draftStep(cur: Record<number, DraftBlock>, f: Frame): Record<number, DraftBlock> | undefined {
+  if (f.t === "delta") {
+    const b = cur[f.index] ?? { kind: f.kind, text: "", name: f.name };
+    return { ...cur, [f.index]: { ...b, text: b.text + f.text, name: b.name ?? f.name } };
+  }
+  // What streamed before a stored step is that step's; a retried attempt starts the reply again.
+  if ((f.t === "event" && (f.event.kind === "assistant" || f.event.kind === "turn_end")) || (f.t === "status" && f.status.kind === "retry")) return {};
+  return undefined;
+}
+const draftSession = (f: Frame) => (f.t === "event" ? f.event.session_id : f.t === "delta" || f.t === "status" ? f.session_id : undefined);
+
 export function apply(f: Frame) {
+  const ds = draftSession(f);
+  if (ds) draftLog.get(ds)?.frames.push(f);
   if (f.t === "session") {
     const s = f.session;
+    if (!newer(`${s.id}:session`, f.rev)) return;
     if (f.deleted) {
       // Its views unmount now instead of asking the daemon for a session it no longer has.
       const { [s.id]: _s, ...sessions } = state.sessions;
@@ -256,25 +305,23 @@ export function apply(f: Frame) {
     if (e.kind === "turn_end") limitsSoon();
     // The socket is in order: what streamed before a stored step is that step's,
     // also when the step is a replay of what a snapshot already brought.
-    const cleared = (e.kind === "assistant" || e.kind === "turn_end") && !!state.drafts[e.session_id];
+    const cleared = !!draftStep({}, f) && !!state.drafts[e.session_id];
     if (cleared) state = { ...state, drafts: { ...state.drafts, [e.session_id]: {} } };
     const list = state.events[e.session_id];
     if (!list) { loading.get(e.session_id)?.push(e); if (cleared) set({}); return; } // not loaded; loading it later reads it from the store
     if (list.length && list[list.length - 1]!.seq >= e.seq) { if (cleared) set({}); return; } // a replay of what is here
     // The new event is the head of its session (the store appends at the head).
     const s = state.sessions[e.session_id];
-    if (s) state = { ...state, sessions: { ...state.sessions, [s.id]: { ...s, head: e.id } } };
+    if (s && newer(`${s.id}:session`, f.rev)) state = { ...state, sessions: { ...state.sessions, [s.id]: { ...s, head: e.id } } };
     set({ events: { ...state.events, [e.session_id]: [...list, e] } });
   } else if (f.t === "delta") {
-    const cur = state.drafts[f.session_id] ?? {};
-    const b = cur[f.index] ?? { kind: f.kind, text: "", name: f.name };
-    set({ drafts: { ...state.drafts, [f.session_id]: { ...cur, [f.index]: { ...b, text: b.text + f.text, name: b.name ?? f.name } } } });
+    set({ drafts: { ...state.drafts, [f.session_id]: draftStep(state.drafts[f.session_id] ?? {}, f)! } });
   } else if (f.t === "queue") {
-    set({ queues: { ...state.queues, [f.session_id]: { queue: f.queue, held: f.held } } });
+    if (newer(`${f.session_id}:queue`, f.rev)) set({ queues: { ...state.queues, [f.session_id]: { queue: f.queue, held: f.held } } });
   } else if (f.t === "status") {
-    // A retried attempt starts the reply again: drop what it streamed.
-    const drafts = f.status.kind === "retry" ? { ...state.drafts, [f.session_id]: {} } : state.drafts;
-    set({ status: { ...state.status, [f.session_id]: f.status }, drafts });
+    if (!newer(`${f.session_id}:status`, f.rev)) return;
+    const d = draftStep(state.drafts[f.session_id] ?? {}, f);
+    set({ status: { ...state.status, [f.session_id]: f.status }, drafts: d ? { ...state.drafts, [f.session_id]: d } : state.drafts });
   } else if (f.t === "error") {
     // A repeat or a resolve updates the kind's row; the latest goes on top.
     set({ errors: [f.error, ...state.errors.filter((e) => e.id !== f.error.id)].slice(0, 200) });
@@ -309,32 +356,38 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
 // is closed and opened again.
 let retry = 500;
 let socket: WebSocket | undefined;
+let onReplayed: (() => void) | undefined;
 export function connect() {
   const ws = (socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`));
   let pinger: ReturnType<typeof setInterval> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   ws.onopen = () => {
     retry = 500;
-    set({ connected: true });
     const cursors = Object.fromEntries(Object.entries(state.events).filter(([id]) => !splitId(id)).map(([id, list]) => [id, list.at(-1)?.seq ?? 0]));
-    // A draft from before the drop may be stale (a retry restarts it): the replay sends the current one.
-    set({ drafts: Object.fromEntries(Object.entries(state.drafts).filter(([id]) => !(id in cursors))) });
+    // A draft from before the drop may be stale (a retry restarts it, the reply
+    // may have finished meanwhile): the replay sends the current one of each
+    // loaded session, and a session opened later reads it from its snapshot.
+    set({ connected: true, synced: false, drafts: Object.fromEntries(Object.entries(state.drafts).filter(([id]) => splitId(id))) });
     ws.send(JSON.stringify({ op: "resume", cursors }));
     // What the page loads at start is loaded again: a first load the daemon
     // was not up for (a restart under the page) comes in now, quietly.
-    actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }));
+    const loads: Promise<unknown>[] = [actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }))];
     if (!state.loaded.models) actions.loadModels().catch((e) => reportError(e, { at: "reconnect" }));
     actions.loadErrors().catch((e) => reportError(e, { at: "reconnect" }));
     // Queue and status of the open sessions moved meanwhile (their events come by the
     // replay); one deleted meanwhile is dropped.
     for (const id of Object.keys(cursors)) {
-      actions.loadSession(id).catch((e) => {
+      loads.push(actions.loadSession(id).catch((e) => {
         if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
         const { [id]: _, ...events } = state.events;
         const { [id]: __, ...sessions } = state.sessions;
         set({ events, sessions, gone: { ...state.gone, [id]: true } });
-      });
+      }));
     }
+    // Caught up when this socket's replay came and the reloads landed; a late
+    // answer from a socket that dropped meanwhile declares nothing.
+    const replayed = new Promise<void>((done) => (onReplayed = done));
+    Promise.all([replayed, ...loads]).then(() => { if (socket === ws && state.connected) set({ synced: true }); });
     for (const l of features) l.reconnect?.();
     pinger = setInterval(() => {
       ws.send(JSON.stringify({ op: "ping", nonce: Date.now() }));
@@ -344,15 +397,16 @@ export function connect() {
   ws.onmessage = (m) => {
     const f = JSON.parse(m.data) as Frame | SocketFrame;
     if (f.t === "pong") { clearTimeout(deadline); deadline = undefined; }
-    else if (f.t === "draft") set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } });
-    else if (f.t !== "hello" && f.t !== "replayed") apply(f);
+    else if (f.t === "draft") { if (newer(`${f.session_id}:draft`, f.rev)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); }
+    else if (f.t === "replayed") { if (socket === ws) onReplayed?.(); }
+    else if (f.t !== "hello") apply(f);
   };
   ws.onclose = () => {
     clearInterval(pinger);
     clearTimeout(deadline);
     if (socket !== ws) return;
     drops++;
-    set({ connected: false });
+    set({ connected: false, synced: false });
     setTimeout(connect, (retry = Math.min(retry * 2, 8000)));
   };
 }

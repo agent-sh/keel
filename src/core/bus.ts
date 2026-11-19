@@ -7,6 +7,15 @@ type Listener = (f: Frame) => void;
 export class Bus {
   private listeners = new Set<Listener>();
   private filters: ((f: Frame) => Frame)[] = [];
+  // Frames are numbered from the start time in microseconds: a restarted
+  // daemon's numbers are above the last one's, so pages can order across it.
+  private base = Date.now() * 1000;
+  private n = 0;
+
+  // The rev of the last emitted frame: what a snapshot read now reflects.
+  rev(): number {
+    return this.base + this.n;
+  }
 
   // Every frame passes the filters before any listener sees it (secrets are
   // kept out of what the UI is sent).
@@ -28,7 +37,7 @@ export class Bus {
   }
 
   emit(f: Frame) {
-    f = this.filter(f);
+    f = { ...this.filter(f), rev: this.base + ++this.n };
     for (const l of this.listeners) {
       try {
         l(f);

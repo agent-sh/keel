@@ -37,6 +37,11 @@ export class Live {
     }
   }
 
+  // What a running turn has streamed so far, for a session snapshot.
+  draft(id: string): DraftBlocks {
+    return this.drafts.get(id) ?? {};
+  }
+
   open(ws: Bun.ServerWebSocket<unknown>) {
     ws.subscribe(ALL);
     send(ws, { t: "hello", pid: process.pid, started_ms: this.started });
@@ -59,7 +64,7 @@ export class Live {
       }
       cursors[id] = last;
       const d = this.drafts.get(id);
-      if (d) send(ws, { t: "draft", session_id: id, blocks: d });
+      if (d) send(ws, { t: "draft", session_id: id, blocks: d, rev: this.bus.rev() });
     }
     ws.subscribe(LIVE);
     send(ws, { t: "replayed", cursors });

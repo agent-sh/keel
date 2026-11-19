@@ -160,7 +160,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         GET: wrap((req) => {
           const s = session(req.params.id);
           return s
-            ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id), queue: store.queue(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id) })
+            ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id), queue: store.queue(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() })
             : bad("no such session", 404);
         }),
         PATCH: wrap(async (req) => {

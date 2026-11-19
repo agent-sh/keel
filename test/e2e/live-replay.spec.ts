@@ -136,3 +136,41 @@ test("a delete that waits on a slow turn answers instead of a connection reset",
   expect(Date.now() - t0).toBeGreaterThan(10_000);
 });
 
+
+// A reconnect's snapshot can come back after live frames that are newer than
+// it: the page keeps the newer head and status, and says it is catching up
+// until the replay and the reloads have landed.
+test("a late snapshot after a reconnect does not bring back an old head or a retry", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const sock = await cuttable(page);
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Late snapshot" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByTestId("composer").fill("script:rate-limit");
+  await page.getByTestId("composer").press("Enter");
+  await expect(page.getByTestId("retrying")).toBeVisible({ timeout: 15_000 });
+
+  // The reconnect's snapshot is read now, while the turn waits to retry, and held.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route(new RegExp(`/api/sessions/${session.id}$`), async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const old = await route.fetch();
+    await held;
+    await route.fulfill({ response: old });
+  });
+  await sock.cut();
+  await expect(page.getByTestId("sync-state")).toHaveText("Catching up", { timeout: 10_000 });
+  // The retry answers over the new socket while the old snapshot is still out.
+  await expect(page.getByTestId("assistant-text").last()).toHaveText("Answered after the rate limit passed.", { timeout: 20_000 });
+  await shoot(page, "live-replay-04-catching-up");
+  release();
+  await expect(page.getByTestId("sync-state")).toHaveCount(0);
+  await page.unroute(new RegExp(`/api/sessions/${session.id}$`));
+  // The older snapshot did not move the head back or bring the countdown back.
+  await expect(page.getByTestId("assistant-text").last()).toHaveText("Answered after the rate limit passed.");
+  await expect(page.getByTestId("retrying")).toHaveCount(0);
+  await expect(page.getByTestId("turn-end")).toHaveCount(1);
+  await request.delete(`/api/sessions/${session.id}`);
+});

@@ -127,8 +127,11 @@ export type SessionSettings = {
 export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);
-// `delta` frames are live streaming text and are not stored.
-export type Frame =
+// `delta` frames are live streaming text and are not stored. `rev` is the bus's
+// order of the frame, set when it is emitted and never lower after a restart: a
+// session snapshot carries the rev it was read at, so a page keeps whichever of
+// the two is newer for a session's metadata, queue, status and draft.
+export type Frame = (
   | { t: "event"; event: StoredEvent }
   | { t: "delta"; session_id: string; index: number; kind: "text" | "thinking" | "tool_input"; text: string; name?: string }
   | { t: "session"; session: Session; deleted?: boolean } // deleted: the session is gone; pages drop it
@@ -137,7 +140,8 @@ export type Frame =
   | { t: "error"; error: ErrorRecord }
   // A feature module's live update (approvals, checkpoints, worktrees): the UI
   // routes it by `name` to the module's own client state.
-  | { t: "feature"; name: string; session_id?: string; data: any };
+  | { t: "feature"; name: string; session_id?: string; data: any }
+) & { rev?: number };
 
 // What only the WebSocket sends (never on the bus): the greeting, the end of a
 // replay, the reply a running turn has streamed so far, a ping's answer.
@@ -145,7 +149,7 @@ export type DraftBlocks = Record<number, { kind: "text" | "thinking" | "tool_inp
 export type SocketFrame =
   | { t: "hello"; pid: number; started_ms: number }
   | { t: "replayed"; cursors: Record<string, number> }
-  | { t: "draft"; session_id: string; blocks: DraftBlocks }
+  | { t: "draft"; session_id: string; blocks: DraftBlocks; rev?: number }
   | { t: "pong"; nonce?: number };
 // What a client sends: catch up on these sessions after `seq` (events wait
 // for the first resume), or ask for a pong.
