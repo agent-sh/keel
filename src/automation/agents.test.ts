@@ -294,6 +294,32 @@ test("a queued report survives a new task and a crash", async () => {
   expect(mine()).toEqual([]);
 });
 
+// The first wait on a report still queued to the busy parent, its result
+// stored only after the child finished a second task: the stored result
+// settles the report it holds (that queue entry too), and the newer one
+// still goes out, once.
+test("a wait result settles the report it holds while a newer one is owed", async () => {
+  busy.add(parent.id);
+  const a = await spawn();
+  end(a, "end_turn", "report P");
+  await settled();
+  const out = await tool("wait_agent").run({ targets: [a.id] }, { ...ctx, callId: "wp" }); // reads the queued report
+  await agents.send(a.id, "task two");
+  end(a, "end_turn", "report Q");
+  await settled();
+  ackStoredWaits(parent.id, [{ tool_use_id: "wp", content: out.content }]); // its result is stored now
+  busy.delete(parent.id);
+  sends.length = 0;
+  flush(parent.id);
+  const mine = sends.filter((x) => x.id === parent.id && x.text.includes(`agent_id="${a.id}"`)).map((x) => [x.text.includes("report P"), x.text.includes("report Q")]);
+  expect(mine).toEqual([[false, true]]);
+  dropPending(parent.id);
+  agents.recover(); // nothing is owed any more
+  sends.length = 0;
+  flush(parent.id);
+  expect(sends.filter((x) => x.id === parent.id && x.text.includes(`agent_id="${a.id}"`))).toEqual([]);
+});
+
 // Call ids are unique only within a session: two parents whose waits share
 // one each get their own report marked delivered.
 test("waits with the same call id in two sessions each mark their own report delivered", async () => {

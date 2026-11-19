@@ -792,10 +792,11 @@ export async function waitAll(parentId: string, ids: string[] | undefined, timeo
 // reports are no longer owed.
 export function ackWaited(parentId: string, reports: { id: string; report: string }[]) {
   for (const r of reports) {
-    const a = get(r.id);
-    if (!a || !isEnded(a) || reportId(a) !== r.report) continue; // a later report is still owed
+    // Settles exactly the report the wait returned, whatever the agent does
+    // now: a newer report it made since stays owed.
+    if (!get(r.id)) continue;
     withdraw(parentId, (m) => m.kind === "subagent" && m.report_id === r.report);
-    settle(a.id, r.report);
+    settle(r.id, r.report);
   }
 }
 
