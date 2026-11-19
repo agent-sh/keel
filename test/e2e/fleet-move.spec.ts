@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: moving a session to another machine with its git state and back.
@@ -66,5 +67,8 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
     expect(errors.slice(0, errors.length - errorsBefore).filter((e: any) => e.source !== "provider")).toEqual([]);
   } finally {
     await request.delete(`/api/sessions/${s.id}`);
+    // The scratch repository here and the one the move made over there.
+    rmSync(HOME_DIR, { recursive: true, force: true });
+    rmSync(`${ROOT}/${basename(HOME_DIR)}`, { recursive: true, force: true });
   }
 });
