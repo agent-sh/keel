@@ -31,8 +31,16 @@ function xaiSchema(s: any): any {
 
 const dataUrl = (b: { media_type: string; data: string }) => `data:${b.media_type};base64,${b.data}`;
 
+// Freeform tools (a grammar, raw text in and out: apply_patch, exec) go as
+// OpenAI custom tools, as Codex sends them; xAI gets the JSON form.
+const customOf = (req: ProviderRequest, d: ResponsesDialect) =>
+  new Set(d === "xai" ? [] : req.tools.filter((t) => t.freeform).map((t) => t.name));
+const rawInput = (input: unknown) => (typeof input === "string" ? input : typeof (input as any)?.input === "string" ? (input as any).input : undefined);
+
 export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: ResponsesDialect, systemPrefix?: string) {
   const input: any[] = [];
+  const custom = customOf(req, dialect);
+  const customCalls = new Set<string>();
   for (const m of project(req.messages, ctx)) {
     let texts: any[] = [];
     const flush = () => {
@@ -48,24 +56,28 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
         if (b.opaque) input.push(b.opaque);
       } else if (b.type === "tool_use") {
         flush();
-        input.push({ type: "function_call", call_id: b.id, name: wireName(dialect, b.name), arguments: JSON.stringify(b.input ?? {}) });
+        const raw = custom.has(b.name) ? rawInput(b.input) : undefined;
+        if (raw !== undefined) { customCalls.add(b.id); input.push({ type: "custom_tool_call", call_id: b.id, name: b.name, input: raw }); }
+        else input.push({ type: "function_call", call_id: b.id, name: wireName(dialect, b.name), arguments: JSON.stringify(b.input ?? {}) });
       } else if (b.type === "tool_result") {
         flush();
         const output = typeof b.content === "string"
           ? b.content
           : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.type === "text" ? c.text : "" }));
-        input.push({ type: "function_call_output", call_id: b.tool_use_id, output });
+        input.push({ type: customCalls.has(b.tool_use_id) ? "custom_tool_call_output" : "function_call_output", call_id: b.tool_use_id, output });
       }
     }
     flush();
   }
-  const tools = req.tools.map((t) => ({
-    type: "function",
-    name: wireName(dialect, t.name),
-    description: t.description,
-    parameters: dialect === "xai" ? xaiSchema(t.input_schema) : t.input_schema,
-    strict: false,
-  }));
+  const tools = req.tools.map((t) => custom.has(t.name)
+    ? { type: "custom", name: t.name, description: t.description, format: { type: "grammar", syntax: t.freeform!.syntax, definition: t.freeform!.definition } }
+    : {
+      type: "function",
+      name: wireName(dialect, t.name),
+      description: t.description,
+      parameters: dialect === "xai" ? xaiSchema(t.input_schema) : t.input_schema,
+      strict: false,
+    });
   const body: Record<string, any> = {
     model: req.model,
     instructions: systemPrefix ? `${systemPrefix}\n\n${req.system}` : req.system,
@@ -110,7 +122,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
           const i = ev.output_index ?? 0;
           switch (ev.type) {
             case "response.output_item.added":
-              if (ev.item?.type === "function_call") {
+              if (ev.item?.type === "function_call" || ev.item?.type === "custom_tool_call") {
                 names.set(i, localName(dialect, ev.item.name));
                 onDelta({ kind: "tool_input", index: i, text: "", name: names.get(i) });
               }
@@ -126,6 +138,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
               if (ev.summary_index > 0) onDelta({ kind: "thinking", index: i, text: "\n\n" });
               break;
             case "response.function_call_arguments.delta":
+            case "response.custom_tool_call_input.delta":
               onDelta({ kind: "tool_input", index: i, text: ev.delta ?? "", name: names.get(i) });
               break;
             case "response.output_item.done":
@@ -179,6 +192,8 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string):
                 ? dialect === "xai" ? it : { type: "reasoning", summary: it.summary ?? [], encrypted_content: it.encrypted_content }
                 : undefined;
               if (thinking || opaque) blocks.push({ type: "thinking", thinking, opaque, origin: ctx.origin });
+            } else if (it.type === "custom_tool_call") {
+              blocks.push({ type: "tool_use", id: it.call_id ?? it.id, name: it.name, input: { input: String(it.input ?? "") }, origin: ctx.origin });
             } else if (it.type === "function_call") {
               blocks.push({ type: "tool_use", id: it.call_id ?? it.id, name: localName(dialect, it.name), input: parseArgs(it.arguments ?? ""), origin: ctx.origin });
             }

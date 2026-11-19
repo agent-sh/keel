@@ -198,3 +198,23 @@ test("deferred tools and tool_reference blocks on each wire", () => {
   expect(resp.input.find((i: any) => i.type === "function_call_output").output).toEqual([{ type: "input_text", text: "Tool loaded: mcp__echo__echo" }]);
 });
 
+// A freeform tool goes as an OpenAI custom tool and its call round-trips as one.
+test("freeform tools are Responses custom tools, except on xAI", () => {
+  const tools = [{ name: "exec", description: "run js", input_schema: { type: "object" }, freeform: { syntax: "lark" as const, definition: "start: /.+/" } }];
+  const history: Message[] = [
+    { role: "user", content: [{ type: "text", text: "go" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "exec", input: { input: "text(1)" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "Script completed" }] },
+  ];
+  const b = responsesBody({ ...req, messages: history, tools }, ctx, "codex");
+  expect(b.tools).toEqual([{ type: "custom", name: "exec", description: "run js", format: { type: "grammar", syntax: "lark", definition: "start: /.+/" } }]);
+  expect(b.input.slice(1)).toEqual([
+    { type: "custom_tool_call", call_id: "c1", name: "exec", input: "text(1)" },
+    { type: "custom_tool_call_output", call_id: "c1", output: "Script completed" },
+  ]);
+  expect(responsesBody({ ...req, messages: history, tools }, ctx, "xai").tools[0].type).toBe("function");
+  const p = responsesWire("codex").parser(req, ctx, () => {});
+  p.event({ data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "custom_tool_call", call_id: "c2", name: "exec", input: "text(2)" } }) } as any);
+  p.event({ data: JSON.stringify({ type: "response.completed", response: { usage: {} } }) } as any);
+  expect(p.result().blocks).toEqual([{ type: "tool_use", id: "c2", name: "exec", input: { input: "text(2)" }, origin: "p:m" }]);
+});
