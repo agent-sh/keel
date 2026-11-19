@@ -6,7 +6,7 @@ import { Gate, type SandboxProfile } from "../../safety/gate.ts";
 import { isMode, MODES } from "../../safety/policy.ts";
 import { makeJudge } from "../../safety/judge.ts";
 import { isLocal, Presence } from "../../safety/presence.ts";
-import { confine, sandboxStatus } from "../../safety/sandbox.ts";
+import { sandboxStatus } from "../../safety/sandbox.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -30,15 +30,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   const sb = sandboxStatus();
   if (!sb.available && g.defaultSandbox() !== "off") deps.errors.capture("server", new Error(`sandbox unavailable: ${sb.reason}`), { at: "startup" });
   registerHooks({
-    // The gate first; a call it lets through runs confined when the session's sandbox is on.
-    async beforeTool(s, call) {
-      const refused = await g.check(s, call);
-      if (refused) return refused;
-      const p = g.perm(s.id);
-      // An escalation the gate let through (asked, or full auto) runs unconfined.
-      if (call.input?.sandbox_permissions === "require_escalated") return;
-      if (p.sandbox !== "off" && sb.available) return { ctx: { wrapSpawn: (argv) => confine(argv, p, s.workspace, call.ctx.spillDir) } };
-    },
+    beforeTool: (s, call) => g.beforeTool(s, call),
   });
 
   const presenceCall = async (f: () => Promise<Response>) => {

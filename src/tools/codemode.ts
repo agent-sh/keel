@@ -205,10 +205,12 @@ export function runCodeTool(rec: CodeRecorder): Tool {
       additionalProperties: false,
     },
     readOnly: false,
-    // The gate judges the program as the command it is.
+    // The gate judges the program as the command it is; one that asks to run
+    // outside the sandbox gets the card a shell command's escalation gets.
     async target(input) {
       const code = typeof input?.code === "string" ? input.code : "";
-      return { name: RUN_CODE, readOnly: false, input, cls: { kind: "shell", command: asShellCommand(code) } };
+      const escalate = input?.sandbox_permissions === "require_escalated" || undefined;
+      return { name: RUN_CODE, readOnly: false, input, cls: { kind: "shell", command: asShellCommand(code), escalate } };
     },
     async run(input, ctx): Promise<ToolOutput> {
       const code = typeof input?.code === "string" ? input.code : "";

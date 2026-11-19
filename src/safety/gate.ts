@@ -6,7 +6,8 @@ import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
-import type { ToolCall } from "../engine/hooks.ts";
+import type { ToolCall, ToolGate } from "../engine/hooks.ts";
+import { confine } from "./sandbox.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { classify, decide, isMode, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
@@ -215,26 +216,38 @@ export class Gate {
     return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name });
   }
 
-  // The beforeTool hook. A dispatcher (mcp_call) is judged as the tool it runs:
-  // its own read flag, and grants for that tool alone.
-  async check(session: Session, call: ToolCall): Promise<{ deny: string } | void> {
+  // The beforeTool hook: the gate first; a call it lets through runs confined
+  // when the session's sandbox is on, unless the gate let it leave the sandbox
+  // (an escalation the owner allowed). Confinement follows the class the gate
+  // judged, never a field of the input.
+  async beforeTool(session: Session, call: ToolCall): Promise<ToolGate> {
+    const r = await this.check(session, call);
+    if ("deny" in r) return r;
+    const p = this.perm(session.id);
+    if (r.cls.kind === "shell" && r.cls.escalate) return;
+    if (this.sandboxed(session, p)) return { ctx: { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir) } };
+  }
+
+  // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,
+  // and grants for that tool alone. Returns the class it judged.
+  async check(session: Session, call: ToolCall): Promise<{ deny: string } | { cls: CallClass }> {
     const target = call.tool.target ? await call.tool.target(call.input) : null;
     const name = target?.name ?? call.tool.name;
     const cls: CallClass = landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classifyCall(call));
     const d = this.evaluate(session, name, cls);
-    if ("allow" in d) return;
+    if ("allow" in d) return { cls };
     if ("deny" in d) return { deny: d.deny };
-    if (cls.kind === "control") return;
+    if (cls.kind === "control") return { cls };
     const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(target ? target.input : call.input).slice(0, 400);
     let notice: string | undefined;
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
     // action, and anything it cannot judge, still goes to the owner.
     if (this.perm(session.id).mode === "reviewer" && d.ask.risk === "low") {
       const key = new Bun.CryptoHasher("sha256").update(`${name}\u0000${cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary}`).digest("hex").slice(0, 32);
-      if (this.retries.delete(`${session.id}\u0000${key}`)) return;
+      if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
       const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
-      else if (v.allow) return;
+      else if (v.allow) return { cls };
       else {
         const b: Blocked = { id: crypto.randomUUID(), session_id: session.id, tool: name, summary: summary.slice(0, 2000), reason: v.reason, risk: v.risk, model: v.model, key, created: Date.now() };
         this.store.db.query("INSERT INTO perm_blocked (id, session_id, data, created) VALUES (?, ?, ?, ?)").run(b.id, b.session_id, JSON.stringify(this.redactAny(b)), b.created);
@@ -242,7 +255,7 @@ export class Gate {
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
-    return this.card(session, call, name, cls, summary, { ...d.ask, notice });
+    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice })) ?? { cls };
   }
 
   // A card for this one call that only the owner answers (a hook asked): no
