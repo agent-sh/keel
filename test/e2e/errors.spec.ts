@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: the error tracker folds a failure that repeats into one row with a

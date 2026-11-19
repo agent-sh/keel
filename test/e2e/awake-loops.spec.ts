@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: the machine is kept awake while a loop's next run is near (not only

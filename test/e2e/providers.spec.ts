@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: Settings > Providers shows every provider with its listing state and

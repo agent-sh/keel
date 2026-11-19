@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { createHmac } from "node:crypto";
 import { shoot } from "./shots.ts";
 

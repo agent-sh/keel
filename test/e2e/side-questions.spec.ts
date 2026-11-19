@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: /btw asks a side question answered from the session's context with

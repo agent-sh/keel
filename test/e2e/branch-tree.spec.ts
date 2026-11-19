@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: the Branches panel shows every branch of a session (edits and

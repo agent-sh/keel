@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: the first run. With no provider listing a model, the start page

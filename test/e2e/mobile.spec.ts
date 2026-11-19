@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { createServer, type Server } from "node:http";

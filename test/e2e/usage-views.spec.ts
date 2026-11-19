@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: Settings > Usage beyond the overview. Token zones: each request's

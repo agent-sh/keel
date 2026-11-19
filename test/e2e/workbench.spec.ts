@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });

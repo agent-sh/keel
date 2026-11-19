@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: `/loop 10m <prompt>` in the composer makes a loop that runs now and

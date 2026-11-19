@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { HAIKU, shoot } from "./shots.ts";
 

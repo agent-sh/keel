@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: what the owner sees when the provider fails or stops early. A real

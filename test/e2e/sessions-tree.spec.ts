@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: edit-and-resend makes a branch and the arrows move between the

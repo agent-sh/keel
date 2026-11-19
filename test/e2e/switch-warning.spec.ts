@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: switching the model or the effort while the prompt cache is warm

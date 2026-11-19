@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a session's fallback model, set from /fallback or a refusal card:

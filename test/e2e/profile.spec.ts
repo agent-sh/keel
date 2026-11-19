@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { HAIKU, shoot, openPanel } from "./shots.ts";
 
 // Feature: the session profile. The Profile tab shows the session's model and

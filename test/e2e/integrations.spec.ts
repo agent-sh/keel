@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";

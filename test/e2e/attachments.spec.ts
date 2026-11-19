@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./isolate.ts";
 import { crc32, deflateSync } from "node:zlib";
 import { HAIKU, shoot } from "./shots.ts";
 
