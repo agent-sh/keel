@@ -10,9 +10,9 @@
 // What a hook can do: block a call or a prompt, send a call to the owner, add
 // context for the model (with the call's result; after the prompt), keep a turn
 // going (Stop). What it cannot: allow anything.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { contains } from "../core/paths.ts";
+import { contains, realOf } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
@@ -80,10 +80,20 @@ function pinDigest(text: string, root: string, files: string[]): string {
   for (const f of files) {
     let body = "\u0000missing";
     try { body = sha(readFileSync(f, "utf8")); } catch {}
-    h.update(`\u0000${relative(root, f)}\u0000${body}`);
+    // A link is pinned with where it points too, so retargeting it unpins.
+    let link = "";
+    try { if (lstatSync(f).isSymbolicLink()) link = `\u0000link\u0000${readlinkSync(f)}`; } catch {}
+    h.update(`\u0000${relative(root, f)}${link}\u0000${body}`);
   }
   return h.digest("hex");
 }
+
+// Covered files that are links landing outside .keel/: the pin does not hold
+// what they run, so the file does not run.
+export const linksOut = (root: string, files: string[]) => {
+  const keel = realOf(join(root, ".keel"));
+  return files.filter((f) => { try { return lstatSync(f).isSymbolicLink() && !contains(keel, realOf(f)); } catch { return false; } });
+};
 
 // A repository's pins are kept for its git common dir (a worktree's are its
 // main checkout's), else for the folder.
@@ -166,6 +176,8 @@ export class Hooks {
         const pin = this.pinned(projectRoot(cwd));
         if (!pin) { active = false; problems.unshift("not pinned: the owner reads the file and pins it before it runs"); }
         else if (pin !== digest) { active = false; problems.unshift(`changed since it was pinned${files.length ? " (the file or a script it runs)" : ""}: pin it again to run it`); }
+        const out = linksOut(root, files);
+        if (out.length) { active = false; problems.unshift(`${out.map((f) => relative(root, f)).join(", ")} ${out.length > 1 ? "are links" : "is a link"} out of .keel/: the pin cannot hold what ${out.length > 1 ? "they run" : "it runs"}`); }
       }
       const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
       out.push({ path, scope, root, text: text.slice(0, 20_000), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
@@ -38,4 +38,28 @@ test("hook matchers and agents' disallowed tools see every name a call answers t
   expect(namesOf("run_code", { code: "1" })).toContain("Bash");
   expect(namesOf("keel__run_on", { machine: "m", command: "make" })).toContain("Bash");
   expect(namesOf("Read", { file_path: "a" })).toEqual(["Read"]);
+});
+
+test("a hook script that is a link is pinned with its target; a link out of .keel/ does not run", () => {
+  process.env.KEEL_HOOKS = "/nonexistent/hooks.json";
+  const repo = mkdtempSync(join(tmpdir(), "keel-hooks-link-"));
+  mkdirSync(join(repo, ".keel/hooks"), { recursive: true });
+  writeFileSync(join(repo, ".keel/hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "bash .keel/hooks/run.sh" }] }] } }));
+  writeFileSync(join(repo, ".keel/hooks/one.sh"), "exit 0\n");
+  writeFileSync(join(repo, ".keel/hooks/two.sh"), "exit 0\n"); // same text: only the link changes
+  symlinkSync("one.sh", join(repo, ".keel/hooks/run.sh"));
+  git(repo, "init", "-q");
+  const h = new Hooks(new Store(mkdtempSync(join(tmpdir(), "keel-hooks-state-"))));
+  const project = () => h.sources(repo).find((s) => s.scope === "project")!;
+  h.pin(repo, project().sha256);
+  expect(project().active).toBe(true);
+  rmSync(join(repo, ".keel/hooks/run.sh"));
+  symlinkSync("two.sh", join(repo, ".keel/hooks/run.sh"));
+  expect(project().active).toBe(false);
+  const outside = join(mkdtempSync(join(tmpdir(), "keel-out-")), "x.sh");
+  writeFileSync(outside, "exit 0\n");
+  rmSync(join(repo, ".keel/hooks/run.sh"));
+  symlinkSync(outside, join(repo, ".keel/hooks/run.sh"));
+  h.pin(repo, project().sha256);
+  expect(project().active).toBe(false);
 });

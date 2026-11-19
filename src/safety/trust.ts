@@ -6,7 +6,8 @@
 // to the content last trusted, a skill does not load. New ones are pinned on
 // first sight unless the owner asks to review new ones too.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { contains, realOf } from "../core/paths.ts";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { Store } from "../core/store.ts";
@@ -21,6 +22,7 @@ export type ProjectFile = {
   pinned_sha256?: string;
   trusted_ms?: number;
   auto?: boolean;         // pinned on first sight, not by the owner
+  outside?: string[];     // a skill's links that land outside it: it does not load
 };
 
 const SCHEMA = `
@@ -40,8 +42,15 @@ export function rootOf(dir: string): string | null {
   }
 }
 
-function skillDigest(dir: string): string | null {
+// A skill folder's digest: each file's path and content; a link's path, where
+// it points and the content it lands on, so retargeting a link changes the
+// digest. A link that lands outside the skill is named in `outside`: such a
+// skill does not load (what it runs is not the skill's to pin).
+function skillScan(dir: string): { digest: string; outside: string[] } | null {
+  if (!existsSync(join(dir, "SKILL.md"))) return null;
   const parts: string[] = [];
+  const outside: string[] = [];
+  const top = realOf(dir);
   const walk = (d: string, depth: number) => {
     if (depth > 4 || parts.length > 400) return;
     let names: string[] = [];
@@ -52,12 +61,19 @@ function skillDigest(dir: string): string | null {
       try { st = lstatSync(p); } catch { continue; }
       if (st.isDirectory()) walk(p, depth + 1);
       else if (st.isFile() && st.size <= 2_000_000) parts.push(`${relative(dir, p)}\0${sha(readFileSync(p))}`);
-      else if (st.isSymbolicLink()) parts.push(`${relative(dir, p)}\0link`);
+      else if (st.isSymbolicLink()) {
+        let target = "";
+        try { target = readlinkSync(p); } catch {}
+        const lands = realOf(p);
+        if (!contains(top, lands)) { outside.push(relative(dir, p)); parts.push(`${relative(dir, p)}\0link\0${target}\0outside`); continue; }
+        let body = "missing";
+        try { const t = statSync(lands); body = t.isFile() && t.size <= 2_000_000 ? sha(readFileSync(lands)) : t.isDirectory() ? "dir" : "large"; } catch {}
+        parts.push(`${relative(dir, p)}\0link\0${target}\0${body}`);
+      }
     }
   };
-  if (!existsSync(join(dir, "SKILL.md"))) return null;
   walk(dir, 0);
-  return sha(parts.join("\n"));
+  return { digest: sha(parts.join("\n")), outside };
 }
 
 // A command file (<repo>/.claude/commands/<name>.md): its content.
@@ -91,7 +107,7 @@ export class Trust {
   files(cwd: string): ProjectFile[] {
     const root = rootOf(cwd);
     if (!root) return [];
-    const found: { path: string; kind: TrustKind; digest: string | null; content?: string }[] = [];
+    const found: { path: string; kind: TrustKind; digest: string | null; content?: string; outside?: string[] }[] = [];
     const dirs: string[] = [];
     for (let d = cwd; ; d = dirname(d)) {
       dirs.unshift(d);
@@ -120,8 +136,8 @@ export class Trust {
         try { names = readdirSync(join(d, sub)); } catch { continue; }
         for (const n of names.sort()) {
           const dir = join(d, sub, n);
-          const digest = skillDigest(dir);
-          if (digest) found.push({ path: dir, kind: "skill", digest });
+          const scan = skillScan(dir);
+          if (scan) found.push({ path: dir, kind: "skill", digest: scan.digest, ...(scan.outside.length ? { outside: scan.outside } : {}) });
         }
       }
     }
@@ -131,13 +147,13 @@ export class Trust {
       const p = this.pin(f.path);
       if (!p && auto) {
         this.setPin({ path: f.path, kind: f.kind, root }, f.digest!, f.kind === "instructions" ? f.content! : null, true);
-        out.push({ path: f.path, kind: f.kind, root, sha256: f.digest, state: "trusted", pinned_sha256: f.digest!, trusted_ms: Date.now(), auto: true });
+        out.push({ path: f.path, kind: f.kind, root, sha256: f.digest, state: "trusted", pinned_sha256: f.digest!, trusted_ms: Date.now(), auto: true, ...(f.outside ? { outside: f.outside } : {}) });
         continue;
       }
       out.push({
         path: f.path, kind: f.kind, root, sha256: f.digest,
         state: !p ? "new" : p.sha === f.digest ? "trusted" : "changed",
-        pinned_sha256: p?.sha, trusted_ms: p?.trusted, auto: p ? !!p.auto : undefined,
+        pinned_sha256: p?.sha, trusted_ms: p?.trusted, auto: p ? !!p.auto : undefined, ...(f.outside ? { outside: f.outside } : {}),
       });
     }
     // Pinned files of the folders on the way that are gone now.
@@ -173,8 +189,11 @@ export class Trust {
 
   skillAllowed(dir: string): boolean {
     if (!rootOf(dir)) return true;
-    const digest = dir.endsWith(".md") ? commandDigest(dir) : skillDigest(dir);
-    return !digest || this.check(dir, "skill", digest, null) === "trusted";
+    if (dir.endsWith(".md")) { const d = commandDigest(dir); return !d || this.check(dir, "skill", d, null) === "trusted"; }
+    const scan = skillScan(dir);
+    if (!scan) return true;
+    if (scan.outside.length) return false;
+    return this.check(dir, "skill", scan.digest, null) === "trusted";
   }
 
   // The owner trusts a file of `cwd` at the content shown to them (the digest they saw).
