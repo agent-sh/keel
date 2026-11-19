@@ -286,6 +286,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
       setNext(r.next_cursor);
       setBuilding(r.index.building);
       setRows((prev) => (cursor ? [...(prev ?? []), ...r.sessions] : r.sessions));
+      // The row on show is taken from the fresh listing, so its preview reads
+      // again (a copy made since the last listing shows) even when it was
+      // picked from the listing before this one.
+      if (!cursor) setSel((cur) => (cur && r.sessions.find((x) => x.harness === cur.harness && x.id === cur.id && x.path === cur.path)) || cur);
       if (!cursor) setShownFor({ q: q.trim(), all });
     } catch (e) {
       reportError(e);
