@@ -3,11 +3,13 @@
 // do the work: readability extraction, SSRF guard, a keyless engine chain led
 // by the hosted AI indexes, spill of long pages. Without them a small built-in
 // path fetches the page itself and searches through Exa's keyless MCP index.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { registerCatalog } from "./catalog.ts";
 import { spill } from "./spill.ts";
+import type { ToolContext } from "./types.ts";
+import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { readText } from "../core/proc.ts";
 
 const HOME = homedir();
@@ -90,7 +92,8 @@ async function exaSearch(query: string, count: number, signal?: AbortSignal): Pr
   return (r.result?.content ?? []).map((c: any) => c.text ?? "").join("\n").trim() || "No results.";
 }
 
-export type FetchOpts = { method?: string; body?: string; headers?: Record<string, string>; extract?: string; spillDir: string };
+// `whole`: the page uncut (for the reader), else long pages are spilled.
+export type FetchOpts = { method?: string; body?: string; headers?: Record<string, string>; extract?: string; spillDir: string; whole?: boolean };
 
 const PRIVATE_HOST = /^(localhost|.*\.localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?$|\[?f[cd])/i;
 // A host the web tools do not reach: this machine and private networks (and a
@@ -118,7 +121,7 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     // The page itself, without the request echo: the model knows the URL.
     const body = typeof r.body_markdown === "string" && o.extract !== "raw" ? r.body_markdown : String(r.output ?? "");
     const final = r.meta?.final_url && r.meta.final_url !== u.href ? `Final URL: ${r.meta.final_url}\n\n` : "";
-    return { text: await spill(final + body, o.spillDir, "webfetch"), error: r.kind !== "ok" };
+    return { text: o.whole ? final + body : await spill(final + body, o.spillDir, "webfetch"), error: r.kind !== "ok" };
   }
   const res = await fetch(u.href, {
     method: o.method ?? "GET", body: o.body, redirect: "manual", signal: signal ?? AbortSignal.timeout(60_000),
@@ -132,7 +135,8 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
   const type = res.headers.get("content-type") ?? "";
   const raw = await res.text();
   const text = /html/.test(type) && o.extract !== "raw" ? htmlToText(raw) : raw;
-  return { text: await spill(`HTTP ${res.status}\n\n${text}`, o.spillDir, "webfetch"), error: !res.ok };
+  const page = `HTTP ${res.status}\n\n${text}`;
+  return { text: o.whole ? page : await spill(page, o.spillDir, "webfetch"), error: !res.ok };
 }
 
 async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal) {
@@ -142,7 +146,28 @@ async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal) {
   await Bun.write(path, res);
   const p = Bun.spawn(["pdftotext", "-layout", "-enc", "UTF-8", path, "-"], { stdout: "pipe", stderr: "ignore" });
   const text = await readText(p.stdout);
-  return { text: await spill(`PDF saved to ${path}\n\n${text}`, o.spillDir, "webfetch-pdf") };
+  const page = `PDF saved to ${path}\n\n${text}`;
+  return { text: o.whole ? page : await spill(page, o.spillDir, "webfetch-pdf") };
+}
+
+// A page fetched for a request (the prompt of WebFetch and web_fetch): a long
+// page goes to the session's reader model, which answers the request from it;
+// the page is saved whole for a Read when the answer is not enough. A short
+// page, a failed fetch, or a reader that fails returns the page as before.
+export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContext, "spillDir" | "signal" | "read">): Promise<{ text: string; error?: boolean }> {
+  const ask = prompt.trim();
+  if (!ask || !ctx.read) return webFetch(url, { spillDir: ctx.spillDir }, ctx.signal);
+  const r = await webFetch(url, { spillDir: ctx.spillDir, whole: true }, ctx.signal);
+  if (r.error || r.text.length <= READ_WHOLE_CHARS) return { ...r, text: await spill(r.text, ctx.spillDir, "webfetch") };
+  mkdirSync(join(ctx.spillDir, "web"), { recursive: true });
+  const path = join(ctx.spillDir, "web", `${Date.now()}-${Bun.hash(url).toString(36)}.md`);
+  await Bun.write(path, r.text);
+  try {
+    const a = await ctx.read(url, r.text, ask);
+    return { text: `${a.text}\n\n[${a.model} read the page (${r.text.length} chars) for this request. The whole page is saved to ${path}; Read or Grep it when this does not answer.]` };
+  } catch {
+    return { text: await spill(r.text, ctx.spillDir, "webfetch") };
+  }
 }
 
 // A plain reading of an HTML page for when the extractor is not installed.

@@ -108,3 +108,50 @@ test("a restart expires an unanswered question and warns only for a call that ma
   const cut = store.events(s.id).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
   expect(Object.fromEntries(cut.map((r: any) => [r.tool_use_id, r.content]))).toEqual({ q1: QUESTION_CUT, q2: QUESTION_CUT, q3: QUESTION_CUT, w1: RESTART_CUT });
 });
+
+// Idle compaction: a context past its idle minimum whose cache is about to
+// expire gets a summary while still warm; a turn that starts after the cache
+// expired goes on that summary, the owner's new words after it.
+test("idle compaction prepares while warm and applies when the cache went cold", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "idle-"));
+  const store = new Store(dir);
+  const s = store.createSession({ model: "p:m", workspace: dir });
+  store.updateSession(s.id, { settings: { compact_at: 2_000 } });
+  store.append(s.id, "user", { text: "read the big file" });
+  store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
+  const twoHours = Date.now() - 2 * 60 * 60_000;
+  store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [twoHours, s.id]);
+  const asked: any[] = [];
+  let answered!: () => void;
+  const summarized = new Promise<void>((r) => (answered = r));
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+  const provider = {
+    id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async (req: any) => {
+      asked.push(req);
+      if (req.purpose === "summary") setTimeout(answered, 0);
+      return { blocks: [{ type: "text", text: req.purpose === "summary" ? "SUMMARY-OF-IT" : "ok" }], usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: "m" };
+    },
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+  const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  await engine.resumeIdle(); // the cache lifetime ended long ago: the timer is due at once
+  await summarized;
+  await Bun.sleep(10);
+  const row = store.db.query<{ data: string }, []>("SELECT data FROM prepared_summaries").get();
+  expect(JSON.parse(row!.data).trigger).toBe("idle");
+  // The owner comes back after the summary call's own cache expired too.
+  store.db.run("UPDATE prepared_summaries SET data = json_set(data, '$.prepared_ms', ?)", [twoHours]);
+  engine.send(s.id, "and now?");
+  await engine.idle(s.id);
+  const turn = asked.findLast((r) => r.purpose === "turn");
+  expect(JSON.stringify(turn.messages[0])).toContain("SUMMARY-OF-IT");
+  expect(JSON.stringify(turn.messages)).not.toContain("x".repeat(8_000));
+  expect(JSON.stringify(turn.messages.at(-1))).toContain("and now?");
+  expect(store.events(s.id).find((e) => e.kind === "compaction")?.data.trigger).toBe("idle");
+});

@@ -100,7 +100,7 @@ export const fmtPct = (v: number | null | undefined) => (v == null ? "none" : `$
 // arrived) is a lower bound, or unknown when nothing in it was priced.
 type Cost = { priced_cost_usd: number; unpriced_calls: number; incomplete_calls?: number; calls?: number; total_tokens?: number };
 export const fmtSpend = (c: Cost) => (c.unpriced_calls || c.incomplete_calls ? (c.priced_cost_usd ? `${fmtUsd(c.priced_cost_usd)}+` : "unknown") : fmtUsd(c.priced_cost_usd));
-const PURPOSE: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor", consult: "Consults" };
+const PURPOSE: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor", consult: "Consults", reader: "Reader" };
 type Order = "calls" | "tokens" | "spend";
 export const fmtUsd = (v: number) => (v === 0 ? "$0" : v < 0.01 ? `$${v.toFixed(4)}` : v < 100 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`);
 

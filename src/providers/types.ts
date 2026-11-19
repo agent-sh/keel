@@ -26,9 +26,15 @@ export type ProviderRequest = {
   signal: AbortSignal;
   // Stable per session: prompt cache affinity, conversation headers.
   sessionKey?: string;
-  // Why the engine asks: a step of a turn, a compaction summary, or a side
-  // answer outside the history. Read by telemetry; drivers ignore it.
-  purpose?: "turn" | "summary" | "side";
+  // Why the engine asks: a step of a turn, a compaction summary, a side
+  // answer outside the history, or a reader's one read of long content for a
+  // tool. Read by telemetry; drivers ignore it.
+  purpose?: "turn" | "summary" | "side" | "reader";
+  // false: a one-off request nothing will repeat; no cache breakpoints (a
+  // write costs more than plain input when no later request reads it).
+  cache?: false;
+  // The cache lifetime asked for, where the wire takes one; absent = the wire's default.
+  cacheTtl?: "5m" | "1h";
   // The qualified model id (provider:model) the request goes to, for
   // measuring; `model` is the name on the wire.
   route?: string;

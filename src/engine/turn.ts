@@ -15,7 +15,9 @@ import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../pr
 import { asksOwner, toolsFor } from "../tools/registry.ts";
 import { allHooks, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
+import { pickReader, readerPrompt } from "./reader.ts";
+import { checkpointAt, COMPACT_SHARE, contextTokens, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
+import { retention } from "./cachewarn.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, backoffMs, errorText, retryable, sleep } from "./retry.ts";
@@ -453,7 +455,11 @@ export class Engine {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
     let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id };
-    for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+    // A reader's request carries no conversation for the hooks to add to.
+    if (purpose === "reader") req.cache = false;
+    else for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+    // A subagent works without pauses, then ends: the hour's dearer cache writes buy it nothing.
+    if (session.parent_id && purpose !== "reader") req.cacheTtl = "5m";
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
     for (let attempt = 0; ; attempt++) {
@@ -501,7 +507,7 @@ export class Engine {
     let st = await this.step(session, session.model);
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);
-    const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id) };
+    const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id), read: (source, text, prompt) => this.read(id, source, text, prompt, signal).catch((e) => { if (!signal.aborted) this.errors.capture("provider", e, { session: id, at: "reader", source }); throw e; }) };
 
     this.setPhase(id, "working");
     const t0 = Date.now();
@@ -539,6 +545,10 @@ export class Engine {
         if (events.some((e) => e.kind === "assistant") && used >= limit) {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
           if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st });
+          events = this.lineage(id);
+        } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events)) {
+          // Back after the cache expired: the summary written while idle (or
+          // ahead) replaces the history instead of the history being written again.
           events = this.lineage(id);
         } else if (used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
@@ -631,6 +641,7 @@ export class Engine {
         const events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
         if (contextTokens(events).used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
+        this.scheduleIdle(id, st);
       }
       for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
@@ -691,17 +702,65 @@ export class Engine {
   }
 
   private preparing = new Set<string>();
+  private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // The prepared summary's time, when there is one.
+  private preparedMs(id: string): number {
+    const row = this.store.db.query<{ data: string }, [string]>("SELECT data FROM prepared_summaries WHERE session_id = ?").get(id);
+    return row ? Number(JSON.parse(row.data).prepared_ms ?? 0) : 0;
+  }
+
+  // The cache of this context has surely expired: no request read it within
+  // the longest lifetime the route may keep it.
+  private cacheCold(id: string, events: StoredEvent[], st: Step): boolean {
+    const warm = lastWarm(events, this.preparedMs(id));
+    return warm > 0 && Date.now() - warm > retention(st.provider.wire, events, st.info.id).max;
+  }
+
+  // After a restart: idle sessions whose cache may still be warm get their timer again.
+  async resumeIdle() {
+    const since = Date.now() - 60 * 60_000;
+    for (const { id } of this.store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated > ? AND archived = 0").all(since)) {
+      const s = this.store.session(id);
+      if (!s || this.running.has(id)) continue;
+      try { this.scheduleIdle(id, await this.step(s, s.model)); } catch (e) { this.errors.capture("provider", e, { session: id, at: "idle compaction after a restart" }); }
+    }
+  }
+
+  // After a turn: a context big enough gets its summary prepared shortly
+  // before its cache lifetime ends, unless the session works again before then.
+  private scheduleIdle(id: string, st: Step) {
+    clearTimeout(this.idleTimers.get(id));
+    this.idleTimers.delete(id);
+    const session = this.store.session(id);
+    if (!session || session.settings.idle_compact === false) return;
+    const events = this.lineage(id);
+    const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+    if (contextTokens(events).used < idleMinTokens(limit)) return;
+    const life = retention(st.provider.wire, events, st.info.id).sure;
+    if (life < 2 * IDLE_MARGIN_MS) return; // a five-minute cache leaves no idle time to use
+    const due = lastWarm(events) + life - IDLE_MARGIN_MS - Date.now();
+    const t = setTimeout(() => {
+      this.idleTimers.delete(id);
+      if (this.running.has(id) || !this.store.session(id)) return;
+      this.prepare(id, st, true);
+    }, Math.max(0, due));
+    (t as any).unref?.();
+    this.idleTimers.set(id, t);
+  }
 
   // Write a summary of the context as it stands now, in the background (the
   // turn goes on). It is stored with the event it covers up to, and swapped in
   // when the context reaches the compaction limit.
-  private prepare(id: string, st: Step) {
+  // `idle`: written for idle compaction, so it covers the whole context: an
+  // older summary that covers less is written again.
+  private prepare(id: string, st: Step, idle = false) {
     if (this.preparing.has(id)) return;
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
     if (!covered || covered.kind === "compaction") return;
     const have = this.store.db.query<{ covered: string }, [string]>("SELECT covered FROM prepared_summaries WHERE session_id = ?").get(id);
-    if (have && events.some((e) => e.id === have.covered) && events.findIndex((e) => e.id === have.covered) > checkpointAt(events).at) return;
+    if (have && events.some((e) => e.id === have.covered) && events.findIndex((e) => e.id === have.covered) > checkpointAt(events).at && (!idle || have.covered === covered.id)) return;
     this.preparing.add(id);
     const session = this.store.session(id)!;
     const ask: Message[] = [...toMessages(events), { role: "user", content: [{ type: "text", text: summaryPrompt() }] }];
@@ -713,7 +772,7 @@ export class Engine {
         this.emitSession(id);
         const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
         if (res.stop === "refusal" || !summary) return;
-        const data = { mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), auto: true, ahead: true, trigger: "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const data = { mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
       .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
@@ -859,6 +918,23 @@ export class Engine {
     this.store.addUsage(id, res.usage);
     this.emitSession(id);
     return { ...res, model_id: st.info.id };
+  }
+
+  // Long content read by the session's reader model (src/engine/reader.ts)
+  // with the working model's request; the answer goes back as the tool's result.
+  async read(id: string, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage }> {
+    const session = this.store.session(id)!;
+    const cur = (await this.providers.resolve(session.model)).info;
+    const pick = pickReader(await this.providers.models(), cur, Math.ceil(text.length / 3) + 4_000);
+    const { provider, info } = await this.providers.resolve(pick.id);
+    const effort = info.efforts.includes("low") ? "low" : undefined;
+    const st: Step = { provider, info, tools: [], system: "You read content for a coding agent and answer its request from that content.", systemSplit: 0, effort };
+    const res = await this.call(id, { ...st, info: { ...info, output: Math.min(info.output, 8_192) } }, [{ role: "user", content: [{ type: "text", text: readerPrompt(source, prompt, text) }] }], signal, new Map(), session, true, "reader");
+    this.store.addUsage(id, res.usage);
+    this.emitSession(id);
+    const answer = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+    if (res.stop === "refusal" || !answer) throw new Error(`the reader (${info.name}) gave no answer`);
+    return { text: answer, model: info.name, usage: res.usage };
   }
 
   // /clear: a fresh context in the same session (no summary). Undo = head back.

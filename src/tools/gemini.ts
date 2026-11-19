@@ -9,7 +9,7 @@ import { answerText, ask, type Question } from "./interact.ts";
 import { headTail, runShell } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
-import { webFetch, webSearch } from "./web.ts";
+import { fetchFor, webSearch } from "./web.ts";
 
 const obj = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required });
 
@@ -226,7 +226,7 @@ const web_fetch: Tool = {
     const urls = [...new Set(String(input.prompt ?? "").match(/https?:\/\/[^\s<>"')\]]+/g) ?? [])].slice(0, 5);
     if (!urls.length) return fail("The prompt must contain at least one URL starting with http:// or https://.");
     const parts = await Promise.all(urls.map(async (u) => {
-      const r = await webFetch(u, { spillDir: ctx.spillDir }, ctx.signal).catch((e) => ({ text: String(e.message), error: true }));
+      const r = await fetchFor(u, String(input.prompt), ctx).catch((e) => ({ text: String(e.message), error: true }));
       return `--- ${u} ---\n${r.text}`;
     }));
     return ok(parts.join("\n\n"));

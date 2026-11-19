@@ -76,7 +76,7 @@ type Tokens = {
   turns: { turn_event: string; ts_ms: number; prompt: string; prompt_event?: string; requests: number; zones: ZoneSet; per_request: { ts_ms: number; purpose: string; zones: ZoneSet }[] }[];
 };
 
-const PURPOSE: Record<string, string> = { turn: "Turn steps", summary: "Compaction summaries", side: "Side answers" };
+const PURPOSE: Record<string, string> = { turn: "Turn steps", summary: "Compaction summaries", side: "Side answers", reader: "Reader reads" };
 
 export function TokensView({ range }: { range: Range }) {
   const sessions = useStore((s) => s.sessions);
@@ -152,7 +152,7 @@ export function TokensView({ range }: { range: Range }) {
                     <div className="mt-1.5 flex flex-col gap-1">
                       {t.per_request.map((q, i) => (
                         <div key={i} className="flex items-center gap-2">
-                          <span className="w-16 shrink-0 text-micro text-faint">{q.purpose === "turn" ? `step ${i + 1}` : q.purpose === "summary" ? "summary" : "side"}</span>
+                          <span className="w-16 shrink-0 text-micro text-faint">{q.purpose === "turn" ? `step ${i + 1}` : q.purpose === "summary" ? "summary" : q.purpose === "reader" ? "reader" : "side"}</span>
                           <ZoneBar z={q.zones} max={maxReq} />
                         </div>
                       ))}
@@ -241,7 +241,7 @@ type Compactions = {
   total: { count: number; tokens_before: number; tokens_after: number; measured_after: number; paired: { count: number; tokens_before: number; tokens_after: number }; cost_usd: number; unpriced: number; duration_p50_ms: number | null; after_hit_ratio: number | null; before_hit_ratio: number | null; by_trigger: Record<string, number> };
   after_requests: number; compactions: Compaction[];
 };
-const TRIGGER: Record<string, string> = { threshold: "the context reached the limit", overflow: "a request did not fit", owner: "asked for" };
+const TRIGGER: Record<string, string> = { threshold: "the context reached the limit", overflow: "a request did not fit", owner: "asked for", idle: "the cache expired while idle" };
 
 export function CompactionsView({ range }: { range: Range }) {
   const r = useReport<Compactions>(`/api/telemetry/compactions?limit=50&since_ms=${Date.now() - RANGES[range]}`, [range]);

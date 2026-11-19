@@ -30,6 +30,25 @@ export function checkpointAt(lineage: StoredEvent[]): { at: number; keepFrom: nu
 // turn that reaches COMPACT_SHARE swaps it in without waiting for a model call.
 export const PREPARE_SHARE = 0.7;
 
+// Idle compaction, as Claude Code does it: a long context left idle is
+// summarized while its cache is still warm (that call reads the history at
+// the cache read price), and the summary replaces the history only when the
+// owner comes back after the cache expired, when the next request would
+// otherwise write the whole history again at the cache write price.
+// Prepared this long before the cache lifetime ends (Claude Code: about 54 of 60 minutes):
+export const IDLE_MARGIN_MS = 6 * 60_000;
+// From this many tokens (Claude Code's default minimum), or from the
+// preparing share of a smaller limit, where a summary is due soon anyway.
+export const IDLE_MIN_TOKENS = 200_000;
+export const idleMinTokens = (limit: number) => Math.min(IDLE_MIN_TOKENS, Math.floor(limit * (PREPARE_SHARE / COMPACT_SHARE)));
+
+// When a request last read or wrote this context's cache: the newest reply,
+// or a summary prepared after it (that call read the same prefix).
+export function lastWarm(lineage: StoredEvent[], preparedMs = 0): number {
+  const last = lineage.findLast((e) => e.kind === "assistant");
+  return Math.max(last?.ts ?? 0, preparedMs);
+}
+
 export function summaryPrompt(focus?: string): string {
   return [
     "[harness] The context is being compacted. Write a summary of the conversation so far that lets you continue the work without it: everything before this point will be replaced by your summary.",

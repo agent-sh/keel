@@ -483,4 +483,21 @@ const tracker: Task = {
   },
 };
 
-export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker];
+// Facts from two long documentation pages: what the fetched pages cost the
+// working model's context (and what a reader model saves) on a real lookup.
+const webdocs: Task = {
+  id: "webdocs",
+  kind: "web lookup",
+  prompt:
+    "Answer from these two pages, one line each: (1) the cache write price multiplier for the 1-hour TTL and (2) how many blocks the cache lookback window checks, both from " +
+    "https://platform.claude.com/docs/en/build-with-claude/prompt-caching ; (3) the beta header and (4) the longest `instructions` string in characters for on-demand compaction, from " +
+    "https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand",
+  files: { "README.md": "# notes\n" },
+  check(_dir, reply) {
+    const want: [string, RegExp][] = [["2x", /\b2(x|\s*(times|×))|\b2\.0x?\b|\btwo times\b|×\s*2\b/i], ["20", /\b20\b/], ["header", /compact-2026-09-04/], ["16384", /16,?384/]];
+    const miss = want.filter(([, re]) => !re.test(reply)).map(([n]) => n);
+    return miss.length ? { ok: false, why: `missed ${miss.join(", ")}` } : { ok: true, why: "all 4 right" };
+  },
+};
+
+export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker, webdocs];

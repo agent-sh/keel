@@ -30,6 +30,8 @@ type Row = {
   ms: number; first_prefix: number; tools_bytes: number; system_bytes: number; last_messages_bytes: number;
   per_request: { input: number; cache_read: number; cache_write: number; cache_write_1h: number; output: number }[];
   reply: string; error?: string; ts: string;
+  // Everything the session spent, side calls included (a reader's read, a summary).
+  session_cost?: number; session_in: number; session_out: number;
 };
 
 function loadEnvFile(p: string) {
@@ -155,6 +157,7 @@ async function bench(opts: { model: string; label: string; reps: number; tasks: 
       first_prefix: p0 ? p0.input + p0.cache_read + p0.cache_write : 0,
       tools_bytes: sh.tools, system_bytes: sh.system, last_messages_bytes: sh.messages,
       per_request: u.per.map(({ cost: _c, ...x }) => x), followup, reply: reply.slice(0, 2000), error: err, ts: new Date().toISOString(),
+      ...(() => { const su = store.session(s.id)!.usage; return { session_cost: su.cost, session_in: su.input + su.cache_read + su.cache_write, session_out: su.output }; })(),
     };
     appendFileSync(results, JSON.stringify(row) + "\n");
     writeFileSync(join(dir, ".bench-request.json"), JSON.stringify(last.get(s.id), null, 1));
@@ -183,7 +186,7 @@ function compare(labels: string[]) {
     const p = join(OUT, "results", `${l}.jsonl`);
     return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((x) => JSON.parse(x)) : [];
   };
-  const cols = ["ok", "total_in", "cache_read", "cache_write", "input", "output", "requests", "tools", "s", "cost", "cached%"];
+  const cols = ["ok", "total_in", "cache_read", "cache_write", "input", "output", "requests", "tools", "s", "cost", "cached%", "all cost"];
   console.log(`| label | task | ${cols.join(" | ")} |`);
   console.log(`|${" --- |".repeat(cols.length + 2)}`);
   for (const l of labels) {
@@ -201,6 +204,7 @@ function compare(labels: string[]) {
         m((r) => r.output).toFixed(0), m((r) => r.requests).toFixed(1), m((r) => r.tools).toFixed(1), (m((r) => r.ms) / 1000).toFixed(0),
         rs.every((r) => r.cost !== undefined) ? `$${m((r) => r.cost!).toFixed(5)}` : "?",
         tin ? `${((100 * m((r) => r.cache_read)) / tin).toFixed(0)}%` : "-",
+        rs.every((r) => r.session_cost !== undefined) ? `$${m((r) => r.session_cost!).toFixed(5)}` : "-",
       ];
       console.log(`| ${l} | ${t} | ${cells.join(" | ")} |`);
     }

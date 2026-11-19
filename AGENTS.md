@@ -18,7 +18,9 @@ under `~/.cache/keel-work/bun/research/`.
 - Token efficiency is part of every feature: append-only history (the provider
   cache prefix never changes), cache breakpoints on tools, system and the last
   user message, a frozen system prompt per session, long tool output spilled to a
-  file (`src/tools/spill.ts`).
+  file (`src/tools/spill.ts`), a long fetched page read by a cheaper reader model
+  (`src/engine/reader.ts`), and idle compaction before a long context's cache
+  expires (`src/engine/compact.ts`).
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the

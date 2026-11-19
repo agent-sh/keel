@@ -24,6 +24,9 @@ export type ToolContext = {
   // Set by the engine: runs another tool of the session as a call of its own
   // (gate, hooks, dispatch, under the id given), for a tool that calls tools (run_code).
   callTool?: (name: string, input: any, id: string) => Promise<ToolResultBlock>;
+  // Set by the engine: long content read by the session's reader model with a
+  // request; resolves to the reader's answer (src/engine/reader.ts).
+  read?: (source: string, text: string, prompt: string) => Promise<{ text: string; model: string }>;
 };
 
 // `shown`: what the transcript shows for the call besides its result (the

@@ -64,6 +64,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
         await Bun.sleep(5_000);
       }
     }).catch((e) => errors.capture("server", e, { at: "recover" }));
+    void providers.models().then(() => engine.resumeIdle()).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
   }
   const stop = async (drainMs = 0) => {
     await engine.drain(drainMs).catch((e) => errors.capture("server", e, { at: "drain" }));

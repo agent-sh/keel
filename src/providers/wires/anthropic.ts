@@ -9,15 +9,17 @@ import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } f
 // Cache lifetime of every breakpoint. An agent loop's requests come seconds
 // apart, but the owner's next prompt often comes after more than five minutes:
 // with the 5-minute lifetime that prompt re-writes the whole conversation.
+// A subagent's requests ask for five minutes (req.cacheTtl): it works without
+// pauses and ends, so the hour's dearer writes buy nothing (Claude Code does the same).
 export const CACHE_TTL: "5m" | "1h" = "1h";
-const cache = { type: "ephemeral" as const, ttl: CACHE_TTL };
+const CACHE: { type: "ephemeral"; ttl: "5m" | "1h" } = { type: "ephemeral", ttl: CACHE_TTL };
 
 const image = (b: { media_type: string; data: string }) => ({ type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } });
 
 // History to the wire. Cache breakpoints: tools + system are frozen (one
 // breakpoint on the system), and a rolling breakpoint on the last user message
 // so each request reads the whole previous prefix from cache.
-export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine">): any[] {
+export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine">, mark: typeof CACHE | undefined = CACHE): any[] {
   const out: any[] = project(messages, ctx).map((m) => ({
     role: m.role,
     content: m.content.map((b): any => {
@@ -40,35 +42,36 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
       }
     }).filter(Boolean),
   })).filter((m) => m.content.length);
-  for (let i = out.length - 1; i >= 0; i--) {
+  for (let i = out.length - 1; mark && i >= 0; i--) {
     const m = out[i]!;
     if (m.role !== "user" || m.content.length === 0) continue;
-    m.content[m.content.length - 1].cache_control = cache;
+    m.content[m.content.length - 1].cache_control = mark;
     break;
   }
   return out;
 }
 
 export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?: string) {
+  const cache = req.cache === false ? undefined : req.cacheTtl === "5m" ? { type: "ephemeral" as const, ttl: "5m" as const } : CACHE;
   const tools = req.tools.map((t, i) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
     eager_input_streaming: true,
-    ...(i === req.tools.length - 1 ? { cache_control: cache } : {}),
+    ...(cache && i === req.tools.length - 1 ? { cache_control: cache } : {}),
   }));
   // Breakpoints (4 at most): the tools, the system text every session shares,
   // the session's own system text, and the rolling one on the last user message.
   const cut = req.systemSplit ?? 0;
   const system: any[] = [];
-  if (cut > 0 && cut < req.system.length) system.push({ type: "text", text: req.system.slice(0, cut), cache_control: cache });
-  system.push({ type: "text", text: cut > 0 && cut < req.system.length ? req.system.slice(cut) : req.system, cache_control: cache });
+  if (cut > 0 && cut < req.system.length) system.push({ type: "text", text: req.system.slice(0, cut), ...(cache && { cache_control: cache }) });
+  system.push({ type: "text", text: cut > 0 && cut < req.system.length ? req.system.slice(cut) : req.system, ...(cache && { cache_control: cache }) });
   if (systemPrefix) system.unshift({ type: "text", text: systemPrefix });
   const body: Record<string, any> = {
     model: req.model,
     max_tokens: req.maxTokens ?? 64_000,
     system,
-    messages: toWire(req.messages, ctx),
+    messages: toWire(req.messages, ctx, cache),
     thinking: { type: "adaptive", display: "summarized" },
     output_config: { effort: req.effort ?? "high" },
   };
