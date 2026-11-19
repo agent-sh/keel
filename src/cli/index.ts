@@ -1,6 +1,7 @@
 // Client commands of `keel`. Each takes its own argv and returns an exit code.
 import { acpCommands } from "./acp.ts";
 import { adminCommands } from "./admin.ts";
+import { debug } from "./debug.ts";
 import { completion } from "./help.ts";
 import { importCmd } from "./imports.ts";
 import { loginCommands } from "./login.ts";
@@ -15,6 +16,7 @@ export const commands: Record<string, Command> = {
   ...mobileCommands, ...acpCommands, ...adminCommands, ...pluginCommands, ...sessionCommands, ...loginCommands,
   run,
   rules: rulesCmd,
+  debug,
   // `keel -p PROMPT` is `keel run -p PROMPT`, as with claude -p.
   "-p": (argv) => run(["-p", ...argv]),
   "--print": (argv) => run(["-p", ...argv]),

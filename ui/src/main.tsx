@@ -14,6 +14,7 @@ import "./lib/tokens-ui.ts";
 import "./features/profile.tsx";
 import "./features/sessops.tsx";
 import "./features/terminal.tsx";
+import "./features/observe.tsx";
 
 // Install metadata. Added here, not in index.html, because the bundler tries
 // to resolve every link in the page as a file to bundle.

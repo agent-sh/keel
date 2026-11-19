@@ -1,0 +1,105 @@
+import { existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { expect, test } from "./isolate.ts";
+import { openPanel, shoot } from "./shots.ts";
+
+// Feature: observability built for fixing. A failed request becomes an error
+// row that names the exact request (route, attempt, class), opens the turn's
+// trace (a waterfall of requests and tools, the failing span's detail, "send
+// again"), gives a debug bundle an agent can read, and "Fix this" starts a
+// session that is handed the bundle. The daemon log is live in Settings, and
+// the traces go out over OTLP/HTTP with the GenAI names. The scripted provider
+// plays a refused billing (a 402) so the failure is the same every run.
+const STAND_IN = "scripted:stand-in";
+
+test("a failed request is traced, bundled, replayed and handed to a fix", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+
+  // A stand-in OTLP collector.
+  const got: any[] = [];
+  const collector = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => { if (req.url === "/v1/traces") got.push(JSON.parse(body)); res.writeHead(200, { "content-type": "application/json" }).end("{}"); });
+  });
+  await new Promise<void>((r) => collector.listen(0, "127.0.0.1", r));
+  const port = (collector.address() as AddressInfo).port;
+
+  try {
+    await page.goto("/settings/logs");
+    await page.getByTestId("otlp-endpoint").fill(`http://127.0.0.1:${port}/v1/traces`);
+    await page.getByTestId("otlp-save").click();
+    await expect(page.getByTestId("otlp-state")).toContainText("0 sent");
+
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Observe check" } })).json();
+    await page.goto(`/s/${session.id}`);
+    await page.getByTestId("composer").fill("script:billing");
+    await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 20_000 });
+
+    // The error row names the request it failed in.
+    await page.getByTestId("errors-button").click();
+    const panel = page.getByTestId("errors-panel");
+    const row = panel.getByTestId("error-row").filter({ hasText: "credit balance is too low" }).first();
+    await row.locator("summary").click();
+    await expect(row.getByTestId("error-wire")).toContainText(`${STAND_IN}  ·  attempt 1  ·  HTTP 402`);
+    await expect(row.getByTestId("error-wire")).toContainText("quota");
+    await shoot(page, "observe-01-error-actions");
+
+    // The bundle an agent reads: the failure, the turn's trace, the failing request, the log.
+    const err = (await (await request.get("/api/errors?resolved=0")).json()).errors.find((e: any) => e.session_id === session.id);
+    const md = await (await request.get(`/api/debug/bundle?error_id=${err.id}`)).text();
+    for (const part of ["## Failure", "## Trace of the turn", "## The failing span", "Request shape: turn;", "## Transcript before the failure", "## Daemon log around it", "credit balance is too low", `[span ${err.span_id}]`]) expect(md).toContain(part);
+
+    // The trace: the turn and its failed request, the request's detail, and sending it again.
+    await row.getByTestId("error-trace").click();
+    await expect(page).toHaveURL(new RegExp(`/s/${session.id}`));
+    await openPanel(page, "traces");
+    const view = page.getByTestId("trace-view");
+    await expect(view.getByTestId("span-row")).toHaveCount(2);
+    await expect(view.locator('[data-testid="span-row"][data-status="error"]')).toHaveCount(2);
+    const detail = page.getByTestId("span-detail");
+    await expect(detail).toContainText("chat stand-in");
+    await expect(detail).toContainText("HTTP 402");
+    await expect(detail).toContainText(err.span_id);
+    await shoot(page, "observe-02-trace");
+    await detail.getByTestId("span-replay").click();
+    await expect(page.getByTestId("replay-result")).toContainText("Failed again: HTTP 402");
+    await shoot(page, "observe-03-replayed");
+
+    // OTLP: the turn and the request as GenAI spans, the failure as status 2.
+    await expect.poll(() => got.flatMap((b) => b.resourceSpans[0].scopeSpans[0].spans).map((s: any) => s.name), { timeout: 15_000 }).toEqual(expect.arrayContaining(["invoke_agent keel", "chat stand-in"]));
+    const spans = got.flatMap((b) => b.resourceSpans[0].scopeSpans[0].spans);
+    const chat = spans.find((s: any) => s.name === "chat stand-in" && s.spanId === err.span_id);
+    expect(chat.status.code).toBe(2);
+    expect(chat.attributes).toEqual(expect.arrayContaining([{ key: "gen_ai.operation.name", value: { stringValue: "chat" } }, { key: "error.type", value: { stringValue: "quota" } }, { key: "gen_ai.conversation.id", value: { stringValue: session.id } }]));
+    // Shapes and numbers only: no prompt text leaves.
+    expect(JSON.stringify(got)).not.toContain("script:billing");
+
+    // Fix this: a new session handed the bundle (on the stand-in here; the owner's default model otherwise).
+    await page.route("**/api/debug/fix", (r) => r.continue({ postData: JSON.stringify({ ...JSON.parse(r.request().postData() ?? "{}"), model: STAND_IN }) }));
+    await page.getByTestId("errors-button").click();
+    const again = page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: "credit balance is too low" }).first();
+    await again.locator("summary").click();
+    await again.getByTestId("error-fix").click();
+    await expect(page).not.toHaveURL(new RegExp(`/s/${session.id}`));
+    const prompt = page.getByTestId("user-message").first();
+    await expect(prompt).toContainText("The debug bundle is ");
+    const path = (await prompt.innerText()).match(/The debug bundle is (\S+\.md)\./)![1]!;
+    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("credit balance is too low");
+    await shoot(page, "observe-04-fix-session");
+
+    // The daemon log, live, filtered, and the export count.
+    await page.goto("/settings/logs");
+    await page.getByTestId("log-filter").fill("credit balance");
+    await expect(page.getByTestId("log-lines")).toContainText("[provider] Scripted: your credit balance is too low");
+    await expect(page.getByTestId("otlp-state")).toContainText(/[1-9]\d* sent/);
+    await page.getByTestId("log-filter").fill("");
+    await shoot(page, "observe-05-logs");
+  } finally {
+    collector.close();
+  }
+});

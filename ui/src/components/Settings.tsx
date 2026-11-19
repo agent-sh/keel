@@ -126,14 +126,14 @@ const GROUP: Record<string, string> = {
   general: "Working", models: "Working", providers: "Working", keyboard: "Working", voice: "Working",
   mcp: "Toolkit", skills: "Toolkit", commands: "Toolkit", agents: "Toolkit", plugins: "Toolkit", hooks: "Toolkit", instructions: "Toolkit",
   safety: "Safety", alerts: "Safety",
-  machines: "Machine", resources: "Machine", storage: "Machine", daemon: "Machine", phone: "Machine", usage: "Machine",
+  machines: "Machine", resources: "Machine", storage: "Machine", daemon: "Machine", phone: "Machine", usage: "Machine", logs: "Machine",
   integrations: "Reach", "acp-agents": "Reach", elsewhere: "Reach", export: "Reach",
   about: "Keel",
 };
 const ORDER = ["Working", "Toolkit", "Safety", "Machine", "Reach", "More", "Keel"];
 const groupOf = (id?: string) => (id ? GROUP[id] ?? "More" : "");
 // Sections of figures and lists use the width; forms keep a reading measure.
-const WIDE = new Set(["usage", "resources", "storage", "machines", "models", "mcp", "skills", "commands", "agents", "plugins", "hooks", "instructions"]);
+const WIDE = new Set(["usage", "resources", "storage", "machines", "models", "mcp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs"]);
 
 export function Settings({ section }: { section: string }) {
   useSyncExternalStore(settingsSections.subscribe, settingsSections.version);

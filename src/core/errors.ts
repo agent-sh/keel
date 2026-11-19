@@ -8,7 +8,9 @@ export class ErrorTracker {
 
   capture(source: ErrorRecord["source"], err: unknown, context?: unknown): ErrorRecord {
     const e = err instanceof Error ? err : new Error(String(err));
-    const rec = this.store.recordError({ source, message: e.message, stack: e.stack, context });
+    // A failed model request names its trace span on the error it threw (src/admin/trace.ts).
+    const span_id = typeof (err as any)?.span_id === "string" ? (err as any).span_id : undefined;
+    const rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, span_id });
     this.bus.emit({ t: "error", error: rec });
     console.error(`[${source}] ${e.message}`);
     return rec;

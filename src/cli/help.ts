@@ -29,6 +29,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["backups", "list the backups"],
     ["restore", "put a backup in place (daemon stopped)"],
     ["report", "a redacted bundle about a problem"],
+    ["debug", "a failure's debug bundle, the errors, traces and the daemon log"],
     ["usage", "tokens, spend and timings"],
     ["service", "write the systemd user unit"],
   ]],

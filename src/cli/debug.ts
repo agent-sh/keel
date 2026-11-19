@@ -1,0 +1,103 @@
+// keel debug: what an agent (or the owner) asked to fix a failure reads from
+// a terminal.
+//   keel debug [ERROR_ID]            the debug bundle (Markdown) of an error, the newest open one by default
+//   keel debug --session ID [--turn EVENT]   the bundle of a session's turn (its last by default)
+//   keel debug errors [--all]        the open errors (every one with --all), newest first
+//   keel debug trace TRACE_ID        one trace's spans as a waterfall
+//   keel debug log [-f] [--level L] [--grep TEXT] [--lines N]   the daemon's log; -f follows it
+import { parseArgs } from "node:util";
+import { authHeaders, findDaemon } from "./client.ts";
+
+const USAGE = `keel debug [ERROR_ID] | --session ID [--turn EVENT]   the debug bundle, as Markdown
+keel debug errors [--all] [--json]                    the open errors, newest first
+keel debug trace TRACE_ID [--json]                    one trace's spans
+keel debug log [-f] [--level debug|info|warn|error] [--grep TEXT] [--lines N]
+  Every form takes --url URL (else KEEL_URL, else the daemon of the state folder).`;
+
+async function get(url: string, path: string): Promise<Response> {
+  let r: Response;
+  try {
+    r = await fetch(url + path, { headers: authHeaders() });
+  } catch {
+    throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
+  }
+  if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as any).error ?? `HTTP ${r.status}`);
+  return r;
+}
+const getJson = async (url: string, path: string) => (await get(url, path)).json() as Promise<any>;
+const time = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+const ms = (x: number) => (x < 1000 ? `${x} ms` : `${(x / 1000).toFixed(2)} s`);
+
+export async function debug(argv: string[]): Promise<number> {
+  const { values: v, positionals: pos } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      url: { type: "string" }, json: { type: "boolean" }, help: { type: "boolean" }, session: { type: "string" }, turn: { type: "string" },
+      all: { type: "boolean" }, follow: { type: "boolean", short: "f" }, level: { type: "string" }, grep: { type: "string" }, lines: { type: "string" },
+    },
+  });
+  if (v.help) return (console.log(USAGE), 0);
+  const url = findDaemon({ url: v.url }).url;
+  try {
+    if (pos[0] === "errors") {
+      const { errors } = await getJson(url, `/api/errors${v.all ? "" : "?resolved=0"}`);
+      if (v.json) return (console.log(JSON.stringify(errors, null, 2)), 0);
+      if (!errors.length) console.log("No open errors.");
+      for (const e of errors) console.log(`${e.id}  ${time(e.ts)}  ${e.source.padEnd(8)} ${String(e.count ?? 1).padStart(4)}x  ${e.message.split("\n")[0].slice(0, 140)}`);
+      return 0;
+    }
+    if (pos[0] === "trace") {
+      if (!pos[1]) throw new Error("name the trace: keel debug trace TRACE_ID");
+      const { spans } = await getJson(url, `/api/debug/traces/${pos[1]}`);
+      if (v.json) return (console.log(JSON.stringify(spans, null, 2)), 0);
+      const t0 = spans[0]?.start_ms ?? 0;
+      for (const s of spans) {
+        const d = (s.end_ms ?? Date.now()) - s.start_ms;
+        console.log(`${s.status === "error" ? "!" : " "} +${((s.start_ms - t0) / 1000).toFixed(2).padStart(7)}s ${s.parent_id ? "  " : ""}${s.name.padEnd(30)} ${ms(d).padStart(9)}  ${s.status}${s.error_type ? ` (${s.error_type})` : ""}  ${s.span_id}${s.error ? `\n      ${s.error.split("\n")[0].slice(0, 200)}` : ""}`);
+      }
+      return 0;
+    }
+    if (pos[0] === "log") return await log(url, v);
+    let q: string;
+    if (v.session) q = `session_id=${encodeURIComponent(v.session)}${v.turn ? `&turn_event=${encodeURIComponent(v.turn)}` : ""}`;
+    else {
+      const id = pos[0] ?? (await getJson(url, "/api/errors?resolved=0")).errors[0]?.id;
+      if (!id) return (console.log("No open errors; name one (keel debug errors --all) or a session (--session ID)."), 0);
+      q = `error_id=${encodeURIComponent(id)}`;
+    }
+    process.stdout.write(await (await get(url, `/api/debug/bundle?${q}`)).text());
+    return 0;
+  } catch (e) {
+    console.error(`keel: ${(e as Error).message}`);
+    return 1;
+  }
+}
+
+async function log(url: string, v: { follow?: boolean; level?: string; grep?: string; lines?: string; json?: boolean }) {
+  const print = (l: { ts: number; level: string; text: string }) => {
+    if (v.grep && !l.text.toLowerCase().includes(v.grep.toLowerCase())) return;
+    console.log(v.json ? JSON.stringify(l) : `${new Date(l.ts).toISOString()} ${l.level.toUpperCase().padEnd(5)} ${l.text}`);
+  };
+  const level = v.level ? `&level=${encodeURIComponent(v.level)}` : "";
+  const { lines, dir } = await getJson(url, `/api/logs?limit=${Number(v.lines) || 200}${level}${v.grep ? `&q=${encodeURIComponent(v.grep)}` : ""}`);
+  for (const l of lines) print(l);
+  if (!v.follow) {
+    if (!v.json) console.error(`(the daemon's log files: ${dir})`);
+    return 0;
+  }
+  const r = await get(url, `/api/logs/stream?${level.slice(1)}`);
+  const dec = new TextDecoder();
+  let buf = "";
+  for await (const chunk of r.body as any as AsyncIterable<Uint8Array>) {
+    buf += dec.decode(chunk, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const ev = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      const data = ev.split("\n").filter((x) => x.startsWith("data: ")).map((x) => x.slice(6)).join("\n");
+      if (data) print(JSON.parse(data));
+    }
+  }
+  return 0;
+}

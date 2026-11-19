@@ -1,0 +1,305 @@
+// Traces: one per turn, with a span for the turn, each model request attempt
+// and each tool call, the way OpenTelemetry's GenAI conventions shape agents
+// (invoke_agent, chat, execute_tool). A span holds the request's shape (never
+// its words), what the wire saw (status, the provider's request id, timings)
+// and the failure. A failed request also keeps the request itself, gzipped, so
+// it can be sent again (replay). The trace id is the turn's turn_start event
+// id, so an error that names its turn names its trace. Kept SPAN_DAYS days.
+import { gunzipSync, gzipSync } from "node:zlib";
+import type { Bus } from "../core/bus.ts";
+import type { Store } from "../core/store.ts";
+import type { Message, Session, ToolResultBlock } from "../core/types.ts";
+import { registerHooks } from "../engine/hooks.ts";
+import { errorText } from "../engine/retry.ts";
+import type { ProviderRequest, ProviderResult } from "../providers/types.ts";
+import { redactHeaders, type Wire, wireOf } from "../providers/wiretap.ts";
+import { errorClass } from "./classes.ts";
+
+export type SpanKind = "turn" | "request" | "tool";
+export type SpanStatus = "running" | "ok" | "error" | "interrupted";
+export type Span = {
+  span_id: string;
+  trace_id: string;
+  parent_id: string | null;
+  session_id: string;
+  kind: SpanKind;
+  name: string;
+  start_ms: number;
+  end_ms: number | null;
+  status: SpanStatus;
+  error: string | null;
+  error_type: string | null;
+  error_id: string | null;
+  attrs: Record<string, any>;
+  replayable: boolean;
+};
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS spans (
+  span_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL,
+  parent_id TEXT,
+  session_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  start_ms INTEGER NOT NULL,
+  end_ms INTEGER,
+  status TEXT NOT NULL,
+  error TEXT,
+  error_type TEXT,
+  error_id TEXT,
+  attrs TEXT NOT NULL,
+  request BLOB
+);
+CREATE INDEX IF NOT EXISTS spans_trace ON spans(trace_id, start_ms);
+CREATE INDEX IF NOT EXISTS spans_session ON spans(session_id, start_ms);
+CREATE INDEX IF NOT EXISTS spans_start ON spans(start_ms);
+`;
+
+export const SPAN_DAYS = 14;
+// A request larger than this (images inline) is not kept for replay.
+const KEEP_REQUEST_BYTES = 16 * 1024 * 1024;
+
+const hex = (n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, "0")).join("");
+export const traceIdOf = (turnEvent: string) => turnEvent.replace(/-/g, "").toLowerCase();
+export const turnSpanId = (traceId: string) => traceId.slice(16);
+export const newSpanId = () => hex(8);
+
+// What a request carries, by count and size, never its text.
+export function requestShape(req: Pick<ProviderRequest, "system" | "messages" | "tools" | "effort" | "maxTokens" | "purpose" | "speed">) {
+  const roles: Record<string, number> = {};
+  const blocks: Record<string, number> = {};
+  let bytes = 0;
+  for (const m of req.messages) {
+    roles[m.role] = (roles[m.role] ?? 0) + 1;
+    const content = Array.isArray(m.content) ? m.content : [{ type: "text" }];
+    for (const b of content as any[]) blocks[b.type] = (blocks[b.type] ?? 0) + 1;
+    bytes += JSON.stringify(m.content).length;
+  }
+  const last = req.messages.at(-1);
+  return {
+    purpose: req.purpose ?? "turn",
+    system_chars: req.system.length,
+    messages: req.messages.length,
+    roles,
+    blocks,
+    message_bytes: bytes,
+    last_message: last ? { role: last.role, blocks: Array.isArray(last.content) ? (last.content as any[]).map((b) => b.type) : ["text"] } : null,
+    tools: req.tools.length,
+    effort: req.effort ?? null,
+    max_tokens: req.maxTokens ?? null,
+    speed: req.speed ?? null,
+  };
+}
+
+// What came back, by kind: the stop reason, the usage, the blocks and tool calls.
+export function resultShape(res: ProviderResult) {
+  const blocks: Record<string, number> = {};
+  for (const b of res.blocks) blocks[b.type] = (blocks[b.type] ?? 0) + 1;
+  return {
+    response_model: res.model,
+    stop: res.stop,
+    ...(res.stop_details ? { stop_details: res.stop_details } : {}),
+    usage: res.usage,
+    blocks,
+    tool_calls: res.blocks.filter((b: any) => b.type === "tool_use").map((b: any) => b.name),
+    ...(res.served ? { served: res.served } : {}),
+  };
+}
+
+const row = (r: any): Span => ({
+  span_id: r.span_id, trace_id: r.trace_id, parent_id: r.parent_id ?? null, session_id: r.session_id, kind: r.kind, name: r.name,
+  start_ms: r.start_ms, end_ms: r.end_ms ?? null, status: r.status, error: r.error ?? null, error_type: r.error_type ?? null,
+  error_id: r.error_id ?? null, attrs: JSON.parse(r.attrs), replayable: !!r.replayable,
+});
+// A retry sends the same request object again: its bytes are kept once, on the first failed attempt, and later attempts point there.
+const COLS = "span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, error_id, attrs, (request IS NOT NULL OR json_extract(attrs, '$.request_in') IS NOT NULL) AS replayable";
+
+type Open = { span: string; trace: string; t0: number; first?: number; attempt: number };
+
+export class Tracer {
+  private open = new WeakMap<ProviderRequest, Open>();
+  private attempts = new WeakMap<ProviderRequest, number>();
+  private kept = new WeakMap<ProviderRequest, string>();
+  // Each span as it ends (the OTLP exporter listens).
+  private ended = new Set<(s: Span) => void>();
+
+  constructor(private store: Store, bus: Bus, private isRunning: (id: string) => boolean) {
+    store.migrate(SCHEMA);
+    // A span still running when the daemon stopped did not end on its own.
+    store.db.run("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, start_ms) WHERE status = 'running'");
+    this.prune();
+    // The error row a failed span became: linked both ways.
+    bus.on((f) => {
+      if (f.t === "error" && f.error.span_id) store.db.run("UPDATE spans SET error_id = ? WHERE span_id = ?", [f.error.id, f.error.span_id]);
+    });
+    registerHooks({
+      requestSent: (s, req) => this.sent(s, req),
+      requestDelta: (_s, req) => {
+        const o = this.open.get(req);
+        if (o && !o.first) o.first = Date.now();
+      },
+      requestDone: (_s, req, res) => this.done(req, res),
+      requestFailed: (_s, req, err, aborted) => this.failed(req, err, aborted),
+      toolRan: (s, call, result, ran) => this.tool(s, call.id, call.tool.name, call.input, result, ran),
+      turnEnd: (s, reason) => this.turnEnd(s, reason),
+    });
+  }
+
+  onEnd(f: (s: Span) => void) {
+    this.ended.add(f);
+    return () => void this.ended.delete(f);
+  }
+
+  prune() {
+    this.store.db.run("DELETE FROM spans WHERE start_ms < ?", [Date.now() - SPAN_DAYS * 86_400_000]);
+  }
+
+  // The open turn of a running session: its turn_start event.
+  private turnOf(s: Session, purpose: string): { id: string; ts: number } | null {
+    if (purpose === "side" || !this.isRunning(s.id)) return null;
+    return this.store.db.query<{ id: string; ts: number }, [string]>("SELECT id, ts FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(s.id);
+  }
+
+  private ensureTurn(s: Session, turn: { id: string; ts: number }) {
+    const trace = traceIdOf(turn.id);
+    const span = turnSpanId(trace);
+    this.store.db.run(
+      "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, NULL, ?, 'turn', 'invoke_agent', ?, 'running', ?)",
+      [span, trace, s.id, turn.ts, JSON.stringify({ turn_event: turn.id, model: s.model, ...(s.parent_id ? { parent_session: s.parent_id } : {}) })],
+    );
+    return { trace, span };
+  }
+
+  private sent(s: Session, req: ProviderRequest) {
+    const purpose = req.purpose ?? "turn";
+    const turn = this.turnOf(s, purpose);
+    const parent = turn ? this.ensureTurn(s, turn) : null;
+    const trace = parent?.trace ?? hex(16);
+    const span = newSpanId();
+    const attempt = (this.attempts.get(req) ?? 0) + 1;
+    this.attempts.set(req, attempt);
+    const t0 = Date.now();
+    this.open.set(req, { span, trace, t0, attempt });
+    const model = req.route ?? `${s.model}`;
+    this.store.db.run(
+      "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'request', ?, ?, 'running', ?)",
+      [span, trace, parent?.span ?? null, s.id, `chat ${req.model}`, t0, JSON.stringify({ route: model, model: req.model, attempt, ...(turn ? { turn_event: turn.id } : {}), shape: requestShape(req) })],
+    );
+  }
+
+  private finish(span: string, patch: { status: SpanStatus; error?: string | null; error_type?: string | null; attrs?: Record<string, unknown>; request?: Uint8Array | null }) {
+    const cur = this.store.db.query<{ attrs: string }, [string]>("SELECT attrs FROM spans WHERE span_id = ?").get(span);
+    if (!cur) return;
+    const attrs = { ...JSON.parse(cur.attrs), ...(patch.attrs ?? {}) };
+    this.store.db.run("UPDATE spans SET end_ms = ?, status = ?, error = ?, error_type = ?, attrs = ?, request = COALESCE(?, request) WHERE span_id = ?", [
+      Date.now(), patch.status, patch.error ?? null, patch.error_type ?? null, JSON.stringify(attrs), patch.request ?? null, span,
+    ]);
+    this.emitEnd(span);
+  }
+
+  private emitEnd(span: string) {
+    if (!this.ended.size) return;
+    const s = this.span(span);
+    if (s) for (const f of this.ended) try { f(s); } catch {}
+  }
+
+  private wireAttrs(req: ProviderRequest, o: Open): Record<string, unknown> {
+    const w: Wire | undefined = wireOf.get(req);
+    return { ...(w && Object.keys(w).length ? { wire: w } : {}), ...(o.first ? { ttft_ms: o.first - o.t0 } : {}) };
+  }
+
+  private done(req: ProviderRequest, res: ProviderResult) {
+    const o = this.open.get(req);
+    if (!o) return;
+    this.open.delete(req);
+    const refused = res.stop === "refusal";
+    this.finish(o.span, { status: refused ? "error" : "ok", error: refused ? res.stop_details?.explanation ?? "refusal" : null, error_type: refused ? "refusal" : null, attrs: { ...this.wireAttrs(req, o), result: resultShape(res) } });
+  }
+
+  private failed(req: ProviderRequest, err: unknown, aborted: boolean) {
+    const o = this.open.get(req);
+    if (!o) return;
+    this.open.delete(req);
+    if (err && typeof err === "object") Object.assign(err, { span_id: o.span, trace_id: o.trace });
+    const e = err as any;
+    const type = aborted ? "cancelled" : errorClass(err) ?? e?.kind ?? e?.name ?? "error";
+    const prior = this.kept.get(req);
+    const packed = aborted || prior ? null : packRequest(req);
+    if (packed) this.kept.set(req, o.span);
+    this.finish(o.span, {
+      status: aborted ? "interrupted" : "error",
+      error: aborted ? null : errorText(err).slice(0, 4000),
+      error_type: type,
+      attrs: { ...this.wireAttrs(req, o), ...(e?.status ? { http_status: e.status } : {}), ...(e?.kind ? { error_kind: e.kind } : {}), ...(e?.retryAfterMs ? { retry_after_ms: e.retryAfterMs } : {}), ...(prior && !aborted ? { request_in: prior } : {}) },
+      request: packed,
+    });
+  }
+
+  private tool(s: Session, callId: string, name: string, input: unknown, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted" }) {
+    const turn = this.turnOf(s, "turn");
+    const parent = turn ? this.ensureTurn(s, turn) : null;
+    const span = newSpanId();
+    const now = Date.now();
+    const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
+    const inputJson = JSON.stringify(input ?? {});
+    this.store.db.run(
+      "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
+      [span, parent?.trace ?? hex(16), parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? content.slice(0, 1000) : null,
+        ran.outcome === "error" ? "tool_error" : null,
+        JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: inputJson.length, result_bytes: content.length, ...(turn ? { turn_event: turn.id } : {}) })],
+    );
+    this.emitEnd(span);
+  }
+
+  private turnEnd(s: Session, reason: string) {
+    const turn = this.store.db.query<{ id: string; ts: number }, [string]>("SELECT id, ts FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(s.id);
+    if (!turn) return;
+    const { span } = this.ensureTurn(s, turn);
+    const status: SpanStatus = reason === "error" ? "error" : reason === "interrupted" || reason === "restart" ? "interrupted" : "ok";
+    const fail = status === "error" ? this.store.db.query<{ error: string; error_type: string }, [string]>("SELECT error, error_type FROM spans WHERE parent_id = ? AND status = 'error' ORDER BY start_ms DESC LIMIT 1").get(span) : null;
+    this.finish(span, { status, error: fail?.error ?? null, error_type: fail?.error_type ?? (status === "error" ? "error" : null), attrs: { reason } });
+  }
+
+  span(id: string): Span | undefined {
+    const r = this.store.db.query<any, [string]>(`SELECT ${COLS} FROM spans WHERE span_id = ?`).get(id);
+    return r ? row(r) : undefined;
+  }
+
+  trace(traceId: string): Span[] {
+    return this.store.db.query<any, [string]>(`SELECT ${COLS} FROM spans WHERE trace_id = ? ORDER BY start_ms, rowid`).all(traceId).map(row);
+  }
+
+  // A session's traces, newest first: the turn span of each, or the lone request of a side answer.
+  traces(sessionId: string, limit = 50): Span[] {
+    return this.store.db.query<any, [string, number]>(`SELECT ${COLS} FROM spans WHERE session_id = ? AND parent_id IS NULL ORDER BY start_ms DESC LIMIT ?`).all(sessionId, limit).map(row);
+  }
+
+  // The request a failed span sent, as sent.
+  request(spanId: string): ProviderRequest | undefined {
+    const r = this.store.db.query<{ request: Uint8Array | null; at: string | null }, [string]>("SELECT request, json_extract(attrs, '$.request_in') AS at FROM spans WHERE span_id = ?").get(spanId);
+    if (!r?.request) return r?.at ? this.request(r.at) : undefined;
+    return JSON.parse(gunzipSync(r.request).toString("utf8"));
+  }
+
+  // A replay: recorded as its own request span in its own trace, pointing at the original.
+  recordReplay(of: Span, route: string, t0: number, out: { ok: boolean; error?: string; error_type?: string; result?: ProviderResult; wire?: Wire; ttft?: number }) {
+    const span = newSpanId();
+    this.store.db.run(
+      "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, NULL, ?, 'request', ?, ?, ?, ?, ?, ?, ?)",
+      [span, hex(16), of.session_id, `chat ${route.split(":").slice(1).join(":") || route}`, t0, Date.now(), out.ok ? "ok" : "error", out.error ?? null, out.error_type ?? null,
+        JSON.stringify({ route, replay_of: of.span_id, shape: of.attrs.shape, ...(out.wire && Object.keys(out.wire).length ? { wire: out.wire } : {}), ...(out.ttft ? { ttft_ms: out.ttft } : {}), ...(out.result ? { result: resultShape(out.result) } : {}) })],
+    );
+    this.emitEnd(span);
+    return this.span(span)!;
+  }
+}
+
+// The request without its signal and callbacks, gzipped; extra headers keep their names only.
+export function packRequest(req: ProviderRequest): Uint8Array | null {
+  const { signal: _s, onHeaders: _h, ...rest } = req;
+  const body = JSON.stringify({ ...rest, ...(rest.extraHeaders ? { extraHeaders: redactHeaders(rest.extraHeaders) } : {}) });
+  return body.length > KEEP_REQUEST_BYTES ? null : gzipSync(body);
+}
+
+export type { Message };

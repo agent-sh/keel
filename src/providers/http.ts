@@ -2,6 +2,7 @@
 // of a failed answer, and the retry of a step that has shown nothing yet.
 import { EventStreamDecoder } from "./aws.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
+import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
 
 export type ErrorKind = "auth" | "rate" | "quota" | "overloaded" | "network" | "invalid" | "context" | "server" | "cancelled";
 
@@ -124,15 +125,14 @@ export async function* streamEvents(o: StreamOpts): AsyncGenerator<SseEvent> {
 async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): AsyncGenerator<SseEvent> {
   let headers = o.headers;
   let res: Response;
+  const w = wire();
   for (let renewed = false; ; renewed = true) {
+    const t0 = Date.now();
     try {
       const body = JSON.stringify(o.body);
-      res = await fetch(o.url, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) },
-        body,
-        signal: guard.signal,
-      });
+      const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) };
+      if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: body.length, transport: "http", resent_after_auth: renewed || undefined });
+      res = await fetch(o.url, { method: "POST", headers: sent, body, signal: guard.signal });
     } catch (e) {
       const stalled = guard.stalled();
       if (stalled) throw stalled;
@@ -140,8 +140,10 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
       throw new ProviderError("network", `${o.label}: ${scrub((e as Error).message, o.secrets)}`);
     }
     try { o.onHeaders?.(res.headers); } catch {}
+    if (w) Object.assign(w, { status: res.status, request_id: requestId(res.headers), res_headers: keptHeaders(res.headers), headers_ms: Date.now() - t0 });
     if (res.ok) break;
     const text = await res.text().catch(() => "");
+    if (w) w.error_body = clip(scrub(text, o.secrets), 2000);
     const err = classify(o.label, res.status, res.headers, scrub(text, o.secrets));
     if (err.kind === "auth" && o.onAuthFailure && !renewed) {
       const h = await o.onAuthFailure();
@@ -154,7 +156,11 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   try {
     for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
       guard.touch();
-      yield* dec.push(chunk);
+      if (w) w.bytes_in = (w.bytes_in ?? 0) + chunk.length;
+      for (const ev of dec.push(chunk)) {
+        if (w) { w.events = (w.events ?? 0) + 1; w.last_event = ev.event ?? /"type"\s*:\s*"([^"]{1,60})"/.exec(ev.data.slice(0, 200))?.[1]; }
+        yield ev;
+      }
     }
     yield* dec.finish();
   } catch (e) {

@@ -101,7 +101,7 @@ function errorRow(r: any): ErrorRecord {
   return {
     id: r.id, ts: r.ts, first_ts: r.first_ts ?? r.ts, count: r.count ?? 1, source: r.source, message: r.message,
     stack: r.stack ?? undefined, context: r.context ? JSON.parse(r.context) : undefined,
-    session_id: r.session_id ?? undefined, turn_event: r.turn_event ?? undefined, resolved_ts: r.resolved_ts ?? undefined,
+    session_id: r.session_id ?? undefined, turn_event: r.turn_event ?? undefined, span_id: r.span_id ?? undefined, resolved_ts: r.resolved_ts ?? undefined,
   };
 }
 
@@ -140,7 +140,7 @@ export class Store {
     // Bumped by every change of the session row: a reply that carries an older
     // revision than what a page holds does not undo the newer change.
     if (!this.columnExists("sessions", "rev")) this.db.exec("ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
-    for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"]] as const) {
+    for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"], ["span_id", "TEXT"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS errors_fp ON errors(fingerprint)");
@@ -386,14 +386,14 @@ export class Store {
     const row = this.db.query<{ id: string }, [string]>("SELECT id FROM errors WHERE fingerprint = ?").get(fp);
     if (row) {
       this.db
-        .query("UPDATE errors SET ts = ?, count = count + 1, message = ?, stack = ?, context = ?, session_id = COALESCE(?, session_id), turn_event = CASE WHEN ? IS NULL THEN turn_event ELSE ? END, resolved_ts = NULL WHERE id = ?")
-        .run(ts, e.message, e.stack ?? null, ctx, sid, sid, turn?.id ?? null, row.id);
+        .query("UPDATE errors SET ts = ?, count = count + 1, message = ?, stack = ?, context = ?, session_id = COALESCE(?, session_id), turn_event = CASE WHEN ? IS NULL THEN turn_event ELSE ? END, span_id = ?, resolved_ts = NULL WHERE id = ?")
+        .run(ts, e.message, e.stack ?? null, ctx, sid, sid, turn?.id ?? null, e.span_id ?? null, row.id);
       return this.error(row.id)!;
     }
     const id = Bun.randomUUIDv7();
     this.db
-      .query("INSERT INTO errors (id, ts, first_ts, source, message, stack, context, fingerprint, session_id, turn_event) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, ts, ts, e.source, e.message, e.stack ?? null, ctx, fp, sid, turn?.id ?? null);
+      .query("INSERT INTO errors (id, ts, first_ts, source, message, stack, context, fingerprint, session_id, turn_event, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, ts, ts, e.source, e.message, e.stack ?? null, ctx, fp, sid, turn?.id ?? null, e.span_id ?? null);
     return this.error(id)!;
   }
 

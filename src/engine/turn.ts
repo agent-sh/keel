@@ -1,3 +1,4 @@
+import { type Wire, wireOf, wireScope } from "../providers/wiretap.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -475,14 +476,16 @@ export class Engine {
         if (first && !quiet && !signal.aborted) this.status(id, { kind: "model", since, model: st.info.name, connected: Date.now() });
       };
       try {
-        const res = await st.provider.stream({ ...req, onHeaders }, (d) => {
+        const tap: Wire = {};
+        wireOf.set(req, tap);
+        const res = await wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders }, (d) => {
           if (first && !quiet) { first = false; this.status(id, { kind: "idle" }); }
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;
           partial.set(d.index, p);
           this.measure((h) => h.requestDelta?.(session, req, d));
           if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
-        });
+        }));
         if (!quiet || attempt) this.status(id, { kind: "idle" });
         this.measure((h) => h.requestDone?.(session, req, res));
         return res;

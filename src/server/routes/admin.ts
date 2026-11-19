@@ -47,7 +47,7 @@ export function redact(v: unknown): unknown {
   return walk(v);
 }
 
-function buildId(): string {
+export function buildId(): string {
   const parts = [process.execPath, process.argv[1] ?? ""].map((p) => {
     try { const st = statSync(p); return `${p}:${st.size}:${st.mtimeMs}`; } catch { return p; }
   });

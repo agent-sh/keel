@@ -175,6 +175,8 @@ export type ErrorRecord = {
   count?: number;
   session_id?: string;
   turn_event?: string;
+  // The exact model request (trace span) the last occurrence failed in.
+  span_id?: string;
   resolved_ts?: number;
   source: "server" | "client" | "provider" | "tool";
   message: string;

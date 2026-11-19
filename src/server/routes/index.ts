@@ -4,6 +4,7 @@ import { checkpointRoutes } from "./checkpoints.ts";
 import { codeModeRoutes } from "./codemode.ts";
 import { draftRoutes } from "./drafts.ts";
 import { errorRoutes } from "./errors.ts";
+import { observeRoutes } from "./observe.ts";
 import { adminRoutes } from "./admin.ts";
 import { telemetryRoutes } from "./telemetry.ts";
 import { driveRoutes } from "./drive.ts";
@@ -75,6 +76,7 @@ export const routeModules: RouteModule[] = [
   errorRoutes,
   resourceRoutes,
   adminRoutes,
+  observeRoutes, // after admin: it reads the settings admin loads
   automationRoutes,
   integrationRoutes,
   driveRoutes,

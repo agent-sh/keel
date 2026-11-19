@@ -1,24 +1,41 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Check, CornerDownRight, RotateCcw, X } from "lucide-react";
+import { Activity, Check, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
 import { useState } from "react";
+import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
 import type { ErrorRecord } from "../../../src/core/types.ts";
-import { actions, reportError, useStore } from "../lib/store.ts";
+import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 
 // One row per kind of failure (the daemon folds repeats into a count), with
 // where it last happened and a way to mark it fixed. A resolved kind that
 // happens again comes back to Open.
+const tool = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
+
+// What the failing request's span says: the route, the attempt, the HTTP status and the provider's request id.
+function Wire({ s }: { s: Span }) {
+  const w = s.attrs.wire ?? {};
+  const bits = [s.attrs.route, s.attrs.attempt ? `attempt ${s.attrs.attempt}` : "", w.status ?? s.attrs.http_status ? `HTTP ${w.status ?? s.attrs.http_status}` : "", w.request_id ? `request ${w.request_id}` : "", s.error_type ?? ""].filter(Boolean);
+  return <div className="font-mono text-micro text-muted" data-testid="error-wire">{bits.join("  ·  ")}</div>;
+}
+
 function Row({ e }: { e: ErrorRecord }) {
   const session = useStore((s) => (e.session_id ? s.sessions[e.session_id] : undefined));
+  const [span, setSpan] = useState<Span | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [fixing, setFixing] = useState(false);
   const n = e.count ?? 1;
+  const target = { error_id: e.id };
+  const expand = (open: boolean) => {
+    if (open && e.span_id && span?.span_id !== e.span_id) api<{ span: Span }>(`/api/debug/spans/${e.span_id}`).then((r) => setSpan(r.span)).catch(() => {});
+  };
   const open = () => {
     if (e.turn_event) setUI({ focusEvent: e.turn_event });
     setUI({ errors: false });
     navigate({ name: "session", id: e.session_id! });
   };
   return (
-    <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row">
+    <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" onToggle={(ev) => expand((ev.currentTarget as HTMLDetailsElement).open)}>
       <summary className="flex cursor-default list-none items-baseline gap-2.5 text-ui">
         <span className="rounded-xs bg-danger-soft px-1.5 py-px text-micro font-medium text-danger">{e.source}</span>
         <span className="min-w-0 flex-1 truncate">{e.message}</span>
@@ -35,7 +52,32 @@ function Row({ e }: { e: ErrorRecord }) {
           {n > 1 && <span>Last <span className="tabular-nums text-fg">{when(e.ts)}</span></span>}
           {e.resolved_ts && <span>Resolved <span className="tabular-nums text-fg">{when(e.resolved_ts)}</span></span>}
         </div>
+        {span && <Wire s={span} />}
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={cn(tool, "border-line-strong bg-raised font-medium text-fg")}
+            disabled={fixing}
+            title="Starts a session that reads this failure's debug bundle and fixes the cause"
+            onClick={() => { setFixing(true); fixThis(target).catch(reportError).finally(() => setFixing(false)); }}
+            data-testid="error-fix"
+          >
+            <Wrench className="size-3.5 text-accent" /> {fixing ? "Starting" : "Fix this"}
+          </button>
+          <button
+            type="button"
+            className={tool}
+            title="The failure, its trace, the transcript before it and the daemon log, as Markdown"
+            onClick={() => copyBundle(target).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(reportError)}
+            data-testid="error-bundle"
+          >
+            <ClipboardCopy className="size-3.5" /> {copied ? "Copied" : "Copy debug bundle"}
+          </button>
+          {e.session_id && e.turn_event && (
+            <button type="button" className={tool} onClick={() => openTrace(e.session_id!, traceOfTurn(e.turn_event!))} data-testid="error-trace">
+              <Activity className="size-3.5" /> Trace
+            </button>
+          )}
           {e.session_id && (
             <button type="button" onClick={open} className="flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="error-session">
               <CornerDownRight className="size-3.5 shrink-0" />
