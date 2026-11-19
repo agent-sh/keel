@@ -57,7 +57,7 @@ test("nested instruction files load when the work reaches their folder", async (
 
   await openPanel(page, "profile");
   const row = page.getByTestId("profile-instructions").locator('li[data-scope="nested"]');
-  await expect(row).toContainText(join(pkg, "AGENTS.md"));
+  await expect(row.locator("[title]").first()).toHaveAttribute("title", join(pkg, "AGENTS.md")); // a long path is cut in its middle; the title holds it whole
   await expect(row).toContainText("on reach");
   await shoot(page, "nested-02-profile");
 
