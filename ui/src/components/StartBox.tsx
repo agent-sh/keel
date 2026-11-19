@@ -10,7 +10,7 @@ import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { MachinePicker, useNewMachine } from "./Fleet.tsx";
-import { fleet } from "../lib/fleet.ts";
+import { fleet, useFleet } from "../lib/fleet.ts";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
 
 const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
@@ -41,6 +41,13 @@ export function StartBox() {
     [sessions, workspace],
   );
   const watches = useWatches(recent);
+  // Auto is shown as where it would place the session now: a folder of this
+  // machine when it stays here, the other machine's directory when it goes.
+  const place = useFleet((s) => s.autoPlace);
+  const root = useFleet((s) => s.machines.find((m) => m.id === place?.machine_id)?.workspace_root);
+  const rulesKey = useFleet((s) => JSON.stringify(s.rules) + s.machines.map((m) => m.id + m.state).join());
+  useEffect(() => { if (machine === "auto") fleet.previewAuto().catch(reportError); }, [machine, rulesKey]);
+  const autoThere = machine === "auto" && !!place && place.machine_id !== "local";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -48,12 +55,20 @@ export function StartBox() {
       <div className="flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
         <div className="mt-auto w-full max-w-[46rem] pb-[8vh] pt-6 md:mb-auto md:mt-[18vh] md:pb-0 md:pt-0">
           <h1 className="mb-1.5 text-display font-semibold tracking-[-0.025em] text-fg">What should we work on?</h1>
-          <p className="mb-6 text-base text-muted">Keel works in the folder below{machine ? ", on the machine you picked" : ""}. Paste screenshots, mention files with @, and steer while it runs.</p>
+          <p className="mb-6 text-base text-muted">{autoThere ? `Keel works on ${place!.machine}, in its granted directory.` : `Keel works in the folder below${machine && machine !== "auto" ? ", on the machine you picked" : ""}.`} Paste screenshots, mention files with @, and steer while it runs.</p>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <MachinePicker />
-            {(!machine || machine === "auto") && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
+            {(!machine || (machine === "auto" && !autoThere)) && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
             {!machine && <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>}
           </div>
+          {machine === "auto" && place && (
+            <p data-testid="auto-place" data-machine={place.machine_id} className="mb-2.5 flex min-w-0 items-center gap-1.5 text-caption text-muted">
+              <span>Auto {autoThere ? "places it on" : "keeps it on"}</span>
+              <span className="font-medium text-fg">{place.machine}</span>
+              {autoThere && root && <span className="truncate font-mono text-micro text-faint">{root}</span>}
+              <span className="truncate text-faint">· {place.reason}</span>
+            </p>
+          )}
           {noModels && <SetupProviders />}
           <div data-testid="new-composer">
             <Composer
@@ -63,7 +78,7 @@ export function StartBox() {
               autoFocus
               onSend={async (t, images) => {
                 const s = machine
-                  ? await fleet.createOn(machine, t, model || undefined, images, workspace || undefined)
+                  ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined)
                   : inWorktree && (await isGitFolder(workspace))
                   ? await createInWorktree(t, model || undefined, workspace || undefined, images)
                   : await actions.create(t, model || undefined, workspace || undefined, images);
@@ -80,7 +95,7 @@ export function StartBox() {
             <span className="flex items-center gap-1.5"><Kbd keys="mod+/" /> all shortcuts</span>
           </div>
           {firstRun && <FirstSteps />}
-          {recent.length > 0 && (
+          {recent.length > 0 && !autoThere && (
             <section className="mt-10">
               <h2 className="mb-2 text-caption font-medium text-faint">Recent in {workspace.split("/").pop()}</h2>
               <div className="flex flex-col">

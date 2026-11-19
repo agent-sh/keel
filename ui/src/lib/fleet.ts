@@ -22,10 +22,12 @@ type State = {
   steps: Record<string, Record<string, { machine: string; name: string }>>;
   newMachine: string; // "" = this machine, "auto" = the placement rules
   rules: Rule[];
+  autoPlace: Place | null; // where Auto would put a new session now (null: not asked yet)
 };
+export type Place = { machine_id: string; machine: string; reason: string; rule?: number };
 export type Rule = { when: { kind?: "session" | "subagent" | "run"; local_busy?: boolean; needs_gpu?: boolean; heavy?: boolean }; machine: string; note?: string };
 
-let state: State = { machines: [], view: [], pairs: [], steps: {}, newMachine: localStorage.getItem("keel.newMachine") ?? "", rules: [] };
+let state: State = { machines: [], view: [], pairs: [], steps: {}, newMachine: localStorage.getItem("keel.newMachine") ?? "", rules: [], autoPlace: null };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => { state = { ...state, ...p }; subs.forEach((f) => f()); };
 export const useFleet = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => sel(state));
@@ -88,8 +90,16 @@ export const fleet = {
     return r;
   },
   unpair: (daemonId: string) => api(`/api/fleet/pairs/${encodeURIComponent(daemonId)}`, { method: "DELETE" }).then(() => fleet.loadMachines()),
-  createOn: (machine: string, text: string, model?: string, images?: unknown[], localWorkspace?: string) =>
-    api<{ session: Session }>("/api/fleet/sessions", { method: "POST", body: JSON.stringify({ machine, text, model, images, local_workspace: localWorkspace }) }).then((r) => (apply({ t: "session", session: r.session }), r.session)),
+  // Where Auto places a new session, asked again each time it is shown.
+  previewAuto: () => api<Place>("/api/fleet/place", { method: "POST", body: JSON.stringify({ kind: "session" }) }).then((p) => (set({ autoPlace: p }), p)),
+  // Auto sends the place the start box showed (expect); the daemon says when it changed.
+  createOn: (machine: string, text: string, model?: string, images?: unknown[], localWorkspace?: string, expect?: string) =>
+    api<{ session: Session }>("/api/fleet/sessions", { method: "POST", body: JSON.stringify({ machine, text, model, images, local_workspace: localWorkspace, expect_machine: expect }) })
+      .then((r) => (apply({ t: "session", session: r.session }), r.session))
+      .catch((e) => {
+        if (machine === "auto") void fleet.previewAuto().catch(reportError);
+        throw e;
+      }),
   saveRules: (rules: Rule[]) => api<{ rules: Rule[] }>("/api/fleet/placement", { method: "POST", body: JSON.stringify({ rules }) }).then((r) => set({ rules: r.rules })),
 };
 

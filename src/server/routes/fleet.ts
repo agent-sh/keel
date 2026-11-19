@@ -381,13 +381,30 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     "/api/fleet/sessions": {
       POST: async (req: Request) => {
         const b = await body(req);
+        // The model runs here wherever the tools go: it is checked first, the
+        // same way for every placement, before any session exists.
+        const model = b.model || (await deps.providers.defaultModel());
+        if (!model) return bad("no model is available: no provider has credentials", 409);
+        try {
+          await deps.providers.resolve(model);
+        } catch (e) {
+          return bad(`${(e as Error).message}: pick another model`, 409);
+        }
         let placed: any;
         if (b.machine === "auto") {
           placed = await f.placeWork({ kind: "session", heavy: !!b.heavy, needs_gpu: !!b.needs_gpu });
           if (typeof placed === "string") return bad(placed);
+          // The start box shows where Auto places the session before it is
+          // sent (expect_machine); a different answer now is said, not taken.
+          if (typeof b.expect_machine === "string" && b.expect_machine !== placed.machine_id)
+            return json({ error: `Auto now places this on ${placed.machine} (${placed.reason}), not where the start box showed. Look at the new place and send again.`, placed }, 409);
+          // A folder of this machine is not a folder there: Auto never trades
+          // the project for another one in the other machine's directory.
+          if (placed.machine_id !== "local" && b.local_workspace) {
+            const there = f.row(placed.machine_id)?.workspace_root;
+            return json({ error: `Auto places this on ${placed.machine}, where it would start in ${there ?? "its granted directory"}, not in ${b.local_workspace} on this machine. Pick this machine to work there, or ${placed.machine} to start in its directory.`, placed }, 409);
+          }
           if (placed.machine_id === "local") {
-            const model = b.model || (await deps.providers.defaultModel());
-            if (!model) return bad("no model is available: no provider has credentials", 409);
             const ws = resolve(b.local_workspace || deps.workspace);
             const s = store.createSession({ model, workspace: ws, title: b.title });
             store.append(s.id, "note", { text: `Kept on ${f.name}: ${placed.reason}.` });
@@ -412,9 +429,6 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           return bad(`${m.name} does not answer: ${(e as Error).message}`, 409);
         }
         if (!st.dir) return bad(`not a directory on ${m.name}: ${ws}`);
-        const model = b.model || (await deps.providers.defaultModel());
-        if (!model) return bad("no model is available: no provider has credentials", 409);
-        await deps.providers.resolve(model);
         const s = store.createSession({ model, workspace: ws, title: b.title });
         store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(m.id, s.id);
         const next = store.session(s.id)!;
