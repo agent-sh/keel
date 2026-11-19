@@ -28,6 +28,10 @@ const plain = (b: WireBlock) => {
   return rest;
 };
 
+// The fingerprint of a block stored without one that is known to be stale (a
+// kept turn of a harness summary): it never matches, so the block leaves.
+export const STALE_BIND = "stale";
+
 // The fingerprint a stored block carries, read where the wire block was made.
 const stored = new WeakMap<WireBlock, string>();
 export const carry = <T extends WireBlock>(wire: T, bind: string | undefined): T => {

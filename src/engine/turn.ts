@@ -18,6 +18,7 @@ import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/
 import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
+import { STALE_BIND } from "../providers/wires/binding.ts";
 import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
 import { retention } from "./cachewarn.ts";
 import { withoutImages } from "./images.ts";
@@ -55,7 +56,12 @@ export function toMessages(events: StoredEvent[]): Message[] {
     } else if (e.kind === "assistant") {
       // A declined reply is discarded: its partial output is not the model's answer.
       if (e.data.stop === "refusal") continue;
-      if (e.data.blocks.length) out.push({ role: "assistant", content: e.data.blocks });
+      // A kept turn of a harness summary (before the checkpoint): its thinking
+      // came after messages the summary replaced. One stored without a
+      // fingerprint is marked stale, so the wire leaves it out as it does a
+      // fingerprinted one (src/providers/wires/binding.ts).
+      const kept = i < cp.at ? e.data.blocks.map((b: any) => ((b.type === "thinking" || b.type === "redacted_thinking") && !b.bind ? { ...b, bind: STALE_BIND } : b)) : e.data.blocks;
+      if (kept.length) out.push({ role: "assistant", content: kept });
     } else if (e.kind === "tool_result") {
       out.push({ role: "user", content: e.data.results });
     } else if (e.kind === "note" && e.data.model) {

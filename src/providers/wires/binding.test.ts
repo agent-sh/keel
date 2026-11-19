@@ -54,6 +54,13 @@ test("a summary the harness wrote: the kept turn's thinking goes, thinking writt
   const r3 = reply(req(toMessages(line)), "NEW", "new reply");
   line.push(ev("a3", "u3", "assistant", { blocks: r3.res.blocks }), ev("u4", "a3", "user", { text: "later" }));
   expect(sent(req(toMessages(line)))).toEqual(["NEW"]);
+  // Stored before fingerprints: the kept turn's thinking leaves all the same, the reply text stays.
+  const unbound = (e: StoredEvent): StoredEvent => (e.kind === "assistant" ? { ...e, data: { blocks: e.data.blocks.map((b: any) => ({ ...b, bind: undefined })) } } : e);
+  const legacy = line.slice(0, 4).map(unbound);
+  expect(sent(req([...toMessages(legacy), user("next")]))).toEqual(["OLD", "KEPT"]);
+  const legacyCut = [...legacy, ev("c2", "a2", "compaction", { mode: "summary", summary: "SUMMARY", covered: "a1" }), ev("u5", "c2", "user", { text: "after" })];
+  expect(sent(req(toMessages(legacyCut)))).toEqual([]);
+  expect(JSON.stringify(anthropicWire.body(req(toMessages(legacyCut)), ctx).messages)).toContain("kept reply");
   // The kept turn's reply text is still there; only its thinking left.
   expect(JSON.stringify(anthropicWire.body(req(toMessages(line)), ctx).messages)).toContain("kept reply");
 });
