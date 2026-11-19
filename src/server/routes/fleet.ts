@@ -12,6 +12,7 @@ import { runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proven } from "../../fleet/link.ts";
 import { remoteRun } from "../../fleet/remote.ts";
 import { Handoffs, MoveError } from "../../fleet/handoff.ts";
+import { forgetOwnership, portalOf, portalPath, redirectTo, rewriteCode, rewriteHtml, sessionPorts, setOpen } from "../../fleet/portal.ts";
 import { validate as validatePlacement } from "../../fleet/placement.ts";
 import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
@@ -87,6 +88,47 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       return { ctx: { dispatch: (tool, input, ctx) => remoteRun(f, m, ctx, { tool: tool.name, input, cwd: ctx.cwd, sandbox: sandbox !== "off" }) } };
     },
   });
+
+  const portsOf = (id: string) =>
+    (sessionPorts().get(id) ?? []).sort((a, b) => a.port - b.port).map((p) => {
+      const o = portalOf(id, p.port);
+      return o ? { ...p, open: true, point: o.point || undefined, url: `${portalPath(id, p.port, o.key)}/` } : p;
+    });
+
+  // Not open, a wrong key and an unknown session are the same 404; a port whose
+  // owner is gone is 502. Never follows a redirect; the page is sandboxed.
+  const portal = async (req: Request) => {
+    const u = new URL(req.url);
+    const [, , sid = "", portS = "", key = "", ...rest] = u.pathname.split("/");
+    const port = Number(portS);
+    const o = portalOf(sid, port);
+    if (!o || o.key !== key) return bad("not found", 404);
+    if (!(sessionPorts().get(sid) ?? []).some((p) => p.port === port)) return bad("no process of the session listens there any more", 502);
+    const prefix = portalPath(sid, port, key);
+    const h = new Headers(req.headers);
+    for (const k of ["authorization", "origin", "referer", "host", "accept-encoding", "connection"]) h.delete(k);
+    let r: Response;
+    try {
+      r = await fetch(`http://127.0.0.1:${port}/${rest.join("/")}${u.search}`, {
+        method: req.method, headers: h, redirect: "manual",
+        body: ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer(),
+      });
+    } catch (e) {
+      return bad(`the dev server does not answer: ${(e as Error).message}`, 502);
+    }
+    const out = new Headers();
+    r.headers.forEach((v, k) => { if (!["x-frame-options", "content-security-policy", "content-length", "content-encoding", "transfer-encoding", "location", "access-control-allow-origin"].includes(k)) out.append(k, v); });
+    out.set("content-security-policy", "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads; frame-ancestors 'self'");
+    out.set("x-content-type-options", "nosniff");
+    out.set("access-control-allow-origin", "*"); // the sandboxed page's own origin is opaque
+    const loc = r.headers.get("location");
+    if (loc) { const to = redirectTo(loc, port, prefix); if (to) out.set("location", to); }
+    const type = r.headers.get("content-type") ?? "";
+    if (/text\/html/.test(type)) out.set("cache-control", "no-store"); // the injected scripts depend on the picker being on
+    if (/text\/html/.test(type)) return new Response(rewriteHtml(await r.text(), prefix, o.point), { status: r.status, headers: out });
+    if (/javascript|ecmascript|text\/css/.test(type)) return new Response(rewriteCode(await r.text(), prefix), { status: r.status, headers: out });
+    return new Response(r.body, { status: r.status, headers: out });
+  };
 
   const paired = (req: Request) => callerOf(req, f.keyOf);
   // Paired-only endpoints: a request without this daemon's key for the caller
@@ -394,6 +436,23 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         }
       },
     },
+
+    // The portal: a session's dev server inside the workbench.
+    "/api/sessions/:id/portal": {
+      GET: (req: any) => (store.session(req.params.id) ? json({ ports: portsOf(req.params.id) }) : bad("no such session", 404)),
+      POST: async (req: any) => {
+        const id = req.params.id;
+        if (!store.session(id)) return bad("no such session", 404);
+        const b = await body(req);
+        const port = Number(b.port);
+        forgetOwnership();
+        if (!portsOf(id).some((p) => p.port === port)) return bad(`no process of this session listens on port ${b.port}`);
+        setOpen(id, port, !!b.open, !!b.point);
+        return json({ ports: portsOf(id) });
+      },
+    },
+    "/portal/:session/:port/:key": (req: any) => Response.redirect(`${new URL(req.url).pathname}/`, 308),
+    "/portal/:session/:port/:key/*": (req: any) => portal(req),
 
     "/api/sessions/:id/fleet": {
       GET: (req: any) => {
