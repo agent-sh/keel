@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { detect, Vault } from "./secrets.ts";
 
 const GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
@@ -34,4 +36,32 @@ test("a value is one placeholder, put back only in its sessions, and named for c
   expect(ev.blocks[0]!.text).toBe("[value of $GITHUB_TOKEN]");
   expect(ev.blocks[0]!.signature).toBe(GH);
   expect((ev.blocks[1] as any).data).toBe(GH);
+});
+
+// A placeholder in a shell command is a quoted variable on the child only: a
+// value full of shell syntax arrives byte for byte wherever the placeholder
+// stands (bare, in either quotes, in $( )), and none of it runs.
+test("a secret in a shell command arrives exact and runs nothing", () => {
+  const v = new Vault();
+  const value = `it's "q" $HOME \`touch pwned\` $(touch pwned2)\nline2 \\ end`;
+  const e = v.add(value, "test", "card", "s1", "FIX");
+  const dir = join(process.env.TMPDIR ?? join(process.env.HOME!, ".cache"), `shell-refs-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  const sha = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
+  for (const cmd of [
+    "printf %s [value of $FIX] | sha256sum",
+    "printf %s '[value of $FIX]' | sha256sum",
+    `printf %s "[value of $FIX]" | sha256sum`,
+    `printf %s "$(printf %s [secret:${e.id}])" | sha256sum`,
+    "printf %s $'[value of $FIX]' | sha256sum",
+  ]) {
+    const r = v.reveal({ command: cmd, description: "uses [value of $FIX]" }, "s1", new Set(["command"]));
+    expect(r.value.command).not.toContain("pwned");
+    expect(r.value.description).toBe("uses [value of $FIX]");
+    const p = Bun.spawnSync(["bash", "-c", r.value.command], { cwd: dir, env: { PATH: process.env.PATH!, ...r.env } });
+    expect({ cmd, out: p.stdout.toString().split(" ")[0] }).toEqual({ cmd, out: sha(value) });
+  }
+  expect(readdirSync(dir)).toEqual([]);
+  // A field that is not a script gets the value itself.
+  expect(v.reveal({ content: "[value of $FIX]" }, "s1", new Set(["command"])).value.content).toBe(value);
 });

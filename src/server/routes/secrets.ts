@@ -5,7 +5,7 @@
 import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { nameError, vault } from "../../safety/secrets.ts";
-import { registerEnv } from "../../tools/jobs.ts";
+import { dropCallEnv, registerEnv, setCallEnv } from "../../tools/jobs.ts";
 import { registerShared } from "../../tools/registry.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -62,6 +62,9 @@ const RequestSecret: Tool = {
 // rows) keep placeholders too. Set at load, before any route adopts old jobs.
 setConcealer({ text: (s, sessionId) => vault.redact(s, sessionId, "output"), pairs: () => vault.pairs() });
 
+// The fields of a shell tool's input that hold the script (Bash, exec_command, run_shell_command).
+const SHELL_FIELDS = new Set(["command", "cmd"]);
+
 let emitRequest: (r: SecretRequest, state: "open" | "closed") => void = () => {};
 
 export const secretRoutes: RouteModule = (deps: Deps) => {
@@ -92,15 +95,18 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
 
   registerHooks({
     system: () =>
-      "Secrets: text like [secret:1a2b3c4d] or [value of $NAME] stands for a secret kept out of the conversation. Write it as it is where the value is needed: a tool input that contains it runs with the real value, and output shows the placeholder again. Named ones are also in your commands' environment as $NAME. To get a secret, use request_secret; never ask for one in the chat.",
+      "Secrets: text like [secret:1a2b3c4d] or [value of $NAME] stands for a secret kept out of the conversation. Write it as it is where the value is needed: a tool input that contains it runs with the real value, and output shows the placeholder again. In a shell command it stands for a quoted variable holding the value, so write it as one word, never inside other syntax. Named ones are also in your commands' environment as $NAME. To get a secret, use request_secret; never ask for one in the chat.",
     // The system prompt (instruction files) is sent redacted too.
     beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output") }),
     // A call that names a placeholder runs with the value. Only the tool sees
     // it: cards, other hooks, traces and records keep the placeholder.
+    // In a shell command it is a quoted variable set on that command's process alone.
     execInput(s, call) {
-      const { value, used } = vault.reveal(call.input, s.id);
+      const { value, used, env } = vault.reveal(call.input, s.id, call.tool.kind === "shell" ? SHELL_FIELDS : undefined);
+      if (Object.keys(env).length) setCallEnv(call.id, env);
       if (used.length) return value;
     },
+    afterTool: (_s, call) => dropCallEnv(call.id),
   });
 
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;

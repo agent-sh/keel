@@ -58,6 +58,12 @@ const SECRET_ENV = /^(ANTHROPIC_|OPENAI_|AWS_BEARER_TOKEN|AWS_SECRET|AWS_SESSION
 const envProviders: ((sessionId: string) => Record<string, string>)[] = [];
 export const registerEnv = (f: (sessionId: string) => Record<string, string>) => void envProviders.push(f);
 
+// Variables one tool call adds for the process it starts (a secret a command
+// refers to as $KEEL_SECRET_<id>): taken by the job that call starts.
+const callEnvs = new Map<string, Record<string, string>>();
+export const setCallEnv = (callId: string, env: Record<string, string>) => void callEnvs.set(callId, env);
+export const dropCallEnv = (callId: string) => void callEnvs.delete(callId);
+
 export function toolEnv(sessionId: string, extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !SECRET_ENV.test(k)) env[k] = v;
@@ -111,7 +117,9 @@ export function startJob(o: StartOpts): Job {
   writeFileSync(log, "");
   const bare = o.argv ?? ["bash", "-c", o.command];
   const argv = o.wrap ? o.wrap(bare) : bare;
-  const env = o.env ?? toolEnv(o.sessionId);
+  const extra = o.callId ? callEnvs.get(o.callId) : undefined;
+  if (o.callId) callEnvs.delete(o.callId);
+  const env = { ...(o.env ?? toolEnv(o.sessionId)), ...extra };
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
