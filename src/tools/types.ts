@@ -26,7 +26,10 @@ export type ToolContext = {
   callTool?: (name: string, input: any, id: string) => Promise<ToolResultBlock>;
 };
 
-export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_error?: boolean };
+// `shown`: what the transcript shows for the call besides its result (the
+// owner's answers to a question, by question), stored on the tool_result event
+// and never sent to a model.
+export type ToolOutput = { content: string | (TextBlock | ImageBlock)[]; is_error?: boolean; shown?: unknown };
 
 // What a call of a tool does, for the permission gate: declared by the tool,
 // never read off its input. readOnly tools are reads; a tool that declares no

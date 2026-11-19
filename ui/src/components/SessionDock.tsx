@@ -2,6 +2,7 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { lineage } from "../../../src/core/tree.ts";
 import { actions, reportError, useStore, type JobView } from "../lib/store.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { planItems, toolKind } from "../lib/tools.ts";
@@ -38,20 +39,27 @@ function useJobs(sessionId: string, working: boolean) {
 
 export function SessionDock({ sessionId }: { sessionId: string }) {
   const events = useStore((s) => s.events[sessionId]);
+  const head = useStore((s) => s.sessions[sessionId]?.head);
   const working = useStore((s) => s.sessions[sessionId]?.phase === "working");
   const workspace = useStore((s) => s.sessions[sessionId]?.workspace);
   useEffect(() => { if (workspace) loadSkillCommands(workspace); }, [workspace]);
+  // The newest plan the tool accepted on the branch the next reply goes to:
+  // a rejected update (or one still on its way) leaves the one before standing.
   const plan = useMemo(() => {
-    for (let i = (events?.length ?? 0) - 1; i >= 0; i--) {
-      const e = events![i]!;
+    if (!events) return null;
+    const line = lineage(events, head ?? null);
+    const accepted = new Set<string>();
+    for (const e of line) if (e.kind === "tool_result") for (const r of e.data.results) if (!r.is_error) accepted.add(r.tool_use_id);
+    for (let i = line.length - 1; i >= 0; i--) {
+      const e = line[i]!;
       if (e.kind !== "assistant") continue;
       for (let k = e.data.blocks.length - 1; k >= 0; k--) {
         const b = e.data.blocks[k];
-        if (b.type === "tool_use" && toolKind(b.name) === "plan") return planItems(b.name, b.input);
+        if (b.type === "tool_use" && toolKind(b.name) === "plan" && accepted.has(b.id)) return planItems(b.name, b.input);
       }
     }
     return null;
-  }, [events]);
+  }, [events, head]);
   const jobs = useJobs(sessionId, working);
   const active = plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled");
   if (!active && !jobs.length) return null;

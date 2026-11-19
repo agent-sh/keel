@@ -257,7 +257,7 @@ const ask_user: Tool = {
     }));
     const a = await ask(ctx);
     if (!a) return fail("The user did not answer; the turn was interrupted.");
-    return ok(JSON.stringify({ answers: Object.fromEntries(qs.map((q) => [q.id, answerText(a[q.id] ?? { picked: [] })])) }));
+    return { ...ok(JSON.stringify({ answers: Object.fromEntries(qs.map((q) => [q.id, answerText(a[q.id] ?? { picked: [] })])) })), shown: { answers: a } };
   },
 };
 

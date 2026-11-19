@@ -186,6 +186,8 @@ export class Engine {
   private sending = new Set<string>();
   // Who asked a running turn to stop (the owner, the parent agent), kept on its turn_end.
   private stoppedBy = new Map<string, string>();
+  // What a finished call left for the transcript (ToolOutput.shown), until its step is stored.
+  private shown = new Map<string, unknown>();
   // Turns being parked for a daemon stop: their end reason is "restart".
   private parking = new Set<string>();
   private draining = false;
@@ -598,7 +600,9 @@ export class Engine {
           const results = await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx))));
           if (cut) results.push({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
-          this.append(id, "tool_result", { results });
+          const shown = Object.fromEntries(results.filter((r) => this.shown.has(r.tool_use_id)).map((r) => [r.tool_use_id, this.shown.get(r.tool_use_id)]));
+          for (const r of results) this.shown.delete(r.tool_use_id);
+          this.append(id, "tool_result", { results, ...(Object.keys(shown).length ? { shown } : {}) });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
         }
@@ -673,6 +677,7 @@ export class Engine {
       const out = await Promise.race([run, stopped]);
       if (!out) return ran(interrupted(), "interrupted");
       result = { type: "tool_result", tool_use_id: u.id, content: out.content, is_error: out.is_error || undefined };
+      if (out.shown !== undefined) this.shown.set(u.id, out.shown);
       ran(result, result.is_error ? "error" : "ok");
     } catch (e) {
       if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(), "interrupted");
@@ -738,7 +743,7 @@ export class Engine {
     if (!messages.length || (events.at(-1)?.kind === "compaction")) throw Object.assign(new Error("nothing to compact"), { status: 409 });
     const st = opts.step ?? (await this.step(session, session.model));
     const before = contextTokens(events).used;
-    for (const h of allHooks()) await Promise.resolve(h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact" }));
+    for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact" }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;

@@ -70,7 +70,7 @@ export function ToolCall({ use, result, live, sessionId, cwd, waiting }: Props) 
   const kind = toolKind(use.name);
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return <QuestionCard use={use} result={result} sessionId={sessionId} waiting={waiting} />;
-  if (kind === "plan" && !live) return <PlanCard items={planItems(use.name, input)} explanation={input.explanation} />;
+  if (kind === "plan" && !live) return <PlanCard items={planItems(use.name, input)} explanation={input.explanation} rejected={result?.is_error ? resultText(result) : undefined} />;
   return <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} />;
 }
 
@@ -211,23 +211,29 @@ function Preview({ text }: { text: string }) {
   );
 }
 
-export function PlanCard({ items, explanation, compact }: { items: PlanItem[]; explanation?: string; compact?: boolean }) {
+// `rejected`: the tool refused this update (its error); the plan before it stands.
+export function PlanCard({ items, explanation, compact, rejected }: { items: PlanItem[]; explanation?: string; compact?: boolean; rejected?: string }) {
   // Only the live checklist (the dock) pulses; plans in the transcript are history.
   const done = items.filter((i) => i.status === "completed").length;
   return (
-    <div className={cn("rounded-lg border border-line bg-raised shadow-1 animate-in", compact ? "px-3 py-2" : "px-3.5 py-3")} data-testid="plan">
+    <div className={cn("rounded-lg border bg-raised shadow-1 animate-in", rejected ? "border-warn/40" : "border-line", compact ? "px-3 py-2" : "px-3.5 py-3")} data-testid="plan" data-rejected={rejected ? "" : undefined}>
       {!compact && (
         <div className="mb-2 flex items-center gap-2 text-ui">
           <ListChecks className="size-3.5 text-muted" />
-          <span className="font-medium">Plan</span>
-          <span className="text-caption text-faint tabular-nums">{done}/{items.length}</span>
-          <div className="ml-auto h-1 w-24 overflow-hidden rounded-full bg-line">
-            <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${items.length ? (100 * done) / items.length : 0}%` }} />
-          </div>
+          <span className="font-medium">{rejected ? "Plan update not applied" : "Plan"}</span>
+          {!rejected && (
+            <>
+              <span className="text-caption text-faint tabular-nums">{done}/{items.length}</span>
+              <div className="ml-auto h-1 w-24 overflow-hidden rounded-full bg-line">
+                <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${items.length ? (100 * done) / items.length : 0}%` }} />
+              </div>
+            </>
+          )}
         </div>
       )}
+      {rejected && <p className={cn("text-caption text-warn", items.length > 0 && "mb-2")} data-testid="plan-rejected">{rejected} The plan before it stays.</p>}
       {explanation && !compact && <p className="mb-2 text-caption text-muted">{explanation}</p>}
-      <ul className="flex flex-col gap-1">
+      <ul className={cn("flex flex-col gap-1", rejected && "opacity-60")}>
         {items.map((it, i) => (
           <li key={i} className="flex items-start gap-2 text-ui leading-snug" data-status={it.status}>
             <span className="mt-0.5 shrink-0">
@@ -249,21 +255,35 @@ export function PlanCard({ items, explanation, compact }: { items: PlanItem[]; e
   );
 }
 
+// Unsent answers, per session and call: they outlive the card (a station
+// switch, a remount) until the question settles. Never sent by themselves.
+const answerDrafts = new Map<string, { picked: Record<string, string[]>; other: Record<string, string> }>();
+
 function QuestionCard({ use, result, sessionId, waiting }: Props) {
   const qs = questions(use.name, use.input);
-  const [picked, setPicked] = useState<Record<string, string[]>>({});
-  const [other, setOther] = useState<Record<string, string>>({});
+  const key = `${sessionId}:${use.id}`;
+  const [picked, setPicked] = useState<Record<string, string[]>>(() => answerDrafts.get(key)?.picked ?? {});
+  const [other, setOther] = useState<Record<string, string>>(() => answerDrafts.get(key)?.other ?? {});
   const [sending, setSending] = useState(false);
+  const inflight = useRef(false);
   const [err, setErr] = useState("");
   const answered = !!result && !result.is_error;
   const open = !result && waiting;
+  // What the owner answered, by question (stored with the result); older records have only the result text.
+  const given = (result as (ToolResultBlock & { shown?: { answers?: Record<string, { picked: string[]; other?: string }> } }) | undefined)?.shown?.answers;
+  useEffect(() => {
+    if (result) answerDrafts.delete(key);
+    else if (Object.keys(picked).length || Object.values(other).some((t) => t)) answerDrafts.set(key, { picked, other });
+  }, [key, result, picked, other]);
   const toggle = (q: { id: string; multi: boolean }, label: string) => setPicked((p) => {
     const cur = p[q.id] ?? [];
     return { ...p, [q.id]: q.multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label] };
   });
   const ready = qs.every((q) => (picked[q.id]?.length ?? 0) > 0 || (other[q.id] ?? "").trim());
+  // One answer per question: Enter and the button share the guard while it is on its way.
   const submit = async () => {
-    if (!sessionId) return;
+    if (!sessionId || inflight.current) return;
+    inflight.current = true;
     setSending(true);
     setErr("");
     try {
@@ -271,6 +291,7 @@ function QuestionCard({ use, result, sessionId, waiting }: Props) {
     } catch (e) {
       setErr(failed(e, { at: "ToolCall" }));
       setSending(false);
+      inflight.current = false;
     }
   };
   return (
@@ -290,7 +311,7 @@ function QuestionCard({ use, result, sessionId, waiting }: Props) {
             {q.options.length > 0 && (
               <div className={cn("grid gap-1.5", q.options.length > 2 ? "sm:grid-cols-2" : "sm:grid-cols-2")} role={q.multi ? "group" : "radiogroup"}>
                 {q.options.map((o) => {
-                  const on = (picked[q.id] ?? []).includes(o.label);
+                  const on = ((given ? given[q.id]?.picked : picked[q.id]) ?? []).includes(o.label);
                   return (
                     <button
                       key={o.label}
@@ -317,11 +338,17 @@ function QuestionCard({ use, result, sessionId, waiting }: Props) {
               <input
                 value={other[q.id] ?? ""}
                 onChange={(e) => setOther((o) => ({ ...o, [q.id]: e.target.value }))}
-                onKeyDown={(e) => { if (e.key === "Enter" && ready) submit(); }}
+                onKeyDown={(e) => { if (e.key === "Enter" && ready && !sending) submit(); }}
                 placeholder={q.options.length ? "Or type your own answer" : "Type your answer"}
                 data-testid="question-other"
                 className="h-8 rounded-md border border-line bg-sunken px-3 text-ui outline-none placeholder:text-faint focus:border-accent"
               />
+            )}
+            {given && (
+              <p className="whitespace-pre-wrap break-words text-caption text-muted" data-testid="question-answer">
+                <span className="font-medium text-fg">Answered: </span>
+                {[...(given[q.id]?.picked ?? []), ...(given[q.id]?.other?.trim() ? [given[q.id]!.other!.trim()] : [])].join(", ") || "no answer"}
+              </p>
             )}
           </fieldset>
         ))}
@@ -339,24 +366,13 @@ function QuestionCard({ use, result, sessionId, waiting }: Props) {
             {err && <span className="text-caption text-danger">{err}</span>}
           </div>
         )}
-        {result && (
-          <p className={cn("text-caption", result.is_error ? "text-danger" : "text-muted")} data-testid="question-result">
-            {answerSummary(resultText(result))}
+        {result && !given && (
+          <p className={cn("whitespace-pre-wrap break-words text-caption", result.is_error ? "text-danger" : "text-muted")} data-testid="question-result">
+            {resultText(result)}
           </p>
         )}
       </div>
     </div>
   );
-}
-
-function answerSummary(text: string): string {
-  const pairs = [...text.matchAll(/"([^"]*)"="([^"]*)"/g)].map((m) => m[2]);
-  if (pairs.length) return `Answered: ${pairs.join(" · ")}`;
-  try {
-    const j = JSON.parse(text);
-    return `Answered: ${Object.values(j.answers ?? {}).map((v: any) => (Array.isArray(v?.answers) ? v.answers.join(", ") : String(v))).join(" · ")}`;
-  } catch {
-    return text;
-  }
 }
 

@@ -499,7 +499,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
 
   const results = useMemo(() => {
     const m = new Map<string, ToolResultBlock>();
-    for (const e of events ?? []) if (e.kind === "tool_result") for (const r of e.data.results) m.set(r.tool_use_id, r);
+    // A call's `shown` (the owner's answers to a question) rides with its result, for the card only.
+    for (const e of events ?? []) if (e.kind === "tool_result") for (const r of e.data.results) m.set(r.tool_use_id, e.data.shown?.[r.tool_use_id] ? { ...r, shown: e.data.shown[r.tool_use_id] } as ToolResultBlock : r);
     return m;
   }, [events]);
 

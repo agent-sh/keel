@@ -166,7 +166,7 @@ const request_user_input: Tool = {
       const x = a[q.id] ?? a[String(i)] ?? { picked: [] };
       return [q.id, { answers: [...x.picked, ...(x.other?.trim() ? [`user_note: ${x.other.trim()}`] : [])] }];
     }));
-    return ok(JSON.stringify({ answers }));
+    return { ...ok(JSON.stringify({ answers })), shown: { answers: a } };
   },
 };
 

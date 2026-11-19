@@ -26,6 +26,8 @@ md.use({
       return /\.(png|jpe?g|gif|webp)$/i.test(p) && !/^[a-z][a-z0-9+.-]*:/i.test(p) ? `<img data-local="${esc(p)}" alt="${esc(text)}" class="max-w-full rounded-md border border-line">` : esc(text);
     },
     code({ text, lang }) {
+      // A fence with nothing in it yet (a reply streaming its opener, or an empty block) is no block.
+      if (!text) return "";
       const l = (lang ?? "").trim().split(/\s/)[0] ?? "";
       return `<div class="code-block"><div class="code-head"><span>${esc(l || "text")}</span><button type="button" class="code-copy" aria-label="Copy code">${COPY_ICON}<span>Copy</span></button></div><pre><code data-lang="${esc(l)}">${esc(text)}</code></pre></div>`;
     },

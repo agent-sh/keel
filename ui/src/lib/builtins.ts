@@ -6,6 +6,7 @@ import { panels, slash } from "./extend.ts";
 import { fuzzy, registerCommand } from "./keys.ts";
 import { getSafetyModes, safety } from "./safety.ts";
 import { actions, getState, reportError } from "./store.ts";
+import { leafOf, lineage } from "../../../src/core/tree.ts";
 import { getUI, navigate, notePick, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
 import { resolveModelArg } from "./picker.ts";
 import { switchSession } from "./switch.ts";
@@ -26,9 +27,26 @@ const newIn = (ws?: string) => {
   if (ws) savePref("newWorkspace", ws);
   navigate({ name: "new" });
 };
+// The last turn's reply on the branch on screen (a previewed one included),
+// all of its text around its tool calls: what its footer's Copy gives.
 const lastReply = (id: string) => {
-  const ev = [...(getState().events[id] ?? [])].reverse().find((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "text" && b.text.trim()));
-  return ev?.data.blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n\n") ?? "";
+  const all = getState().events[id] ?? [];
+  const s = getState().sessions[id];
+  if (!s) return "";
+  const p = getUI().preview;
+  const head = p?.session === id && all.some((e) => e.id === p.event) && !lineage(all, s.head).some((e) => e.id === p.event) ? leafOf(all, p.event) : s.head;
+  const line = lineage(all, head);
+  const text: string[] = [];
+  for (let i = line.length - 1; i >= 0; i--) {
+    const e = line[i]!;
+    // A turn starts at a prompt (a restart or harness note inside it does not), as the footer counts it.
+    if (e.kind === "user" && e.data.origin !== "restart" && e.data.origin !== "harness") { if (text.length) break; continue; }
+    if (e.kind === "assistant" && e.data.stop !== "refusal") {
+      const t = e.data.blocks.filter((b: any) => b.type === "text" && b.text.trim()).map((b: any) => b.text);
+      text.unshift(...t);
+    }
+  }
+  return text.join("\n\n");
 };
 
 panels.add({

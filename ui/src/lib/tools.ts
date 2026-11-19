@@ -17,10 +17,12 @@ export const toolKind = (name: string): ToolKind => KINDS[name] ?? (name.include
 
 export type PlanItem = { text: string; status: "pending" | "in_progress" | "completed" | "cancelled"; active?: string };
 
+// A call the model got wrong (not a list) is an empty plan, not a crash.
 export function planItems(name: string, input: any): PlanItem[] {
-  if (name === "update_plan") return (input?.plan ?? []).map((p: any) => ({ text: p.step, status: p.status }));
-  if (name === "write_todos") return (input?.todos ?? []).map((t: any) => ({ text: t.description, status: t.status }));
-  return (input?.todos ?? []).map((t: any) => ({ text: t.content, status: t.status, active: t.activeForm }));
+  const list = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+  if (name === "update_plan") return list(input?.plan).map((p: any) => ({ text: String(p?.step ?? ""), status: p?.status }));
+  if (name === "write_todos") return list(input?.todos).map((t: any) => ({ text: String(t?.description ?? ""), status: t?.status }));
+  return list(input?.todos).map((t: any) => ({ text: String(t?.content ?? ""), status: t?.status, active: t?.activeForm }));
 }
 
 export type UiQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multi: boolean };

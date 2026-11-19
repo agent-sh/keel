@@ -65,3 +65,49 @@ test("plan mode and plan approval", async ({ page, request }) => {
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// A plan update the tool rejects leaves the plan before it in the dock, and
+// its card says it was not applied. A question's answers show under each
+// question, quotes and all, and the picked options stay checked.
+test("a rejected plan update and answered questions read right", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const todos = [{ content: "Write the parser", status: "in_progress", activeForm: "Writing the parser" }, { content: "Test it", status: "pending", activeForm: "Testing it" }];
+  const qs = [
+    { question: "Keep backup?", header: "Backup", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false },
+    { question: "Retain logs?", header: "Logs", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false },
+  ];
+  const calls = [{ name: "TodoWrite", input: { todos } }, { name: "TodoWrite", input: { todos: "not a list" } }, { name: "AskUserQuestion", input: { questions: qs } }];
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Plan and questions" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify(calls)}`);
+  await page.getByTestId("composer").press("Enter");
+  const card = page.getByTestId("question");
+  await expect(card).toHaveAttribute("data-state", "open", { timeout: 20_000 });
+  // The rejected update is marked; the dock keeps the accepted plan.
+  await expect(page.locator('[data-testid="plan"][data-rejected]')).toHaveCount(1);
+  await expect(page.getByTestId("dock-plan")).toContainText("Writing the parser");
+
+  await card.getByTestId("question-option").nth(0).click(); // Keep backup: Yes
+  await card.getByTestId("question-other").nth(0).fill('use "weekly" copies');
+  await card.getByTestId("question-option").nth(3).click(); // Retain logs: No
+  // Enter twice before the first answer lands: one answer, no "no question is waiting".
+  await card.getByTestId("question-other").nth(1).evaluate((el) => {
+    for (let i = 0; i < 2; i++) el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  await expect(card).toHaveAttribute("data-state", "answered", { timeout: 20_000 });
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 20_000 });
+  await expect(card).not.toContainText("no question is waiting");
+  const answers = card.getByTestId("question-answer");
+  await expect(answers.nth(0)).toHaveText('Answered: Yes, use "weekly" copies');
+  await expect(answers.nth(1)).toHaveText("Answered: No");
+  await expect(card.getByTestId("question-option").nth(0)).toHaveAttribute("aria-checked", "true");
+  await expect(card.getByTestId("question-option").nth(3)).toHaveAttribute("aria-checked", "true");
+  await shoot(page, "plan-02-rejected-and-answered");
+  // Reopened, the same.
+  await page.reload();
+  await expect(page.getByTestId("question-answer").nth(0)).toHaveText('Answered: Yes, use "weekly" copies');
+  await expect(page.getByTestId("question-option").nth(3)).toHaveAttribute("aria-checked", "true");
+  await request.delete(`/api/sessions/${session.id}`);
+});

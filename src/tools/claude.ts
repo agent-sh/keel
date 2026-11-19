@@ -332,7 +332,7 @@ const AskUserQuestion: Tool = {
     const a = await ask(ctx);
     if (!a) return fail("The owner did not answer; the turn was interrupted.");
     const pairs = qs.map((q) => `"${q.question}"="${answerText(a[q.id] ?? { picked: [] })}"`).join(", ");
-    return ok(`User has answered your questions: ${pairs}. You can now continue with the user's answers in mind.`);
+    return { ...ok(`User has answered your questions: ${pairs}. You can now continue with the user's answers in mind.`), shown: { answers: a } };
   },
 };
 
