@@ -2,6 +2,7 @@
 // view of every session across linked daemons, the forwarder to another
 // daemon's API, sessions placed on a machine, and the paired-only endpoints
 // another daemon calls (facts, live stream, hands).
+import { holdStream } from "../streams.ts";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
@@ -587,9 +588,11 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         let off = () => {};
         let ping: Timer | undefined;
         const enc = new TextEncoder();
-        const stop = () => { off(); clearInterval(ping); };
+        let forget = () => {};
+        const stop = () => { off(); clearInterval(ping); forget(); };
         const stream = new ReadableStream({
           start(ctl) {
+            forget = holdStream(ctl);
             const send = (x: unknown) => { try { ctl.enqueue(enc.encode(`data: ${JSON.stringify(x)}\n\n`)); } catch { stop(); } };
             send({ t: "snapshot", sessions: store.sessions() });
             off = bus.on((fr) => {

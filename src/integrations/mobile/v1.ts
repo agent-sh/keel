@@ -1,6 +1,7 @@
 // Hermes Mobile API v1: the routes the phone app calls. Every route but health
 // and pair needs the device's bearer token and a request signature; approvals
 // and revoking another device also need the approval key's signature.
+import { holdStream } from "../../server/streams.ts";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename } from "node:path";
@@ -316,11 +317,12 @@ export function mobileApi(ctx: MobileCtx) {
   function events(req: Req, dev: Device, srv: Server<unknown>) {
     srv.timeout(req, 0);
     const enc = new TextEncoder();
-    let off = () => {}, beat: Timer | undefined, lagged = 0;
+    let off = () => {}, beat: Timer | undefined, lagged = 0, forget = () => {};
     const stream = new ReadableStream<Uint8Array>(
       {
         start(c) {
-          const close = () => { off(); clearInterval(beat); try { c.close(); } catch {} };
+          forget = holdStream(c);
+          const close = () => { off(); clearInterval(beat); forget(); try { c.close(); } catch {} };
           const send = (p: unknown) => {
             if (!mobile.isActive(dev.id)) return close();
             // Fell behind: drop until the phone reads again, then say so once.
@@ -355,7 +357,7 @@ export function mobileApi(ctx: MobileCtx) {
           beat = setInterval(() => send({ type: "seq", seq: mobile.globalSeq(), working: working() }), 15_000);
           req.signal.addEventListener("abort", close, { once: true });
         },
-        cancel() { off(); clearInterval(beat); },
+        cancel() { off(); clearInterval(beat); forget(); },
       },
       { highWaterMark: 1000, size: () => 1 },
     );

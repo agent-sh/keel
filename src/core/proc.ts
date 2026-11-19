@@ -1,10 +1,9 @@
 // Reading a child process's pipes. Every module reads child output through
-// these helpers, which take the pipe's reader and never hand it back: in Bun
-// the only source of "Invalid state: Reader released" is releaseLock() (the
-// reader's release steps), and a release while the pipe is still open rejects
-// the reader's closed promise, which then escapes as an unhandled rejection
-// through any reaction on it. A read that stops early cancels the pipe
-// instead, which closes it (closed resolves) and lets the child see EPIPE
+// these helpers, which take the pipe's reader and never hand it back: nothing
+// reads a pipe after them, and in Bun releasing a reader while its stream is
+// still open can reject unhandled ("Invalid state: Reader released"; see
+// server/streams.ts for where Bun does it itself). A read that stops early
+// cancels the pipe instead, which closes it and lets the child see EPIPE
 // rather than block on a full pipe.
 
 type Pipe = ReadableStream<Uint8Array> | number | null | undefined;

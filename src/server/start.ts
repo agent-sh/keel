@@ -1,5 +1,6 @@
 // Starting the daemon: `keel serve`, and the daemon a client command starts in
 // its own process when none answers (runMode.client).
+import { endStreams } from "./streams.ts";
 import { join, resolve } from "node:path";
 import { defaultStateDir } from "../core/paths.ts";
 import { recordUrl } from "../admin/daemon.ts";
@@ -40,7 +41,10 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
   const g = globalThis as { __keelEngine?: Engine };
   // A hot reload builds a new engine in the same process: the old one parks its turns first.
-  if (g.__keelEngine) await g.__keelEngine.drain(0);
+  if (g.__keelEngine) {
+    await g.__keelEngine.drain(0);
+    endStreams();
+  }
   g.__keelEngine = engine;
   process.on("exit", () => providers.plugins.killAll());
   const server = serve(
