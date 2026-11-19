@@ -19,6 +19,10 @@ if [ -z "${KEEL_PARLAR:-}" ]; then
   install -m 755 "$(dirname "$0")/../test/e2e/fixtures/parlar-standin.py" "$DEV/parlar/parlar"
   export KEEL_PARLAR="$DEV/parlar/parlar"
 fi
+# Phone control goes to a socket beside the state (the phone e2e starts its
+# stand-in gateway there), never the owner's Hermes gateway and phone.
+export KEEL_PHONE_SOCKET="${KEEL_PHONE_SOCKET:-$DEV/phone/phone.sock}"
+mkdir -p "$(dirname "$KEEL_PHONE_SOCKET")"
 cd "$(dirname "$0")/.."
 # Lanes add dependencies; a stale node_modules breaks the bundle at load.
 bun install --silent

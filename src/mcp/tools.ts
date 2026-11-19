@@ -64,7 +64,7 @@ const SearchTools: Tool = {
     const query = String(input.query ?? "");
     const limit = Math.min(Math.max(Number(input.limit) || 5, 1), 20);
     const offset = Math.max(Number(input.offset) || 0, 0);
-    const all = await catalogTools();
+    const all = (await catalogTools()).filter((t) => !t.hidden);
     const pending = catalogSources().flatMap((s) => s.pending?.() ?? []);
     const note = pending.length ? `\nStill connecting: ${pending.join(", ")}; search again shortly for their tools.` : "";
     if (!query.trim()) {

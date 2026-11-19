@@ -1,0 +1,298 @@
+{
+  "source": "hermes-android-app phone_use (server/mobile/phone.py)",
+  "instructions": "The owner's Android phone, driven through the Hermes app's Accessibility service. It acts only while the owner has armed control on the phone (Hermes app: Me > This phone > Control); Keel cannot arm it, and his Stop on the phone ends any call at once. Start with phone_state: indexed on-screen elements and a screenshot. Prefer index over x/y; coordinates are physical screen pixels. A successful action means it was dispatched, not that it worked: read phone_state again to verify. When a call says control is not armed or was stopped, tell the owner and do not call phone tools again until he says control is on.",
+  "reads": [
+    "phone_state",
+    "phone_screenshot",
+    "phone_list_apps",
+    "phone_list_windows",
+    "phone_wait"
+  ],
+  "tools": [
+    {
+      "name": "phone_state",
+      "action": "state",
+      "description": "Read the phone's screen: indexed elements (role, text, id, bounds, checked/selected/focused, clickable/editable/scrollable) and a screenshot. Defaults to the focused screen without keyboard or background windows.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "screenshot": {
+            "type": "boolean",
+            "description": "include a screenshot (default true)"
+          },
+          "max_nodes": {
+            "type": "integer",
+            "description": "element cap (default 250)"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "focused",
+              "all"
+            ],
+            "description": "focused foreground screen (default) or all windows, foreground first"
+          },
+          "include_keyboard": {
+            "type": "boolean",
+            "description": "include input-method elements (default false)"
+          }
+        }
+      }
+    },
+    {
+      "name": "phone_screenshot",
+      "action": "screenshot",
+      "description": "Take a screenshot of the phone's screen.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "phone_list_apps",
+      "action": "list_apps",
+      "description": "List the apps installed on the phone (label and package).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "filter by label or package substring"
+          }
+        }
+      }
+    },
+    {
+      "name": "phone_list_windows",
+      "action": "list_windows",
+      "description": "List the phone's open windows with their ids.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "phone_wait",
+      "action": "wait",
+      "description": "Wait on the phone for the screen to settle, at most 10 seconds.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "number",
+            "description": "seconds (max 10)"
+          }
+        },
+        "required": [
+          "seconds"
+        ]
+      }
+    },
+    {
+      "name": "phone_tap",
+      "action": "tap",
+      "description": "Tap an element of the phone's screen by index, or a point by x/y.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Element index from the latest phone_state"
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "gesture",
+              "accessibility"
+            ],
+            "description": "auto (default) taps checkable controls with one gesture and otherwise uses Accessibility with fallback on explicit rejection; gesture forces a physical tap; accessibility never falls back"
+          }
+        }
+      }
+    },
+    {
+      "name": "phone_long_press",
+      "action": "long_press",
+      "description": "Long-press an element by index, or a point by x/y.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Element index from the latest phone_state"
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "description": "press duration (default 700)"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "gesture",
+              "accessibility"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "phone_swipe",
+      "action": "swipe",
+      "description": "Swipe or drag on the phone's screen from x/y to x2/y2.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          },
+          "x2": {
+            "type": "integer"
+          },
+          "y2": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "description": "swipe duration (default 300)"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "x2",
+          "y2"
+        ]
+      }
+    },
+    {
+      "name": "phone_scroll",
+      "action": "scroll",
+      "description": "Scroll the phone's screen, or a scrollable element by index, to reveal content on one side.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "description": "content moves to reveal this side"
+          },
+          "index": {
+            "type": "integer",
+            "description": "Element index from the latest phone_state"
+          }
+        },
+        "required": [
+          "direction"
+        ]
+      }
+    },
+    {
+      "name": "phone_type",
+      "action": "type",
+      "description": "Type text into an editable element of the phone (by index, else the focused field). Replaces its content unless append is true.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer",
+            "description": "Element index from the latest phone_state"
+          },
+          "append": {
+            "type": "boolean"
+          },
+          "submit": {
+            "type": "boolean",
+            "description": "press the keyboard's enter after typing"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "phone_key",
+      "action": "key",
+      "description": "Press a system key on the phone.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "back",
+              "home",
+              "recents",
+              "notifications",
+              "quick_settings",
+              "enter",
+              "power_dialog",
+              "lock"
+            ]
+          }
+        },
+        "required": [
+          "key"
+        ]
+      }
+    },
+    {
+      "name": "phone_open_app",
+      "action": "open_app",
+      "description": "Open an app on the phone by package name or label.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "package name or app label"
+          }
+        },
+        "required": [
+          "app"
+        ]
+      }
+    },
+    {
+      "name": "phone_activate_window",
+      "action": "activate_window",
+      "description": "Bring a window of the phone to the front, by its id from phone_list_windows or by app.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "window_id": {
+            "type": "integer"
+          },
+          "app": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

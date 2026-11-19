@@ -2,7 +2,7 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
 import { Tabs } from "@base-ui/react/tabs";
-import { ChevronRight, Download, Globe, KeyRound, LogOut, Plug, RefreshCw, RotateCw, SquareTerminal, Trash2, X } from "lucide-react";
+import { ChevronRight, Download, Globe, KeyRound, LogOut, Plug, RefreshCw, RotateCw, Smartphone, SquareTerminal, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { McpServerState } from "../../../src/mcp/manager.ts";
 import type { ImportableServer } from "../../../src/mcp/config.ts";
@@ -25,6 +25,9 @@ const DOT: Record<McpServerState["state"], string> = {
   disabled: "bg-line-strong",
   idle: "bg-ok/50",
   missing: "bg-warn",
+  armed: "bg-ok",
+  not_armed: "bg-line-strong",
+  unreachable: "bg-warn",
 };
 const LABEL: Record<McpServerState["state"], string> = {
   ready: "Ready",
@@ -34,7 +37,12 @@ const LABEL: Record<McpServerState["state"], string> = {
   disabled: "Off",
   idle: "Starts on first use",
   missing: "Not installed",
+  armed: "Armed on the phone",
+  not_armed: "Not armed",
+  unreachable: "Gateway not answering",
 };
+// Tools are offered: a process that starts on first use, or phone control the owner armed.
+const offered = (s: McpServerState) => s.state === "ready" || s.state === "idle" || s.state === "armed" || s.state === "not_armed";
 
 function IconButton({ title, onClick, children, danger, testid }: { title: string; onClick: () => void; children: React.ReactNode; danger?: boolean; testid?: string }) {
   return (
@@ -65,11 +73,11 @@ function ServerRow({ s, act }: { s: McpServerState; act: (path: string, body?: u
           </span>
         )}
         <span className="inline-flex items-center gap-1 rounded-md bg-panel px-1.5 py-px text-micro text-muted">
-          {s.transport === "http" ? <Globe className="size-3" /> : <SquareTerminal className="size-3" />}
+          {s.transport === "http" ? <Globe className="size-3" /> : s.transport === "socket" ? <Smartphone className="size-3" /> : <SquareTerminal className="size-3" />}
           {s.transport}
         </span>
         <span className="whitespace-nowrap text-caption text-faint tabular-nums" data-testid="mcp-tool-count">
-          {s.state === "ready" || s.state === "idle" ? `${s.tools} tool${s.tools === 1 ? "" : "s"}` : LABEL[s.state]}
+          {s.state === "armed" || s.state === "not_armed" ? `${LABEL[s.state]} · ${s.tools} tools` : s.state === "ready" || s.state === "idle" ? `${s.tools} tool${s.tools === 1 ? "" : "s"}` : LABEL[s.state]}
         </span>
         <span className="ml-auto flex items-center gap-0.5">
           {(s.state === "needs_auth" || (s.sign_in && !s.signed_in && s.state === "error")) && (
@@ -103,11 +111,11 @@ function ServerRow({ s, act }: { s: McpServerState; act: (path: string, body?: u
       </div>
       <div className="mt-1.5 truncate pl-[18px] font-mono text-micro text-faint" title={s.target}>{s.target}</div>
       {s.error && s.state !== "disabled" && (
-        <div className={cn("mt-2 ml-[18px] rounded-md", s.state === "missing" ? "bg-warn/12 text-muted" : "bg-danger-soft text-danger", " px-2 py-1.5 font-mono text-micro leading-relaxed whitespace-pre-wrap break-words")} data-testid="mcp-error">
+        <div className={cn("mt-2 ml-[18px] rounded-md", s.state === "missing" || s.state === "not_armed" ? "bg-warn/12 text-muted" : "bg-danger-soft text-danger", " px-2 py-1.5 font-mono text-micro leading-relaxed whitespace-pre-wrap break-words")} data-testid="mcp-error">
           {s.error.slice(0, 600)}
         </div>
       )}
-      {(s.state === "ready" || s.state === "idle") && shown.length > 0 && (
+      {offered(s) && shown.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1 pl-[18px]">
           {shown.map((t) => (
             <span key={t} className="rounded-md border border-line px-1.5 py-px font-mono text-micro text-muted">{t}</span>

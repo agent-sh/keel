@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
+import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpClient, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
@@ -14,7 +15,8 @@ import { OAuthStore } from "./oauth.ts";
 import { toOutput } from "./result.ts";
 import { runMode } from "../core/runmode.ts";
 
-export type McpState = "disabled" | "connecting" | "ready" | "error" | "needs_auth" | "idle" | "missing";
+// armed, not_armed, unreachable: phone control, whose state is the gateway's answer.
+export type McpState = "disabled" | "connecting" | "ready" | "error" | "needs_auth" | "idle" | "missing" | "armed" | "not_armed" | "unreachable";
 
 // A server Keel brings itself: not in mcp.json, cannot be removed, offered to
 // every session. Its tool list ships with Keel, so search starts nothing; the
@@ -30,11 +32,16 @@ export type BundledServer = {
   // `meta` goes with the call as MCP `_meta` (a server serving every session from one process tells them apart by it).
   call?: (tool: string, input: any, ctx: ToolContext, run: (tool: string, input: any, meta?: Record<string, unknown>) => Promise<ToolOutput>) => Promise<ToolOutput>;
   released?: (session: string) => void;
+  // A server with no process (phone control): its state comes from here, a
+  // reload asks it again, and `call` answers every call itself.
+  live?: { state(): { state: McpState; error?: string }; check(): Promise<void>; target?: string };
+  // What a call does, for the gate, before any card (phone control refuses an unarmed phone here).
+  judge?: (tool: string, input: any) => Promise<CallClass>;
 };
 
 export type McpServerState = {
   name: string;
-  transport: "stdio" | "http";
+  transport: "stdio" | "http" | "socket";
   target: string;
   enabled: boolean;
   state: McpState;
@@ -52,7 +59,7 @@ export type McpServerState = {
   prompts: boolean;   // the connected server offers prompt templates
 };
 
-export type McpReloadedServer = { name: string; change: "added" | "removed" | "changed" | "unchanged" };
+export type McpReloadedServer = { name: string; change: "added" | "removed" | "changed" | "unchanged" | "checked" };
 
 type Entry = {
   name: string;
@@ -100,8 +107,23 @@ export class McpManager {
   addBundled(name: string, b: BundledServer) {
     const off = this.bundledOff().includes(name);
     const e = this.addEntry(name, b.config ?? { command: "" }, b);
-    e.state = off ? "disabled" : b.config ? "idle" : "missing";
-    e.error = b.config ? undefined : b.missing;
+    e.state = off ? "disabled" : b.config || b.live ? "idle" : "missing";
+    e.error = b.config || b.live ? undefined : b.missing;
+  }
+
+  isOff(name: string) {
+    return this.entries.get(name)?.state === "disabled";
+  }
+
+  // Bundled servers with no process (phone control) asked again: what a reload reports as checked.
+  async checkLive(only?: string): Promise<McpReloadedServer[]> {
+    const out: McpReloadedServer[] = [];
+    for (const e of this.entries.values()) {
+      if (!e.bundled?.live || e.state === "disabled" || (only && e.name !== only)) continue;
+      await e.bundled.live.check().catch((err) => this.errors.capture("server", err, { mcp: e.name }));
+      out.push({ name: e.name, change: "checked" });
+    }
+    return out;
   }
 
   private bundledOff(): string[] {
@@ -152,6 +174,8 @@ export class McpManager {
     registerCatalog({
       name,
       tools: async () => {
+        // Phone control turned off leaves search, and a call still gets the plain reason.
+        if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];
         // A bundled server's shipped list: searching it starts nothing.
         if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
@@ -175,6 +199,7 @@ export class McpManager {
       description: t.description ?? t.title ?? "",
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
       readOnly: e.bundled ? e.bundled.reads(t.name) : t.annotations?.readOnlyHint === true,
+      judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input) : undefined,
       run: (input: any, ctx: ToolContext) => this.call(e.name, t.name, input, ctx),
     };
   }
@@ -201,6 +226,7 @@ export class McpManager {
   ensure(name: string, wait?: number): Promise<McpClient> {
     const e = this.entries.get(name);
     if (!e) return Promise.reject(new Error(`no MCP server named ${name}`));
+    if (e.bundled?.live) return Promise.reject(new Error(`${name} has no MCP process`));
     if (e.state === "disabled") return Promise.reject(new Error(`${name} is turned off`));
     if (e.state === "missing") return Promise.reject(new Error(e.error ?? `${name} is not installed`));
     if (e.client && e.state === "ready") return Promise.resolve(e.client);
@@ -289,13 +315,15 @@ export class McpManager {
   // ---- owner actions ----
 
   list(): McpServerState[] {
-    return [...this.entries.values()].sort((a, b) => a.name.localeCompare(b.name)).map((e) => ({
+    return [...this.entries.values()].sort((a, b) => a.name.localeCompare(b.name)).map((e) => {
+      const live = e.bundled?.live && e.state !== "disabled" ? e.bundled.live.state() : null;
+      return {
       name: e.name,
-      transport: e.config.url ? "http" : "stdio",
-      target: e.config.url ?? [e.config.command, ...(e.config.args ?? [])].join(" "),
+      transport: e.bundled?.live ? "socket" : e.config.url ? "http" : "stdio",
+      target: e.bundled?.live?.target ?? e.config.url ?? [e.config.command, ...(e.config.args ?? [])].join(" "),
       enabled: e.state !== "disabled",
-      state: e.state,
-      error: e.error,
+      state: live?.state ?? e.state,
+      error: live ? live.error : e.error,
       tools: (e.bundled && !e.client ? e.bundled.tools : e.tools).length,
       tool_names: (e.bundled && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
       last_connected: e.last,
@@ -307,7 +335,8 @@ export class McpManager {
       bundled: e.bundled?.label,
       resources: !!e.client?.capabilities.resources,
       prompts: !!e.client?.capabilities.prompts,
-    }));
+    } as McpServerState;
+    });
   }
 
   has(name: string) {
@@ -350,8 +379,9 @@ export class McpManager {
       writeFileSync(this.bundledOffPath, JSON.stringify([...off]));
       e.client?.close();
       e.client = undefined;
-      e.state = !enabled ? "disabled" : e.bundled.config ? "idle" : "missing";
-      e.error = enabled && !e.bundled.config ? e.bundled.missing : undefined;
+      e.state = !enabled ? "disabled" : e.bundled.config || e.bundled.live ? "idle" : "missing";
+      e.error = enabled && !e.bundled.config && !e.bundled.live ? e.bundled.missing : undefined;
+      if (enabled) void e.bundled.live?.check();
       return;
     }
     const c = { ...e.config };
@@ -374,6 +404,10 @@ export class McpManager {
 
   async reconnect(name: string) {
     const e = this.entries.get(name)!;
+    if (e.bundled?.live) {
+      if (e.state !== "disabled") await e.bundled.live.check();
+      return;
+    }
     e.client?.close();
     e.client = undefined;
     e.era = undefined;

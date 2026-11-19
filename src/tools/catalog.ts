@@ -12,6 +12,7 @@ export type CatalogTool = {
   description: string;
   input_schema: Record<string, unknown>;
   readOnly?: boolean;
+  hidden?: boolean;        // not offered by search, still answered by mcp_call (a server turned off says so)
   // What a call does, for the permission gate, when the read flag alone does not say.
   judge?(input: any): Promise<CallClass>;
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;

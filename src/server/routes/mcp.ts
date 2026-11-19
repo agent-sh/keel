@@ -2,6 +2,7 @@ import type { RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
+import { installPhone } from "../../integrations/phone.ts";
 import { readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
@@ -27,6 +28,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   g.__keelMcp = m;
   installMcpTools(m);
   installChromeBridge(m);
+  installPhone(m);
   m.start();
   // A deleted or archived session lets go of what a bundled server held for it (tabs).
   (g as any).__keelMcpOff?.();
@@ -114,6 +116,8 @@ export const mcpRoutes: RouteModule = (deps) => {
           // a server only in the file may be reloaded into existence
           if (b.server && !m.has(b.server) && !(b.server in readConfig().servers)) return bad(`no MCP server named ${b.server}`, 404);
           const reload = m.reload(b.server || undefined);
+          // Phone control has no file entry: a reload asks the gateway again.
+          reload.servers.push(...(await m.checkLive(b.server || undefined)));
           const changed = reload.servers.filter((s) => s.change !== "unchanged");
           const line = changed.length ? `MCP reloaded: ${changed.map((s) => `${s.name} ${s.change}`).join(", ")}.` : "MCP reloaded: nothing changed.";
           return json({ reload, line, servers: m.list() });
@@ -129,7 +133,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         const limit = Number(u.get("limit") ?? 20);
         if (!Number.isFinite(offset) || !Number.isFinite(limit)) return bad("offset and limit are numbers");
         const q = u.get("q") ?? "";
-        const all = await catalogTools();
+        const all = (await catalogTools()).filter((t) => !t.hidden);
         const hits = all.map((t) => ({ t, s: score(t, q) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).map((x) => x.t);
         const tools = hits.slice(offset, offset + limit).map((t) => ({ server: t.server, name: t.name, qualified_name: t.qualified, description: t.description, input_schema: t.input_schema }));
         const pending = catalogSources().flatMap((s) => s.pending?.() ?? []);

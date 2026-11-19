@@ -19,6 +19,7 @@ const ENV = {
   KEEL_IMPORT_CODEX_DIR: join(SCRATCH, "codex"),
   KEEL_IMPORT_KEEL_DB: join(SCRATCH, "none.db"),
   KEEL_BROWSER: "true",
+  KEEL_PHONE_SOCKET: join(SCRATCH, "phone.sock"), // never the owner's Hermes gateway
 };
 
 type Ran = { code: number; out: string; err: string };
