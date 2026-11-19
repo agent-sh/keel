@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
-import { FolderX } from "lucide-react";
+import { FolderX, WifiOff } from "lucide-react";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { Composer } from "./Composer.tsx";
@@ -30,14 +30,22 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   const session = useStore((s) => s.sessions[id]);
   // A link to a session that is gone (deleted, another daemon's) says so instead of loading forever.
   const [missing, setMissing] = useState<string | null>(null);
+  // A load that failed for want of the daemon (a cold open offline) is tried
+  // again when the connection is back: this route's session, not only the
+  // ones the page already held.
+  const [unreached, setUnreached] = useState<string | null>(null);
+  const connected = useStore((s) => s.connected);
   const gone = useStore((s) => !!s.gone[id]);
   useEffect(() => {
     setMissing(null);
-    actions.loadSession(id).catch((e) => {
-      if ((e as { status?: number }).status === 404) setMissing(id);
+    if (unreached === id && !connected) return;
+    actions.loadSession(id).then(() => setUnreached(null), (e) => {
+      const status = (e as { status?: number }).status;
+      if (status === 404) setMissing(id);
+      else if (status === undefined && e instanceof TypeError) setUnreached(id);
       else reportError(e, { at: "open session" });
     });
-  }, [id]);
+  }, [id, unreached === id && connected]);
   useEffect(() => { if (focus) document.title = session?.title ? `${session.title} - Keel` : "Keel"; }, [session?.title, focus]);
   if (!session && (missing === id || gone)) {
     return (
@@ -55,7 +63,9 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
     return (
       <div className="flex flex-1 flex-col">
         <div className="flex h-12 items-center px-2 md:px-4"><SidebarButton /></div>
-        <div className="m-auto text-ui text-faint">Opening the session</div>
+        <div className="m-auto text-ui text-faint" data-testid={unreached === id ? "session-unreached" : undefined}>
+          {unreached === id ? "Keel is not reachable. The session opens when the connection is back." : "Opening the session"}
+        </div>
       </div>
     );
   }
@@ -67,6 +77,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
           <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
           <div className="k-compose pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
+              {unreached === id && <Unreached />}
               {session.workspace_gone && <FolderGone path={session.workspace} />}
               <LiveSourceBanner sessionId={session.id} />
               <Suspense fallback={null}><HeldMessages sessionId={session.id} /></Suspense>
@@ -96,6 +107,20 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
 
 // The session's folder is not on disk: the transcript reads as before, and
 // the way on is to move the session to a folder that exists.
+// The session's row is known (from the list) but its history could not be
+// fetched: said, not shown as an empty conversation.
+function Unreached() {
+  return (
+    <div className="mb-2 flex items-center gap-3 rounded-md border border-line border-l-[3px] border-l-warn bg-raised px-3 py-2 text-ui" data-testid="session-unreached" role="status">
+      <WifiOff className="size-4 shrink-0 text-warn" aria-hidden="true" />
+      <p className="min-w-0 flex-1">
+        <span className="text-fg">Keel is not reachable.</span>{" "}
+        <span className="text-muted">The conversation loads when the connection is back.</span>
+      </p>
+    </div>
+  );
+}
+
 function FolderGone({ path }: { path: string }) {
   return (
     <div className="mb-2 flex items-center gap-3 rounded-md border border-line border-l-[3px] border-l-st-fail bg-raised px-3 py-2 text-ui" data-testid="folder-gone" role="status">

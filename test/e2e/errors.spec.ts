@@ -76,8 +76,21 @@ test("a reconnect after a deletion or a failed first load records no error", asy
   // Inside its station: the station's head and band, in steel.
   await expect(page.locator(".k-station[data-missing]").getByTestId("station-head")).toContainText("Not here");
   await shoot(page, "errors-03-deleted-while-away");
+
+  // A link opened while the daemon cannot be reached (a phone's notification
+  // on a cold page) says so, and opens its session once the connection is back.
+  const s2 = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Opened while away" } })).json()).session;
+  let blocked = true;
+  await page.route(new RegExp(`/api/sessions/${s2.id}$`), (r) => (blocked ? r.abort("connectionrefused") : r.continue()));
+  await page.goto(`/s/${s2.id}`);
+  await expect(page.getByTestId("session-unreached").first()).toBeVisible({ timeout: 15_000 });
+  await shoot(page, "errors-04-opened-while-away");
+  blocked = false;
+  await live.ws!.close({ code: 4000, reason: "cut by the test" });
+  await expect(page.getByTestId("station-head").first()).toContainText("Opened while away", { timeout: 15_000 });
   await page.waitForTimeout(3_500); // a network failure is posted 3 s after it happened
   expect(posted).toEqual([]);
+  await request.delete(`/api/sessions/${s2.id}`);
 });
 
 // A session whose folder was deleted reads as before and says the folder is
