@@ -18,6 +18,7 @@ const ENV = {
   KEEL_IMPORT_CLAUDE_DIR: join(SCRATCH, "claude"),
   KEEL_IMPORT_CODEX_DIR: join(SCRATCH, "codex"),
   KEEL_IMPORT_KEEL_DB: join(SCRATCH, "none.db"),
+  KEEL_IMPORT_AGY_DIR: join(SCRATCH, "agy"),
   KEEL_BROWSER: "true",
   KEEL_PHONE_SOCKET: join(SCRATCH, "phone.sock"), // never the owner's Hermes gateway
 };
@@ -213,7 +214,7 @@ describe("client commands against a running daemon", () => {
 
     const harnesses = await k(["import", "harnesses", "--json"]);
     expect(harnesses.code).toBe(0);
-    expect(json(harnesses.out).map((h: any) => h.harness).sort()).toEqual(["claude", "codex", "keel"]);
+    expect(json(harnesses.out).map((h: any) => h.harness).sort()).toEqual(["agy", "claude", "codex", "keel"]);
     const badSub = await k(["import", "nope"]);
     expect(badSub.code).toBe(3);
 

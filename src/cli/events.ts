@@ -91,7 +91,9 @@ export class Follower {
       try {
         const ws = new WebSocket(this.c.base.replace(/^http/, "ws") + "/ws");
         this.ws = ws;
-        ws.onopen = () => resolve();
+        // The daemon sends a socket events and deltas only after its resume;
+        // events before now are read by seq, so this one asks from now on.
+        ws.onopen = () => { ws.send(JSON.stringify({ op: "resume", cursors: {} })); resolve(); };
         ws.onerror = () => resolve(); // reading by seq still works
         ws.onmessage = (m) => {
           let f: any;
