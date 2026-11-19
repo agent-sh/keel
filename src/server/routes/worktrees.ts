@@ -166,7 +166,8 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
     "/api/sessions/:id/changes/branch": {
       GET: (req: any) => guard(async () => {
         const s = store.session(req.params.id);
-        return s ? json(await wts.branchDiff(s)) : bad("no such session", 404);
+        const paths = new URL(req.url).searchParams.getAll("path").filter((p) => p && !p.startsWith("/") && !p.split("/").includes(".."));
+        return s ? json(await wts.branchDiff(s, paths.length ? paths : undefined)) : bad("no such session", 404);
       }),
     },
     // Review comments on the branch diff go to the model as one message.
@@ -179,7 +180,15 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         const comments = (Array.isArray(b.comments) ? b.comments : []).filter((c: any) => typeof c?.path === "string" && Number.isFinite(c.line) && String(c.text ?? "").trim());
         const note = String(b.note ?? "").trim();
         if (!comments.length && !note) return bad("no comments");
-        const lines = comments.map((c: any) => `- ${c.path}:${c.line}: ${String(c.text).trim()}`);
+        // Each comment names its side (a removed line is the old file's line)
+        // and the text it was written on, so a line that moved is not mistaken
+        // for another; one the diff no longer holds is said to be outdated.
+        const lines = comments.map((c: any) => {
+          const where = c.side === "old" ? `${c.path}, removed line ${c.line} (old file)` : `${c.path}:${c.line}`;
+          const quote = typeof c.quote === "string" ? c.quote.slice(0, 300) : "";
+          const on = !quote ? "" : c.outdated ? `\n  (outdated: that line changed since; the comment was written on \`${quote}\`)` : `\n  on: \`${quote}\``;
+          return `- ${where}: ${String(c.text).trim()}${on}`;
+        });
         const text = [
           "Review of the branch diff.",
           note,

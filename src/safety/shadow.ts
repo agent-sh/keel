@@ -7,9 +7,12 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, writeFileSync }
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { readText } from "../core/proc.ts";
+import { capPatch } from "./patch.ts";
 
 export type FileChange = { path: string; status: string; added: number; removed: number; outside?: boolean };
-export type DiffResult = { files: FileChange[]; diff: string; truncated: boolean };
+// truncated: the patch was cut at DIFF_CAP bytes after a whole line; partial
+// names the file the cut ends inside (files after it have no patch shown).
+export type DiffResult = { files: FileChange[]; diff: string; truncated: boolean; partial?: string };
 
 const DIFF_CAP = 400_000;
 // A file over this is left out of a snapshot (model weights, archives, media);
@@ -176,22 +179,24 @@ export class Shadow {
       if (a === b) return { files: [], diff: "", truncated: false };
       const spec = paths ? ["--", ...paths] : [];
       if (paths && !paths.length) return { files: [], diff: "", truncated: false };
+      // NUL-separated lists: a path is never quoted or escaped there.
       const [ns, num, patch] = await Promise.all([
-        this.git(["diff-tree", "-r", "--no-renames", "--name-status", a, b, ...spec]),
-        this.git(["diff-tree", "-r", "--no-renames", "--numstat", a, b, ...spec]),
+        this.git(["diff-tree", "-r", "-z", "--no-renames", "--name-status", a, b, ...spec]),
+        this.git(["diff-tree", "-r", "-z", "--no-renames", "--numstat", a, b, ...spec]),
         this.git(["diff-tree", "-r", "--no-renames", "-p", a, b, ...spec]),
       ]);
-      const counts = new Map(num.trim().split("\n").filter(Boolean).map((l) => {
+      const counts = new Map(num.split("\0").filter(Boolean).map((l) => {
         const [ad, rm, ...p] = l.split("\t");
         return [p.join("\t"), { added: Number(ad) || 0, removed: Number(rm) || 0 }];
       }));
-      const files = ns.trim().split("\n").filter(Boolean).map((l) => {
-        const [status, ...p] = l.split("\t");
-        const path = p.join("\t");
-        return { path, status: status!, ...(counts.get(path) ?? { added: 0, removed: 0 }) };
-      });
-      const truncated = patch.length > DIFF_CAP;
-      return { files, diff: truncated ? patch.slice(0, DIFF_CAP) : patch, truncated };
+      const parts = ns.split("\0");
+      const files: FileChange[] = [];
+      for (let i = 0; i + 1 < parts.length; i += 2) {
+        const status = parts[i]!, path = parts[i + 1]!;
+        if (!status) break;
+        files.push({ path, status, ...(counts.get(path) ?? { added: 0, removed: 0 }) });
+      }
+      return { files, ...capPatch(patch, DIFF_CAP) };
     });
   }
 
@@ -209,26 +214,58 @@ export class Shadow {
   }
 
   // Paths that differ between two trees.
-  async changed(a: string, b: string, paths?: string[]): Promise<string[]> {
-    return (await this.diff(a, b, paths)).files.map((f) => f.path);
+  changed(a: string, b: string, paths?: string[]): Promise<string[]> {
+    if (a === b || (paths && !paths.length)) return Promise.resolve([]);
+    return this.lock(async () => (await this.git(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b, ...(paths ? ["--", ...paths] : [])])).split("\0").filter(Boolean));
+  }
+
+  // The blob each path has in `tree` ("" for a path it does not hold).
+  async blobs(tree: string, paths: string[]): Promise<Map<string, string>> {
+    const out = new Map(paths.map((p) => [p, ""]));
+    if (!paths.length) return out;
+    const ls = await this.lock(() => this.git(["ls-tree", "-r", "-z", tree, "--", ...paths]));
+    for (const rec of ls.split("\0").filter(Boolean)) {
+      const tab = rec.indexOf("\t");
+      out.set(rec.slice(tab + 1), rec.slice(0, tab).split(" ")[2]!);
+    }
+    return out;
   }
 
   // Put the files at `paths` back as they are in `tree`; a path the tree does
-  // not hold is removed.
-  restore(tree: string, paths: string[]): Promise<void> {
+  // not hold is removed. Nothing is written before the tree is read and its
+  // index prepared, so a failure there leaves every file as it was; a failure
+  // while writing is reported per path (each one checked against the tree).
+  restore(tree: string, paths: string[]): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
     return this.lock(async () => {
-      if (!paths.length) return;
+      if (!paths.length) return { restored: [], failed: [] };
       const listed = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", tree])).split("\0").filter(Boolean));
       const back = paths.filter((p) => listed.has(p));
-      for (const p of paths.filter((p) => !listed.has(p))) rmSync(join(this.workspace, p), { force: true });
-      if (!back.length) return;
+      const gone = paths.filter((p) => !listed.has(p));
       const index = join(this.dir, `keel-restore-${crypto.randomUUID()}`);
+      const errs = new Map<string, string>();
       try {
-        await this.git(["read-tree", tree], { index });
-        await this.git(["checkout-index", "-f", "-z", "--stdin"], { index, input: back.join("\0") + "\0" });
+        if (back.length) await this.git(["read-tree", tree], { index });
+        if (back.length) {
+          try {
+            await this.git(["checkout-index", "-f", "-z", "--stdin"], { index, input: back.join("\0") + "\0" });
+          } catch (e) {
+            // Which ones did not come back: compare each with the tree.
+            const want = await this.git(["ls-files", "-s", "-z", "--", ...back], { index });
+            const sha = new Map(want.split("\0").filter(Boolean).map((r) => [r.slice(r.indexOf("\t") + 1), r.split(" ")[1]!]));
+            for (const p of back) {
+              let now = "";
+              try { now = (await this.git(["hash-object", "--", p])).trim(); } catch {}
+              if (now !== sha.get(p)) errs.set(p, (e as Error).message.slice(0, 300));
+            }
+          }
+        }
       } finally {
         rmSync(index, { force: true });
       }
+      for (const p of gone) {
+        try { rmSync(join(this.workspace, p), { force: true }); } catch (e) { errs.set(p, (e as Error).message.slice(0, 300)); }
+      }
+      return { restored: paths.filter((p) => !errs.has(p)), failed: [...errs].map(([path, error]) => ({ path, error })) };
     });
   }
 }

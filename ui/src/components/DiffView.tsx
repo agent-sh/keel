@@ -1,40 +1,10 @@
 import { ChevronRight, MessageSquarePlus, Undo2 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { parsePatch, type FilePatch, type PatchLine } from "../../../src/safety/patch.ts";
 import { cn } from "../lib/utils.ts";
 
+export { parsePatch };
 export type FileChange = { path: string; status: string; added: number; removed: number; outside?: boolean };
-type Line = { kind: "add" | "del" | "ctx" | "hunk"; text: string; old?: number; new?: number };
-type FilePatch = { path: string; lines: Line[]; binary: boolean };
-
-// Split a unified patch (git diff -p) into files and numbered lines.
-export function parsePatch(patch: string): FilePatch[] {
-  const files: FilePatch[] = [];
-  let cur: FilePatch | null = null;
-  let o = 0;
-  let n = 0;
-  for (const raw of patch.split("\n")) {
-    if (raw.startsWith("diff --git ")) {
-      const m = raw.match(/^diff --git a\/(.*) b\/(.*)$/);
-      cur = { path: m?.[2] ?? raw.slice(11), lines: [], binary: false };
-      files.push(cur);
-      continue;
-    }
-    if (!cur) continue;
-    if (raw.startsWith("Binary files")) { cur.binary = true; continue; }
-    if (raw.startsWith("@@")) {
-      const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
-      o = Number(m?.[1] ?? 0);
-      n = Number(m?.[2] ?? 0);
-      cur.lines.push({ kind: "hunk", text: raw });
-      continue;
-    }
-    if (/^(---|\+\+\+|index |new file|deleted file|old mode|new mode|similarity|rename )/.test(raw) && !cur.lines.length) continue;
-    if (raw.startsWith("+")) cur.lines.push({ kind: "add", text: raw.slice(1), new: n++ });
-    else if (raw.startsWith("-")) cur.lines.push({ kind: "del", text: raw.slice(1), old: o++ });
-    else if (raw.startsWith(" ")) cur.lines.push({ kind: "ctx", text: raw.slice(1), old: o++, new: n++ });
-  }
-  return files;
-}
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   A: { label: "added", cls: "text-ok" },
@@ -42,40 +12,98 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   M: { label: "modified", cls: "text-muted" },
 };
 
-export type Comment = { path: string; line: number; text: string };
+// A comment on one line of one side: "old" is the removed text (a deleted
+// line's number in the old file), "new" the file as it is now. `quote` is the
+// line's text when it was written, so a refreshed diff can find it again.
+export type Comment = { id: string; path: string; side: "old" | "new"; line: number; text: string; quote: string; outdated?: boolean };
+
+// "Show this file at that line": a finding's link asks the file's block to
+// open and scroll there; `found` says whether the line is in the diff.
+export type JumpDetail = { path: string; line: number; end?: number; found?: boolean };
+export const JUMP = "keel:diff-jump";
 
 // Files with their diffs. `actions` renders per-file buttons (revert);
 // `onComment` turns line numbers into "add a comment" targets; `onHunk`
-// puts a revert button on each hunk.
-export type HunkRef = { path: string; index: number; header: string };
+// puts a revert button on each hunk. `truncated`/`partial` say the patch was
+// cut to fit; `loadFile` fetches one file's whole diff in its place.
+export type HunkRef = { path: string; index: number; header: string; body: string };
 export function DiffView({
-  files, patch, actions, comments, onComment, onHunk, empty,
+  files, patch, truncated, partial, loadFile, actions, comments, onComment, onHunk, empty,
 }: {
   files: FileChange[];
   patch: string;
+  truncated?: boolean;
+  partial?: string;
+  loadFile?: (path: string) => Promise<string>;
   actions?: (f: FileChange) => ReactNode;
   comments?: Comment[];
-  onComment?: (c: Comment) => void;
+  onComment?: (c: Omit<Comment, "id">) => void;
   onHunk?: (h: HunkRef) => void;
   empty?: string;
 }) {
   const parsed = useMemo(() => new Map(parsePatch(patch).map((p) => [p.path, p])), [patch]);
+  const [whole, setWhole] = useState<Record<string, FilePatch>>({});
+  useEffect(() => setWhole({}), [patch]);
   if (!files.length) return <p className="px-3 py-10 text-center text-ui text-faint">{empty ?? "No changes."}</p>;
+  const load = loadFile && (async (path: string) => {
+    const p = parsePatch(await loadFile(path)).find((x) => x.path === path);
+    if (p) setWhole((m) => ({ ...m, [path]: p }));
+  });
   return (
     <div className="flex flex-col gap-2" data-testid="diff-view">
-      {files.map((f) => (
-        <FileBlock key={f.path} f={f} p={parsed.get(f.path)} actions={actions} comments={comments?.filter((c) => c.path === f.path)} onComment={onComment} onHunk={onHunk} />
-      ))}
+      {files.map((f) => {
+        const p = whole[f.path] ?? parsed.get(f.path);
+        const cut = !whole[f.path] && truncated ? (p ? (partial === f.path ? "partial" : null) : "omitted") : null;
+        return <FileBlock key={f.path} f={f} p={p} cut={cut} load={load} actions={actions} comments={comments?.filter((c) => c.path === f.path && !c.outdated)} onComment={onComment} onHunk={onHunk} />;
+      })}
     </div>
   );
 }
 
-function FileBlock({ f, p, actions, comments, onComment, onHunk }: {
-  f: FileChange; p?: FilePatch; actions?: (f: FileChange) => ReactNode; comments?: Comment[]; onComment?: (c: Comment) => void; onHunk?: (h: HunkRef) => void;
+const exec = (m?: string) => !!m && (parseInt(m, 8) & 0o111) !== 0;
+function modeNote(p?: FilePatch): string | null {
+  if (!p?.oldMode || !p.newMode) return null;
+  const a = exec(p.oldMode), b = exec(p.newMode);
+  const what = a === b ? "File mode changed" : b ? "Executable bit added" : "Executable bit removed";
+  return `${what} (${p.oldMode} → ${p.newMode})`;
+}
+
+function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
+  f: FileChange; p?: FilePatch; cut: "partial" | "omitted" | null; load?: (path: string) => Promise<void>;
+  actions?: (f: FileChange) => ReactNode; comments?: Comment[]; onComment?: (c: Omit<Comment, "id">) => void; onHunk?: (h: HunkRef) => void;
 }) {
   const [open, setOpen] = useState(true);
-  const [draft, setDraft] = useState<{ line: number; text: string } | null>(null);
+  // Drafts by line: moving to another line keeps what was typed on this one.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [flash, setFlash] = useState<{ line: number; end: number } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
   const st = STATUS[f.status[0]!] ?? { label: f.status, cls: "text-muted" };
+  const mode = modeNote(p);
+
+  useEffect(() => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<JumpDetail>).detail;
+      if (d.path !== f.path) return;
+      const end = d.end ?? d.line;
+      d.found = !!p?.lines.some((l) => l.kind !== "hunk" && l.kind !== "del" && l.new! >= d.line && l.new! <= end);
+      setOpen(true);
+      if (!d.found) { body.current?.closest("section")?.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+      setFlash({ line: d.line, end });
+      requestAnimationFrame(() => [...(body.current?.querySelectorAll<HTMLElement>("tr[data-new]") ?? [])].find((r) => Number(r.dataset.new) >= d.line && Number(r.dataset.new) <= end)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    };
+    window.addEventListener(JUMP, on);
+    return () => window.removeEventListener(JUMP, on);
+  }, [f.path, p]);
+  useEffect(() => { if (!flash) return; const t = setTimeout(() => setFlash(null), 2400); return () => clearTimeout(t); }, [flash]);
+
+  const loadButton = load && (
+    <button data-testid="diff-load-file" disabled={loading} onClick={() => { setLoading(true); load(f.path).finally(() => setLoading(false)); }}
+      className="ml-2 rounded px-1.5 font-sans text-micro font-medium text-accent hover:bg-accent-soft disabled:opacity-50">
+      {loading ? "Loading…" : "Show this file's whole diff"}
+    </button>
+  );
+
   return (
     <section className="overflow-hidden rounded-xl border border-line bg-raised" data-testid="diff-file" data-path={f.path}>
       <header className="flex items-center gap-2 border-b border-line bg-panel/60 px-3 py-1.5">
@@ -84,38 +112,49 @@ function FileBlock({ f, p, actions, comments, onComment, onHunk }: {
         </button>
         <span className="min-w-0 truncate font-mono text-caption">{f.path}</span>
         <span className={cn("text-micro", st.cls)}>{st.label}</span>
-        {f.outside && <span className="rounded-full bg-warn/15 px-1.5 text-micro text-warn" title="Changed outside the session's turns">outside</span>}
+        {f.outside && <span className="rounded-full bg-warn/15 px-1.5 text-micro text-warn" title="Changed outside the session's own tool calls">outside</span>}
+        {cut && <span className="rounded-full bg-warn/15 px-1.5 text-micro text-warn" data-testid="diff-cut">{cut === "partial" ? "partial" : "not in preview"}</span>}
         <span className="ml-auto font-mono text-micro tabular-nums">
           <span className="text-ok">+{f.added}</span> <span className="text-danger">-{f.removed}</span>
         </span>
         {actions?.(f)}
       </header>
       {open && (
-        <div className="overflow-x-auto font-mono text-caption leading-[1.6]">
-          {!p || p.binary ? (
-            <p className="px-3 py-2 text-faint">{p?.binary ? "Binary file" : "No text change shown."}</p>
+        <div ref={body} className="overflow-x-auto font-mono text-caption leading-[1.6]">
+          {mode && <p className="border-b border-line px-3 py-1.5 font-sans text-caption text-muted" data-testid="diff-mode">{mode}</p>}
+          {cut === "omitted" ? (
+            <p className="px-3 py-2 font-sans text-faint" data-testid="diff-omitted">Left out of this preview: the whole diff is over its size limit.{loadButton}</p>
+          ) : p?.binary ? (
+            <p className="px-3 py-2 text-faint">Binary file</p>
+          ) : !p || !p.lines.length ? (
+            !mode && <p className="px-3 py-2 text-faint">No text change shown.</p>
           ) : (
             <table className="w-full border-collapse">
               <tbody>
                 {p.lines.map((l, i) => {
                   const hunkIndex = l.kind === "hunk" ? p.lines.slice(0, i).filter((x) => x.kind === "hunk").length : -1;
-                  const lineNo = l.new ?? l.old ?? 0;
-                  const here = comments?.filter((c) => l.kind !== "del" && l.kind !== "hunk" && c.line === l.new) ?? [];
+                  const side: "old" | "new" = l.kind === "del" ? "old" : "new";
+                  const lineNo = (side === "old" ? l.old : l.new) ?? 0;
+                  const key = `${side}:${lineNo}`;
+                  const here = l.kind === "hunk" ? [] : comments?.filter((c) => c.side === side && c.line === lineNo) ?? [];
+                  const lit = flash && l.kind !== "del" && l.kind !== "hunk" && l.new! >= flash.line && l.new! <= flash.end;
                   return [
-                    <tr key={i} className={cn(
-                      "group/line",
-                      l.kind === "add" && "bg-ok/10",
-                      l.kind === "del" && "bg-danger-soft/70",
-                      l.kind === "hunk" && "bg-accent-soft/40 text-faint",
-                    )}>
+                    <tr key={i} data-new={l.kind !== "del" && l.kind !== "hunk" ? l.new : undefined} data-old={l.kind === "del" ? l.old : undefined}
+                      className={cn(
+                        "group/line",
+                        l.kind === "add" && "bg-ok/10",
+                        l.kind === "del" && "bg-danger-soft/70",
+                        l.kind === "hunk" && "bg-accent-soft/40 text-faint",
+                        lit && "outline outline-1 -outline-offset-1 outline-accent bg-accent-soft/60",
+                      )}>
                       <td className="w-10 select-none px-2 text-right text-faint/80 tabular-nums">{l.kind === "hunk" ? "" : l.old ?? ""}</td>
                       <td className="relative w-10 select-none px-2 text-right text-faint/80 tabular-nums">
                         {l.kind === "hunk" ? "" : l.new ?? ""}
-                        {onComment && l.kind !== "hunk" && l.kind !== "del" && (
+                        {onComment && l.kind !== "hunk" && (
                           <button
                             data-testid="comment-line"
-                            title="Comment on this line"
-                            onClick={() => setDraft({ line: lineNo, text: "" })}
+                            title={side === "old" ? "Comment on this removed line" : "Comment on this line"}
+                            onClick={() => setDrafts((d) => ({ ...d, [key]: d[key] ?? "" }))}
                             className="absolute -right-2 top-0 grid size-[1.2rem] place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
                           >
                             <MessageSquarePlus className="size-3" />
@@ -125,52 +164,61 @@ function FileBlock({ f, p, actions, comments, onComment, onHunk }: {
                       <td className="w-4 select-none pl-2 text-faint">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : ""}</td>
                       <td className="whitespace-pre pr-4">
                         {l.text}
+                        {l.noEol && <span className="ml-2 select-none rounded bg-sunken px-1 font-sans text-micro text-muted" data-testid="no-eol">no newline at end of file</span>}
                         {onHunk && l.kind === "hunk" && (
-                          <button data-testid="revert-hunk" onClick={() => onHunk({ path: f.path, index: hunkIndex, header: l.text })}
+                          <button data-testid="revert-hunk" onClick={() => onHunk({ path: f.path, index: hunkIndex, header: l.text, body: l.body ?? "" })}
                             className="float-right ml-3 rounded px-1.5 font-sans text-micro text-muted hover:bg-hover hover:text-fg">Revert hunk</button>
                         )}
                       </td>
                     </tr>,
-                    ...here.map((c, j) => (
-                      <tr key={`${i}-c${j}`}>
+                    ...here.map((c) => (
+                      <tr key={`${i}-c${c.id}`}>
                         <td colSpan={4} className="px-3 py-1.5">
-                          <div className="rounded-lg border border-accent/40 bg-accent-soft/40 px-3 py-1.5 font-sans text-caption" data-testid="line-comment">{c.text}</div>
+                          <div className="rounded-lg border border-accent/40 bg-accent-soft/40 px-3 py-1.5 font-sans text-caption" data-testid="line-comment" data-side={c.side}>{c.text}</div>
                         </td>
                       </tr>
                     )),
-                    draft && draft.line === lineNo && l.kind !== "del" && l.kind !== "hunk" ? (
+                    drafts[key] !== undefined && l.kind !== "hunk" ? (
                       <tr key={`${i}-draft`}>
                         <td colSpan={4} className="px-3 py-1.5">
-                          <form
-                            className="flex gap-2 font-sans"
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              if (draft.text.trim()) onComment?.({ path: f.path, line: draft.line, text: draft.text.trim() });
-                              setDraft(null);
-                            }}
-                          >
-                            <input
-                              autoFocus
-                              data-testid="comment-input"
-                              value={draft.text}
-                              onChange={(e) => setDraft({ ...draft, text: e.target.value })}
-                              onKeyDown={(e) => { if (e.key === "Escape") setDraft(null); }}
-                              placeholder="What should change here?"
-                              className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-caption outline-none focus:border-line-strong"
-                            />
-                            <button type="submit" data-testid="comment-add" className="h-8 rounded-lg bg-accent px-3 text-caption font-medium text-accent-fg">Add</button>
-                          </form>
+                          <CommentForm l={l} side={side} text={drafts[key]!}
+                            onText={(t) => setDrafts((d) => ({ ...d, [key]: t }))}
+                            onClose={() => setDrafts(({ [key]: _, ...d }) => d)}
+                            onAdd={(t) => { onComment?.({ path: f.path, side, line: lineNo, text: t, quote: l.text }); setDrafts(({ [key]: _, ...d }) => d); }}
+                          />
                         </td>
                       </tr>
                     ) : null,
                   ];
                 })}
+                {cut === "partial" && (
+                  <tr><td colSpan={4} className="border-t border-line px-3 py-1.5 font-sans text-caption text-warn" data-testid="diff-partial">The rest of this file's diff is cut to fit.{loadButton}</td></tr>
+                )}
               </tbody>
             </table>
           )}
         </div>
       )}
     </section>
+  );
+}
+
+function CommentForm({ l, side, text, onText, onClose, onAdd }: { l: PatchLine; side: "old" | "new"; text: string; onText: (t: string) => void; onClose: () => void; onAdd: (t: string) => void }) {
+  return (
+    <form className="flex items-center gap-2 font-sans" onSubmit={(e) => { e.preventDefault(); if (text.trim()) onAdd(text.trim()); else onClose(); }}>
+      {side === "old" && <span className="shrink-0 rounded bg-danger-soft px-1.5 text-micro text-danger" title={`Removed line ${l.old}`}>removed line</span>}
+      <input
+        autoFocus
+        data-testid="comment-input"
+        value={text}
+        onChange={(e) => onText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Escape" && !text.trim()) onClose(); }}
+        placeholder={side === "old" ? "What about this removed line?" : "What should change here?"}
+        className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-caption outline-none focus:border-line-strong"
+      />
+      <button type="submit" data-testid="comment-add" className="h-8 rounded-lg bg-accent px-3 text-caption font-medium text-accent-fg">Add</button>
+      <button type="button" data-testid="comment-discard" onClick={onClose} className="h-8 rounded-lg px-2 text-caption text-muted hover:bg-hover">Discard</button>
+    </form>
   );
 }
 

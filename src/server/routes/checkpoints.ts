@@ -29,7 +29,7 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
   // A session whose tools run on another machine has its folder there: nothing here to snapshot.
   registerHooks({
     beforeTool: async (s, call) => void (s.machine || (await quiet("checkpoint before", () => c.before(s, call)))),
-    afterTool: (s, call) => (s.machine ? undefined : c.after(s, call)),
+    afterTool: async (s, call) => void (s.machine || (await quiet("checkpoint after", () => c.after(s, call)))),
     turnEnd: async (s) => void (s.machine || (await quiet("checkpoint end", () => c.end(s)))),
   });
 
@@ -44,7 +44,8 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         const sh = c.shadow(s.workspace);
-        return json({ turns: await c.turns(s), scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
+        const { turns, expired } = await c.turns(s);
+        return json({ turns, expired, scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
       }),
     },
     "/api/sessions/:id/checkpoints/diff": {
@@ -53,7 +54,8 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         if (!s) return bad("no such session", 404);
         const q = new URL(req.url).searchParams;
         const num = (k: string) => (q.has(k) ? Number(q.get(k)) : undefined);
-        return json(await c.diff(s, { turn: num("turn"), from: num("from") }));
+        const paths = q.getAll("path").filter((p) => p && !p.startsWith("/") && !p.split("/").includes(".."));
+        return json(await c.diff(s, { turn: num("turn"), from: num("from"), paths: paths.length ? paths : undefined }));
       }),
     },
     "/api/sessions/:id/changes/revert": {
@@ -63,9 +65,9 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
         if (s.workspace_gone) return bad("the session's folder is gone; move the session to a folder that exists first", 409);
         if (busy(s.id, s.workspace)) return bad("a turn is running in this workspace; stop it first", 409);
-        if (typeof b.path !== "string" || !Number.isInteger(b.hunk?.index) || typeof b.hunk?.header !== "string" || !Number.isFinite(b.from)) return bad("give path, hunk { index, header } and from (the turn)");
+        if (typeof b.path !== "string" || !Number.isInteger(b.hunk?.index) || typeof b.hunk?.header !== "string" || typeof b.hunk?.body !== "string" || !Number.isFinite(b.from)) return bad("give path, hunk { index, header, body } and from (the turn)");
         if (b.path.startsWith("/") || b.path.split("/").includes("..")) return bad("the path is relative to the workspace and stays inside it");
-        return json(await c.revertHunk(s, { from: Number(b.from), path: b.path, index: b.hunk.index, header: b.hunk.header }));
+        return json(await c.revertHunk(s, { from: Number(b.from), path: b.path, index: b.hunk.index, header: b.hunk.header, body: b.hunk.body }));
       }),
     },
     "/api/sessions/:id/rewind": {
@@ -76,7 +78,9 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         if (s.workspace_gone) return bad("the session's folder is gone; move the session to a folder that exists first", 409);
         if (!b.preview && busy(s.id, s.workspace)) return bad("a turn is running in this workspace; stop it first", 409);
         const paths = Array.isArray(b.paths) ? b.paths.filter((p: unknown) => typeof p === "string") : undefined;
-        return json(await c.rewind(s, { turn: b.turn, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside }));
+        const confirm = Array.isArray(b.confirm?.paths) && b.confirm.versions && typeof b.confirm.versions === "object"
+          ? { paths: b.confirm.paths.filter((p: unknown) => typeof p === "string"), versions: b.confirm.versions as Record<string, string> } : undefined;
+        return json(await c.rewind(s, { turn: b.turn, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside, confirm }));
       }),
     },
   };

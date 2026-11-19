@@ -93,6 +93,17 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("hand\n");
   expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("base\nowner edit\n");
 
+  // Opting in to restore outside edits covers what the preview showed, not a
+  // file that changed after it: late.txt, made while the dialog is open, stays.
+  await panel.getByTestId("turn-checkpoint").last().getByTestId("rewind-turn").click();
+  await expect(confirm.getByTestId("rewind-list")).toContainText("removed: not there before");
+  await page.getByTestId("include-outside").check();
+  writeFileSync(join(ws, "late.txt"), "late\n");
+  await page.getByTestId("rewind-go").click();
+  await expect(panel.getByTestId("rewind-done")).toContainText("Restored");
+  expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("base\n");
+  expect(readFileSync(join(ws, "late.txt"), "utf8")).toBe("late\n");
+
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });

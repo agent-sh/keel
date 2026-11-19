@@ -302,7 +302,7 @@ export class Worktrees {
   }
 
   // Everything the branch carries over its merge base, uncommitted and untracked work included.
-  async branchDiff(s: Session): Promise<DiffResult & { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number }> {
+  async branchDiff(s: Session, paths?: string[]): Promise<DiffResult & { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number }> {
     if (!existsSync(s.workspace)) return { is_git: true, missing: true, branch: this.get(s.id)?.branch ?? null, base: null, merge_base: null, commits: 0, files: [], diff: "", truncated: false };
     const top = (await git(s.workspace, ["rev-parse", "--show-toplevel"], { ok: true })).trim();
     if (!top) return { is_git: false, branch: null, base: null, merge_base: null, commits: 0, files: [], diff: "", truncated: false };
@@ -316,7 +316,7 @@ export class Worktrees {
     const sh = new Shadow("", top, gitDir);
     const tree = await sh.snapshot();
     const fromTree = (await git(top, ["rev-parse", `${from}^{tree}`])).trim();
-    return { is_git: true, branch, base, merge_base: mb, commits, ...(await sh.diff(fromTree, tree)) };
+    return { is_git: true, branch, base, merge_base: mb, commits, ...(await sh.diff(fromTree, tree, paths)) };
   }
 
   // The change a review looks at: uncommitted work (tracked and untracked) over

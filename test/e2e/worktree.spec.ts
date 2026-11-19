@@ -36,7 +36,7 @@ test("worktree session and branch review", async ({ page, request }) => {
   await shoot(page, "wt-01-start");
 
   await page.getByTestId("composer").fill(
-    "Run exactly this one Bash command and nothing else: echo 'second line' >> notes.md && git add notes.md && git -c user.name=k -c user.email=k@k commit -qm 'Add a line'\nThen reply ok.",
+    "Run exactly this one Bash command and nothing else: sed -i 's/first line/the first line/' notes.md && echo 'second line' >> notes.md && git add notes.md && git -c user.name=k -c user.email=k@k commit -qm 'Add a line'\nThen reply ok.",
   );
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/s\//);
@@ -68,12 +68,36 @@ test("worktree session and branch review", async ({ page, request }) => {
   await added.hover();
   await added.getByTestId("comment-line").click();
   await page.getByTestId("comment-input").fill("Say this line in Hebrew instead.");
+  // Opening another line keeps what was typed on this one; the removed
+  // line takes a comment of its own (the old file's side).
+  const removed = file.locator("tr[data-old]").filter({ hasText: "first line" });
+  await removed.hover();
+  await removed.getByTestId("comment-line").click();
+  await expect(page.getByTestId("comment-input")).toHaveCount(2);
+  await expect(page.getByTestId("comment-input").last()).toHaveValue("Say this line in Hebrew instead.");
+  await page.getByTestId("comment-input").last().press("Enter");
+  await page.getByTestId("comment-input").fill("Keep the old wording.");
   await page.getByTestId("comment-add").click();
-  await expect(page.getByTestId("line-comment")).toHaveText("Say this line in Hebrew instead.");
+  await expect(page.getByTestId("line-comment")).toHaveCount(2);
+  await expect(file.locator('[data-testid="line-comment"][data-side="old"]')).toHaveText("Keep the old wording.");
+  // Unsent feedback survives a switch to Changes and back, marked as a draft.
+  await page.getByTestId("review-note").fill("Two small things.");
+  await openPanel(page, "changes");
+  await openPanel(page, "review");
+  await expect(page.getByTestId("review-draft")).toBeVisible();
+  await expect(page.getByTestId("review-comments").locator("li")).toHaveCount(2);
+  await expect(page.getByTestId("review-note")).toHaveValue("Two small things.");
+  // An edit made outside Keel shows on Refresh, with no turn.
+  writeFileSync(join(worktree.path, "todo.md"), "outside\n");
+  await page.getByTestId("branch-refresh").click();
+  await expect(page.getByTestId("branch-review").getByTestId("diff-file").filter({ hasText: "todo.md" })).toBeVisible();
   await shoot(page, "wt-03-review");
   await page.getByTestId("review-send").click();
   await expect(page.getByTestId("line-comment")).toHaveCount(0);
-  await expect(page.getByTestId("user-message").last()).toContainText("notes.md:4: Say this line in Hebrew instead.");
+  await expect(page.getByTestId("review-draft")).toHaveCount(0);
+  const sent = page.getByTestId("user-message").last();
+  await expect(sent).toContainText("notes.md:4: Say this line in Hebrew instead.");
+  await expect(sent).toContainText("notes.md, removed line 3 (old file): Keep the old wording.");
   await page.getByTestId("stop").click().catch(() => {});
   await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).running, { timeout: 60_000 }).toBe(false);
 

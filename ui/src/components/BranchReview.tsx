@@ -1,11 +1,30 @@
-import { GitBranch, MessageSquare, Send, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { GitBranch, MessageSquare, RefreshCw, Send, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, onFeature, reportError, failed } from "../lib/store.ts";
-import { DiffView, type Comment, type FileChange } from "./DiffView.tsx";
+import { api, onFeature, failed } from "../lib/store.ts";
+import { cn } from "../lib/utils.ts";
+import { DiffView, parsePatch, type Comment, type FileChange } from "./DiffView.tsx";
 import { ReviewFindings } from "./ReviewFindings.tsx";
 
-type Branch = { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number; files: FileChange[]; diff: string; truncated: boolean };
+type Branch = { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number; files: FileChange[]; diff: string; truncated: boolean; partial?: string };
+
+// Unsent feedback per session: closing the panel or switching to Changes
+// keeps it (for this page), another session never sees it.
+const drafts = new Map<string, { comments: Comment[]; note: string }>();
+
+// A refreshed diff moves lines: each comment stays on the text it was written
+// on (same side and number, else the one line with that text), or is marked
+// outdated rather than landing on another line.
+function reconcile(comments: Comment[], patch: string): Comment[] {
+  const files = new Map(parsePatch(patch).map((p) => [p.path, p]));
+  return comments.map((c) => {
+    const lines = (files.get(c.path)?.lines ?? []).filter((l) => l.kind !== "hunk" && (c.side === "old" ? l.kind === "del" : l.kind !== "del"));
+    const num = (l: (typeof lines)[0]) => (c.side === "old" ? l.old : l.new);
+    if (lines.some((l) => num(l) === c.line && l.text === c.quote)) return c.outdated ? { ...c, outdated: false } : c;
+    const same = lines.filter((l) => l.text === c.quote);
+    return same.length === 1 ? { ...c, line: num(same[0]!)!, outdated: false } : { ...c, outdated: true };
+  });
+}
 
 // Review the session's branch: its diff over the merge base (uncommitted
 // work included), comments on lines, and one message that sends them all
@@ -13,67 +32,132 @@ type Branch = { is_git: boolean; missing?: boolean; branch: string | null; base:
 export function BranchReview({ session }: { session: Session }) {
   const sessionId = session.id;
   const [b, setB] = useState<Branch | null>(null);
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [note, setNote] = useState("");
+  const saved = drafts.get(sessionId);
+  const [comments, setComments] = useState<Comment[]>(saved?.comments ?? []);
+  const [note, setNote] = useState(saved?.note ?? "");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [loadErr, setLoadErr] = useState("");
+  const [sendErr, setSendErr] = useState("");
+  const [loading, setLoading] = useState(false);
+  const seq = useRef(0);
 
-  const load = useCallback(() => api<Branch>(`/api/sessions/${sessionId}/changes/branch`).then(setB).catch((e) => { setErr(e.message); reportError(e); }), [sessionId]);
-  useEffect(() => { if (session.phase === "idle") load(); }, [session.phase]);
+  useEffect(() => {
+    if (comments.length || note) drafts.set(sessionId, { comments, note });
+    else drafts.delete(sessionId);
+  }, [sessionId, comments, note]);
+
+  // Only the newest read lands: a slow answer from before a park or a
+  // restore never replaces the one that came after it.
+  const load = useCallback(async () => {
+    const n = ++seq.current;
+    setLoading(true);
+    try {
+      const r = await api<Branch>(`/api/sessions/${sessionId}/changes/branch`);
+      if (n !== seq.current) return;
+      setB(r);
+      setLoadErr("");
+      setComments((l) => (l.length ? reconcile(l, r.diff) : l));
+    } catch (e) {
+      if (n === seq.current) setLoadErr(failed(e, { at: "BranchReview load" }));
+    } finally {
+      if (n === seq.current) setLoading(false);
+    }
+  }, [sessionId]);
+  // A turn that ends may have changed files: read again on the move to idle.
+  const phase = useRef(session.phase);
+  useEffect(() => {
+    const was = phase.current;
+    phase.current = session.phase;
+    if (session.phase === "idle" && was !== "idle") load();
+  }, [session.phase, load]);
   useEffect(() => {
     load();
-    return onFeature({ frame: (f) => { if ((f.name === "checkpoints" || f.name === "worktree") && f.session_id === sessionId) load(); } });
+    return onFeature({ frame: (f) => { if ((f.name === "checkpoints" || f.name === "worktree") && f.session_id === sessionId) load(); }, reconnect: load });
   }, [load]);
 
-  if (!b) return <p className="px-3 py-10 text-center text-ui text-faint">{err || "Loading…"}</p>;
+  const refresh = (
+    <button data-testid="branch-refresh" onClick={load} disabled={loading} title="Read the branch again (edits made outside Keel too)"
+      className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
+      <RefreshCw className={cn("size-3.5", loading && "animate-spin")} /> {b ? "Refresh" : "Retry"}
+    </button>
+  );
+  if (!b) {
+    return (
+      <div className="flex flex-col items-center gap-2 px-3 py-10 text-center text-ui text-faint">
+        <p data-testid="branch-load-error">{loadErr || "Loading…"}</p>
+        {loadErr && refresh}
+      </div>
+    );
+  }
   if (b.missing) return <p className="px-3 py-10 text-center text-ui text-faint">The worktree is parked: its folder is off disk. Restore it from the branch menu in the header.</p>;
   if (!b.is_git) return <p className="px-3 py-10 text-center text-ui text-faint">The session's folder is not in a git repository.</p>;
 
+  // What was sent is cleared once acknowledged; anything written since stays.
   const send = async () => {
+    const sent = comments;
+    const sentNote = note;
     setBusy(true);
-    setErr("");
+    setSendErr("");
     try {
-      await api(`/api/sessions/${sessionId}/review`, { method: "POST", body: JSON.stringify({ comments, note }) });
-      setComments([]);
-      setNote("");
+      await api(`/api/sessions/${sessionId}/review`, { method: "POST", body: JSON.stringify({ comments: sent, note: sentNote }) });
+      const ids = new Set(sent.map((c) => c.id));
+      setComments((l) => l.filter((c) => !ids.has(c.id)));
+      setNote((n) => (n === sentNote ? "" : n));
     } catch (e) {
-      setErr(failed(e, { at: "BranchReview" }));
+      setSendErr(failed(e, { at: "BranchReview" }));
     } finally {
       setBusy(false);
     }
   };
+  const hasDraft = comments.length > 0 || !!note.trim();
+  const fileDiff = async (path: string) => (await api<Branch>(`/api/sessions/${sessionId}/changes/branch?path=${encodeURIComponent(path)}`)).diff;
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="branch-review">
       <ReviewFindings session={session} />
-      <div className="flex flex-col gap-0.5 px-1">
-        <div className="flex min-w-0 items-center gap-2 text-ui">
-          <GitBranch className="size-4 shrink-0 text-faint" />
-          <span className="truncate font-mono">{b.branch ?? "detached"}</span>
+      <div className="flex items-start gap-2 px-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex min-w-0 items-center gap-2 text-ui">
+            <GitBranch className="size-4 shrink-0 text-faint" />
+            <span className="truncate font-mono">{b.branch ?? "detached"}</span>
+          </div>
+          <p className="text-caption text-muted">
+            {b.base && <>over <span className="font-mono">{b.base}</span> · </>}
+            {b.commits} commit{b.commits === 1 ? "" : "s"}, {b.files.length} file{b.files.length === 1 ? "" : "s"}
+            {b.truncated && <span className="text-warn" data-testid="branch-truncated"> · diff cut at 400 KB</span>}
+            <span className="text-faint"> · hover a line number to comment</span>
+          </p>
         </div>
-        <p className="text-caption text-muted">
-          {b.base && <>over <span className="font-mono">{b.base}</span> · </>}
-          {b.commits} commit{b.commits === 1 ? "" : "s"}, {b.files.length} file{b.files.length === 1 ? "" : "s"}
-          {b.truncated && <span className="text-warn"> · diff cut at 400 KB</span>}
-          <span className="text-faint"> · hover a line number to comment</span>
-        </p>
+        {refresh}
       </div>
+      {loadErr && <p className="rounded-lg bg-warn/10 px-3 py-1.5 text-caption text-warn" data-testid="branch-stale">This is the last diff read; reading it again failed: {loadErr}</p>}
       <DiffView
         files={b.files}
         patch={b.diff}
+        truncated={b.truncated}
+        partial={b.partial}
+        loadFile={fileDiff}
         empty={b.base ? "The branch carries no changes over its base." : "No default branch to compare with."}
         comments={comments}
-        onComment={(c) => setComments((l) => [...l, c])}
+        onComment={(c) => setComments((l) => [...l, { ...c, id: crypto.randomUUID() }])}
       />
       <div className="sticky bottom-0 rounded-xl border border-line bg-raised p-3 shadow-2">
+        {hasDraft && (
+          <div className="mb-2 flex items-center gap-2 text-micro" data-testid="review-draft">
+            <span className="rounded-full bg-accent-soft px-2 py-0.5 font-medium text-accent">Draft</span>
+            <span className="text-faint">not sent yet</span>
+            <button data-testid="review-discard" onClick={() => { setComments([]); setNote(""); }} className="ml-auto text-faint hover:text-danger">Discard draft</button>
+          </div>
+        )}
         {comments.length > 0 && (
           <ul className="mb-2 flex flex-col gap-1" data-testid="review-comments">
-            {comments.map((c, i) => (
-              <li key={i} className="flex items-start gap-2 text-caption">
-                <MessageSquare className="mt-0.5 size-3.5 shrink-0 text-accent" />
-                <span className="font-mono text-faint">{c.path}:{c.line}</span>
+            {comments.map((c) => (
+              <li key={c.id} className="flex items-start gap-2 text-caption" data-outdated={c.outdated ? "" : undefined}>
+                <MessageSquare className={cn("mt-0.5 size-3.5 shrink-0", c.outdated ? "text-warn" : "text-accent")} />
+                <span className="font-mono text-faint">{c.path}:{c.side === "old" ? `removed ${c.line}` : c.line}</span>
+                {c.outdated && <span className="rounded bg-warn/15 px-1 text-micro text-warn" title={`It was on: ${c.quote}`}>line changed</span>}
                 <span className="min-w-0 flex-1">{c.text}</span>
-                <button onClick={() => setComments(comments.filter((_, j) => j !== i))} className="text-faint hover:text-danger" title="Remove"><X className="size-3.5" /></button>
+                <button onClick={() => setComments((l) => l.filter((x) => x.id !== c.id))} className="text-faint hover:text-danger" title="Remove"><X className="size-3.5" /></button>
               </li>
             ))}
           </ul>
@@ -96,7 +180,7 @@ export function BranchReview({ session }: { session: Session }) {
             <Send className="size-3.5" /> Send {comments.length ? `${comments.length} comment${comments.length === 1 ? "" : "s"}` : "note"} to the model
           </button>
         </div>
-        {err && <p className="mt-2 text-caption text-danger">{err}</p>}
+        {sendErr && <p className="mt-2 text-caption text-danger" data-testid="review-send-error">{sendErr}</p>}
       </div>
     </div>
   );
