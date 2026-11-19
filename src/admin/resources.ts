@@ -100,19 +100,19 @@ export class Resources {
     (this.timer as any).unref?.();
   }
 
-  // Every process under the daemon, children of children included.
+  // Every process under the daemon, children of children included. Each
+  // thread's `children` file names the processes it started, so only the
+  // daemon's own tree is read, not every process on the machine.
   private descendants(): number[] {
-    const kids = new Map<number, number[]>();
-    for (const d of readdirSync("/proc")) {
-      const pid = Number(d);
-      if (!pid) continue;
-      const st = /^\d+ \(.*\) \S (\d+)/s.exec(read(`/proc/${pid}/stat`));
-      if (!st) continue;
-      const pp = Number(st[1]);
-      (kids.get(pp) ?? kids.set(pp, []).get(pp)!).push(pid);
-    }
     const out: number[] = [];
-    const walk = (p: number) => { for (const c of kids.get(p) ?? []) { out.push(c); walk(c); } };
+    const walk = (pid: number) => {
+      let tids: string[] = [];
+      try { tids = readdirSync(`/proc/${pid}/task`); } catch { return; }
+      for (const t of tids) for (const c of read(`/proc/${pid}/task/${t}/children`).split(" ")) {
+        const n = Number(c);
+        if (n) { out.push(n); walk(n); }
+      }
+    };
     walk(process.pid);
     return out;
   }
