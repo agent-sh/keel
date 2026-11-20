@@ -4,3 +4,6 @@
 // report, a wake, a loop run, a peer's message) or an origin of its own
 // (momentum, a hook, the harness, a restart). The one list for the engine and the page.
 export const OWNER_ORIGINS: ReadonlySet<unknown> = new Set([undefined, "steer", "queued", "voice", "cli"]);
+
+// A stored prompt's data is the owner's own words.
+export const ownerPrompt = (d: { kind?: unknown; origin?: unknown } | undefined): boolean => !!d && !d.kind && OWNER_ORIGINS.has(d.origin);

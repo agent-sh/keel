@@ -2,7 +2,7 @@
 // word every shell shows first (needs you, working, failed, done), the line
 // of what it is doing now, and its turns over time for the wake chart.
 import { useEffect } from "react";
-import { OWNER_ORIGINS } from "../../../src/core/owner.ts";
+import { ownerPrompt } from "../../../src/core/owner.ts";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
 import { useSafety } from "./safety.ts";
 import { actions, getState, reportError, useStore } from "./store.ts";
@@ -137,7 +137,7 @@ const taskWords = (e: StoredEvent) => {
 // What the owner wrote (typed, steered, queued, spoken or sent from the CLI). Messages
 // the harness delivers (a wait firing, a subagent's task or report, a hook) carry a
 // kind or an origin of their own (engine.send spreads its meta into the event) and are not his.
-const ownWords = (e: StoredEvent) => !e.data.kind && !e.data.meta && OWNER_ORIGINS.has(e.data.origin) && !/^\s*(<[a-z_]+[\s>]|\[harness\])/i.test(String(e.data.text ?? ""));
+const ownWords = (e: StoredEvent) => ownerPrompt(e.data) && !e.data.meta && !/^\s*(<[a-z_]+[\s>]|\[harness\])/i.test(String(e.data.text ?? ""));
 // One readable line: no tags, no markdown marks.
 const clean = (t: string) => stripAnsi(String(t)).replace(/<\/?[a-z_][^>]*>/gi, " ").replace(/[*`#_]/g, "").replace(/\s+/g, " ").trim();
 

@@ -5,7 +5,7 @@
 // the owner's recent words verbatim instead of the history; the history stays
 // stored, readable and searchable. Nothing earlier is rewritten.
 import type { Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
-import { OWNER_ORIGINS } from "../core/owner.ts";
+import { ownerPrompt } from "../core/owner.ts";
 import { imageTokens } from "./images.ts";
 
 // Share of the model's window at which a turn compacts before its next call.
@@ -87,9 +87,19 @@ export const OWNER_MEDIA_BYTES = 20 * 1024 * 1024;
 
 type Entry = { text: string; media: PromptBlock[] };
 
-// The owner's own messages since the last checkpoint (and those the last
-// summary kept), with their images and files.
-function ownerEntries(lineage: StoredEvent[]): Entry[] {
+// Whose words a stored prompt carries: the owner's own, another input that
+// was delivered for the model (an agent's report or task, a wake, a loop run,
+// a peer's message, a momentum or hook prompt), or neither (the harness's own
+// instruction for that moment: continue, the step budget, a schema retry).
+export function whose(e: StoredEvent): "owner" | "other" | null {
+  if (e.kind !== "user") return null;
+  if (ownerPrompt(e.data)) return "owner";
+  return e.data.origin === "harness" || e.data.origin === "restart" || e.data.kind === "harness" ? null : "other";
+}
+
+// One side's messages since the last checkpoint (and those the last summary
+// kept), with their images and files.
+function entries(lineage: StoredEvent[], who: "owner" | "other"): Entry[] {
   let all: Entry[] = [];
   const at: number[] = []; // the index of each message's event
   lineage.forEach((e, i) => {
@@ -97,12 +107,13 @@ function ownerEntries(lineage: StoredEvent[]): Entry[] {
       // Messages of the verbatim tail of a summary prepared ahead stay.
       const covered = e.data.covered ? lineage.findIndex((x) => x.id === e.data.covered) : -1;
       const tail = covered >= 0 ? all.filter((_, k) => at[k]! > covered) : [];
-      const kept: Entry[] = e.data.mode === "summary" ? (e.data.owner_messages ?? []).map((t: string, k: number) => ({ text: t, media: e.data.owner_media?.[k] ?? [] })) : [];
+      const texts: string[] = e.data.mode !== "summary" ? [] : (who === "owner" ? e.data.owner_messages : e.data.other_messages) ?? [];
+      const kept: Entry[] = texts.map((t, k) => ({ text: t, media: who === "owner" ? (e.data.owner_media?.[k] ?? []) : [] }));
       all = [...kept, ...tail];
       at.length = 0;
       at.push(...all.map(() => i));
-    } else if (e.kind === "user" && OWNER_ORIGINS.has(e.data.origin)) {
-      all.push({ text: e.data.text, media: (e.data.images ?? []).filter((b: any) => b.type === "image" || b.type === "attachment") });
+    } else if (whose(e) === who) {
+      all.push({ text: e.data.text, media: who === "owner" ? (e.data.images ?? []).filter((b: any) => b.type === "image" || b.type === "attachment") : [] });
       at.push(i);
     }
   });
@@ -135,10 +146,13 @@ function fit(all: Entry[], budget: number): { kept: Entry[]; bytes: number; shor
 // fields of its event: the owner's words within `budget` bytes (smaller when
 // the model's window cannot hold OWNER_WORDS_BYTES beside the summary), each
 // with its images and files newest first within OWNER_MEDIA_BYTES (older ones
-// leave a note in their place). `owner_messages_shortened`: the one message
+// leave a note in their place); then the other inputs (reports, wakes, tasks,
+// peers) under their own heading, in what the owner's words left of the budget,
+// so they never push his words out. `*_shortened`: the one message of each
 // kept as its start and end, so the divider can say so.
-export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): { owner_messages: string[]; owner_media?: PromptBlock[][]; owner_messages_shortened?: number } {
-  const owner = fit(ownerEntries(lineage), budget);
+export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): { owner_messages: string[]; owner_media?: PromptBlock[][]; owner_messages_shortened?: number; other_messages?: string[]; other_messages_shortened?: number } {
+  const owner = fit(entries(lineage, "owner"), budget);
+  const other = fit(entries(lineage, "other"), budget - owner.bytes);
   let media = 0;
   for (let i = owner.kept.length - 1; i >= 0; i--) {
     owner.kept[i]!.media = owner.kept[i]!.media.map((m: any) => {
@@ -151,6 +165,8 @@ export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES)
     owner_messages: owner.kept.map((e) => e.text),
     ...(owner.kept.some((e) => e.media.length) ? { owner_media: owner.kept.map((e) => e.media) } : {}),
     ...(owner.shortened ? { owner_messages_shortened: 1 } : {}),
+    ...(other.kept.length ? { other_messages: other.kept.map((e) => e.text) } : {}),
+    ...(other.shortened ? { other_messages_shortened: 1 } : {}),
   };
 }
 
@@ -194,16 +210,19 @@ export function excerpt(text: string, budget: number): string | null {
   return head + note(total - headBytes - tailBytes) + tail;
 }
 
-export function summaryMessage(data: { summary: string; owner_messages?: string[]; owner_media?: PromptBlock[][] }): Message {
+export function summaryMessage(data: { summary: string; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[] }): Message {
   const head = `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}`;
   const msgs = data.owner_messages ?? [];
+  const wrap = (t: string) => `<message>\n${t}\n</message>`;
+  const others = data.other_messages?.length ? `\n\n[Other messages delivered before the compaction (agent reports, wakes, loop runs, tasks, messages from other sessions; not the owner's words), oldest first:]\n${data.other_messages.map(wrap).join("\n")}` : "";
   if (!data.owner_media) {
-    const owner = msgs.length ? `\n\n[The owner's messages before the compaction, oldest first:]\n${msgs.map((t) => `<message>\n${t}\n</message>`).join("\n")}` : "";
-    return { role: "user", content: [{ type: "text", text: head + owner }] };
+    const owner = msgs.length ? `\n\n[The owner's messages before the compaction, oldest first:]\n${msgs.map(wrap).join("\n")}` : "";
+    return { role: "user", content: [{ type: "text", text: head + owner + others }] };
   }
   // Each message with the images and files it was sent with, in place.
   const content: any[] = [{ type: "text", text: `${head}\n\n[The owner's messages before the compaction, oldest first, with what they attached:]` }];
-  msgs.forEach((t, k) => content.push(...(data.owner_media![k] ?? []), { type: "text", text: `<message>\n${t}\n</message>` }));
+  msgs.forEach((t, k) => content.push(...(data.owner_media![k] ?? []), { type: "text", text: wrap(t) }));
+  if (others) content.push({ type: "text", text: others.trimStart() });
   return { role: "user", content };
 }
 
@@ -325,7 +344,7 @@ function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
   if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : utf8Bytes(JSON.stringify(e.data.blocks ?? []));
   if (e.kind === "tool_result") return jsonBytes(e.data.results ?? [], per);
   if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
-  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media }, per) : 0;
+  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
   if (e.kind !== "user") return 0;
   let n = utf8Bytes(String(e.data.text ?? ""));
   for (const b of (e.data.images ?? []) as any[]) {

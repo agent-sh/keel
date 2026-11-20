@@ -60,6 +60,32 @@ test("files travel with their message through repeated compactions, the older on
   expect(over.slice(1)).toEqual([{ type: "text", text: "<message>\nolder caption\n</message>" }, file("b.pdf", half + 1), { type: "text", text: "<message>\nnewer caption\n</message>" }] as any);
 });
 
+// Only the owner's own words are kept as his: reports, wakes, loop runs,
+// tasks, peers, momentum and hooks are kept under their own heading in what
+// his words leave of the budget; the harness's own instructions are not kept.
+test("delivered inputs never count as the owner's words", () => {
+  const report = (k: number) => ev("user", { text: `<subagent_result agent_id="a${k}">${"r".repeat(15_000)}</subagent_result>`, kind: "subagent" });
+  const line = [
+    ev("user", { text: `the owner's ask ${"o".repeat(2_000)}` }),
+    report(1), report(2), report(3), report(4),
+    ev("user", { text: "loop run", kind: "loop" }), ev("user", { text: "from a peer", kind: "peer" }), ev("user", { text: "momentum item", origin: "momentum" }),
+    ev("user", { text: "said aloud", origin: "voice" }), ev("user", { text: "steered", origin: "steer" }),
+    ev("user", { text: "[harness] Continue.", origin: "harness" }), ev("user", { text: "[harness] schema", kind: "harness" }),
+  ];
+  const kept = keptMessages(line, 50_000);
+  expect(kept.owner_messages).toEqual([line[0]!.data.text, "said aloud", "steered"]);
+  expect(kept.other_messages!.slice(-3)).toEqual(["loop run", "from a peer", "momentum item"]);
+  expect(kept.other_messages!.join("")).not.toContain("[harness]");
+  expect(kept.other_messages_shortened).toBe(1);
+  const text = (summaryMessage({ summary: "s", ...kept }).content[0] as any).text as string;
+  expect(text.indexOf("<subagent_result")).toBeGreaterThan(text.indexOf("[Other messages delivered before the compaction"));
+  expect(text.indexOf("[Other messages")).toBeGreaterThan(text.indexOf("said aloud"));
+  // A later compaction keeps each side from the first one's record.
+  const again = keptMessages([...line, ev("compaction", { mode: "summary", summary: "s", ...kept })], 50_000);
+  expect(again.owner_messages).toEqual(kept.owner_messages);
+  expect(again.other_messages).toEqual(kept.other_messages);
+});
+
 // A compaction at the start of a turn summarizes what came before the prompts
 // that opened it, whoever sent them; once the turn has a reply, everything.
 test("the prompts that open a turn stay out of its first compaction", () => {
