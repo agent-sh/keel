@@ -48,6 +48,10 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).not.toContain("restart");
   expect(ev.some((e) => e.kind === "assistant" && JSON.stringify(e.data.blocks).toLowerCase().includes("finished"))).toBe(true);
   await expect(panel.getByTestId("daemon-status")).toContainText("pid", { timeout: 30_000 });
+  // The page reconnected by itself. It may also reload itself into the page the
+  // new daemon serves, at any moment: do that now, so the shot is not cut by it.
+  await page.reload();
+  await expect(panel.getByTestId("daemon-status")).toContainText("pid", { timeout: 30_000 });
   await shoot(page, "daemon-03-back");
 
   // A restart that does not wait: the turn is parked and continues after the start.

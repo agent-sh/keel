@@ -101,6 +101,10 @@ export function Composer({
   const pendingKeep = useRef(new Set<string>()); // added here, not yet stored
   const sidRef = useRef(session?.id);
   sidRef.current = session?.id;
+  // How many the box holds, counted here: React may run a state update later
+  // than the code that asked for it, so what was added is not read out of one.
+  const held = useRef(0);
+  held.current = images.length;
   useEffect(() => {
     const sid = session?.id;
     if (!sid) return;
@@ -190,10 +194,11 @@ export function Composer({
     for (const f of list) {
       try {
         const a = await toAttachment(f);
-        let added = false;
-        setImages((cur) => (cur.length >= 20 ? cur : ((added = true), [...cur, a])));
+        if (held.current >= 20) continue;
+        held.current++;
+        setImages((cur) => (cur.length >= 20 ? cur : [...cur, a]));
         const sid = sidRef.current;
-        if (added && sid && !a.file) {
+        if (sid && !a.file) {
           have.current.add(a.id);
           pendingKeep.current.add(a.id);
           keepImage(sid, a).finally(() => pendingKeep.current.delete(a.id));
