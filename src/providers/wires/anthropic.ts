@@ -10,8 +10,8 @@ import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } f
 // Cache lifetime of every breakpoint. An agent loop's requests come seconds
 // apart, but the owner's next prompt often comes after more than five minutes:
 // with the 5-minute lifetime that prompt re-writes the whole conversation.
-// A subagent's requests ask for five minutes (req.cacheTtl): it works without
-// pauses and ends, so the hour's dearer writes buy nothing (Claude Code does the same).
+// A subagent that has not paused asks for five minutes (req.cacheLife "short",
+// see Engine.cacheLife): the hour's dearer writes would buy it nothing.
 export const CACHE_TTL: "5m" | "1h" = "1h";
 const CACHE: { type: "ephemeral"; ttl: "5m" | "1h" } = { type: "ephemeral", ttl: CACHE_TTL };
 
@@ -54,7 +54,7 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
 }
 
 export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?: string) {
-  const cache = req.cache === false ? undefined : req.cacheTtl === "5m" ? { type: "ephemeral" as const, ttl: "5m" as const } : CACHE;
+  const cache = req.cache === false ? undefined : req.cacheLife === "short" ? { type: "ephemeral" as const, ttl: "5m" as const } : CACHE;
   // Deferred tools are not part of the prompt (the provider leaves them out of
   // the cached prefix until a tool_reference names one), so the tools
   // breakpoint sits on the last eager tool and the deferred set can change freely.

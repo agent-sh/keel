@@ -42,8 +42,9 @@ export type ProviderRequest = {
   // false: a one-off request nothing will repeat; no cache breakpoints (a
   // write costs more than plain input when no later request reads it).
   cache?: false;
-  // The cache lifetime asked for, where the wire takes one; absent = the wire's default.
-  cacheTtl?: "5m" | "1h";
+  // The cache lifetime asked for, where the wire offers a choice (cacheLives):
+  // "short" its shortest, "long" its longest; absent = the wire's default.
+  cacheLife?: "short" | "long";
   // The qualified model id (provider:model) the request goes to, for
   // measuring; `model` is the name on the wire.
   route?: string;

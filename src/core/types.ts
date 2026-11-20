@@ -136,6 +136,7 @@ export type SessionSettings = {
   peer_turns?: number; // turns other sessions may start before the owner speaks here again
   max_steps?: number;  // model steps one turn may take; absent = no budget
   skill_mode?: string; // a skill kept on as standing instructions
+  cache_long?: boolean; // an agent's request came after a pause near its short cache lifetime: it asks for the long one from then on
   drop_thinking?: boolean; // the provider refused this session's sent-back thinking once: "drop_block" from then on
 };
 

@@ -22,7 +22,8 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt } from "./compact.ts";
-import { retention } from "./cachewarn.ts";
+import { PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
+import { cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, backoffMs, errorText, retryable, sleep } from "./retry.ts";
@@ -568,8 +569,7 @@ export class Engine {
     // A reader's request carries no conversation for the hooks to add to.
     if (purpose === "reader") req.cache = false;
     else for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
-    // A subagent works without pauses, then ends: the hour's dearer cache writes buy it nothing.
-    if (session.parent_id && purpose !== "reader") req.cacheTtl = "5m";
+    if (session.parent_id && purpose !== "reader") req.cacheLife = this.cacheLife(id, st);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
     for (let attempt = 0; ; attempt++) {
@@ -622,6 +622,26 @@ export class Engine {
         await sleep(wait, signal);
       }
     }
+  }
+
+  // A subagent's cache lifetime, where the route offers a choice. It starts
+  // short (an agent usually works without pauses and the long lifetime's
+  // writes cost more) and takes the long one for good once a request comes
+  // later than the short lifetime less PAUSE_MARGIN_MS after the one before:
+  // the agent waits (a foreground command, wait_for, its own agents), and on
+  // the short lifetime each wake would write its whole context again.
+  private sent = new SessionMap<number>(256);
+  private cacheLife(id: string, st: Step): "short" | "long" | undefined {
+    const lives = cacheLives(st.provider.wire);
+    const now = Date.now();
+    const prev = this.sent.get(id);
+    this.sent.set(id, now);
+    if (!lives) return undefined;
+    if (this.store.session(id)?.settings.cache_long) return "long";
+    const before = prev ?? lastWarm(this.lineage(id));
+    if (!before || now - before <= lives.short - PAUSE_MARGIN_MS) return "short";
+    this.store.mergeSettings(id, { cache_long: true });
+    return "long";
   }
 
   // The provider's prefix check on sent-back thinking failed although the
@@ -930,7 +950,9 @@ export class Engine {
     clearTimeout(this.idleTimers.get(id));
     this.idleTimers.delete(id);
     const session = this.store.session(id);
-    if (!session || session.settings.idle_compact === false) return;
+    // An agent's context is not prepared while idle: an ended agent is seldom
+    // taken up again, and one that waits within its turn is not idle.
+    if (!session || session.parent_id || session.settings.idle_compact === false) return;
     const events = this.lineage(id);
     const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
     if (this.used(events, st) < idleMinTokens(limit)) return;

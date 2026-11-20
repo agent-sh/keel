@@ -1,5 +1,5 @@
 import type { SseEvent } from "../sse.ts";
-import type { Delta, ProviderRequest, ProviderResult } from "../types.ts";
+import type { Delta, ProviderRequest, ProviderResult, Wire } from "../types.ts";
 
 // What every wire codec gets besides the request.
 export type WireCtx = {
@@ -8,6 +8,12 @@ export type WireCtx = {
   efforts: string[];      // levels the model takes; empty: send none
   legacyIsMine?: boolean; // see project.ts
 };
+
+// The cache lifetimes a request on a wire can choose between
+// (ProviderRequest.cacheLife), in ms. Anthropic Messages takes five minutes or
+// an hour per breakpoint; on the other wires the provider sets the lifetime.
+const LIVES: Partial<Record<Wire, { short: number; long: number }>> = { anthropic_messages: { short: 5 * 60_000, long: 60 * 60_000 } };
+export const cacheLives = (wire?: Wire) => (wire ? LIVES[wire] : undefined);
 
 export interface WireParser {
   event(e: SseEvent): void;

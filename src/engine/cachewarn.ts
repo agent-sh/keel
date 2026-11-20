@@ -16,6 +16,10 @@ export const CACHE_TTL_MS = 5 * 60_000;
 
 const MIN = 60_000;
 
+// A gap this close to a short cache lifetime counts as past it: the request
+// time (25 to 30 s seen on long contexts) and its spread take the rest.
+export const PAUSE_MARGIN_MS = MIN;
+
 // How long the request that wrote the prefix keeps it, from what that route
 // documents and what its answers showed. `sure`: covered by a documented
 // lifetime; up to `max`: it may still be there (a typical retention).
