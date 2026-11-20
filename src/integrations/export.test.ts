@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { marked } from "marked";
 import type { Session, StoredEvent } from "../core/types.ts";
@@ -73,20 +73,40 @@ test("a resume handoff carries the active context only", () => {
   expect(sum.map((e) => e.kind)).toEqual(["compaction", "user"]);
 });
 
-test("Codex resume projects compacted and retained text as display events, separate from model history", () => {
+test("Codex resume adds display events without changing model history or Keel reimport", async () => {
   const summary = ev("compaction", { mode: "summary", summary: "Earlier context" });
   const prompt = ev("user", { text: "What changed?" });
-  const next = ev("user", { text: "", images: [{ type: "image", media_type: "image/png", data: "iVBORw0KGgo" }] });
+  const steer = ev("user", { text: "Include the result" });
+  const note = ev("note", { text: "Model only", model: true });
+  const answer = ev("assistant", { blocks: [{ type: "text", text: "All good" }], model: "p:alpha" });
+  const image = { type: "image", media_type: "image/png", data: "iVBORw0KGgo" };
+  const next = ev("user", { text: "", images: [image] });
+  const partial = ev("assistant", { blocks: [{ type: "text", text: "Checking" }] });
+  const abort = ev("turn_end", { reason: "interrupted" });
+  const start = ev("turn_start", {}, prompt.ts);
+  const end = ev("turn_end", { reason: "end_turn" }, answer.ts);
   const evs = [
-    summary, prompt, ev("turn_start", {}), ev("user", { text: "Include the result" }),
-    ev("note", { text: "Model only", model: true }),
-    ev("assistant", { blocks: [{ type: "text", text: "All good" }] }),
-    ev("turn_end", { reason: "end_turn" }),
-    next, ev("assistant", { blocks: [{ type: "text", text: "Checking" }] }),
-    ev("turn_end", { reason: "interrupted" }),
+    summary, prompt, start, steer, note, answer, end, next, partial, abort,
   ];
-  const rows = toCodexRollout(s, evs, "x", 0).trim().split("\n").map((l) => JSON.parse(l));
-  expect(rows.filter((r) => r.type === "event_msg").map((r) => r.payload)).toEqual([
+  const stamp = (e: StoredEvent) => new Date(e.ts).toISOString();
+  const wire = (e: StoredEvent, type: string, payload: object) => ({ timestamp: stamp(e), type, payload });
+  const message = (e: StoredEvent, role: string, content: object) => wire(e, "response_item", { type: "message", role, content: [content] });
+  const modelHistory = [
+    wire(summary, "session_meta", { id: "x", timestamp: stamp(summary), cwd: s.workspace, originator: "keel", cli_version: "0.0.0", source: "cli" }),
+    wire(summary, "compacted", { message: "Earlier context" }),
+    message(prompt, "user", { type: "input_text", text: "What changed?" }),
+    message(steer, "user", { type: "input_text", text: "Include the result" }),
+    message(note, "user", { type: "input_text", text: "<keel_note>\nModel only\n</keel_note>" }),
+    wire(answer, "turn_context", { cwd: s.workspace, approval_policy: "on-request", sandbox_policy: { type: "workspace-write" }, model: "alpha", summary: "auto" }),
+    message(answer, "assistant", { type: "output_text", text: "All good" }),
+    message(next, "user", { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo" }),
+    message(partial, "assistant", { type: "output_text", text: "Checking" }),
+  ];
+  const before = toJsonl([...modelHistory, wire(abort, "event_msg", { type: "turn_aborted", reason: "interrupted" })]);
+  const after = toCodexRollout(s, evs, "x", 0);
+  const rows = after.trimEnd().split("\n").map((json) => ({ json, row: JSON.parse(json) }));
+  expect(rows.filter(({ row }) => row.type !== "event_msg").map(({ json }) => json + "\n").join("")).toBe(toJsonl(modelHistory));
+  expect(rows.filter(({ row }) => row.type === "event_msg").map(({ row }) => row.payload)).toEqual([
     { type: "task_started", turn_id: summary.id },
     { type: "agent_message", message: "Summary of the earlier conversation (Keel)\n\nEarlier context" },
     { type: "task_complete", turn_id: summary.id },
@@ -100,15 +120,18 @@ test("Codex resume projects compacted and retained text as display events, separ
     { type: "agent_message", message: "Checking" },
     { type: "turn_aborted", turn_id: next.id, reason: "interrupted" },
   ]);
-  expect(rows.find((r) => r.type === "compacted")?.payload).toEqual({ message: "Earlier context" });
-  expect(rows.filter((r) => r.type === "response_item").map((r) => r.payload.content[0])).toEqual([
-    { type: "input_text", text: "What changed?" },
-    { type: "input_text", text: "Include the result" },
-    { type: "input_text", text: "<keel_note>\nModel only\n</keel_note>" },
-    { type: "output_text", text: "All good" },
-    { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo" },
-    { type: "output_text", text: "Checking" },
-  ]);
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "", "keel-export-"));
+  try {
+    const oldPath = join(dir, "before.jsonl"), newPath = join(dir, "after.jsonl");
+    writeFileSync(oldPath, before);
+    writeFileSync(newPath, after);
+    const old = await readCodex(oldPath), updated = await readCodex(newPath);
+    expect(updated.events).toEqual(old.events);
+    expect(updated.events.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["What changed?", "Include the result", ""]);
+    expect(updated.events.filter((e) => e.kind === "note").map((e) => e.data.text)).toEqual(["Earlier context", "Model only"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("round trips through Claude Code's and Codex's files keep ids, outcomes, notes, images, times and models", async () => {
