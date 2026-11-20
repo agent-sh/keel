@@ -430,8 +430,14 @@ export function markUnread(id: string): boolean {
 const shown: Record<string, number> = {};
 const gdbusArgs = ["call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications"];
 
-function gvariantString(s: string) {
-  return `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, " ")}'`;
+// gdbus reads every argument as GVariant text. A bare string works only by its
+// fallback (wrap in double quotes, escaping the quotes and nothing else), which
+// refuses a backslash before a quote (JSON in a body) or at the end, and gdbus
+// takes text that starts with a dash for an option of its own. So each string
+// goes quoted: backslash and quote escaped, a line break as \n, no NUL (an
+// argument cannot hold one).
+export function gvariantString(s: string) {
+  return `'${s.replace(/\0/g, "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n")}'`;
 }
 
 registerChannel({
@@ -443,7 +449,7 @@ registerChannel({
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
     const p = Bun.spawn([
       "gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.Notify",
-      "Keel", String(shown[key] ?? 0), "", a.title, a.body, "[]",
+      "Keel", String(shown[key] ?? 0), "", gvariantString(a.title), gvariantString(a.body), "[]",
       `{'suppress-sound': <true>, 'urgency': <byte ${urgency}>, 'desktop-entry': <'keel'>, 'category': <${gvariantString(`keel.${a.kind}`)}>}`,
       "int32 -1",
     ], { stdout: "pipe", stderr: "pipe" });

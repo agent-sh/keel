@@ -201,3 +201,18 @@ test("the desktop gets what needs the owner; a routine finish stays in the inbox
   await settle();
   expect(sent.at(-1)).toBe("finished:asked for");
 });
+
+// The desktop channel hands gdbus its strings as GVariant text. A body that
+// carries JSON (a backslash before a quote) was refused when passed bare, and
+// a title starting with dashes was read as an option.
+test("a notification's title and body reach gdbus as quoted GVariant strings", () => {
+  const json = String.raw`send: {"text":"line\n\nHis words: \"yes\""}`;
+  expect(alerts.gvariantString(json)).toBe(String.raw`'send: {"text":"line\\n\\nHis words: \\"yes\\""}'`);
+  expect(alerts.gvariantString("it's\ntwo lines\0")).toBe(String.raw`'it\'s\ntwo lines'`);
+  if (!Bun.which("gdbus") || !process.env.DBUS_SESSION_BUS_ADDRESS) return;
+  // The real parser, on a method that takes one string and shows nothing.
+  const parses = (arg: string) =>
+    Bun.spawnSync(["gdbus", "call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.NameHasOwner", arg], { timeout: 5000 }).exitCode === 0;
+  expect(parses(json)).toBe(false);
+  for (const s of [json, "--help", "C:\\", "it's", "'quoted'", "true", "a\nb\tc", "@s x", "<b>&"]) expect(parses(alerts.gvariantString(s))).toBe(true);
+});
