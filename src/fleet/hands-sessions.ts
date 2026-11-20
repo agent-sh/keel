@@ -109,9 +109,24 @@ export async function processTable(): Promise<Proc[]> {
 // record read from its folder is checked here against the process's start.
 type Listed = { pid: number; sessionId: string; status?: Signals["status"]; waitingFor?: string; listed?: boolean; procStart?: string; startedAt?: number };
 
+let listed: { at: number; rows: Promise<Listed[]> } | undefined;
+function claudeListed(): Promise<Listed[]> {
+  if (!Bun.which("claude")) return Promise.resolve([]);
+  if (listed && Date.now() - listed.at < 5000) return listed.rows;
+  const rows = (async () => {
+    try {
+      const p = Bun.spawn(["claude", "agents", "--json"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 5000 });
+      const list = JSON.parse(await readText(p.stdout));
+      return (Array.isArray(list) ? list : []).filter((r) => typeof r?.pid === "number" && typeof r.sessionId === "string").map((r) => ({ pid: r.pid, sessionId: r.sessionId, status: r.status, waitingFor: r.waitingFor }) as Listed);
+    } catch { return []; }
+  })();
+  listed = { at: Date.now(), rows };
+  return rows;
+}
+
 // Claude Code's own list of its live sessions: its command when it is on the
 // PATH, joined with the records it keeps (the command reads the same ones).
-// Read once per request, never kept: a session that started a second ago counts.
+// The records are read at every request: a session that started a second ago counts.
 async function claudeSessions(): Promise<Listed[]> {
   {
     const by = new Map<number, Listed>();
@@ -125,12 +140,11 @@ async function claudeSessions(): Promise<Listed[]> {
         if (typeof r.pid === "number" && typeof r.sessionId === "string") by.set(r.pid, { pid: r.pid, sessionId: r.sessionId, status: r.status, waitingFor: r.waitingFor, procStart: r.procStart, startedAt: r.startedAt });
       } catch {}
     }
-    if (Bun.which("claude")) {
-      try {
-        const p = Bun.spawn(["claude", "agents", "--json"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 5000 });
-        const list = JSON.parse(await readText(p.stdout));
-        for (const r of Array.isArray(list) ? list : []) if (typeof r?.pid === "number" && typeof r.sessionId === "string") by.set(r.pid, { pid: r.pid, sessionId: r.sessionId, status: r.status, waitingFor: r.waitingFor, listed: true });
-      } catch {}
+    // Its word on each of them: asked at most every few seconds (the command
+    // starts a process there), while the records above are read every time.
+    for (const r of await claudeListed()) {
+      const mine = by.get(r.pid);
+      if (!mine || mine.sessionId === r.sessionId) by.set(r.pid, { ...mine, ...r, listed: true });
     }
     return [...by.values()];
   }
@@ -193,6 +207,7 @@ function carrying(sessionId: string, procs: Proc[]): number[] {
 // What the transcript leaves open since its harness started: read from the
 // end, only the kinds of record that say something, once per change of the file.
 const tails = new Map<string, { key: string; tail: Tail }>();
+const TAIL_MAX = 64 << 20;
 const TELLING = { claude: ['"tool_use"', '"tool_result"', "task-notification", '"turn_duration"', '"stop_hook_summary"', "Request interrupted", '"end_turn"', '"type":"user"'], codex: ['"event_msg"', '"response_item"'] };
 function tailSince(f: Found, since: number): Tail {
   let key = `${since}`;
@@ -201,7 +216,10 @@ function tailSince(f: Found, since: number): Tail {
   if (had?.key === key) return had.tail;
   const reader = tailReader(f.harness, since);
   const telling = TELLING[f.harness as Here].map((w) => Buffer.from(w));
+  let read = 0;
   linesBack(f.path, (line) => {
+    // A long session's old records are not read through: a job older than this still shows, as a process under it.
+    if ((read += line.length) > TAIL_MAX) return true;
     if (!telling.some((w) => line.includes(w))) return false;
     try { return reader.push(JSON.parse(line.toString("utf8"))); } catch { return false; }
   });
