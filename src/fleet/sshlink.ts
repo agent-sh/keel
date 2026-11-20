@@ -191,7 +191,7 @@ export class SshLink {
     // Detached from the ssh session (setsid, else nohup), so a dropped link
     // leaves it and its jobs running; a second start finds the first and exits.
     const cmd = `env BUN_BE_BUN=1 ${q(runtime)} ${q(helper)} --dir ${q(runDir)} --spill ${q(`${base}/spill`)} --version ${hash}`;
-    const r = await this.run(`mkdir -p ${q(runDir)} && chmod 700 ${q(base)} ${q(runDir)} && cd "$HOME" && if [ -S ${q(remoteSock)} ] && kill -0 "$(cat ${q(runDir)}/hands.pid 2>/dev/null)" 2>/dev/null; then echo running; else if command -v setsid >/dev/null 2>&1; then setsid ${cmd} >> ${q(runDir)}/hands.log 2>&1 < /dev/null & else nohup ${cmd} >> ${q(runDir)}/hands.log 2>&1 < /dev/null & fi; echo started; fi; i=0; while [ ! -S ${q(remoteSock)} ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done; [ -S ${q(remoteSock)} ] || { echo "it did not open its socket within 15 s; its log:" >&2; tail -n 5 ${q(runDir)}/hands.log >&2; exit 1; }`);
+    const r = await this.run(`mkdir -p ${q(runDir)} && chmod 700 ${q(base)} ${q(runDir)} && cd "$HOME" && if [ -S ${q(remoteSock)} ] && ps -p "$(cat ${q(runDir)}/hands.pid 2>/dev/null)" -o args= 2>/dev/null | grep -q "hands-${hash}"; then echo running; else if command -v setsid >/dev/null 2>&1; then setsid ${cmd} >> ${q(runDir)}/hands.log 2>&1 < /dev/null & else nohup ${cmd} >> ${q(runDir)}/hands.log 2>&1 < /dev/null & fi; echo started; fi; i=0; while [ ! -S ${q(remoteSock)} ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done; [ -S ${q(remoteSock)} ] || { echo "it did not open its socket within 15 s; its log:" >&2; tail -n 5 ${q(runDir)}/hands.log >&2; exit 1; }`);
     if (r.code !== 0) throw new LinkError(`${alias}: the helper did not start: ${r.err.trim() || `exit ${r.code}`}`);
     this.installed = { runtime, helper, uploaded, dir: base };
     if (uploaded.length) this.log(`installed on ${alias}: ${uploaded.join(", ")}`);
@@ -243,6 +243,13 @@ export class SshLink {
         await Bun.sleep(Math.min(30_000, 500 * 2 ** attempt));
       }
     }
+  }
+
+  // A machine switched off: its helpers end (no session uses them: switching
+  // off is refused while one does). What was put there stays for next time.
+  async stopHelpers(): Promise<void> {
+    const base = `$HOME/${process.env.KEEL_REMOTE_DIR ?? ".cache/keel-remote"}`;
+    await this.run(`for f in "${base}"/run-*/hands.pid; do [ -f "$f" ] || continue; p=$(cat "$f"); ps -p "$p" -o args= 2>/dev/null | grep -q "hands-.*--dir" && kill "$p"; done; true`, { timeout: 15_000 });
   }
 
   // The folders inside one folder there, for the folder picker (no helper needed).

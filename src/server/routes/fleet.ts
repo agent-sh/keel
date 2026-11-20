@@ -302,7 +302,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (!f.row(id)) return bad("no such machine", 404);
         const users = store.sessions().filter((s) => s.machine === id);
         if (users.length) return bad(`sessions run their tools there: ${users.map((s) => s.title || s.id).join(", ")}`, 409);
-        f.remove(id);
+        await f.remove(id);
         return json({ machines: await machinesList() });
       },
     },

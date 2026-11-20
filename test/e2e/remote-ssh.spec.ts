@@ -118,6 +118,16 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     await expect.poll(() => readFileSync(`${LOCAL}/a.txt`, "utf8"), { timeout: 120_000 }).toBe("one\ntwo\nthree\n");
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("machine-chip")).not.toContainText(HOST);
+
+    // Switched off once no session uses it: back among the hosts, its helper ended.
+    for (const id of [moved, sid]) await request.delete(`/api/sessions/${id}`);
+    moved = sid = "";
+    await page.goto("/settings/machines");
+    await page.locator('[data-testid="machine-row"]').filter({ hasText: HOST }).getByTestId("machine-toggle").click();
+    await expect(page.locator(`[data-testid="ssh-host"][data-host="${HOST}"]`)).toBeVisible({ timeout: 30_000 });
+    mid = "";
+    const alive = `for f in ${ROOT}/*/run-*/hands.pid $HOME/.cache/keel-remote/run-*/hands.pid; do [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null && echo alive; done; true`;
+    await expect.poll(() => there(alive), { timeout: 15_000 }).toBe("");
   } finally {
     if (moved) await request.delete(`/api/sessions/${moved}`);
     rmSync(LOCAL, { recursive: true, force: true });

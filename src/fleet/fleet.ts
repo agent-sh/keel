@@ -128,7 +128,9 @@ export class Fleet {
     return this.row(id)!;
   }
 
-  remove(id: string) {
+  async remove(id: string) {
+    const m = this.row(id);
+    if (m && this.isSsh(m)) await this.sshLink(m).stopHelpers().catch(() => {}); // unreachable: it ends by itself after a day
     this.unlink(id);
     this.setRules(this.rules().filter((r) => r.machine !== id)); // a rule for a machine that is gone sends nothing
     this.store.db.query("DELETE FROM fleet_machines WHERE id = ?").run(id);
