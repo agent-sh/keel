@@ -21,7 +21,7 @@ import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt } from "./compact.ts";
 import { PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -979,7 +979,7 @@ export class Engine {
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
     if (!covered || covered.kind === "compaction") return;
     const have = this.store.db.query<{ covered: string }, [string]>("SELECT covered FROM prepared_summaries WHERE session_id = ?").get(id);
-    if (have && events.some((e) => e.id === have.covered) && events.findIndex((e) => e.id === have.covered) > checkpointAt(events).at && (!idle || have.covered === covered.id)) return;
+    if (have && preparedHolds(events, have.covered, idle)) return;
     this.preparing.add(id);
     const session = this.store.session(id)!;
     const before = this.used(events, st);

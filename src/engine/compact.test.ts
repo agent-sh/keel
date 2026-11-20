@@ -5,7 +5,7 @@
 // adds nothing, a note for the model adds its text, an attached text file adds
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
-import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, replyBytes, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
+import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -124,6 +124,17 @@ test("an unmeasured history is counted at the model's own bytes a token", () => 
 test("a reply counts its words, thinking and calls, not signatures", () => {
   const reply = [{ type: "thinking", thinking: "abcd", signature: "S".repeat(50_000) }, { type: "redacted_thinking", data: "R".repeat(9_000) }, { type: "text", text: "hello" }, { type: "tool_use", id: "t1", name: "Bash", input: { c: 1 } }] as any;
   expect(replyBytes(reply)).toBe(4 + 5 + 4 + 7);
+});
+
+// An idle summary stays whole when its own request stored a job notice after
+// what it covers; an owner's prompt after it makes it partial.
+test("a prepared summary holds through notes, not through new words", () => {
+  const reply = ev("assistant", { blocks: [{ type: "text", text: "done" }], stop: "end_turn" });
+  const line = [ev("user", { text: "go" }), reply, ev("turn_end", {}), ev("note", { kind: "job", text: "job 1 ended", model: true })];
+  expect(preparedHolds(line, reply.id, true)).toBe(true);
+  expect(preparedHolds([...line, ev("user", { text: "more" })], reply.id, true)).toBe(false);
+  expect(preparedHolds([...line, ev("user", { text: "more" })], reply.id, false)).toBe(true);
+  expect(preparedHolds(line, "gone", false)).toBe(false);
 });
 
 const turn = (n: number, out: string) => [

@@ -65,6 +65,16 @@ export function lastWarm(lineage: StoredEvent[], preparedMs = 0): number {
   return Math.max(last?.ts ?? 0, preparedMs);
 }
 
+// A prepared summary that covers up to `covered` still serves: it covers part
+// of this branch after its last checkpoint, and for idle compaction (which
+// covers the whole context) only notes came after it, such as a job notice its
+// own request stored. Those follow it verbatim when it is applied.
+export function preparedHolds(lineage: StoredEvent[], covered: string, idle: boolean): boolean {
+  const at = lineage.findIndex((e) => e.id === covered);
+  if (at < 0 || at <= checkpointAt(lineage).at) return false;
+  return !idle || lineage.slice(at + 1).every((e) => e.kind === "note" || e.kind === "turn_start" || e.kind === "turn_end");
+}
+
 export function summaryPrompt(focus?: string): string {
   return [
     "[harness] The context is being compacted. Write a summary of the conversation so far that lets you continue the work without it: everything before this point will be replaced by your summary.",
