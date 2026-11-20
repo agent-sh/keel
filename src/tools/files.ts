@@ -329,15 +329,26 @@ function isUtf8(b: Uint8Array): boolean {
 
 // ---- search ----------------------------------------------------------------
 
-export async function globFiles(pattern: string, root: string, cap = 100): Promise<{ files: string[]; truncated: boolean }> {
+// A folder to search that is not there (a guessed tests/ folder, a removed worktree) or is a
+// file is answered with where to look instead. Bun's scan throws on both, and on a folder it
+// cannot read part-way: the files found until then are returned with what stopped the search.
+export async function globFiles(pattern: string, root: string, cwd: string, cap = 100): Promise<{ files: string[]; truncated: boolean; stopped?: string } | { error: string }> {
+  let st;
+  try { st = statSync(root); } catch { return { error: notFound(root, cwd, "Directory") }; }
+  if (!st.isDirectory()) return { error: `${root} is a file, not a directory. Search in ${dirname(root)}.` };
   const files: { p: string; m: number }[] = [];
-  for await (const f of new Bun.Glob(pattern).scan({ cwd: root, absolute: true, onlyFiles: true, dot: true })) {
-    if (f.includes("/node_modules/") || f.includes("/.git/")) continue;
-    files.push({ p: f, m: mtime(f) });
-    if (files.length >= 20_000) break;
+  let stopped: string | undefined;
+  try {
+    for await (const f of new Bun.Glob(pattern).scan({ cwd: root, absolute: true, onlyFiles: true, dot: true })) {
+      if (f.includes("/node_modules/") || f.includes("/.git/")) continue;
+      files.push({ p: f, m: mtime(f) });
+      if (files.length >= 20_000) break;
+    }
+  } catch (e) {
+    stopped = `The search stopped before it covered every folder, so this list is incomplete: ${(e as Error).message}`;
   }
   files.sort((a, b) => b.m - a.m);
-  return { files: files.slice(0, cap).map((f) => f.p), truncated: files.length > cap };
+  return { files: files.slice(0, cap).map((f) => f.p), truncated: files.length > cap, stopped };
 }
 
 export type RgOpts = {

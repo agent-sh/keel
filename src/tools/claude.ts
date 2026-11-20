@@ -1,6 +1,5 @@
 // The tool profile Claude models are trained on: Claude Code's current names,
 // argument shapes and result wording (code.claude.com/docs/en/tools-reference).
-import { statSync } from "node:fs";
 import { abs, editFile, globFiles, guardOverwrite, mtime, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
@@ -210,10 +209,11 @@ const Glob: Tool = {
   }, ["pattern"]),
   async run(input, ctx) {
     const root = input.path ? abs(input.path, ctx) : ctx.cwd;
-    try { if (!statSync(root).isDirectory()) return fail(`${root} is not a directory.`); } catch { return fail(`Directory does not exist: ${root}`); }
-    const r = await globFiles(String(input.pattern ?? ""), root);
-    if (!r.files.length) return ok("No files found");
-    return ok(r.files.join("\n") + (r.truncated ? "\n(Results are truncated. Consider using a more specific path or pattern.)" : ""));
+    const r = await globFiles(String(input.pattern ?? ""), root, ctx.cwd);
+    if ("error" in r) return fail(r.error);
+    const stopped = r.stopped ? `\n(${r.stopped})` : "";
+    if (!r.files.length) return ok(`No files found${stopped}`);
+    return ok(r.files.join("\n") + (r.truncated ? "\n(Results are truncated. Consider using a more specific path or pattern.)" : "") + stopped);
   },
 };
 

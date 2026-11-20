@@ -9,8 +9,8 @@ import { basename, dirname, extname, join, relative, isAbsolute } from "node:pat
 const exists = (p: string) => { try { statSync(p); return true; } catch { return false; } };
 const list = (dir: string): string[] | null => { try { return readdirSync(dir); } catch { return null; } };
 
-export function notFound(p: string, cwd: string): string {
-  const out = [`File does not exist: ${p}`];
+export function notFound(p: string, cwd: string, what: "File" | "Directory" = "File"): string {
+  const out = [`${what} does not exist: ${p}`];
   const moved = reroot(p, cwd);
   const folder = dirname(p);
   let names = list(folder);

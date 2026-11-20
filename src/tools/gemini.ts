@@ -130,9 +130,11 @@ const glob: Tool = {
   }, ["pattern"]),
   async run(input, ctx) {
     const root = input.dir_path ? abs(input.dir_path, ctx) : ctx.cwd;
-    const r = await globFiles(String(input.pattern ?? ""), root, 200);
-    if (!r.files.length) return ok(`No files found matching pattern "${input.pattern}" within ${root}`);
-    return ok(`Found ${r.files.length}${r.truncated ? "+" : ""} file(s) matching "${input.pattern}" within ${root}, sorted by modification time (newest first):\n${r.files.join("\n")}`);
+    const r = await globFiles(String(input.pattern ?? ""), root, ctx.cwd, 200);
+    if ("error" in r) return fail(r.error);
+    const stopped = r.stopped ? `\n(${r.stopped})` : "";
+    if (!r.files.length) return ok(`No files found matching pattern "${input.pattern}" within ${root}${stopped}`);
+    return ok(`Found ${r.files.length}${r.truncated ? "+" : ""} file(s) matching "${input.pattern}" within ${root}, sorted by modification time (newest first):\n${r.files.join("\n")}${stopped}`);
   },
 };
 

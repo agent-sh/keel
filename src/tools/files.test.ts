@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { applyEdit, editFile, readFile } from "./files.ts";
+import { claudeTools } from "./claude.ts";
+import { applyEdit, editFile, globFiles, readFile } from "./files.ts";
+import { geminiTools } from "./gemini.ts";
 import { notFound, similar } from "./missing.ts";
 
 test("an edit whose lines differ only in trailing whitespace applies once", () => {
@@ -75,4 +77,27 @@ test("a large read fills the room left in the context, not one page", async () =
   expect(r.partial).toBeFalsy();
   expect(String(r.content)).toContain("20000\tline 19999");
   expect((await readFile(p, { ...ctx, room: 20_000 }, { large: true })).error).toBe(true); // more than the room
+});
+
+test("a glob in a folder that is not there says where to look, and one stopped part-way says so", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "glob-"));
+  mkdirSync(join(root, "crate/src"), { recursive: true });
+  writeFileSync(join(root, "crate/src/lib.rs"), "");
+  const ctx = { cwd: root } as any;
+  for (const [tool, dir] of [[geminiTools.find((t) => t.name === "glob")!, "dir_path"], [claudeTools.find((t) => t.name === "Glob")!, "path"]] as const) {
+    const gone = await tool.run({ pattern: "**/*.rs", [dir]: join(root, "crate/tests") }, ctx);
+    expect(gone.is_error).toBe(true);
+    expect(gone.content).toStartWith(`Directory does not exist: ${join(root, "crate/tests")}`);
+    const file = await tool.run({ pattern: "**/*.rs", [dir]: join(root, "crate/src/lib.rs") }, ctx);
+    expect(file.content).toBe(`${join(root, "crate/src/lib.rs")} is a file, not a directory. Search in ${join(root, "crate/src")}.`);
+    const found = await tool.run({ pattern: "**/*.rs", [dir]: join(root, "crate") }, ctx);
+    expect(found.is_error).toBeFalsy();
+    expect(found.content).toContain(join(root, "crate/src/lib.rs"));
+  }
+  expect(notFound(join(root, "crate/srcs"), root, "Directory")).toContain(join(root, "crate/src"));
+  mkdirSync(join(root, "crate/locked"));
+  chmodSync(join(root, "crate/locked"), 0o000);
+  const part = await globFiles("**/*.rs", join(root, "crate"), root);
+  chmodSync(join(root, "crate/locked"), 0o755);
+  if (process.getuid?.() !== 0) expect("stopped" in part && part.stopped).toContain("EACCES");
 });
