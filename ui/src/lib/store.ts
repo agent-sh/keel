@@ -492,6 +492,8 @@ export function reportError(err: unknown, context?: unknown) {
     setTimeout(() => { if (state.connected && drops === at) post(); }, 3000);
     return;
   }
+  // The daemon refused it while draining for a restart: the same connection state.
+  if ((err as { body?: { draining?: boolean } } | null)?.body?.draining) return;
   post();
 }
 // A failure the owner sees where it happened: tracked once, unless it is the

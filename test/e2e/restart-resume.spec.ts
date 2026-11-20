@@ -166,8 +166,13 @@ test("an owner session continues through restarts until its turn stops moving", 
     await shoot(page, "restart-05-owner-held");
     await page.getByTestId("resume").click();
     await expect.poll(holds, { timeout: 30_000 }).toBe(5);
-    spawnSync("sh", ["-c", `echo go > ${gate}`], { timeout: 10_000 });
-    await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 5 calls. Last result: released", { timeout: 30_000 });
+    // Written until the last call reads it: a command a crash cut still reads
+    // the pipe too, and a write can reach it before the last one opens it.
+    const last = page.getByTestId("assistant-text").last();
+    await expect.poll(async () => {
+      spawnSync("sh", ["-c", `echo go > ${gate}`], { timeout: 2_000 });
+      return last.textContent();
+    }, { timeout: 30_000 }).toContain("Done with 5 calls. Last result: released");
   } finally {
     d.proc.kill("SIGKILL");
   }
