@@ -5,7 +5,7 @@
 // adds nothing, a note for the model adds its text, an attached text file adds
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
-import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, ownerMedia, ownerWords, summaryMessage, utf8Bytes } from "./compact.ts";
+import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -29,8 +29,8 @@ test("the message that crosses the text budget keeps a marked excerpt and its fi
   for (const size of [OWNER_WORDS_BYTES - 1, OWNER_WORDS_BYTES, OWNER_WORDS_BYTES + 1]) {
     const paste = "x".repeat(size - 3) + "END";
     const line = [ev("user", { text: "a" }), ev("user", { text: paste, images: [file("ref.txt", 12)] })];
-    const words = ownerWords(line);
-    const media = ownerMedia(line)!;
+    const { owner_messages: words, owner_media, owner_messages_shortened } = keptMessages(line);
+    const media = owner_media!;
     if (size < OWNER_WORDS_BYTES) expect(words).toEqual(["a", paste]);
     else if (size === OWNER_WORDS_BYTES) expect(words).toEqual([paste]);
     else {
@@ -38,6 +38,7 @@ test("the message that crosses the text budget keeps a marked excerpt and its fi
       expect(words[0]).toMatch(/^x+\n\[\.\.\. \d+ bytes of this message were left out of the compacted context \.\.\.\]\nx*END$/);
       expect(Buffer.byteLength(words[0]!)).toBeLessThanOrEqual(OWNER_WORDS_BYTES);
     }
+    expect(owner_messages_shortened).toBe(size > OWNER_WORDS_BYTES ? 1 : undefined);
     expect(media.at(-1)).toEqual([file("ref.txt", 12)] as any);
   }
 });
@@ -46,17 +47,30 @@ test("files travel with their message through repeated compactions, the older on
   const half = OWNER_MEDIA_BYTES / 2;
   const run = (newer: number) => {
     const first = [ev("user", { text: "older caption", images: [file("a.pdf", half)] })];
-    const c1 = ev("compaction", { mode: "summary", summary: "s1", owner_messages: ownerWords(first), owner_media: ownerMedia(first) });
+    const c1 = ev("compaction", { mode: "summary", summary: "s1", ...keptMessages(first) });
     const second = [...first, c1, ev("user", { text: "newer caption", images: [file("b.pdf", newer)] })];
-    const c2 = ev("compaction", { mode: "summary", summary: "s2", owner_messages: ownerWords(second), owner_media: ownerMedia(second) });
+    const c2 = ev("compaction", { mode: "summary", summary: "s2", ...keptMessages(second) });
     const third = [...second, c2];
-    const c3 = ev("compaction", { mode: "summary", summary: "s3", owner_messages: ownerWords(third), owner_media: ownerMedia(third) });
+    const c3 = ev("compaction", { mode: "summary", summary: "s3", ...keptMessages(third) });
     return summaryMessage(c3.data).content.slice(1);
   };
   expect(run(half)).toEqual([file("a.pdf", half), { type: "text", text: "<message>\nolder caption\n</message>" }, file("b.pdf", half), { type: "text", text: "<message>\nnewer caption\n</message>" }] as any);
   const over = run(half + 1);
   expect(over[0]).toEqual({ type: "text", text: "[An attached file (a.pdf) the owner sent with this message is no longer in the context.]" });
   expect(over.slice(1)).toEqual([{ type: "text", text: "<message>\nolder caption\n</message>" }, file("b.pdf", half + 1), { type: "text", text: "<message>\nnewer caption\n</message>" }] as any);
+});
+
+// A compaction at the start of a turn summarizes what came before the prompts
+// that opened it, whoever sent them; once the turn has a reply, everything.
+test("the prompts that open a turn stay out of its first compaction", () => {
+  const old = [ev("user", { text: "old" }), ev("turn_start", {}), ev("assistant", { blocks: [], stop: "end_turn" }), ev("turn_end", {})];
+  for (const meta of [{}, { origin: "voice" }, { origin: "momentum" }, { kind: "subagent" }]) {
+    const opening = [ev("user", { text: "now", ...meta }), ev("user", { text: "and this", origin: "queued" }), ev("turn_start", {}), ev("note", { text: "memory", model: true })];
+    expect(summarizable([...old, ...opening])).toEqual(old);
+  }
+  const mid = [...old, ev("user", { text: "now" }), ev("turn_start", {}), ev("assistant", { blocks: [], stop: "tool_use" })];
+  expect(summarizable(mid)).toEqual(mid);
+  expect(summarizable(old)).toEqual(old);
 });
 
 // A history no provider has counted (an imported one) is estimated whole at
@@ -110,12 +124,12 @@ test("a history too long for one request: outputs shortened oldest first, then p
   const joined = cut.parts.join("");
   for (let n = 0; n < 30; n++) expect(joined.split(`[user]\nprompt ${n}\n`)).toHaveLength(2);
   expect(joined.indexOf("prompt 3\n")).toBeLessThan(joined.indexOf("prompt 17\n"));
-  // One piece larger than a part keeps its start and end.
-  const giant = transcriptParts([{ role: "user", content: [{ type: "text", text: `HEAD ${"g".repeat(50_000)} TAIL` }] }], 5_000);
-  expect(giant.parts).toHaveLength(1);
-  expect(utf8Bytes(giant.parts[0]!)).toBeLessThanOrEqual(5_001);
-  expect(giant.parts[0]).toContain("HEAD");
-  expect(giant.parts[0]).toContain("TAIL");
+  // One message larger than a part goes on in the next parts, all of it read.
+  const text = `HEAD ${"g".repeat(25_000)}ש MIDDLE ${"g".repeat(25_000)} TAIL`;
+  const giant = transcriptParts([{ role: "user", content: [{ type: "text", text }] }, ...turn(1, "short")], 5_000);
+  expect(giant.parts.length).toBeGreaterThan(10);
+  for (const p of giant.parts) expect(utf8Bytes(p)).toBeLessThanOrEqual(5_000);
+  expect(giant.parts.join("")).toStartWith(`[user]\n${text}\n[user]\nprompt 1`);
   // A later part's request carries the summary so far and says more follows.
   const mid = partPrompt("PART", 1, 3, "SO FAR", 30);
   expect(mid).toContain("<summary>\nSO FAR\n</summary>");

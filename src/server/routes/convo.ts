@@ -6,7 +6,7 @@
 // prefix (Engine.ask), so it reads the cache the turns wrote; nothing earlier
 // is rewritten: a summary is a new event, the old branch stays.
 import type { Message, Session, StoredEvent } from "../../core/types.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, ownerMedia, ownerWords } from "../../engine/compact.ts";
+import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, keptMessages } from "../../engine/compact.ts";
 import { CACHE_TTL_MS } from "../../engine/cachewarn.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerShared } from "../../tools/registry.ts";
@@ -153,7 +153,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
       handoffs.delete(s.id);
       const line = engine.lineage(s.id);
       append(s.id, "compaction", {
-        mode: "summary", summary: h, owner_messages: ownerWords(line), owner_media: ownerMedia(line), auto: true, trigger: "model",
+        mode: "summary", summary: h, ...keptMessages(line), auto: true, trigger: "model",
         tokens_before: contextTokens(line, s.model).used, label: "The model started a fresh context with a handoff note",
       });
       emitSession(s.id);
@@ -231,7 +231,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           // what follows stay verbatim after the summary.
           const before = line.slice(0, at);
           head = append(s.id, "compaction", {
-            mode: "summary", summary, owner_messages: ownerWords(before), owner_media: ownerMedia(before), focus, auto: false, trigger: "owner",
+            mode: "summary", summary, ...keptMessages(before), focus, auto: false, trigger: "owner",
             covered: line[at - 1]!.id, range: "up_to", from_event: ev.id, tokens_before: contextTokens(line, s.model).used, usage, model: res.model_id,
             label: "Summarized everything before a prompt; it and what follows stay as they were",
           });

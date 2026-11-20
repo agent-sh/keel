@@ -49,7 +49,9 @@ test("an imported history over the window is compacted before its first request"
   expect(cp[0].data.parts).toBeGreaterThan(1);
   expect(cp[0].data.outputs_shortened).toBe(45);
   expect(cp[0].data.summary).toContain(`read part ${cp[0].data.parts} of ${cp[0].data.parts} of the transcript, after the summary of the parts before it`);
-  expect(cp[0].data.owner_messages.at(-1)).toBe("Which port did step 45 check?");
+  // The prompt that opened the turn is not summarized: it follows the summary whole.
+  expect(cp[0].data.owner_messages.at(-1)).toBe("Step 45: check the service on port 7045.");
+  expect(cp[0].data.covered).toBe(events[lines.length - 1].id);
   expect(cp[0].data.owner_messages).toContain("Step 1: check the service on port 7001.");
   expect(tail.filter((e) => e.kind === "error")).toHaveLength(0);
   expect(tail.find((e) => e.kind === "turn_end").data.reason).toBe("end_turn");

@@ -104,21 +104,23 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await expect(texts.last()).toHaveText("The backup model took the request.", { timeout: 15_000 });
   await expect(page.getByTestId("turn-end")).toHaveCount(10);
 
-  // A new session for the window: a request too long compacts and goes on.
+  // A new session for the window: a request too long compacts what came before
+  // the prompt and goes on (the prompt itself is sent whole after the summary).
   const { session: s2 } = await (await request.post("/api/sessions", { data: { model: STAND_IN } })).json();
   await page.goto(`/s/${s2.id}`);
-  await send(page, "script:overflow", 1);
+  await send(page, "Hello.", 1);
+  await send(page, "script:overflow", 2);
   await expect(page.getByTestId("compacted")).toContainText("Context compacted automatically");
   await expect(texts.last()).toHaveText("Answered after compacting to fit.");
 
   // A long reply fills the window past the threshold: the meter turns red and
   // the next turn compacts before its request.
-  await send(page, "script:fill", 2);
+  await send(page, "script:fill", 3);
   await page.getByTestId("context-meter").click();
   await expect(page.getByTestId("context-popup")).toContainText("of 8.0k tokens");
   await shoot(page, "failures-04-context-full");
   await page.keyboard.press("Escape");
-  await send(page, "Anything else?", 3);
+  await send(page, "Anything else?", 4);
   await expect(page.getByTestId("compacted")).toHaveCount(2);
   await expect(texts.last()).toHaveText("Scripted reply, after a compaction.");
   await shoot(page, "failures-05-auto-compacted");

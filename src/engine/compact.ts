@@ -5,6 +5,7 @@
 // the owner's recent words verbatim instead of the history; the history stays
 // stored, readable and searchable. Nothing earlier is rewritten.
 import type { Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
+import { OWNER_ORIGINS } from "../core/owner.ts";
 import { imageTokens } from "./images.ts";
 
 // Share of the model's window at which a turn compacts before its next call.
@@ -88,7 +89,7 @@ type Entry = { text: string; media: PromptBlock[] };
 
 // The owner's own messages since the last checkpoint (and those the last
 // summary kept), with their images and files.
-function ownerEntries(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): Entry[] {
+function ownerEntries(lineage: StoredEvent[]): Entry[] {
   let all: Entry[] = [];
   const at: number[] = []; // the index of each message's event
   lineage.forEach((e, i) => {
@@ -100,14 +101,18 @@ function ownerEntries(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): Entry
       all = [...kept, ...tail];
       at.length = 0;
       at.push(...all.map(() => i));
-    } else if (e.kind === "user" && (!e.data.origin || e.data.origin === "steer" || e.data.origin === "queued")) {
+    } else if (e.kind === "user" && OWNER_ORIGINS.has(e.data.origin)) {
       all.push({ text: e.data.text, media: (e.data.images ?? []).filter((b: any) => b.type === "image" || b.type === "attachment") });
       at.push(i);
     }
   });
-  // Newest first within the text budget, then oldest first. The message that
-  // crosses the budget keeps a marked excerpt (its start and end) with its
-  // images and files, as Codex cuts the message at its remaining allowance.
+  return all;
+}
+
+// Newest first within the text budget, then oldest first. The message that
+// crosses the budget keeps a marked excerpt (its start and end), as Codex cuts
+// the message at its remaining allowance; `shortened` says it happened.
+function fit(all: Entry[], budget: number): { kept: Entry[]; bytes: number; shortened: boolean } {
   const kept: Entry[] = [];
   let bytes = 0;
   for (let i = all.length - 1; i >= 0; i--) {
@@ -118,18 +123,48 @@ function ownerEntries(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): Entry
       continue;
     }
     const part = excerpt(all[i]!.text, budget - bytes);
-    if (part !== null) kept.unshift({ ...all[i]!, text: part });
-    break;
+    if (part === null) break;
+    kept.unshift({ ...all[i]!, text: part });
+    bytes += Buffer.byteLength(part);
+    return { kept, bytes, shortened: true };
   }
+  return { kept, bytes, shortened: false };
+}
+
+// What a compaction keeps verbatim of the messages it summarizes, as the
+// fields of its event: the owner's words within `budget` bytes (smaller when
+// the model's window cannot hold OWNER_WORDS_BYTES beside the summary), each
+// with its images and files newest first within OWNER_MEDIA_BYTES (older ones
+// leave a note in their place). `owner_messages_shortened`: the one message
+// kept as its start and end, so the divider can say so.
+export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): { owner_messages: string[]; owner_media?: PromptBlock[][]; owner_messages_shortened?: number } {
+  const owner = fit(ownerEntries(lineage), budget);
   let media = 0;
-  for (let i = kept.length - 1; i >= 0; i--) {
-    kept[i]!.media = kept[i]!.media.map((m: any) => {
+  for (let i = owner.kept.length - 1; i >= 0; i--) {
+    owner.kept[i]!.media = owner.kept[i]!.media.map((m: any) => {
       const n = m.type === "image" ? m.data.length : m.type === "attachment" ? m.size : 0;
       if (m.type === "text" || media + n <= OWNER_MEDIA_BYTES) { media += n; return m; }
       return { type: "text", text: `[An ${m.type === "image" ? "image" : `attached file (${m.name})`} the owner sent with this message is no longer in the context.]` };
     });
   }
-  return kept;
+  return {
+    owner_messages: owner.kept.map((e) => e.text),
+    ...(owner.kept.some((e) => e.media.length) ? { owner_media: owner.kept.map((e) => e.media) } : {}),
+    ...(owner.shortened ? { owner_messages_shortened: 1 } : {}),
+  };
+}
+
+// What a compaction at this point summarizes. A turn that has not had a reply
+// yet keeps the prompts that opened it out of the summary: they follow it
+// verbatim and whole, whoever sent them (a typed prompt, speech, an agent's
+// report, a hook's), as Codex records the new input only after a pre-turn
+// compaction. Otherwise the whole branch.
+export function summarizable(lineage: StoredEvent[]): StoredEvent[] {
+  const start = lineage.findLastIndex((e) => e.kind === "turn_start");
+  if (start < 0 || lineage.slice(start + 1).some((e) => e.kind === "assistant" || e.kind === "tool_result" || e.kind === "compaction")) return lineage;
+  let k = start;
+  while (k > 0 && lineage[k - 1]!.kind === "user") k--;
+  return k < start ? lineage.slice(0, k) : lineage;
 }
 
 // The start and the end of a text within `budget` UTF-8 bytes, with a note
@@ -157,18 +192,6 @@ export function excerpt(text: string, budget: number): string | null {
     tailBytes += n;
   }
   return head + note(total - headBytes - tailBytes) + tail;
-}
-
-// `budget`: the bytes of owner words to keep, when the model's window is too
-// small for OWNER_WORDS_BYTES (they must fit it beside the summary).
-export function ownerWords(lineage: StoredEvent[], budget?: number): string[] {
-  return ownerEntries(lineage, budget).map((e) => e.text);
-}
-
-// Aligned with ownerWords; absent when no kept message carried an image or a file.
-export function ownerMedia(lineage: StoredEvent[], budget?: number): PromptBlock[][] | undefined {
-  const m = ownerEntries(lineage, budget).map((e) => e.media);
-  return m.some((x) => x.length) ? m : undefined;
 }
 
 export function summaryMessage(data: { summary: string; owner_messages?: string[]; owner_media?: PromptBlock[][] }): Message {
@@ -318,7 +341,8 @@ function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
 // goes as a plain-text transcript instead (no media, no reasoning, as OpenCode
 // and pi serialize it): tool outputs are shortened oldest first until it fits
 // one request; when it still does not, it is cut into parts read oldest
-// first, each with the summary of the parts before it, so nothing is left out.
+// first, each with the summary of the parts before it, so nothing is left out
+// (a message longer than a part goes on in the next one).
 
 // What a shortened tool output keeps (its start and end), as OpenCode and pi cut them.
 export const TRANSCRIPT_CLIP = 2_000;
@@ -361,14 +385,7 @@ export function transcriptParts(messages: Message[], budget: number): { parts: s
   const parts: string[] = [];
   let cur = "";
   let bytes = 0;
-  for (let i = 0; i < all.length; i++) {
-    let text = all[i]!.text;
-    let n = size[i]!;
-    // One piece larger than a part keeps its start and end.
-    if (n > budget) {
-      text = (excerpt(text, budget) ?? "") + "\n";
-      n = utf8Bytes(text);
-    }
+  const add = (text: string, n: number) => {
     if (bytes + n > budget && cur) {
       parts.push(cur);
       cur = "";
@@ -376,9 +393,29 @@ export function transcriptParts(messages: Message[], budget: number): { parts: s
     }
     cur += text;
     bytes += n;
+  };
+  for (let i = 0; i < all.length; i++) {
+    // One piece larger than a part (a long message) goes on in the next parts.
+    if (size[i]! > budget) for (const c of chunks(all[i]!.text, budget)) add(c, utf8Bytes(c));
+    else add(all[i]!.text, size[i]!);
   }
   if (cur) parts.push(cur);
   return { parts, clipped };
+}
+
+// A text cut into pieces of at most `budget` UTF-8 bytes, on character bounds.
+function chunks(text: string, budget: number): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let n = 0;
+  for (const c of text) {
+    const b = utf8Bytes(c);
+    if (n + b > budget) { out.push(cur); cur = ""; n = 0; }
+    cur += c;
+    n += b;
+  }
+  if (cur) out.push(cur);
+  return out;
 }
 
 // The request for one part: the summary of the parts before it, the part, and

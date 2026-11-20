@@ -21,7 +21,7 @@ import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt } from "./compact.ts";
 import { retention } from "./cachewarn.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
@@ -711,7 +711,9 @@ export class Engine {
         const used = this.used(events, st);
         // A history with no reply of its own yet (one long first message) is
         // summarized only when it cannot be sent as it is.
-        if (used >= limit && (used >= st.info.context || events.some((e) => e.kind === "assistant")) && events.at(-1)?.kind !== "compaction") {
+        // (The prompts that opened a turn with no reply yet are not summarized: they follow the summary whole.)
+        const base = summarizable(events);
+        if (used >= limit && (used >= st.info.context || events.some((e) => e.kind === "assistant")) && base.length && base.at(-1)?.kind !== "compaction") {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
           if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st });
           events = this.lineage(id);
@@ -731,8 +733,10 @@ export class Engine {
           res = await this.call(id, st, messages, signal, partial, session);
         } catch (e) {
           // The request no longer fits the window: compact once and go on.
-          // (A context that is a fresh summary already has nothing left to compact.)
-          if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit && events.findLast((x) => x.kind !== "note" && x.kind !== "turn_start" && !(x.kind === "user" && x.data.origin === "harness"))?.kind !== "compaction") {
+          // (A context that is a fresh summary, or only the prompts that opened
+          // the turn, has nothing left to compact: the provider's error stands.)
+          const last = summarizable(events).findLast((x) => x.kind !== "note" && x.kind !== "turn_start" && !(x.kind === "user" && x.data.origin === "harness"));
+          if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit && last && last.kind !== "compaction") {
             compactedForFit = true;
             this.refused(st, events);
             await this.compactNow(id, { auto: true, trigger: "overflow", signal, step: st });
@@ -963,7 +967,7 @@ export class Engine {
         this.emitSession(id);
         const summary = res.summary;
         if (!summary) return;
-        const data = { mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), owner_messages: ownerWords(events, this.wordsBudget(st)), owner_media: ownerMedia(events, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const data = { mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...keptMessages(events, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
       .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
@@ -1072,9 +1076,16 @@ export class Engine {
   async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner"; signal?: AbortSignal; step?: Step } = {}) {
     const session = this.store.session(id)!;
     const events = this.lineage(id);
-    const messages = toMessages(events);
-    if (!messages.length || (events.at(-1)?.kind === "compaction")) throw Object.assign(new Error("nothing to compact"), { status: 409 });
+    // A turn with no reply yet: the prompts that opened it stay out of the summary and follow it whole.
+    const upto = summarizable(events);
+    const messages = toMessages(upto);
+    if (!messages.length || (upto.at(-1)?.kind === "compaction")) throw Object.assign(new Error("nothing to compact"), { status: 409 });
     const st = opts.step ?? (await this.step(session, session.model));
+    if (upto.length < events.length) {
+      const opening = events.slice(upto.length);
+      const tokens = contextTokens(opening, st.info.id).used;
+      if (tokens >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or continue on a model with a larger window.`), { status: 409, code: "context_over_window" });
+    }
     const before = this.used(events, st);
     for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact" }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
@@ -1082,7 +1093,7 @@ export class Engine {
     const signal = opts.signal ?? own.signal;
     const t0 = Date.now();
     try {
-      const res = await this.summarize(id, st, session, events, signal, opts.focus);
+      const res = await this.summarize(id, st, session, upto, signal, opts.focus);
       const u: Usage = res.usage;
       const summary = res.summary;
       if (!summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
@@ -1091,16 +1102,16 @@ export class Engine {
       // Inside a turn, a note a hook stored for the summary request itself (memory
       // for the prompt, when the summary is the turn's first request) follows the
       // summarized events on the same branch: it stays verbatim after the summary.
-      let covered: string | undefined;
+      let covered = upto.length < events.length ? upto.at(-1)!.id : undefined;
       if (moved) {
         const now = this.lineage(id);
         const at = now.findIndex((e) => e.id === events.at(-1)!.id);
         if (!opts.auto || at < 0 || now.slice(at + 1).some((e) => e.kind !== "note")) throw moved;
-        covered = events.at(-1)!.id;
+        covered ??= events.at(-1)!.id;
       }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), owner_messages: ownerWords(events, this.wordsBudget(st)), owner_media: ownerMedia(events, this.wordsBudget(st)), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...keptMessages(upto, this.wordsBudget(st)), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);

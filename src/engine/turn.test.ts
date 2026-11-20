@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { RESTART_CUT, stalledContinuations, toMessages } from "./turn.ts";
-import { ownerMedia, ownerWords } from "./compact.ts";
+import { keptMessages } from "./compact.ts";
 
 let seq = 0;
 const ev = (id: string, parent: string | null, kind: StoredEvent["kind"], data: any): StoredEvent => ({ id, session_id: "s", seq: ++seq, parent, kind, data, ts: 0 });
@@ -52,13 +52,13 @@ test("the owner's images and files stay with their message through a compaction"
     ev("m2", "m1", "assistant", { blocks: [{ type: "text", text: "red" }], stop: "end_turn" }),
     ev("m3", "m2", "user", { text: "and this file", images: [file] }),
   ];
-  const media = ownerMedia(line)!;
+  const media = keptMessages(line).owner_media!;
   expect(media).toEqual([[img], [file]]);
-  const cp = ev("m4", "m3", "compaction", { mode: "summary", summary: "s", owner_messages: ownerWords(line), owner_media: media });
+  const cp = ev("m4", "m3", "compaction", { mode: "summary", summary: "s", owner_messages: keptMessages(line).owner_messages, owner_media: media });
   const m = toMessages([...line, cp]);
   expect(m[0]!.content.map((b: any) => b.type)).toEqual(["text", "image", "text", "attachment", "text"]);
   // A later compaction keeps them again, from the first one's record.
-  expect(ownerMedia([...line, cp])).toEqual([[img], [file]]);
+  expect(keptMessages([...line, cp]).owner_media).toEqual([[img], [file]]);
 });
 
 // One instruction source read through two paths (a linked AGENTS.md, a file
