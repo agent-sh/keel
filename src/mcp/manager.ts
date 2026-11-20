@@ -16,6 +16,7 @@ import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.
 import { OAuthStore } from "./oauth.ts";
 import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
+import { conceal } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
 
 // armed, not_armed, unreachable: phone control, whose state is the gateway's answer.
@@ -794,7 +795,9 @@ export class McpManager {
     return canon({ ...e.config, enabled: undefined });
   }
 
-  private publish(e: Entry, instructions: string | undefined) {
+  private publish(e: Entry, published: string | undefined) {
+    // Kept as a session's prompt carries it: a secret in it is a placeholder.
+    const instructions = published === undefined ? undefined : conceal(published);
     const key = this.configKey(e), was = this.published[e.name];
     if (was && was.key === key && was.instructions === (instructions ?? null)) return;
     this.published[e.name] = { key, instructions: instructions ?? null };

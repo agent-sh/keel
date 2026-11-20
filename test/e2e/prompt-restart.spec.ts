@@ -14,6 +14,8 @@ import { join, resolve } from "node:path";
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 const SLOW_MS = 5_000;
 const GUIDANCE = "Slow server guidance: ask it for the tide tables.";
+// The server's instructions hold a secret: no file of the state folder may.
+const SECRET = "9fK2mQx7Lp3Zr8Tw";
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string; spawned: number }> {
   const spawned = Date.now();
@@ -82,6 +84,11 @@ test("a restart sends the same system prompt, with a slow MCP server's instructi
     expect.soft({ hash: after.hash, changed: after.changed }).toEqual({ hash: kept.hash, changed: null });
     expect.soft((await call(`/api/telemetry?session_id=${id}`)).breaks).toEqual([]);
     await ended(id, 2);
+    // The prompt is kept as it is sent: the secret's value is in no state file.
+    expect.soft((await call(`/api/telemetry/prompt?session_id=${id}&text=1`)).text).toMatch(/Its key is API_KEY=\[secret:[0-9a-f]{8}\]/);
+    const files = ["keel.db", "keel.db-wal", "mcp-instructions.json"].map((f) => join(state, "state", f)).filter((f) => existsSync(f));
+    expect(files.length).toBeGreaterThanOrEqual(2);
+    for (const f of files) expect.soft(readFileSync(f, "latin1").includes(SECRET), `${f} holds the secret's value`).toBe(false);
 
     // More sessions take a turn than the daemon keeps prompts in memory for,
     // and an input changes meanwhile (the server is turned off): the first

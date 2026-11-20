@@ -1,4 +1,5 @@
-// A session's system prompt, kept with the session: the text a request sends
+// A session's system prompt, kept with the session, as the model is sent it
+// (secrets are placeholders before it is stored or hashed): the text a request sends
 // and the blocks it was made of (the core lines, each hook's text, the place,
 // the instruction files), each with a fingerprint. A daemon restart or a
 // session dropping out of memory reads the same bytes back; the prompt is

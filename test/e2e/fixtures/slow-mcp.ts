@@ -15,7 +15,7 @@ async function handle(m: any) {
         protocolVersion: m.params?.protocolVersion ?? "2025-11-25",
         capabilities: { tools: {} },
         serverInfo: { name: "slow-mcp", version: "1.0.0" },
-        instructions: "Slow server guidance: ask it for the tide tables.",
+        instructions: "Slow server guidance: ask it for the tide tables. Its key is API_KEY=9fK2mQx7Lp3Zr8Tw",
       });
     case "tools/list":
       return reply({ tools: [{ name: "tide", description: "The tide table of a port.", inputSchema: { type: "object", properties: { port: { type: "string" } } } }] });
