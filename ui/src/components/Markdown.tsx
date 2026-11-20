@@ -85,38 +85,63 @@ function mathIn(root: Element) {
 
 // Paths in inline code are asked about in one request per session and burst;
 // the answers are kept for the page's life (a file named once is named again).
+// A lookup that failed is no answer: it is asked again, later each time,
+// while any of its paths is still on the page.
 const known = new Map<string, Map<string, string | null>>();
 const asking = new Map<string, Set<HTMLElement>>();
+const RETRY_MS = 2000;
+const RETRY_MAX_MS = 60_000;
+function markPath(el: HTMLElement, have: Map<string, string | null>) {
+  const rel = have.get(el.dataset.path!);
+  if (rel === undefined) return false;
+  el.dataset.checked = "1";
+  if (rel !== null) {
+    el.dataset.rel = rel;
+    el.setAttribute("role", "link");
+    el.tabIndex = 0;
+    el.title = `Open ${rel}${el.dataset.line ? ` at line ${el.dataset.line}` : ""} in Files`;
+  }
+  return true;
+}
+function askPaths(sessionId: string, els: Set<HTMLElement>, wait: number, failures = 0) {
+  const have = known.get(sessionId) ?? known.set(sessionId, new Map()).get(sessionId)!;
+  asking.set(sessionId, els);
+  setTimeout(() => {
+    // What joined the batch while it waited is asked with it; what left the page is dropped.
+    const batch = [...els].filter((el) => el.isConnected && !markPath(el, have));
+    const paths = [...new Set(batch.map((el) => el.dataset.path!))];
+    if (!paths.length) return void asking.delete(sessionId);
+    api<{ files: Record<string, string> }>(`/api/sessions/${sessionId}/files/exist`, { method: "POST", body: JSON.stringify({ paths }) }).then(
+      (r) => {
+        for (const p of paths) have.set(p, r.files[p] ?? null);
+        // A path that joined while the request was out is asked next.
+        const rest = new Set([...els].filter((el) => el.isConnected && !markPath(el, have)));
+        if (rest.size) askPaths(sessionId, rest, 30);
+        else asking.delete(sessionId);
+      },
+      (e) => {
+        // The session is gone: nothing of it links.
+        if ((e as { status?: number }).status === 404) {
+          for (const p of paths) have.set(p, null);
+          els.forEach((el) => markPath(el, have));
+          return void asking.delete(sessionId);
+        }
+        reportError(e, { kind: "file-links" });
+        askPaths(sessionId, els, Math.min(RETRY_MS * 2 ** failures, RETRY_MAX_MS), failures + 1);
+      },
+    );
+  }, wait);
+}
 function pathsIn(root: Element, sessionId?: string) {
   if (!sessionId) return;
   const els = [...root.querySelectorAll<HTMLElement>("code.k-fileref:not([data-checked])")];
   if (!els.length) return;
   const have = known.get(sessionId) ?? known.set(sessionId, new Map()).get(sessionId)!;
-  const mark = (el: HTMLElement) => {
-    const rel = have.get(el.dataset.path!);
-    if (rel === undefined) return false;
-    el.dataset.checked = "1";
-    if (rel !== null) {
-      el.dataset.rel = rel;
-      el.setAttribute("role", "link");
-      el.tabIndex = 0;
-      el.title = `Open ${rel}${el.dataset.line ? ` at line ${el.dataset.line}` : ""} in Files`;
-    }
-    return true;
-  };
-  const wait = asking.get(sessionId);
-  const fresh = els.filter((el) => !mark(el));
+  const fresh = els.filter((el) => !markPath(el, have));
   if (!fresh.length) return;
-  if (wait) { fresh.forEach((el) => wait.add(el)); return; }
-  const batch = new Set(fresh);
-  asking.set(sessionId, batch);
-  setTimeout(() => {
-    const paths = [...new Set([...batch].map((el) => el.dataset.path!))].filter((p) => !have.has(p));
-    api<{ files: Record<string, string> }>(`/api/sessions/${sessionId}/files/exist`, { method: "POST", body: JSON.stringify({ paths }) })
-      .then((r) => { for (const p of paths) have.set(p, r.files[p] ?? null); })
-      .catch((e) => { for (const p of paths) have.set(p, null); if ((e as { status?: number }).status !== 404) reportError(e, { kind: "file-links" }); })
-      .finally(() => { asking.delete(sessionId); batch.forEach(mark); });
-  }, 30);
+  const wait = asking.get(sessionId);
+  if (wait) fresh.forEach((el) => wait.add(el));
+  else askPaths(sessionId, new Set(fresh), 30);
 }
 
 const enhance = (root: Element, sessionId?: string) => { highlightIn(root); mathIn(root); pathsIn(root, sessionId); };

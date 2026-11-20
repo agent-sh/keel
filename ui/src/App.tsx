@@ -62,26 +62,28 @@ export function App() {
   return (
     <Boundary>
       <Attention />
-      <div
-        className="k-app"
-        onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()}
-        onDrop={(e) => {
-          if (!e.dataTransfer.files.length) return;
-          e.preventDefault();
-          dispatchEvent(new CustomEvent("keel:files", { detail: [...e.dataTransfer.files] }));
-        }}
-      >
-        {/* Desktop: the rail, folded or open. Phone: the open rail as a drawer. */}
-        <div className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}><Sidebar open={rail.list} /></div>
-        {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => toggleList(false)} aria-hidden="true" />}
-        {page ? (
-          <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}</Suspense></main>
-        ) : <Suspense fallback={null}><Bridge /></Suspense>}
+      <div className="k-shell">
+        <AdminBand />
+        <div
+          className="k-app"
+          onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()}
+          onDrop={(e) => {
+            if (!e.dataTransfer.files.length) return;
+            e.preventDefault();
+            dispatchEvent(new CustomEvent("keel:files", { detail: [...e.dataTransfer.files] }));
+          }}
+        >
+          {/* Desktop: the rail, folded or open. Phone: the open rail as a drawer. */}
+          <div className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}><Sidebar open={rail.list} /></div>
+          {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => toggleList(false)} aria-hidden="true" />}
+          {page ? (
+            <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}</Suspense></main>
+          ) : <Suspense fallback={null}><Bridge /></Suspense>}
+        </div>
       </div>
       <Overlays />
       <ConfirmHost />
       <ContextMenuHost />
-      <AdminBand />
     </Boundary>
   );
 }

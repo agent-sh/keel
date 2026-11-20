@@ -126,6 +126,8 @@ test("a draining daemon still answers reads and the answers its running turns wa
     // The page opened during the drain links the file the reply names.
     const tracked: string[] = [];
     page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") tracked.push(r.postData() ?? ""); });
+    const refused: string[] = [];
+    page.on("response", (r) => { if (r.status() === 503) refused.push(`${r.request().method()} ${new URL(r.url()).pathname.replace(session.id, ":id")}`); });
     await page.goto(`${d.url}/s/${session.id}`);
     await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping when the running turns finish");
     await expect(page.locator('code.k-fileref[data-rel="notes/plan.md"]')).toHaveAttribute("role", "link");
@@ -134,12 +136,25 @@ test("a draining daemon still answers reads and the answers its running turns wa
     // A prompt sent now is not taken: the composer says why and keeps the text.
     await page.getByTestId("composer").fill("more work");
     await page.getByTestId("composer").press("Enter");
-    await expect(page.getByTestId("composer-notice")).toContainText("draining");
+    await expect(page.getByTestId("composer-notice")).toContainText("stopping and takes no new work");
+    await expect(page.getByTestId("admin-band-note")).toHaveText("Not taken: new work waits.");
     await expect(page.getByTestId("composer")).toHaveValue("more work");
+    // The band is a row of its own: it covers nothing of the message box.
+    const band = (await page.getByTestId("admin-band").boundingBox())!;
+    const box = (await page.getByTestId("composer").boundingBox())!;
+    expect(band.y + band.height).toBeLessThanOrEqual(box.y);
+    // An image dropped on the page is kept with the session's draft.
+    await page.evaluate(() => {
+      const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+      dispatchEvent(new CustomEvent("keel:files", { detail: [new File([png], "dot.png", { type: "image/png" })] }));
+    });
+    await expect.poll(async () => (await get(`/api/sessions/${session.id}/draft`)).attachments.length, { timeout: 10_000 }).toBe(1);
     await shoot(page, "daemon-05-draining-session");
     await page.evaluate(() => fetch("/api/daemon").then((r) => r.text())); // whatever the page was posting has gone out
-    expect(tracked.filter((t) => t.includes("draining"))).toEqual([]);
-    expect((await get("/api/errors")).errors.filter((e: any) => /draining/.test(e.message))).toEqual([]);
+    // Of all the page sent by itself and for the owner, only the prompt was turned away.
+    expect(refused).toEqual(["POST /api/sessions/:id/messages"]);
+    expect(tracked.filter((t) => t.includes("no new work"))).toEqual([]);
+    expect((await get("/api/errors")).errors.filter((e: any) => /no new work/.test(e.message))).toEqual([]);
 
     // The approval is taken: the turn runs its command and ends, and the drain with it.
     await page.getByTestId("approval").getByTestId("allow-once").click();

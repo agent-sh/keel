@@ -21,7 +21,8 @@
 kbd { font-family: var(--font-inst); font-stretch: 75%; }
 
 /* ---------- Shell ---------- */
-.k-app { display: flex; height: 100%; overflow: hidden; background: var(--bg); }
+.k-shell { display: flex; flex-direction: column; height: 100%; }
+.k-app { display: flex; flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
 .k-page { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 .k-scrim { display: none; }
 

@@ -475,8 +475,9 @@ export function reportError(err: unknown, context?: unknown) {
   // The daemon recorded this one itself (its answer names the record): once is enough.
   if ((err as { body?: { error_id?: string } } | null)?.body?.error_id) return;
   // The daemon turned the request away because it is draining: the state the
-  // page's band shows, not a fault. The caller still says so where it happened.
-  if ((err as { body?: { draining?: boolean } } | null)?.body?.draining) return;
+  // page's band shows, not a fault. The band says that something was not
+  // taken, since not every caller has a place to say so.
+  if ((err as { body?: { draining?: boolean } } | null)?.body?.draining) return void dispatchEvent(new CustomEvent("keel:turned-away"));
   const e = err instanceof Error ? err : new Error(String(err));
   const url = location.pathname;
   const post = () =>
@@ -496,8 +497,6 @@ export function reportError(err: unknown, context?: unknown) {
     setTimeout(() => { if (state.connected && drops === at) post(); }, 3000);
     return;
   }
-  // The daemon refused it while draining for a restart: the same connection state.
-  if ((err as { body?: { draining?: boolean } } | null)?.body?.draining) return;
   post();
 }
 // A failure the owner sees where it happened: tracked once, unless it is the

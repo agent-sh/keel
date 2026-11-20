@@ -92,15 +92,18 @@ export function relaunchArgv(): string[] {
 
 // What a draining daemon takes besides GET, since none of it starts work:
 // its own (errors, awake, the drain), a read whose question is in the body
-// (which paths of a reply are files), what the owner answers a running turn
-// (the drain is waiting for that turn; the passkey check is for an answer
-// from a remote device), and a stop.
+// (which paths of a reply are files), what the page says by itself (which
+// session the owner is at, alerts he has seen, the unsent draft of a message
+// box, which a reload after the restart brings back), what the owner answers
+// a running turn (the drain is waiting for that turn; the passkey check is
+// for an answer from a remote device), and a stop.
 const DRAIN_PASSES = new RegExp(
   "^/api/(?:" +
     "(?:errors|awake|drain)(?:/|$)" +
+    "|presence$|alerts/read$" +
     "|owner-presence/authenticate/(?:start|finish)$" +
     "|sessions/[^/]+/(?:" +
-      "files/exist|interrupt|as-agent/stop" +
+      "files/exist|interrupt|as-agent/stop|presence|draft(?:/files/[^/]+)?" +
       "|(?:approvals|questions|plan|secrets)/[^/]+" +
       "|(?:jobs|terminal|agents)/[^/]+/stop" +
     ")$" +
@@ -117,7 +120,8 @@ export class Daemon {
     // While draining, nothing that would start work is taken.
     addAdmission((req, path) => {
       if (!this.draining || req.method === "GET" || req.method === "HEAD" || DRAIN_PASSES.test(path)) return;
-      return Response.json({ error: "the daemon is draining for a restart; try again when it is back", draining: true }, { status: 503 });
+      const why = this.draining.restart ? "the daemon is restarting and takes no new work until it is back" : "the daemon is stopping and takes no new work";
+      return Response.json({ error: why, draining: true }, { status: 503 });
     });
   }
 

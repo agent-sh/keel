@@ -20,6 +20,10 @@ test("render: streaming blocks, math, file links, colored output", async ({ page
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Render", workspace: ws } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
 
+  // The first lookup of the reply's paths is turned away, as a draining daemon
+  // would: no answer is not "no such file", so it is asked again and links.
+  let turnedAway = 0;
+  await page.route(/\/files\/exist$/, (route) => (turnedAway++ ? route.fallback() : route.fulfill({ status: 503, json: { error: "the daemon is stopping and takes no new work", draining: true } })));
   await page.goto(`/s/${session.id}`);
   await page.getByTestId("composer").fill("script:render");
   await page.keyboard.press("Enter");
@@ -42,6 +46,7 @@ test("render: streaming blocks, math, file links, colored output", async ({ page
   // File links: the file that exists links, the ones that do not stay code.
   const link = reply.locator('code.k-fileref[data-rel="notes/plan.md"]');
   await expect(link).toHaveAttribute("role", "link");
+  expect(turnedAway).toBeGreaterThan(1);
   await expect(reply.locator('code.k-fileref[data-path="src/parse.ts"]')).toHaveAttribute("data-checked", "1");
   await expect(reply.locator('code.k-fileref[data-path="src/parse.ts"]')).not.toHaveAttribute("data-rel", /.*/);
   await shoot(page, "render-02-reply");

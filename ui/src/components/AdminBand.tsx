@@ -1,4 +1,4 @@
-// A small band at the bottom of the page for the daemon's own state: a restart
+// A band across the top of the page for the daemon's own state: a restart
 // that is waiting for running turns, and a new build of the page after the
 // daemon came back (the page asks before reloading, so nothing typed is lost).
 import { RotateCw } from "lucide-react";
@@ -19,15 +19,24 @@ export function AdminBand() {
     check();
     return onFeature({ frame: (f) => { if (f.name === "daemon") setDraining(f.data.draining); }, reconnect: check });
   }, []);
+  // A request the daemon turned away while draining (reportError says so): shown for a moment.
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const on = () => { setRefused(true); clearTimeout(t); t = setTimeout(() => setRefused(false), 4000); };
+    addEventListener("keel:turned-away", on);
+    return () => { removeEventListener("keel:turned-away", on); clearTimeout(t); };
+  }, []);
   const text = updated ? "Keel was updated." : draining && connected ? (draining.restart ? "Keel restarts when the running turns finish." : "Keel is stopping when the running turns finish.") : null;
   if (!text) return null;
+  // A row of the page's own, above everything: it never sits on a message box or a card.
   return (
-    <div role="status" data-testid="admin-band" className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-line bg-raised py-1.5 pl-4 pr-1.5 text-ui shadow-2">
-      <RotateCw className="size-3.5 text-brass" />
-      <span>{text}</span>
+    <div role="status" data-testid="admin-band" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-line bg-raised px-4 text-ui animate-in">
+      <RotateCw className="size-3.5 shrink-0 text-brass" />
+      <span className="truncate">{text}</span>
       {updated ? (
-        <button type="button" onClick={() => location.reload()} className="h-7 rounded-full bg-accent px-3 text-caption font-medium text-accent-fg hover:bg-accent-hover">Reload the page</button>
-      ) : <span className="pr-2.5 text-caption text-faint">New work waits.</span>}
+        <button type="button" onClick={() => location.reload()} className="h-7 shrink-0 rounded-md bg-accent px-3 text-caption font-medium text-accent-fg hover:bg-accent-hover">Reload the page</button>
+      ) : <span data-testid="admin-band-note" className={refused ? "shrink-0 text-caption font-medium text-warn" : "shrink-0 text-caption text-faint"}>{refused ? "Not taken: new work waits." : "New work waits."}</span>}
     </div>
   );
 }
