@@ -109,7 +109,7 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
   }
   const o = await ctx.readMaterial(items, question, ctx.callId);
   o.unread.push(...skipped);
-  const shown = { readers: { question, sources: items.length, chars: o.chars, parts: o.parts, models: o.models, usage: o.usage, cost: o.cost, plan: o.plan, working: o.working, unread: o.unread, compiled: o.compiled } };
+  const shown = { readers: { question, sources: items.length, chars: o.chars, parts: o.parts, models: o.models, usage: o.usage, cost: o.cost, plan: o.plan, working: o.working, unread: o.unread, compiled: o.compiled, checked: o.checked } };
   if (!o.text) {
     // No reader read anything: the material as a long output, saved whole.
     const spilled = await spill(wholeText(items), ctx.spillDir, "readers");
@@ -119,11 +119,14 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
 }
 
 const DESCRIPTION =
-  "Hand a reading job to cheaper reader models: they read the files, folders (every file git does not ignore), glob matches or web pages you name, " +
-  "in parts side by side, and return one compiled answer to your question with exact quotes and path:line references, and what they could not cover. " +
-  "Use it instead of reading many files, a big log, a long tool output saved to a file (pass the path the cut result names) or several pages yourself, " +
-  "when you need what they say about one question rather than their full text. The readers see nothing of this conversation: the question must say what to look for. " +
-  "The material stays on disk; Read a cited line when you need its context. Short material comes back whole.";
+  "Answer one question about a lot of text through cheaper reader models: they read the files, folders (every file git does not ignore), glob matches or web pages you name in parts side by side and return one compiled answer with exact quotes and path:line references. " +
+  "Reach for it when the material is long (many files, big logs, transcripts, a long saved output, several pages) and the answer depends on what the text says rather than on a word a search finds: which files, people or cases fit a description, what was decided or taken back, a summary across files. " +
+  "A search is still the way to locate a known name or string. " +
+  "Pass the folder or files whole: the readers cost a fraction of your rate and none of the text enters your context. " +
+  "The readers see nothing of this conversation: the question says what counts and what does not. " +
+  "Keel checks every quote against the files and says what was not read, so the answer can be used as it is; " +
+  "Read a cited line when you need its context. " +
+  "Short material comes back whole.";
 
 const schema = {
   type: "object",

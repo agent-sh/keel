@@ -212,8 +212,76 @@ export function compilePrompt(question: string, findings: { covers: string; text
     ...(nothing.length ? ["", `These parts were read too and hold nothing that bears on the request: ${nothing.join(", ")}.`] : []),
     "",
     "Write one answer to the request from these findings only: merge findings that repeat, keep every exact quote and its path:line reference, " +
-      "and put what matters most first. Say plainly which parts of the request the findings do not answer. Do not report which parts were read. No preamble.",
+      "and put what matters most first. If the findings leave part of the request unanswered, say which in one sentence. " +
+      "Do not comment on which parts were read, on coverage, or on whether quotes or line numbers were checked: the harness reports that itself. No preamble.",
   ].join("\n");
 }
 
 export const READER_SYSTEM = "You read material for a coding agent and answer its request from that material.";
+
+// ---- the answer checked against the material ---------------------------------
+
+// What Keel found when it held the answer against the material: the quotes
+// that appear word for word, and whether at a line the answer cites for them;
+// the path:line references that name a line the material has. A working model
+// that sees its answer checked has no reason to search the material again.
+export type Checked = { quotes: number; verbatim: number; atLine: number; refs: number; valid: number; missing: string[] };
+
+const norm = (s: string) => s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim().toLowerCase();
+const REF = /([\w@.\/-]*[\w-]\.[A-Za-z0-9]+):(\d+)(?:\s*[-\u2013]\s*(\d+))?|(?<![\w.\/])`?:(\d+)(?:\s*[-\u2013]\s*(\d+))?/g;
+const QUOTE = /"([^"\n]{12,})"|\u201c([^\u201d\n]{12,})\u201d/g;
+// A quote with an ellipsis is checked piece by piece.
+const pieces = (q: string) => q.split(/\.\.\.|\u2026/).map((p) => p.trim().replace(/[.,;:!?]+$/, "")).filter((p) => p.length >= 12);
+
+export function checkAnswer(answer: string, items: Material[]): Checked {
+  const lines = new Map<string, string[]>();
+  for (const m of items) lines.set(m.source, m.text.split("\n").map(norm));
+  const all = norm(items.map((m) => m.text).join("\n"));
+  // A source as the answer names it: exact, else by its ending (the readers may drop a folder).
+  const find = (p: string) => lines.has(p) ? p : [...lines.keys()].find((k) => k.endsWith(`/${p}`) || p.endsWith(`/${k}`));
+  const out: Checked = { quotes: 0, verbatim: 0, atLine: 0, refs: 0, valid: 0, missing: [] };
+  let last: string | undefined;
+  // A quote goes with the references on its own line, else with those of the
+  // lines just above it (a heading line that names the file, then the quote).
+  let recent: { src: string; from: number; to: number }[] = [];
+  let since = 0;
+  for (const line of answer.split("\n")) {
+    let spans: { src: string; from: number; to: number }[] = [];
+    for (const r of line.matchAll(REF)) {
+      const path = r[1] ? find(r[1]) : last;
+      if (r[1] && !path) { if (lines.size && /[\/.]/.test(r[1])) out.refs++; continue; }
+      if (!path) continue;
+      last = path;
+      const from = Number(r[2] ?? r[4]), to = Number(r[3] ?? r[5] ?? from);
+      out.refs++;
+      if (from >= 1 && to >= from && to <= lines.get(path)!.length) { out.valid++; spans.push({ src: path, from, to }); }
+    }
+    if (spans.length) { recent = spans; since = 0; } else if (++since <= 3) spans = recent;
+    for (const q of line.matchAll(QUOTE)) {
+      const ps = pieces(q[1] ?? q[2] ?? "");
+      if (!ps.length) continue;
+      out.quotes++;
+      const n = ps.map(norm);
+      if (!n.every((p) => all.includes(p))) { if (out.missing.length < 5) out.missing.push((q[1] ?? q[2]!).slice(0, 120)); continue; }
+      out.verbatim++;
+      const near = spans.some((s) => {
+        const ls = lines.get(s.src)!;
+        const text = ls.slice(Math.max(0, s.from - 2), Math.min(ls.length, s.to + 1)).join(" ");
+        return n.every((p) => text.includes(p));
+      });
+      if (near) out.atLine++;
+    }
+  }
+  return out;
+}
+
+// The line under an answer that says what the check found.
+export function checkedNote(c: Checked): string {
+  if (!c.quotes && !c.refs) return "";
+  const parts: string[] = [];
+  if (c.quotes) parts.push(c.atLine === c.quotes ? `all ${c.quotes} quotes are word for word at the lines they cite`
+    : `${c.verbatim} of ${c.quotes} quotes appear word for word in the material${c.atLine ? ` (${c.atLine} at the line cited)` : ""}`);
+  if (c.refs) parts.push(`${c.valid} of ${c.refs} path:line references name lines that exist`);
+  const miss = c.missing.length ? `\nNot found in the material, so treat as unconfirmed:\n- "${c.missing.join('"\n- "')}"` : "";
+  return `[Keel checked the answer against the files: ${parts.join("; ")}.${miss}]`;
+}

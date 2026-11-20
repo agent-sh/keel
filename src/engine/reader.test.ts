@@ -2,7 +2,7 @@
 // session's provider and family that holds the text, never a dearer one.
 import { expect, test } from "bun:test";
 import type { ModelInfo } from "../providers/types.ts";
-import { chunkChars, chunkMaterial, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, readerChoices } from "./reader.ts";
+import { checkAnswer, checkedNote, chunkChars, chunkMaterial, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, readerChoices } from "./reader.ts";
 import { readMaterial, type ReaderHost } from "./readers.ts";
 
 const m = (id: string, input: number | undefined, o: Partial<ModelInfo> = {}): ModelInfo => ({
@@ -116,4 +116,22 @@ test("the owner's small models read first, in their order, from any provider, sk
   expect(ids(1000, ["gone:model", "plan:luna", "q:haiku"]).slice(0, 2)).toEqual(["plan:luna", "q:haiku"]);
   expect(ids(1000, ["q:haiku", "plan:luna"]).slice(0, 2)).toEqual(["q:haiku", "plan:luna"]);
   expect(ids(40_000, ["p:tiny", "q:haiku"])[0]).toBe("q:haiku");
+});
+
+test("an answer is checked against the material: quotes word for word at the lines cited, references that exist, quotes not found named", () => {
+  const items = [
+    { source: "notes/a.md", text: "# A\nThe crews go days without any link to shore, so the app must hold entries.\nOther text." },
+    { source: "notes/b.md", text: "one\ntwo\nWe are moving another vendor's system out and into yours." },
+  ];
+  const answer = [
+    "- **A** (notes/a.md:2): \u201cThe crews go days without any link to shore, so the app must hold entries.\u201d",
+    "- **B** (`b.md:3`, `:9`)",
+    '  "We are moving another vendor\'s system out ... and into yours."',
+    '- C (notes/c.md:4): "a sentence nobody wrote down anywhere."',
+  ].join("\n");
+  const c = checkAnswer(answer, items);
+  expect(c).toEqual({ quotes: 3, verbatim: 2, atLine: 2, refs: 4, valid: 2, missing: ["a sentence nobody wrote down anywhere."] });
+  expect(checkedNote(c)).toContain("2 of 3 quotes appear word for word in the material (2 at the line cited); 2 of 4 path:line references");
+  expect(checkedNote(c)).toContain('- "a sentence nobody wrote down anywhere."');
+  expect(checkedNote(checkAnswer("no quotes and no references here", items))).toBe("");
 });

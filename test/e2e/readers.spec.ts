@@ -55,6 +55,10 @@ test("readers: a folder of logs is read in parts and compiled into one answer", 
   await expect(card.getByTestId("readers-answer")).not.toContainText(/not (been )?read/i);
   await expect(card.getByTestId("readers-summary")).toContainText("4 sources");
   await expect(card.getByTestId("readers-summary")).toContainText("findings compiled");
+  // Keel held the answer against the files: its quotes are found word for word, and the note says nothing went unread.
+  await expect(card.getByTestId("readers-checked")).toHaveText(/^(\d+) of \1 quotes found word for word$/);
+  await expect(card.getByTestId("readers-notes")).toContainText("nothing was left unread");
+  await expect(card.getByTestId("readers-notes")).toContainText("Keel checked the answer against the files");
   // A priced reader shows its cost; one on a plan says so.
   await expect(card.getByTestId("readers-cost")).toContainText(/\$|on plan/);
   await card.scrollIntoViewIfNeeded();

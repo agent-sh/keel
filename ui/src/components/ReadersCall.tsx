@@ -11,6 +11,7 @@ import { Markdown } from "./Markdown.tsx";
 type Shown = {
   question: string; whole?: boolean; sources: number; chars: number; parts?: PartState[]; models?: string[];
   cost?: number; plan?: boolean; working?: { model: string; cost?: number }; unread?: string[]; skipped?: string[]; compiled?: boolean;
+  checked?: { quotes: number; verbatim: number; atLine: number; refs: number; valid: number };
 };
 type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string };
 
@@ -42,7 +43,7 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
   const [open, setOpen] = useState(false);
   const out = resultText(result);
   // The answer is the result's text before Keel's own bracketed notes.
-  const cut = out.search(/\n\n\[(?:[^\n]* read \d+ sources?|Short enough|No reader)/);
+  const cut = out.search(/\n\n\[(?:[^\n]* read (?:every line of )?\d+ sources?|Short enough|No reader)/);
   const answer = cut >= 0 ? out.slice(0, cut) : out;
   const notes = cut >= 0 ? out.slice(cut).trim() : "";
   const done = parts.filter((p) => p.state !== "waiting" && p.state !== "reading").length;
@@ -80,6 +81,11 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
             <div className="text-caption text-muted" data-testid="readers-summary">
               {shown.sources} source{shown.sources === 1 ? "" : "s"}, {shown.chars.toLocaleString("en-US")} characters
               {shown.whole ? ", short enough to read whole" : shown.models?.length ? `, read by ${shown.models.join(" and ")}${shown.compiled ? ", findings compiled" : ""}` : ""}
+              {shown.checked && shown.checked.quotes > 0 && (
+                <> · <span className={shown.checked.verbatim < shown.checked.quotes ? "text-danger" : undefined} data-testid="readers-checked">
+                  {shown.checked.verbatim} of {shown.checked.quotes} quotes found word for word
+                </span></>
+              )}
               {shown.cost !== undefined && <> · readers {fmtCost(shown.cost)}</>}
               {other && shown.working?.cost !== undefined && <> · {shown.working.model} would pay at least {fmtCost(shown.working.cost)} to read it once</>}
             </div>

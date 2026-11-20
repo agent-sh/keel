@@ -9,7 +9,7 @@ import type { ModelInfo, Price } from "../providers/types.ts";
 import { bytesPerToken } from "./compact.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
 import {
-  chunkChars, chunkMaterial, compilePrompt, materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, READERS_AT_ONCE,
+  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, type Checked, materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, READERS_AT_ONCE,
   readerChoices, readRate, type Chunk, type Material,
 } from "./reader.ts";
 
@@ -46,6 +46,7 @@ export type ReadOutcome = {
   plan?: boolean;          // every reader that read is on a subscription: no per-token cost
   working?: { model: string; tokens: number; cost?: number }; // the working model reading the same material once, uncached (at least)
   compiled: boolean;
+  checked?: Checked;       // the answer held against the material
 };
 
 const short = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 200);
@@ -153,7 +154,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const chars = kept.reduce((n, m) => n + m.text.length, 0);
   const tokens = partTokens || chars / bytesPerToken(cur.id);
   return {
-    text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled,
+    text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled, ...(text ? { checked: checkAnswer(text, kept) } : {}),
     ...(billed.size === 1 && billed.has("subscription") ? { plan: true } : {}),
     working: { model: cur.name, tokens: Math.round(tokens), cost: rate === undefined || cur.billing !== "per_token" ? undefined : (tokens * rate) / 1e6 },
   };
@@ -164,9 +165,12 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
 export function coverageNote(o: ReadOutcome, sources: number, saved?: string): string {
   const who = o.models.length ? o.models.join(" and ") : "no reader";
   const n = o.parts.length;
-  const lines = [`[${who} read ${sources} source${sources === 1 ? "" : "s"} (${o.chars} chars) in ${n} part${n === 1 ? "" : "s"} for this request` +
-    `${o.compiled ? `; their findings were compiled into this answer` : ""}. References are path:line in the files as they are on disk: Read one when you need its context.` +
+  const all = !o.unread.length && o.parts.every((p) => p.state === "read" || p.state === "nothing");
+  const lines = [`[${who} read ${all ? "every line of " : ""}${sources} source${sources === 1 ? "" : "s"} (${o.chars} chars) in ${n} part${n === 1 ? "" : "s"} for this request` +
+    `${o.compiled ? `; their findings were compiled into this answer` : ""}${all ? "; nothing was left unread" : ""}. References are path:line in the files as they are on disk: Read one when you need its context.` +
     `${saved ? ` Fetched pages are saved under ${saved}.` : ""}]`];
+  const checked = o.checked ? checkedNote(o.checked) : "";
+  if (checked) lines.push(checked);
   if (o.unread.length) lines.push(`[Not read, so not covered by this answer:\n- ${o.unread.join("\n- ")}]`);
   return lines.join("\n");
 }
