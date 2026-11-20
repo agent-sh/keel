@@ -1,6 +1,9 @@
 import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
 import { mkdirSync } from "node:fs";
+import { createHmac, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: messages between sessions. A session sends with keel__session_send
@@ -119,5 +122,47 @@ test("fleet messages: a notice when the other machine's session has handled it",
   } finally {
     await request.delete(`/api/sessions/${sender.id}`);
     await request.delete(`${PEER}/api/sessions/${receiver.id}`);
+  }
+});
+
+test("fleet messages: a missing receipt does not confirm delivery", async ({ page, request }) => {
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; context: number; id: string }[])
+    .filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0]?.id;
+  test.skip(!model, "the daemon runs without the scripted provider");
+
+  // The paired fixture answers successfully but gives no message receipt.
+  // Its proof is valid: HTTP success alone must not imply delivery.
+  const name = "receipt-fixture", daemon_id = randomUUID(), key = randomUUID();
+  let sends = 0;
+  const peer = createServer((req, res) => {
+    req.resume();
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/fleet/pair") return res.end(JSON.stringify({ daemon_id, key }));
+    const proof = createHmac("sha256", key).update(`${req.headers["x-keel-nonce"]}|${daemon_id}`).digest("hex");
+    res.setHeader("x-keel-proof", proof);
+    if (req.url === "/api/fleet/identity") return res.end(JSON.stringify({ daemon_id, server_name: name }));
+    if (req.url === "/api/fleet/facts") return res.end(JSON.stringify({ cpus: 1, load1: 0, tools: [] }));
+    if (req.url === "/api/fleet/messages") { sends++; return res.end("{}"); }
+    res.writeHead(404).end("{}");
+  });
+  await new Promise<void>((resolve, reject) => peer.once("error", reject).listen(0, "127.0.0.1", resolve));
+  let machine: string | undefined, sender: string | undefined;
+  try {
+    machine = (await (await request.post("/api/fleet/machines", { data: { name, daemon_url: `http://127.0.0.1:${(peer.address() as AddressInfo).port}` } })).json()).id;
+    sender = (await (await request.post("/api/sessions", { data: { title: "Receipt sender", model } })).json()).session.id;
+    await request.put(`/api/sessions/${sender}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    const calls = [{ name: "keel__session_send", input: { to: `${name}/receiver`, text: "Check the receipt.", notify_when_idle: true } }];
+    await request.post(`/api/sessions/${sender}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+
+    await page.goto(`/s/${sender}`);
+    const send = page.locator('[data-tool="keel__session_send"]');
+    await send.click({ timeout: 15_000 });
+    await expect(send).toContainText("The message may have arrived; check the receiving session before retrying.");
+    expect(sends).toBe(1);
+    await shoot(page, "fleet-msg-05-unconfirmed");
+  } finally {
+    if (sender) await request.delete(`/api/sessions/${sender}`);
+    if (machine) await request.delete(`/api/fleet/machines/${machine}`);
+    peer.close();
   }
 });

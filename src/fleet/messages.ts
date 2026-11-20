@@ -9,7 +9,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Fleet } from "./fleet.ts";
-import { LinkError, linkJson } from "./link.ts";
+import { LinkError, linkFetch } from "./link.ts";
 
 export const MAX_TEXT = 1_000_000;
 export const PEER_PREFIX = '<external_input source="peer_session"';
@@ -268,15 +268,30 @@ export class Messages {
   }
 
   private async sendRemote(machineId: string, name: string, sid: string, text: string, wake: boolean, from: Sender): Promise<{ text: string; machine?: string; session?: string; message_id?: string; state?: string }> {
-    try {
-      const p = await this.fleet.peer(machineId);
-      const r = await linkJson<{ id: string; state: string; reason?: string }>(p, "/api/fleet/messages", { method: "POST", body: JSON.stringify({ to: sid, text, wake, from }) });
-      const said = r.state === "held" ? `Held on ${name} for the owner: ${r.reason ?? "it waits for the owner there"}.` : r.state === "queued" ? `Queued for ${name}/${sid} (id ${r.id}).` : `Delivered to ${name}/${sid}.`;
-      return { text: said, machine: machineId, session: sid, message_id: r.id, state: r.state };
-    } catch (e) {
-      if (e instanceof LinkError) throw new HttpError(502, `${name}: ${(e as Error).message}`);
+    const target = `${name}/${sid}`;
+    const p = await this.fleet.peer(machineId).catch((e) => {
+      if (e instanceof LinkError) throw new HttpError(502, `Not sent to ${target}: ${e.message}`);
       throw e;
+    });
+    // The receiver may already have kept the message even if its reply is
+    // lost. No retry or idle watch without a receipt for this send.
+    const unconfirmed = (why: string) => new HttpError(502, `Delivery to ${target} is unconfirmed (${why}). The message may have arrived; check the receiving session before retrying.`);
+    const res = await linkFetch(p, "/api/fleet/messages", { method: "POST", body: JSON.stringify({ to: sid, text, wake, from }) }).catch((e) => {
+      if (e instanceof LinkError) throw unconfirmed(e.message);
+      throw e;
+    });
+    const r = await res.json().catch(() => null) as { id?: unknown; state?: unknown; reason?: unknown; error?: unknown } | null;
+    // A proven rejection from the message route is different from an
+    // unexpected response, which does not settle whether the POST took effect.
+    if (res.status >= 400 && res.status < 500 && typeof r?.error === "string") {
+      throw new HttpError(res.status, `Message to ${target} rejected: ${r.error}`);
     }
+    if (!res.ok || typeof r?.id !== "string" || !r.id.trim() || (r.state !== "delivered" && r.state !== "queued" && r.state !== "held")) {
+      throw unconfirmed(`no usable receipt, HTTP ${res.status}`);
+    }
+    const reason = typeof r.reason === "string" ? r.reason : "it waits for the owner there";
+    const said = r.state === "held" ? `Held on ${name} for the owner: ${reason}.` : r.state === "queued" ? `Queued for ${target} (id ${r.id}).` : `Delivered to ${target}.`;
+    return { text: said, machine: machineId, session: sid, message_id: r.id, state: r.state };
   }
 
   // Where a message stands for a sender that waits for it to be handled: held
