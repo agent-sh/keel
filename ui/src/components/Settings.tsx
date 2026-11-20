@@ -158,7 +158,7 @@ export function Settings({ section }: { section: string }) {
         <h1 className="text-base font-semibold">Settings</h1>
       </header>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <nav className="shrink-0 border-line p-3 md:w-60 md:border-r md:p-4" aria-label="Settings sections">
+        <nav className="shrink-0 border-line p-3 md:w-60 md:overflow-y-auto md:border-r md:p-4" aria-label="Settings sections">
           <label className="mb-3 flex h-8 items-center gap-2 rounded-md border border-line bg-raised px-2.5 text-ui">
             <Search className="size-3.5 text-faint" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a setting" className="w-full bg-transparent outline-none placeholder:text-faint" />

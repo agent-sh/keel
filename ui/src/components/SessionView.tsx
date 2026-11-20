@@ -11,6 +11,7 @@ import { LiveSourceBanner } from "./TakeOver.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
+import { whenIdle } from "../lib/utils.ts";
 
 // The conversation (Markdown, tool rows) is its own chunk: the start page does
 // not need it, and a session link starts loading it with the page.
@@ -19,7 +20,7 @@ const Transcript = lazy(() => loadTranscript().then((m) => ({ default: m.Transcr
 const HeldMessages = lazy(() => import("./FleetMessages.tsx").then((m) => ({ default: m.HeldMessages })));
 const SessionDock = lazy(() => import("./SessionDock.tsx").then((m) => ({ default: m.SessionDock })));
 if (location.pathname.startsWith("/s/")) loadTranscript();
-else (window.requestIdleCallback ?? setTimeout)(() => void loadTranscript());
+else whenIdle(() => void loadTranscript());
 const Approvals = lazy(() => import("./ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
 
 

@@ -5,6 +5,7 @@ import { finishedLength, mend } from "../lib/mdstream.ts";
 import { pathRef } from "../lib/paths.ts";
 import { api, reportError } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI } from "../lib/ui.ts";
+import { whenIdle } from "../lib/utils.ts";
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const COPY_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
@@ -136,7 +137,7 @@ const sessionOf = new WeakMap<Element, string | undefined>();
 const watch = (el: Element, sessionId?: string) => {
   seen ??= new IntersectionObserver((list) => {
     // In idle time, so coloring what scrolls in never takes a frame of the scroll itself.
-    for (const x of list) if (x.isIntersecting) { seen!.unobserve(x.target); const t = x.target; requestIdleCallback(() => enhance(t, sessionOf.get(t)), { timeout: 400 }); }
+    for (const x of list) if (x.isIntersecting) { seen!.unobserve(x.target); const t = x.target; whenIdle(() => enhance(t, sessionOf.get(t)), 400); }
   }, { rootMargin: "800px 0px" });
   sessionOf.set(el, sessionId);
   seen.observe(el);

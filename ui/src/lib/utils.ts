@@ -6,6 +6,13 @@ import { extendTailwindMerge } from "tailwind-merge";
 const twMerge = extendTailwindMerge({ extend: { theme: { text: ["micro", "caption", "ui", "base", "read", "title", "display"] } } });
 export const cn = (...v: ClassValue[]) => twMerge(clsx(v));
 
+// Work for idle time. WebKit has no requestIdleCallback: there the work runs
+// right after the next frame is painted, so it still never takes a frame.
+export const whenIdle = (fn: () => void, timeout?: number) => {
+  if (typeof requestIdleCallback === "function") requestIdleCallback(fn, timeout ? { timeout } : undefined);
+  else requestAnimationFrame(() => setTimeout(fn, 0));
+};
+
 export function fmtTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
