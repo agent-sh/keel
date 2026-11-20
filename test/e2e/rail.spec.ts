@@ -62,8 +62,12 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await expect(card.locator("dl")).toContainText("Active");
   await shoot(page, "rail-02-list-card");
 
-  // Two stations: still the list. The keyboard walks it, and the focus brings the card.
-  await reloadWith("keel.focus", "false");
+  // Two stations (asked for: one pane is the default): still the list. The keyboard walks it, and the focus brings the card.
+  await Promise.all([page.waitForEvent("load"), page.evaluate((ids) => {
+    localStorage.setItem("keel.focus", "false");
+    localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: ids, sizes: {}, active: 0 }));
+    location.reload();
+  }, [done, failed]).catch(() => {})]);
   await expect(stations).toHaveCount(2);
   await expect(side).toHaveAttribute("data-open", "true");
   await entry(done).focus();

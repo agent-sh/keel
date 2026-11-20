@@ -4,14 +4,14 @@
 // it is a column of marks, each a session's state and a short code of its
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Server, Settings, Sun, SunMoon, Tag } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Server, Settings, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineColour, machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
-import { useStations } from "../lib/stations.ts";
+import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
-import { callsigns, listBounds, listWidth, toggleList, useRail } from "../lib/rail.ts";
+import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { lastLine, useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
@@ -75,6 +75,13 @@ function stepRows(e: KeyboardEvent<HTMLElement>) {
 // States a row spells out; a finished or untouched session is its mark alone.
 const SPELLED: Watch[] = ["need", "work", "fail", "resume", "stop"];
 
+// Opens a session in a new pane beside the one worked in (Ctrl or middle click, the row's button).
+export function openBeside(id: string) {
+  if (phone()) return navigate({ name: "session", id });
+  stations.beside(id, panesMax());
+  navigate({ name: "session", id });
+}
+
 function Row({ s, active }: { s: Session; active: boolean }) {
   const restore = s.archived;
   const w = useWatch(s);
@@ -94,8 +101,9 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       {...card}
       draggable
       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
-      onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
-      onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && navigate({ name: "session", id: s.id })}
+      onClick={(e) => { card.onClick?.(e); if (e.ctrlKey || e.metaKey) openBeside(s.id); else navigate({ name: "session", id: s.id }); }}
+      onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openBeside(s.id); } }}
+      onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && ((e.ctrlKey || e.metaKey) ? openBeside(s.id) : navigate({ name: "session", id: s.id }))}
       className="k-row group"
     >
       <Mark w={w} />
@@ -107,6 +115,11 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       <NeedsYou sessionId={s.id} />
       <SessionBadges sessionId={s.id} />
       <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" title={when(s.updated)}>{ago(s.updated)}</span>
+      {!restore && !shown && !phone() && (
+        <button type="button" title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
+          <Columns2 />
+        </button>
+      )}
       <button
         type="button"
         title={restore ? "Restore" : "Archive"}

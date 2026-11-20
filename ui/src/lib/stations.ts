@@ -1,9 +1,12 @@
 // The panes on the bridge: how many there are (the owner's number), which
 // session each holds, how wide each is, and whether the helm is focused to
 // the full width. Nothing here changes by itself: a pane is added, removed,
-// filled, emptied, moved or resized only by the owner. Opening a session
-// never adds a pane: it goes to the pane worked in when that is empty, else
-// to a free pane, else it replaces the session in the pane worked in.
+// filled, moved or resized only by the owner. Opening a session never adds a
+// pane: it goes to a pane the owner added and left empty, else to the pane
+// worked in. A second pane opens only when asked for: the pane control, "open
+// beside", or a drop on a pane's edge. Closing the session in a pane closes
+// the pane (the last one stays), and an empty pane is not kept across a
+// reload, so no empty pane waits for a session he did not ask to place.
 import { useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { WATCH_RANK, type Watch } from "./watch.ts";
@@ -27,14 +30,22 @@ const load = <T,>(k: string, d: T): T => {
   }
 };
 
+// The kept layout without its empty panes: a pane he left empty is not forced on him again.
+export function restore(kept: Partial<Kept> | null): Kept {
+  const n = Math.min(MAX_PANES, Math.max(1, Math.floor(Number(kept?.count)) || 1));
+  const all = Array.from({ length: n }, (_, i) => kept?.slots?.[i] ?? null);
+  const at = Math.min(n - 1, Math.max(0, Number(kept?.active) || 0));
+  const slots = all.filter((x) => x);
+  if (!slots.length) return { count: 1, slots: [null], sizes: kept?.sizes ?? {}, active: 0 };
+  // The pane worked in, else the nearest filled one left of it.
+  const active = Math.max(0, slots.indexOf(all[at] ?? all.slice(0, at).findLast((x) => x) ?? slots[0]!));
+  return { count: slots.length, slots, sizes: kept?.sizes ?? {}, active };
+}
 const kept = load<Partial<Kept> | null>("keel.panes", null);
-const count0 = Math.min(MAX_PANES, Math.max(1, Math.floor(Number(kept?.count)) || 1));
+const first = restore(kept);
 let state: State = {
   seeded: !!kept,
-  count: count0,
-  slots: Array.from({ length: count0 }, (_, i) => kept?.slots?.[i] ?? null),
-  sizes: kept?.sizes ?? {},
-  active: Math.min(count0 - 1, Math.max(0, Number(kept?.active) || 0)),
+  ...first,
   focus: load("keel.focus", false),
   shown: [],
 };
@@ -70,11 +81,9 @@ export const shares = (s: Pick<State, "count" | "sizes">): number[] => {
 };
 
 export const stations = {
-  // The first layout, once: the number of panes that fit and the sessions to start with.
-  seed(count: number, ids: string[]) {
-    if (state.seeded) return;
-    const n = Math.min(MAX_PANES, Math.max(1, count));
-    set({ seeded: true, count: n, slots: Array.from({ length: n }, (_, i) => ids[i] ?? null), active: 0 });
+  // The first layout, once: one pane, with the session open.
+  seed(id: string | null) {
+    if (!state.seeded) set({ seeded: true, count: 1, slots: [id], active: 0 });
   },
   // The owner's number. Fewer panes: empty ones go first, then the rightmost; the pane worked in stays.
   setCount(count: number) {
@@ -105,9 +114,32 @@ export const stations = {
   setActive(slot: number) {
     if (slot >= 0 && slot < state.count && slot !== state.active) set({ active: slot });
   },
-  // Empties the session's pane; the pane stays.
+  // Opens a session in a new pane beside one (the pane worked in by default):
+  // its right, or its left. At `max` panes the neighbour on that side is used.
+  beside(id: string, max: number, at = state.active, side: "left" | "right" = "right") {
+    const from = state.slots.indexOf(id);
+    if (from >= 0) return from === state.active ? undefined : set({ active: from }); // already on screen
+    if (state.count >= Math.min(MAX_PANES, max)) {
+      // No room for another pane: the neighbour on that side takes it.
+      const j = side === "right" ? (at + 1 < state.count ? at + 1 : at - 1) : (at > 0 ? at - 1 : at + 1);
+      if (j < 0 || j >= state.count) return stations.open(id);
+      return stations.place(id, j);
+    }
+    const slots = [...state.slots];
+    const i = side === "right" ? at + 1 : at;
+    slots.splice(i, 0, id);
+    set({ seeded: true, count: slots.length, slots, active: i });
+  },
+  // Closes the session's pane; the last pane stays, empty.
   close(id: string) {
-    if (state.slots.includes(id)) set({ slots: state.slots.map((x) => (x === id ? null : x)) });
+    const i = state.slots.indexOf(id);
+    if (i >= 0) stations.closePane(i);
+  },
+  closePane(i: number) {
+    if (i < 0 || i >= state.count) return;
+    if (state.count === 1) return set({ slots: [null] });
+    const slots = state.slots.filter((_, j) => j !== i);
+    set({ count: slots.length, slots, active: Math.min(slots.length - 1, state.active > i ? state.active - 1 : state.active) });
   },
   // Sessions that are gone leave their panes empty.
   drop(gone: (id: string) => boolean) {

@@ -1,17 +1,18 @@
 // The bridge: as many panes side by side as the owner chose, a session in
 // each. The pane worked in is the helm and carries the full header. Keel
-// never adds or removes a pane by itself: opening a session fills the pane
-// worked in when it is empty, else a free one, else replaces the session
-// there. Panes are resized by dragging the divider between them, reordered by
-// dragging a header onto another pane, and a session dragged from the rail
-// lands in the pane it is dropped on. The helm can be focused to the full
+// never adds a pane by itself: opening a session fills a pane he added and
+// left empty, else replaces the session in the pane worked in. A second pane opens when asked for: the pane control, "open beside"
+// (Ctrl or middle click in the list, the row's button, the palette), or a
+// session dropped on a pane's left or right edge. Panes are resized by
+// dragging the divider between them, reordered by dragging a header onto
+// another pane, and a session dropped on a pane's middle lands in it. The helm can be focused to the full
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
 import { ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, Pin, PinOff, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
-import { paneMin, panesMax, useRail, useWidth } from "../lib/rail.ts";
+import { paneMin, panesMax, useWidth } from "../lib/rail.ts";
 import { byAttention, getStations, opened, shares, stations, target, useStations } from "../lib/stations.ts";
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
@@ -43,13 +44,14 @@ registerCommand(
   { id: "station.focus", label: "Focus the pane (full width) or show all", group: "Bridge", keys: "alt+enter", inInput: true, run: () => stations.toggleFocus() },
   { id: "station.pin", label: "Pin or unpin the session in the list", group: "Bridge", keys: "alt+p", run: () => { const h = helmNow(); if (h) pinSession(h, !isPinned(getState().sessions[h])).catch(reportError); } },
   { id: "station.close", label: "Close the session in the pane", group: "Bridge", keys: "alt+w", run: () => { const h = helmNow(); if (h) closeStation(h); } },
+  { id: "station.beside", label: "Open the session beside (new pane)", group: "Bridge", words: "split side second pane", when: () => !!helmNow() && getStations().count < panesMax(), run: () => { const h = helmNow(); if (h) stations.beside(h, panesMax()); } },
   { id: "panes.more", label: "One more pane", group: "Bridge", words: "window split add column", when: () => getStations().count < panesMax(), run: () => setPanes(getStations().count + 1) },
   { id: "panes.fewer", label: "One pane fewer", group: "Bridge", words: "window split remove column", when: () => getStations().count > 1, run: () => setPanes(getStations().count - 1) },
   { id: "panes.even", label: "Make the panes equal width", group: "Bridge", words: "reset size split", when: () => getStations().count > 1, run: () => stations.resize() },
   ...[1, 2, 3, 4, 5, 6].map((n) => ({ id: `panes.${n}`, label: `${n} pane${n > 1 ? "s" : ""}`, group: "Bridge", words: "window split columns layout", when: () => n <= Math.max(panesMax(), getStations().count), run: () => setPanes(n) })),
 );
 
-// Empties the pane; the pane stays. The helm moves to a neighbour that holds a session.
+// Closes the pane (the last one stays, empty). The helm moves to a neighbour that holds a session.
 function closeStation(id: string) {
   const { slots } = getStations();
   const i = slots.indexOf(id);
@@ -110,21 +112,33 @@ function MissingHead({ id }: { id: string }) {
   );
 }
 
-// A pane takes a dragged session: it shows where the drop lands.
+// A pane takes a dragged session: its middle puts the session in it, its
+// left or right edge (a fifth of its width) opens a new pane on that side
+// while another fits. It shows where the drop lands.
+type Over = "in" | "left" | "right";
+export const EDGE = 0.2;
 function useDrop(slot: number | undefined) {
-  const [over, setOver] = useState(false);
+  const [over, setOver] = useState<Over | null>(null);
   if (slot === undefined) return {};
   const mine = (e: DragEvent) => e.dataTransfer.types.includes(DRAG);
+  const where = (e: DragEvent<HTMLElement>): Over => {
+    if (getStations().count >= panesMax()) return "in";
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - r.left) / Math.max(1, r.width);
+    return x < EDGE ? "left" : x > 1 - EDGE ? "right" : "in";
+  };
   return {
-    "data-drop": over || undefined,
-    onDragOver: (e: DragEvent) => { if (!mine(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (!over) setOver(true); },
-    onDragLeave: (e: DragEvent<HTMLElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false); },
-    onDrop: (e: DragEvent) => {
+    "data-drop": over ?? undefined,
+    onDragOver: (e: DragEvent<HTMLElement>) => { if (!mine(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; const w = where(e); if (w !== over) setOver(w); },
+    onDragLeave: (e: DragEvent<HTMLElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null); },
+    onDrop: (e: DragEvent<HTMLElement>) => {
       const id = e.dataTransfer.getData(DRAG);
-      setOver(false);
+      const w = where(e);
+      setOver(null);
       if (!id) return;
       e.preventDefault();
-      stations.place(id, slot);
+      if (w === "in") stations.place(id, slot);
+      else stations.beside(id, panesMax(), slot, w);
       navigate({ name: "session", id });
     },
   };
@@ -181,6 +195,7 @@ function NewStation({ slot, grow }: { slot?: number; grow?: number }) {
 function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boolean }) {
   const { list, watches } = useLive();
   const slots = useStations((x) => x.slots);
+  const count = useStations((x) => x.count);
   const offer = useMemo(() => byAttention(list, watches).filter((s) => !slots.includes(s.id)).slice(0, 7), [list, watches, slots]);
   const drop = useDrop(slot);
   const put = (id: string) => { stations.place(id, slot); navigate({ name: "session", id }); };
@@ -188,7 +203,9 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
     <section className="k-station k-pane-empty" data-slot={slot} data-next={next || undefined} data-testid="pane-empty" style={{ flexGrow: grow }} aria-label={`Empty pane ${slot + 1}`} onPointerDown={() => stations.setActive(slot)} {...drop}>
       <div className="k-band" aria-hidden="true" />
       <div className="k-pane-empty-body">
-        <p className="k-pane-empty-word">Pane {slot + 1}<span>{next ? "the next session opens here" : "empty"}</span></p>
+        <p className="k-pane-empty-word">Pane {slot + 1}<span>{next ? "the next session opens here" : "empty"}</span>
+          {count > 1 && <button type="button" className="k-pane-empty-close" data-testid="pane-close" title="Close this pane" aria-label={`Close pane ${slot + 1}`} onClick={(e) => { e.stopPropagation(); stations.closePane(slot); }}><X /></button>}
+        </p>
         <h2>Nothing here yet</h2>
         <p className="k-pane-empty-hint">Pick a session below or in the list, or drag one in.</p>
         {offer.length > 0 && (
@@ -237,7 +254,6 @@ const PHONE_PAGES = 6;
 
 export function Bridge() {
   const route = useUI((s) => s.route);
-  const rail = useRail();
   const width = useWidth();
   const phone = width < 768;
   const { list, watches } = useLive();
@@ -247,12 +263,9 @@ export function Bridge() {
   const helm = route.name === "session" ? route.id : null;
   const fresh = route.name === "new";
 
-  // The first layout, once: two panes when they fit beside the list, the helm and what asks for attention in them.
+  // The first layout, once: one pane, with the session open. A second one is his to ask for.
   useEffect(() => {
-    if (kept.seeded || !loaded || phone) return;
-    const count = width - rail.width >= 2 * 620 * getUI().scale ? 2 : 1;
-    const ids = byAttention(list, watches).map((s) => s.id).filter((id) => id !== helm);
-    stations.seed(count, [...(helm ? [helm] : []), ...ids]);
+    if (!kept.seeded && loaded && !phone) stations.seed(helm);
   }, [kept.seeded, loaded]);
   // Opening a session places it (kept below); this render already shows it there.
   const st = helm ? opened(kept, helm) : kept;

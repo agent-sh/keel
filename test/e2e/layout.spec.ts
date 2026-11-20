@@ -3,8 +3,9 @@ import { shoot } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
-// or removes one: opening a session fills a free pane, else replaces the one
-// worked in; closing one leaves its pane empty. The list's edge and the line
+// one: opening a session opens it in the pane worked in (a pane just added is
+// the one worked in); closing one closes its pane, and an empty pane is not
+// kept over a reload. The list's edge and the line
 // between two panes drag (and move with the arrow keys, reset on a double
 // click), and the sizes are remembered. A session dragged from the list
 // lands in the pane it is dropped on; a pane's header dropped on another
@@ -49,17 +50,20 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
     }))).toBe(true);
   };
 
-  // The owner's layout to start from: two panes, one of them free.
+  // A kept layout of two panes, one of them empty, opens as one pane: the empty one is not forced.
   await page.addInitScript((id) => {
     if (sessionStorage.getItem("seeded")) return;
     sessionStorage.setItem("seeded", "1");
-    localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [id, null], sizes: {}, active: 0 }));
+    localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [id, null], sizes: {}, active: 1 }));
   }, a);
   await page.goto(`/s/${a}`);
-  await expect(panes).toHaveCount(2);
+  await expect(panes).toHaveCount(1);
   await expect(pane(0)).toHaveAttribute("data-station", a);
+  // Two by the owner's number: the new pane is the one worked in.
+  await page.getByTestId("panes-2").click();
+  await expect(panes).toHaveCount(2);
   await expect(pane(1)).toHaveAttribute("data-testid", "pane-empty");
-  await expect(page.getByTestId("panes-2")).toHaveAttribute("aria-checked", "true");
+  await expect(pane(1)).toContainText("the next session opens here");
 
   // Type is larger by default: what is read and what is glanced at.
   expect(await rootPx()).toBe(16);
@@ -67,7 +71,7 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   expect(await fontPx('[data-testid="session-row"] .k-row-title')).toBeGreaterThanOrEqual(14);
   expect(await fontPx('[data-testid="composer"]')).toBeGreaterThanOrEqual(15);
 
-  // Opening a session never adds a pane: it takes the free one, and with none free it replaces the one worked in.
+  // Opening a session never adds a pane: it goes to the pane worked in.
   await entry(b).click();
   await expect(pane(1)).toHaveAttribute("data-station", b);
   await expect(panes).toHaveCount(2);
@@ -88,10 +92,9 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await fits();
   await shoot(page, "layout-02-three-panes");
 
-  // Closing a session leaves its pane, empty. One pane keeps the one worked in; the number holds over a reload.
+  // Closing a session closes its pane. One pane keeps the one worked in; an empty pane is gone after a reload.
   await pane(2).getByTestId("station-close").click();
-  await expect(panes).toHaveCount(3);
-  await expect(pane(2)).not.toHaveAttribute("data-station", b);
+  await expect(panes).toHaveCount(2);
   await entry(a).click();
   await page.getByTestId("panes-1").click();
   await expect(panes).toHaveCount(1);
@@ -101,8 +104,9 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await expect(panes).toHaveCount(2);
   await expect(pane(1)).toHaveAttribute("data-testid", "pane-empty");
   await page.reload();
-  await expect(panes).toHaveCount(2);
+  await expect(panes).toHaveCount(1);
   await expect(pane(0)).toHaveAttribute("data-station", a);
+  await page.getByTestId("panes-2").click();
 
   // A session dragged from the list lands in the pane it is dropped on.
   await entry(d).dragTo(pane(1));
@@ -115,10 +119,10 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   // The pane under a dragged session says the drop lands there.
   const data = await page.evaluateHandle((id) => { const dt = new DataTransfer(); dt.setData("application/x-keel-session", id); return dt; }, c);
   await pane(1).dispatchEvent("dragover", { dataTransfer: data });
-  await expect(pane(1)).toHaveAttribute("data-drop", "true");
+  await expect(pane(1)).toHaveAttribute("data-drop", /./);
   await shoot(page, "layout-04-drop-target");
   await pane(1).dispatchEvent("dragleave", { dataTransfer: data });
-  await expect(pane(1)).not.toHaveAttribute("data-drop", "true");
+  await expect(pane(1)).not.toHaveAttribute("data-drop", /./);
 
   // The line between two panes drags; the arrow keys move it; the sizes are remembered; a double click evens them.
   const grip = page.getByTestId("pane-grip");
