@@ -14,3 +14,7 @@ Open http://127.0.0.1:47960.
 Providers are found from the environment: `ANTHROPIC_API_KEY` for the Anthropic
 API; `AWS_BEARER_TOKEN_BEDROCK`, AWS keys or `ANTHROPIC_BEDROCK_BASE_URL` for
 Amazon Bedrock. Models come from each provider's own listing.
+
+## License
+
+MIT
