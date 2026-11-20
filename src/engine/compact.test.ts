@@ -5,7 +5,7 @@
 // adds nothing, a note for the model adds its text, an attached text file adds
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
-import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
+import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, replyBytes, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -106,17 +106,24 @@ test("an unmeasured history is counted at the model's own bytes a token", () => 
   const t = contextTokens(big, "lab:dense");
   expect(t.measured).toBe(0);
   expect(t.used).toBeGreaterThan(100_000 / BYTES_PER_TOKEN);
-  // Too small a request teaches nothing; a real one sets the ratio, the next moves it a fifth of the way.
+  // Too small a request teaches nothing; each real one, the first too, moves the ratio a fifth of the way.
   expect(learnRatio("lab:dense", 3_000, 1_000)).toBeUndefined();
-  expect(learnRatio("lab:dense", 400_000, 100_000)).toBe(4);
-  expect(learnRatio("lab:dense", 300_000, 100_000)).toBeCloseTo(3.8);
-  expect(bytesPerToken("lab:dense")).toBeCloseTo(3.8);
+  expect(learnRatio("lab:dense", 400_000, 100_000)).toBeCloseTo(2.8);
+  expect(learnRatio("lab:dense", 300_000, 100_000)).toBeCloseTo(2.84);
+  expect(bytesPerToken("lab:dense")).toBeCloseTo(2.84);
   expect(bytesPerToken("lab:never-seen")).toBe(BYTES_PER_TOKEN);
   expect(contextTokens(big, "lab:dense").used).toBeLessThan(t.used);
   // A request refused as over the window proves a lower ratio; one that proves nothing new changes nothing.
-  expect(capRatio("lab:dense", 500_000, 100_000)).toBeUndefined();
+  expect(capRatio("lab:dense", 400_000, 100_000)).toBeUndefined();
   expect(capRatio("lab:dense", 200_000, 100_000)).toBeCloseTo(1.8);
   expect(contextTokens(big, "lab:dense").used).toBeGreaterThan(t.used);
+});
+
+// The ratio counts what the provider tokenizes: a thought's signature and the
+// block framing are not in a reply's bytes.
+test("a reply counts its words, thinking and calls, not signatures", () => {
+  const reply = [{ type: "thinking", thinking: "abcd", signature: "S".repeat(50_000) }, { type: "redacted_thinking", data: "R".repeat(9_000) }, { type: "text", text: "hello" }, { type: "tool_use", id: "t1", name: "Bash", input: { c: 1 } }] as any;
+  expect(replyBytes(reply)).toBe(4 + 5 + 4 + 7);
 });
 
 const turn = (n: number, out: string) => [

@@ -4,7 +4,7 @@
 // a `compaction` event is appended. From there the model sees the summary and
 // the owner's recent words verbatim instead of the history; the history stays
 // stored, readable and searchable. Nothing earlier is rewritten.
-import type { Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
+import type { AssistantBlock, Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { imageTokens } from "./images.ts";
 
@@ -247,8 +247,10 @@ export const bytesPerToken = (model?: string): number => (model && ratios.get(mo
 export function learnRatio(model: string, bytes: number, tokens: number): number | undefined {
   if (tokens < RATIO_SAMPLE_TOKENS || bytes <= 0) return undefined;
   const sample = Math.min(RATIO_MAX, Math.max(RATIO_MIN, bytes / tokens));
-  const have = ratios.get(model);
-  const next = have ? have + (sample - have) * RATIO_RATE : sample;
+  // A first reply moves the default by the same rate: one small or odd request
+  // (a context of many wrappers Keel does not count) cannot set the ratio alone.
+  const have = ratios.get(model) ?? BYTES_PER_TOKEN;
+  const next = have + (sample - have) * RATIO_RATE;
   ratios.set(model, next);
   return next;
 }
@@ -341,7 +343,7 @@ const PATH_NOTE_BYTES = 330;
 // text when it goes inline, else the note with its path; a PDF read natively
 // is model-specific and counted as that note).
 function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
-  if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : utf8Bytes(JSON.stringify(e.data.blocks ?? []));
+  if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : replyBytes(e.data.blocks ?? []);
   if (e.kind === "tool_result") return jsonBytes(e.data.results ?? [], per);
   if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
   if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
@@ -350,6 +352,20 @@ function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
   for (const b of (e.data.images ?? []) as any[]) {
     if (b.type !== "attachment") n += jsonBytes(b, per);
     else n += b.size <= TEXT_INLINE && (TEXT_MEDIA.test(b.media_type) || b.media_type === "application/octet-stream") ? b.size + PATH_NOTE_BYTES : PATH_NOTE_BYTES;
+  }
+  return n;
+}
+
+// A reply's bytes as the provider tokenizes them: its words, its thinking and
+// each call's name and input. A thought's signature, redacted thinking and the
+// block framing are opaque to the tokenizer (counted, they made a long
+// session's learned ratio twice the measured one).
+export function replyBytes(blocks: AssistantBlock[]): number {
+  let n = 0;
+  for (const b of blocks) {
+    if (b.type === "text") n += utf8Bytes(b.text);
+    else if (b.type === "thinking") n += utf8Bytes(b.thinking);
+    else if (b.type === "tool_use") n += utf8Bytes(b.name) + utf8Bytes(JSON.stringify(b.input ?? {}));
   }
   return n;
 }

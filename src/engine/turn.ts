@@ -1009,9 +1009,10 @@ export class Engine {
     return true;
   }
 
-  // Bytes of what every request carries before the conversation.
+  // Bytes of what every request carries before the conversation and the
+  // provider counts: a deferred tool is not in the prompt until a call loads it.
   private prefixBytes(st: Step): number {
-    return utf8Bytes(st.system ?? "") + utf8Bytes(JSON.stringify((st.tools ?? []).map((t) => [t.name, t.description, t.input_schema])));
+    return utf8Bytes(st.system ?? "") + utf8Bytes(JSON.stringify((st.tools ?? []).filter((t) => !t.defer).map((t) => [t.name, t.description, t.input_schema])));
   }
 
   // Tokens the next request of this context carries, as this model counts
