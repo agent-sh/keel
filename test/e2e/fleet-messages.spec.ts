@@ -79,6 +79,8 @@ test("fleet messages: across machines, and held for the owner", async ({ page, r
 // notify_when_idle across daemons: the sender gets one notice when the session
 // on the other machine has handled its message, from the receiver's record.
 test("fleet messages: a notice when the other machine's session has handled it", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   mkdirSync(ROOT, { recursive: true });
   let { machines } = await (await request.get("/api/fleet/machines")).json();

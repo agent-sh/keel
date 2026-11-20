@@ -46,7 +46,8 @@ const encode = (raw: Uint8Array<ArrayBuffer>, e: Enc) =>
 // A JSON answer at or above MIN_BYTES, compressed with the cheapest coding the
 // request accepts. Anything else comes back as it was.
 export async function compressJson(req: Request, res: Response): Promise<Response> {
-  if (!res.body || req.method === "HEAD" || res.headers.has("content-encoding")) return res;
+  // A handler that upgraded the request to a WebSocket answers nothing.
+  if (!res?.body || req.method === "HEAD" || res.headers.has("content-encoding")) return res;
   if (!(res.headers.get("content-type") ?? "").startsWith("application/json")) return res;
   const raw = new Uint8Array(await res.arrayBuffer());
   const headers = new Headers(res.headers);
