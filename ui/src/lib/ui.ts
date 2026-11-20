@@ -84,7 +84,7 @@ let state: UIState = {
   newModel: "",
   newProject: "",
   composerSeed: null,
-  panel: null, // closed on load; a session he opened it in brings it back (Bridge)
+  panel: null, // closed on load; a session they opened it in brings it back (Bridge)
   focusEvent: new URLSearchParams(location.search).get("e"),
   focusCall: null,
   preview: null,

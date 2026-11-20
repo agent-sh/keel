@@ -83,7 +83,7 @@ export const artifactRoutes: RouteModule = ({ store, bus, errors }) => {
       if (s.machine) return "";
       const dir = dirOf(s);
       try { mkdirSync(dir, { recursive: true }); } catch (e) { errors.capture("server", e, { at: "artifacts folder", session: s.id }); }
-      return `Artifacts: files you make for the owner to look at (a report, a chart, an HTML page, a summary in markdown) go in ${dir}/, unless he names a place. He sees them, with what you created or changed in his folders, in the session's Artifacts.`;
+      return `Artifacts: files you make for the owner to look at (a report, a chart, an HTML page, a summary in markdown) go in ${dir}/, unless they name a place. They see them, with what you created or changed in their folders, in the session's Artifacts.`;
     },
     beforeTool: (s, call) => {
       if (s.machine) return;

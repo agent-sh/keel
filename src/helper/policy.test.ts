@@ -61,7 +61,7 @@ test("many compactions keep the owner's newest words whole, within the budget, a
   expect(whole.at(-1)).toBe(said(39));
   expect(whole.length).toBeGreaterThanOrEqual(15);
   expect(whole.map((t: string) => Number(t.match(/^Decision (\d+)/)?.[1]))).toEqual(whole.map((_: string, k: number) => 40 - whole.length + k));
-  // Digest wakes only fill what his words left.
+  // Digest wakes only fill what their words left.
   const other = (last.other_messages ?? []).reduce((n: number, t: string) => n + Buffer.byteLength(t), 0);
   expect(bytes + other).toBeLessThanOrEqual(OWNER_WORDS_BYTES);
 });

@@ -1,6 +1,6 @@
 // The bridge: as many panes side by side as the owner chose, a session in
 // each. The pane worked in is the helm and carries the full header. Keel
-// never adds a pane by itself: opening a session fills a pane he added and
+// never adds a pane by itself: opening a session fills a pane they added and
 // left empty, else replaces the session in the pane worked in. A second pane opens when asked for: the pane control, "open beside"
 // (Ctrl or middle click in the list, the row's button, the palette), or a
 // session dropped on a pane's left or right edge. Panes are resized by
@@ -191,7 +191,7 @@ function NewStation({ slot, grow }: { slot?: number; grow?: number }) {
 }
 
 // A pane with no session: it waits for the owner to put one in. It offers the
-// sessions not on screen, what needs him first, and takes a dragged one.
+// sessions not on screen, what needs them first, and takes a dragged one.
 function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boolean }) {
   const { list, watches } = useLive();
   const slots = useStations((x) => x.slots);
@@ -263,7 +263,7 @@ export function Bridge() {
   const helm = route.name === "session" ? route.id : null;
   const fresh = route.name === "new";
 
-  // The first layout, once: one pane, with the session open. A second one is his to ask for.
+  // The first layout, once: one pane, with the session open. A second one is their to ask for.
   useEffect(() => {
     if (!kept.seeded && loaded && !phone) stations.seed(helm);
   }, [kept.seeded, loaded]);
@@ -282,7 +282,7 @@ export function Bridge() {
   const onScreen = phone ? pages.map((s) => s.id) : slots.map((x) => x.id).filter((x): x is string => !!x && !gone(x));
   useEffect(() => stations.setShown(onScreen));
 
-  // The side panel starts closed in every session. One he opened in a
+  // The side panel starts closed in every session. One they opened in a
   // session comes back with it (and over a reload); closing it forgets it.
   const panel = useUI((s) => s.panel);
   const panels = () => JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string>;

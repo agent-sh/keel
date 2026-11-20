@@ -252,7 +252,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           if (f.rows().some((r) => r.name.toLowerCase() === name.toLowerCase())) return bad(`a machine is already named ${name}`);
           m = f.add({ name, source: "ssh", ssh_host: group.alias, daemon_port: port ?? undefined, workspace_root: root });
           if (port === null) {
-            // The account is the owner's own: its home is the directory granted unless he names one.
+            // The account is the owner's own: its home is the directory granted unless they name one.
             const checked = await f.check(m.id);
             if (!root && checked.facts) {
               const home = (JSON.parse(checked.facts) as { home?: string }).home;

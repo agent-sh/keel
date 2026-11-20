@@ -136,7 +136,7 @@ const taskWords = (e: StoredEvent) => {
 
 // What the owner wrote (typed, steered, queued, spoken or sent from the CLI). Messages
 // the harness delivers (a wait firing, a subagent's task or report, a hook) carry a
-// kind or an origin of their own (engine.send spreads its meta into the event) and are not his.
+// kind or an origin of their own (engine.send spreads its meta into the event) and are not their.
 const ownWords = (e: StoredEvent) => ownerPrompt(e.data) && !e.data.meta && !/^\s*(<[a-z_]+[\s>]|\[harness\])/i.test(String(e.data.text ?? ""));
 // One readable line: no tags, no markdown marks.
 const clean = (t: string) => stripAnsi(String(t)).replace(/<\/?[a-z_][^>]*>/gi, " ").replace(/[*`#_]/g, "").replace(/\s+/g, " ").trim();

@@ -46,7 +46,7 @@ function find(ref: string): Session {
 
 const sessions: Tool = {
   name: "helper__sessions",
-  description: "The owner's sessions now: id, title, folder, state (working, idle, failed), what waits for him (approvals, questions), unread alerts, running agents, last activity and the last 24 hours' cost. Archived ones with archived: true.",
+  description: "The owner's sessions now: id, title, folder, state (working, idle, failed), what waits for them (approvals, questions), unread alerts, running agents, last activity and the last 24 hours' cost. Archived ones with archived: true.",
   input_schema: { type: "object", properties: { archived: { type: "boolean" } }, additionalProperties: false },
   readOnly: true,
   run: (input) => guard(() => {
@@ -108,7 +108,7 @@ const sessionRead: Tool = {
 
 const activity: Tool = {
   name: "helper__activity",
-  description: "What happened across Keel: the helper's event digest (failures, finished long work, what waits for the owner, mail that needs him), the open errors with their counts, and spend by session, over the last hours (default 24).",
+  description: "What happened across Keel: the helper's event digest (failures, finished long work, what waits for the owner, mail that needs them), the open errors with their counts, and spend by session, over the last hours (default 24).",
   input_schema: { type: "object", properties: { hours: { type: "number" } }, additionalProperties: false },
   readOnly: true,
   run: (input) => guard(() => {
@@ -130,7 +130,7 @@ const activity: Tool = {
 
 const remember: Tool = {
   name: "helper__remember",
-  description: `Keep one fact worth knowing later in the owner's remembered list (he sees and edits it): a preference, decision, person, commitment (with its date) or stable fact. Pass id to update an item instead of adding a near copy. Never secrets. kind: ${MEMORY_KINDS.join(", ")}.`,
+  description: `Keep one fact worth knowing later in the owner's remembered list (they see and edit it): a preference, decision, person, commitment (with its date) or stable fact. Pass id to update an item instead of adding a near copy. Never secrets. kind: ${MEMORY_KINDS.join(", ")}.`,
   input_schema: { type: "object", properties: { text: { type: "string" }, kind: { type: "string", enum: MEMORY_KINDS }, id: { type: "string", description: "An item's id (or its last characters) to update" } }, required: ["text", "kind"], additionalProperties: false },
   readOnly: true,
   run: (input) => guard(() => {
@@ -152,7 +152,7 @@ const forget: Tool = {
 
 const needMail = () => {
   const src = H!.source;
-  if (!src.available()) throw new Error(`${src.label} is not connected: the owner signs in through his Google token file (Settings, Helper).`);
+  if (!src.available()) throw new Error(`${src.label} is not connected: the owner signs in through their Google token file (Settings, Helper).`);
   return src;
 };
 const shortFrom = (f: string) => f.replace(/\s*<[^>]*>/, "") || f;
@@ -200,7 +200,7 @@ const mailShown = (i: any) =>
 
 const mailSend: Tool = {
   name: "mail__send",
-  description: "Send a mail as the owner, only when he asked for this message. He confirms it on a card before it goes (always). reply_to_id: a message id to answer in its thread.",
+  description: "Send a mail as the owner, only when they asked for this message. They confirm it on a card before it goes (always). reply_to_id: a message id to answer in its thread.",
   input_schema: { type: "object", properties: { to: { type: "string" }, cc: { type: "string" }, subject: { type: "string" }, body: { type: "string" }, reply_to_id: { type: "string" } }, required: ["to", "subject", "body"], additionalProperties: false },
   readOnly: false,
   confirm: { why: "it sends a mail as you", shown: mailShown },

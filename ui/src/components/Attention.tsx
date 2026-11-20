@@ -1,5 +1,5 @@
 // What needs the owner, outside the page: the tab's title starts with how many
-// sessions need him, its icon carries a dot in the state's color (needs you,
+// sessions need them, its icon carries a dot in the state's color (needs you,
 // else working), and an installed app gets the count as its badge. So a tab
 // in the background, or the app in the dock, says when to come back.
 import { useEffect, useMemo } from "react";

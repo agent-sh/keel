@@ -129,7 +129,7 @@ export type SessionSettings = {
   // Marks, daemon state every client shares (src/server/routes/marks.ts).
   pinned_ms?: number;  // pinned at; absent = not pinned
   tags?: string[];
-  done_ms?: number;    // the owner marked the work finished; his next prompt clears it
+  done_ms?: number;    // the owner marked the work finished; their next prompt clears it
   failed_ms?: number;  // the last turn ended in a failure; the next turn's start clears it
   last_end?: string;   // why the last turn ended (turn_end's reason: end_turn, interrupted, restart, error...)
   accept_messages?: boolean; // false: messages from other sessions are refused

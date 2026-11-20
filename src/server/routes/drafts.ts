@@ -68,7 +68,7 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
     return { ...(row?.text ? { text: row.text, origin: row.origin, text_ms: row.updated_ms } : {}), attachments, ...(updated ? { updated_ms: updated } : {}) };
   };
 
-  // When the owner last used each session: his message, a draft change, typing.
+  // When the owner last used each session: their message, a draft change, typing.
   const used = new Map<string, number>();
   const touch = (id: string) => used.set(id, Date.now());
   // The owner's own words count: every automatic sender tags what it sends

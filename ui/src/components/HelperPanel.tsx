@@ -1,5 +1,5 @@
 // The helper's side panel: what it remembers (each item editable and
-// removable, and his own additions), what it was told about lately, and
+// removable, and their own additions), what it was told about lately, and
 // its mail source. Also the helper's settings section.
 import { Check, MailCheck, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useState } from "react";

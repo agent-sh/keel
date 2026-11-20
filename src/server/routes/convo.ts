@@ -45,13 +45,13 @@ export function parseDigest(text: string): { recap?: string; next?: string } {
 }
 
 const PART_FROM = (excerpt: string, focus?: string) => [
-  `[harness] The owner is summarizing a part of this conversation: from his message that begins "${excerpt}" to the end. That part will be replaced by your summary; everything before it stays as it is.`,
+  `[harness] The owner is summarizing a part of this conversation: from their message that begins "${excerpt}" to the end. That part will be replaced by your summary; everything before it stays as it is.`,
   "Write the summary of that part only, so the work can go on without it: what was asked, what was decided, files read or changed and why, commands and results that still matter, and where it stands. Be specific: names, paths, numbers, error text. Do not call tools; reply with the summary only.",
   focus ? `\nKeep above all: ${focus}` : "",
 ].join("\n");
 
 const PART_UP_TO = (excerpt: string, focus?: string) => [
-  `[harness] The owner is summarizing a part of this conversation: everything before his message that begins "${excerpt}". That part will be replaced by your summary; that message and everything after it stay as they are.`,
+  `[harness] The owner is summarizing a part of this conversation: everything before their message that begins "${excerpt}". That part will be replaced by your summary; that message and everything after it stay as they are.`,
   "Write the summary of that earlier part only, so the work can go on without it: what was asked, what was decided, files read or changed and why, commands and results that still matter, and where it stood. Be specific: names, paths, numbers, error text. Do not call tools; reply with the summary only.",
   focus ? `\nKeep above all: ${focus}` : "",
 ].join("\n");
@@ -93,7 +93,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
     if (!name) return "[harness] The owner turned the skill mode off: the standing instructions of the skill named before no longer apply.";
     const r = renderForOwner(name, "", s.workspace, s.id);
     if ("error" in r) return `[harness] The skill mode ${name} could not be loaded (${r.error}).`;
-    return `[harness] The owner set the skill "${name}" as this session's mode: follow its instructions on every turn until he turns it off.\n\n${r.text}`;
+    return `[harness] The owner set the skill "${name}" as this session's mode: follow its instructions on every turn until they turn it off.\n\n${r.text}`;
   };
   registerHooks({
     beforeRequest(s, req) {
@@ -225,7 +225,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           head = append(s.id, "note", {
             kind: "summary", model: true, summary, from_event: ev.id, replaced_head: line.at(-1)!.id, focus, usage, model_id: res.model_id,
             label: "Summarized from a prompt on; the earlier conversation stays as it was",
-            text: `[harness] The owner summarized the later part of this conversation, from his message that began "${excerpt(ev.data.text)}". Summary of that part:\n\n${summary}`,
+            text: `[harness] The owner summarized the later part of this conversation, from their message that began "${excerpt(ev.data.text)}". Summary of that part:\n\n${summary}`,
           }, ev.parent);
         } else {
           // A checkpoint that covers everything before the prompt; the prompt and

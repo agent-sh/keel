@@ -1,4 +1,4 @@
-// The session list by the owner's own folders: his folders in his order, each
+// The session list by the owner's own folders: their folders in their order, each
 // folded or open, a level of folders inside a top one, then the sessions in
 // none. A session dragged onto a folder's head is filed there; a folder
 // dragged onto another's head goes before it, or into it from the lower half

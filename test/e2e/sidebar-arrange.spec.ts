@@ -6,11 +6,11 @@ import { openPanel, shoot } from "./shots.ts";
 // opening a session opens it in the pane worked in. A second pane opens when
 // asked for: the row's "open beside" button (or Ctrl click), or a session
 // dropped on a pane's edge. The agents a session started are folded under
-// it to a count (a turning mark while one works) until he opens them, and
+// it to a count (a turning mark while one works) until they open them, and
 // that choice is kept per session. One field filters the list by title or
 // folder, and its menu groups (by folder or one list), sorts (recent, state,
 // name) and hides finished sessions; the arrangement is kept. The side
-// panel starts closed in every session and on load; one he opened in a
+// panel starts closed in every session and on load; one they opened in a
 // session comes back with that session only. The pane's top line moves
 // between state colours smoothly, and breathes while a turn works.
 const MODEL = "scripted:stand-in";
@@ -33,7 +33,7 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   const pane = (i: number) => bridge.locator(`:scope > [data-slot="${i}"]`);
   const entry = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
 
-  // His kept layout: two panes, the second left empty. It opens as one pane.
+  // Their kept layout: two panes, the second left empty. It opens as one pane.
   await page.addInitScript((id) => {
     if (sessionStorage.getItem("seeded")) return;
     sessionStorage.setItem("seeded", "1");
@@ -90,7 +90,7 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await expect(kids.getByTestId("child-session")).toHaveCount(2);
   await shoot(page, "arrange-04-agents-open");
   await page.reload();
-  await expect(kids.getByTestId("child-session")).toHaveCount(2); // his choice, kept
+  await expect(kids.getByTestId("child-session")).toHaveCount(2); // their choice, kept
   await kids.getByTestId("children-toggle").click();
   await expect(kids.getByTestId("child-session")).toHaveCount(0);
 

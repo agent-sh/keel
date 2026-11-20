@@ -6,16 +6,16 @@ export type MemoryKind = "preference" | "decision" | "person" | "commitment" | "
 export const MEMORY_KINDS: MemoryKind[] = ["preference", "decision", "person", "commitment", "fact"];
 export type MemoryItem = { id: string; ts: number; updated: number; kind: MemoryKind; text: string; source: "helper" | "owner"; used?: number };
 
-// An event the helper is told about. `wake`: worth starting a turn for (he
-// may be away and something broke or needs him); `feed`: told with the next
+// An event the helper is told about. `wake`: worth starting a turn for (they
+// may be away and something broke or needs them); `feed`: told with the next
 // turn, whoever starts it.
 export type Level = "wake" | "feed";
 export type DigestEvent = { id: string; ts: number; kind: string; session_id: string | null; title: string; body: string; level: Level };
 
 // Alert kinds (src/automation/alerts.ts) as the helper weighs them. An
-// approval or a question already reaches him on his channels: the helper
-// hears of it with his next word, it does not wake for it. A failure, a usage
-// limit and a failed loop are what he would want summed up while away. A
+// approval or a question already reaches them on their channels: the helper
+// hears of it with their next word, it does not wake for it. A failure, a usage
+// limit and a failed loop are what they would want summed up while away. A
 // finished turn matters only when it was long work (the alert rule's own
 // threshold, passed in). A snooze ending is routine.
 export function levelOfAlert(kind: string, data: { ran_ms?: number } | undefined, longTurnMs: number): Level | null {
@@ -56,7 +56,7 @@ const STOP = new Set("the and for are but not you your with that this from have 
 export const words = (s: string) => new Set(s.toLowerCase().normalize("NFKD").replace(/\p{M}+/gu, "").split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3 && !STOP.has(w)));
 
 // The items a turn recalls: those sharing words with what the turn answers,
-// best first, then his standing preferences and commitments the context has
+// best first, then their standing preferences and commitments the context has
 // not seen since its last summary; never one recalled since then (`seen`);
 // within `budget` characters. Recall is context for the model, so a short
 // list it can trust beats a long one it must sift.

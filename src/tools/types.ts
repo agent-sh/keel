@@ -64,7 +64,7 @@ export type Tool = ToolSpec & {
   families?: string[];
   // It waits on the owner's answer (a question): a restart expires it, it did nothing.
   asksOwner?: boolean;
-  // Every call goes to the owner on a card of its own (a mail sent as him),
+  // Every call goes to the owner on a card of its own (a mail sent as them),
   // in every mode: no grant, mode or reviewer settles it. `shown`: the card's text.
   confirm?: { why: string; shown(input: any): string };
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;

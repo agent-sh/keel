@@ -451,7 +451,7 @@ export function mobileApi(ctx: MobileCtx) {
 
   // Messages of one chat's shown branch with its approval cards in place. The
   // other branches' messages come as kind "deleted" (the app hides those ids),
-  // so a phone that cached the branch the owner left shows only the one he chose;
+  // so a phone that cached the branch the owner left shows only the one they chose;
   // nothing is removed from the store. A client that pages (`before`, or
   // `paged=1` with `limit`) gets the newest `limit` and `older` to ask for the
   // page before; one that does not gets the whole branch, as before.

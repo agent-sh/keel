@@ -108,7 +108,7 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
     emit(id);
   });
 
-  // The owner's next prompt reopens a session he marked done.
+  // The owner's next prompt reopens a session they marked done.
   bus.on((f) => {
     if (f.t !== "event" || f.event.kind !== "user") return;
     const d = f.event.data;

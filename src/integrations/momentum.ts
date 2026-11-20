@@ -75,7 +75,7 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     }
     if (!text.trim()) return { ok: false, code: "empty_text", error: "queue and steer need text" };
     if (s.archived) return { ok: false, code: "archived", error: "the session is archived" };
-    // The owner is writing a message there: momentum's waits, so his message
+    // The owner is writing a message there: momentum's waits, so their message
     // is not overtaken (interrupt still goes through).
     if (c.draft?.(s.id)) return { ok: false, code: "hold_ui_draft", error: "the owner has an unsent message in this session" };
     const tagged = text.trimStart().startsWith("[momentum]") ? text : `[momentum] ${text.trim()}`;

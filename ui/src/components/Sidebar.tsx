@@ -301,7 +301,7 @@ function Index({ current }: { current: string | null }) {
   const hidden = listed.length - pinned.length - rest.length;
   const cmp = order(arr, watches);
   const grouped = arr.group === "folder" ? groups(rest, cmp, arr.sort === "name") : [];
-  // By project or by his folders, the archive is one list (a project's archived sessions are on its page).
+  // By project or by their folders, the archive is one list (a project's archived sessions are on its page).
   const flat = arr.group === "flat" || ((arr.group === "project" || arr.group === "mine") && tab !== "active") ? [...rest].sort(cmp) : [];
   // Same-named folders read apart (beta/api, alpha/api); a machine's folders are named among its own.
   const heads = useMemo(() => {

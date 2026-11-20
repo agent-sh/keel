@@ -74,7 +74,7 @@ export const driveRoutes: RouteModule = (deps: Deps) => {
         }
       },
       POST: async (req: any) => {
-        // A send, an answer or a model switch from a remote device is the owner's: his passkey.
+        // A send, an answer or a model switch from a remote device is the owner's: their passkey.
         if (presence && !presence.allows(req, "outside")) return json({ error: "this needs your passkey from a remote device", presence: { action: "outside" } }, 428);
         const b = await body(req);
         try {

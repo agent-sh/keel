@@ -125,7 +125,7 @@ export const projectRoutes: RouteModule = ({ store, bus, engine, providers }) =>
   });
 
   // A default mode that asks less than the daemon's default needs the owner
-  // at this machine or his passkey, as loosening a session's mode does.
+  // at this machine or their passkey, as loosening a session's mode does.
   const checkDefaults = async (req: Request, d: unknown): Promise<ProjectDefaults> => {
     if (!d || typeof d !== "object" || Array.isArray(d)) throw refuse("defaults is an object");
     const out: ProjectDefaults = {};

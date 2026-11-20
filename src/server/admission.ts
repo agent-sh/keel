@@ -35,7 +35,7 @@ function hostName(host: string): string {
   return host.replace(/:\d+$/, "");
 }
 
-// Hosts a module knows the owner gave: the address he told the phone to reach
+// Hosts a module knows the owner gave: the address they told the phone to reach
 // this machine at, say. Each source is read per request, so a change applies at once.
 const hostSources: (() => string[])[] = [];
 export const addAllowedHosts = (f: () => string[]) => void hostSources.push(f);

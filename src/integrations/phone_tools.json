@@ -1,6 +1,6 @@
 {
   "source": "hermes-android-app phone_use (server/mobile/phone.py)",
-  "instructions": "The owner's Android phone, driven through the Hermes app's Accessibility service. It acts only while the owner has armed control on the phone (Hermes app: Me > This phone > Control); Keel cannot arm it, and his Stop on the phone ends any call at once. Start with phone_state: indexed on-screen elements and a screenshot. Prefer index over x/y; coordinates are physical screen pixels. A successful action means it was dispatched, not that it worked: read phone_state again to verify. When a call says control is not armed or was stopped, tell the owner and do not call phone tools again until he says control is on.",
+  "instructions": "The owner's Android phone, driven through the Hermes app's Accessibility service. It acts only while the owner has armed control on the phone (Hermes app: Me > This phone > Control); Keel cannot arm it, and their Stop on the phone ends any call at once. Start with phone_state: indexed on-screen elements and a screenshot. Prefer index over x/y; coordinates are physical screen pixels. A successful action means it was dispatched, not that it worked: read phone_state again to verify. When a call says control is not armed or was stopped, tell the owner and do not call phone tools again until they say control is on.",
   "reads": [
     "phone_state",
     "phone_screenshot",

@@ -6,7 +6,7 @@
 // worked in. A second pane opens only when asked for: the pane control, "open
 // beside", or a drop on a pane's edge. Closing the session in a pane closes
 // the pane (the last one stays), and an empty pane is not kept across a
-// reload, so no empty pane waits for a session he did not ask to place.
+// reload, so no empty pane waits for a session they did not ask to place.
 import { useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { WATCH_RANK, type Watch } from "./watch.ts";
@@ -30,7 +30,7 @@ const load = <T,>(k: string, d: T): T => {
   }
 };
 
-// The kept layout without its empty panes: a pane he left empty is not forced on him again.
+// The kept layout without its empty panes: a pane they left empty is not forced on them again.
 export function restore(kept: Partial<Kept> | null): Kept {
   const n = Math.min(MAX_PANES, Math.max(1, Math.floor(Number(kept?.count)) || 1));
   const all = Array.from({ length: n }, (_, i) => kept?.slots?.[i] ?? null);
@@ -169,7 +169,7 @@ export const stations = {
 
 const STALE_FAIL_MS = 24 * 3600_000;
 
-// Sessions in the order they ask for attention: what needs him, what works,
+// Sessions in the order they ask for attention: what needs them, what works,
 // a fresh failure, then the newest. It orders the first layout, an empty
 // pane's suggestions and a phone's pages; it never fills a pane by itself.
 export function byAttention(live: Session[], watches: Record<string, Watch>): Session[] {

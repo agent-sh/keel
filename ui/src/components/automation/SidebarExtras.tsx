@@ -12,7 +12,7 @@ const LoopsPanel = lazy(() => import("./LoopsPanel.tsx").then((m) => ({ default:
 
 // Under a session row: the agents it started, live, with stop. Children never
 // appear in the top-level list and never count as unread on their own. The
-// list is folded to its count until the owner opens it; his choice is kept
+// list is folded to its count until the owner opens it; their choice is kept
 // per session. Folded, a working agent shows as a turning mark on the count.
 const OPEN_KEY = "keel.agentsOpen";
 const openKept = (): Record<string, boolean> => { try { return JSON.parse(localStorage.getItem(OPEN_KEY) ?? "{}"); } catch { return {}; } };

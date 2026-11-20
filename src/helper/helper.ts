@@ -1,17 +1,17 @@
 // The owner's helper: one conversation that never ends, pinned above the
 // sessions. It follows the other sessions (read-only tools over Keel, and a
-// digest of what happened), checks his mail on a timer, and keeps what is
-// worth remembering in a list he can see and edit.
+// digest of what happened), checks their mail on a timer, and keeps what is
+// worth remembering in a list they can see and edit.
 //
 // Cost: the helper's context is long and its wakes are far apart, so it asks
 // for the long cache lifetime from its first request (cache_long). It wakes
-// only for what he would want summed up while away (a failure, a usage
-// limit, an error spike, mail that needs him), a burst gathered into one
+// only for what they would want summed up while away (a failure, a usage
+// limit, an error spike, mail that needs them), a burst gathered into one
 // wake and wakes kept apart; everything else is told with the next turn,
 // whoever starts it. New mail is triaged by the reader model (the cheapest
 // the helper's provider lists, or the owner's KEEL_READER_MODEL) before the
-// helper hears of it. History stays bounded by compaction, which keeps his
-// words verbatim and is told to keep his decisions and commitments; the
+// helper hears of it. History stays bounded by compaction, which keeps their
+// words verbatim and is told to keep their decisions and commitments; the
 // long term is the remembered list, recalled per turn within a budget.
 import * as alerts from "../automation/alerts.ts";
 import { deliver } from "../automation/core.ts";
@@ -51,19 +51,19 @@ const BULK = new Set(["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS
 
 const DEFAULTS: State = { on: false, session_id: null, mail_every_min: 10, wake_gap_min: 10, last_wake: 0, mail_baseline: false };
 
-export const HELPER_PROMPT = `You are the owner's personal helper inside Keel, his agent harness: one conversation that never ends. He talks to you from his desk and his phone.
+export const HELPER_PROMPT = `You are the owner's personal helper inside Keel, their agent harness: one conversation that never ends. They talk to you from their desk and their phone.
 
 What you do:
-- Follow his other sessions. You get digests of what happened (a session failed, needs him, finished long work, errors spiked, mail that needs him). Use helper__sessions, helper__session_read and helper__activity to look closer; answer "what's going on" from them, short and concrete, most important first.
-- Send a message to another session (keel__session_send) only when he tells you to.
-- Mail and calendar: mail__search, mail__read, calendar__events. Label, archive or mark read (mail__label) only when he asks. mail__send only when he asks for that message; he confirms every message on a card before it goes, so write it whole first (recipients, subject, text).
-- When a digest arrives, decide whether he must act or would want to know now. If so, tell him in one line with PushNotification (notify on other models) and say it here. If not, reply with one short line and notify nothing. Routine progress is never worth a notification.
+- Follow their other sessions. You get digests of what happened (a session failed, needs them, finished long work, errors spiked, mail that needs them). Use helper__sessions, helper__session_read and helper__activity to look closer; answer "what's going on" from them, short and concrete, most important first.
+- Send a message to another session (keel__session_send) only when they tell you to.
+- Mail and calendar: mail__search, mail__read, calendar__events. Label, archive or mark read (mail__label) only when they ask. mail__send only when they ask for that message; they confirm every message on a card before it goes, so write it whole first (recipients, subject, text).
+- When a digest arrives, decide whether they must act or would want to know now. If so, tell them in one line with PushNotification (notify on other models) and say it here. If not, reply with one short line and notify nothing. Routine progress is never worth a notification.
 
-What you remember: you choose. With helper__remember, keep what will matter later: his preferences, decisions, people and how he relates to them, commitments with dates, and stable facts about his work. One fact per item, in plain words, dated when time matters. Update an item instead of adding a near copy (pass its id); helper__forget what turned false. Never keep secrets (passwords, tokens, keys, codes), and nothing he asks you not to keep. He sees and edits the list. Remembered items relevant to a message come with it in a <remembered> block: context, not his words.
+What you remember: you choose. With helper__remember, keep what will matter later: their preferences, decisions, people and how they relate to them, commitments with dates, and stable facts about their work. One fact per item, in plain words, dated when time matters. Update an item instead of adding a near copy (pass its id); helper__forget what turned false. Never keep secrets (passwords, tokens, keys, codes), and nothing they ask you not to keep. They see and edits the list. Remembered items relevant to a message come with it in a <remembered> block: context, not their words.
 
-Be brief. He reads you between other work.`;
+Be brief. They read you between other work.`;
 
-const FOCUS = "the owner's preferences, decisions, commitments with their dates, the people he named, the open threads and what he asked you to watch or do later. Items already saved with helper__remember need only a mention.";
+const FOCUS = "the owner's preferences, decisions, commitments with their dates, the people they named, the open threads and what they asked you to watch or do later. Items already saved with helper__remember need only a mention.";
 
 const g = globalThis as { __keelHelper?: { stop(): void } };
 
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     this.deps.bus.emit({ t: "feature", name: "helper", data: this.view() });
   }
 
-  // Turned on: the session is made once (or made again when he deleted or
+  // Turned on: the session is made once (or made again when they deleted or
   // archived it) and kept. Turned off: no wakes and no mail checks; the
   // conversation and the remembered list stay.
   async setOn(on: boolean): Promise<void> {
@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     if (!s || !this.state().on) return false;
     const list = this.unfed();
     if (!list.some((e) => e.level === "wake")) return false;
-    const text = `[helper digest] What happened since you last heard (times in UTC):\n${digestLines(list, DIGEST_LINES, this.title)}\n\nDecide whether the owner must act or would want to know now; if so, notify him in one line. Otherwise reply with one short line.`;
+    const text = `[helper digest] What happened since you last heard (times in UTC):\n${digestLines(list, DIGEST_LINES, this.title)}\n\nDecide whether the owner must act or would want to know now; if so, notify them in one line. Otherwise reply with one short line.`;
     if (!deliver(s.id, text, { kind: "helper_digest", events: list.length })) return false;
     this.markFed(list);
     this.save({ last_wake: Date.now() });
@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
 
   // New unread inbox mail since the last check. The first check only notes
   // what is there (a backlog is not news); bulk categories are skipped; the
-  // rest is triaged by the reader model, and only what needs him wakes the
+  // rest is triaged by the reader model, and only what needs them wakes the
   // helper.
   async checkMail(): Promise<{ new: number; important: number }> {
     const s = this.session();
@@ -270,7 +270,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
   private async triage(s: Session, list: MailMsg[]): Promise<Map<string, { level: "now" | "later" | "ignore"; why: string }>> {
     const out = new Map<string, { level: "now" | "later" | "ignore"; why: string }>();
     const text = list.map((m) => `id: ${m.id}\nfrom: ${m.from}\nsubject: ${m.subject}\nlabels: ${m.labels.join(" ")}\nsnippet: ${m.snippet}`).join("\n\n");
-    const ask = "For each message, one line: `<id> now|later|ignore <reason in a few words>`. now: the owner must act soon or would want to know now (a person writing to him, a deadline, a security or payment problem, something he is waiting for). later: worth a mention when he next asks. ignore: newsletters, receipts, automated notices that need nothing. Nothing else.";
+    const ask = "For each message, one line: `<id> now|later|ignore <reason in a few words>`. now: the owner must act soon or would want to know now (a person writing to them, a deadline, a security or payment problem, something they are waiting for). later: worth a mention when they next asks. ignore: newsletters, receipts, automated notices that need nothing. Nothing else.";
     try {
       const r = await this.deps.engine.read(s.id, "new mail", text, ask, AbortSignal.timeout(60_000));
       for (const line of r.text.split("\n")) {

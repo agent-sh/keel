@@ -41,7 +41,7 @@ test("a calendar schedule keeps its zone, and its times always move forward", ()
   const z = Date.UTC(2026, 10, 23); // Monday 00:00 UTC
   const f = parseCron("30 9 * * 1-5");
   // The same three instants wherever the daemon runs: the zone travels with the loop.
-  expect(nextRuns("30 9 * * 1-5", z, 3, "Asia/Jerusalem")).toEqual([Date.UTC(2026, 10, 23, 7, 30), Date.UTC(2026, 10, 24, 7, 30), Date.UTC(2026, 10, 25, 7, 30)]);
+  expect(nextRuns("30 9 * * 1-5", z, 3, "Europe/Paris")).toEqual([Date.UTC(2026, 10, 23, 8, 30), Date.UTC(2026, 10, 24, 8, 30), Date.UTC(2026, 10, 25, 8, 30)]);
   expect(nextCron(f, z, "UTC")).toBe(Date.UTC(2026, 10, 23, 9, 30));
   // The repeated autumn hour (New York, 2026-11-01): from the second 01:20 a
   // daily 01:30 is the next day's, never the earlier 01:30 already past.

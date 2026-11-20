@@ -158,7 +158,7 @@ function fit(all: Entry[], budget: number): { kept: Entry[]; bytes: number; shor
 // with its images and files newest first within OWNER_MEDIA_BYTES (older ones
 // leave a note in their place); then the other inputs (reports, wakes, tasks,
 // peers) under their own heading, in what the owner's words left of the budget,
-// so they never push his words out. `*_shortened`: the one message of each
+// so they never push their words out. `*_shortened`: the one message of each
 // kept as its start and end, so the divider can say so.
 export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): { owner_messages: string[]; owner_media?: PromptBlock[][]; owner_messages_shortened?: number; other_messages?: string[]; other_messages_shortened?: number } {
   const owner = fit(entries(lineage, "owner"), budget);

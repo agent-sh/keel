@@ -60,9 +60,9 @@ test("files travel with their message through repeated compactions, the older on
   expect(over.slice(1)).toEqual([{ type: "text", text: "<message>\nolder caption\n</message>" }, file("b.pdf", half + 1), { type: "text", text: "<message>\nnewer caption\n</message>" }] as any);
 });
 
-// Only the owner's own words are kept as his: reports, wakes, loop runs,
+// Only the owner's own words are kept as their: reports, wakes, loop runs,
 // tasks, peers, momentum and hooks are kept under their own heading in what
-// his words leave of the budget; the harness's own instructions are not kept.
+// their words leave of the budget; the harness's own instructions are not kept.
 test("delivered inputs never count as the owner's words", () => {
   const report = (k: number) => ev("user", { text: `<subagent_result agent_id="a${k}">${"r".repeat(15_000)}</subagent_result>`, kind: "subagent" });
   const line = [

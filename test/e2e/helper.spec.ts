@@ -5,8 +5,8 @@ import { shoot } from "./shots.ts";
 
 // Feature: the owner's helper. One conversation kept above the sessions
 // (the list's Helper entry, Ctrl J), with its side panel: the remembered
-// list the helper writes and he edits, what it was told about lately, and
-// its mail. Sending a mail always waits for his card, even in full auto. A
+// list the helper writes and they edit, what it was told about lately, and
+// its mail. Sending a mail always waits for their card, even in full auto. A
 // failure in another session and important new mail arrive in one digest
 // wake. The mail is the stand-in folder scripts/dev.sh sets; the model is
 // the scripted stand-in, so the calls are exact.
@@ -64,7 +64,7 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
   await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 30_000 });
   expect(readFileSync(outbox, "utf8").trim().split("\n").filter(Boolean).length).toBe(sentBefore + 1);
 
-  // He edits what it kept, adds his own item, and forgets one.
+  // They edit what it kept, adds their own item, and forgets one.
   const item = page.getByTestId("memory-item").filter({ hasText: "Dana is the accountant" });
   await item.hover();
   await item.getByTestId("memory-edit-button").click();
@@ -105,7 +105,7 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
   expect(digest[0].data.text).toContain("Billing run");
   await shoot(page, "helper-03-digest");
 
-  // His next message brings the remembered items it calls up, within the budget.
+  // Their next message brings the remembered items it calls up, within the budget.
   await page.getByTestId("composer").fill("When do the invoices go to the accountant?");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 });

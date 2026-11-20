@@ -271,14 +271,14 @@ export function retry(id: string): Alert | undefined {
 const DECISION: Partial<Record<AlertKind, string>> = { approval: "approval_id", question: "call_id" };
 
 // The channels that interrupt the owner (a desktop banner, the phone). They
-// carry what needs him or what he would want to know now: a question or an
-// approval, a failure that stopped his session, a loop that failed, a usage
-// limit, and what the model was told to tell him (agent). A routine finish
+// carry what needs them or what they would want to know now: a question or an
+// approval, a failure that stopped their session, a loop that failed, a usage
+// limit, and what the model was told to tell them (agent). A routine finish
 // stays in the inbox (its count on the bell and the row's dot), unless the
-// turn ran long, or completion is "always" (he asked to hear every finish).
-// Long is five minutes: a turn that short is one he is usually still at the
+// turn ran long, or completion is "always" (they asked to hear every finish).
+// Long is five minutes: a turn that short is one they are usually still at the
 // desk for (watching it, or in the next pane), while one that ran minutes is
-// one he left to do something else; Claude Code's own idle notice waits a
+// one they left to do something else; Claude Code's own idle notice waits a
 // minute of nothing to do, and a finish is less urgent than an input wait.
 const INTERRUPTS = new Set(["desktop", "push"]);
 export const LONG_TURN_MS = 5 * 60_000;

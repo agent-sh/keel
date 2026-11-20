@@ -51,7 +51,7 @@ export function discoverPhone(home: string, env: (k: string) => string | undefin
 }
 
 export const notArmed = () =>
-  `Phone control is not armed, so nothing was sent to the phone. Only the owner can arm it (${ARM_HOW}); Keel cannot. Tell the owner if the task needs the phone, and do not call phone tools again until he says control is on.`;
+  `Phone control is not armed, so nothing was sent to the phone. Only the owner can arm it (${ARM_HOW}); Keel cannot. Tell the owner if the task needs the phone, and do not call phone tools again until they say control is on.`;
 const stopped = (why: string) =>
   `The owner stopped phone control on the phone (${why}), so this call ended. Whether the action took effect is unknown. Do not retry it or call phone tools again until the owner arms control again (${ARM_HOW}).`;
 const unreachable = (socket: string, why: string) =>
