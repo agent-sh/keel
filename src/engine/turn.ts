@@ -28,7 +28,7 @@ import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
-import { RETRY, RETRY_WAIT_MAX_MS, backoffMs, errorText, retryable, sleep } from "./retry.ts";
+import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
 // What the model is told about a tool call a daemon restart cut.
 export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
@@ -682,10 +682,7 @@ export class Engine {
         }
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
         const wait = backoffMs(attempt, e);
-        if (wait > RETRY_WAIT_MAX_MS) {
-          const at = new Date(Date.now() + wait).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-          throw Object.assign(new Error(`${errorText(e)} (the provider asked to wait until ${at}, longer than a turn waits; Continue after that)`), { name: "RetryTooLong" });
-        }
+        if (wait > RETRY_WAIT_MAX_MS) throw new RetryTooLong(e, Date.now() + wait);
         this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait });
         this.status(id, { kind: "retry", attempt: attempt + 1, max: RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
         await sleep(wait, signal);

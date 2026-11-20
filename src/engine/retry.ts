@@ -8,6 +8,19 @@ export const RETRY = { max: 10, baseMs: 500, capMs: 32_000 };
 // not retried sooner than it said: the turn ends with the time it named.
 export const RETRY_WAIT_MAX_MS = 5 * 60_000;
 
+// An actionable provider failure, not a server fault or a retry of its own.
+export class RetryTooLong extends Error {
+  readonly span_id?: string;
+
+  constructor(cause: unknown, retryAt: number) {
+    const time = new Date(retryAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    super(`${errorText(cause)} (the provider asked to wait until ${time}, longer than a turn waits; Continue after that)`, { cause });
+    this.name = "RetryTooLong";
+    const span = (cause as { span_id?: unknown } | null)?.span_id;
+    if (typeof span === "string") this.span_id = span;
+  }
+}
+
 const RETRY_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
 const PASSING = /overloaded|rate.?limit|terminated|econnreset|econnrefused|etimedout|socket|network|stream (ended|closed)|premature close|fetch failed|timed? ?out|internal server error|service unavailable/i;
 

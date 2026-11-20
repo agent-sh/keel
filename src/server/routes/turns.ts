@@ -3,6 +3,7 @@
 import { leafOf, lineage } from "../../core/tree.ts";
 import { bytesPerToken, checkpointAt, contextTokens, COMPACT_SHARE, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
 import { resolveAttachments } from "../../engine/attachments.ts";
+import { RetryTooLong } from "../../engine/retry.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { ProviderError } from "../../providers/http.ts";
 import type { RouteModule } from "../app.ts";
@@ -146,7 +147,7 @@ export const turnRoutes: RouteModule = (deps) => {
           return json({ ok: true, event: ev });
         } catch (e) {
           // A provider's 4xx is a failed summary, not a refusal by this route.
-          if (!(e instanceof ProviderError)) throw e;
+          if (!(e instanceof ProviderError || e instanceof RetryTooLong)) throw e;
           const rec = errors.capture("provider", e, { session: s.id, at: "manual compaction" });
           return json({ error: rec.message, error_id: rec.id }, 502);
         }

@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
-import { actions, reportError, useStore, type ContextInfo, failed } from "../lib/store.ts";
+import { actions, reportError, useStore, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
@@ -40,7 +40,11 @@ function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: strin
     setEditing(false);
   });
   // Moves and sends that lose a race to the turn are no failure: the row is gone.
-  const act = (p: Promise<unknown>, at: string) => p.catch((e) => { const st = (e as { status?: number }).status; if (st !== 404 && st !== 409) failed(e, { at }); });
+  const act = (p: Promise<unknown>, at: string) => p.catch((e) => {
+    if (showArchivedRefusal(e)) return;
+    const st = (e as { status?: number }).status;
+    if (st !== 404 && st !== 409) failed(e, { at });
+  });
   return (
     <li className="group/q flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-hover" data-testid="queue-item">
       <span className={cn(
@@ -115,7 +119,7 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
           <span className="size-1.5 rounded-full bg-warn" />
           {nextOff ? "Paused: the next prompt was queued on another branch. Send it here or go back to its branch." : "Paused after the stop. Nothing runs until you send or resume."}
           {!nextOff && (
-            <button type="button" className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft" onClick={() => actions.queueResume(sessionId).catch((e) => failed(e, { at: "queue resume" }))}>
+            <button type="button" className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft" onClick={() => actions.queueResume(sessionId).catch((e) => { if (!showArchivedRefusal(e)) failed(e, { at: "queue resume" }); })}>
               <Play className="size-3" /> Resume
             </button>
           )}

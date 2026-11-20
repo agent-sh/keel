@@ -30,6 +30,7 @@ const STRICT_BYTES = 2.5;
 const textOf = (m: Message | undefined) =>
   (m?.content as any[] | undefined)?.filter((b) => b.type === "text").map((b) => b.text).join("\n") ?? "";
 const tokens = (v: unknown) => Math.ceil(JSON.stringify(v).length / 4);
+const longRateLimit = () => new ProviderError("rate", "Scripted: 429 rate limited, retry after 15 min", 429, 15 * 60_000);
 
 export class ScriptedProvider implements Provider {
   readonly id = "scripted";
@@ -89,6 +90,7 @@ export class ScriptedProvider implements Provider {
     if (lastText.includes("[harness] The context is being compacted")) {
       if (req.purpose === "summary" && lastText.includes("Keep above all: script:compact-error"))
         throw classify("Scripted", 400, new Headers(), JSON.stringify({ error: { message: "fixture image MIME type rejected" } }));
+      if (req.purpose === "summary" && lastText.includes("Keep above all: script:rate-limit-long")) throw longRateLimit();
       return reply("Goal: the owner is checking how the harness handles provider failures. State: the scripted scenario ran; next, answer the newest prompt.");
     }
     if (req.model === "stand-in-backup") return reply("The backup model took the request.");
@@ -137,7 +139,7 @@ export class ScriptedProvider implements Provider {
         if (lastText.includes("[harness] Goal check")) return reply('{"verdict": "met", "reason": "The reply says goal.txt holds the word ready."}');
         return reply("Done: goal.txt holds the word ready.");
       case "rate-limit-long":
-        throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 15 min", 429, 15 * 60_000);
+        throw longRateLimit();
       case "rate-limit":
         if (attempt === 0) throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 4 s", 429, 4_000);
         return reply("Answered after the rate limit passed.");

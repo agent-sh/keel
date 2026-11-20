@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { ContextMenuHost } from "./components/ContextMenu.tsx";
 import { Attention, setBaseTitle } from "./components/Attention.tsx";
@@ -35,6 +35,28 @@ function OnFirstOpen({ open, children }: { open: boolean; children: ReactNode })
   return seen.current ? <Suspense fallback={null}>{children}</Suspense> : null;
 }
 
+// A session action can answer after its composer went away. In that case the
+// shell shows the refusal instead, even on a different page.
+function ArchivedRefusalNotice() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const on = (e: Event) => queueMicrotask(() => {
+      if (e.defaultPrevented) return;
+      setVisible(true);
+      clearTimeout(t);
+      t = setTimeout(() => setVisible(false), 4000);
+    });
+    addEventListener("keel:archived-refusal", on);
+    return () => { removeEventListener("keel:archived-refusal", on); clearTimeout(t); };
+  }, []);
+  return visible ? (
+    <div role="status" data-testid="archived-refusal" className="flex min-h-9 shrink-0 items-center justify-center border-b border-line bg-raised px-4 py-1 text-center text-ui text-warn">
+      Action not taken: restore the archived session first.
+    </div>
+  ) : null;
+}
+
 export function App() {
   const route = useUI((s) => s.route);
 
@@ -68,6 +90,7 @@ export function App() {
       <Attention />
       <div className="k-shell">
         <AdminBand />
+        <ArchivedRefusalNotice />
         <div
           className="k-app"
           onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()}

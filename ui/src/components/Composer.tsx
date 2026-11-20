@@ -191,7 +191,9 @@ export function Composer({
   useEffect(() => {
     if (!session?.id) return;
     const onRefusal = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === session.id) setNotice("Restore this session before working in it again.");
+      if ((e as CustomEvent<string>).detail !== session.id) return;
+      e.preventDefault();
+      setNotice("Restore this session before working in it again.");
     };
     addEventListener("keel:archived-refusal", onRefusal);
     return () => removeEventListener("keel:archived-refusal", onRefusal);
