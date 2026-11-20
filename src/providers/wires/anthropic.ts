@@ -20,7 +20,7 @@ const image = (b: { media_type: string; data: string }) => ({ type: "image", sou
 // History to the wire. Cache breakpoints: tools + system are frozen (one
 // breakpoint on the system), and a rolling breakpoint on the last user message
 // so each request reads the whole previous prefix from cache.
-export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine">, mark: typeof CACHE | undefined = CACHE, toolRefs = false): any[] {
+export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine">, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false): any[] {
   const out: any[] = project(messages, { ...ctx, toolRefs }).map((m) => ({
     role: m.role,
     content: m.content.map((b): any => {
@@ -78,7 +78,8 @@ export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?:
   system.push({ type: "text", text: cut > 0 && cut < req.system.length ? req.system.slice(cut) : req.system, ...(cache && { cache_control: cache }) });
   if (systemPrefix) system.unshift({ type: "text", text: systemPrefix });
   // Thinking whose prefix changed since it was written is left out (binding.ts).
-  const bound = unbind(toWire(req.messages, ctx, cache, deferred.length > 0), system, tools);
+  // null, not undefined: a request without a cache marks no message either (undefined takes the default mark).
+  const bound = unbind(toWire(req.messages, ctx, cache ?? null, deferred.length > 0), system, tools);
   binders.set(req, bound.binder);
   const body: Record<string, any> = {
     model: req.model,
