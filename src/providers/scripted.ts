@@ -87,6 +87,8 @@ export class ScriptedProvider implements Provider {
     const part = lastText.match(/^\[harness\] The context is being compacted, .* in (\d+) parts, oldest first; this is part (\d+)\./);
     if (part) return reply(`Goal: the owner is checking a history longer than the window. State: read part ${part[2]} of ${part[1]} of the transcript${lastText.includes("<summary>") ? ", after the summary of the parts before it" : ""}.`);
     if (lastText.includes("[harness] The context is being compacted")) {
+      if (req.purpose === "summary" && lastText.includes("Keep above all: script:compact-error"))
+        throw classify("Scripted", 400, new Headers(), JSON.stringify({ error: { message: "fixture image MIME type rejected" } }));
       return reply("Goal: the owner is checking how the harness handles provider failures. State: the scripted scenario ran; next, answer the newest prompt.");
     }
     if (req.model === "stand-in-backup") return reply("The backup model took the request.");

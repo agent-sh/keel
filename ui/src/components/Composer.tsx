@@ -188,6 +188,14 @@ export function Composer({
     const t = setTimeout(() => setNotice(null), 4000);
     return () => clearTimeout(t);
   }, [notice]);
+  useEffect(() => {
+    if (!session?.id) return;
+    const onRefusal = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === session.id) setNotice("Restore this session before working in it again.");
+    };
+    addEventListener("keel:archived-refusal", onRefusal);
+    return () => removeEventListener("keel:archived-refusal", onRefusal);
+  }, [session?.id]);
 
   // Files dropped or pasted anywhere on the page land here.
   const addFiles = async (list: File[]) => {

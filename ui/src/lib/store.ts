@@ -106,7 +106,7 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
     r = await send({ "x-keel-presence": receipt });
     body = await read(r);
   }
-  if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
+  if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body, path });
   return body as T;
 }
 
@@ -546,6 +546,13 @@ export function reportError(err: unknown, context?: unknown) {
   // page's band shows, not a fault. The band says that something was not
   // taken, since not every caller has a place to say so.
   if ((err as { body?: { draining?: boolean } } | null)?.body?.draining) return void dispatchEvent(new CustomEvent("keel:turned-away"));
+  // Session actions without their own feedback can be refused after an
+  // archive. Show that state in the affected session, not in Errors.
+  const apiError = err as { status?: number; body?: { error?: string }; path?: string } | null;
+  if (apiError?.status === 409 && apiError.body?.error === "the session is archived" && typeof apiError.path === "string") {
+    const session = apiError.path.match(/^\/api\/sessions\/([^/?]+)(?:\/|$)/)?.[1];
+    if (session) return void dispatchEvent(new CustomEvent("keel:archived-refusal", { detail: session }));
+  }
   const e = err instanceof Error ? err : new Error(String(err));
   const url = location.pathname;
   const post = () =>

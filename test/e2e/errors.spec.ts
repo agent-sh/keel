@@ -184,3 +184,53 @@ test("a failure the daemon recorded is not recorded again by the page", async ({
   expect(posted.filter((p) => p.includes("listing exploded")).length).toBe(1);
   await page.unroute(/\/api\/providers(\?|$)/);
 });
+
+test("manual compaction is tracked once and an archived refusal stays in the session", async ({ page, request }) => {
+  const base = "/api/sessions";
+  const created = await request.post(base, { data: { model: "scripted:stand-in", title: "Error catch fixture" } });
+  expect(created.ok()).toBe(true);
+  const { session: s } = await created.json();
+  const path = `${base}/${s.id}`;
+  const errors = async () => ((await (await request.get("/api/errors")).json()).errors as any[]).filter((e) => e.session_id === s.id);
+  const posted: string[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") posted.push(r.postDataJSON().message); });
+  try {
+    expect((await request.post(`${path}/messages`, { data: { text: "A fixture prompt" } })).ok()).toBe(true);
+    await expect.poll(async () => (await (await request.get(path)).json()).events.some((e: any) => e.kind === "turn_end")).toBe(true);
+    await page.goto(`/s/${s.id}`);
+    const composer = page.getByTestId("composer");
+    const notice = page.getByTestId("composer-notice");
+    const command = "/compact script:compact-error";
+    const mime = "Scripted: HTTP 400: fixture image MIME type rejected";
+    await composer.fill(command);
+    const compacted = page.waitForResponse((r) => new URL(r.url()).pathname === `${path}/compact` && r.request().method() === "POST");
+    await composer.press("Enter");
+    const refusal = await compacted;
+    await expect(notice).toHaveText(mime);
+    await expect(composer).toHaveValue(command);
+    expect(refusal.status()).toBe(502);
+    const { error_id } = await refusal.json();
+    expect(await errors()).toMatchObject([{ id: error_id, source: "provider", message: mime, count: 1 }]);
+
+    expect((await request.patch(path, { data: { archived: true } })).ok()).toBe(true);
+    const refused = page.waitForResponse((r) => new URL(r.url()).pathname === `${path}/messages` && r.request().method() === "POST");
+    await page.getByTestId("retry").click();
+    expect((await refused).status()).toBe(409);
+    await expect(notice).toHaveText("Restore this session before working in it again.");
+    await expect(composer).toHaveValue(command);
+    expect(posted).toEqual([]);
+    await shoot(page, "errors-05-archived-refusal");
+
+    // Not every conflict is an expected archive refusal.
+    const other = "fixture unexpected session conflict";
+    await page.route(`${path}/messages`, (r) => r.fulfill({ status: 409, json: { error: other } }));
+    await page.getByTestId("retry").click();
+    await expect.poll(errors).toMatchObject([
+      { source: "client", message: other, count: 1 },
+      { id: error_id, source: "provider", message: mime, count: 1 },
+    ]);
+    expect(posted).toEqual([other]);
+  } finally {
+    await request.delete(path);
+  }
+});

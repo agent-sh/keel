@@ -4,13 +4,14 @@ import { leafOf, lineage } from "../../core/tree.ts";
 import { bytesPerToken, checkpointAt, contextTokens, COMPACT_SHARE, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
 import { resolveAttachments } from "../../engine/attachments.ts";
 import { toMessages } from "../../engine/turn.ts";
+import { ProviderError } from "../../providers/http.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 
 export const turnRoutes: RouteModule = (deps) => {
-  const { store, engine, providers, bus } = deps;
+  const { store, engine, providers, bus, errors } = deps;
   const queueBody = (id: string) => ({ queue: store.queue(id), held: engine.isHeld(id) });
   const sessionOr404 = (id: string) => store.session(id);
 
@@ -140,8 +141,15 @@ export const turnRoutes: RouteModule = (deps) => {
         // `for_model`: the model the session moves to next; the owner's words kept verbatim fit its window too.
         const next = b.for_model ? (await providers.models()).find((m) => m.id === b.for_model) : undefined;
         if (b.for_model && !next) return bad(`model ${b.for_model} is not listed`);
-        const ev = await engine.compactNow(s.id, { focus: b.focus ? String(b.focus).slice(0, 2000) : undefined, next });
-        return json({ ok: true, event: ev });
+        try {
+          const ev = await engine.compactNow(s.id, { focus: b.focus ? String(b.focus).slice(0, 2000) : undefined, next });
+          return json({ ok: true, event: ev });
+        } catch (e) {
+          // A provider's 4xx is a failed summary, not a refusal by this route.
+          if (!(e instanceof ProviderError)) throw e;
+          const rec = errors.capture("provider", e, { session: s.id, at: "manual compaction" });
+          return json({ error: rec.message, error_id: rec.id }, 502);
+        }
       },
     },
     "/api/sessions/:id/clear": {
