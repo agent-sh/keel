@@ -22,6 +22,14 @@ export class ProviderError extends Error {
   }
 }
 
+// No key where the provider looks for one. The provider is not set up: nothing
+// was asked and nothing was refused, so a listing treats it as a state, not a failure.
+export class NoKey extends ProviderError {
+  constructor(message: string) {
+    super("auth", message);
+  }
+}
+
 // Strip anything that looks like a credential before a message is shown or stored.
 export function scrub(text: string, secrets: string[] = []): string {
   let out = text;

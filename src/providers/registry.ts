@@ -10,11 +10,12 @@ import { CodexProvider } from "./codex.ts";
 import { endpoints } from "./config.ts";
 import { familyOf } from "./family.ts";
 import { EndpointProvider } from "./endpoint.ts";
+import { MISSING_RECHECK_MS } from "./creds.ts";
 import { GeminiProvider, OpenAIProvider } from "./keyed.ts";
 import { Probes } from "./probe.ts";
 import { Plugins } from "./plugins/index.ts";
 import { priceOf } from "./pricing.ts";
-import { ProviderError } from "./http.ts";
+import { NoKey, ProviderError } from "./http.ts";
 import { fromHeaders, Limits, type Window } from "./limits.ts";
 import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
 import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus, SpeedOffer } from "./types.ts";
@@ -94,7 +95,8 @@ export class Providers {
 
   // A refused credential or billing, from a listing or a turn; anything else is not an account state.
   private note(id: string, e: unknown, source: Problem["source"]) {
-    if (!(e instanceof ProviderError)) return;
+    // No key at all is a provider that is not set up, not a key that was refused.
+    if (!(e instanceof ProviderError) || e instanceof NoKey) return;
     const billing = e.kind === "quota" && e.status !== 429;
     if (e.kind !== "auth" && !billing) return;
     const link = /https:\/\/[^\s"'<>)]+/.exec(e.message)?.[0]?.replace(/[.,]$/, "");
@@ -193,8 +195,11 @@ export class Providers {
     await this.catalog.load();
     if (!only && !this.fixed) this.plugins.load();
     if (!this.fixed) await this.plugins.settled();
-    const targets = this.all().filter((p) => (!only || p.id === only) && p.available());
-    await Promise.all(targets.map(async (p) => {
+    const asked = this.all().filter((p) => !only || p.id === only);
+    await Promise.all(asked.map(async (p) => {
+      // A key found missing before is looked for again: one saved since makes its provider available.
+      await p.recheck?.();
+      if (!p.available()) return;
       const seq = (this.started.get(p.id) ?? 0) + 1;
       this.started.set(p.id, seq);
       const identity = p.identity?.();
@@ -208,6 +213,16 @@ export class Providers {
         // A newer answer already landed: this older failure says nothing about it.
         if ((this.applied.get(p.id) ?? 0) > seq) return;
         this.applied.set(p.id, seq);
+        if (e instanceof NoKey) {
+          // The first read of its key found none: the provider is not set up
+          // (available() says so from here on). Nothing failed, nothing was
+          // refused, so no error is recorded and an earlier one is dropped.
+          const last = this.listing(p.id);
+          if (last.models.length) this.listings.set(p.id, { ...last, state: "saved", error: undefined });
+          else this.listings.delete(p.id);
+          this.cleared(p.id, "listing");
+          return;
+        }
         const error = (e as Error).message;
         // The last good list as it is now (not as it was when this refresh began).
         const prev = this.listing(p.id);
@@ -363,6 +378,8 @@ export class Providers {
     const pid = id.slice(0, id.indexOf(":"));
     if (!this.fixed && pid.includes("/")) await this.plugins.settled();
     const provider = this.get(pid);
+    // A key that could not be read a while ago (a locked keyring, one saved since) is read again before refusing.
+    if (provider && !provider.available()) await provider.recheck?.(MISSING_RECHECK_MS);
     if (!provider || !provider.available()) throw new Error(`provider ${pid} is not available`);
     let info = (await this.models()).find((m) => m.id === id);
     if (!info) {

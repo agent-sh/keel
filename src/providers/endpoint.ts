@@ -4,10 +4,10 @@
 // server says about each model there (window, tools, images, thinking) is
 // read from its own metadata routes, never assumed.
 import type { AuthStyle, EndpointConfig } from "./config.ts";
-import { configured, fingerprint, forget, key, shown, sourceIdentity, type KeySource } from "./creds.ts";
+import { configured, fingerprint, forget, key, recheck, shown, sourceIdentity, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { familyOf, notChat } from "./family.ts";
-import { getJson, ProviderError } from "./http.ts";
+import { getJson, NoKey, ProviderError } from "./http.ts";
 import { fromOpenRouterKey, type WindowReading } from "./limits.ts";
 import type { Billing, Delta, ListedModel, Price, Provider, ProviderRequest, ProviderResult, ProviderStatus, Wire } from "./types.ts";
 import { anthropicWire } from "./wires/anthropic.ts";
@@ -73,6 +73,10 @@ export class EndpointProvider implements Provider {
     return this.keyless || !!this.pastedKey || configured(this.src);
   }
 
+  async recheck(olderThanMs?: number) {
+    if (!this.keyless && !this.pastedKey) await recheck(this.src, olderThanMs);
+  }
+
   identity() {
     return fingerprint(this.id, this.wire, this.base, this.keyless ? "" : sourceIdentity(this.src));
   }
@@ -99,7 +103,7 @@ export class EndpointProvider implements Provider {
     const k = await key(this.src);
     if (!k) {
       const where = [this.src.env && `$${this.src.env}`, this.src.cred && `keyring entry ${this.src.cred}`].filter(Boolean).join(" or ");
-      throw new ProviderError("auth", `${this.label}: no key in ${where}`);
+      throw new NoKey(`${this.label}: no key in ${where}`);
     }
     return k;
   }

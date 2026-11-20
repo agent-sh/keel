@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EndpointProvider } from "./endpoint.ts";
 import { Providers, servedTier } from "./registry.ts";
 import type { ListedModel, Provider } from "./types.ts";
 
@@ -130,4 +131,35 @@ test("a read after a restart knows the window from the saved catalog while a new
   expect(big.context).toBe(1_000_000);
   expect(big.context_assumed).toBeUndefined();
   expect(big.efforts).toEqual(["high"]);
+});
+
+test("a provider with no key is not set up: nothing failed and no key was refused", async () => {
+  const captured: unknown[] = [];
+  const env = `KEEL_TEST_NOKEY_${process.pid}`;
+  // A real endpoint whose key is named but held nowhere (the variable is unset, the keyring entry does not exist).
+  const p = new EndpointProvider({ id: "nokey", base_url: "http://127.0.0.1:9/v1", key_env: env, key_cred: `keel-test-absent-${process.pid}-${Date.now()}` });
+  const state = dir();
+  const r = new Providers(state, { providers: [p], capture: (_s, e) => captured.push(e) });
+  r.catalog.load = async () => {};
+  expect(p.available()).toBe(true); // not read yet: the first read decides
+  await r.refresh();
+  expect(p.available()).toBe(false);
+  expect(captured).toEqual([]);
+  expect(r.listing("nokey").state).toBe("never");
+  expect(r.problem("nokey")).toBeUndefined();
+  // It stays not set up (no flapping back), and a later refresh looks again without recording anything.
+  await r.refresh();
+  expect(p.available()).toBe(false);
+  expect(captured).toEqual([]);
+  expect(new Providers(state, { providers: [p] }).listing("nokey").state).toBe("never");
+  // With a key, a listing that fails is a failure and is recorded.
+  process.env[env] = "k";
+  try {
+    expect(p.available()).toBe(true);
+    await r.refresh();
+    expect(r.listing("nokey").state).toBe("failed");
+    expect(captured.length).toBe(1);
+  } finally {
+    delete process.env[env];
+  }
 });

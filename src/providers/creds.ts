@@ -67,18 +67,31 @@ export async function key(src: KeySource): Promise<string | null> {
     missing.set(src.cred, Date.now());
     return null;
   }
+  missing.delete(src.cred);
   cache.set(src.cred, { value: out, at: Date.now() });
   return out;
 }
 
 // Whether a source can be expected to answer, without reading the value: an
-// environment variable, or a keyring entry not seen missing lately.
+// environment variable, or a keyring entry whose last read did not come back
+// empty (one never read counts: its first read decides).
 export function configured(src: KeySource): boolean {
   if (src.env && process.env[src.env]) return true;
   if (!src.cred) return false;
-  const m = missing.get(src.cred);
-  return !m || Date.now() - m > TTL;
+  return !missing.has(src.cred);
 }
+
+// Reads again a keyring entry last found empty, when that was at least
+// `olderThanMs` ago: a key saved outside Keel since, or a keyring that was
+// locked then, makes the source configured again.
+export async function recheck(src: KeySource, olderThanMs = 0): Promise<void> {
+  if (!src.cred || (src.env && process.env[src.env])) return;
+  const m = missing.get(src.cred);
+  if (m !== undefined && Date.now() - m >= olderThanMs) await key(src);
+}
+
+// How long a source found empty is left alone before a request for its provider reads it again.
+export const MISSING_RECHECK_MS = TTL;
 
 export function forget(src: KeySource) {
   if (src.cred) cache.delete(src.cred);
