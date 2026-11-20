@@ -120,6 +120,9 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     const seen = await (await request.get(`/api/fleet/machines/${m.id}/transcripts/activity?harness=claude&id=${sid(5)}`)).json();
     expect(seen.in_flight.map((i: any) => i.kind)).toEqual(["job", "tool"]); // the job first
     procs.push(...seen.in_flight.map((i: any) => i.pid));
+    // The job of the one waited for is left running by the wait: ended with the test.
+    const kept = await (await request.get(`/api/fleet/machines/${m.id}/transcripts/activity?harness=claude&id=${sid(4)}`)).json();
+    procs.push(...kept.in_flight.map((i: any) => i.pid));
     await shoot(page, "resume-02-active-rows");
 
     // ---- wait until idle: the deadline is shown, and it resumes once the shell has ended
@@ -144,6 +147,7 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     const told = (await notes(request, afterWait)).join("\n");
     expect(told).toContain("once it was idle");
     expect(told).toContain("background job, left running there");
+    expect(kept.in_flight.filter((i: any) => i.kind === "job").every((i: any) => alive(i.pid))).toBe(true);
     await shoot(page, "resume-05-resumed-after-wait");
 
     // ---- a plain copy of a conversation still at work says so, in its transcript and on its page
