@@ -7,7 +7,7 @@ import { fuzzy, registerCommand } from "./keys.ts";
 import { getSafetyModes, safety } from "./safety.ts";
 import { actions, getState, reportError } from "./store.ts";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
-import { getUI, navigate, notePick, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
+import { getUI, navigate, notePick, savePref, setScale, setTheme, setUI, stepScale, type ThemePref } from "./ui.ts";
 import { resolveModelArg } from "./picker.ts";
 import { toggleList } from "./rail.ts";
 import { switchSession } from "./switch.ts";
@@ -70,6 +70,9 @@ registerCommand(
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
   { id: "prev-session", label: "Previous session", group: "Sessions", keys: "mod+shift+[", inInput: true, run: () => step(-1) },
   { id: "sidebar", label: "Show or fold the session list", group: "View", keys: "mod+b", inInput: true, words: "sidebar rail toggle", run: () => toggleList() },
+  { id: "text-bigger", label: "Bigger text", group: "View", keys: "mod+= mod+shift+=", inInput: true, words: "zoom font size larger letters", run: () => stepScale(1) },
+  { id: "text-smaller", label: "Smaller text", group: "View", keys: "mod+-", inInput: true, words: "zoom font size letters", run: () => stepScale(-1) },
+  { id: "text-reset", label: "Default text size", group: "View", keys: "mod+0", inInput: true, words: "zoom font size reset letters", run: () => setScale(1) },
   { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => navigator.clipboard.writeText(lastReply(current()!.id)) },
   // In an agent's session Escape goes back to the session that started it, as

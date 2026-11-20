@@ -15,6 +15,8 @@ type UIState = {
   theme: ThemePref;
   sidebar: boolean; // desktop: the list is wanted (rail.ts says whether it fits); phone: the drawer is open
   peek: boolean; // desktop, no room for the list: it lays over the stations
+  listW: number | null; // the list's width when it was dragged, px; null is the default
+  scale: number; // text size: every length in the interface is a rem and scales with it
   palette: boolean;
   shortcuts: boolean;
   errors: boolean;
@@ -66,6 +68,8 @@ let state: UIState = {
   theme: (localStorage.getItem("keel.theme") as ThemePref) || "system",
   sidebar: isPhone() ? false : pref("keel.list", true), // desktop: the list, unless it was folded by choice
   peek: false,
+  listW: pref<number | null>("keel.listW", null),
+  scale: 1,
   palette: false,
   shortcuts: false,
   errors: false,
@@ -103,13 +107,34 @@ export function navigate(r: Route, replace = false) {
 addEventListener("popstate", () => setUI({ route: parse() }));
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 
-export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel", v: unknown) {
+export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW", v: unknown) {
   if (!(k === "sidebar" && isPhone())) localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);
 }
 
 // Crossing to phone width closes the drawer; back on a wide screen the owner's choice returns.
 matchMedia("(max-width: 767px)").addEventListener("change", (e) => setUI({ sidebar: e.matches ? false : pref("keel.list", true), peek: false }));
+
+// Text size. The whole interface is set in rem, so one number on the root
+// scales it: type, spacing and controls together, with nothing left behind to clip.
+export const SCALES = [0.9, 1, 1.1, 1.2, 1.35, 1.5] as const;
+export const SCALE_NAMES = ["Small", "Default", "Large", "Larger", "Largest", "Huge"] as const;
+const nearest = (v: number) => SCALES.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a), 1 as number);
+function applyScale(v: number) {
+  document.documentElement.style.setProperty("--ui-scale", String(v));
+}
+export function setScale(v: number) {
+  const scale = nearest(v);
+  localStorage.setItem("keel.textScale", JSON.stringify(scale));
+  applyScale(scale);
+  setUI({ scale });
+  // Layout that measures the window (how many panes fit) follows.
+  dispatchEvent(new Event("resize"));
+}
+// One step up (+1) or down (-1) the sizes.
+export const stepScale = (by: -1 | 1) => setScale(SCALES[Math.min(SCALES.length - 1, Math.max(0, SCALES.indexOf(nearest(state.scale) as (typeof SCALES)[number]) + by))]!);
+state.scale = nearest(pref("keel.textScale", 1));
+applyScale(state.scale);
 
 const media = matchMedia("(prefers-color-scheme: dark)");
 function applyTheme() {

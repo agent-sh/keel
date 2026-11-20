@@ -107,7 +107,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                     data-testid="sandbox-network"
                     className="relative h-5 w-9 rounded-full bg-line-strong transition-colors data-checked:bg-accent"
                   >
-                    <Switch.Thumb className="block size-4 translate-x-0.5 rounded-full bg-raised shadow-2 transition-transform data-checked:translate-x-[18px]" />
+                    <Switch.Thumb className="block size-4 translate-x-0.5 rounded-full bg-raised shadow-2 transition-transform data-checked:translate-x-[1.125rem]" />
                   </Switch.Root>
                 </label>
               </div>

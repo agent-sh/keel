@@ -43,7 +43,7 @@ function matches(e: KeyboardEvent, spec: string): boolean {
   // Shifted punctuation reports the shifted character; compare by code for those.
   const k = e.key.toLowerCase();
   const codeKey = e.code.replace(/^Key|^Digit/, "").toLowerCase();
-  const named: Record<string, string> = { "[": "bracketleft", "]": "bracketright", "/": "slash", ",": "comma", ".": "period", "\\": "backslash" };
+  const named: Record<string, string> = { "[": "bracketleft", "]": "bracketright", "/": "slash", ",": "comma", ".": "period", "\\": "backslash", "=": "equal", "-": "minus" };
   const hit = k === key || codeKey === key || (named[key] && e.code.toLowerCase() === named[key]);
   return !!hit && e.shiftKey === want.shift;
 }

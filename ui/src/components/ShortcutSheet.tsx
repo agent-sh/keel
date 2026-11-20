@@ -49,7 +49,7 @@ export function ShortcutSheet() {
           className="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[min(46rem,calc(100vw-1.5rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border border-line bg-raised p-6 shadow-3 transition-[opacity,scale] duration-150 data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
           <div className="mb-5 flex items-center">
-            <Dialog.Title className="text-[17px] font-semibold">Keyboard shortcuts</Dialog.Title>
+            <Dialog.Title className="text-[1.1562rem] font-semibold">Keyboard shortcuts</Dialog.Title>
             <Dialog.Close aria-label="Close" className="ml-auto grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
               <X className="size-4" />
             </Dialog.Close>

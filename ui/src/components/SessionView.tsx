@@ -54,7 +54,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">
         {missingHeader ?? <div className="flex h-12 items-center px-2 md:px-4"><SidebarButton /></div>}
-        <div className={missingHeader ? "max-w-md px-[22px] py-5" : "m-auto max-w-sm text-center"}>
+        <div className={missingHeader ? "max-w-md px-[1.375rem] py-5" : "m-auto max-w-sm text-center"}>
           {!missingHeader && <p className="text-ui text-fg">This session is not on this daemon.</p>}
           <p className="mt-1 text-caption text-muted">It was deleted, or the link comes from another machine.</p>
           {typeof gone === "string"

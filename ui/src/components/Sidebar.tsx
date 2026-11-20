@@ -11,13 +11,15 @@ import { machineColour, machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
 import { useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
-import { callsigns, LIST, RAIL, toggleList, useRail } from "../lib/rail.ts";
-import { navigate, setTheme, setUI, useUI } from "../lib/ui.ts";
+import { callsigns, listBounds, listWidth, toggleList, useRail } from "../lib/rail.ts";
+import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { lastLine, useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
 import { useAuto } from "../lib/automation.ts";
 import { folderOf, Mark, modelOf } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
+import { dragSession, PaneCount } from "./Panes.tsx";
+import { Grip } from "./Grip.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
 import { archive } from "../lib/sessops.ts";
@@ -40,7 +42,7 @@ function groups(sessions: Session[]) {
 // The card beside an entry: shown at once for a mark (it has no words of its
 // own), after a pause for a list row (its title is already there), and at
 // once for either on keyboard focus.
-type Card = { s: Session; y: number };
+type Card = { s: Session; y: number; left: number };
 const CardCtx = createContext<(s: Session, wait: number) => Record<string, (e: { currentTarget: HTMLElement }) => void>>(() => ({}));
 function useCard() {
   const [card, setCard] = useState<Card | null>(null);
@@ -49,11 +51,12 @@ function useCard() {
   const bind = (s: Session, wait: number) => {
     const show = (ms: number) => (e: { currentTarget: HTMLElement }) => {
       const r = e.currentTarget.getBoundingClientRect();
+      const edge = e.currentTarget.closest(".k-rail")?.getBoundingClientRect().right ?? r.right;
       clearTimeout(timer.current);
-      const set = () => setCard({ s, y: r.top + r.height / 2 });
+      const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8 });
       if (ms) timer.current = setTimeout(set, ms); else set();
     };
-    return { onPointerEnter: show(wait), onPointerLeave: hide, onFocus: show(0), onBlur: hide, onClick: hide };
+    return { onPointerEnter: show(wait), onPointerLeave: hide, onFocus: show(0), onBlur: hide, onClick: hide, onDragStart: hide };
   };
   useEffect(() => () => clearTimeout(timer.current), []);
   return { card, bind, hide };
@@ -89,6 +92,8 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       data-unread={unread || undefined}
       aria-current={active ? "page" : undefined}
       {...card}
+      draggable
+      onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
       onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
       onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && navigate({ name: "session", id: s.id })}
       className="k-row group"
@@ -196,6 +201,8 @@ function Marks({ current }: { current: string | null }) {
                       aria-current={current === s.id ? "page" : undefined}
                       aria-label={`${s.title || "New session"}, ${WATCH_LABEL[watches[s.id]!]}, ${folderOf(s)}, ${ago(s.updated)}`}
                       {...card}
+                      draggable
+                      onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
                       onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
                     >
                       <Mark w={watches[s.id]!} />
@@ -330,6 +337,9 @@ export function Sidebar({ open }: { open: boolean }) {
   const current = route.name === "session" ? route.id : null;
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
   const { card, bind, hide } = useCard();
+  const grip = useRef<{ from: number; to: number | null }>({ from: 0, to: null });
+  const aside = useRef<HTMLElement>(null);
+  useUI((s) => s.listW);
   useEffect(hide, [open, current]);
   // The one control that shows the list or folds it, in the same corner either way.
   const Toggle = open ? PanelLeftClose : PanelLeftOpen;
@@ -349,14 +359,33 @@ export function Sidebar({ open }: { open: boolean }) {
   );
 
   return (
-    <aside className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-testid="sidebar" aria-label="Sessions">
+    <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: listWidth() } : undefined}>
       <div className="k-rail-brand">
         <span className="k-logo" data-live={connected || undefined} title={connected ? "Connected to the daemon" : "Reconnecting to the daemon"}><Logo /></span>
         <span className="k-brand-name">Keel</span>
+        {open && !phone() && <PaneCount />}
         {open && toggle}
       </div>
+      {open && !rail.over && !phone() && (
+        <Grip
+          className="k-rail-grip"
+          testid="list-grip"
+          label="Width of the session list"
+          now={(100 * (listWidth() - listBounds().min)) / Math.max(1, listBounds().max - listBounds().min)}
+          onStart={() => { grip.current = { from: listWidth(), to: null }; }}
+          onMove={(dx) => {
+            // The list follows the pointer on the page itself; the width is kept when the drag ends.
+            const to = Math.round(Math.min(listBounds().max, Math.max(listBounds().min, grip.current.from + dx)));
+            grip.current.to = to;
+            if (aside.current) aside.current.style.width = `${to}px`;
+          }}
+          onEnd={() => { if (grip.current.to !== null) savePref("listW", grip.current.to); }}
+          onReset={() => savePref("listW", null)}
+        />
+      )}
       <div className="k-rail-acts">
         {!open && toggle}
+        {!open && <PaneCount />}
         <button type="button" className="k-act" data-testid="new-session" aria-label="New session" title="New session (Ctrl Shift O)" aria-current={route.name === "new" ? "page" : undefined} onClick={() => navigate({ name: "new" })}>
           <Plus /><span className="k-act-label">New session</span>{open && <Kbd keys="mod+shift+o" className="ml-auto" />}
         </button>
@@ -369,7 +398,7 @@ export function Sidebar({ open }: { open: boolean }) {
           {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" aria-label="Sessions by state" onKeyDown={stepRows}><Marks current={current} /></nav>}
         </div>
       </CardCtx.Provider>
-      {card && <RailCard s={card.s} y={card.y} left={(open ? LIST : RAIL) + 8} />}
+      {card && <RailCard s={card.s} y={card.y} left={card.left} />}
       <div className="k-rail-foot">
         {!open && (
           <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; toggleList(true); }}>

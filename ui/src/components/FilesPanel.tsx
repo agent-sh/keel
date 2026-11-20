@@ -37,7 +37,7 @@ function CodeView({ file, line, end }: { file: Opened; line?: number; end?: numb
     import("../lib/highlight.ts").then((m) => setHtml(m.highlightHtml(file.text!, langOf(file.path)))).catch(reportError);
   }, [file]);
   return (
-    <div className="relative flex min-h-full w-max min-w-full font-mono text-[12.5px] leading-[1.65]">
+    <div className="relative flex min-h-full w-max min-w-full font-mono text-[0.8438rem] leading-[1.65]">
       {line && line <= lines.length && (
         <div ref={band} data-testid="file-line" aria-hidden="true" className="pointer-events-none absolute inset-x-0 bg-accent-soft"
           style={{ top: `calc(12px + ${line - 1} * 1.65em)`, height: `calc(${Math.max(1, Math.min(end ?? line, lines.length) - line + 1)} * 1.65em)` }} />

@@ -2,15 +2,15 @@ import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: the rail always says which session is which. With room it is the
-// list (title, state, time, by folder), whether one station or two are open.
-// It folds to marks only by choice (the toggle or Ctrl B, remembered) or when
-// the stations asked for leave no room (three pinned at this width); a mark
-// is the state's shape and a short code of the title, no two alike, and the
-// card beside the entry under the pointer or the focus gives the title, the
-// state, the folder and the last activity. Without room the toggle lays the
-// list over the stations until a session is picked. A failed session is
+// list (title, state, time, by folder), with one pane, two or three open at
+// this width. It folds to marks only by choice (the toggle or Ctrl B,
+// remembered) or when the panes leave no room (three in a narrower window); a
+// mark is the state's shape and a short code of the title, no two alike, and
+// the card beside the entry under the pointer or the focus gives the title,
+// the state, the folder and the last activity. Without room the toggle lays
+// the list over the panes until a session is picked. A failed session is
 // marked failed on a fresh page, before any of its events are loaded (the
-// daemon keeps the mark). The station head shows the whole title in the text
+// daemon keeps the mark). The pane head shows the whole title in the text
 // face.
 const MODEL = "scripted:stand-in";
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
@@ -108,30 +108,43 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await expect(side).toHaveAttribute("data-open", "true");
   expect(await stored("keel.list")).toBe("true");
 
-  // Three pinned stations leave no room at this width: marks, though the list is the choice.
-  await reloadWith("keel.stations.pinned", JSON.stringify([done, failed, twin]));
+  // Three panes (the owner's number) still leave room at this width: the list stays.
+  await page.getByTestId("panes-3").click();
+  await entry(twin).click(); // it takes the free pane
   await expect(stations).toHaveCount(3);
+  await expect(side).toHaveAttribute("data-open", "true");
+  await expect(entry(twin).locator(".k-row-title")).toBeVisible();
+  await shoot(page, "rail-05-three-stations-list");
+  // Folded by choice with three panes: the marks and the card.
+  await page.getByTestId("rail-toggle").click();
   await expect(side).not.toHaveAttribute("data-open", "true");
-  await expect(entry(twin).getByTestId("rail-code")).toBeVisible();
   await entry(twin).hover();
   await expect(card).toContainText(`asset host ${tag}`);
-  await shoot(page, "rail-05-three-stations-marks-card");
-  // The toggle lays the list over the stations; Escape puts it away; picking a session does too.
+  await shoot(page, "rail-06-three-stations-folded-card");
+  await page.getByTestId("rail-toggle").click();
+  await expect(side).toHaveAttribute("data-open", "true");
+
+  // A narrower window has no room for the list beside three panes: marks, though the list is the choice.
+  await page.setViewportSize({ width: 1500, height: 980 });
+  await expect(side).not.toHaveAttribute("data-open", "true");
+  await expect(stations).toHaveCount(3);
+  await expect(entry(twin).getByTestId("rail-code")).toBeVisible();
+  // The toggle lays the list over the panes; Escape puts it away; picking a session does too.
   await page.getByTestId("rail-toggle").click();
   await expect(side).toHaveAttribute("data-over", "true");
   await expect(entry(twin).locator(".k-row-title")).toBeVisible();
   await expect(stations).toHaveCount(3);
-  await shoot(page, "rail-06-three-stations-list-over");
+  await shoot(page, "rail-07-no-room-list-over");
   await page.keyboard.press("Escape");
   await expect(side).not.toHaveAttribute("data-open", "true");
   await page.keyboard.press("Control+b");
   await expect(side).toHaveAttribute("data-over", "true");
-  await entry(twin).click();
-  await expect(page).toHaveURL(new RegExp(`/s/${twin}`));
+  await entry(failed).click();
+  await expect(page).toHaveURL(new RegExp(`/s/${failed}`));
   await expect(side).not.toHaveAttribute("data-open", "true");
   expect(await stored("keel.list")).toBe("true");
-  // With the pins gone there is room again and the list is back by itself.
-  await reloadWith("keel.stations.pinned", "[]");
+  // With the room back the list is back by itself.
+  await page.setViewportSize({ width: 1700, height: 980 });
   await expect(side).toHaveAttribute("data-open", "true");
 
   // The station of a long title shows it whole, over two lines at most.
@@ -140,7 +153,7 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   const title = head.getByRole("heading");
   await expect(title).toContainText(`batch size ${tag}`);
   expect(await title.evaluate((el) => getComputedStyle(el).fontFamily)).toContain("Plex Sans");
-  await shoot(page, "rail-07-station-title");
+  await shoot(page, "rail-08-station-title");
 
   // A new turn that works clears the failed mark.
   await request.post(`/api/sessions/${failed}/messages`, { data: { text: "Try again." } });

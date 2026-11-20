@@ -2,7 +2,7 @@ import { ArrowLeft, Bot, Info, Keyboard, Menu, Search, SlidersHorizontal } from 
 import { Fragment, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
-import { navigate, savePref, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
+import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
 
@@ -42,13 +42,43 @@ export function Card({ children }: { children: ReactNode }) {
   return <div className="k-card rounded-lg border border-line bg-raised px-5 shadow-1">{children}</div>;
 }
 
+// Text size: six steps, each shown as the letter at its size. It scales the
+// whole interface (type, spacing, controls), not the page zoom.
+function TextSize() {
+  const scale = useUI((s) => s.scale);
+  return (
+    <div role="radiogroup" aria-label="Text size" data-testid="text-size" className="inline-flex items-stretch rounded-md border border-line bg-sunken p-0.5">
+      {SCALES.map((v, i) => (
+        <button
+          key={v}
+          type="button"
+          role="radio"
+          aria-checked={scale === v}
+          aria-label={`${SCALE_NAMES[i]}, ${Math.round(v * 100)}%`}
+          title={`${SCALE_NAMES[i]} (${Math.round(v * 100)}%)`}
+          data-testid={`text-size-${Math.round(v * 100)}`}
+          onClick={() => setScale(v)}
+          className={cn("grid h-8 w-9 place-items-center rounded-sm font-semibold leading-none text-muted transition-colors", scale === v ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
+          style={{ fontSize: `${Math.round(13 * v * 10) / 10}px` }}
+        >
+          A
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function General() {
   const theme = useUI((s) => s.theme);
   const enterSends = useUI((s) => s.enterSends);
+  const scale = useUI((s) => s.scale);
   return (
     <Card>
       <SettingRow label="Theme" hint="Follow the system, or keep one.">
         <Segmented<ThemePref> label="Theme" value={theme} onChange={setTheme} options={[{ value: "system", label: "System" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} />
+      </SettingRow>
+      <SettingRow label="Text size" hint={`${SCALE_NAMES[SCALES.indexOf(scale as (typeof SCALES)[number])] ?? "Default"}, ${Math.round(scale * 100)}%. Ctrl + and Ctrl - step it from anywhere, Ctrl 0 puts the default back.`}>
+        <TextSize />
       </SettingRow>
       <SettingRow label="Send with" hint={enterSends ? "Enter sends, Shift Enter makes a new line." : "Ctrl Enter sends, Enter makes a new line."}>
         <Segmented label="Send with" value={enterSends ? "enter" : "mod"} onChange={(v) => savePref("enterSends", v === "enter")} options={[{ value: "enter", label: "Enter" }, { value: "mod", label: "Ctrl Enter" }]} />

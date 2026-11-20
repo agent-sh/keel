@@ -1,16 +1,23 @@
-// The form the rail takes. It is the readable list (titles, state, time, by
-// folder) whenever the stations asked for still fit beside it. Only when
-// they do not (pinned stations, a side panel, a narrow window), or when the
-// list was folded by choice, is it the column of marks; the list is then one
-// press away, laid over the stations until a session is picked.
+// The form the rail takes, and the measures the bridge lays out by. The rail
+// is the readable list (titles, state, time, by folder) whenever the panes
+// the owner chose still fit beside it. Only when they do not (many panes, a
+// side panel, a narrow window), or when the list was folded by choice, is it
+// the column of marks; the list is then one press away, laid over the panes
+// until a session is picked. Every measure is a rem, so it follows the text size.
 import { useEffect, useState } from "react";
-import { getStations, useStations } from "./stations.ts";
-import { getState, useStore } from "./store.ts";
+import { getStations, MAX_PANES, useStations } from "./stations.ts";
 import { getUI, savePref, setUI, useUI } from "./ui.ts";
 
-export const LIST = 300; // the list's width, px
-export const RAIL = 64; // the marks' width, px
-export const STATION_MIN = 540; // matches .k-station's min-width
+const rem = (n: number) => n * getUI().scale;
+export const railWidth = () => rem(64); // the marks
+export const paneMin = () => rem(440); // matches .k-station's min-width
+const LIST = 300, LIST_MIN = 232, LIST_MAX = 560;
+export const listBounds = () => ({ min: rem(LIST_MIN), max: Math.max(rem(LIST_MIN), Math.min(rem(LIST_MAX), innerWidth - paneMin())), base: rem(LIST) });
+// The list's width: the dragged one within what fits, else the default.
+export function listWidth() {
+  const { min, max, base } = listBounds();
+  return Math.round(Math.min(max, Math.max(min, getUI().listW ?? base)));
+}
 
 const phone = () => matchMedia("(max-width: 767px)").matches;
 
@@ -24,36 +31,36 @@ export function useWidth() {
   return w;
 }
 
-// Stations that must be on screen whatever the room: the pinned ones, the
-// helm, a new session being started; an open side panel takes one more.
-function asked(): number {
+// The width the panes on screen need at their narrowest; a side panel widens the helm.
+function needed(width: number): number {
   const ui = getUI();
-  if (ui.route.name === "settings") return 1;
+  if (ui.route.name === "settings") return paneMin();
   const st = getStations();
-  const helm = ui.route.name === "session" ? ui.route.id : null;
-  const ids = new Set<string>();
-  if (!st.focus) for (const s of Object.values(getState().sessions)) if (!s.archived && (st.pinned.includes(s.id) || s.settings.pinned_ms)) ids.add(s.id);
-  if (helm) ids.add(helm);
-  return Math.max(1, ids.size + (ui.route.name === "new" ? 1 : 0)) + (ui.panel && helm ? 1 : 0);
+  const panes = st.focus ? 1 : st.count;
+  return panes * paneMin() + (ui.panel && ui.route.name === "session" ? Math.min(0.44 * width, rem(640)) : 0);
 }
 
-// No room for the list beside what was asked for.
-export const railTight = (width = innerWidth) => !phone() && width - LIST < asked() * STATION_MIN;
+// No room for the list beside the panes.
+export const railTight = (width = innerWidth) => !phone() && width - listWidth() < needed(width);
 
-export type RailForm = { list: boolean; tight: boolean; over: boolean };
+// How many panes the window can hold (beside the folded rail).
+export const panesMax = (width = innerWidth) => Math.min(MAX_PANES, Math.max(1, Math.floor((width - railWidth()) / paneMin())));
+
+export type RailForm = { list: boolean; tight: boolean; over: boolean; width: number };
 export function railForm(width = innerWidth): RailForm {
   const ui = getUI();
   const tight = railTight(width);
   const over = tight && ui.peek;
-  return { list: phone() || (ui.sidebar && !tight) || over, tight, over };
+  const list = phone() || (ui.sidebar && !tight) || over;
+  return { list, tight, over, width: list && !over ? listWidth() : railWidth() };
 }
 
 export function useRail(): RailForm {
   const width = useWidth();
-  useUI((s) => s);
-  useStations((s) => s.pinned);
+  // What the form depends on, and no more: a pane does not render again for an overlay opening.
+  useUI((s) => `${s.sidebar}|${s.peek}|${s.listW}|${s.scale}|${!!s.panel}|${s.route.name}`);
+  useStations((s) => s.count);
   useStations((s) => s.focus);
-  useStore((s) => s.sessions);
   const form = railForm(width);
   // The laid-over list does not outlive the squeeze that called for it.
   useEffect(() => { if (!form.tight && getUI().peek) setUI({ peek: false }); }, [form.tight]);
@@ -61,7 +68,7 @@ export function useRail(): RailForm {
 }
 
 // The one control (and Ctrl B): show the list or fold it. With room the
-// choice is remembered; without, the list lays over the stations.
+// choice is remembered; without, the list lays over the panes.
 export function toggleList(show?: boolean) {
   const ui = getUI();
   if (phone()) return savePref("sidebar", show ?? !ui.sidebar);

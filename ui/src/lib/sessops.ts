@@ -4,7 +4,6 @@
 import type { Session } from "../../../src/core/types.ts";
 import { confirmAction } from "../components/Confirm.tsx";
 import { actions, api } from "./store.ts";
-import { stations } from "./stations.ts";
 
 export type Marks = { session_id: string; pinned: boolean; accept_messages: boolean; peer_turns: number; unread: boolean };
 
@@ -16,11 +15,8 @@ export const marks = {
 
 export const isPinned = (s: Session | undefined) => !!s?.settings.pinned_ms;
 
-// A pinned session keeps its station on the bridge on every device; unpinning
-// lets it go back to coming and going by attention.
+// A pinned session leads the list on every device.
 export async function pin(id: string, on: boolean) {
-  if (on) stations.pin(id);
-  else stations.unpin(id);
   await actions.patch(id, { pinned: on } as any);
 }
 

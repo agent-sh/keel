@@ -25,7 +25,7 @@ function Thinking({ text, live }: { text: string; live?: boolean }) {
         <span className={live ? "animate-pulse-dot" : ""}>{live ? "Thinking" : "Thought"}</span>
         {!live && <ChevronDown className="size-3 -rotate-90 transition-transform group-open/think:rotate-0" />}
       </summary>
-      {text.trim() && <div className="mt-1.5 max-h-96 overflow-y-auto border-l-2 border-line pl-3.5 text-[14px] leading-relaxed whitespace-pre-wrap">{text}</div>}
+      {text.trim() && <div className="mt-1.5 max-h-96 overflow-y-auto border-l-2 border-line pl-3.5 text-[0.9688rem] leading-relaxed whitespace-pre-wrap">{text}</div>}
     </details>
   );
 }

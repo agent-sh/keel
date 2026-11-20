@@ -3,8 +3,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
-// Feature: several sessions on screen at once (the Bridge's stations). The
-// station worked in has the keys: Alt+M opens only its model menu, a slash
+// Feature: several sessions on screen at once (the Bridge's panes). The
+// pane worked in has the keys: Alt+M opens only its model menu, a slash
 // command acts on its session, and text put into one session's draft from
 // outside lands in that station's message box and no other.
 // Every station on screen: no focus mode (the config's default for the other specs).
@@ -19,11 +19,13 @@ test("keys and drafts per station", async ({ page, request }) => {
   const a = await mk(`Station A ${tag}`);
   const b = await mk(`Station B ${tag}`);
   for (const id of [a, b]) await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
-  // Started and finished: the newest finished sessions get stations.
+  // Started and finished.
   for (const id of [a, b]) await request.post(`/api/sessions/${id}/messages`, { data: { text: "Reply with exactly the word ready." } });
   for (const id of [a, b]) await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 90_000 }).toBe(true);
 
-  await page.setViewportSize({ width: 3840, height: 1080 }); // the owner's ultrawide: six stations
+  await page.setViewportSize({ width: 3840, height: 1080 }); // an ultrawide
+  // Two panes, A and B in them (the layout is the owner's: nothing fills a pane by itself).
+  await page.addInitScript((ids) => localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: ids, sizes: {}, active: 0 })), [a, b]);
   await page.goto(`/s/${a}`);
   const station = (title: RegExp) => page.locator("section.k-station").filter({ has: page.getByRole("heading", { name: title }) });
   const sa = station(new RegExp(`^Station A ${tag}`));

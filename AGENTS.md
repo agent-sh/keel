@@ -38,6 +38,10 @@ under `~/.cache/keel-work/bun/research/`.
 - UI: tokens in `ui/src/styles.css` only; components use them (`bg-raised`,
   `text-muted`, `border-line`, `text-accent`). Base UI for behavior, our own
   Tailwind styling. Check the screenshots at 1920x1040 in both themes.
+  Lengths are rem, in CSS and in arbitrary classes (`h-[1.125rem]`), so the
+  text size the owner picks scales everything; px only for hairlines (2px or
+  less), shadows and media queries. JS that measures in px multiplies by the
+  scale (`ui/src/lib/rail.ts`).
 - Public repo rules (agent-sh): no owner chat quotes, no hostnames or private
   project names, no em dashes in code or docs.
 

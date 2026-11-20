@@ -177,7 +177,7 @@ export function Palette() {
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search sessions, actions and models"
               data-testid="palette-input"
-              className="h-13 w-full bg-transparent text-[15px] outline-none placeholder:text-faint"
+              className="h-13 w-full bg-transparent text-[1.0312rem] outline-none placeholder:text-faint"
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
                 if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
@@ -199,7 +199,7 @@ export function Palette() {
                   aria-selected={i === sel}
                   onMouseMove={() => sel !== i && setSelKey(e.key)}
                   onClick={() => pick(e)}
-                  className={cn("flex h-9 items-center gap-3 rounded-md px-2.5 text-[13.5px]", i === sel ? "bg-hover text-fg" : "text-muted")}
+                  className={cn("flex h-9 items-center gap-3 rounded-md px-2.5 text-[0.9062rem]", i === sel ? "bg-hover text-fg" : "text-muted")}
                 >
                   <span className={i === sel ? "text-accent" : "text-faint"}>{e.icon}</span>
                   <span className="min-w-0 truncate text-fg">{e.label}</span>
