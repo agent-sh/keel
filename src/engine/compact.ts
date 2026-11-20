@@ -193,6 +193,19 @@ export function summarizable(lineage: StoredEvent[]): StoredEvent[] {
   return k < start ? lineage.slice(0, k) : lineage;
 }
 
+// A summary would say something new: since the last one there is a reply, a
+// tool result or a prompt that is not the harness's own (a restart's continue,
+// a step-budget notice). Notes, turn marks and errors alone are not worth a request.
+export function worthSummarizing(upto: StoredEvent[]): boolean {
+  for (let i = upto.length - 1; i >= 0; i--) {
+    const e = upto[i]!;
+    if (e.kind === "compaction") return false;
+    if (e.kind === "assistant" || e.kind === "tool_result") return true;
+    if (e.kind === "user" && e.data.origin !== "harness" && e.data.origin !== "restart") return true;
+  }
+  return false;
+}
+
 // The start and the end of a text within `budget` UTF-8 bytes, with a note
 // in the middle naming what was left out; null when not even the note fits.
 export function excerpt(text: string, budget: number): string | null {

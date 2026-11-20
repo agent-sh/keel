@@ -21,7 +21,7 @@ import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -704,6 +704,7 @@ export class Engine {
     let cuts = 0;
     let fellBack = false;
     let compactedForFit = false;
+    let summaryFailed = false;
     let steps = 0;
     const partial = new Map<number, { kind: string; text: string }>();
     try {
@@ -732,10 +733,15 @@ export class Engine {
         // A history with no reply of its own yet (one long first message) is
         // summarized only when it cannot be sent as it is.
         // (The prompts that opened a turn with no reply yet are not summarized: they follow the summary whole.)
-        const base = summarizable(events);
-        if (used >= limit && (used >= st.info.context || events.some((e) => e.kind === "assistant")) && base.length && base.at(-1)?.kind !== "compaction") {
+        if (used >= limit && !summaryFailed && (used >= st.info.context || events.some((e) => e.kind === "assistant")) && worthSummarizing(summarizable(events))) {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
-          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st });
+          // One that fails while the context still fits is said, and the turn goes on whole.
+          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
+            if (signal.aborted || used >= st.info.context) throw e;
+            summaryFailed = true;
+            const rec = this.errors.capture("provider", e, { session: id, at: "threshold compaction" });
+            this.append(id, "note", { kind: "compaction_failed", text: `The context was not compacted (${rec.message}); this turn goes on with it whole.` });
+          });
           events = this.lineage(id);
           // A request counted over the window is never sent.
           const now = this.used(events, st);
@@ -744,7 +750,7 @@ export class Engine {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
           events = this.lineage(id);
-        } else if (used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
+        } else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
         }
         const messages = toMessages(events);
@@ -755,8 +761,7 @@ export class Engine {
           // The request no longer fits the window: compact once and go on.
           // (A context that is a fresh summary, or only the prompts that opened
           // the turn, has nothing left to compact: the provider's error stands.)
-          const last = summarizable(events).findLast((x) => x.kind !== "note" && x.kind !== "turn_start" && !(x.kind === "user" && x.data.origin === "harness"));
-          if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit && last && last.kind !== "compaction") {
+          if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit && worthSummarizing(summarizable(events))) {
             compactedForFit = true;
             this.refused(st, events);
             await this.compactNow(id, { auto: true, trigger: "overflow", signal, step: st });
@@ -977,7 +982,7 @@ export class Engine {
     if (this.preparing.has(id)) return;
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
-    if (!covered || covered.kind === "compaction") return;
+    if (!covered || !worthSummarizing(events)) return;
     const have = this.store.db.query<{ covered: string }, [string]>("SELECT covered FROM prepared_summaries WHERE session_id = ?").get(id);
     if (have && preparedHolds(events, have.covered, idle)) return;
     this.preparing.add(id);
@@ -1102,7 +1107,7 @@ export class Engine {
     // A turn with no reply yet: the prompts that opened it stay out of the summary and follow it whole.
     const upto = summarizable(events);
     const messages = toMessages(upto);
-    if (!messages.length || (upto.at(-1)?.kind === "compaction")) throw Object.assign(new Error("nothing to compact"), { status: 409 });
+    if (!messages.length || !worthSummarizing(upto)) throw Object.assign(new Error("nothing to compact"), { status: 409 });
     const st = opts.step ?? (await this.step(session, session.model));
     if (upto.length < events.length) {
       const opening = events.slice(upto.length);

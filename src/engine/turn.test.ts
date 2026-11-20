@@ -186,6 +186,60 @@ test("idle compaction prepares while warm and applies when the cache went cold",
   expect(store.events(s.id).find((e) => e.kind === "compaction")?.data.trigger).toBe("idle");
 });
 
+// A threshold compaction is asked only when there is something new to
+// summarize, and a summary request answered without one (a tool call instead)
+// leaves the turn to go on whole while the context still fits the window.
+test("threshold compaction: nothing new is not summarized, an empty summary does not fail the turn", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "thresh-"));
+  const store = new Store(dir);
+  const asked: string[] = [];
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+  const usage = { input: 1, output: 1, cache_read: 0, cache_write: 0 };
+  const provider = {
+    id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async (req: any) => {
+      asked.push(req.purpose);
+      if (req.purpose === "summary") return { blocks: [{ type: "tool_use", id: "t", name: "Read", input: {} }], usage, stop: "tool_use", model: "m" };
+      return { blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "m" };
+    },
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+  const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String((e as Error).message) }) } as any, join(dir, "spill"));
+  const big = { blocks: [{ type: "text", text: "x".repeat(20_000) }], model: "p:m", stop: "end_turn", usage: { ...usage, input: 6_000 } };
+  const session = (after: (id: string) => void) => {
+    const s = store.createSession({ model: "p:m", workspace: dir });
+    store.updateSession(s.id, { settings: { compact_at: 2_000 } });
+    store.append(s.id, "user", { text: "go" });
+    store.append(s.id, "assistant", big);
+    after(s.id);
+    return s.id;
+  };
+  // Already summarized, then cut by a restart: only harness words and marks since.
+  const a = session((id) => {
+    store.append(id, "compaction", { mode: "summary", summary: "y".repeat(20_000), auto: true });
+    store.append(id, "turn_start", {});
+    store.append(id, "note", { text: "memory" });
+    store.append(id, "turn_end", { reason: "restart" });
+  });
+  engine.send(a, "[harness] continue", { meta: { origin: "restart" } });
+  await engine.idle(a);
+  expect(asked).toEqual(["turn"]);
+  // History to summarize, but the summary request calls a tool.
+  asked.length = 0;
+  const b = session(() => {});
+  engine.send(b, "next");
+  await engine.idle(b);
+  expect(asked).toEqual(["summary", "turn"]);
+  const line = store.events(b);
+  expect(line.find((e) => e.kind === "note" && e.data.kind === "compaction_failed")?.data.text).toContain("no summary");
+  expect(line.findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+});
+
 // A finished tool call takes its abort listener off the turn's shared signal,
 // whether it succeeded, failed or a gate refused it.
 test("a settled tool call leaves no abort listener on the turn's signal", async () => {
