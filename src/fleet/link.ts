@@ -14,7 +14,7 @@ export const proof = (key: string, nonce: string, daemonId: string) =>
 
 export const newKey = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
 
-const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a: string, b: string) => Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 export type Peer = { url: string; myId: string; key: string; daemonId: string };
 

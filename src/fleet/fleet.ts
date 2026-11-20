@@ -268,7 +268,11 @@ export class Fleet {
 
   private async baseUrl(m: MachineRow): Promise<string> {
     if (m.daemon_url) return m.daemon_url.replace(/\/$/, "");
-    return `http://127.0.0.1:${(await this.tunnel(m)).port}`;
+    const t = await this.tunnel(m).catch((e) => {
+      if (e instanceof LinkError) throw e;
+      throw new LinkError(`cannot open ssh tunnel to ${m.ssh_host}: ${(e as Error).message}`);
+    });
+    return `http://127.0.0.1:${t.port}`;
   }
 
   // Before the first link, the port must belong to the owner's own user: here
@@ -297,7 +301,10 @@ export class Fleet {
     if (!m) throw new LinkError("no such machine");
     const url = await this.baseUrl(m);
     if (!m.link_key || !m.link_daemon_id) {
-      const why = await this.ownerListens(m, url);
+      const name = m.name;
+      const why = await this.ownerListens(m, url).catch((e) => {
+        throw new LinkError(`cannot check the listener for ${name}: ${(e as Error).message}`);
+      });
       if (why) throw new LinkError(why);
       const r = await fetch(`${url}/api/fleet/pair`, {
         method: "POST", headers: { "content-type": "application/json" }, redirect: "manual",
