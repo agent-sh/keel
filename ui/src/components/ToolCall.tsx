@@ -17,6 +17,7 @@ import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
 import { cn } from "../lib/utils.ts";
 import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 import { CodeCall } from "./CodeCall.tsx";
+import { ReadersCall } from "./ReadersCall.tsx";
 import { Copyable } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
 
@@ -74,6 +75,7 @@ function planSummary(items: PlanItem[]): string {
 export function ToolCall({ use, result, live, sessionId, cwd, waiting }: Props) {
   if (AGENT_TOOLS.has(use.name)) return <AgentCall use={use} result={result} live={live} />;
   if (use.name === "run_code") return <CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />;
+  if (use.name === "AskReaders" || use.name === "ask_readers") return <ReadersCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />;
   const kind = toolKind(use.name);
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return <QuestionCard use={use} result={result} sessionId={sessionId} waiting={waiting} />;

@@ -1,6 +1,8 @@
 import type { ImageBlock, TextBlock, ToolRefBlock, ToolResultBlock } from "../core/types.ts";
 import type { ToolSpec } from "../providers/types.ts";
 import type { CallClass } from "../safety/policy.ts";
+import type { Material } from "../engine/reader.ts";
+import type { ReadOutcome } from "../engine/readers.ts";
 
 export type ToolContext = {
   sessionId: string;
@@ -30,6 +32,9 @@ export type ToolContext = {
   // Set by the engine: long content read by the session's reader model with a
   // request; resolves to the reader's answer (src/engine/reader.ts).
   read?: (source: string, text: string, prompt: string) => Promise<{ text: string; model: string }>;
+  // Set by the engine: one reading job over many sources, split across reader
+  // models and compiled into one answer (src/engine/readers.ts).
+  readMaterial?: (items: Material[], question: string, callId?: string) => Promise<ReadOutcome>;
 };
 
 // `shown`: what the transcript shows for the call besides its result (the

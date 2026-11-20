@@ -4,6 +4,7 @@ import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
 import { DEFERRED_BUILTINS, gptToolSearch, toolSearch } from "./defer.ts";
 import "./web.ts";
+import { AskReaders, ask_readers } from "./readers.ts";
 import type { Tool } from "./types.ts";
 
 // Tools by model family: each family gets the names and shapes it was trained
@@ -18,6 +19,7 @@ export function registerFamily(family: ModelInfo["family"], tools: Tool[]) {
 export function registerShared(...tools: Tool[]) {
   for (const t of tools) if (!shared.some((s) => s.name === t.name)) shared.push(t);
 }
+registerShared(AskReaders, ask_readers);
 
 // Tools only some sessions get (the helper's): asked per session, appended in
 // name order after the shared ones, so a session's tool prefix stays stable.

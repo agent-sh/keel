@@ -19,7 +19,8 @@ import { asksOwner, toolsFor } from "../tools/registry.ts";
 import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
 import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
-import { pickReader, readerPrompt } from "./reader.ts";
+import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
+import { readMaterial, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
@@ -745,7 +746,9 @@ export class Engine {
     let st = await this.step(session, session.model);
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);
-    const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id), read: (source, text, prompt) => this.read(id, source, text, prompt, signal).catch((e) => { if (!signal.aborted) this.errors.capture("provider", e, { session: id, at: "reader", source }); throw e; }) };
+    const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id),
+      read: (source, text, prompt) => this.read(id, source, text, prompt, signal),
+      readMaterial: (items, question, callId) => this.readMaterial(id, items, question, signal, callId) };
 
     this.setPhase(id, "working");
     const t0 = Date.now();
@@ -1321,21 +1324,37 @@ export class Engine {
     return { ...res, model_id: st.info.id };
   }
 
-  // Long content read by the session's reader model (src/engine/reader.ts)
+  // Long content read by the session's reader models (src/engine/readers.ts)
   // with the working model's request; the answer goes back as the tool's result.
+  // Throws when no reader could read it (each failure is captured once).
   async read(id: string, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage }> {
+    const o = await this.readMaterial(id, [{ source, text }], prompt, signal);
+    if (!o.text || o.unread.length) throw new Error(`no reader read ${source}: ${o.unread.join("; ") || "no answer"}`);
+    return { text: o.text, model: o.models.join(" and "), usage: o.usage };
+  }
+
+  // One reading job for the session: no conversation and no cache go with it,
+  // each request is booked with purpose "reader", and `callId` gets the job's
+  // progress on the bus (feature "readers").
+  async readMaterial(id: string, items: Material[], question: string, signal: AbortSignal, callId?: string): Promise<ReadOutcome> {
     const session = this.store.session(id)!;
-    const cur = (await this.providers.resolve(session.model)).info;
-    const pick = pickReader(await this.providers.models(), cur, Math.ceil(text.length / 3) + 4_000);
-    const { provider, info } = await this.providers.resolve(pick.id);
-    const effort = info.efforts.includes("low") ? "low" : undefined;
-    const st: Step = { provider, info, tools: [], system: "You read content for a coding agent and answer its request from that content.", systemSplit: 0, effort };
-    const res = await this.call(id, { ...st, info: { ...info, output: Math.min(info.output, 8_192) } }, [{ role: "user", content: [{ type: "text", text: readerPrompt(source, prompt, text) }] }], signal, new Map(), session, true, "reader");
-    this.store.addUsage(id, res.usage);
-    this.emitSession(id);
-    const answer = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-    if (res.stop === "refusal" || !answer) throw new Error(`the reader (${info.name}) gave no answer`);
-    return { text: answer, model: info.name, usage: res.usage };
+    const host: ReaderHost = {
+      models: () => this.providers.models(),
+      current: async () => (await this.providers.resolve(session.model)).info,
+      listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
+      capture: (e, c) => this.errors.capture("provider", e, { session: id, ...c }),
+      progress: callId ? (p) => this.bus.emit({ t: "feature", name: "readers", session_id: id, data: { call_id: callId, ...p } }) : undefined,
+      ask: async (m, prompt, sig) => {
+        const { provider, info } = await this.providers.resolve(m.id);
+        const effort = info.efforts.includes("low") ? "low" : undefined;
+        const st: Step = { provider, info: { ...info, output: Math.min(info.output || READER_OUTPUT, READER_OUTPUT) }, tools: [], system: READER_SYSTEM, systemSplit: 0, effort };
+        const res = await this.call(id, st, [{ role: "user", content: [{ type: "text", text: conceal(prompt, id) }] }], sig, new Map(), session, true, "reader");
+        this.store.addUsage(id, res.usage);
+        this.emitSession(id);
+        return { text: res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n"), usage: res.usage, stop: res.stop };
+      },
+    };
+    return readMaterial(host, items, question, signal);
   }
 
   // /clear: a fresh context in the same session (no summary). Undo = head back.

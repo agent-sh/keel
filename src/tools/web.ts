@@ -165,8 +165,9 @@ export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContex
   try {
     const a = await ctx.read(url, r.text, ask);
     return { text: `${a.text}\n\n[${a.model} read the page (${r.text.length} chars) for this request. The whole page is saved to ${path}; Read or Grep it when this does not answer.]` };
-  } catch {
-    return { text: await spill(r.text, ctx.spillDir, "webfetch") };
+  } catch (e) {
+    if (ctx.signal.aborted) throw e;
+    return { text: `[No reader could read the page for this request (${String((e as Error).message ?? e).slice(0, 300)}); the page follows as it is.]\n\n${await spill(r.text, ctx.spillDir, "webfetch")}` };
   }
 }
 

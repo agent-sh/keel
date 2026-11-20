@@ -20,8 +20,9 @@ under `~/.cache/keel-work/bun/research/`.
   user message, a system prompt kept with the session (the same bytes across
   restarts, made again only when one of its blocks really changed: see
   `src/engine/prompt-store.ts`), long tool output spilled to a
-  file (`src/tools/spill.ts`), a long fetched page read by a cheaper reader model
-  (`src/engine/reader.ts`), and idle compaction before a long context's cache
+  file (`src/tools/spill.ts`), long material (pages, files, logs, a saved output)
+  read in parts by cheaper reader models and compiled into one answer
+  (`src/engine/reader.ts`, `src/engine/readers.ts`), and idle compaction before a long context's cache
   expires (`src/engine/compact.ts`).
 - A request counted over the model's window is never sent: the context is
   compacted first. A context no provider has counted yet (an imported history)
