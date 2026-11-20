@@ -1,3 +1,4 @@
+import { copyText } from "../lib/copy.ts";
 import { Marked, type Token } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { mathExtensions, mathHtml } from "../lib/mdmath.ts";
@@ -166,7 +167,7 @@ const onClick = (sessionId?: string) => (e: React.MouseEvent | React.KeyboardEve
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".code-copy");
   if (!btn) return;
   const code = btn.closest(".code-block")?.querySelector("code")?.textContent ?? "";
-  navigator.clipboard.writeText(code).then(() => {
+  copyText(code).then(() => {
     btn.dataset.copied = "";
     btn.lastElementChild!.textContent = "Copied";
     setTimeout(() => { delete btn.dataset.copied; btn.lastElementChild!.textContent = "Copy"; }, 1400);

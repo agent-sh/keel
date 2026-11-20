@@ -1,5 +1,6 @@
 // Settings > Phone: pair the phone app with a one-time QR, see each paired
 // phone with whether its alerts arrive, send a test push, revoke.
+import { copyText } from "../lib/copy.ts";
 import { BellRing, Check, Copy, QrCode, Send, ShieldAlert, Smartphone, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
@@ -85,7 +86,7 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
                 <button
                   type="button"
                   aria-label="Copy the pairing link"
-                  onClick={() => navigator.clipboard.writeText(bundle.pair_link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, reportError)}
+                  onClick={() => copyText(bundle.pair_link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, reportError)}
                   className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
                 >
                   {copied ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}

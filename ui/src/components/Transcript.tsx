@@ -1,3 +1,4 @@
+import { CopyButton } from "./CopyButton.tsx";
 import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { Fragment, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -35,19 +36,6 @@ function ActionButton({ label, onClick, children, testid }: { label: string; onC
     <button type="button" title={label} aria-label={label} data-testid={testid} onClick={onClick} className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg">
       {children}
     </button>
-  );
-}
-
-function CopyButton({ text, testid }: { text: () => string; testid?: string }) {
-  const [done, setDone] = useState(false);
-  return (
-    <ActionButton
-      label={done ? "Copied" : "Copy"}
-      testid={testid}
-      onClick={() => navigator.clipboard.writeText(text()).then(() => { setDone(true); setTimeout(() => setDone(false), 1400); }, reportError)}
-    >
-      {done ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
-    </ActionButton>
   );
 }
 
@@ -129,7 +117,7 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
       )}
       <div className="-mt-0.5 flex h-6 items-center">
         <span className="flex items-center opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 max-md:opacity-100">
-          <CopyButton text={() => text} />
+          <CopyButton text={() => text} label="Copy the message" testid="copy-message" className="size-7" />
           <ActionButton label="Edit and send as a new version" testid="edit-message" onClick={() => setEditing(true)}><Pencil className="size-3.5" /></ActionButton>
           <Extra on="user" e={e} s={s} />
         </span>
@@ -375,8 +363,8 @@ function TurnFooter({ e, reply, prompt, s, last, notes = [] }: { e: StoredEvent;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
   return (
-    <div className={cn("group/foot -mt-1 flex h-7 items-center gap-0.5", !last && "opacity-0 hover:opacity-100 focus-within:opacity-100 max-md:opacity-100")}>
-      {reply && <CopyButton text={() => reply} testid="copy-reply" />}
+    <div className={cn("group/foot -mt-1 flex h-7 items-center gap-0.5", !last && "opacity-50 hover:opacity-100 focus-within:opacity-100 max-md:opacity-100")}>
+      {reply && <CopyButton text={() => reply} label="Copy the reply" testid="copy-reply" className="size-7" />}
       {prompt && last && s.phase !== "working" && (
         <ActionButton label="Answer again (a new version; this one stays a branch)" testid="retry" onClick={() => actions.edit(s.id, prompt.id, prompt.data.text).catch(reportError)}>
           <RotateCcw className="size-3.5" />

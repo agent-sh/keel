@@ -273,6 +273,15 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .code-head .code-copy { margin-left: auto; display: inline-flex; align-items: center; gap: 0.3125rem; height: 1.5rem; padding: 0 0.5rem; border-radius: var(--radius-sm); color: var(--faint); }
 .code-head .code-copy:hover { color: var(--fg); background: var(--hover); }
 .code-head .code-copy[data-copied] { color: var(--ok); }
+/* The shared copy button (CopyButton.tsx), and a block with one in its corner. */
+.k-copy { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; flex-shrink: 0; border-radius: var(--radius-sm); color: var(--faint); }
+.k-copy:hover { background: var(--hover); color: var(--fg); }
+.k-copy svg { width: 0.875rem; height: 0.875rem; }
+.k-copy[data-copied] { color: var(--ok); }
+.k-copyable { position: relative; }
+.k-copy-corner { position: absolute; top: 0.25rem; right: 0.25rem; z-index: 1; background: var(--code-bg); opacity: 0; transition: opacity 120ms; }
+.k-copyable:hover > .k-copy-corner, .k-copy-corner:focus-visible, .k-copy-corner[data-copied] { opacity: 1; }
+@media (hover: none) { .k-copy-corner { opacity: 1; } }
 .code-block pre { margin: 0; padding: 0.75rem 0.875rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8438rem; line-height: 1.6; tab-size: 2; }
 .code-block pre code { font-family: inherit; }
 

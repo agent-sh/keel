@@ -1,5 +1,6 @@
 // Traces, the debug bundle and "fix this", shared by the Errors panel, the
 // Traces side panel and the Logs settings.
+import { copyText } from "./copy.ts";
 import { api } from "./store.ts";
 import { getUI, navigate, savePref, setUI } from "./ui.ts";
 
@@ -31,7 +32,7 @@ export async function bundleText(t: BundleTarget): Promise<string> {
 }
 
 export async function copyBundle(t: BundleTarget) {
-  await navigator.clipboard.writeText(await bundleText(t));
+  await copyText(await bundleText(t));
 }
 
 // A new session asked to find the cause and fix it, with the bundle on disk; the page goes there.

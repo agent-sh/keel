@@ -1,3 +1,4 @@
+import { copyText } from "../lib/copy.ts";
 import { useEffect, useState, type ReactNode } from "react";
 import { safety, useSafety } from "../lib/safety.ts";
 import { api, reportError, failed } from "../lib/store.ts";
@@ -243,7 +244,7 @@ function RemoteAccessCard() {
           </p>
           <div className="mt-3 flex items-center gap-2">
             <code className="min-w-0 flex-1 truncate rounded bg-code px-2 py-1 font-mono text-caption text-fg" data-testid="remote-access-link">{full.replace(/token=[^&]+/, "token=\u2026")}</code>
-            <button data-testid="remote-access-copy" onClick={() => navigator.clipboard.writeText(full).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, reportError)} className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">{copied ? "Copied" : "Copy link"}</button>
+            <button data-testid="remote-access-copy" onClick={() => copyText(full).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, reportError)} className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">{copied ? "Copied" : "Copy link"}</button>
           </div>
           {!link.hosts.length && <p className="mt-2 text-caption text-faint">No tunnel host is set: start the daemon with KEEL_ALLOWED_HOSTS naming it.</p>}
         </div>

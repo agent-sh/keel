@@ -17,6 +17,11 @@ import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
 import { cn } from "../lib/utils.ts";
 import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 import { CodeCall } from "./CodeCall.tsx";
+import { Copyable } from "./CopyButton.tsx";
+import { stripAnsiText } from "../../../src/core/ansi.ts";
+
+// The file a call names, for its copy line.
+const pathOf = (input: any): string | undefined => { const p = input?.file_path ?? input?.path ?? input?.notebook_path; return typeof p === "string" && p ? p : undefined; };
 
 const ICONS: Record<ToolKind, typeof Wrench> = {
   shell: SquareTerminal, stdin: SquareTerminal, stop: Square, read: FileText, edit: FilePen, write: FilePlus2, patch: FilePen,
@@ -117,17 +122,26 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
         </span>
       </Collapsible.Trigger>
       <Collapsible.Panel className="k-tool-panel overflow-hidden border-t border-line">
+        {pathOf(input) && kind !== "shell" && (
+          <Copyable text={pathOf(input)!} label="Copy the path" testid="copy-path" className="k-tool-path">
+            <span className="block truncate px-3 pt-2 pr-9 font-mono text-micro text-faint" title={pathOf(input)}>{pathOf(input)}</span>
+          </Copyable>
+        )}
         {(kind === "shell" || kind === "stdin") && <Terminal name={use.name} input={input} out={out} error={state === "error"} />}
         {diff && <DiffView diff={diff} />}
         {kind === "write" && input.content !== undefined && <Preview text={String(input.content)} />}
         {!diff && kind !== "shell" && kind !== "stdin" && kind !== "write" && !live && kind === "other" && (
-          <pre className="px-3 pt-2.5 font-mono text-micro whitespace-pre-wrap break-all text-faint">{JSON.stringify(input, null, 2).slice(0, 4000)}</pre>
+          <Copyable text={JSON.stringify(input, null, 2)} label="Copy the input" testid="copy-input">
+            <pre className="px-3 pt-2.5 pr-9 font-mono text-micro whitespace-pre-wrap break-all text-faint">{JSON.stringify(input, null, 2).slice(0, 4000)}</pre>
+          </Copyable>
         )}
         {kind !== "shell" && kind !== "stdin" && out && (!diff || state === "error") && (
-          <pre className={cn(
-            "m-2.5 max-h-80 overflow-auto rounded-md border border-line bg-code p-2.5 font-mono text-caption leading-relaxed whitespace-pre-wrap break-all",
-            result?.is_error ? "text-danger" : "text-muted",
-          )}>{out}</pre>
+          <Copyable text={out} label="Copy the output" testid="copy-output" className="m-2.5">
+            <pre className={cn(
+              "max-h-80 overflow-auto rounded-md border border-line bg-code p-2.5 pr-9 font-mono text-caption leading-relaxed whitespace-pre-wrap break-all",
+              result?.is_error ? "text-danger" : "text-muted",
+            )}>{out}</pre>
+          </Copyable>
         )}
         {nested.map((n) => (
           <details key={n.path} className="mx-2.5 mb-2.5 rounded-md border border-line bg-sunken" data-testid="nested-instructions">
@@ -159,12 +173,18 @@ function Terminal({ name, input, out, error }: { name: string; input: any; out: 
   return (
     <div className="m-2.5 overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
       {cmd && (
-        <pre className="border-b border-line px-2.5 py-2 whitespace-pre-wrap break-all text-fg">
-          <span className="select-none text-accent-ink">$ </span>{cmd}
-        </pre>
+        <Copyable text={String(cmd)} label="Copy the command" testid="copy-command">
+          <pre className="border-b border-line px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-fg">
+            <span className="select-none text-accent-ink">$ </span>{cmd}
+          </pre>
+        </Copyable>
       )}
       {name === "write_stdin" && input.chars && <pre className="border-b border-line px-2.5 py-1.5 text-accent-ink">{JSON.stringify(input.chars)}</pre>}
-      {body && <pre className={cn("max-h-80 overflow-auto px-2.5 py-2 whitespace-pre-wrap break-all", error ? "text-danger" : "text-muted")}><Ansi text={body} /></pre>}
+      {body && (
+        <Copyable text={() => stripAnsiText(body)} label="Copy the output" testid="copy-output">
+          <pre className={cn("max-h-80 overflow-auto px-2.5 py-2 pr-9 whitespace-pre-wrap break-all", error ? "text-danger" : "text-muted")}><Ansi text={body} /></pre>
+        </Copyable>
+      )}
     </div>
   );
 }
@@ -221,7 +241,9 @@ function Preview({ text }: { text: string }) {
   const shown = lines.slice(0, 60);
   return (
     <div className="m-3 mt-2.5 overflow-hidden rounded-md border border-line bg-code">
-      <pre className="max-h-80 overflow-auto px-2.5 py-2 font-mono text-caption leading-[1.55] whitespace-pre-wrap break-all text-muted">{shown.join("\n")}</pre>
+      <Copyable text={text} label="Copy the content" testid="copy-content">
+        <pre className="max-h-80 overflow-auto px-2.5 py-2 pr-9 font-mono text-caption leading-[1.55] whitespace-pre-wrap break-all text-muted">{shown.join("\n")}</pre>
+      </Copyable>
       {lines.length > shown.length && <div className="border-t border-line px-2.5 py-1 text-micro text-faint">{lines.length - shown.length} more lines</div>}
     </div>
   );

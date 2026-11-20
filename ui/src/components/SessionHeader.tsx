@@ -1,3 +1,4 @@
+import { copyText } from "../lib/copy.ts";
 import { Menu } from "@base-ui/react/menu";
 import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -76,7 +77,7 @@ export function SessionHeader({ session }: { session: Session }) {
           <button
             type="button"
             title={`${session.workspace}\nClick to copy the path`}
-            onClick={() => navigator.clipboard.writeText(session.workspace)}
+            onClick={() => copyText(session.workspace)}
             className="hidden h-6 shrink-0 items-center gap-1 rounded-sm px-1.5 text-caption text-faint hover:bg-hover hover:text-muted sm:inline-flex"
           >
             <Folder className="size-3.5" />
@@ -108,8 +109,8 @@ export function SessionHeader({ session }: { session: Session }) {
           <Menu.Positioner sideOffset={6} align="end" className="z-50 outline-none">
             <Menu.Popup className={cn(popupClass, "min-w-52")}>
               <Menu.Item className={itemClass} data-testid="menu-rename" onClick={() => setEditing(true)}><Pencil /> Rename</Menu.Item>
-              <Menu.Item className={itemClass} onClick={() => navigator.clipboard.writeText(location.href)}><Link2 /> Copy link</Menu.Item>
-              <Menu.Item className={itemClass} onClick={() => navigator.clipboard.writeText(session.workspace)}><Copy /> Copy folder path</Menu.Item>
+              <Menu.Item className={itemClass} onClick={() => copyText(location.href)}><Link2 /> Copy link</Menu.Item>
+              <Menu.Item className={itemClass} onClick={() => copyText(session.workspace)}><Copy /> Copy folder path</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); }}><FolderPlus /> New session here</Menu.Item>
               <Menu.Separator className="mx-1 my-1 h-px bg-line" />
               <Menu.Item

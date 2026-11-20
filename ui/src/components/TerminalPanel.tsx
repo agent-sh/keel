@@ -2,6 +2,7 @@
 // its output with the program's colors, the ones running or in the background
 // with their output streaming in, and the owner's stop, copy and re-run. A
 // command line at the foot runs the owner's own command in the session's folder.
+import { copyText } from "../lib/copy.ts";
 import { Check, ChevronRight, Copy, Play, RotateCw, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
@@ -83,7 +84,7 @@ function Row({ session, e, now, open, onToggle, onRun }: { session: string; e: E
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(stripAnsiText(e.output));
+      await copyText(stripAnsiText(e.output));
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (err) { reportError(err, { at: "terminal copy" }); }

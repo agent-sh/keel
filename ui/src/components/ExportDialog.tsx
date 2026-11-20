@@ -2,6 +2,7 @@
 // transcript in Claude Code's or Codex's store with the command that resumes it.
 // An imported session also shows where it came from, and takes what its source
 // gained since.
+import { copyText } from "../lib/copy.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { Check, Copy, FileDown, FileJson, History, Terminal, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -122,7 +123,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
                 <p className="text-caption text-muted">Written as a new session. Resume it with:</p>
                 <div className="mt-2 flex items-center gap-2 rounded-md bg-sunken px-2.5 py-1.5">
                   <code className="min-w-0 flex-1 truncate font-mono text-caption" data-testid="export-command" title={command}>{command}</code>
-                  <button type="button" aria-label="Copy the command" onClick={() => navigator.clipboard.writeText(command).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); })} className={cn("grid size-6 place-items-center rounded-sm text-faint hover:text-fg", copied && "text-ok")}>
+                  <button type="button" aria-label="Copy the command" onClick={() => copyText(command).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); })} className={cn("grid size-6 place-items-center rounded-sm text-faint hover:text-fg", copied && "text-ok")}>
                     {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                   </button>
                 </div>
