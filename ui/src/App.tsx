@@ -38,12 +38,12 @@ export function App() {
   useEffect(() => {
     const at = getUI().route;
     if (at.name === "session") preloadSession(at.id);
-    const boot = actions.loadSessions();
-    setBootLoad(boot);
-    boot.catch(reportError);
+    // The first socket reloads whatever of this first load failed (a daemon
+    // restart under the page), so it waits on all of it, not only the sessions.
+    const loads = [actions.loadSessions(), actions.loadModels(), actions.loadErrors()];
+    for (const l of loads) l.catch(reportError);
+    setBootLoad(Promise.all(loads));
     connect();
-    actions.loadModels().catch(reportError);
-    actions.loadErrors().catch(reportError);
     return installKeymap();
   }, []);
   useEffect(() => { if (route.name !== "session") setBaseTitle(route.name === "settings" ? "Settings - Keel" : "Keel"); }, [route]);
