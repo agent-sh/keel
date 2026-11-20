@@ -11,7 +11,8 @@ import { openPanel, shoot } from "./shots.ts";
 // folder, and its menu groups (by folder or one list), sorts (recent, state,
 // name) and hides finished sessions; the arrangement is kept. The side
 // panel starts closed in every session and on load; one he opened in a
-// session comes back with that session only.
+// session comes back with that session only. The pane's top line moves
+// between state colours smoothly, and breathes while a turn works.
 const MODEL = "scripted:stand-in";
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
 
@@ -149,5 +150,18 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "session");
   await entry(c).click();
   await expect(page.getByTestId("side-panel")).toHaveCount(0);
+
+  // The top line: a working turn breathes in colour; the end of it eases to the done colour.
+  await request.put(`/api/sessions/${c}/permissions`, { data: { mode: "full-auto" } });
+  await request.post(`/api/sessions/${c}/messages`, { data: { text: "script:long-tool" } });
+  const band = pane(0).locator(".k-band");
+  await expect(pane(0)).toHaveAttribute("data-watch", "work", { timeout: 15_000 });
+  await expect.poll(() => band.evaluate((el) => getComputedStyle(el).animationName)).toBe("k-breathe");
+  await expect(page.getByTestId("wake-line")).toBeVisible();
+  expect(await band.evaluate((el) => getComputedStyle(el).transitionProperty)).toContain("background-color");
+  await shoot(page, "arrange-09-working-line");
+  await request.post(`/api/sessions/${c}/interrupt`);
+  await expect(pane(0)).not.toHaveAttribute("data-watch", "work", { timeout: 15_000 });
+  expect(await band.evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
   await request.post(`/api/sessions/${parent}/interrupt`).catch(() => {});
 });

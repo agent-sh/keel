@@ -188,7 +188,6 @@
   --animate-in: fade-up 180ms var(--ease-out);
   --animate-pop: pop 160ms var(--ease-out);
   --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
-  --animate-wake: wake 1.8s ease-in-out infinite;
 }
 
 @keyframes fade-up {
@@ -202,11 +201,6 @@
 @keyframes pulse-dot {
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }
-}
-/* The wake: a band of brass that runs under the header while a turn works. */
-@keyframes wake {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(250%); }
 }
 
 @media (prefers-reduced-motion: reduce) {

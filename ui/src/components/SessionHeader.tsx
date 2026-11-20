@@ -144,11 +144,7 @@ export function SessionHeader({ session }: { session: Session }) {
           </Menu.Positioner>
         </Menu.Portal>
       </Menu.Root>
-      {session.phase === "working" && (
-        <div className="pointer-events-none absolute inset-x-0 -bottom-px h-[2px] overflow-hidden" aria-hidden="true">
-          <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-brass to-transparent animate-wake" />
-        </div>
-      )}
+      {session.phase === "working" && <div className="k-wake-line" aria-hidden="true" data-testid="wake-line" />}
     </header>
   );
 }
