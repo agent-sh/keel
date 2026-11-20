@@ -32,6 +32,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     beforeTool: (s, call) => g.beforeTool(s, call),
     callOutcome: (sid, callId) => g.callOutcome(sid, callId),
     turnParking: (sid) => g.park(sid),
+    turnStart: (s) => g.turnStarted(s.id),
   });
 
   const presenceCall = async (f: () => Promise<Response>) => {
@@ -92,7 +93,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         return json({ perm, rev: deps.bus.rev() });
       },
     },
-    // What the reviewer of reviewer mode refused, newest first; the owner can let one retry through.
+    // What the judge refused without the owner (reviewer mode, full auto), newest first; the owner can let one retry through.
     "/api/sessions/:id/blocked": {
       GET: (req: any) => (store.session(req.params.id) ? json({ blocked: g.blocked(req.params.id), reviewer_model: g.setting("reviewer_model") ?? null }) : bad("no such session", 404)),
     },
@@ -104,7 +105,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         if (guard) return guard;
         const b = g.allowRetry(s.id, req.params.bid);
         if (!b) return bad("no such refused call", 404);
-        const text = `[harness] The owner let one retry of a call the reviewer refused go through: ${b.tool} ${b.summary.slice(0, 300)}. The owner wants it run: run it again now, exactly as before; this one time it is not refused.`;
+        const text = `[harness] The owner let one retry of a refused call go through: ${b.tool} ${b.summary.slice(0, 300)}. The owner wants it run: run it again now, exactly as before; this one time it is not refused.`;
         deliver(s.id, text, { kind: "harness", origin: "harness" });
         return json({ ok: true, blocked: b });
       },

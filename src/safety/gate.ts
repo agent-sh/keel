@@ -4,12 +4,16 @@
 // open (a crash, a kill, a stop) stays open: the continued turn runs its call
 // again and waits on the same card, and an answer given before that is kept.
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall, ToolGate } from "../engine/hooks.ts";
+import { preAllow } from "./autonomy.ts";
+import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
+import { splitCommand } from "./shell.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { classify, decide, isMode, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
@@ -59,11 +63,25 @@ CREATE TABLE IF NOT EXISTS perm_blocked (id TEXT PRIMARY KEY, session_id TEXT NO
 CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, created);
 `;
 
-// What the reviewer of reviewer mode is asked, and what it answers.
-export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any };
-export type Verdict = { allow: boolean; risk: string; reason: string; model: string } | { unavailable: string };
-// A call the reviewer refused; the owner can let one retry of it through.
-export type Blocked = { id: string; session_id: string; tool: string; summary: string; reason: string; risk: string; model: string; key: string; retry?: boolean; created: number };
+// What the judge is asked (reviewer mode's calls, and full auto's high-risk
+// ones with `high`: why the rules flagged it and the facts of where it lands),
+// and what it answers.
+export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; high?: { why: string; facts?: string } };
+export type Verdict = { allow: boolean; risk: string; reason: string; model: string; ms?: number } | { unavailable: string };
+// A call refused without the owner (the judge's refusal, a judge that could
+// not answer, a repeat); the owner can let one retry of it through.
+// `by`: who refused it; `count`: how often this exact call was refused.
+export type Blocked = {
+  id: string; session_id: string; calls?: string[]; tool: string; summary: string; reason: string; risk: string; model: string; key: string;
+  by?: "reviewer" | "judge" | "unavailable" | "streak"; count?: number; retry?: boolean; created: number; last?: number;
+};
+// How a full-auto high-risk call was settled, for the activity list and alerts.
+export type Judged = { session_id: string; call_id: string; tool: string; summary: string; outcome: "rule" | "judge" | "retry" | "refused" | "repeat" | "unavailable" | "streak"; reason: string; model?: string; ms?: number; blocked_id?: string };
+
+// Refusals in a row in one turn after which the rest of its high-risk calls
+// are refused without review (Claude Code falls back after 3 in a row, Codex
+// stops the turn after 3): the work goes on, the loop of retries does not.
+export const STREAK = 3;
 
 type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string };
 
@@ -72,6 +90,7 @@ export class Gate {
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
+  private streak = new Map<string, number>(); // full auto: refusals in a row in the session's turn
   // Cards a restart left open, by session and call: nothing waits on them
   // until the continued turn runs the call again (park, reattach).
   private parked = new Map<string, string>();
@@ -151,6 +170,7 @@ export class Gate {
     if (prev.retry) return prev;
     const b: Blocked = { ...prev, retry: true };
     this.retries.add(`${sessionId}\u0000${b.key}`);
+    this.streak.delete(sessionId);
     this.store.db.query("UPDATE perm_blocked SET data = ? WHERE id = ?").run(JSON.stringify(b), id);
     this.bus.emit({ t: "feature", name: "blocked", session_id: sessionId, data: b });
     return b;
@@ -297,30 +317,95 @@ export class Gate {
       const settled: Partial<Approval> | undefined = back.state !== "pending" ? undefined
         : "allow" in d ? { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" } : "deny" in d ? { state: "denied", reason: d.deny } : undefined;
       if (settled) this.finish(back, settled);
+      // Now in full auto: the card closes and the call is settled without the owner.
+      if (!settled && back.state === "pending" && "ask" in d && !back.once && this.perm(session.id).mode === "full-auto") {
+        this.finish(back, { state: "cancelled", reason: "settled without the owner in full auto" });
+        return this.alone(session, call, name, cls, back.summary, keyOf(name, target, cls, call, back.summary), d.ask.why);
+      }
       return (await this.wait({ ...back, ...settled }, session, call, name, cls)) ?? { cls };
     }
     if ("allow" in d) return { cls };
     if ("deny" in d) return { deny: d.deny };
     if (cls.kind === "control") return { cls };
     const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(target ? target.input : call.input).slice(0, 400);
+    const key = keyOf(name, target, cls, call, summary);
+    const mode = this.perm(session.id).mode;
+    // Full auto: nothing waits on the owner. What would ask is high risk; it
+    // goes to the rules, then the judge, and is run or refused at once.
+    if (mode === "full-auto") return this.alone(session, call, name, cls, summary, key, d.ask.why);
     let notice: string | undefined;
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
     // action, and anything it cannot judge, still goes to the owner.
-    if (this.perm(session.id).mode === "reviewer" && d.ask.risk === "low") {
-      // The refused call as judged: its tool on that source in that shape, and its input.
-      const key = new Bun.CryptoHasher("sha256").update(JSON.stringify([name, target?.source ?? null, target?.shape ?? null, cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary])).digest("hex").slice(0, 32);
+    if (mode === "reviewer" && d.ask.risk === "low") {
       if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
       const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
       else if (v.allow) return { cls };
       else {
-        const b: Blocked = { id: crypto.randomUUID(), session_id: session.id, tool: name, summary: summary.slice(0, 2000), reason: v.reason, risk: v.risk, model: v.model, key, created: Date.now() };
-        this.store.db.query("INSERT INTO perm_blocked (id, session_id, data, created) VALUES (?, ?, ?, ?)").run(b.id, b.session_id, JSON.stringify(this.redactAny(b)), b.created);
-        this.bus.emit({ t: "feature", name: "blocked", session_id: session.id, data: b });
+        this.block({ session_id: session.id, calls: [call.id], tool: name, summary, reason: v.reason, risk: v.risk, model: v.model, key, by: "reviewer" });
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
     return (await this.card(session, call, name, cls, summary, { ...d.ask, notice, bind: target?.source })) ?? { cls };
+  }
+
+  // A new turn: the run of refusals starts over.
+  turnStarted(sessionId: string) {
+    this.streak.delete(sessionId);
+  }
+
+  // Full auto's high-risk call, settled without the owner: a retry the owner
+  // let through runs; the rules allow what stays on the session's own,
+  // recoverable work; a call refused before is refused again with its reason;
+  // after STREAK refusals in a row the turn's other high-risk calls are refused
+  // unreviewed; else the judge decides, and a judge that cannot answer refuses.
+  private async alone(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string, key: string, why = "it is high risk"): Promise<{ deny: string } | { cls: CallClass }> {
+    const base = { session_id: session.id, tool: name, summary: summary.slice(0, 2000) };
+    const ran = (outcome: Judged["outcome"], reason: string, more: Partial<Judged> = {}) => {
+      if (outcome === "rule" || outcome === "judge" || outcome === "retry") this.streak.delete(session.id);
+      this.bus.emit({ t: "feature", name: "judged", session_id: session.id, data: this.redactAny({ ...base, call_id: call.id, outcome, reason, ...more }) });
+    };
+    if (this.retries.delete(`${session.id}\u0000${key}`)) return ran("retry", "the owner let one retry through"), { cls };
+    if (cls.kind === "shell" && !cls.escalate) {
+      const parts = splitCommand(cls.command);
+      const rule = parts ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
+      if (rule) return ran("rule", rule), { cls };
+    }
+    const refuse = (b: Blocked, outcome: Judged["outcome"], text: string) => {
+      this.streak.set(session.id, (this.streak.get(session.id) ?? 0) + (outcome === "unavailable" ? 0 : 1));
+      ran(outcome, b.reason, { model: b.model, blocked_id: b.id });
+      return { deny: text };
+    };
+    const again = this.store.db.query<{ data: string }, [string, string]>("SELECT data FROM perm_blocked WHERE session_id = ? AND json_extract(data, '$.key') = ? ORDER BY created DESC LIMIT 1").get(session.id, key);
+    const prev = again ? (JSON.parse(again.data) as Blocked) : undefined;
+    if (prev && !prev.retry && prev.by !== "unavailable" && prev.by !== "streak") {
+      const b: Blocked = { ...prev, calls: [...(prev.calls ?? []), call.id].slice(-20), count: (prev.count ?? 1) + 1, last: Date.now() };
+      this.store.db.query("UPDATE perm_blocked SET data = ? WHERE id = ?").run(JSON.stringify(this.redactAny(b)), b.id);
+      this.bus.emit({ t: "feature", name: "blocked", session_id: session.id, data: this.redactAny(b) });
+      return refuse(b, "repeat", `Refused again: this exact call was already refused in this session (${reasonOf(prev.reason)}). Do not retry it or work around it. Take a safer way, or finish the rest and tell the owner what you could not do; the owner can let one retry through.`);
+    }
+    if ((this.streak.get(session.id) ?? 0) >= STREAK) {
+      const b = this.block({ ...base, calls: [call.id], reason: `${STREAK} high-risk calls in a row were refused in this turn, so this one was refused without review`, risk: "unknown", model: "", key, by: "streak" });
+      return refuse(b, "streak", `Refused without review: ${STREAK} high-risk calls in a row were refused in this turn. Stop trying high-risk actions now: finish what you can without them, then report to the owner what was refused and why you needed it.`);
+    }
+    const facts = cls.kind === "shell" ? repoContext(cls.command, cls.cwd ?? session.workspace, homedir(), session) : undefined;
+    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input), high: { why, facts } });
+    if ("unavailable" in v) {
+      const b = this.block({ ...base, calls: [call.id], reason: `The judge could not review it: ${v.unavailable}`, risk: "unknown", model: "", key, by: "unavailable" });
+      return refuse(b, "unavailable", `Refused: this high-risk call (${why}) needs the judge's review, and the judge could not give one (${reasonOf(v.unavailable)}). That is not proof it is unsafe. Take another way if there is one, or go on with the rest and report it; the owner can let one retry through.`);
+    }
+    if (v.allow) return ran("judge", v.reason, { model: v.model, ms: v.ms }), { cls };
+    const b = this.block({ ...base, calls: [call.id], reason: v.reason, risk: v.risk, model: v.model, key, by: "judge" });
+    return refuse(b, "refused", `Refused by the judge (risk ${v.risk}): ${reasonOf(v.reason)}. Do not retry it as it is or work around it: take a safer way, or finish the rest and tell the owner what you could not do. The owner can let one retry through.`);
+  }
+
+  // A refusal stored for the owner's list (secrets kept out of it).
+  private block(b: Omit<Blocked, "id" | "created">): Blocked {
+    const full: Blocked = { ...b, summary: b.summary.slice(0, 2000), id: crypto.randomUUID(), created: Date.now() };
+    const shown = this.redactAny(full);
+    this.store.db.query("INSERT INTO perm_blocked (id, session_id, data, created) VALUES (?, ?, ?, ?)").run(full.id, full.session_id, JSON.stringify(shown), full.created);
+    this.bus.emit({ t: "feature", name: "blocked", session_id: full.session_id, data: shown });
+    return full;
   }
 
   // A card for this one call that only the owner answers (a hook asked): no
@@ -434,12 +519,24 @@ export class Gate {
       } else if ("deny" in d) {
         this.finish(a, { state: "denied", reason: d.deny });
         w.resolve({ deny: d.deny });
+      } else if (this.perm(w.session.id).mode === "full-auto") {
+        // The session went to full auto with a card open: the card closes, and
+        // the call is settled the way full auto settles it.
+        this.finish(a, { state: "cancelled", reason: "settled without the owner in full auto" });
+        const key = keyOf(w.name, w.bind ? { source: w.bind } : null, w.cls, w.call, a.summary);
+        void this.alone(w.session, w.call, w.name, w.cls, a.summary, key, a.why).then((r) => w.resolve("deny" in r ? r : { allow: true }));
       }
     }
   }
 }
 
 const callKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
+
+// A refused call as judged: its tool on that source in that shape, and its input.
+const keyOf = (name: string, target: { source?: string; shape?: string } | null, cls: CallClass, call: ToolCall, summary: string) =>
+  new Bun.CryptoHasher("sha256").update(JSON.stringify([name, target?.source ?? null, target?.shape ?? null, cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary])).digest("hex").slice(0, 32);
+
+const reasonOf = (r: string) => r.replace(/[.\s]+$/, "");
 
 // What the model gets for a call the owner denied.
 const ownerDenial = (why?: string) => (why ? `The owner denied this call: ${why}` : "The owner denied this call. Do not retry it; take another way or ask.");

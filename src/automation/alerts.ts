@@ -9,7 +9,7 @@ import { readText } from "../core/proc.ts";
 // sent as a frame, and delivered to the channels the settings name for its
 // kind. A channel is anything with deliver(); phone push registers one later.
 
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression"] as const;
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
 // Sent means the channel took it, not that the owner saw it.
@@ -280,10 +280,12 @@ const DECISION: Partial<Record<AlertKind, string>> = { approval: "approval_id", 
 // desk for (watching it, or in the next pane), while one that ran minutes is
 // one they left to do something else; Claude Code's own idle notice waits a
 // minute of nothing to do, and a finish is less urgent than an input wait.
+// A call full auto refused stays quiet too: nothing waits on the owner, the
+// session goes on, and the inbox lists it with one retry to let through.
 const INTERRUPTS = new Set(["desktop", "push"]);
 export const LONG_TURN_MS = 5 * 60_000;
 const routine = (kind: AlertKind, data: unknown, st: AlertSettings) =>
-  kind === "snooze_over" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
+  kind === "snooze_over" || kind === "refused" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
 
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown): Alert | undefined {
   try {

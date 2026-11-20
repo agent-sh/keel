@@ -1,4 +1,5 @@
 import { awakeHolds, awakeReasons, recheckAwake } from "../admin/awake.ts";
+import type { Judged } from "../safety/gate.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import { lineage } from "../core/tree.ts";
@@ -147,6 +148,19 @@ function init(deps: Deps) {
     if (f.t === "event" && f.event.kind === "user" && !f.event.data.kind && f.event.data.origin !== "queued") {
       const s = deps.store.session(f.event.session_id);
       if (s && !s.parent_id) snooze.end(s.id, "the owner wrote to it");
+    }
+    // Full auto settled a high-risk call without the owner: each is an
+    // activity row; a refusal is a quiet alert (the inbox, never a desktop or
+    // phone interruption), except a repeat of one already raised.
+    if (f.t === "feature" && f.name === "judged") {
+      const j = f.data as Judged;
+      const ran = j.outcome === "rule" || j.outcome === "judge" || j.outcome === "retry";
+      activity.record("approval", ran ? `allowed by ${j.outcome === "rule" ? "a rule" : j.outcome === "judge" ? "the judge" : "a retry"}` : j.outcome === "repeat" ? "refused again" : "refused", j.session_id, `${j.tool}: ${j.summary}`.slice(0, 300) + ` (${j.reason})`.slice(0, 300), { call_id: j.call_id, blocked_id: j.blocked_id, model: j.model, ms: j.ms });
+      if (!ran && j.outcome !== "repeat") {
+        const s = deps.store.session(j.session_id);
+        alerts.raise("refused", j.session_id, `Refused in ${s?.title || "a session"}`, `${j.tool}: ${j.summary}`.slice(0, 200) + ` (${j.reason})`.slice(0, 300), { blocked_id: j.blocked_id, open_session: j.session_id });
+      }
+      return;
     }
     if (f.t !== "feature" || f.name !== "approval") return;
     const a = f.data as { id: string; session_id: string; tool: string; summary: string; risk: string; state: string };

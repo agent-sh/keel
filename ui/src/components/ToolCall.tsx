@@ -2,13 +2,14 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
 import {
   Brain, Check, ChevronRight, Circle, CircleDot, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
-  ListChecks, MessageCircleQuestion, NotebookPen, Plug, Search, Sparkles, SquareTerminal, Square, Wrench, X,
+  ListChecks, MessageCircleQuestion, NotebookPen, Plug, RotateCcw, Search, Sparkles, SquareTerminal, Square, Wrench, X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { actions, failed } from "../lib/store.ts";
+import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
 import {
   patchFiles, planItems, questions, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind,
   type PlanItem, type ToolKind,
@@ -87,7 +88,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
   const Icon = ICONS[kind];
   const { text: out, nested, memory } = useMemo(() => { const m = splitMemory(resultText(result)); return { ...splitNested(m.text), memory: m.memory }; }, [result]);
   const images = resultImages(result);
-  const state = !result ? "running" : result.is_error ? "error" : "ok";
+  const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));
+  const state = !result ? "running" : refused ? "refused" : result.is_error ? "error" : "ok";
   const diff = useMemo(() => editDiff(kind, input), [kind, input]);
   const shell = kind === "shell" || kind === "stdin" ? shellStatus(out) : {};
   // Diffs are what the owner wants to see: small ones start open.
@@ -105,7 +107,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
   return (
     <Collapsible.Root ref={root} open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={live ? "live" : state} data-kind={kind}>
       <Collapsible.Trigger className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui hover:bg-hover">
-        <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" ? "bg-danger-soft text-danger" : state === "running" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
+        <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" || state === "refused" ? "bg-danger-soft text-danger" : state === "running" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
           <Icon className="size-3.5" />
         </span>
         <span className="shrink-0 font-medium">{LABEL[kind] ?? FLEET_LABEL[use.name] ?? use.name}</span>
@@ -120,9 +122,19 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
           {shell.session && <span className="rounded-full bg-accent-soft px-1.5 py-px text-accent-ink">session {shell.session}</span>}
           {state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
           {state === "error" && <span className="text-danger">{shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>}
+          {state === "refused" && <span className="text-danger" data-testid="tool-refused">refused</span>}
           <ChevronRight className="size-3.5 text-faint transition-transform group-data-[open]/tool:rotate-90" />
         </span>
       </Collapsible.Trigger>
+      {refused && sessionId && (
+        // A refused call says so where it sits: who refused it, why, and the retry the owner can let through.
+        <div className="flex items-start gap-3 border-t border-line px-3 py-2" data-testid="tool-refusal">
+          <p className="min-w-0 flex-1 text-caption text-muted"><span className="font-medium text-danger">{refusedBy(refused)}.</span> {refused.reason}</p>
+          {refused.retry
+            ? <span className="shrink-0 text-caption text-faint" data-testid="tool-retry-allowed">Retry allowed</span>
+            : <button data-testid="tool-retry" onClick={() => allowRetry(sessionId, refused.id)} className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 text-caption hover:bg-hover"><RotateCcw className="size-3" /> Allow one retry</button>}
+        </div>
+      )}
       <Collapsible.Panel className="k-tool-panel overflow-hidden border-t border-line">
         {pathOf(input) && kind !== "shell" && (
           <Copyable text={pathOf(input)!} label="Copy the path" testid="copy-path" className="k-tool-path">

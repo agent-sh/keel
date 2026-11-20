@@ -38,15 +38,15 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
             {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </Select>
         </SettingRow>
-        <SettingRow label="Reviewer mode's model" hint="Judges the calls a session in reviewer mode would ask you about. High-risk ones still come to you.">
+        <SettingRow label="Judge model" hint="Decides in your place: the high-risk calls of a session in full auto, and what a session in reviewer mode would ask you (high-risk ones there still come to you). Unset, your small models answer, best first, then the session's own model.">
           <div className="flex items-center gap-2" data-testid="reviewer-model">
-            {perm?.reviewer_model ? <ModelPicker value={perm.reviewer_model} onChange={(m) => putPerm({ reviewer_model: m })} compact /> : <>{sameAs}<ModelPicker value="" onChange={(m) => putPerm({ reviewer_model: m })} compact /></>}
+            {perm?.reviewer_model ? <ModelPicker value={perm.reviewer_model} onChange={(m) => putPerm({ reviewer_model: m })} compact /> : <><span className="text-caption text-faint">your small models</span><ModelPicker value="" onChange={(m) => putPerm({ reviewer_model: m })} compact /></>}
             {perm?.reviewer_model && <button className="text-caption text-faint hover:text-fg" onClick={() => putPerm({ reviewer_model: null })}>Reset</button>}
           </div>
         </SettingRow>
         <div className="border-b border-line py-4">
-          <div className="text-base font-medium">Reviewer policy</div>
-          <div className="mt-0.5 text-ui text-muted">Your own rules for reviewer mode, in plain words. They win over its built-in guidance.</div>
+          <div className="text-base font-medium">Judge policy</div>
+          <div className="mt-0.5 text-ui text-muted">Your own rules for the judge, in plain words. They win over its built-in guidance.</div>
           <PolicyBox value={perm?.reviewer_policy ?? ""} onSave={(v) => putPerm({ reviewer_policy: v })} />
         </div>
         <SettingRow label="Code review model" hint="The independent reviewer in the Review panel. Another family than the session's gives a second opinion.">

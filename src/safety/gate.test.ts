@@ -50,13 +50,40 @@ test("confinement follows the class the gate judged, not an input field", async 
   // A shell tool that offers no escalation runs confined whatever its input says.
   const plain = await g.beforeTool(session, call(bash, { command: "npm test", sandbox_permissions: "require_escalated" }));
   expect(plain && "ctx" in plain && typeof plain.ctx?.wrapSpawn).toBe("function");
-  // A program that asks to leave the sandbox gets the escalation card, even in full auto.
-  const stop = new AbortController();
-  const asked = g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }, stop.signal));
-  await Bun.sleep(5);
-  expect(g.approvals({ session: "s1", pending: true }).map((a) => a.risk)).toEqual(["high"]);
-  stop.abort();
-  expect(await asked).toHaveProperty("deny");
+  // A program that asks to leave the sandbox goes to the judge in full auto,
+  // never to a card: with no judge to answer it is refused at once.
+  const asked = await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }));
+  expect(g.approvals({ session: "s1", pending: true })).toEqual([]);
+  expect(asked).toHaveProperty("deny");
+  // The judge allows it: it runs outside the sandbox.
+  g.judge = async () => ({ allow: true, risk: "high", reason: "the owner asked for it", model: "m" });
+  expect(await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }))).toBeUndefined();
+});
+
+test("full auto: a refused call is refused again without review, and a run of refusals stops the judging", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm("s1", { mode: "full-auto", sandbox: "off" });
+  let asked = 0;
+  g.judge = async () => (asked++, { allow: false, risk: "high", reason: "it rewrites the default branch", model: "m" });
+  const run = (command: string) => g.beforeTool(session, call(bash, { command }));
+  const first = await run("git push -f origin main");
+  expect(first && "deny" in first && first.deny).toContain("rewrites the default branch");
+  const again = await run("git push -f origin main");
+  expect(again && "deny" in again && again.deny).toContain("already refused");
+  expect(asked).toBe(1);
+  expect(g.blocked("s1")).toHaveLength(1);
+  expect(g.blocked("s1")[0]!.count).toBe(2);
+  // Two refusals in a row so far; one more reviewed refusal, then no more reviews this turn.
+  await run("sudo systemctl stop x");
+  const streak = await run("sudo reboot");
+  expect(streak && "deny" in streak && streak.deny).toContain("in a row");
+  expect(asked).toBe(2);
+  // A new turn reviews again; the owner's one retry lets exactly that call through.
+  g.turnStarted("s1");
+  const b = g.blocked("s1").find((x) => x.summary === "git push -f origin main")!;
+  g.allowRetry("s1", b.id);
+  expect(await run("git push -f origin main")).toBeUndefined();
+  expect(g.approvals({ session: "s1" })).toEqual([]);
 });
 
 test("open cards are read whole and in one order, however much history there is", () => {
