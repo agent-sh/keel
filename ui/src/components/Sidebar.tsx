@@ -15,6 +15,7 @@ import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from 
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { lastLine, useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
+import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
 import { folderOf, Mark, modelOf } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
@@ -26,17 +27,18 @@ import { archive } from "../lib/sessops.ts";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
-// Sessions grouped by folder (and machine, for another machine's), the folder
-// with the newest work first.
-function groups(sessions: Session[]) {
+// Sessions grouped by folder (and machine, for another machine's), each in
+// the list's order; the folders in the order of their first session (by
+// name: the folder's name).
+function groups(sessions: Session[], cmp: (a: Session, b: Session) => number, byName: boolean) {
   const by = new Map<string, Session[]>();
   for (const s of sessions) {
     const k = `${s.machine ?? ""}\u0000${s.workspace}`;
     (by.get(k) ?? by.set(k, []).get(k)!).push(s);
   }
   return [...by.entries()]
-    .map(([k, list]) => ({ key: k, ws: list[0]!.workspace, machine: list[0]!.machine ?? undefined, list: list.sort((a, b) => b.updated - a.updated) }))
-    .sort((a, b) => b.list[0]!.updated - a.list[0]!.updated);
+    .map(([k, list]) => ({ key: k, ws: list[0]!.workspace, machine: list[0]!.machine ?? undefined, list: list.sort(cmp) }))
+    .sort((a, b) => (byName ? base(a.ws).localeCompare(base(b.ws)) : 0) || cmp(a.list[0]!, b.list[0]!));
 }
 
 // The card beside an entry: shown at once for a mark (it has no words of its
@@ -82,7 +84,7 @@ export function openBeside(id: string) {
   navigate({ name: "session", id });
 }
 
-function Row({ s, active }: { s: Session; active: boolean }) {
+function Row({ s, active, where }: { s: Session; active: boolean; where?: boolean }) {
   const restore = s.archived;
   const w = useWatch(s);
   const card = useContext(CardCtx)(s, 450);
@@ -110,6 +112,7 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       <span className="k-row-main">
         <span className="k-row-title">{s.title || "New session"}</span>
         {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{WATCH_LABEL[w]}</span>}
+        {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
       </span>
       {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag max-w-20 shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
       <NeedsYou sessionId={s.id} />
@@ -139,8 +142,9 @@ function Row({ s, active }: { s: Session; active: boolean }) {
 // A folder shows its newest sessions; the rest open on request (and the open
 // one is always shown, also when it is a subagent's: its parent's row then).
 const SHOWN = 6;
-function Group({ list, current }: { list: Session[]; current: string | null }) {
-  const [all, setAll] = useState(false);
+function Group({ list, current, every, where }: { list: Session[]; current: string | null; every?: boolean; where?: boolean }) {
+  const [more, setAll] = useState(false);
+  const all = more || !!every;
   const root = useStore((x) => {
     let s = current ? x.sessions[current] : undefined;
     for (let n = 0; s?.parent_id && n < 32; n++) s = x.sessions[s.parent_id] ?? undefined;
@@ -151,12 +155,12 @@ function Group({ list, current }: { list: Session[]; current: string | null }) {
     <div className="flex flex-col gap-px">
       {shown.map((s) => (
         <div key={s.id}>
-          <Row s={s} active={current === s.id} />
+          <Row s={s} active={current === s.id} where={where} />
           <SessionChildren parentId={s.id} current={current} />
         </div>
       ))}
       {list.length > shown.length && <button type="button" onClick={() => setAll(true)} className="k-more">{list.length - shown.length} more</button>}
-      {all && list.length > SHOWN && <button type="button" onClick={() => setAll(false)} className="k-more">Show fewer</button>}
+      {more && list.length > SHOWN && <button type="button" onClick={() => setAll(false)} className="k-more">Show fewer</button>}
     </div>
   );
 }
@@ -284,9 +288,17 @@ function Index({ current }: { current: string | null }) {
   const picked = tags_[tab] ?? null;
   const tag = picked && tags.includes(picked) ? picked : null; // a tag no session has any more filters nothing
   const setTag = (t: string | null) => setTags((m) => ({ ...m, [tab]: t }));
-  const listed = tag ? base_.filter((s) => (s.settings.tags ?? []).includes(tag)) : base_;
+  // The filter words and the arrangement (ListArrange.tsx): pinned sessions stay in view unless the words leave them out.
+  const [q, setQ] = useState("");
+  const arr = useArrange();
+  const watches = useWatches(base_);
+  const listed = base_.filter((s) => (!tag || (s.settings.tags ?? []).includes(tag)) && (!q || matches(s, q)));
   const pinned = listed.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!);
-  const grouped = useMemo(() => groups(listed.filter((s) => !s.settings.pinned_ms)), [listed]);
+  const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current));
+  const hidden = listed.length - pinned.length - rest.length;
+  const cmp = order(arr, watches);
+  const grouped = arr.group === "flat" ? [] : groups(rest, cmp, arr.sort === "name");
+  const flat = arr.group === "flat" ? [...rest].sort(cmp) : [];
   // Same-named folders read apart (beta/api, alpha/api); a machine's folders are named among its own.
   const heads = useMemo(() => {
     const by = new Map<string, string[]>();
@@ -304,6 +316,7 @@ function Index({ current }: { current: string | null }) {
           </button>
         ))}
       </div>
+      <ListFind q={q} setQ={setQ} />
       {tags.length > 0 && (
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (
@@ -318,11 +331,15 @@ function Index({ current }: { current: string | null }) {
         {pinned.length > 0 && (
           <section className="k-group" data-testid="pinned-group">
             <h2 className="k-group-head"><Pin /><span className="truncate">Pinned</span></h2>
-            <Group list={pinned} current={current} />
+            <Group list={pinned} current={current} every={!!q} where />
           </section>
         )}
-        {grouped.length === 0 && pinned.length === 0 && (
-          tag
+        {grouped.length === 0 && flat.length === 0 && pinned.length === 0 && (
+          q
+            ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
+            : hidden > 0
+            ? <p className="k-empty">All {hidden} sessions here are finished and hidden. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setArrange({ hideDone: false })}>Show them</button></p>
+            : tag
             ? <p className="k-empty" data-testid="tag-empty">No sessions match the tag {tag}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setTag(null)}>Show all</button></p>
             : <p className="k-empty">{tab === "active" ? "Sessions you start show up here, grouped by folder." : "Archived sessions show up here. Restore one to bring it back."}</p>
         )}
@@ -333,9 +350,17 @@ function Index({ current }: { current: string | null }) {
               <span className="truncate">{heads.get(`${g.machine ?? ""}\u0000${g.ws}`) ?? base(g.ws)}</span>
               {g.machine && <span className="k-group-machine" data-testid="group-machine">{machineName(g.machine)}</span>}
             </h2>
-            <Group list={g.list} current={current} />
+            <Group list={g.list} current={current} every={!!q} />
           </section>
         ))}
+        {flat.length > 0 && (
+          <section className="k-group" data-testid="flat-group">
+            <Group list={flat} current={current} every={!!q} where />
+          </section>
+        )}
+        {hidden > 0 && (grouped.length > 0 || flat.length > 0) && (
+          <button type="button" className="k-more" data-testid="hidden-done" onClick={() => setArrange({ hideDone: false })}>{hidden} finished hidden</button>
+        )}
       </nav>
     </>
   );

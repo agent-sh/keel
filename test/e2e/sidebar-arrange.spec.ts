@@ -5,7 +5,11 @@ import { shoot } from "./shots.ts";
 // is never forced: a kept layout with an empty pane opens as one pane, and
 // opening a session opens it in the pane worked in. A second pane opens when
 // asked for: the row's "open beside" button (or Ctrl click), or a session
-// dropped on a pane's edge.
+// dropped on a pane's edge. The agents a session started are folded under
+// it to a count (a turning mark while one works) until he opens them, and
+// that choice is kept per session. One field filters the list by title or
+// folder, and its menu groups (by folder or one list), sorts (recent, state,
+// name) and hides finished sessions; the arrangement is kept.
 const MODEL = "scripted:stand-in";
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
 
@@ -66,4 +70,67 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await expect(pane(1)).toHaveAttribute("data-station", c);
   await pane(1).getByTestId("station-close").click();
   await expect(panes).toHaveCount(1);
+
+  // Agents: a session that starts two shows them folded to a count.
+  const parent = await mk(`Audit the dependency tree ${tag}`, "Hold on.");
+  await request.put(`/api/sessions/${parent}/permissions`, { data: { mode: "full-auto" } });
+  const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
+  await request.post(`/api/sessions/${parent}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn("script:long-tool"), spawn("Say ok.")])}` } });
+  await page.goto(`/s/${b}`);
+  const kids = entry(parent).locator("xpath=..").getByTestId("session-children");
+  await expect(kids.getByTestId("children-toggle")).toContainText("2 agents", { timeout: 30_000 });
+  await expect(kids.getByTestId("children-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(kids.getByTestId("child-session")).toHaveCount(0);
+  await expect(kids.getByTestId("children-toggle").locator('.k-mark[data-watch="work"]')).toBeVisible({ timeout: 30_000 });
+  await shoot(page, "arrange-03-agents-folded");
+  await kids.getByTestId("children-toggle").click();
+  await expect(kids.getByTestId("child-session")).toHaveCount(2);
+  await shoot(page, "arrange-04-agents-open");
+  await page.reload();
+  await expect(kids.getByTestId("child-session")).toHaveCount(2); // his choice, kept
+  await kids.getByTestId("children-toggle").click();
+  await expect(kids.getByTestId("child-session")).toHaveCount(0);
+
+  // Filter: words of the title or the folder.
+  const filter = page.getByTestId("list-filter");
+  await filter.fill(`release ${tag}`);
+  await expect(entry(b)).toBeVisible();
+  await expect(entry(a)).toHaveCount(0);
+  await shoot(page, "arrange-05-filtered");
+  await filter.fill(`nothing-like-this ${tag}`);
+  await expect(page.getByTestId("filter-empty")).toBeVisible();
+  await filter.press("Escape");
+  await expect(filter).toHaveValue("");
+  await expect(entry(a)).toBeVisible();
+
+  // Arrange: one list sorted by name, finished sessions hidden; kept over a reload.
+  await page.getByTestId("list-arrange").click();
+  await expect(page.getByTestId("arrange-menu")).toBeVisible();
+  await page.getByTestId("arrange-group-flat").click();
+  await page.getByTestId("arrange-sort-name").click();
+  await shoot(page, "arrange-06-menu");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("flat-group")).toBeVisible();
+  await filter.fill(tag);
+  const titles = await page.getByTestId("flat-group").locator(".k-row-title").allTextContents();
+  expect(titles).toEqual([...titles].sort((x, y) => x.localeCompare(y)));
+  await expect(entry(a).getByTestId("row-folder")).toBeVisible();
+  await filter.fill("");
+  await page.getByTestId("list-arrange").click();
+  await page.getByTestId("arrange-hide-done").click();
+  await page.keyboard.press("Escape");
+  await expect(entry(a)).toHaveCount(0); // finished
+  await expect(entry(b)).toBeVisible(); // the one open stays
+  await expect(page.getByTestId("hidden-done")).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("flat-group")).toBeVisible();
+  await expect(entry(a)).toHaveCount(0);
+  await expect(pane(0).getByTestId("composer")).toBeVisible();
+  await shoot(page, "arrange-07-flat-by-name-hide-finished");
+  await page.getByTestId("list-arrange").click();
+  await page.getByTestId("arrange-reset").click();
+  await expect(page.getByTestId("flat-group")).toHaveCount(0);
+  await expect(entry(a)).toBeVisible();
+
+  await request.post(`/api/sessions/${parent}/interrupt`).catch(() => {});
 });
