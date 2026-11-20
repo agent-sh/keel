@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, waitJob } from "./jobs.ts";
+import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob } from "./jobs.ts";
 
 // A daemon that starts background commands and exits (a restart); this
 // process plays the next daemon.
@@ -132,4 +132,18 @@ test("a command reaches the shell as written: its own braced variables and exit 
   expect(await waitJob(j, 10000)).toBe(true);
   expect(takeUnread(j).trim()).toBe("1");
   expect(j.exitCode).toBe(7);
+});
+
+test("a command does not get the daemon's own supervision settings", () => {
+  const keep = { ...process.env };
+  Object.assign(process.env, { KEEL_SUPERVISED: "systemd", KEEL_DRAIN_MS: "600000", KEEL_GH_BIN: "/x/gh" });
+  try {
+    const env = toolEnv("s1");
+    expect(env.KEEL_SUPERVISED).toBeUndefined();
+    expect(env.KEEL_DRAIN_MS).toBeUndefined();
+    expect(env.KEEL_GH_BIN).toBe("/x/gh");
+    expect(env.KEEL_SESSION).toBe("s1");
+  } finally {
+    for (const k of ["KEEL_SUPERVISED", "KEEL_DRAIN_MS", "KEEL_GH_BIN"]) if (keep[k] === undefined) delete process.env[k]; else process.env[k] = keep[k];
+  }
 });
