@@ -367,7 +367,7 @@ function Index({ current }: { current: string | null }) {
 }
 
 export function Sidebar({ open }: { open: boolean }) {
-  const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts).length);
+  const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts && !e.read_ts).length);
   const connected = useStore((s) => s.connected);
   const route = useUI((s) => s.route);
   const theme = useUI((s) => s.theme);
@@ -446,7 +446,7 @@ export function Sidebar({ open }: { open: boolean }) {
         <button type="button" className="k-act" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
           <Settings /><span className="k-act-label">Settings</span>
         </button>
-        <button type="button" className={cn("k-act", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={errors ? `${errors} open failures` : "Errors"} title={errors ? `${errors} open failures` : "No failures recorded"} onClick={() => setUI({ errors: true })}>
+        <button type="button" className={cn("k-act", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={errors ? `${errors} unread failures` : "Errors"} title={errors ? `${errors} unread failures` : "No unread failures"} onClick={() => setUI({ errors: true })}>
           <Bug />{errors > 0 && <span className="k-act-n">{errors}</span>}
         </button>
         <AutomationFooter />

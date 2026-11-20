@@ -187,6 +187,8 @@ export type ErrorRecord = {
   // The exact model request (trace span) the last occurrence failed in.
   span_id?: string;
   resolved_ts?: number;
+  // Set when the owner marked it read: it no longer counts in the badge. A new occurrence clears it.
+  read_ts?: number;
   source: "server" | "client" | "provider" | "tool";
   message: string;
   stack?: string;

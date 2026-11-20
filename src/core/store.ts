@@ -101,7 +101,7 @@ function errorRow(r: any): ErrorRecord {
   return {
     id: r.id, ts: r.ts, first_ts: r.first_ts ?? r.ts, count: r.count ?? 1, source: r.source, message: r.message,
     stack: r.stack ?? undefined, context: r.context ? JSON.parse(r.context) : undefined,
-    session_id: r.session_id ?? undefined, turn_event: r.turn_event ?? undefined, span_id: r.span_id ?? undefined, resolved_ts: r.resolved_ts ?? undefined,
+    session_id: r.session_id ?? undefined, turn_event: r.turn_event ?? undefined, span_id: r.span_id ?? undefined, resolved_ts: r.resolved_ts ?? undefined, read_ts: r.read_ts ?? undefined,
   };
 }
 
@@ -141,7 +141,7 @@ export class Store {
     // Bumped by every change of the session row: a reply that carries an older
     // revision than what a page holds does not undo the newer change.
     if (!this.columnExists("sessions", "rev")) this.db.exec("ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
-    for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"], ["span_id", "TEXT"]] as const) {
+    for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"], ["span_id", "TEXT"], ["read_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS errors_fp ON errors(fingerprint)");
@@ -374,7 +374,7 @@ export class Store {
 
   // One row per kind of failure: the same source and message (numbers and ids
   // folded) bumps the row's count and time instead of adding one. A resolved
-  // row that happens again opens again.
+  // or read row that happens again opens again, unread.
   recordError(raw: Omit<ErrorRecord, "id" | "ts">): ErrorRecord {
     const ts = Date.now();
     // Kept like events: a secret in a failure's text is its placeholder.
@@ -390,7 +390,7 @@ export class Store {
     const row = this.db.query<{ id: string }, [string]>("SELECT id FROM errors WHERE fingerprint = ?").get(fp);
     if (row) {
       this.db
-        .query("UPDATE errors SET ts = ?, count = count + 1, message = ?, stack = ?, context = ?, session_id = COALESCE(?, session_id), turn_event = CASE WHEN ? IS NULL THEN turn_event ELSE ? END, span_id = ?, resolved_ts = NULL WHERE id = ?")
+        .query("UPDATE errors SET ts = ?, count = count + 1, message = ?, stack = ?, context = ?, session_id = COALESCE(?, session_id), turn_event = CASE WHEN ? IS NULL THEN turn_event ELSE ? END, span_id = ?, resolved_ts = NULL, read_ts = NULL WHERE id = ?")
         .run(ts, e.message, e.stack ?? null, ctx, sid, sid, turn?.id ?? null, e.span_id ?? null, row.id);
       return this.error(row.id)!;
     }
@@ -406,9 +406,19 @@ export class Store {
     return r ? errorRow(r) : undefined;
   }
 
-  errors(limit = 200, opts: { resolved?: boolean } = {}): ErrorRecord[] {
-    const where = opts.resolved === undefined ? "" : opts.resolved ? "WHERE resolved_ts IS NOT NULL" : "WHERE resolved_ts IS NULL";
+  errors(limit = 200, opts: { resolved?: boolean; read?: boolean } = {}): ErrorRecord[] {
+    const conds = [
+      opts.resolved === undefined ? "" : opts.resolved ? "resolved_ts IS NOT NULL" : "resolved_ts IS NULL",
+      opts.read === undefined ? "" : opts.read ? "read_ts IS NOT NULL" : "read_ts IS NULL",
+    ].filter(Boolean);
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     return this.db.query<any, [number]>(`SELECT * FROM errors ${where} ORDER BY ts DESC LIMIT ?`).all(limit).map(errorRow);
+  }
+
+  // Seen by the owner: out of the counts, still on the list. Happening again makes it unread.
+  readError(id: string, read: boolean): ErrorRecord | undefined {
+    this.db.query("UPDATE errors SET read_ts = ? WHERE id = ?").run(read ? Date.now() : null, id);
+    return this.error(id);
   }
 
   resolveError(id: string, resolved: boolean): ErrorRecord | undefined {

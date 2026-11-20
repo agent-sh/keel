@@ -5,7 +5,9 @@ import { HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: the error tracker folds a failure that repeats into one row with a
 // count, links it to the session it happened in, and a resolved kind leaves
-// the Open list (and comes back if it happens again).
+// the Open list (and comes back if it happens again). A kind marked read
+// stays on the list but leaves the badge, across a reload; happening again
+// makes it unread.
 test("errors fold, link to their session and resolve", async ({ page, request }) => {
   const s = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Error tracker check" } })).json()).session;
   const tag = `e2e failure ${Date.now().toString(36)}`;
@@ -24,6 +26,31 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await expect(row.getByTestId("error-session")).toContainText("Last in Error tracker check");
   await shoot(page, "errors-01-open");
 
+  // Mark read: out of the badge, still listed, hidden by Unread only; kept by the daemon.
+  const badge = async () => Number((await page.getByTestId("errors-button").getAttribute("aria-label"))?.match(/^(\d+) unread/)?.[1] ?? 0);
+  const before = await badge();
+  await row.getByTestId("error-read").click();
+  await expect(row).toHaveAttribute("data-read", "1");
+  await expect.poll(badge).toBe(before - 1);
+  await panel.getByTestId("errors-unread-only").check();
+  await expect(panel.getByTestId("error-row").filter({ hasText: tag })).toHaveCount(0);
+  await panel.getByTestId("errors-unread-only").uncheck();
+  await page.reload();
+  await page.getByTestId("errors-button").click();
+  await expect(row).toHaveAttribute("data-read", "1");
+  await expect.poll(badge).toBe(before - 1);
+  await shoot(page, "errors-01b-read");
+  // It happens again: unread, in the badge again.
+  await request.post("/api/errors", { data: { message: `${tag}: request 4 timed out after 400 ms`, context: { url: `/s/${s.id}` } } });
+  await expect(row).not.toHaveAttribute("data-read", "1");
+  await expect(row.getByTestId("error-count")).toHaveText("4x");
+  await expect.poll(badge).toBe(before);
+  // Mark all read clears the badge.
+  await panel.getByTestId("errors-read-all").click();
+  await expect.poll(badge).toBe(0);
+  await expect(row).toHaveAttribute("data-read", "1");
+  await row.locator("summary").click();
+
   await row.getByTestId("error-resolve").click();
   await expect(panel.getByTestId("error-row").filter({ hasText: tag })).toHaveCount(0);
   await panel.getByRole("tab", { name: /Resolved/ }).click();
@@ -34,7 +61,7 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await request.post("/api/errors", { data: { message: `${tag}: request 9 timed out after 900 ms`, context: { url: `/s/${s.id}` } } });
   await panel.getByRole("tab", { name: /Open/ }).click();
   const again = panel.getByTestId("error-row").filter({ hasText: tag });
-  await expect(again.getByTestId("error-count")).toHaveText("4x");
+  await expect(again.getByTestId("error-count")).toHaveText("5x");
 
   await again.locator("summary").click();
   await again.getByTestId("error-session").click();
@@ -44,9 +71,9 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   // stays open and is named.
   const id = (await (await request.get("/api/errors?resolved=0")).json()).errors.find((e: any) => e.message.startsWith(tag)).id;
   await request.post("/api/errors", { data: { message: `${tag}: request 10 timed out after 1000 ms`, context: { url: `/s/${s.id}` } } });
-  const stale = await (await request.post("/api/errors/resolve-all", { data: { seen: [{ id, count: 4 }] } })).json();
+  const stale = await (await request.post("/api/errors/resolve-all", { data: { seen: [{ id, count: 5 }] } })).json();
   expect(stale).toEqual({ resolved: 0, changed: [id] });
-  expect((await (await request.post("/api/errors/resolve-all", { data: { seen: [{ id, count: 5 }] } })).json()).resolved).toBe(1);
+  expect((await (await request.post("/api/errors/resolve-all", { data: { seen: [{ id, count: 6 }] } })).json()).resolved).toBe(1);
   await request.delete(`/api/sessions/${s.id}`);
 });
 

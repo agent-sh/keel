@@ -1,50 +1,56 @@
-// The error tracker's routes: the list (open or resolved), a browser error
-// posted by the page, and marking one kind of failure fixed.
+// The error tracker's routes: the list (open or resolved, read or unread), a
+// browser error posted by the page, and marking one kind of failure fixed or read.
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
-export const errorRoutes: RouteModule = ({ store, errors, bus }) => ({
-  "/api/errors": {
-    GET: (req: Request) => {
-      const r = new URL(req.url).searchParams.get("resolved");
-      return json({ errors: store.errors(200, r === null ? {} : { resolved: r === "1" }) });
+export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
+  const allSeen = async (req: Request, what: "resolve" | "read") => {
+    const b = (await req.json().catch(() => null)) as { seen?: { id: string; count: number }[] } | null;
+    const open = store.errors(5000, what === "resolve" ? { resolved: false } : { resolved: false, read: false });
+    const seen = Array.isArray(b?.seen) ? new Map(b.seen.map((x) => [String(x.id), Number(x.count)])) : undefined;
+    const changed: string[] = [];
+    let n = 0;
+    for (const e of open) {
+      if (seen && !seen.has(e.id)) continue;
+      if (seen && seen.get(e.id) !== (e.count ?? 1)) { changed.push(e.id); continue; }
+      bus.emit({ t: "error", error: (what === "resolve" ? store.resolveError(e.id, true) : store.readError(e.id, true))! });
+      n++;
+    }
+    return json({ [what === "resolve" ? "resolved" : "read"]: n, changed });
+  };
+  return {
+    "/api/errors": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const flag = (k: string) => (q.get(k) === null ? undefined : q.get(k) === "1");
+        return json({ errors: store.errors(200, { resolved: flag("resolved"), read: flag("read") }) });
+      },
+      POST: async (req: Request) => {
+        const b = (await req.json().catch(() => ({}))) as any;
+        const err = Object.assign(new Error(String(b.message ?? "client error").slice(0, 2000)), { stack: b.stack });
+        const rec = errors.capture("client", err, b.context);
+        return json({ ok: true, id: rec.id }, 201);
+      },
     },
-    POST: async (req: Request) => {
-      const b = (await req.json().catch(() => ({}))) as any;
-      const err = Object.assign(new Error(String(b.message ?? "client error").slice(0, 2000)), { stack: b.stack });
-      const rec = errors.capture("client", err, b.context);
-      return json({ ok: true, id: rec.id }, 201);
+    // { resolved?: boolean, read?: boolean }
+    "/api/errors/:id": {
+      PATCH: async (req: Request & { params: { id: string } }) => {
+        const b = (await req.json().catch(() => null)) as { resolved?: unknown; read?: unknown } | null;
+        const ok = (v: unknown) => v === undefined || typeof v === "boolean";
+        if (!b || (b.resolved === undefined && b.read === undefined) || !ok(b.resolved) || !ok(b.read)) return json({ error: "resolved or read must be true or false" }, 400);
+        if (!store.error(req.params.id)) return json({ error: "no such error" }, 404);
+        if (typeof b.resolved === "boolean") store.resolveError(req.params.id, b.resolved);
+        const rec = typeof b.read === "boolean" ? store.readError(req.params.id, b.read)! : store.error(req.params.id)!;
+        bus.emit({ t: "error", error: rec });
+        return json({ record: rec });
+      },
     },
-  },
-  // { resolved: boolean }
-  "/api/errors/:id": {
-    PATCH: async (req: Request & { params: { id: string } }) => {
-      const b = (await req.json().catch(() => null)) as { resolved?: unknown } | null;
-      if (!b || typeof b.resolved !== "boolean") return json({ error: "resolved must be true or false" }, 400);
-      const rec = store.resolveError(req.params.id, b.resolved);
-      if (!rec) return json({ error: "no such error" }, 404);
-      bus.emit({ t: "error", error: rec });
-      return json({ record: rec });
-    },
-  },
-  // { seen: [{ id, count }] }: resolve the kinds the owner saw, as they were
-  // seen. A kind that happened again since (its count moved) stays open and
-  // is named in `changed`. With no body every open kind is resolved.
-  "/api/errors/resolve-all": {
-    POST: async (req: Request) => {
-      const b = (await req.json().catch(() => null)) as { seen?: { id: string; count: number }[] } | null;
-      const open = store.errors(5000, { resolved: false });
-      const seen = Array.isArray(b?.seen) ? new Map(b.seen.map((x) => [String(x.id), Number(x.count)])) : undefined;
-      const changed: string[] = [];
-      let resolved = 0;
-      for (const e of open) {
-        if (seen && !seen.has(e.id)) continue;
-        if (seen && seen.get(e.id) !== (e.count ?? 1)) { changed.push(e.id); continue; }
-        bus.emit({ t: "error", error: store.resolveError(e.id, true)! });
-        resolved++;
-      }
-      return json({ resolved, changed });
-    },
-  },
-});
+    // { seen: [{ id, count }] }: resolve (or mark read) the kinds the owner saw,
+    // as they were seen. A kind that happened again since (its count moved)
+    // stays as it was and is named in `changed`. With no body every open
+    // (unread) kind is changed.
+    "/api/errors/resolve-all": { POST: (req: Request) => allSeen(req, "resolve") },
+    "/api/errors/read-all": { POST: (req: Request) => allSeen(req, "read") },
+  };
+};

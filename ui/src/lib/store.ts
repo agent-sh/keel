@@ -200,6 +200,10 @@ export const actions = {
     set({ errors: r.errors });
   },
   resolveError: (id: string, resolved: boolean) => api(`/api/errors/${id}`, { method: "PATCH", body: JSON.stringify({ resolved }) }),
+  readError: (id: string, read: boolean) => api(`/api/errors/${id}`, { method: "PATCH", body: JSON.stringify({ read }) }),
+  // As resolve-all: one that happened again since it was shown stays unread.
+  readAllErrors: (seen: { id: string; count?: number }[]) =>
+    api<{ read: number; changed: string[] }>("/api/errors/read-all", { method: "POST", body: JSON.stringify({ seen: seen.map((e) => ({ id: e.id, count: e.count ?? 1 })) }) }),
   // Only the kinds on screen, at the counts shown: one that happened again stays open.
   resolveAllErrors: (seen: { id: string; count?: number }[]) =>
     api<{ resolved: number; changed: string[] }>("/api/errors/resolve-all", { method: "POST", body: JSON.stringify({ seen: seen.map((e) => ({ id: e.id, count: e.count ?? 1 })) }) }),
