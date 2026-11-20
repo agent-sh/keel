@@ -208,8 +208,10 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
         // one Keel turn. Give each visible prompt its own boundary. Hidden
         // harness inputs still carry their original model-side boundaries.
         finish(prev);
-        begin(e);
       }
+      // A hidden continuation still starts the model's turn. Starting at its
+      // reply instead would split the input from the restored model settings.
+      if (!turnId) begin(e);
       line(e.ts, "response_item", { type: "message", role: "user", content: [...images.map((image_url) => ({ type: "input_image", image_url })), ...(text ? [{ type: "input_text", text }] : [])] });
       if (visible) display(e.ts, "user_message", { message: text, images: images.length ? images : undefined });
     } else if (e.kind === "compaction" && e.data.summary) {
@@ -222,7 +224,6 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
     else if (e.kind === "note" && e.data.model) line(e.ts, "response_item", { type: "message", role: "user", content: [{ type: "input_text", text: `${NOTE_OPEN}\n${e.data.text}\n${NOTE_CLOSE}` }] });
     else if (e.kind === "assistant") {
       const blocks = e.data.blocks ?? [];
-      if (!turnId && blocks.some((b: any) => b.type === "text" && b.text)) begin(e);
       // Who answered: Codex reads the model of each turn from its turn context.
       if (e.data.model && e.data.model !== model) {
         model = e.data.model;

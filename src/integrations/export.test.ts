@@ -92,10 +92,13 @@ test("Codex resume adds display events without changing model history or Keel re
   const next = ev("user", { text: "", images: [image] });
   const partial = ev("assistant", { blocks: [{ type: "text", text: "Checking" }] });
   const abort = ev("turn_end", { reason: "interrupted" });
+  const continuation = ev("user", { text: "Continue interrupted work", origin: "harness" });
+  const resumed = ev("assistant", { blocks: [{ type: "text", text: "Resumed" }], model: "p:beta" });
+  const resumedEnd = ev("turn_end", { reason: "end_turn" });
   const start = ev("turn_start", {}, prompt.ts);
   const end = ev("turn_end", { reason: "end_turn" }, answer.ts);
   const evs = [
-    summary, prompt, start, steer, ...delivered, note, answer, end, next, partial, abort,
+    summary, prompt, start, steer, ...delivered, note, answer, end, next, partial, abort, continuation, resumed, resumedEnd,
   ];
   const stamp = (e: StoredEvent) => new Date(e.ts).toISOString();
   const wire = (e: StoredEvent, type: string, payload: object) => ({ timestamp: stamp(e), type, payload });
@@ -111,8 +114,11 @@ test("Codex resume adds display events without changing model history or Keel re
     message(answer, "assistant", { type: "output_text", text: "All good" }),
     message(next, "user", { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo" }),
     message(partial, "assistant", { type: "output_text", text: "Checking" }),
+    message(continuation, "user", { type: "input_text", text: "Continue interrupted work" }),
+    wire(resumed, "turn_context", { cwd: s.workspace, approval_policy: "on-request", sandbox_policy: { type: "workspace-write" }, model: "beta", summary: "auto" }),
+    message(resumed, "assistant", { type: "output_text", text: "Resumed" }),
   ];
-  const before = toJsonl([...modelHistory, wire(abort, "event_msg", { type: "turn_aborted", reason: "interrupted" })]);
+  const before = toJsonl([...modelHistory.slice(0, -3), wire(abort, "event_msg", { type: "turn_aborted", reason: "interrupted" }), ...modelHistory.slice(-3)]);
   const after = toCodexRollout(s, evs, "x", 0);
   const rows = after.trimEnd().split("\n").map((json) => ({ json, row: JSON.parse(json) }));
   expect(rows.filter(({ row }) => row.type !== "event_msg").map(({ json }) => json + "\n").join("")).toBe(toJsonl(modelHistory));
@@ -131,7 +137,14 @@ test("Codex resume adds display events without changing model history or Keel re
     { type: "user_message", message: "", images: ["data:image/png;base64,iVBORw0KGgo"] },
     { type: "agent_message", message: "Checking" },
     { type: "turn_aborted", turn_id: next.id, reason: "interrupted" },
+    { type: "task_started", turn_id: continuation.id },
+    { type: "agent_message", message: "Resumed" },
+    { type: "task_complete", turn_id: continuation.id },
   ]);
+  // Codex scans backward. Keep the hidden input and model setting between
+  // the same turn markers without displaying the input as an owner prompt.
+  const hiddenStart = rows.findIndex(({ row }) => row.payload.type === "task_started" && row.payload.turn_id === continuation.id);
+  expect(rows.slice(hiddenStart + 1, hiddenStart + 3).map(({ row }) => row)).toEqual(modelHistory.slice(-3, -1));
   const dir = mkdtempSync(join(process.env.TMPDIR ?? "", "keel-export-"));
   try {
     const oldPath = join(dir, "before.jsonl"), newPath = join(dir, "after.jsonl");
@@ -139,7 +152,7 @@ test("Codex resume adds display events without changing model history or Keel re
     writeFileSync(newPath, after);
     const old = await readCodex(oldPath), updated = await readCodex(newPath);
     expect(updated.events).toEqual(old.events);
-    expect(updated.events.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["What changed?", "Include the result", ...delivered.map((e) => e.data.text), ""]);
+    expect(updated.events.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["What changed?", "Include the result", ...delivered.map((e) => e.data.text), "", "Continue interrupted work"]);
     expect(updated.events.filter((e) => e.kind === "note").map((e) => e.data.text)).toEqual(["Earlier context", "Model only"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
