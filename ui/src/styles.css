@@ -159,7 +159,7 @@
   --shadow-3: var(--shadow-3);
   --shadow-soft: var(--shadow-2);
 
-  /* Type scale, in rem: a 14 px interface and a 17 px reading size at the default text size. */
+  /* Type scale, in rem: a 15 px interface, 16 px body and an 18 px reading size at the default text size. */
   --text-micro: 0.75rem;
   --text-micro--line-height: 1.35;
   --text-caption: 0.8125rem;
@@ -216,7 +216,8 @@
 html, body, #root { height: 100%; }
 /* Every length in the interface is a rem: the text size the owner picks
    (Settings, Ctrl + and Ctrl -) scales type, spacing and controls together. */
-html { -webkit-text-size-adjust: 100%; font-size: calc(16px * var(--ui-scale, 1)); }
+/* The default text size: a 17 px root (16 px body text); the owner's size scales it. */
+html { -webkit-text-size-adjust: 100%; font-size: calc(17px * var(--ui-scale, 1)); }
 /* No color transitions while the theme flips: everything changes in one frame. */
 .theme-switch, .theme-switch * { transition: none !important; }
 body {

@@ -66,8 +66,8 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await expect(pane(1)).toContainText("the next session opens here");
 
   // Type is larger by default: what is read and what is glanced at.
-  expect(await rootPx()).toBe(16);
-  expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBeGreaterThanOrEqual(17);
+  expect(await rootPx()).toBe(17);
+  expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBeGreaterThanOrEqual(18);
   expect(await fontPx('[data-testid="session-row"] .k-row-title')).toBeGreaterThanOrEqual(14);
   expect(await fontPx('[data-testid="composer"]')).toBeGreaterThanOrEqual(15);
 
@@ -169,11 +169,11 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   // Text size: Ctrl + steps the whole interface up, and it is remembered.
   const read0 = await fontPx('[data-testid="transcript"] .prose-keel');
   await page.keyboard.press("Control+=");
-  expect(await rootPx()).toBeCloseTo(17.6, 1);
+  expect(await rootPx()).toBeCloseTo(18.7, 1);
   expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBeCloseTo(read0 * 1.1, 1);
   expect(await stored("keel.textScale")).toBe(1.1);
   await page.reload();
-  expect(await rootPx()).toBeCloseTo(17.6, 1);
+  expect(await rootPx()).toBeCloseTo(18.7, 1);
   await expect(panes).toHaveCount(2);
   await fits();
   // Settings has the same control.
@@ -182,7 +182,7 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await expect(sizes.getByRole("radio", { checked: true })).toHaveAttribute("data-testid", "text-size-110");
   await shoot(page, "layout-06-settings-text-size");
   await page.getByTestId("text-size-135").click();
-  expect(await rootPx()).toBeCloseTo(21.6, 1);
+  expect(await rootPx()).toBeCloseTo(22.95, 1);
   await expect(sizes.getByRole("radio", { checked: true })).toHaveAttribute("data-testid", "text-size-135");
   // At the larger sizes two panes still stand side by side, nothing clipped.
   await page.goto(`/s/${long}`);
@@ -191,14 +191,14 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await fits();
   await shoot(page, "layout-07-text-135");
   await page.keyboard.press("Control+-");
-  expect(await rootPx()).toBeCloseTo(19.2, 1);
+  expect(await rootPx()).toBeCloseTo(20.4, 1);
   await fits();
   await shoot(page, "layout-08-text-120");
   await page.keyboard.press("Control+0");
-  expect(await rootPx()).toBe(16);
+  expect(await rootPx()).toBe(17);
   expect(await stored("keel.textScale")).toBe(1);
   await page.keyboard.press("Control+-");
-  expect(await rootPx()).toBeCloseTo(14.4, 1);
+  expect(await rootPx()).toBeCloseTo(15.3, 1);
   await fits();
   await page.keyboard.press("Control+0");
 

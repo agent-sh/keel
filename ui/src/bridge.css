@@ -183,7 +183,7 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 
 /* ---------- Stations ---------- */
 .k-stations { flex: 1; min-width: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; }
-.k-station { position: relative; flex: 1 1 0; min-width: 27.5rem; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
+.k-station { position: relative; flex: 1 1 0; min-width: 26rem; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
 .k-station[data-helm] { background: var(--raised); }
 .k-station:has(+ .k-grip) { border-right: 0; }
 /* A header is the pane's handle: drag it onto another pane to trade places. */

@@ -8,9 +8,11 @@ import { useEffect, useState } from "react";
 import { getStations, MAX_PANES, useStations } from "./stations.ts";
 import { getUI, savePref, setUI, useUI } from "./ui.ts";
 
-const rem = (n: number) => n * getUI().scale;
+// A length given in px at a 16 px root, at the root's size now (the default
+// size and the owner's text size are the stylesheet's: styles.css sets the root).
+const rem = (n: number) => (n * parseFloat(getComputedStyle(document.documentElement).fontSize)) / 16 || n * getUI().scale;
 export const railWidth = () => rem(64); // the marks
-export const paneMin = () => rem(440); // matches .k-station's min-width
+export const paneMin = () => rem(416); // matches .k-station's min-width (26rem)
 const LIST = 300, LIST_MIN = 232, LIST_MAX = 560;
 export const listBounds = () => ({ min: rem(LIST_MIN), max: Math.max(rem(LIST_MIN), Math.min(rem(LIST_MAX), innerWidth - paneMin())), base: rem(LIST) });
 // The list's width: the dragged one within what fits, else the default.
