@@ -2,9 +2,10 @@
 // directory that follows `cd` (inside the workspace only), merged
 // stdout/stderr, and the move to the background when a foreground command
 // outlives its timeout instead of killing it.
-import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { startJob, stopJob, takeUnread, waitJob, type Job } from "./jobs.ts";
+import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { contains } from "../core/paths.ts";
@@ -16,9 +17,27 @@ const real = (p: string) => { try { return realpathSync(p); } catch { return p; 
 export const shellCwd = (ctx: ToolContext) => cwds.get(ctx.sessionId) ?? ctx.cwd;
 export const logDir = (ctx: ToolContext) => join(ctx.spillDir, "jobs");
 
+// Why no command can start in `dir`, or nothing when one can. A spawn into a
+// folder that is not there fails as ENOENT of the program it was to start
+// (`posix_spawn 'systemd-run'`), which a model reads as a missing sandbox and
+// answers by asking to run unconfined. This names the folder and the places
+// near it instead. A folder the shell had moved into and that was removed
+// since is left: the next command starts in the session's folder.
+export function goneCwd(ctx: ToolContext, dir: string): string | undefined {
+  let why: string;
+  try {
+    if (statSync(dir).isDirectory()) return;
+    why = `Not a directory: ${dir}`;
+  } catch { why = notFound(dir, ctx.cwd, "Directory"); }
+  const out = ["Nothing ran: the command's working directory is not there.", why];
+  if (cwds.get(ctx.sessionId) === dir) { cwds.delete(ctx.sessionId); out.push(`Shell cwd was reset to ${ctx.cwd}`); }
+  return out.join("\n\n");
+}
+
 export type ShellRun =
   | { state: "done"; output: string; exitCode: number | null; signal?: string | null; cwdNote?: string; job: Job }
-  | { state: "running"; job: Job; output: string };
+  | { state: "running"; job: Job; output: string }
+  | { state: "refused"; error: string };   // nothing started (see goneCwd)
 
 export type ShellOpts = {
   command: string;
@@ -33,6 +52,8 @@ export type ShellOpts = {
 export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun> {
   const track = !o.cwd;
   const cwd = o.cwd ?? shellCwd(ctx);
+  const gone = goneCwd(ctx, cwd);
+  if (gone) return { state: "refused", error: gone };
   const dir = logDir(ctx);
   const cwdFile = join(dir, `cwd-${ctx.callId ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
   // The command is handed to bash as written; the trap records where it ended.

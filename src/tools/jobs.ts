@@ -123,6 +123,10 @@ export type StartOpts = {
 };
 
 export function startJob(o: StartOpts): Job {
+  // Bun reports a working directory that is not there as ENOENT of the
+  // program it was to start: the folder is named here instead (the shell
+  // tools check first and answer the model, see goneCwd).
+  if (!statSync(o.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`The working directory ${o.cwd} does not exist: nothing ran.`);
   mkdirSync(o.logDir, { recursive: true });
   const num = ++counter;
   const id = `b${num.toString(36)}${Math.random().toString(36).slice(2, 6)}`;

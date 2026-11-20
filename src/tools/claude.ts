@@ -41,6 +41,7 @@ const Bash: Tool = {
     const r = await runShell(ctx, {
       command, description: input.description, timeoutMs: timeout, background: !!input.run_in_background, onTimeout: "background",
     });
+    if (r.state === "refused") return fail(r.error);
     if (r.state === "running") {
       const moved = !input.run_in_background;
       const head = moved

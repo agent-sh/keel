@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, startJob, takeUnread, toolEnv, waitJob, writeJob, type Job } from "./jobs.ts";
-import { logDir, shellCwd } from "./shell.ts";
+import { goneCwd, logDir, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
 import { applyPatch, extractShellApplyPatch } from "./v4a.ts";
@@ -70,6 +70,8 @@ const exec_command: Tool = {
     const cmd = String(input.cmd ?? "");
     if (!cmd.trim()) return fail("exec_command failed: cmd is empty");
     const cwd = input.workdir ? resolve(shellCwd(ctx), input.workdir) : shellCwd(ctx);
+    const gone = goneCwd(ctx, cwd);
+    if (gone) return fail(`exec_command failed: ${gone}`);
     // Models trained on Codex often send apply_patch through the shell.
     const sp = extractShellApplyPatch(cmd);
     if (sp) return runPatch(sp.patch, sp.cd ? resolve(cwd, sp.cd) : cwd, ctx);

@@ -36,6 +36,7 @@ const run_shell_command: Tool = {
       command: String(input.command ?? ""), description: input.description, cwd: input.dir_path ? abs(input.dir_path, ctx) : undefined,
       timeoutMs: delay || 300_000, background: !!input.is_background && !delay, onTimeout: "background",
     });
+    if (r.state === "refused") return fail(r.error);
     if (r.state === "running") {
       return ok(`Command moved to the background.\nBackground PIDs: ${r.job.pid}\nOutput file: ${r.job.log}${r.output.trim() ? `\nOutput so far: ${headTail(r.output, 2000)}` : ""}`);
     }
