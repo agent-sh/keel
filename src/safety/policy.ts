@@ -1,14 +1,16 @@
 // The permission decision for one tool call, from the session's mode and the
 // standing answers that apply. Pure: the gate supplies the facts.
+import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { highRisk, isReadOnly, matchRule, splitCommand, suggestRule } from "./shell.ts";
+import { neverAllowed, neverAllowedText } from "./autonomy.ts";
+import { isReadOnly, matchRule, risksOf, splitCommand, suggestRule } from "./shell.ts";
 import { contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
 
 export const MODES = [
   { id: "ask", name: "Ask", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
   { id: "auto-edits", name: "Auto edits", description: "Edits inside the workspace run. Commands ask, except read-only ones and sandboxed ones." },
-  { id: "full-auto", name: "Full auto", description: "Everything runs. Only high-risk commands still ask." },
+  { id: "full-auto", name: "Full auto", description: "Everything runs and nothing waits for you. A high-risk call (a force push, a remote branch delete, a hard reset, sudo, a wide delete) goes to the judge model: what it allows runs, what it refuses comes back to the model with the reason and is listed for you to let one retry through. Destroying home or system data and sending credentials out are always refused." },
   { id: "read-only", name: "Read only", description: "Reads and read-only commands run. Everything else is refused." },
   { id: "plan", name: "Plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
   { id: "reviewer", name: "Reviewer", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
@@ -33,7 +35,7 @@ export type Suggest = { kind: RuleKind; pattern: string; bind?: string };
 
 export type CallClass =
   | { kind: "read" }
-  | { kind: "shell"; command: string; escalate?: boolean }
+  | { kind: "shell"; command: string; escalate?: boolean; cwd?: string }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
   | { kind: "edit"; paths: string[] }
   // `grant` names the standing answer that covers it when the tool's name is
@@ -64,7 +66,7 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       if (cmd === null) return { kind: "other" }; // a monitor of a socket: judged by the tool's name
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
       const escalate = !!tool.input_schema?.properties?.sandbox_permissions && input?.sandbox_permissions === "require_escalated";
-      return { kind: "shell", command: cmd, escalate: escalate || undefined };
+      return { kind: "shell", command: cmd, escalate: escalate || undefined, cwd };
     }
     case "edit": {
       const paths: string[] = [];
@@ -93,7 +95,7 @@ function shellText(input: any): string | null {
 export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
 
 // `scratch`: folders of the harness's own the session writes in like its workspace (its artifacts folder).
-export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[] };
+export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string };
 
 export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read" || c.kind === "control") return { allow: true };
@@ -106,11 +108,11 @@ export function decide(c: CallClass, f: Facts): Decision {
     // Leaving the owner's sandbox is the owner's call in every mode, one call at a time.
     if (c.escalate && f.sandboxed) {
       if (f.mode === "read-only") return { deny: "This session is read-only: commands cannot leave the sandbox." };
-      const inner = decideShell(c.command, f);
+      const inner = decideShell(c.command, f, c.cwd);
       const why = ["the command asks to run outside the sandbox", "ask" in inner ? inner.ask.why : undefined].filter(Boolean).join("; and ");
       return { ask: { risk: "high", why, suggest: [] } };
     }
-    return decideShell(c.command, f);
+    return decideShell(c.command, f, c.cwd);
   }
   if (c.kind === "refused") return { deny: c.why };
   if (c.kind === "drive") return decideDrive(c, f);
@@ -138,17 +140,28 @@ export function decide(c: CallClass, f: Facts): Decision {
   return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
 }
 
-function decideShell(command: string, f: Facts): Decision {
+// Never allowed on its own: in the modes where nobody is asked (full auto,
+// reviewer) it is refused, whatever a judge would say; where the owner is
+// asked, it is the owner's call, one at a time.
+const never = (why: string, f: Facts): Decision =>
+  f.mode === "full-auto" || f.mode === "reviewer"
+    ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
+    : { ask: { risk: "high", why: `the command ${why}`, suggest: [] } };
+
+function decideShell(command: string, f: Facts, cwd = f.workspace): Decision {
   const parts = splitCommand(command);
+  const home = f.home ?? homedir();
+  const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
+  if (worst) return never(worst, f);
   if (!parts) {
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only and the command could not be parsed to check it." };
     return { ask: { risk: "high", why: "the command could not be parsed, so no rule can cover it", suggest: [] } };
   }
-  const risks = parts.map(highRisk).filter((r): r is string => !!r);
+  const risks = risksOf(parts);
   if (risks.length) {
     if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]}.` };
-    return { ask: { risk: "high", why: `the command ${[...new Set(risks)].join(" and ")}`, suggest: [] } };
+    return { ask: { risk: "high", why: `the command ${risks.join(" and ")}`, suggest: [] } };
   }
   if (f.mode === "full-auto") return { allow: true };
   const shellRules = f.rules.filter((r) => r.kind === "shell");

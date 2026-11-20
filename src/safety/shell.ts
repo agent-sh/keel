@@ -3,8 +3,9 @@
 // risk, and whether a stored rule covers each one. Pure functions.
 
 // One simple command: its words with quotes removed, and whether it writes
-// through a redirection.
-export type Simple = { words: string[]; text: string; redirects: boolean };
+// through a redirection. `nested`: it runs inside a substitution, a subshell
+// or a group, so a `cd` in it does not say where the commands after it run.
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true };
 
 const OPS = ["&&", "||", "|&", ";;", ";", "|", "&", "\n"];
 
@@ -17,6 +18,7 @@ export function splitCommand(cmd: string): Simple[] | null {
   let inWord = false;
   let text = "";
   let redirects = false;
+  let depth = 0;
   const flushWord = () => {
     if (inWord) words.push(word);
     word = "";
@@ -28,7 +30,7 @@ export function splitCommand(cmd: string): Simple[] | null {
     // `for x in ...` and `case ... in` headers run nothing themselves.
     if (/^(for|select|case)$/.test(words[0] ?? "")) words = [];
     while (words.length && /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/.test(words[0]!)) words.shift();
-    if (words.length) out.push({ words, text: text.trim(), redirects });
+    if (words.length) out.push({ words, text: text.trim(), redirects, ...(depth > 0 ? { nested: true as const } : {}) });
     words = [];
     text = "";
     redirects = false;
@@ -56,7 +58,7 @@ export function splitCommand(cmd: string): Simple[] | null {
           if (end < 0) return null;
           const sub = splitCommand(cmd.slice(j + 2, end));
           if (!sub) return null;
-          out.push(...sub);
+          out.push(...nestedIn(sub));
           inner += "$(...)"; j = end; continue;
         }
         if (cmd[j] === "`") {
@@ -64,7 +66,7 @@ export function splitCommand(cmd: string): Simple[] | null {
           if (end < 0) return null;
           const sub = splitCommand(cmd.slice(j + 1, end));
           if (!sub) return null;
-          out.push(...sub);
+          out.push(...nestedIn(sub));
           inner += "`...`"; j = end; continue;
         }
         inner += cmd[j];
@@ -78,7 +80,7 @@ export function splitCommand(cmd: string): Simple[] | null {
       if (end < 0) return null;
       const sub = splitCommand(cmd.slice(i + 2, end));
       if (!sub) return null;
-      out.push(...sub);
+      out.push(...nestedIn(sub));
       word += "$(...)"; inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
@@ -87,7 +89,7 @@ export function splitCommand(cmd: string): Simple[] | null {
       if (end < 0) return null;
       const sub = splitCommand(cmd.slice(i + 1, end));
       if (!sub) return null;
-      out.push(...sub);
+      out.push(...nestedIn(sub));
       word += "`...`"; inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
@@ -103,7 +105,7 @@ export function splitCommand(cmd: string): Simple[] | null {
       continue;
     }
     if (c === "(" || c === ")" || c === "{" || c === "}") {
-      if (!inWord) { flushCmd(); continue; }
+      if (!inWord) { flushCmd(); depth = Math.max(0, depth + (c === "(" || c === "{" ? 1 : -1)); continue; }
     }
     if (c === ">" || c === "<") {
       // A redirection: `>file`, `>> file`, `2>&1`, `&>file`, `<file`.
@@ -135,6 +137,8 @@ export function splitCommand(cmd: string): Simple[] | null {
   flushCmd();
   return out;
 }
+
+const nestedIn = (sub: Simple[]): Simple[] => sub.map((s) => ({ ...s, nested: true as const }));
 
 function matchParen(s: string, open: number): number {
   let depth = 0;
@@ -234,7 +238,7 @@ export function highRisk(s: Simple): string | null {
   }
   if (prog === "git") {
     const sub = args.find((a) => !a.startsWith("-"));
-    if (sub === "push" && args.some((a) => a === "--force" || a === "-f" || a.startsWith("--force") || a === "--mirror" || /^\+/.test(a) || a === "--delete" || a === "-d"))
+    if (sub === "push" && args.some((a) => a === "--force" || a === "-f" || a.startsWith("--force") || a === "--mirror" || /^\+/.test(a) || a === "--delete" || a === "-d" || /^:./.test(a)))
       return "rewrites or deletes history on a remote";
     if (sub === "reset" && args.includes("--hard")) return "discards uncommitted work";
     if (sub === "clean" && args.some((a) => /^-[a-zA-Z]*f/.test(a))) return "deletes untracked files";
@@ -242,12 +246,32 @@ export function highRisk(s: Simple): string | null {
     if (sub === "restore" && args.includes(".") && !args.includes("--staged")) return "discards uncommitted work";
   }
   if (/^mkfs/.test(prog) || prog === "wipefs" || prog === "fdisk" || prog === "parted") return "formats or repartitions a disk";
-  if (prog === "dd" && args.some((a) => /^of=\/dev\//.test(a))) return "writes a raw device";
+  if (prog === "dd" && args.some((a) => /^of=\/dev\/(?!(null|stdout|stderr)$)/.test(a))) return "writes a raw device";
   if ((prog === "chmod" || prog === "chown") && args.some((a) => /^-[a-zA-Z]*R/.test(a)) && args.some((a) => /^(\/|~|\$HOME)\/?$/.test(a))) return "changes ownership or modes of a whole tree";
   if (prog === "shutdown" || prog === "reboot" || prog === "poweroff" || prog === "halt") return "stops the machine";
-  if ((prog === "curl" || prog === "wget") && /\|\s*(ba|z)?sh\b/.test(s.text)) return "runs a downloaded script";
   return null;
 }
+
+const FETCHERS = new Set(["curl", "wget", "aria2c", "http", "xh"]);
+const RUNNERS = /^(sh|bash|zsh|dash|ksh|fish|python3?|perl|ruby|node|bun|deno)$/;
+
+// What makes the whole line high risk beyond its parts: a script fetched from
+// the network and run by a shell or interpreter that reads it from a pipe or
+// a substitution (curl URL | sh, bash <(curl URL), sh -c "$(curl URL)").
+export function lineRisk(parts: Simple[]): string | null {
+  const fetches = parts.some((p) => FETCHERS.has(body(p.words).words[0] ?? ""));
+  if (!fetches) return null;
+  const runs = parts.some((p) => {
+    const [prog, ...args] = body(p.words).words;
+    if (!prog || !RUNNERS.test(prog)) return false;
+    const operands = args.filter((a) => !a.startsWith("-") || a === "-");
+    return !operands.length || operands.includes("-") || args.includes("-s") || args.some((a) => a.includes("$(...)") || a.includes("`...`"));
+  });
+  return runs ? "runs a downloaded script" : null;
+}
+
+// Every reason the line is high risk: each part's, and the line's own.
+export const risksOf = (parts: Simple[]): string[] => [...new Set([...parts.map(highRisk), lineRisk(parts)].filter((r): r is string => !!r))];
 
 // A rule pattern in Claude Code's form: `git log *` matches `git log` and
 // anything after it; a pattern without `*` matches exactly. `*` elsewhere
