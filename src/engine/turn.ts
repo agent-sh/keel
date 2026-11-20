@@ -22,7 +22,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readMaterial, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -1062,7 +1062,7 @@ export class Engine {
         this.emitSession(id);
         const summary = res.summary;
         if (!summary) return;
-        const data = { mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...keptMessages(events, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...checkpointData(events, summary, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
       .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
@@ -1211,7 +1211,7 @@ export class Engine {
       }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...keptMessages(upto, this.wordsBudget(st, opts.next)), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...checkpointData(upto, summary, this.wordsBudget(st, opts.next)), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);

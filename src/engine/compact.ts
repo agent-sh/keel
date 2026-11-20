@@ -75,18 +75,167 @@ export function preparedHolds(lineage: StoredEvent[], covered: string, idle: boo
   return !idle || lineage.slice(at + 1).every((e) => e.kind === "note" || e.kind === "turn_start" || e.kind === "turn_end");
 }
 
+// A summary may shorten the conversation but never change what a statement
+// means. Rules, constraints, decisions and requests are quoted, not retold
+// (summaries drop how-to-work rules and scope exclusions far more often than
+// specs, more with each compaction: arXiv 2610.31778); only the story is in
+// the model's own words. The quotes are checked against the stored
+// conversation (settle()), and the statements of the last summary are carried
+// into the next one until the conversation lifts them.
+export const STATEMENTS_FORMAT = [
+  "Write it in two parts. Statements are quoted, never retold; only the story is in your own words.",
+  "## Statements",
+  "Every rule, constraint, decision and requirement that still stands, and every request not done yet: how to work, what not to do or touch, what to build, what was settled. One per line, as `- owner: \"...\"` for the owner's words or `- work: \"...\"` for a decision the work settled, quoted character for character from the conversation, in whole sentences. Never reword, soften, merge or cut one: what you cannot quote exactly, leave out. Keep every statement of an earlier summary unless it is lifted or done. Quote only the conversation: the system prompt and instruction files reach you unchanged after the compaction.",
+  "## Lifted",
+  "Each earlier statement that was lifted or replaced since, as `- \"<the statement>\" lifted by: \"<the exact words that lifted it>\"`. Leave the section empty when none was.",
+  "## Done",
+  "Each request of an earlier summary that is done now, as `- \"<the statement>\"`. Rules and constraints are never done; only lifted.",
+  "## Story",
+].join("\n");
+
 export function summaryPrompt(focus?: string): string {
   return [
     "[harness] The context is being compacted. Write a summary of the conversation so far that lets you continue the work without it: everything before this point will be replaced by your summary.",
-    "Use these sections:",
-    "1. Goal: what the owner asked for, every request, the current one last.",
-    "2. Decisions and constraints the owner set or the work settled.",
-    "3. Files and code: paths read or changed, what changed and why.",
-    "4. Commands and results that still matter (builds, tests, errors and their fixes).",
-    "5. State: where the work stands and the exact next step.",
+    STATEMENTS_FORMAT,
+    "In your own words, under these headings:",
+    "1. Goal: what the owner is after, and the current request.",
+    "2. Files and code: paths read or changed, what changed and why.",
+    "3. Commands and results that still matter (builds, tests, errors and their fixes).",
+    "4. State: where the work stands and the exact next step.",
     "Be specific: names, paths, numbers, error text. Do not call tools; reply with the summary only.",
     focus ? `\nKeep above all: ${focus}` : "",
   ].join("\n");
+}
+
+export type Statement = { by: "owner" | "work"; text: string };
+export type Settled = { summary: string; statements?: Statement[]; statements_dropped?: string[]; statements_lifted?: { text: string; by: string }[]; statements_done?: string[] };
+
+// Formatting the model may add or leave out around quoted words.
+const norm = (s: string) => s.replace(/[`*]/g, "").replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
+const sentences = (t: string) => t.split(/(?<=[.!?])\s+|\n+/).map((x) => x.replace(/^\s*(?:[-*>]|\d+[.)])\s+/, "").trim()).filter(Boolean);
+const words = (s: string) => new Set(norm(s).toLowerCase().match(/[\p{L}\p{N}_./-]{3,}/gu) ?? []);
+
+// Where a quote comes from, as whole sentences of the conversation: the
+// sentences of one message that hold it (a quote cut inside a sentence gets
+// its sentence back), else the one sentence that has nearly all of its words
+// and little else (the model retold it: the speaker's own words replace it).
+// null: nothing said it.
+export function sourceOf(quote: string, texts: string[]): string | null {
+  const q = norm(quote);
+  if (!q) return null;
+  for (const t of texts) {
+    if (!norm(t).includes(q)) continue;
+    const ss = sentences(t);
+    // The fewest sentences that hold it.
+    for (let n = 1; n <= ss.length; n++) {
+      for (let i = 0; i + n <= ss.length; i++) {
+        const run = ss.slice(i, i + n).join(" ");
+        if (norm(run).includes(q)) return run;
+      }
+      if (ss.slice(0, n).join(" ").length > q.length + 4_000) break;
+    }
+    return q; // the quote spans what the split cannot rejoin (a code block): its own words are the conversation's
+  }
+  const qw = words(quote);
+  if (qw.size < 3) return null;
+  let best: { s: string; score: number } | null = null;
+  for (const t of texts) {
+    for (const s of sentences(t)) {
+      const sw = words(s);
+      let both = 0;
+      for (const w of qw) if (sw.has(w)) both++;
+      const a = both / qw.size, b = both / Math.max(1, sw.size);
+      if (a >= 0.7 && b >= 0.5 && (!best || a + b > best.score)) best = { s, score: a + b };
+    }
+  }
+  return best?.s ?? null;
+}
+
+function section(text: string, name: string): string[] | null {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => new RegExp(`^#{1,4}\\s*(?:part \\d+[:.]?\\s*)?${name}\\b`, "i").test(l.trim()));
+  if (at < 0) return null;
+  const end = lines.findIndex((l, i) => i > at && /^#{1,4}\s/.test(l.trim()));
+  return lines.slice(at + 1, end < 0 ? undefined : end);
+}
+const quoted = (s: string) => {
+  const a = s.search(/["\u201c]/), b = Math.max(s.lastIndexOf('"'), s.lastIndexOf("\u201d"));
+  return a >= 0 && b > a ? s.slice(a + 1, b) : null;
+};
+
+// The summary as it is stored: the statements the model quoted, each checked
+// against the conversation (the owner's words for an owner statement, any
+// message for a decision of the work) and given back as its whole sentences;
+// the earlier summary's statements carried unless a quoted line lifted them;
+// a quote nothing in the conversation said, left out and counted (a summary
+// that retold a rule into something else must not stand as the rule); then
+// the story. A summary with no statements part (a handoff note) is kept as
+// written, the earlier statements before it.
+export function settle(lineage: StoredEvent[], text: string, prior: Statement[] = []): Settled {
+  const owner: string[] = [], all: string[] = [];
+  for (const e of lineage) {
+    if (whose(e) === "owner") { owner.push(String(e.data.text ?? "")); all.push(String(e.data.text ?? "")); }
+    else if (e.kind === "user" && e.data.text) all.push(String(e.data.text));
+    else if (e.kind === "assistant") for (const b of e.data.blocks ?? []) if (b.type === "text") all.push(b.text);
+  }
+  const lines = section(text, "Statements");
+  const lifting = section(text, "Lifted") ?? [];
+  const story = (section(text, "Story") ?? (lines ? [] : text.split("\n"))).join("\n").trim();
+  const said: Statement[] = [], dropped: string[] = [];
+  for (const l of lines ?? []) {
+    const m = l.match(/^\s*[-*]\s*(owner|work)\s*:\s*(.+)$/i);
+    const q = m ? quoted(m[2]!) : null;
+    // The harness's own request (its text, the owner's focus line) is not the conversation.
+    if (!m || q === null || /^\s*(\[harness\]|Keep above all:)/.test(q)) continue;
+    const mine = m[1]!.toLowerCase() === "owner" ? sourceOf(q, owner) : null;
+    const src = mine ?? sourceOf(q, all);
+    if (src === null) { dropped.push(q); continue; }
+    said.push({ by: mine !== null ? "owner" : "work", text: src });
+  }
+  // Lifted: an earlier statement named, and words of the conversation that lift it.
+  const lifted: { text: string; by: string }[] = [];
+  for (const l of lifting) {
+    const [what, why] = l.split(/lifted by\s*:/i);
+    const q = what ? quoted(what) : null, w = why ? quoted(why) : null;
+    if (q === null || w === null) continue;
+    const old = sourceOf(q, prior.map((p) => p.text));
+    const target = old === null ? undefined : prior.find((p) => norm(p.text).includes(norm(old)));
+    const by = target ? sourceOf(w, target.by === "owner" ? owner : all) : null;
+    if (target && by !== null) lifted.push({ text: target.text, by });
+  }
+  // Done: earlier requests the summary names as finished; they leave, counted.
+  const done: string[] = [];
+  for (const l of section(text, "Done") ?? []) {
+    const q = /^\s*[-*]/.test(l) ? quoted(l) : null;
+    const old = q === null ? null : sourceOf(q, prior.map((p) => p.text));
+    const target = old === null ? undefined : prior.find((p) => norm(p.text).includes(norm(old)));
+    if (target && !lifted.some((x) => x.text === target.text) && !done.includes(target.text)) done.push(target.text);
+  }
+  const gone = new Set([...lifted.map((l) => l.text), ...done]);
+  const out: Statement[] = [];
+  const same = (a: string, b: string) => norm(a) === norm(b) || norm(a).includes(norm(b)) || norm(b).includes(norm(a));
+  for (const s of [...prior.filter((p) => !gone.has(p.text)), ...said]) {
+    const k = out.findIndex((o) => same(o.text, s.text));
+    if (k < 0) out.push(s);
+    else if (s.text.length > out[k]!.text.length) out[k] = { ...out[k]!, text: s.text };
+  }
+  if (!out.length && !dropped.length && !lifted.length && !done.length) return { summary: lines ? story : text.trim() };
+  const q = (t: string) => `"${t}"`;
+  const head = [
+    "## Statements",
+    "The conversation's own words, carried through every compaction until lifted:",
+    ...out.map((s) => `- ${s.by}: ${q(s.text)}`),
+    ...(dropped.length ? ["", `(${dropped.length} statement${dropped.length > 1 ? "s" : ""} the summary did not quote word for word ${dropped.length > 1 ? "were" : "was"} left out; the stored history keeps the original words.)`] : []),
+    ...(done.length ? ["", `(${done.length} earlier request${done.length > 1 ? "s" : ""} the summary marked done ${done.length > 1 ? "were" : "was"} left out.)`] : []),
+    ...(lifted.length ? ["", "## Lifted", ...lifted.map((l) => `- ${q(l.text)} lifted by: ${q(l.by)}`)] : []),
+  ];
+  return {
+    summary: `${head.join("\n")}\n\n## Story\n${story}`,
+    statements: out,
+    ...(dropped.length ? { statements_dropped: dropped } : {}),
+    ...(lifted.length ? { statements_lifted: lifted } : {}),
+    ...(done.length ? { statements_done: done } : {}),
+  };
 }
 
 // Images and files of the owner's kept messages travel through a compaction
@@ -178,6 +327,17 @@ export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES)
     ...(other.kept.length ? { other_messages: other.kept.map((e) => e.text) } : {}),
     ...(other.shortened ? { other_messages_shortened: 1 } : {}),
   };
+}
+
+// What a summary checkpoint stores besides how it was made: the settled
+// summary and its statements, and the owner's newest words in what the
+// statements leave of the budget.
+export function checkpointData(lineage: StoredEvent[], summary: string, budget = OWNER_WORDS_BYTES) {
+  const cp = checkpointAt(lineage);
+  const prev = cp.at >= 0 && lineage[cp.at]!.data.mode === "summary" ? lineage[cp.at]!.data : undefined;
+  const settled = settle(lineage, summary, prev?.statements ?? []);
+  const said = (settled.statements ?? []).reduce((n, s) => n + utf8Bytes(s.text), 0);
+  return { ...settled, ...keptMessages(lineage, Math.max(0, budget - said)) };
 }
 
 // What a compaction at this point summarizes. A turn that has not had a reply

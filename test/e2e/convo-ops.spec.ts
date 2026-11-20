@@ -76,7 +76,9 @@ test("recap, summarize a part, skill mode, the model's context tools", async ({ 
   expect(JSON.parse(status.content).context_used_tokens).toBeGreaterThan(0);
   await send(`Call the keel__new_context tool with the handoff "Goal: reply with the word ${word}.", then do what the handoff says.`, 5);
   const fresh = (await events()).findLast((e) => e.kind === "compaction");
-  expect(fresh.data).toMatchObject({ trigger: "model", summary: `Goal: reply with the word ${word}.` });
+  // The handoff is the story; the statements of the summary before it carry on in front of it.
+  expect(fresh.data).toMatchObject({ trigger: "model" });
+  expect(fresh.data.summary.endsWith(`Goal: reply with the word ${word}.`)).toBe(true);
   await expect(page.getByTestId("compacted").last()).toContainText("handoff note");
   await expect(page.getByTestId("assistant-text").last()).toContainText(word);
   await shoot(page, "convo-05-new-context");

@@ -257,6 +257,8 @@ function Checkpoint({ e, s, undoable }: { e: StoredEvent; s: Session; undoable?:
             {e.data.parts ? ` (too long for one request: read as a transcript${e.data.parts > 1 ? ` in ${e.data.parts} parts` : ""}${e.data.outputs_shortened ? `, ${e.data.outputs_shortened} long tool outputs shortened` : ""})` : ""}
             {e.data.owner_messages_shortened ? `; the oldest of the owner's messages kept word for word is cut to its start and end` : ""}
             {e.data.other_messages_shortened ? `; the oldest kept report or other delivered message is cut to its start and end` : ""}
+            {e.data.statements_dropped?.length ? `; ${e.data.statements_dropped.length === 1 ? "one statement" : `${e.data.statements_dropped.length} statements`} the summary did not quote word for word left out` : ""}
+            {e.data.statements_done?.length ? `; ${e.data.statements_done.length === 1 ? "one request" : `${e.data.statements_done.length} requests`} marked done` : ""}
             <ChevronDown className="size-3 -rotate-90 transition-transform group-open/cp:rotate-0" />
           </span>
         </Divider>

@@ -6,7 +6,7 @@
 // prefix (Engine.ask), so it reads the cache the turns wrote; nothing earlier
 // is rewritten: a summary is a new event, the old branch stays.
 import type { Message, Session, StoredEvent } from "../../core/types.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, keptMessages } from "../../engine/compact.ts";
+import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, checkpointData, settle, STATEMENTS_FORMAT } from "../../engine/compact.ts";
 import { warmUntil } from "../../admin/telemetry.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerShared } from "../../tools/registry.ts";
@@ -46,13 +46,17 @@ export function parseDigest(text: string): { recap?: string; next?: string } {
 
 const PART_FROM = (excerpt: string, focus?: string) => [
   `[harness] The owner is summarizing a part of this conversation: from their message that begins "${excerpt}" to the end. That part will be replaced by your summary; everything before it stays as it is.`,
-  "Write the summary of that part only, so the work can go on without it: what was asked, what was decided, files read or changed and why, commands and results that still matter, and where it stands. Be specific: names, paths, numbers, error text. Do not call tools; reply with the summary only.",
+  "Write the summary of that part only, so the work can go on without it.",
+  STATEMENTS_FORMAT,
+  "In your own words: what was asked, files read or changed and why, commands and results that still matter, and where it stands. Be specific: names, paths, numbers, error text. Do not call tools; reply with the summary only.",
   focus ? `\nKeep above all: ${focus}` : "",
 ].join("\n");
 
 const PART_UP_TO = (excerpt: string, focus?: string) => [
   `[harness] The owner is summarizing a part of this conversation: everything before their message that begins "${excerpt}". That part will be replaced by your summary; that message and everything after it stay as they are.`,
-  "Write the summary of that earlier part only, so the work can go on without it: what was asked, what was decided, files read or changed and why, commands and results that still matter, and where it stood. Be specific: names, paths, numbers, error text. Do not call tools; reply with the summary only.",
+  "Write the summary of that earlier part only, so the work can go on without it.",
+  STATEMENTS_FORMAT,
+  "In your own words: what was asked, files read or changed and why, commands and results that still matter, and where it stood. Be specific: names, paths, numbers, error text. Do not call tools; reply with the summary only.",
   focus ? `\nKeep above all: ${focus}` : "",
 ].join("\n");
 
@@ -154,7 +158,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
       handoffs.delete(s.id);
       const line = engine.lineage(s.id);
       append(s.id, "compaction", {
-        mode: "summary", summary: h, ...keptMessages(line), auto: true, trigger: "model",
+        mode: "summary", ...checkpointData(line, h), auto: true, trigger: "model",
         tokens_before: contextTokens(line, s.model).used, label: "The model started a fresh context with a handoff note",
       });
       emitSession(s.id);
@@ -213,8 +217,10 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           const rec = errors.capture("provider", e, { session: s.id, at: "summarize" });
           return json({ error: `the summary call failed: ${rec.message}`, error_id: rec.id }, 502);
         }
-        const summary = textOf(res.blocks);
-        if (res.stop === "refusal" || !summary) return bad("the model wrote no summary", 502);
+        const written = textOf(res.blocks);
+        if (res.stop === "refusal" || !written) return bad("the model wrote no summary", 502);
+        // The later part's statements, checked against what was said in it (the earlier part stays verbatim).
+        const summary = b.direction === "from" ? settle(line, written).summary : written;
         if (engine.isRunning(s.id)) return bad("a turn started meanwhile: summarize when it has ended", 409);
         const moved = headMoved(line.at(-1)!.id, store.session(s.id)?.head);
         if (moved) return json({ error: moved.message, code: "head_moved" }, 409);
@@ -232,7 +238,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           // what follows stay verbatim after the summary.
           const before = line.slice(0, at);
           head = append(s.id, "compaction", {
-            mode: "summary", summary, ...keptMessages(before), focus, auto: false, trigger: "owner",
+            mode: "summary", ...checkpointData(before, summary), focus, auto: false, trigger: "owner",
             covered: line[at - 1]!.id, range: "up_to", from_event: ev.id, tokens_before: contextTokens(line, s.model).used, usage, model: res.model_id,
             label: "Summarized everything before a prompt; it and what follows stay as they were",
           });

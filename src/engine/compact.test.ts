@@ -5,7 +5,7 @@
 // adds nothing, a note for the model adds its text, an attached text file adds
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
-import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
+import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -180,4 +180,60 @@ test("a history too long for one request: outputs shortened oldest first, then p
   expect(mid).toContain('<transcript part="2" of="3">');
   expect(mid).toContain("The next part follows");
   expect(partPrompt("PART", 2, 3, "SO FAR", 0, "the port")).toContain("Keep above all: the port");
+});
+
+// A summary's statements stand only in the words that were said: a quote is
+// checked against the stored conversation and given back as its whole
+// sentences, a retelling close to one sentence gets that sentence's words, one
+// that says something nothing said is left out and counted, and the last
+// summary's statements are carried until a quoted line lifts them.
+test("statements are the conversation's own words, carried until lifted", () => {
+  const said = [
+    ev("user", { text: "Start on the export. Never run the migrations against staging; use the local copy. Also do not touch vendor/." }),
+    ev("assistant", { blocks: [{ type: "text", text: "We settled on integer cents for every amount." }], stop: "end_turn" }),
+    ev("user", { text: "Always run the linter before the tests." }),
+  ];
+  const first = settle(said, [
+    "## Statements",
+    '- owner: "Start on the export."',
+    '- owner: "Never run the migrations against staging"', // cut inside its sentence
+    '- owner: "Do not touch vendor/."',
+    '- owner: "Always run the linter before running the tests."', // retold, the same words nearly
+    '- owner: "Prefer not to deploy on Fridays."', // nothing said it
+    '- owner: "Keep above all: the export."', // the harness's request, not the conversation: skipped
+    '- owner: "We settled on integer cents for every amount."', // the work said it
+    "## Lifted",
+    "## Story",
+    "1. Goal: the export.",
+  ].join("\n"));
+  expect(first.statements).toEqual([
+    { by: "owner", text: "Start on the export." },
+    { by: "owner", text: "Never run the migrations against staging; use the local copy." },
+    { by: "owner", text: "Also do not touch vendor/." },
+    { by: "owner", text: "Always run the linter before the tests." },
+    { by: "work", text: "We settled on integer cents for every amount." },
+  ]);
+  expect(first.statements_dropped).toEqual(["Prefer not to deploy on Fridays."]);
+  expect(first.summary).toContain("## Story\n1. Goal: the export.");
+  expect(first.summary).toContain("1 statement the summary did not quote word for word was left out");
+
+  // The next summary forgets two statements and lifts one with words nobody said: all three stay.
+  const cp = ev("compaction", { mode: "summary", ...checkpointData(said, first.summary) });
+  const later = [...said, cp, ev("user", { text: "The vendor rule is over: you may edit vendor/ now." })];
+  const forgot = checkpointData(later, ['## Statements', '- owner: "Always run the linter before the tests."', "## Lifted", '- "Also do not touch vendor/." lifted by: "vendor is fine"', "## Story", "x"].join("\n"));
+  expect(forgot.statements!.map((s) => s.text)).toEqual(first.statements!.map((s) => s.text));
+  // Lifted by the owner's own words: gone, and said so.
+  const lifted = checkpointData(later, ['## Statements', "## Lifted", '- "do not touch vendor/" lifted by: "The vendor rule is over: you may edit vendor/ now."', "## Story", "x"].join("\n"));
+  expect(lifted.statements!.map((s) => s.text)).not.toContain("Also do not touch vendor/.");
+  expect(lifted.statements!.length).toBe(4);
+  expect(lifted.statements_lifted).toEqual([{ text: "Also do not touch vendor/.", by: "The vendor rule is over: you may edit vendor/ now." }]);
+  // A request marked done leaves, counted; a line naming nothing said before changes nothing.
+  const finished = checkpointData(later, ["## Statements", "## Done", '- "Start on the export."', '- "Ship it."', "## Story", "x"].join("\n"));
+  expect(finished.statements!.map((s) => s.text)).not.toContain("Start on the export.");
+  expect(finished.statements_done).toEqual(["Start on the export."]);
+  expect(finished.summary).toContain("1 earlier request the summary marked done was left out.");
+  // A handoff note with no statements part keeps its text and the statements before it.
+  const handoff = checkpointData(later, "Goal: go on with the export.");
+  expect(handoff.statements!.length).toBe(5);
+  expect(handoff.summary).toEndWith("## Story\nGoal: go on with the export.");
 });
