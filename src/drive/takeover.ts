@@ -98,6 +98,39 @@ const oneLine = (t: string, n = 160) => {
 };
 const jobLines = (jobs: Job[]) => jobs.map((j) => `\n- \`${j.cron}\` ${j.recurring ? "recurring" : "once"}${j.durable ? ", kept on disk by Claude Code" : ""}: ${oneLine(j.prompt)}`).join("");
 
+// What a copy is told while its original still runs. `where`: the machine the
+// original runs on, when it is not this one. `state`: what it does there, or
+// null when that could not be asked.
+export function liveText(o: { label: string; id: string; where?: string; state: string | null; step: string | null; jobs: Job[]; finish?: string }): string {
+  const src = `${o.label} session ${o.id}${o.where ? ` on ${o.where}` : ""}`;
+  let t = o.state !== null
+    ? `[harness take-over] This session is a copy of ${src}, and the original still runs there: it is ${o.state}.`
+    : `[harness take-over] This session is a copy of ${src}, which may still run there: Keel could not ask the agent view.`;
+  t += o.step ? ` Keel did not end it. ${o.step}` : " It was copied, not taken over.";
+  if (o.jobs.length) t += `\nIts scheduled jobs stay with the original and do not carry over:${jobLines(o.jobs)}\nOnce it has ended, recreate the ones still wanted with keel__loop_create.`;
+  t += "\nUntil the original ends or the owner says so, do not act on shared resources it may also be driving: its repositories and worktrees, processes and servers, GPUs and leases, scheduled jobs.";
+  if (o.state !== null) t += o.finish ?? " Once it is idle, the owner finishes the take-over with Take over now on this session's page.";
+  return t;
+}
+
+// What a copy is told once its original has ended. `told`: it was told before
+// that the original still ran. `gap`: what the original wrote that the copy
+// lacks, because the copy went on in Keel.
+export function endedText(o: { label: string; id: string; where?: string; how: string | null; told: boolean; stoppedNow: boolean; gap?: { messages: number | null; transcript: string }; jobs: Job[] }): string {
+  const src = `${o.label} session ${o.id}${o.where ? ` on ${o.where}` : ""}`;
+  const h = o.how ? ` (${o.how})` : "";
+  const { gap } = o;
+  const lacks = !gap ? "what it wrote last is above"
+    : gap.messages === 0 ? "it wrote nothing after this session was copied from it, so nothing of it is missing here"
+    : gap.messages === null ? `what it wrote after this session was copied from it is not here and could not be counted; its transcript is ${gap.transcript}`
+    : `${gap.messages} of its messages after this session was copied from it are not here, since this session went on in Keel; they are in its transcript, ${gap.transcript}`;
+  let t = o.told
+    ? `[harness take-over] The original ${src} has ended${h}, and ${lacks}. This session alone holds the conversation now; the hold on shared resources is over.`
+    : `[harness take-over] The original ${src} ${o.stoppedNow ? "was ended" : "has ended"}${h}, and this session goes on from it${gap ? `: ${lacks}` : ""}.`;
+  if (o.jobs.length) t += `\nIts scheduled jobs ended with it and do not carry over:${jobLines(o.jobs)}\nRecreate the ones still wanted with keel__loop_create.`;
+  return t;
+}
+
 // The one thing the owner does by hand when the agent view cannot end a session.
 export function manualStep(row: Row, raw: av.Raw): string {
   const again = "then take it over again: Keel adds what it wrote last";
@@ -283,14 +316,7 @@ export class TakeOver {
   async tellLive(sessionId: string, f: Found | null, step: string | null): Promise<Behind & { told: boolean }> {
     const b = this.behind(sessionId, f ? inFlight(f.raw) : null);
     if (f && this.imports.liveSource(sessionId)) return { ...b, told: true };
-    const { label, id } = this.label(sessionId);
-    let t = f
-      ? `[harness take-over] This session is a copy of ${label} session ${id}, and the original still runs there: it is ${b.running ? `working (${b.running})` : f.row.state}.`
-      : `[harness take-over] This session is a copy of ${label} session ${id}, which may still run there: Keel could not ask the agent view.`;
-    t += step ? ` Keel did not end it. ${step}` : " It was copied, not taken over.";
-    if (b.jobs.length) t += `\nIts scheduled jobs stay with the original and do not carry over:${jobLines(b.jobs)}\nOnce it has ended, recreate the ones still wanted with keel__loop_create.`;
-    t += "\nUntil the original ends or the owner says so, do not act on shared resources it may also be driving: its repositories and worktrees, processes and servers, GPUs and leases, scheduled jobs.";
-    if (f) t += " Once it is idle, the owner finishes the take-over with Take over now on this session's page.";
+    const t = liveText({ ...this.label(sessionId), state: f ? (b.running ? `working (${b.running})` : f.row.state) : null, step, jobs: b.jobs });
     const told = this.write(sessionId, t);
     if (told && f) this.imports.putLive(sessionId, f.row.id);
     return { ...b, told };
@@ -324,16 +350,7 @@ export class TakeOver {
       }
     }
     if (!told && !behind.jobs.length && !gap) return { behind };
-    const { label, id } = this.label(sessionId);
-    const h = how ? ` (${how})` : "";
-    const lacks = !gap ? "what it wrote last is above"
-      : gap.messages === 0 ? "it wrote nothing after this session was copied from it, so nothing of it is missing here"
-      : gap.messages === null ? `what it wrote after this session was copied from it is not here and could not be counted; its transcript is ${gap.transcript}`
-      : `${gap.messages} of its messages after this session was copied from it are not here, since this session went on in Keel; they are in its transcript, ${gap.transcript}`;
-    let t = told
-      ? `[harness take-over] The original ${label} session ${id} has ended${h}, and ${lacks}. This session alone holds the conversation now; the hold on shared resources is over.`
-      : `[harness take-over] The original ${label} session ${id} ${stoppedNow ? "was ended" : "has ended"}${h}, and this session goes on from it${gap ? `: ${lacks}` : ""}.`;
-    if (behind.jobs.length) t += `\nIts scheduled jobs ended with it and do not carry over:${jobLines(behind.jobs)}\nRecreate the ones still wanted with keel__loop_create.`;
+    const t = endedText({ ...this.label(sessionId), how, told, stoppedNow, gap, jobs: behind.jobs });
     if (this.write(sessionId, t)) this.imports.clearLive(sessionId);
     return { behind, gap };
   }

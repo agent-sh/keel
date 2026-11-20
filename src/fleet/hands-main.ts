@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { instructionFiles } from "../engine/turn.ts";
 import { jobPids } from "../tools/jobs.ts";
 import { handsBusy, handsRoutes } from "./hands-routes.ts";
+import { sessionRoutes } from "./hands-sessions.ts";
 
 const arg = (k: string) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined; };
 const dir = arg("--dir");
@@ -29,11 +30,15 @@ try {
 rmSync(sock, { force: true });
 
 let last = Date.now();
-const routes = handsRoutes({
-  spillRoot: spill,
-  capture: (e, ctx) => { console.error(new Date().toISOString(), ctx, e); return { message: (e as Error)?.message ?? String(e) }; },
-  instructions: instructionFiles,
-});
+const routes = {
+  ...handsRoutes({
+    spillRoot: spill,
+    capture: (e, ctx) => { console.error(new Date().toISOString(), ctx, e); return { message: (e as Error)?.message ?? String(e) }; },
+    instructions: instructionFiles,
+  }),
+  // The other harnesses' sessions here: listed, read, and ended on a take-over.
+  ...sessionRoutes(),
+};
 const server = Bun.serve({
   unix: sock,
   async fetch(req) {

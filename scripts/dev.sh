@@ -48,6 +48,17 @@ fi
 # stand-in gateway there), never the owner's Hermes gateway and phone.
 export KEEL_PHONE_SOCKET="${KEEL_PHONE_SOCKET:-$DEV/phone/phone.sock}"
 mkdir -p "$(dirname "$KEEL_PHONE_SOCKET")"
+# One ssh host is a stand-in: this machine with a scratch home, reached by the
+# stand-in ssh (every other host of the owner's configuration goes to the real
+# ssh). The ssh machine e2e enables it; nothing runs there until it does.
+export KEEL_SSH_STANDIN_HOST="${KEEL_SSH_STANDIN_HOST:-keel-standin}"
+export KEEL_SSH_STANDIN_HOME="${KEEL_SSH_STANDIN_HOME:-$DEV/box}"
+export KEEL_SSH="${KEEL_SSH:-$(cd "$(dirname "$0")/.." && pwd)/test/e2e/fixtures/ssh-standin.sh}"
+if [ -z "${KEEL_SSH_CONFIG:-}" ]; then
+  mkdir -p "$KEEL_SSH_STANDIN_HOME" "$DEV/ssh"
+  printf 'Include ~/.ssh/config\nHost %s\n' "$KEEL_SSH_STANDIN_HOST" > "$DEV/ssh/config"
+  export KEEL_SSH_CONFIG="$DEV/ssh/config"
+fi
 cd "$(dirname "$0")/.."
 # KEEL_BIN runs a built binary (bun scripts/build.ts) with the same scratch setup.
 if [ -n "${KEEL_BIN:-}" ]; then

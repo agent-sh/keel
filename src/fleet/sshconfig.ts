@@ -11,6 +11,10 @@ const MAX_DEPTH = 16;
 
 export const plainAlias = (a: string) => /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(a);
 
+// The configuration read: the owner's, or the file KEEL_SSH_CONFIG names (a
+// scratch daemon's, which includes the owner's and adds its stand-in host).
+const configFile = (home: string) => process.env.KEEL_SSH_CONFIG || join(home, ".ssh", "config");
+
 export function sshHosts(home = homedir()): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -24,7 +28,7 @@ export function sshHosts(home = homedir()): string[] {
       for (const f of expand(p)) read(f, depth + 1);
     });
   };
-  read(join(sshDir, "config"), 0);
+  read(configFile(home), 0);
   return out;
 }
 
@@ -85,7 +89,7 @@ export function resolveAlias(alias: string): { user?: string; hostname?: string;
 export function hostGroups(home = homedir()): HostGroup[] {
   const hosts = sshHosts(home);
   let stamp = hosts.join(",");
-  try { stamp += statSync(join(home, ".ssh", "config")).mtimeMs; } catch {}
+  try { stamp += statSync(configFile(home)).mtimeMs; } catch {}
   if (groupsCache?.stamp === stamp) return groupsCache.groups;
   const byKey = new Map<string, HostGroup & { direct?: string }>();
   for (const a of hosts) {

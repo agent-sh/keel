@@ -80,6 +80,14 @@ export class Fleet {
     return linkFetch(await this.peer(id), path, init);
   }
 
+  // The same, read as JSON; an answer that is not ok is a LinkError with its words.
+  async handsJson<T = any>(id: string, path: string, init: RequestInit & { timeout?: number; idempotent?: boolean } = {}): Promise<T> {
+    const r = await this.hands(id, path, init);
+    const body = (await r.json().catch(() => ({}))) as any;
+    if (!r.ok) throw new LinkError(body.error ?? `HTTP ${r.status}`);
+    return body as T;
+  }
+
   start() {
     for (const m of this.rows()) if (m.auto_connect) this.check(m.id).catch((e) => this.errors.capture("server", e, { at: "fleet auto_connect", machine: m.id }));
   }

@@ -7,32 +7,19 @@ import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
 import { exportTo, parseKeelJsonl, redact, redactDeep, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
 import { HARNESSES, modelFor as pickModel, sharedImports } from "../../integrations/import/service.ts";
+import { offered, scrub, tail } from "../../integrations/import/offer.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
-import { callerOf, LinkError, linkJson, proven } from "../../fleet/link.ts";
+import { callerOf, LinkError, proven } from "../../fleet/link.ts";
 import { contains } from "../../core/paths.ts";
 import { attachmentPath } from "../../engine/attachments.ts";
 import { fleet } from "./fleet.ts";
 import { takeover } from "./takeover.ts";
+import { grantedMachine, resumes } from "./resume.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 const isHarness = (h: unknown): h is Harness => HARNESSES.some((x) => x.harness === h);
-// Transcripts another machine never offers: any under a folder or with a name of credentials.
-const CREDENTIAL = /(^|\/)(\.ssh|\.gnupg|\.aws|\.docker|\.kube|\.password-store|[^/]*(credential|secret|token|passw|\.pem$|\.key$)[^/]*)(\/|$)/i;
 const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
-
-// The newest messages of a read, for a preview.
-function tail(events: { kind: string; data: any }[], n = 6) {
-  const out: { role: string; text: string }[] = [];
-  for (const e of events) {
-    if (e.kind === "user") out.push({ role: "user", text: e.data.text });
-    else if (e.kind === "assistant") {
-      const t = (e.data.blocks ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-      if (t) out.push({ role: "assistant", text: t });
-    }
-  }
-  return out.slice(-n).map((m) => ({ ...m, text: m.text.length > 1200 ? m.text.slice(0, 1199) + "…" : m.text }));
-}
 
 export const importRoutes: RouteModule = (deps) => {
   const { store, bus, providers } = deps;
@@ -87,22 +74,13 @@ export const importRoutes: RouteModule = (deps) => {
     if (!c) return proven(bad("not a paired daemon", 403), null, fleet?.id ?? "");
     return proven(await h(req), c, fleet!.id);
   };
-  const offered = (f: Found) => !CREDENTIAL.test(f.path) && !CREDENTIAL.test(f.cwd ?? "");
-  const scrub = (f: Found) => ({ ...f, title: redact(f.title), first_prompt: f.first_prompt && redact(f.first_prompt), last_prompt: f.last_prompt && redact(f.last_prompt) });
 
-  // The machine a request names, with its granted directory; or the answer.
-  const machineOf = (id: string): any => {
-    if (!fleet) return bad("the fleet is not running", 409);
-    if (id === "local") return bad("this machine's transcripts are in the import list");
-    if (id.startsWith("ssh:")) return bad("enable that ssh host as a machine first");
-    const m = fleet.row(id);
-    if (!m) return bad("no such machine", 404);
-    if (!m.workspace_root) return bad(`${m.name} has no granted directory: an imported session would have nowhere to run`);
-    return m;
-  };
+  // A machine's own read of its transcripts: its daemon over the paired link,
+  // or the helper of a machine reached over ssh.
+  const machineOf = grantedMachine;
   const ask = async <T,>(mid: string, path: string): Promise<T | Response> => {
     try {
-      return await linkJson<T>(await fleet!.peer(mid), path, { timeout: 30_000 });
+      return await fleet!.handsJson<T>(mid, path, { timeout: 30_000, idempotent: true });
     } catch (e) {
       if (!(e instanceof LinkError)) throw e;
       return bad(`${fleet!.row(mid)?.name ?? mid} did not answer: ${(e as Error).message}`, 409);
@@ -150,10 +128,15 @@ export const importRoutes: RouteModule = (deps) => {
         const r = await ask<any>(m.id, `/api/fleet/hands/transcripts?${u}`);
         if (r instanceof Response) return r;
         return json({
-          machine_id: m.id, machine: m.name, has_agent_view: false, tools_present: r.tools_present,
+          machine_id: m.id, machine: m.name, has_agent_view: false, tools_present: r.tools_present, transport: fleet!.isSsh(m) ? "ssh" : "daemon",
           sessions: r.sessions.map((f: Found) => {
             const l = imports.links(f.harness, f.id)[0];
-            return { ...f, imported: l ? { session_id: l.session_id, synced_ms: l.synced_ms, grew: f.size_bytes !== l.source_size || Math.round(f.updated_ms) !== l.source_mtime } : undefined };
+            return {
+              ...f,
+              imported: l ? { session_id: l.session_id, synced_ms: l.synced_ms, grew: f.size_bytes !== l.source_size || Math.round(f.updated_ms) !== l.source_mtime, went_on: imports.wentOn(l.session_id) } : undefined,
+              // A resume that waits for the original to be idle shows on its row.
+              wait: resumes?.waitOf(m.id, f.harness, f.id),
+            };
           }),
           total: r.total, next_cursor: r.next_cursor, index: r.index, harnesses: r.harnesses,
         });
@@ -187,10 +170,12 @@ export const importRoutes: RouteModule = (deps) => {
         const f = r.session;
         const model = b.model || (await modelFor(f));
         if (!model) return bad("no model is available: no provider has credentials", 409);
-        const workspace = f.cwd && r.session.cwd_exists && contains(m.workspace_root, f.cwd) ? f.cwd : m.workspace_root;
+        const workspace = f.cwd && r.session.cwd_exists && contains(m.workspace_root!, f.cwd) ? f.cwd : m.workspace_root!;
         const out = await imports.import(f, { mode: b.mode, model, workspace, title: b.title, from: { machine: m.id, read: r.read } });
         if (workspace !== f.cwd) store.append(out.session.id, "note", { text: `Its folder ${f.cwd ?? "(none)"} is not inside the directory granted on ${m.name}; it goes on in ${workspace} there.` });
         bus.emit({ t: "session", session: store.session(out.session.id)! });
+        // A copy of a conversation whose harness still runs there is told so.
+        if (out.action === "created" && fleet!.isSsh(m)) await resumes?.copied(m, out.session.id, b.harness, String(b.id));
         return json({ action: out.action, session: store.session(out.session.id), imported_events: out.imported_events, counts: r.read.counts, notes: r.read.notes }, out.action === "created" ? 201 : 200);
       },
     },
@@ -325,7 +310,11 @@ export const importRoutes: RouteModule = (deps) => {
           const st = statSync(l.harness === "keel" || l.harness === "hermes" ? l.source_path.split("#")[0]! : l.source_path);
           source = { exists: true, grew: st.size !== l.source_size || Math.round(st.mtimeMs) !== l.source_mtime };
         } catch {}
-        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id) }, source });
+        // A copy of a transcript read on another machine names that machine (its link is "<machine>:<path>").
+        const far = /^(m[0-9a-f]{8}):\//.exec(l.source_path)?.[1];
+        const fm = far ? fleet?.row(far) : undefined;
+        const machine = fm ? { id: fm.id, name: fm.name, ssh: fleet!.isSsh(fm) } : undefined;
+        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id), machine }, source });
       },
     },
     "/api/sessions/:id/export": {

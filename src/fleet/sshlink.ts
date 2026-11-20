@@ -64,19 +64,17 @@ export function parseProbe(out: string): Probe {
 const localPlatform = () => `${process.platform}-${process.arch === "arm64" ? "aarch64" : "x64"}`;
 
 // The helper's code: bundled with the binary at build time, else bundled from
-// the source once per daemon process.
+// the source at each connection (a dev daemon whose helper source changed
+// puts the new one there the next time it connects).
 let bundle: Promise<{ text: string; hash: string }> | undefined;
 export function handsBundle() {
-  return (bundle ??= (async () => {
-    let text: string;
-    if (typeof __KEEL_HANDS_JS__ === "string") text = __KEEL_HANDS_JS__;
-    else {
-      const r = await Bun.build({ entrypoints: [join(import.meta.dir, "hands-main.ts")], target: "bun", minify: true });
-      if (!r.success) throw new Error(`the ssh helper does not build: ${r.logs.map(String).join("; ")}`);
-      text = await r.outputs[0]!.text();
-    }
-    return { text, hash: Bun.hash(text).toString(16).slice(0, 12) };
-  })());
+  const hashed = (text: string) => ({ text, hash: Bun.hash(text).toString(16).slice(0, 12) });
+  if (typeof __KEEL_HANDS_JS__ === "string") return (bundle ??= Promise.resolve(hashed(__KEEL_HANDS_JS__)));
+  return (async () => {
+    const r = await Bun.build({ entrypoints: [join(import.meta.dir, "hands-main.ts")], target: "bun", minify: true });
+    if (!r.success) throw new Error(`the ssh helper does not build: ${r.logs.map(String).join("; ")}`);
+    return hashed(await r.outputs[0]!.text());
+  })();
 }
 
 // Every master this process started, closed when it exits (each is its own ssh

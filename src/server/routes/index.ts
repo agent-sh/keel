@@ -30,6 +30,7 @@ import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
 import { portRoutes } from "./port.ts";
 import { takeoverRoutes } from "./takeover.ts";
+import { resumeRoutes } from "./resume.ts";
 import { hookRoutes } from "./hooks.ts";
 import { surfaceRoutes } from "./surfaces.ts";
 import { workspaceRoutes } from "./workspace.ts";
@@ -102,6 +103,7 @@ export const routeModules: RouteModule[] = [
   importRoutes,
   portRoutes, // bring the setup of the other harnesses over
   takeoverRoutes, // taking over a session another harness runs
+  resumeRoutes, // the same for a conversation on an ssh machine: its state, wait or resume now
   hookRoutes,
   surfaceRoutes, // Settings: skills, agent files, instruction files, the hooks file, plugins.toml
   runRoutes, // the command line: keel run, keel send
