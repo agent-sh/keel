@@ -648,6 +648,12 @@ function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, 
   });
 }
 
+// A park is a live status, not a report. If the parent was still busy when
+// the child resumed or ended, do not tell it the child is waiting anymore.
+function withdrawParked(a: AgentRecord) {
+  withdraw(a.parent_id, (m) => m.kind === "harness" && m.agent_id === a.id && m.status === "waiting");
+}
+
 const stopping = new Map<string, StopBy>();
 const INCOMPLETE = new Set(["refusal", "max_tokens", "max_steps"]);
 
@@ -661,9 +667,17 @@ export function onTurnEnd(sessionId: string, reason: string) {
   if (reason === "restart" && !stopping.has(a.id)) return;
   const { engine } = D();
   if (engine.isRunning(sessionId) || hasPending(sessionId)) return;
-  if (!stopping.has(a.id) && waits.activeFor(sessionId) > 0) {
+  const waitingOn = stopping.has(a.id) ? "" : waits.describeActive(sessionId);
+  if (waitingOn) {
     update(a.id, { status: "waiting", result: collectResult(a) });
     wake(a.id);
+    // A blocking spawn returns the park in its tool result. Reviewers and
+    // other silent agents stay quiet. Recovery does not replay this notice.
+    if (a.background && !isSilent(a.id)) {
+      deliver(a.parent_id, `[harness] Agent ${a.id} parked on ${waitingOn}. It has not finished; its report will arrive after it finishes.`, {
+        kind: "harness", agent_id: a.id, status: "waiting",
+      });
+    }
     return;
   }
   // A turn of the child stopped from its own page is the owner's stop.
@@ -691,6 +705,7 @@ function lastRound(a: AgentRecord): string {
 }
 
 async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: StopBy | null; end_reason: string; note?: string }) {
+  withdrawParked(a);
   let result = collectResult(a, status === "incomplete" ? how.end_reason : undefined);
   if (how.note) result += `${result ? "\n\n" : ""}${how.note}`;
   const row = D().store.db.query<{ output_schema: string | null; schema_tries: number }, [string]>("SELECT output_schema, schema_tries FROM agents WHERE id = ?").get(a.id)!;
@@ -870,7 +885,9 @@ function outsideWorktree(a: AgentRecord, sessionId: string, input: any): string 
 // turn is handed back like any other. The new task begins at that prompt.
 export function onTurnStart(sessionId: string) {
   const a = byChild(sessionId);
-  if (!a || !isEnded(a)) return;
+  if (!a) return;
+  if (a.status === "waiting") withdrawParked(a);
+  if (!isEnded(a)) return;
   const parent = D().store.session(a.parent_id);
   if (!parent || parent.archived) return; // no one to report to: it stays the owner's own turn
   const evs = D().store.events(sessionId);

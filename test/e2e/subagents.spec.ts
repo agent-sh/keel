@@ -116,6 +116,52 @@ test("the last agent report ends a timer set while the agents ran", async ({ pag
   await request.delete(`/api/sessions/${session.id}`);
 });
 
+test("a parked subagent notifies its busy parent before the final report", async ({ page, request }) => {
+  const models: { id: string; provider: string; context: number }[] = (await (await request.get("/api/models")).json()).models;
+  const model = models.filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0];
+  test.skip(!model, "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: model!.id, title: "Parked subagent" } })).json();
+  try {
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+    const child = [{ name: "wait_for", input: { kind: "timer", seconds: 12, note: "child-only wait details" } }];
+    const calls = [
+      { name: "spawn_agent", input: { message: `Timer helper\nscript:calls ${JSON.stringify(child)}`, isolation: "none" } },
+      { name: "wait_agent", input: { timeout_ms: 3000 } },
+    ];
+    const view = () => request.get(`/api/sessions/${session.id}`).then((r) => r.json());
+    const agent = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents[0];
+    await page.goto(`/s/${session.id}`);
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify(calls)}`);
+    await page.getByTestId("composer").press("Enter");
+    await expect.poll(async () => (await agent())?.status).toBe("waiting");
+    const a = await agent();
+    const [{ id: waitId }] = (await (await request.get(`/api/sessions/${a.session_id}/background`)).json()).waits;
+    expect((await view()).running).toBe(true);
+
+    const note = page.getByTestId("harness-notice");
+    await expect(note).toHaveCount(1);
+    await note.getByRole("button").click();
+    await expect(note).toContainText(`Agent ${a.id} parked on timer wait ${waitId}`);
+    await expect(note).not.toContainText("child-only wait details");
+    await shoot(page, "agents-parked");
+
+    await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 20_000 });
+    const { events } = await view();
+    const parked = events.filter((e: any) => e.kind === "user" && e.data.agent_id === a.id && e.data.status === "waiting");
+    expect(parked).toHaveLength(1);
+    const waited = events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results)
+      .find((r: any) => String(r.content).includes('"timed_out":true'));
+    expect(JSON.parse(waited.content).status[a.id]).toBe("waiting");
+    const ends = events.filter((e: any) => e.kind === "turn_end");
+    const report = events.find((e: any) => e.kind === "user" && e.data.agent_id === a.id && e.data.report_id);
+    expect(ends[0].seq).toBeLessThan(parked[0].seq);
+    expect(parked[0].seq).toBeLessThan(report.seq);
+    expect(report.data.status).toBe("completed");
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
 // Feature: an agent's own page stops it whole, as its card in the parent
 // does (by the owner, its waits cancelled), and a held Escape on that page
 // goes back to the parent once, stopping nothing there.

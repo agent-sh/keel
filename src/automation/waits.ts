@@ -97,6 +97,14 @@ export function activeFor(sessionId: string): number {
   return D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM waits WHERE status = 'active' AND session_id = ?").get(sessionId)!.n;
 }
 
+// Safe across sessions: the stored spec and note may contain credentials,
+// private paths or command lines. Only describe the kind and opaque handle.
+export function describeActive(sessionId: string): string {
+  return D().store.db.query<Pick<WaitRecord, "id" | "kind">, [string]>(
+    "SELECT id, kind FROM waits WHERE status = 'active' AND session_id = ? ORDER BY created, id",
+  ).all(sessionId).map((w) => `${w.kind} wait ${w.id}`).join(", ");
+}
+
 // Probe state that is not worth a column: log cursors, monitor tails. A log
 // wait's cursor (the first unread byte, the file's identity, a line being
 // skipped) is also kept in the row, so a restart reads on from where it was.
