@@ -519,4 +519,140 @@ const catalog: Task = {
   },
 };
 
-export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker, webdocs, catalog];
+// Long material with one question each: the reading jobs a readers
+// experiment compares (a cheap reader model against the working model's own
+// tools). Generated from a fixed seed, so every run reads the same bytes.
+function seeded(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const LOG_ROUTES = ["/api/items", "/api/cart", "/api/users", "/api/search", "/api/export", "/api/health"];
+const logLines: string[] = [];
+let export503 = 0;
+{
+  const r = seeded(11);
+  for (let i = 0; i < 1500; i++) {
+    const ts = new Date(Date.UTC(2026, 2, 4, 10, 0, 0) + i * 1700).toISOString().replace(/\.\d+Z$/, "Z");
+    const route = LOG_ROUTES[Math.floor(r() * LOG_ROUTES.length)]!;
+    const id = `r${1000 + i}`;
+    let status = r() < 0.04 ? (r() < 0.5 ? 404 : 500) : 200;
+    // A fixed set of export failures, spread through the file.
+    if (i % 211 === 37) { status = 503; logLines.push(`${ts} WARN req=${id} route=/api/export status=503 ms=${3000 + i} upstream=archive`); export503++; continue; }
+    if (i === 977) { logLines.push(`${ts} ERROR req=${id} route=/api/cart status=502 ms=30000 payment gateway timeout after 3 attempts`); continue; }
+    logLines.push(`${ts} ${status === 200 ? "INFO" : "WARN"} req=${id} route=${route} status=${status} ms=${Math.floor(r() * 400) + 5}`);
+  }
+}
+const readlog: Task = {
+  id: "readlog",
+  kind: "read a long log",
+  prompt: "logs/service.log is the service log of one morning. How many requests to /api/export returned 503, and which request id hit the payment gateway timeout? Do not change any file. Reply with one line exactly like: count=<n> req=<id>",
+  files: { "logs/service.log": logLines.join("\n") + "\n", "README.md": "# service\n\nLogs are under logs/.\n" },
+  check(_dir, reply) {
+    const m = reply.match(/count=(\d+)\s+req=(r\d+)/);
+    if (!m) return { ok: false, why: "no count=<n> req=<id> line" };
+    if (Number(m[1]) !== export503) return { ok: false, why: `count ${m[1]}, want ${export503}` };
+    if (m[2] !== "r1977") return { ok: false, why: `req ${m[2]}, want r1977` };
+    return { ok: true, why: "count and id right" };
+  },
+};
+
+const SPEC_TOPICS = ["sessions", "billing", "exports", "audit trail", "roles", "webhooks", "search", "retention", "quotas", "imports", "notifications", "sharing"];
+const specText: string[] = ["# Platform specification", ""];
+{
+  const r = seeded(23);
+  const words = "the service keeps each record with its owner and its time so that a later reader can tell what happened and when it happened in order".split(" ");
+  const para = () => Array.from({ length: 70 }, () => words[Math.floor(r() * words.length)]).join(" ") + ".";
+  SPEC_TOPICS.forEach((topic, i) => {
+    specText.push(`## ${i + 1}. ${topic[0]!.toUpperCase()}${topic.slice(1)}`, "");
+    for (let k = 0; k < 6; k++) specText.push(para(), "");
+    if (topic === "quotas") specText.push("Upload limits: an active project may upload up to 2 GB per file; an archived project is limited to 750 MB per file, and a trial project to 100 MB.", "");
+    if (topic === "retention") specText.push("Deleted projects are kept for 30 days, then purged; archived projects are kept for 3 years.", "");
+  });
+}
+const readspec: Task = {
+  id: "readspec",
+  kind: "read a long document",
+  prompt: "docs/spec.md is our platform specification. What is the per-file upload limit for an archived project, and how long are archived projects kept? Do not change any file. Reply with one line exactly like: limit=<size> kept=<duration>",
+  files: { "docs/spec.md": specText.join("\n"), "README.md": "# platform\n\nThe specification is docs/spec.md.\n" },
+  check(_dir, reply) {
+    const m = reply.match(/limit=([^\n]+?)\s+kept=([^\n]+)/);
+    if (!m) return { ok: false, why: "no limit=<size> kept=<duration> line" };
+    if (!/750\s*MB/i.test(m[1]!)) return { ok: false, why: `limit ${m[1]}` };
+    if (!/3\s*years?/i.test(m[2]!)) return { ok: false, why: `kept ${m[2]}` };
+    return { ok: true, why: "limit and retention right" };
+  },
+};
+
+const CODE_MODULES = ["orders", "invoices", "refunds", "carts", "coupons", "shipping", "returns", "ledger", "payouts", "taxes", "stock", "vendors", "reviews", "alerts", "reports", "sessions", "tokens", "exports", "imports", "audit"];
+const legacyCallers = ["refunds", "ledger", "tokens"];
+const codeFiles: Record<string, string> = {};
+CODE_MODULES.forEach((m) => {
+  const fns = ["create", "fetch", "update", "archive", "summarize", "validate"].map((f) => {
+    const hash = legacyCallers.includes(m) && f === "update" ? "legacy_hash(payload)" : "stable_hash(payload)";
+    return `def ${f}_${m}(store, payload, limit=50):\n    """${f} for ${m}."""\n    key = ${hash}\n    rows = store.get(key, [])[:limit]\n    out = []\n    for row in rows:\n        if row.get("deleted"):\n            continue\n        out.append({**row, "module": "${m}"})\n    return out`;
+  });
+  codeFiles[`app/${m}.py`] = `"""The ${m} module."""\nfrom app.hashing import stable_hash, legacy_hash  # noqa: F401\n\n\n${fns.join("\n\n\n")}\n`;
+});
+codeFiles["app/hashing.py"] = `"""Hashing helpers. legacy_hash is deprecated: it collides on long payloads."""\nimport hashlib\n\n\ndef stable_hash(p):\n    return hashlib.sha256(repr(p).encode()).hexdigest()\n\n\ndef legacy_hash(p):\n    return hashlib.md5(repr(p)[:64].encode()).hexdigest()\n`;
+const readcode: Task = {
+  id: "readcode",
+  kind: "read many files",
+  prompt: "In the app package, which modules still call the deprecated legacy_hash (a call, not the import)? Do not change any file. Reply with one line exactly like: modules=<a,b,c> in alphabetical order, module names without app/ or .py",
+  files: { ...codeFiles, "README.md": "# app\n\nA shop backend.\n" },
+  check(_dir, reply) {
+    const m = reply.match(/modules=([a-z_,\s]+)/);
+    if (!m) return { ok: false, why: "no modules=<...> line" };
+    const got = m[1]!.split(",").map((x) => x.trim()).filter(Boolean);
+    const want = [...legacyCallers].sort();
+    return got.join(",") === want.join(",") ? { ok: true, why: "all three" } : { ok: false, why: `got ${got.join(",")}` };
+  },
+};
+
+// Meeting notes where the answer is in what was said, not in a word a search
+// finds: three earlier decisions are taken back in later meetings, each in
+// other words, among decisions that stand.
+const NOTE_TOPICS: { topic: string; decided: string; back?: { at: number; text: string } }[] = [
+  { topic: "payment vendor", decided: "We pick the second payment vendor for the checkout; contracts go out next week.", back: { at: 9, text: "Finance found the second payment vendor charges per refund too; we stay with the vendor we have and the new contract is not signed." } },
+  { topic: "four-day week", decided: "Support moves to a four-day week from next month as a trial.", back: { at: 11, text: "Customers in two regions lost weekend coverage, so support returns to five days; the four-day trial ends now." } },
+  { topic: "monorepo", decided: "The web and mobile code move into one monorepo this quarter.", back: { at: 7, text: "Build times doubled in the trial; web and mobile go back to separate repositories and the single-repo plan is dropped." } },
+  { topic: "quarterly offsite", decided: "The quarterly offsite is held in the north office." },
+  { topic: "on-call rotation", decided: "On-call rotates weekly across the backend team." },
+  { topic: "office plants", decided: "The office gets plants on every floor." },
+];
+const notesText: string[] = ["# Team meeting notes", ""];
+{
+  const r = seeded(31);
+  const filler = "people went over the open items and the numbers from last week and agreed to look again at the plan once the figures are in and to share the notes with everyone".split(" ");
+  const para = () => Array.from({ length: 90 }, () => filler[Math.floor(r() * filler.length)]).join(" ") + ".";
+  for (let m = 1; m <= 12; m++) {
+    notesText.push(`## Meeting ${m}`, "");
+    for (let k = 0; k < 5; k++) notesText.push(para(), "");
+    NOTE_TOPICS.forEach((t, i) => {
+      if (m === 2 + (i % 3)) notesText.push(`Decision: ${t.decided}`, "");
+      if (t.back?.at === m) notesText.push(t.back.text, "");
+    });
+  }
+}
+const readnotes: Task = {
+  id: "readnotes",
+  kind: "understand a long document",
+  prompt: "notes/meetings.md holds a year of team meeting notes. Which decisions were later taken back, and in which meeting? Do not change any file. Reply with one line per reversed decision, like: <topic> reversed in meeting <n>",
+  files: { "notes/meetings.md": notesText.join("\n"), "README.md": "# team\n\nMeeting notes are in notes/.\n" },
+  check(_dir, reply) {
+    const text = reply.toLowerCase();
+    const want: [string, RegExp, number][] = [["payment vendor", /payment|vendor/, 9], ["four-day week", /four-day|4-day|four day/, 11], ["monorepo", /monorepo|single repo|one repo/, 7]];
+    const miss = want.filter(([, re, at]) => !text.split("\n").some((l) => re.test(l) && l.includes(String(at)))).map(([n]) => n);
+    const wrong = ["offsite", "on-call", "plants"].filter((d) => text.includes(d));
+    if (miss.length) return { ok: false, why: `missed ${miss.join(", ")}` };
+    if (wrong.length) return { ok: false, why: `named standing decisions: ${wrong.join(", ")}` };
+    return { ok: true, why: "all three reversals" };
+  },
+};
+
+export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker, webdocs, catalog, readlog, readspec, readcode, readnotes];
