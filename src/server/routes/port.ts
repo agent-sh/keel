@@ -5,6 +5,7 @@ import { AREAS, apply, PARTS, plan, planParts, portHome, strip, type Area } from
 import { configDir } from "../../providers/config.ts";
 import { sharedImports } from "../../integrations/import/service.ts";
 import { gate } from "./permissions.ts";
+import { jsonLines } from "../streams.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -27,23 +28,20 @@ export const portRoutes: RouteModule = (deps) => {
         const l = limits(new URL(req.url).searchParams);
         if (!l) return json({ error: "days is a number above 0 and max one of 0 or more" }, 400);
         if (new URL(req.url).searchParams.get("stream") !== "1") return json(await plan(portDeps(), l));
-        // One JSON line per area as it is read (the first plan on a fresh state
-        // builds the sessions index, which takes the longest), then a done line.
-        const enc = new TextEncoder();
-        return new Response(new ReadableStream({
-          async start(c) {
-            const line = (v: unknown) => { try { c.enqueue(enc.encode(JSON.stringify(v) + "\n")); } catch {} };
-            line({ home: portHome(), config: configDir(), parts: PARTS });
-            try {
-              await planParts(portDeps(), l, (p) => line({ part: { areas: p.areas, items: p.items.map(strip), ms: p.ms } }));
-              line({ done: true });
-            } catch (e) {
-              errors.capture("server", e, { at: "port plan" });
-              line({ error: (e as Error).message });
-            }
-            try { c.close(); } catch {}
-          },
-        }), { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
+        // One JSON line per area as it is read, then a done line. The first plan
+        // on a fresh state builds the sessions index, with nothing to send for
+        // longer than the server's idle timeout when the stores are large:
+        // jsonLines keeps the response open meanwhile.
+        return jsonLines(async (line) => {
+          line({ home: portHome(), config: configDir(), parts: PARTS });
+          try {
+            await planParts(portDeps(), l, (p) => line({ part: { areas: p.areas, items: p.items.map(strip), ms: p.ms } }));
+            line({ done: true });
+          } catch (e) {
+            errors.capture("server", e, { at: "port plan" });
+            line({ error: (e as Error).message });
+          }
+        });
       },
       POST: async (req: Request) => {
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;

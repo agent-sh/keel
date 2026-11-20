@@ -126,8 +126,10 @@ export function PortSettings() {
           } else if (m.error) throw new Error(m.error);
         }
       }
-      setPending([]);
-    })().catch(reportError).finally(() => setBusy((b) => (b === "reading" ? "" : b)));
+    })().catch(reportError).finally(() => {
+      setPending([]); // also when the read failed: nothing is being read any more
+      setBusy((b) => (b === "reading" ? "" : b));
+    });
   };
   useEffect(read, []);
   const set = (ids: string[], on: boolean) => setPicked((p) => { const n = new Set(p); for (const id of ids) on ? n.add(id) : n.delete(id); return n; });

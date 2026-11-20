@@ -18,3 +18,25 @@ export function endStreams() {
   for (const c of open) try { c.close(); } catch {}
   open.clear();
 }
+
+// Half the server's idle timeout (10 s, app.ts): Bun closes a response that
+// has sent nothing for that long, also while its handler still works.
+export const KEEPALIVE_MS = 5_000;
+
+// A response of JSON lines written while `work` runs, one per `line(v)`. While
+// the work is quiet an empty line goes out every KEEPALIVE_MS, so a long step
+// (an index built for the first time) does not end the response as idle. A
+// reader skips empty lines.
+export function jsonLines(work: (line: (v: unknown) => void) => Promise<void>): Response {
+  const enc = new TextEncoder();
+  let tick: Timer | undefined;
+  return new Response(new ReadableStream<Uint8Array>({
+    async start(c) {
+      const put = (s: string) => { try { c.enqueue(enc.encode(s)); } catch {} };
+      tick = setInterval(() => put("\n"), KEEPALIVE_MS);
+      try { await work((v) => put(JSON.stringify(v) + "\n")); } finally { clearInterval(tick); }
+      try { c.close(); } catch {}
+    },
+    cancel: () => clearInterval(tick),
+  }), { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
+}

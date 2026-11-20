@@ -491,8 +491,9 @@ export function reportError(err: unknown, context?: unknown) {
   // state the page already shows, and the reconnect reloads: only a network
   // failure while the socket was up and stays up is tracked. A request made
   // before the socket first opened (the page loading during a restart) is
-  // loaded again when it opens.
-  if (e instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(e.message)) {
+  // loaded again when it opens. "network error" is Chrome's name for a response
+  // cut while its body was being read (a stream open when the daemon went away).
+  if (e instanceof TypeError && /failed to fetch|network ?error|load failed/i.test(e.message)) {
     if (!state.connected) return;
     const at = drops;
     setTimeout(() => { if (state.connected && drops === at) post(); }, 3000);
