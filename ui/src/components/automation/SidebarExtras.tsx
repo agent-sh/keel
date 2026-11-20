@@ -4,13 +4,18 @@ import { auto, isLive, openSession, snoozeText, useAuto } from "../../lib/automa
 import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentStatus, ALERT_STATE, IconButton, StopIcon } from "./bits.tsx";
+import { Mark } from "../Mark.tsx";
 
 // The panels load the first time they open.
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
 const LoopsPanel = lazy(() => import("./LoopsPanel.tsx").then((m) => ({ default: m.LoopsPanel })));
 
 // Under a session row: the agents it started, live, with stop. Children never
-// appear in the top-level list and never count as unread on their own.
+// appear in the top-level list and never count as unread on their own. The
+// list is folded to its count until the owner opens it; his choice is kept
+// per session. Folded, a working agent shows as a turning mark on the count.
+const OPEN_KEY = "keel.agentsOpen";
+const openKept = (): Record<string, boolean> => { try { return JSON.parse(localStorage.getItem(OPEN_KEY) ?? "{}"); } catch { return {}; } };
 export function SessionChildren({ parentId, current }: { parentId: string; current: string | null }) {
   const onPick = openSession;
   const all = useAuto((s) => s.agents);
@@ -18,14 +23,18 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
   const kids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
-  // Unfinished children open the list; the summary says how many run and how many wait.
-  const live = kids.filter(isLive).length;
+  // The summary says how many run and how many wait.
   const running = kids.filter((k) => k.status === "running").length;
   const waiting = kids.filter((k) => k.status === "waiting").length;
   const viewing = kids.find((k) => k.session_id === current);
-  const [open, setOpen] = useState<boolean | null>(null);
+  const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
+  const setOpen = (o: boolean) => {
+    setExpanded(o);
+    const m = openKept();
+    if (o) m[parentId] = true; else delete m[parentId];
+    localStorage.setItem(OPEN_KEY, JSON.stringify(m));
+  };
   if (!kids.length) return null;
-  const expanded = open ?? (live > 0 || !!viewing || current === parentId);
   return (
     <div className="ml-3 border-l border-line pl-2" data-testid="session-children">
       <button
@@ -36,6 +45,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-caption text-faint hover:text-muted"
       >
         <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
+        {!expanded && running > 0 && <Mark w="work" className="size-2 border-[1.5px]" />}
         <span className="shrink-0">{kids.length} agent{kids.length > 1 ? "s" : ""}</span>
         {running > 0 && <span className="shrink-0 text-accent">· {running} running</span>}
         {waiting > 0 && <span className="shrink-0 text-warn">· {waiting} waiting</span>}

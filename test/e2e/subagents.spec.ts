@@ -18,6 +18,10 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await page.keyboard.press("Enter");
 
   await expect(page.getByTestId("agent-call")).toHaveCount(2, { timeout: 60_000 });
+  // The agents under the session row are folded to a count until opened.
+  const kids = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`).locator("xpath=..").getByTestId("session-children");
+  await expect(kids.getByTestId("child-session")).toHaveCount(0);
+  await kids.getByTestId("children-toggle").click();
   await expect(page.getByTestId("child-session")).toHaveCount(2);
   await expect(page.getByTestId("background-button")).toBeVisible();
   await shoot(page, "agents-01-started");
