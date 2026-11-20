@@ -51,7 +51,8 @@ export const settingsSections = registry<SettingsSection>();
 export type RowAction = {
   id: string;
   label: string;
-  icon: ReactNode;
+  // A function draws the icon per row (a rating shows whether it is on).
+  icon: ReactNode | ((e: StoredEvent, s: Session) => ReactNode);
   on: "user" | "assistant";
   when?: (e: StoredEvent, s: Session) => boolean;
   run: (e: StoredEvent, s: Session) => void;

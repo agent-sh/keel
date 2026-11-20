@@ -1,4 +1,4 @@
-import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Clock, Gauge, Hand, MessageCircleQuestion, Repeat, Square } from "lucide-react";
+import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Clock, Gauge, Hand, MessageCircleQuestion, Repeat, Square, TrendingDown } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentRecord, Alert } from "../../lib/automation.ts";
 import { cn } from "../../lib/utils.ts";
@@ -30,10 +30,10 @@ export const agentWhy = (a: { status: string; stopped_by?: string | null; end_re
   a.status === "stopped" ? (a.stopped_by ? STOPPED_BY[a.stopped_by] : undefined) : a.status === "incomplete" ? (a.end_reason ? ENDED[a.end_reason] : undefined) : undefined;
 
 const ALERT_ICON: Record<Alert["kind"], typeof Bell> = {
-  approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock,
+  approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock, regression: TrendingDown,
 };
 export const ALERT_LABEL: Record<Alert["kind"], string> = {
-  approval: "Approval", question: "Question", finished: "Finished", failed: "Failed", limit: "Usage limit", loop_failed: "Loop failed", agent: "From the agent", snooze_over: "Snooze over",
+  approval: "Approval", question: "Question", finished: "Finished", failed: "Failed", limit: "Usage limit", loop_failed: "Loop failed", agent: "From the agent", snooze_over: "Snooze over", regression: "Regression",
 };
 
 export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", command: "Command hook", push: "Phone" };
@@ -41,7 +41,7 @@ export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", comman
 // What each alert kind means in the Bridge's state colors: violet needs you,
 // amber is work (an agent speaking, a limit closing in), red failed, sea green done.
 export const ALERT_STATE: Record<Alert["kind"], Watch> = {
-  approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle",
+  approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail",
 };
 
 export function AlertIcon({ kind, read }: { kind: Alert["kind"]; read?: boolean }) {

@@ -44,7 +44,7 @@ function Extra({ on, e, s }: { on: "user" | "assistant"; e: StoredEvent; s: Sess
   return (
     <>
       {rowActions.all().filter((a) => a.on === on && (!a.when || a.when(e, s))).map((a) => (
-        <ActionButton key={a.id} label={a.label} onClick={() => a.run(e, s)}>{a.icon}</ActionButton>
+        <ActionButton key={a.id} label={a.label} testid={`rowaction-${a.id}`} onClick={() => a.run(e, s)}>{typeof a.icon === "function" ? a.icon(e, s) : a.icon}</ActionButton>
       ))}
     </>
   );
