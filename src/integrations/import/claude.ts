@@ -61,6 +61,9 @@ const commandText = (t: string) => {
   return `${name}${args ? " " + args : ""}`;
 };
 
+// The model a record answered with ("<synthetic>" marks Claude Code's own notices).
+const modelOf = (r: any): string | undefined => (r?.type === "assistant" && typeof r.message?.model === "string" && r.message.model !== "<synthetic>" ? r.message.model : undefined);
+
 export function claudeFound(path: string, size: number, mtime: number): Found | null {
   const { head, tail } = headTail(path, 48 * 1024);
   let cwd: string | undefined, model: string | undefined, first: string | undefined, entry: string | undefined, sid: string | undefined;
@@ -68,7 +71,6 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     cwd ??= r.cwd;
     sid ??= r.sessionId;
     entry ??= r.entrypoint;
-    if (!model && r.type === "assistant" && r.message?.model && r.message.model !== "<synthetic>") model = r.message.model;
     if (!first) { const p = promptOf(r); if (p && !/^\/(clear|exit|resume)\b/.test(commandText(p))) first = commandText(p); }
   }
   let title: string | undefined, last: string | undefined;
@@ -79,6 +81,7 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     if (r.type === "last-prompt" && r.lastPrompt) last = r.lastPrompt;
     else { const p = promptOf(r); if (p) last = commandText(p); }
     cwd ??= r.cwd;
+    model = modelOf(r) ?? model; // the latest reply's model: a session can switch models
   }
   // A Claude Code transcript whose head and tail hold no prompt (long tool
   // outputs around it) is read through for its first one.
@@ -87,6 +90,9 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     if (hit) { first = hit.text; cwd ??= hit.r.cwd; sid ??= hit.r.sessionId; }
   }
   if (!first && !last) return null; // no conversation in it
+  // The head of a long transcript can be all system context before the first
+  // reply: then the first reply in the file names the model.
+  model ??= head.map(modelOf).find(Boolean) ?? scanFor(path, modelOf);
   const sub = basename(dirname(path)) === "subagents";
   return {
     harness: "claude",
@@ -127,6 +133,7 @@ export async function readClaude(path: string): Promise<Read> {
     chain.push(r);
   }
   chain.reverse();
+  found.model = chain.map(modelOf).findLast(Boolean) ?? found.model;
   const b = new Builder();
   const notes: string[] = [];
   let lastMsg: string | undefined;

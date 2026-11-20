@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { requestText } from "./agy.ts";
-import { readClaude } from "./claude.ts";
+import { claudeFound, readClaude } from "./claude.ts";
 import { damageNotes, readLines } from "./files.ts";
 import { readCodex } from "./codex.ts";
 import { readKeel } from "./keel.ts";
@@ -40,6 +40,28 @@ test("a Claude Code reply recorded as stopped stays stopped", async () => {
     { ...base, type: "assistant", uuid: "a", parentUuid: "u", message: { id: "m", role: "assistant", content: [{ type: "text", text: "First check passed" }], stop_reason: "interrupted" } },
   ].map((r) => JSON.stringify(r)).join("\n") + "\n");
   expect((await readClaude(p)).events.find((e) => e.kind === "assistant")?.data.stop).toBe("interrupted");
+});
+
+test("a Claude Code import names the model of the latest reply, also past a long head", async () => {
+  const p = join(dir, "m.jsonl");
+  const base = { sessionId: "m", cwd: dir, isSidechain: false, timestamp: new Date().toISOString() };
+  const reply = (uuid: string, parent: string, model: string) => ({ ...base, type: "assistant", uuid, parentUuid: parent, message: { id: uuid, role: "assistant", model, content: [{ type: "text", text: "ok" }] } });
+  const pad = "x".repeat(40 * 1024);
+  const recs = [
+    { ...base, type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "go " + pad } },
+    { ...base, type: "attachment", uuid: "at", parentUuid: "u1", attachment: { text: pad } },
+    reply("a1", "at", "claude-opus-5-5"),
+    { ...base, type: "user", uuid: "u2", parentUuid: "a1", message: { role: "user", content: "more " + pad } },
+    reply("a2", "u2", "global.anthropic.claude-sonnet-5-5"),
+    { ...base, type: "assistant", uuid: "n", parentUuid: "a2", message: { id: "n", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "notice" }] } },
+  ];
+  const write = (r: any[]) => writeFileSync(p, r.map((x) => JSON.stringify(x)).join("\n") + "\n");
+  write(recs);
+  expect(claudeFound(p, 0, 0)?.model).toBe("global.anthropic.claude-sonnet-5-5");
+  expect((await readClaude(p)).found.model).toBe("global.anthropic.claude-sonnet-5-5");
+  // Only the first reply, beyond the head the listing samples: still named.
+  write([...recs.slice(0, 3), { ...base, type: "user", uuid: "u3", parentUuid: "a1", message: { role: "user", content: "tail " + pad + pad } }]);
+  expect(claudeFound(p, 0, 0)?.model).toBe("claude-opus-5-5");
 });
 
 test("a Rust Keel session whose head is gone is not read as all its branches", async () => {
