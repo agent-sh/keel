@@ -28,9 +28,13 @@ export const hookRoutes: RouteModule = (deps) => {
 
   registerHooks({
     async beforeRequest(s, req) {
+      // The prompt's hooks run for the turn request that answers it, not for a
+      // summary or side request sent first: that one keeps its own messages.
+      if (req.purpose !== "turn") return req;
       const evs = events(s.id);
       let i = evs.length - 1;
-      while (i >= 0 && (evs[i]!.kind === "turn_start" || evs[i]!.kind === "note")) i--;
+      // (A compaction at the turn's start is stored after the prompt it leaves whole.)
+      while (i >= 0 && (evs[i]!.kind === "turn_start" || evs[i]!.kind === "note" || evs[i]!.kind === "compaction")) i--;
       const last = evs[i];
       if (last?.kind !== "user" || answered.has(last.id)) return req;
       answered.add(last.id);

@@ -183,11 +183,15 @@ export class Tacit {
     const t = this;
     registerHooks({
       async beforeRequest(s, req) {
-        if (!t.bin || !t.flags(s.id).use_memory) return req;
+        // Memory for a prompt joins the turn request that answers it. A summary
+        // or side request sent first keeps its own messages: rebuilding them
+        // from the branch would drop its ask and send the prompt in its place.
+        if (req.purpose !== "turn" || !t.bin || !t.flags(s.id).use_memory) return req;
         const events = t.lineage(s.id);
         // The prompt this request answers: the newest user message, with no reply after it yet.
+        // (A compaction at the turn's start is stored after the prompt it leaves whole.)
         let i = events.length - 1;
-        while (i >= 0 && (events[i]!.kind === "turn_start" || (events[i]!.kind === "note" && !events[i]!.data.model))) i--;
+        while (i >= 0 && (events[i]!.kind === "turn_start" || events[i]!.kind === "compaction" || (events[i]!.kind === "note" && !events[i]!.data.model))) i--;
         const last = events[i];
         if (last?.kind !== "user" || t.done.has(last.id)) return req;
         t.done.add(last.id);

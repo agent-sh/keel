@@ -17,6 +17,9 @@ export type TurnHooks = {
   system?: (s: Session, model?: ModelInfo) => string | Promise<string>;
   // Change the request just before it is sent (compaction, volatile-tail notes).
   // Must keep the prefix stable: append, never rewrite earlier messages.
+  // Runs for every purpose: a hook that answers the newest prompt or rebuilds
+  // the messages from the branch does so for `purpose: "turn"` only (a summary
+  // or side request carries its own ask, which the branch does not hold).
   beforeRequest?: (s: Session, req: ProviderRequest) => ProviderRequest | Promise<ProviderRequest>;
   // Every provider call, turn steps, summaries and side answers alike, for
   // measuring only: the request exactly as sent (after every beforeRequest and
