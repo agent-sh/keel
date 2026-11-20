@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { shoot } from "./shots.ts";
 
 // Feature: the owner's helper. One conversation kept above the sessions
-// (the list's Helper entry, Ctrl J), with its side panel: the remembered
-// list the helper writes and they edit, what it was told about lately, and
+// (the list's Helper entry, Ctrl J), with its side panel: the memory the
+// helper writes and they edit (keyed records: helper-memory.spec.ts), what it was told about lately, and
 // its mail. Sending a mail always waits for their card, even in full auto. A
 // failure in another session and important new mail arrive in one digest
 // wake. The mail is the stand-in folder scripts/dev.sh sets; the model is
@@ -27,10 +27,10 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
   const outbox = join(mail, "outbox.jsonl");
   const sentBefore = existsSync(outbox) ? readFileSync(outbox, "utf8").trim().split("\n").filter(Boolean).length : 0;
 
-  // A fresh helper on this scratch daemon: an earlier run's conversation archived, its list emptied.
+  // A fresh helper on this scratch daemon: an earlier run's conversation archived, its memory emptied.
   const was = await (await request.get("/api/helper")).json();
   if (was.session_id) await request.patch(`/api/sessions/${was.session_id}`, { data: { archived: true } });
-  for (const m of (await (await request.get("/api/helper/memory")).json()).items) await request.delete(`/api/helper/memory/${m.id}`);
+  for (const m of (await (await request.get("/api/helper/memory")).json()).items) await request.delete(`/api/helper/memory/${encodeURIComponent(m.key)}`);
 
   // Opening it the first time turns it on; it leaves the session list.
   await page.goto("/");
@@ -48,7 +48,7 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
 
   // The helper keeps a fact, reads the sessions, and drafts a mail; the mail waits for the card.
   const calls = [
-    { name: "helper__remember", input: { text: "Dana is the accountant; invoices go to her", kind: "person" } },
+    { name: "helper__memory_put", input: { records: [{ key: "person.dana", value: "Dana is the accountant; invoices go to her", kind: "person", aliases: ["dana@example.com"] }] } },
     { name: "helper__sessions", input: {} },
     { name: "mail__send", input: { to: "dana@example.com", subject: "Invoice 1042", body: "Hi Dana,\n\nThe invoice is paid.\n\nAvi" } },
   ];
@@ -81,7 +81,7 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
   await drop.getByTestId("memory-delete").click();
   await expect(drop).toHaveCount(0);
   // A secret is never kept.
-  const secret = await request.post("/api/helper/memory", { data: { text: "The deploy token is ghp_abcdefghijklmnopqrstuvwxyz0123456789", kind: "fact" } });
+  const secret = await request.post("/api/helper/memory", { data: { value: "The deploy token is ghp_abcdefghijklmnopqrstuvwxyz0123456789", kind: "fact" } });
   expect(secret.status()).toBe(400);
 
   // Another session fails and important mail comes in: one wake tells both.

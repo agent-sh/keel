@@ -11,7 +11,8 @@ import { pendingQuestions } from "../tools/interact.ts";
 import { registerSessionTools } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Helper } from "./helper.ts";
-import { digestLines, MEMORY_KINDS } from "./policy.ts";
+import { memoryTools } from "./memtools.ts";
+import { digestLines } from "./policy.ts";
 
 let H: Helper | undefined;
 const ago = (ms: number) => {
@@ -128,34 +129,17 @@ const activity: Tool = {
   }),
 };
 
-const remember: Tool = {
-  name: "helper__remember",
-  description: `Keep one fact worth knowing later in the owner's remembered list (they see and edit it): a preference, decision, person, commitment (with its date) or stable fact. Pass id to update an item instead of adding a near copy. Never secrets. kind: ${MEMORY_KINDS.join(", ")}.`,
-  input_schema: { type: "object", properties: { text: { type: "string" }, kind: { type: "string", enum: MEMORY_KINDS }, id: { type: "string", description: "An item's id (or its last characters) to update" } }, required: ["text", "kind"], additionalProperties: false },
-  readOnly: true,
-  run: (input) => guard(() => {
-    const m = H!.remember(input, "helper");
-    return `Remembered [${m.id.slice(-6)}] (${m.kind}) ${m.text}`;
-  }),
-};
-
-const forget: Tool = {
-  name: "helper__forget",
-  description: "Remove one item from the remembered list (it turned false, or the owner asked), by its id or its last characters.",
-  input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-  readOnly: true,
-  run: (input) => guard(() => {
-    const m = H!.forget(String(input.id ?? ""));
-    return m ? `Forgot: ${m.text}` : `No remembered item ${input.id}.`;
-  }),
-};
-
 const needMail = () => {
   const src = H!.source;
   if (!src.available()) throw new Error(`${src.label} is not connected: the owner signs in through their Google token file (Settings, Helper).`);
   return src;
 };
 const shortFrom = (f: string) => f.replace(/\s*<[^>]*>/, "") || f;
+// A label id with its name when memory keeps one (mail.label.<id>), so the ids need no lookup.
+const named = (ids: string[]) => ids.map((id) => {
+  const r = H!.records.index.get(`mail.label.${id}`);
+  return r && r.value !== id ? `${id} (${r.value})` : id;
+}).join(" ");
 
 const mailSearch: Tool = {
   name: "mail__search",
@@ -175,7 +159,7 @@ const mailRead: Tool = {
   readOnly: true,
   run: (input) => guard(async () => {
     const m = await needMail().read(String(input.id ?? ""));
-    return `From: ${m.from}\nTo: ${m.to ?? ""}\nDate: ${m.date}\nSubject: ${m.subject}\nThread: ${m.thread_id}\nLabels: ${m.labels.join(" ")}\n\n<mail_text>\n${m.body ?? m.snippet}\n</mail_text>`;
+    return `From: ${m.from}\nTo: ${m.to ?? ""}\nDate: ${m.date}\nSubject: ${m.subject}\nThread: ${m.thread_id}\nLabels: ${named(m.labels)}\n\n<mail_text>\n${m.body ?? m.snippet}\n</mail_text>`;
   }),
 };
 
@@ -191,7 +175,7 @@ const mailLabel: Tool = {
     const remove = [...(input.remove ?? []), ...(input.archive ? ["INBOX"] : []), ...(input.read === true ? ["UNREAD"] : [])].map(String);
     if (!add.length && !remove.length) throw new Error("Nothing to change.");
     await src.modify(String(input.id), add, remove);
-    return `Changed ${input.id}: ${[add.length && `added ${add.join(", ")}`, remove.length && `removed ${remove.join(", ")}`].filter(Boolean).join("; ")}.`;
+    return `Changed ${input.id}: ${[add.length && `added ${named(add)}`, remove.length && `removed ${named(remove)}`].filter(Boolean).join("; ")}.`;
   }),
 };
 
@@ -233,7 +217,8 @@ const calendar: Tool = {
   }),
 };
 
-const ALL = [sessions, sessionRead, activity, remember, forget, mailSearch, mailRead, mailLabel, mailSend, calendar];
+const memory = memoryTools(() => H!.records);
+const ALL = [...memory, sessions, sessionRead, activity, mailSearch, mailRead, mailLabel, mailSend, calendar];
 
 export function bindHelperTools(h: Helper) {
   H = h;

@@ -1,45 +1,49 @@
-// The helper's side panel: what it remembers (each item editable and
-// removable, and their own additions), what it was told about lately, and
-// its mail source. Also the helper's settings section.
-import { Check, MailCheck, Pencil, Plus, Trash2, X } from "lucide-react";
-import { useState } from "react";
+// The helper's side panel: its memory (keyed records the helper keeps and
+// the owner searches, edits, adds and deletes), what it was told about
+// lately, and its mail source. Also the helper's settings section.
+import { Check, MailCheck, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { addMemory, checkMail, dropMemory, editMemory, openHelper, setHelper, useHelper, type MemoryItem } from "../lib/helper.ts";
+import { addMemory, checkMail, dropMemory, editMemory, openHelper, setHelper, useHelper, type MemoryRecord } from "../lib/helper.ts";
 import { reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 import { iconButton } from "./ui.tsx";
 
-const KINDS = ["preference", "decision", "person", "commitment", "fact"];
+const KINDS = ["fact", "person", "preference", "decision", "commitment", "reference"];
 const failed = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const field = "min-w-0 rounded-md border border-line bg-sunken px-2 text-ui outline-none placeholder:text-faint focus:border-accent";
+const split = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+// The list shows this many records; the search narrows the rest.
+const SHOWN = 60;
 
-function Item({ m }: { m: MemoryItem }) {
-  const [edit, setEdit] = useState<string | null>(null);
+// Matches the search box: every word in the key, value, aliases or topics.
+const matches = (m: MemoryRecord, q: string) => {
+  const hay = `${m.key} ${m.value} ${m.aliases.join(" ")} ${m.topics.join(" ")} ${m.kind}`.toLowerCase();
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+};
+
+function Item({ m }: { m: MemoryRecord }) {
+  // An alias that only repeats the value (a label's name) is not shown twice.
+  const aliases = m.aliases.filter((a) => a !== m.value.toLowerCase());
+  const [edit, setEdit] = useState<{ value: string; aliases: string; topics: string } | null>(null);
   const [err, setErr] = useState("");
   const save = () => {
-    if (edit === null) return;
-    editMemory(m.id, { text: edit }).then(() => { setEdit(null); setErr(""); }, (e) => setErr(failed(e)));
+    if (!edit) return;
+    editMemory(m.key, { value: edit.value, aliases: split(edit.aliases), topics: split(edit.topics) }).then(() => { setEdit(null); setErr(""); }, (e) => setErr(failed(e)));
   };
+  const keys = (e: React.KeyboardEvent) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEdit(null); };
   return (
-    <li className="group border-b border-line py-2 last:border-0" data-testid="memory-item" data-kind={m.kind}>
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 shrink-0 rounded-xs bg-sunken px-1.5 py-px text-micro text-muted">{m.kind}</span>
-        {edit === null ? (
-          <p className="min-w-0 flex-1 text-ui leading-snug" data-testid="memory-text">{m.text}</p>
-        ) : (
-          <textarea
-            className="min-h-[3.5rem] min-w-0 flex-1 resize-y rounded-md border border-line bg-sunken px-2 py-1 text-ui outline-none focus:border-accent"
-            value={edit} autoFocus data-testid="memory-edit" aria-label="Edit the remembered item"
-            onChange={(e) => setEdit(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEdit(null); }}
-          />
-        )}
-        <span className={cn("flex shrink-0 gap-0.5", edit === null && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100")}>
-          {edit === null ? (
+    <li className="group border-b border-line py-2 last:border-0" data-testid="memory-item" data-key={m.key} data-kind={m.kind}>
+      <div className="flex items-center gap-2">
+        <code className="min-w-0 flex-1 truncate font-mono text-micro text-accent-ink" data-testid="memory-key" title={m.key}>{m.key}</code>
+        <span className="shrink-0 rounded-xs bg-sunken px-1.5 py-px text-micro text-muted">{m.kind}</span>
+        <span className={cn("flex shrink-0 gap-0.5", !edit && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100")}>
+          {!edit ? (
             <>
-              <button type="button" className={cn(iconButton, "size-6")} aria-label="Edit" title="Edit" data-testid="memory-edit-button" onClick={() => setEdit(m.text)}><Pencil className="size-3.5" /></button>
-              <button type="button" className={cn(iconButton, "size-6 hover:text-danger")} aria-label="Forget" title="Forget" data-testid="memory-delete" onClick={() => dropMemory(m.id).catch(reportError)}><Trash2 className="size-3.5" /></button>
+              <button type="button" className={cn(iconButton, "size-6")} aria-label="Edit" title="Edit" data-testid="memory-edit-button" onClick={() => setEdit({ value: m.value, aliases: m.aliases.join(", "), topics: m.topics.join(", ") })}><Pencil className="size-3.5" /></button>
+              <button type="button" className={cn(iconButton, "size-6 hover:text-danger")} aria-label="Delete" title="Delete" data-testid="memory-delete" onClick={() => dropMemory(m.key).catch(reportError)}><Trash2 className="size-3.5" /></button>
             </>
           ) : (
             <>
@@ -49,31 +53,48 @@ function Item({ m }: { m: MemoryItem }) {
           )}
         </span>
       </div>
-      <div className="mt-1 pl-0.5 text-micro text-faint">{m.source === "owner" ? "You" : "The helper"}, {ago(m.updated) === "now" ? "just now" : `${ago(m.updated)} ago`}{m.used ? `, recalled ${m.used}x` : ""}</div>
+      {!edit ? (
+        <p className="mt-0.5 text-ui leading-snug" data-testid="memory-text">{m.value}</p>
+      ) : (
+        <div className="mt-1 flex flex-col gap-1.5">
+          <textarea className={cn(field, "min-h-[3.5rem] resize-y py-1")} value={edit.value} autoFocus data-testid="memory-edit" aria-label="Value" onChange={(e) => setEdit({ ...edit, value: e.target.value })} onKeyDown={keys} />
+          <input className={cn(field, "h-7 text-caption")} value={edit.aliases} placeholder="Aliases, comma separated" data-testid="memory-edit-aliases" aria-label="Aliases" onChange={(e) => setEdit({ ...edit, aliases: e.target.value })} onKeyDown={keys} />
+          <input className={cn(field, "h-7 text-caption")} value={edit.topics} placeholder="Topics, comma separated" data-testid="memory-edit-topics" aria-label="Topics" onChange={(e) => setEdit({ ...edit, topics: e.target.value })} onKeyDown={keys} />
+        </div>
+      )}
+      {!edit && (aliases.length > 0 || m.topics.length > 0) && (
+        <div className="mt-1 flex flex-wrap gap-1" data-testid="memory-terms">
+          {aliases.map((a) => <span key={`a${a}`} className="rounded-xs border border-line px-1.5 text-micro text-muted" data-testid="memory-alias">{a}</span>)}
+          {m.topics.map((t) => <span key={`t${t}`} className="rounded-xs bg-accent-soft px-1.5 text-micro text-accent-ink" data-testid="memory-topic">#{t}</span>)}
+        </div>
+      )}
+      <div className="mt-1 text-micro text-faint">{m.source === "owner" ? "You" : m.source === "import" ? "Imported" : "The helper"}, {ago(m.updated) === "now" ? "just now" : `${ago(m.updated)} ago`}{m.used ? `, used ${m.used}x` : ""}</div>
       {err && <p className="mt-1 text-micro text-danger" role="alert">{err}</p>}
     </li>
   );
 }
 
 function AddItem() {
-  const [text, setText] = useState("");
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
   const [kind, setKind] = useState("fact");
   const [err, setErr] = useState("");
   const add = () => {
-    if (!text.trim()) return;
-    addMemory(text, kind).then(() => { setText(""); setErr(""); }, (e) => setErr(failed(e)));
+    if (!value.trim()) return;
+    addMemory({ key: key.trim() || undefined, value, kind }).then(() => { setKey(""); setValue(""); setErr(""); }, (e) => setErr(failed(e)));
   };
   return (
-    <div className="mt-2 flex flex-col gap-1.5">
+    <div className="mt-2 flex flex-col gap-1.5 rounded-md border border-line p-2">
       <div className="flex gap-1.5">
-        <input
-          className="h-8 min-w-0 flex-1 rounded-md border border-line bg-sunken px-2 text-ui outline-none placeholder:text-faint focus:border-accent"
-          placeholder="Remember something" value={text} data-testid="memory-new" aria-label="Something to remember"
-          onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }}
-        />
-        <Select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind" className="h-8 w-28">
+        <input className={cn(field, "h-7 flex-1 font-mono text-micro")} placeholder="key, such as person.dana (optional)" value={key} data-testid="memory-new-key" aria-label="Key"
+          onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        <Select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind" className="h-7 w-28">
           {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
         </Select>
+      </div>
+      <div className="flex gap-1.5">
+        <input className={cn(field, "h-8 flex-1")} placeholder="Remember something" value={value} data-testid="memory-new" aria-label="Something to remember"
+          onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
         <button type="button" className={cn(iconButton, "size-8")} aria-label="Add" title="Add" data-testid="memory-add" onClick={add}><Plus className="size-4" /></button>
       </div>
       {err && <p className="text-micro text-danger" role="alert">{err}</p>}
@@ -81,22 +102,43 @@ function AddItem() {
   );
 }
 
+function MemoryList() {
+  const memory = useHelper((s) => s.memory);
+  const [q, setQ] = useState("");
+  const [all, setAll] = useState(false);
+  const found = useMemo(() => (q.trim() ? memory.filter((m) => matches(m, q)) : memory), [memory, q]);
+  const shown = all ? found : found.slice(0, SHOWN);
+  return (
+    <section aria-labelledby="helper-mem">
+      <h3 id="helper-mem" className="flex items-baseline gap-2 text-ui font-semibold">
+        Memory <span className="text-caption font-normal tabular-nums text-faint" data-testid="memory-count">{memory.length}</span>
+      </h3>
+      <p className="mt-0.5 text-caption text-muted">One fact per key. The helper looks facts up by key or alias instead of reading files again. Edit or delete anything; nothing secret is kept.</p>
+      {memory.length > 0 && (
+        <label className={cn(field, "mt-2 flex h-8 items-center gap-1.5")}>
+          <Search className="size-3.5 shrink-0 text-faint" />
+          <input className="h-full min-w-0 flex-1 bg-transparent outline-none placeholder:text-faint" placeholder="Search keys, values, aliases, topics" value={q} data-testid="memory-search" aria-label="Search memory"
+            onChange={(e) => { setQ(e.target.value); setAll(false); }} onKeyDown={(e) => { if (e.key === "Escape") setQ(""); }} />
+          {q && <span className="shrink-0 text-micro tabular-nums text-faint" data-testid="memory-found">{found.length}</span>}
+        </label>
+      )}
+      {shown.length ? <ul className="mt-1" data-testid="memory-list">{shown.map((m) => <Item key={m.key} m={m} />)}</ul>
+        : <p className="mt-3 text-caption text-faint" data-testid="memory-empty">{q ? "No record matches." : "Nothing yet."}</p>}
+      {found.length > shown.length && (
+        <button type="button" className="mt-1 text-caption text-muted hover:text-fg" data-testid="memory-more" onClick={() => setAll(true)}>Show all {found.length}</button>
+      )}
+      <AddItem />
+    </section>
+  );
+}
+
 export function HelperPanel(_: { session: Session }) {
   const view = useHelper((s) => s.view);
-  const memory = useHelper((s) => s.memory);
   const [checked, setChecked] = useState("");
   const events = (view?.events ?? []).slice(-12).reverse();
   return (
     <div className="flex h-full flex-col gap-5 overflow-y-auto p-4" data-testid="helper-panel">
-      <section aria-labelledby="helper-mem">
-        <h3 id="helper-mem" className="flex items-baseline gap-2 text-ui font-semibold">
-          Remembered <span className="text-caption font-normal tabular-nums text-faint">{memory.length}</span>
-        </h3>
-        <p className="mt-0.5 text-caption text-muted">What the helper chose to keep. Edit or forget anything; nothing secret is kept.</p>
-        {memory.length ? <ul className="mt-2" data-testid="memory-list">{memory.map((m) => <Item key={m.id} m={m} />)}</ul>
-          : <p className="mt-3 text-caption text-faint" data-testid="memory-empty">Nothing yet.</p>}
-        <AddItem />
-      </section>
+      <MemoryList />
 
       <section aria-labelledby="helper-ev">
         <h3 id="helper-ev" className="text-ui font-semibold">Lately</h3>
@@ -163,8 +205,8 @@ export function HelperSettings() {
             {MINUTES.filter(Boolean).map((m) => <option key={m} value={String(m)}>{mins(m)}</option>)}
           </Select>
         </SettingRow>
-        <SettingRow label="Remembered" hint="Kept in this daemon's state. Other agents' MCP servers set up in Settings reach the helper too.">
-          <span className="text-ui tabular-nums text-muted">{memory} items</span>
+        <SettingRow label="Memory" hint="Keyed records kept in this daemon's state, searched and edited in the helper's panel. Other agents' MCP servers set up in Settings reach the helper too.">
+          <span className="text-ui tabular-nums text-muted">{memory} records</span>
         </SettingRow>
       </Card>
     </div>

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../core/types.ts";
 import { keptMessages, OWNER_WORDS_BYTES } from "../engine/compact.ts";
-import { levelOfAlert, nextWakeAt, recall, spike, type MemoryItem } from "./policy.ts";
+import { levelOfAlert, nextWakeAt, spike } from "./policy.ts";
 
 test("what wakes the helper, what waits for the next turn, what is noise", () => {
   const long = 5 * 60_000;
@@ -24,19 +24,6 @@ test("a burst is one wake, and wakes are kept apart", () => {
   }
   expect(spikes).toEqual([4, 9]); // one spike per five failures, never one per failure
   expect(spike([0, 1000], 20_000, 10_000, 3).spiked).toBe(false); // old ones left the window
-});
-
-test("recall: related items first, standing ones next, nothing twice, within budget", () => {
-  const m = (id: string, kind: MemoryItem["kind"], text: string, updated = 0): MemoryItem => ({ id, ts: 0, updated, kind, text, source: "helper" });
-  const items = [
-    m("a", "fact", "The dentist appointment is on Thursday at 10:00"),
-    m("b", "preference", "Replies in short sentences, no hedging"),
-    m("c", "person", "Dana is the accountant; invoices go to her"),
-    m("d", "fact", "The office router is in the hallway closet"),
-  ];
-  expect(recall(items, "Send the invoices to the accountant", new Set(), 2000).map((x) => x.id)).toEqual(["c", "b"]);
-  expect(recall(items, "Send the invoices to the accountant", new Set(["c", "b"]), 2000).map((x) => x.id)).toEqual([]);
-  expect(recall(items, "When is the dentist", new Set(), 80).map((x) => x.id)).toEqual(["a"]);
 });
 
 // A conversation that never ends: forty compactions, each after an owner

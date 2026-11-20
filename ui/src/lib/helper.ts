@@ -2,11 +2,12 @@
 // session, its mail source, the events it was told about, and the
 // remembered list. Fed by REST and the helper's feature frames.
 import { useSyncExternalStore } from "react";
-import type { DigestEvent, MemoryItem } from "../../../src/helper/policy.ts";
+import type { DigestEvent } from "../../../src/helper/policy.ts";
+import type { MemoryRecord } from "../../../src/helper/records.ts";
 import { api, onFeature, reportError } from "./store.ts";
 import { navigate } from "./ui.ts";
 
-export type { DigestEvent, MemoryItem };
+export type { DigestEvent, MemoryRecord };
 export type HelperView = {
   on: boolean;
   session_id: string | null;
@@ -16,7 +17,7 @@ export type HelperView = {
   mail: { id: string; label: string; available: boolean; account?: string; can: { modify: boolean; send: boolean; calendar: boolean } };
   events: DigestEvent[];
 };
-type State = { view: HelperView | null; memory: MemoryItem[] };
+type State = { view: HelperView | null; memory: MemoryRecord[] };
 
 let state: State = { view: null, memory: [] };
 const subs = new Set<() => void>();
@@ -26,7 +27,7 @@ export function useHelper<T>(sel: (s: State) => T): T {
 }
 
 export async function loadHelper(): Promise<HelperView> {
-  const [view, mem] = await Promise.all([api<HelperView>("/api/helper"), api<{ items: MemoryItem[] }>("/api/helper/memory")]);
+  const [view, mem] = await Promise.all([api<HelperView>("/api/helper"), api<{ items: MemoryRecord[] }>("/api/helper/memory")]);
   set({ view, memory: mem.items });
   return view;
 }
@@ -58,7 +59,8 @@ export async function openHelper() {
 }
 
 const json = (b: unknown) => ({ method: "POST", body: JSON.stringify(b) });
-export const addMemory = (text: string, kind: string) => api("/api/helper/memory", json({ text, kind }));
-export const editMemory = (id: string, p: { text?: string; kind?: string }) => api(`/api/helper/memory/${id}`, { method: "PATCH", body: JSON.stringify(p) });
-export const dropMemory = (id: string) => api(`/api/helper/memory/${id}`, { method: "DELETE" });
+export type MemoryInput = { key?: string; value?: string; kind?: string; aliases?: string[]; topics?: string[] };
+export const addMemory = (p: MemoryInput) => api("/api/helper/memory", json(p));
+export const editMemory = (key: string, p: MemoryInput) => api(`/api/helper/memory/${encodeURIComponent(key)}`, { method: "PATCH", body: JSON.stringify(p) });
+export const dropMemory = (key: string) => api(`/api/helper/memory/${encodeURIComponent(key)}`, { method: "DELETE" });
 export const checkMail = () => api<{ new: number; important: number }>("/api/helper/check", { method: "POST" });

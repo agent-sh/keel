@@ -3,9 +3,9 @@
 //   GET  /api/helper                 on, session, mail source, recent events
 //   PUT  /api/helper                 { on?, mail_every_min?, wake_gap_min? }
 //   POST /api/helper/check           look at new mail now
-//   GET  /api/helper/memory          the remembered list
-//   POST /api/helper/memory          { text, kind } added by the owner
-//   PATCH/DELETE /api/helper/memory/:id
+//   GET  /api/helper/memory          the memory's records (?q= finds keys by alias, topic, prefix or words)
+//   POST /api/helper/memory          { key?, value, kind?, aliases?, topics? } added by the owner
+//   PATCH/DELETE /api/helper/memory/:key  (PATCH may carry a new key)
 import { Helper } from "../../helper/helper.ts";
 import { bindHelperTools } from "../../helper/tools.ts";
 import type { RouteModule } from "../app.ts";
@@ -29,15 +29,21 @@ export const helperRoutes: RouteModule = (deps) => {
     },
     "/api/helper/check": { POST: async () => json(await h.runMailCheck()) },
     "/api/helper/memory": {
-      GET: () => json({ items: h.memory() }),
-      POST: async (req: Request) => json({ item: h.remember((await req.json().catch(() => ({}))) as any, "owner") }),
-    },
-    "/api/helper/memory/:id": {
-      PATCH: async (req: any) => {
-        if (!h.item(req.params.id)) return json({ error: "no such item" }, 404);
-        return json({ item: h.remember({ ...((await req.json().catch(() => ({}))) as any), id: req.params.id }, "owner") });
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams.get("q")?.trim();
+        if (!q) return json({ items: h.memory() });
+        const f = h.records.index.find(q, 200);
+        return json({ items: f.hits.map((x) => h.records.index.byKey.get(x.key)!), total: f.total });
       },
-      DELETE: (req: any) => (h.forget(req.params.id) ? json({ ok: true }) : json({ error: "no such item" }, 404)),
+      POST: async (req: Request) => {
+        const b = (await req.json().catch(() => ({}))) as any;
+        if (b.key && h.records.index.get(String(b.key))) return json({ error: `a record ${h.records.index.get(String(b.key))!.key} exists: edit it instead` }, 409);
+        return json({ item: h.records.put([b], "owner")[0] });
+      },
+    },
+    "/api/helper/memory/:key": {
+      PATCH: async (req: any) => json({ item: h.records.edit(decodeURIComponent(req.params.key), (await req.json().catch(() => ({}))) as any) }),
+      DELETE: (req: any) => (h.records.drop([decodeURIComponent(req.params.key)]).length ? json({ ok: true }) : json({ error: "no such record" }, 404)),
     },
   };
 };
