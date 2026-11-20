@@ -142,7 +142,7 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-empty { padding: 24px 8px 0; font-size: 13px; line-height: 1.6; color: var(--faint); }
 
 /* ---------- Stations ---------- */
-.k-stations { flex: 1; min-width: 0; display: flex; overflow-x: auto; scroll-snap-type: x proximity; }
+.k-stations { flex: 1; min-width: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; }
 .k-station { position: relative; flex: 1 1 0; min-width: 540px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
 .k-station[data-helm] { flex-grow: 1.45; background: var(--raised); }
 .k-stations[data-count="1"] .k-station { flex-grow: 1; }

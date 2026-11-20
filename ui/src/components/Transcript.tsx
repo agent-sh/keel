@@ -608,7 +608,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     <div className="relative min-h-0 flex-1">
       <div
         ref={scroller}
-        className="h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
+        className="relative h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
         onScroll={(e) => {
           const el = e.currentTarget;
           const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
