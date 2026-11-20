@@ -3,7 +3,11 @@
 // placeholder `[secret:<8 hex>]` (or `[value of $NAME]` once it has a name).
 // The value lives only in this process, for the sessions it belongs to; a tool
 // call that names the placeholder runs with the value, and commands of the
-// session get named secrets as environment variables. A restart forgets them.
+// session get named secrets as environment variables. A restart forgets the
+// values, not the placeholders: the id is keyed by a key kept in the state
+// folder, and the ids and names issued are kept (never a value), so a value
+// seen again after a restart gets its old placeholder, and a call naming one
+// whose value is gone is refused by name instead of running with its text.
 import { createHmac, randomBytes } from "node:crypto";
 
 export type SecretMeta = { id: string; kind: string; name?: string; source: Source; sessions: string[]; created: number; placeholder: string };
@@ -102,7 +106,6 @@ export function detect(text: string): Hit[] {
   return out;
 }
 
-const KEY = randomBytes(32);
 // Tool input fields that describe a call to the owner and run nothing.
 // The fields of a shell tool that hold its script.
 export const SHELL_FIELDS: ReadonlySet<string> = new Set(["command", "cmd"]);
@@ -206,8 +209,17 @@ export function shellRefs(text: string, name: (id: string | undefined, varName: 
   return out;
 }
 
+// What is kept of the placeholders issued: ids and names, never a value.
+export type Ledger = { issued(id: string, kind: string, name?: string): void; has(id: string): boolean };
+
 export class Vault {
   private byValue = new Map<string, Entry>();
+  ledger: Ledger | null = null;
+  // The key placeholder ids are made with, kept across restarts by the caller.
+  private key: Uint8Array = randomBytes(32);
+  useKey(key: Uint8Array) {
+    this.key = key;
+  }
   private byId = new Map<string, Entry>();
   private listeners = new Set<Listener>();
   // A child session (a subagent, a reviewer) may use its parent's secrets.
@@ -233,12 +245,13 @@ export class Vault {
     let e = this.byValue.get(value);
     const fresh = !e;
     if (!e) {
-      const id = createHmac("sha256", KEY).update(value).digest("hex").slice(0, 8);
+      const id = createHmac("sha256", this.key).update(value).digest("hex").slice(0, 8);
       e = { id, value, kind, source, sessions: new Set(), created: Date.now(), name };
       this.byValue.set(value, e);
       this.byId.set(id, e);
     }
     if (name && !e.name) e.name = name;
+    if (fresh || name) this.ledger?.issued(e.id, e.kind, e.name);
     const joined = sessionId && !e.sessions.has(sessionId);
     if (sessionId) e.sessions.add(sessionId);
     if (sessionId && (fresh || joined)) this.tell({ type: "found", session_id: sessionId, secret: this.meta(e) });
@@ -254,6 +267,7 @@ export class Vault {
       for (const o of this.byId.values()) if (o !== e && o.name === name && [...o.sessions].some((s) => e.sessions.has(s))) o.name = undefined;
     }
     e.name = name || undefined;
+    if (e.name) this.ledger?.issued(e.id, e.kind, e.name);
     this.tell({ type: "changed", secret: this.meta(e) });
     return this.meta(e);
   }
@@ -419,6 +433,30 @@ export class Vault {
       return { ...m, content };
     });
     return (changed ? out : messages) as T;
+  }
+
+  // The placeholders in a tool input, at any depth: those a call of this
+  // session can be given the value of (`held`), and those Keel issued (or
+  // named) whose value this session does not hold now (`gone`: a restart
+  // forgot it, the owner removed it, or it belongs to another session). Text
+  // that only looks like a placeholder, which Keel never issued, is neither.
+  placeholders(v: unknown, sessionId: string, fields?: ReadonlySet<string>): { held: string[]; gone: string[] } {
+    const held = new Set<string>(), gone = new Set<string>();
+    const scan = (x: string) => {
+      for (const m of x.matchAll(PLACE)) {
+        const [raw, id, name] = m;
+        const e = id ? this.byId.get(id) : [...this.byId.values()].find((y) => y.name === name && this.holds(y, sessionId));
+        if (e && this.holds(e, sessionId)) held.add(raw);
+        else if (name || this.ledger?.has(id!) || e) gone.add(raw);
+      }
+    };
+    const walk = (x: unknown, top: boolean) => {
+      if (typeof x === "string") scan(x);
+      else if (Array.isArray(x)) x.forEach((y) => walk(y, false));
+      else if (x && typeof x === "object") for (const [k, y] of Object.entries(x)) if (!top || !fields || fields.has(k)) walk(y, false);
+    };
+    walk(v, true);
+    return { held: [...held], gone: [...gone] };
   }
 
   // A request's messages masked going forward only. A message this route was

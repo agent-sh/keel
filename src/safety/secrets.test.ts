@@ -176,3 +176,24 @@ test("a value found later never changes history already sent", () => {
   expect(JSON.stringify(second[1])).not.toContain(value);
   expect(JSON.stringify(v.maskSent("s1 other", [m1, m2]))).not.toContain(value);
 });
+
+// After a restart (a new Vault, the same key and ledger) a value seen again
+// has its old placeholder, and one whose value is gone is told apart from
+// text that only looks like a placeholder.
+test("placeholders outlive a restart and a forgotten one is named", () => {
+  const key = new Uint8Array(32).fill(7);
+  const ids = new Set<string>();
+  const ledger = { issued: (id: string) => void ids.add(id), has: (id: string) => ids.has(id) };
+  const before = new Vault();
+  before.useKey(key);
+  before.ledger = ledger;
+  const ph = before.redact(`token ${GH}`, "s1", "output").split(" ")[1]!;
+  const after = new Vault();
+  after.useKey(key);
+  after.ledger = ledger;
+  const cmd = { command: `./verify ${ph} [secret:1a2b3c4d] [value of $NOPE]`, description: ph };
+  expect(after.placeholders(cmd, "s1", new Set(["command"]))).toEqual({ held: [], gone: [ph, "[value of $NOPE]"] });
+  expect(after.redact(`again ${GH}`, "s1", "output")).toBe(`again ${ph}`);
+  expect(after.placeholders(cmd, "s1", new Set(["command"]))).toEqual({ held: [ph], gone: ["[value of $NOPE]"] });
+  expect(after.placeholders({ content: { nested: [ph] } }, "other")).toEqual({ held: [], gone: [ph] });
+});

@@ -2,6 +2,9 @@
 // what is stored and sent to the UI is redacted, a tool call that names a
 // placeholder runs with the value, and the model can ask the owner for a
 // secret by name (request_secret), which its commands then get as a variable.
+import { randomBytes } from "node:crypto";
+import { chmodSync, closeSync, openSync, readFileSync, writeSync } from "node:fs";
+import { join } from "node:path";
 import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { nameError, SHELL_FIELDS, vault } from "../../safety/secrets.ts";
@@ -66,9 +69,35 @@ setConcealer({ text: (s, sessionId) => vault.redact(s, sessionId, "output"), pai
 
 let emitRequest: (r: SecretRequest, state: "open" | "closed") => void = () => {};
 
+// The key placeholder ids are made with: 32 random bytes in the state folder,
+// readable by the owner alone, made once. It is not a secret's value; with
+// it and the store, a guessed value could be checked against an 8-hex id.
+function placeholderKey(stateDir: string): Uint8Array {
+  const path = join(stateDir, "secret-key");
+  try {
+    const fd = openSync(path, "wx", 0o600);
+    const key = randomBytes(32);
+    writeSync(fd, key);
+    closeSync(fd);
+    return key;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    chmodSync(path, 0o600);
+    const key = readFileSync(path);
+    if (key.length !== 32) throw new Error(`${path} is not a 32-byte key: remove it to make a new one (placeholders stored so far stop resolving)`);
+    return key;
+  }
+}
+
 export const secretRoutes: RouteModule = (deps: Deps) => {
   const { store, bus } = deps;
   vault.parentOf = (id) => store.session(id)?.parent_id;
+  // Placeholders mean the same after a restart: the same key, and the ids issued kept (never a value).
+  vault.useKey(placeholderKey(store.stateDir));
+  store.migrate(`CREATE TABLE IF NOT EXISTS secret_placeholders (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT, created INTEGER NOT NULL)`);
+  const issue = store.db.query("INSERT INTO secret_placeholders (id, kind, name, created) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = COALESCE(excluded.name, name)");
+  const issued = store.db.query("SELECT 1 FROM secret_placeholders WHERE id = ?");
+  vault.ledger = { issued: (id, kind, name) => void issue.run(id, kind, name ?? null, Date.now()), has: (id) => !!issued.get(id) };
 
   // Everything stored is redacted; images, signatures and reasoning stay byte-exact.
   store.redact = (sessionId, kind, value) => {
@@ -112,8 +141,20 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     // would reach the command as its own text: the call is refused, saying how
     // to write it. Splicing the value in would put it in the script's syntax,
     // and unquoting the heredoc would change what every other $ in it means.
+    // A placeholder whose value this daemon does not hold now (a restart
+    // forgot it) would run as its own text: refused, naming it. A file tool
+    // never writes a value (only a command is given one) and writing the
+    // placeholder would put its text in the file: refused too, saying how.
     beforeTool(s, call) {
-      if (call.tool.kind !== "shell" || !call.input || typeof call.input !== "object") return;
+      if (!call.input || typeof call.input !== "object" || call.ctx.dispatch) return;
+      if (call.tool.kind === "edit") {
+        const { held, gone } = vault.placeholders(call.input, s.id);
+        if (!held.length && !gone.length) return;
+        return { deny: `${[...held, ...gone].join(", ")} stands for a secret; a file tool writes neither its value nor its text, so nothing was written. Where the file holds the value you read as the placeholder, change the text around it and leave that line out of your edit. To put a value in a file, use a shell command, where the placeholder stands for it: printf '%s\n' "NAME=<the placeholder>" >> .env.` };
+      }
+      if (call.tool.kind !== "shell") return;
+      const { gone } = vault.placeholders(call.input, s.id, SHELL_FIELDS);
+      if (gone.length) return { deny: `${gone.join(", ")} stands for a secret this daemon does not hold now (values are kept in memory only: a restart, or removing it, forgets them); nothing ran. Read it again from where it came from (it gets the same placeholder), or ask the owner with request_secret.` };
       const { stuck } = vault.reveal(call.input, s.id, SHELL_FIELDS);
       if (!stuck.length) return;
       return { deny: `${[...new Set(stuck)].join(", ")} stands inside a quoted heredoc (<<'EOF'), where nothing expands, so the command would get the placeholder text, not the secret; nothing ran. Use an unquoted heredoc (<<EOF, where it expands) or put the placeholder outside it, for example: printf '%s' <the placeholder> | your-command.` };
