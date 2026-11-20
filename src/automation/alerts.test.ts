@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -217,13 +217,27 @@ test("a notification's title and body reach gdbus as quoted GVariant strings", (
   for (const s of [json, "--help", "C:\\", "it's", "'quoted'", "true", "a\nb\tc", "@s x", "<b>&"]) expect(parses(alerts.gvariantString(s))).toBe(true);
 });
 
-test.skipIf(!Bun.which("dbus-run-session") || !Bun.which("gjs") || !Bun.which("gdbus"))(
-  "clicking the replacement GNOME notification opens its current Keel deep link",
-  () => {
+const privateDesktop = test.skipIf(!Bun.which("dbus-run-session") || !Bun.which("gjs") || !Bun.which("gdbus"));
+for (const [mode, reason] of [
+  ["actions", "clicking the replacement GNOME notification opens its current Keel deep link"],
+  ["no-actions", "a notification server without actions still shows passive alerts"],
+  ["broken-gjs", "a GJS helper that cannot start does not block passive alerts"],
+  ["notify-error", "a Notify error does not trigger a second delivery"],
+] as const) {
+  privateDesktop(reason, () => {
     const env: NodeJS.ProcessEnv = { ...process.env, KEEL_PRIVATE_DESKTOP_FIXTURE: "1", KEEL_DESKTOP_NOTIFY: "on" };
     for (const key of ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"]) delete env[key];
-    const run = Bun.spawnSync(["dbus-run-session", "--", process.execPath, join(import.meta.dir, "../../test/fixtures/desktop-alert.ts")], { env, timeout: 10_000 });
-    if (run.exitCode !== 0) throw new Error(run.stderr.toString() || `notification fixture exited ${run.exitCode}`);
-  },
-  12_000,
-);
+    env.KEEL_FIXTURE_SERVICE_GJS = Bun.which("gjs")!;
+    const bin = mode === "broken-gjs" ? mkdtempSync(join(tmpdir(), "keel-broken-gjs-")) : null;
+    try {
+      if (bin) {
+        writeFileSync(join(bin, "gjs"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+        env.PATH = `${bin}:${env.PATH}`;
+      }
+      const run = Bun.spawnSync(["dbus-run-session", "--", process.execPath, join(import.meta.dir, "../../test/fixtures/desktop-alert.ts"), mode], { env, timeout: 10_000 });
+      if (run.exitCode !== 0) throw new Error(run.stderr.toString() || `notification fixture exited ${run.exitCode}`);
+    } finally {
+      if (bin) rmSync(bin, { recursive: true, force: true });
+    }
+  }, 12_000);
+}

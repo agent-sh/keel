@@ -433,7 +433,7 @@ export function markUnread(id: string): boolean {
 
 // Desktop: one silent notification per session, replaced by the next and
 // closed when the session is read. On GNOME, GJS also receives the click;
-// retain passive delivery where only gdbus is installed.
+// retain passive delivery where GJS is absent or cannot start.
 const shown = new Map<string, number>();
 const gdbusArgs = ["call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications"];
 let desktop: ReturnType<typeof desktopNotifications> | undefined;
@@ -479,9 +479,18 @@ registerChannel({
   async deliver(a) {
     const key = a.session_id ?? "_";
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
-    if (Bun.which("gjs")) {
-      if (!desktop || desktop.ended) desktop = desktopNotifications(openDesktopAlert);
-      return desktop.send({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind });
+    const gjs = Bun.which("gjs");
+    if (gjs) {
+      if (!desktop || desktop.ended) {
+        try { desktop = desktopNotifications(gjs, openDesktopAlert); }
+        catch (e) { if (!Bun.which("gdbus")) throw e; }
+      }
+      const helper = desktop;
+      if (helper && await helper.ready && !helper.ended) {
+        // The service may have shown this even if it never acknowledged.
+        // No retry through gdbus after the request has left this daemon.
+        return helper.send({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind });
+      }
     }
     const p = Bun.spawn([
       "gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.Notify",
@@ -495,7 +504,8 @@ registerChannel({
     if (m) shown.set(key, Number(m[1]));
   },
   async withdraw(sessionId) {
-    if (desktop && !desktop.ended) await desktop.send({ key: sessionId });
+    const helper = desktop;
+    if (helper && await helper.ready && !helper.ended) await helper.send({ key: sessionId });
     const id = shown.get(sessionId);
     if (!id) return;
     shown.delete(sessionId);

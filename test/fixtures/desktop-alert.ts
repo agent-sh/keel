@@ -16,7 +16,10 @@ import { pumpLines } from "../../src/core/proc.ts";
 assert.equal(process.env.KEEL_PRIVATE_DESKTOP_FIXTURE, "1");
 const state = mkdtempSync(join(tmpdir(), "keel-desktop-alert-"));
 process.env.GIO_USE_VFS = "local";
-const service = Bun.spawn(["gjs", join(import.meta.dir, "gnome-notifications.js")], { stdout: "pipe", stderr: "inherit" });
+const mode = Bun.argv[2]!;
+const gjs = process.env.KEEL_FIXTURE_SERVICE_GJS!;
+assert.equal(Bun.which("gjs") !== gjs, mode === "broken-gjs");
+const service = Bun.spawn([gjs, join(import.meta.dir, "gnome-notifications.js"), mode], { stdout: "pipe", stderr: "inherit" });
 const lines: string[] = [];
 void pumpLines(service.stdout, (line) => lines.push(line));
 const waitFor = async (ready: () => boolean, desc: string) => {
@@ -44,21 +47,36 @@ try {
   alerts.saveSettings({ routes: Object.fromEntries(alerts.KINDS.map((kind) => [kind, ["desktop"]])) as any });
   const session = store.createSession({ title: "Example", model: "test", workspace: state });
   const old = alerts.raise("agent", session.id, "old", "irrelevant")!;
-  await waitFor(() => alerts.get(old.id)?.delivery?.desktop?.state === "sent", "initial desktop handoff");
-  const title = "--synthetic 'title'";
-  const body = "first\nsecond \\\"line\\\"";
-  const fresh = alerts.raise("agent", session.id, title, body, { event_id: "example-event" })!;
-  await waitFor(() => alerts.get(fresh.id)?.delivery?.desktop?.state === "sent" && !!lines[2], "replacement handoff");
-  const first = JSON.parse(lines[1]!);
-  const replacement = JSON.parse(lines[2]!);
-  assert.deepEqual(replacement, { id: first.id, replace: first.id, title, body });
-  assert.equal(existsSync(opened), false, "handoff does not open a browser");
+  await waitFor(() => {
+    const result = alerts.get(old.id)?.delivery?.desktop?.state;
+    return result === "sent" || result === "failed";
+  }, "initial desktop handoff");
+  const before = alerts.get(old.id)?.delivery?.desktop;
+  if (mode === "notify-error") {
+    assert.equal(before?.state, "failed");
+    await waitFor(() => !!lines[1], "one Notify received");
+    assert.equal(lines.length, 2, "an ambiguous Notify is never sent to the server twice");
+    assert.equal(errors.length, 1);
+  } else {
+    assert.equal(before?.state, "sent", before?.error ?? "desktop handoff did not complete");
+    const title = "--synthetic 'title'";
+    const body = "first\nsecond \\\"line\\\"";
+    const fresh = alerts.raise("agent", session.id, title, body, { event_id: "example-event" })!;
+    await waitFor(() => alerts.get(fresh.id)?.delivery?.desktop?.state === "sent" && !!lines[2], "replacement handoff");
+    const first = JSON.parse(lines[1]!);
+    const replacement = JSON.parse(lines[2]!);
+    const actions = mode === "actions" ? ["default", "Open Keel"] : [];
+    assert.deepEqual(replacement, { id: first.id, replace: first.id, title, body, actions });
+    assert.equal(existsSync(opened), false, "handoff does not open a browser");
 
-  const click = Bun.spawnSync(["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.Click", String(replacement.id)], { timeout: 2000 });
-  assert.equal(click.exitCode, 0, click.stderr.toString());
-  await waitFor(() => existsSync(opened), "browser stand-in");
-  assert.deepEqual(await Bun.file(opened).json(), [`http://127.0.0.1:48371/s/${session.id}?e=example-event`, "synthetic-token"]);
-  assert.deepEqual(errors, []);
+    if (mode === "actions") {
+      const click = Bun.spawnSync(["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.Click", String(replacement.id)], { timeout: 2000 });
+      assert.equal(click.exitCode, 0, click.stderr.toString());
+      await waitFor(() => existsSync(opened), "browser stand-in");
+      assert.deepEqual(await Bun.file(opened).json(), [`http://127.0.0.1:48371/s/${session.id}?e=example-event`, "synthetic-token"]);
+    }
+    assert.deepEqual(errors, []);
+  }
 } finally {
   service.kill();
   await service.exited;

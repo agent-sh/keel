@@ -1,4 +1,4 @@
-import { pumpLines, readText } from "../core/proc.ts";
+import { pumpLines, pumpText } from "../core/proc.ts";
 
 // GNOME sends ActionInvoked and ActivationToken to the unique bus name that
 // called Notify. A second gdbus process cannot receive them. Keep one Gio
@@ -47,7 +47,13 @@ const read = () => input.read_line_async(GLib.PRIORITY_DEFAULT, null, (stream, r
         "desktop-entry": new GLib.Variant("s", "keel"),
         "category": new GLib.Variant("s", "keel." + req.kind),
       };
-      const [id] = call("Notify", "(susssasa{sv}i)", ["Keel", old, "", req.title, req.body, ["default", "Open Keel"], hints, -1]);
+      // The server may lack actions, or its capabilities may be unavailable.
+      // In either case send one passive notification on this connection.
+      let actions = [];
+      try {
+        if (call("GetCapabilities", "()", [])[0].includes("actions")) actions = ["default", "Open Keel"];
+      } catch (_) {}
+      const [id] = call("Notify", "(susssasa{sv}i)", ["Keel", old, "", req.title, req.body, actions, hints, -1]);
       forget(old);
       byKey.set(req.key, id);
       byId.set(id, { key: req.key, alert: req.alert });
@@ -62,20 +68,35 @@ const read = () => input.read_line_async(GLib.PRIORITY_DEFAULT, null, (stream, r
   read();
 });
 read();
+send({ ready: true });
 loop.run();
 `;
 
 type Request = { key: string; alert?: string; title?: string; body?: string; urgency?: number; kind?: string };
 
-export function desktopNotifications(activate: (alert: string, token?: string) => void) {
-  const p = Bun.spawn(["gjs", "-c", worker], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+export function desktopNotifications(gjs: string, activate: (alert: string, token?: string) => void) {
+  const p = Bun.spawn([gjs, "-c", worker], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   p.unref();
+  // Do not write even the first request before the handshake. A failed
+  // handshake is known to be safe to fall back from; a failed send is not.
+  const ready = Promise.withResolvers<boolean>();
   const waiting = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
   let seq = 0;
   let ended: Error | undefined;
-  const stderr = readText(p.stderr).catch(() => "");
+  const startup = setTimeout(() => {
+    ended = new Error("desktop notification helper did not start");
+    ready.resolve(false);
+    p.kill();
+  }, 5000);
+  let stderr = "";
+  void pumpText(p.stderr, (text) => { stderr = (stderr + text).slice(-500); }).catch(() => {});
   void pumpLines(p.stdout, (line) => {
     const res = JSON.parse(line);
+    if (res.ready === true) {
+      clearTimeout(startup);
+      ready.resolve(true);
+      return;
+    }
     if (res.alert) return activate(res.alert, res.token);
     const req = waiting.get(res.seq);
     waiting.delete(res.seq);
@@ -84,13 +105,16 @@ export function desktopNotifications(activate: (alert: string, token?: string) =
   }).catch((e: Error) => {
     ended = e;
     p.kill();
-  }).then(async () => {
-    const err = (await stderr).trim();
+  }).then(() => {
+    clearTimeout(startup);
+    const err = stderr.trim();
     ended ??= new Error(`desktop notification helper exited${err ? `: ${err}` : ""}`);
+    ready.resolve(false);
     for (const req of waiting.values()) req.reject(ended);
     waiting.clear();
   });
   return {
+    ready: ready.promise,
     get ended() { return ended !== undefined; },
     send(req: Request) {
       if (ended) return Promise.reject(ended);
