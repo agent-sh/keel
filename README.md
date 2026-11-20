@@ -15,6 +15,23 @@ Providers are found from the environment: `ANTHROPIC_API_KEY` for the Anthropic
 API; `AWS_BEARER_TOKEN_BEDROCK`, AWS keys or `ANTHROPIC_BEDROCK_BASE_URL` for
 Amazon Bedrock. Models come from each provider's own listing.
 
+## Refresh the frontend without restarting
+
+Build the page from the daemon's source revision, with only the UI changes
+applied. Check the daemon's UI status, then install the bundle:
+
+```bash
+bun scripts/build.ts --ui dist/keel-ui.tar.gz
+keel ui status --url http://127.0.0.1:47960
+keel ui install dist/keel-ui.tar.gz --url http://127.0.0.1:47960
+```
+
+The daemon validates the bundle's API stamp. If the server sources differ,
+rebuild against the running revision or update the binary in a planned restart.
+Keel never restarts the daemon for a UI install. Idle pages reload, and a page
+with a draft offers a reload and keeps the draft. `keel ui rollback` switches
+back to the previous bundle, or to the embedded page.
+
 ## Automatic diagnostic notices
 
 Off by default. To opt in, open a dedicated coordinator session, copy its ID
