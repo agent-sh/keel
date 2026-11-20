@@ -282,17 +282,19 @@ export function Bridge() {
   const onScreen = phone ? pages.map((s) => s.id) : slots.map((x) => x.id).filter((x): x is string => !!x && !gone(x));
   useEffect(() => stations.setShown(onScreen));
 
-  // The side panel is remembered per session: coming back to one brings its panel back.
+  // The side panel starts closed in every session. One he opened in a
+  // session comes back with it (and over a reload); closing it forgets it.
   const panel = useUI((s) => s.panel);
+  const panels = () => JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string>;
   useEffect(() => {
     if (!helm) return;
-    const m = JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string | null>;
-    if (helm in m && m[helm] !== getUI().panel) setUI({ panel: m[helm] ?? null });
+    const want = panels()[helm] ?? null;
+    if (want !== getUI().panel) setUI({ panel: want });
   }, [helm]);
   useEffect(() => {
     if (!helm) return;
-    const m = JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string | null>;
-    m[helm] = panel;
+    const m = panels();
+    if (panel) m[helm] = panel; else delete m[helm];
     localStorage.setItem("keel.stationPanel", JSON.stringify(m));
   }, [panel]);
 

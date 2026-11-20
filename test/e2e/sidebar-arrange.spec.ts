@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { openPanel, shoot } from "./shots.ts";
 
 // Feature: the list and the panes stay the owner's to arrange. A second pane
 // is never forced: a kept layout with an empty pane opens as one pane, and
@@ -9,7 +9,9 @@ import { shoot } from "./shots.ts";
 // it to a count (a turning mark while one works) until he opens them, and
 // that choice is kept per session. One field filters the list by title or
 // folder, and its menu groups (by folder or one list), sorts (recent, state,
-// name) and hides finished sessions; the arrangement is kept.
+// name) and hides finished sessions; the arrangement is kept. The side
+// panel starts closed in every session and on load; one he opened in a
+// session comes back with that session only.
 const MODEL = "scripted:stand-in";
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
 
@@ -132,5 +134,20 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await expect(page.getByTestId("flat-group")).toHaveCount(0);
   await expect(entry(a)).toBeVisible();
 
+  // The side panel: closed on load, even when an old global choice kept it open.
+  await page.evaluate(() => localStorage.setItem("keel.panel", JSON.stringify("files")));
+  await page.goto(`/s/${a}`);
+  await expect(page.getByTestId("side-panel")).toHaveCount(0);
+  await openPanel(page, "session");
+  await expect(page.getByTestId("side-panel")).toBeVisible();
+  await entry(b).click();
+  await expect(page.getByTestId("side-panel")).toHaveCount(0); // not opened there
+  await shoot(page, "arrange-08-panel-closed");
+  await entry(a).click();
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "session");
+  await page.reload();
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "session");
+  await entry(c).click();
+  await expect(page.getByTestId("side-panel")).toHaveCount(0);
   await request.post(`/api/sessions/${parent}/interrupt`).catch(() => {});
 });

@@ -79,12 +79,18 @@ let state: UIState = {
   newWorkspace: pref("keel.newWorkspace", ""),
   newModel: "",
   composerSeed: null,
-  panel: pref("keel.panel", null),
+  panel: null, // closed on load; a session he opened it in brings it back (Bridge)
   focusEvent: new URLSearchParams(location.search).get("e"),
   focusCall: null,
   preview: null,
   fileAt: null,
 };
+// Once: the panel was kept open for every session (one global choice, and a
+// per-session copy of it). Both are forgotten; it starts closed.
+if (localStorage.getItem("keel.panel") !== null) {
+  localStorage.removeItem("keel.panel");
+  localStorage.removeItem("keel.stationPanel");
+}
 const subs = new Set<() => void>();
 const subscribe = (f: () => void) => {
   subs.add(f);
@@ -108,7 +114,7 @@ addEventListener("popstate", () => setUI({ route: parse() }));
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 
 export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW", v: unknown) {
-  if (!(k === "sidebar" && isPhone())) localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));
+  if (!(k === "sidebar" && isPhone()) && k !== "panel") localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);
 }
 
