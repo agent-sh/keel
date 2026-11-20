@@ -9,6 +9,7 @@ import { api, onFeature, reportError } from "../lib/store.ts";
 import { navigate, seedComposer } from "../lib/ui.ts";
 import { ago, cn, fmtCost } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
+import { SessionOrganize } from "./SessionOrganize.tsx";
 
 export function Section({ title, children, testid }: { title: string; children: React.ReactNode; testid?: string }) {
   return (
@@ -19,7 +20,7 @@ export function Section({ title, children, testid }: { title: string; children: 
   );
 }
 
-export function Line({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+export function Line({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-3 border-b border-line py-2 text-ui last:border-0">
       <span className="min-w-0 flex-1">
@@ -234,6 +235,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
         </Line>
         <Tags s={s} />
       </Section>
+      <SessionOrganize s={s} />
       {!s.parent_id && (
         <Section title="Other sessions" testid="peer-marks">
           <Messages s={s} />

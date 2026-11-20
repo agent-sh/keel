@@ -580,7 +580,8 @@ export class Engine {
     // prompt and its fingerprints never hold a secret's value.
     const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id) });
     const shared: PromptPart[] = [CORE, ...extra].map((t, i) => sent({ name: i ? blockName(t) : "core", text: t + "\n\n" }));
-    const parts = [...shared, ...sessionParts(session.workspace, session.created).map(sent)];
+    const own = (await Promise.all(allHooks().map((h) => h.sessionSystem?.(session, info) ?? ""))).filter(Boolean).map((t) => sent({ name: blockName(t), text: `\n${t}\n` }));
+    const parts = [...shared, ...sessionParts(session.workspace, session.created).map(sent), ...own];
     return { text: parts.map((p) => p.text).join(""), split: shared.reduce((n, p) => n + p.text.length, 0), blocks: blocksOf(parts), model: info?.id ?? null };
   }
 

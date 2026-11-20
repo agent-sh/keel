@@ -24,6 +24,7 @@ import { UpdateNotice } from "./components/UpdateNotice.tsx";
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
 // The bridge (stations, sessions) is its own chunk, fetched with the page.
 const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
+const ProjectPage = lazy(() => import("./components/ProjectPage.tsx").then((m) => ({ default: m.ProjectPage })));
 const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
 
 // Mounts its child the first time `open` is true, then keeps it (for close animations).
@@ -58,7 +59,7 @@ export function App() {
     addEventListener("keydown", f, true);
     return () => removeEventListener("keydown", f, true);
   }, [rail.over]);
-  const page = route.name === "settings";
+  const page = route.name === "settings" || route.name === "project";
   return (
     <Boundary>
       <Attention />
@@ -77,7 +78,7 @@ export function App() {
           <div className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}><Sidebar open={rail.list} /></div>
           {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => toggleList(false)} aria-hidden="true" />}
           {page ? (
-            <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}</Suspense></main>
+            <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}{route.name === "project" && <ProjectPage id={route.id} />}</Suspense></main>
           ) : <Suspense fallback={null}><Bridge /></Suspense>}
         </div>
       </div>

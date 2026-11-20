@@ -9,6 +9,7 @@ import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
 import { MachinePicker, useNewMachine } from "./Fleet.tsx";
 import { fleet, useFleet } from "../lib/fleet.ts";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
@@ -20,6 +21,7 @@ export function StartBox() {
   const defaultModel = useStore((s) => s.defaultModel);
   const sessions = useStore((s) => s.sessions);
   const newModel = useUI((s) => s.newModel);
+  const newProject = useUI((s) => s.newProject);
   const chosen = useUI((s) => s.newWorkspace);
   const [fallback, setFallback] = useState("");
   useEffect(() => { api("/api/workspaces").then((r) => setFallback(r.recent[0]?.path ?? r.default)).catch(reportError); }, []);
@@ -60,6 +62,7 @@ export function StartBox() {
             <MachinePicker />
             {(!machine || (machine === "auto" && !autoThere)) && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
             {!machine && <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>}
+            {!machine && <ProjectPicker workspace={workspace} />}
           </div>
           {machine === "auto" && place && (
             <p data-testid="auto-place" data-machine={place.machine_id} className="mb-2.5 flex min-w-0 items-center gap-1.5 text-caption text-muted">
@@ -81,10 +84,10 @@ export function StartBox() {
                   ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined)
                   : inWorktree && (await isGitFolder(workspace))
                   ? await createInWorktree(t, model || undefined, workspace || undefined, images)
-                  : await actions.create(t, model || undefined, workspace || undefined, images);
+                  : await actions.create(t, model || undefined, workspace || undefined, images, { project: startProject(workspace, newProject) });
                 // The pick was for this conversation: the next New starts on the default
                 // again. A failed create keeps it for the retry.
-                setUI({ newModel: "" });
+                setUI({ newModel: "", newProject: "" });
                 navigate({ name: "session", id: s.id });
               }}
             />

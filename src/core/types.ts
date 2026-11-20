@@ -138,6 +138,7 @@ export type SessionSettings = {
   skill_mode?: string; // a skill kept on as standing instructions
   cache_long?: boolean; // an agent's request came after a pause near its short cache lifetime: it asks for the long one from then on
   drop_thinking?: boolean; // the provider refused this session's sent-back thinking once: "drop_block" from then on
+  project?: string;    // a project's id, or "none"; absent = the project that holds its folder (src/server/routes/projects.ts)
 };
 
 // `anchor`: the session's head when it was queued (the branch it was written on).

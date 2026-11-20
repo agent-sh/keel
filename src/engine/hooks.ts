@@ -15,6 +15,10 @@ export type TurnHooks = {
   // Extra text for the system prompt; called once per session (the prompt is
   // frozen), with the model the session's first request goes to.
   system?: (s: Session, model?: ModelInfo) => string | Promise<string>;
+  // Text of the session's own part of the prompt, after the cache split (a
+  // project's instructions): it never enters the prefix other sessions share.
+  // Rendered and kept like the rest; Engine.forgetSystem has it made again.
+  sessionSystem?: (s: Session, model?: ModelInfo) => string | Promise<string>;
   // Change the request just before it is sent (compaction, volatile-tail notes).
   // Must keep the prefix stable: append, never rewrite earlier messages.
   // Runs for every purpose: a hook that answers the newest prompt or rebuilds

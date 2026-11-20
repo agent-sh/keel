@@ -70,7 +70,7 @@ function withModules(core: Record<string, any>, modules: RouteModule[], deps: De
 }
 
 // The UI's pages; the client routes the rest.
-const PAGES = ["/", "/s/:id", "/settings", "/settings/:section"];
+const PAGES = ["/", "/s/:id", "/p/:id", "/settings", "/settings/:section"];
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // Bun's default idle timeout, and the point where a handler counts as slow.

@@ -42,6 +42,7 @@ import { treeRoutes } from "./tree.ts";
 import { attachmentRoutes } from "./attachments.ts";
 import { runRoutes } from "./run.ts";
 import { marksRoutes } from "./marks.ts";
+import { projectRoutes } from "./projects.ts";
 import { convoRoutes } from "./convo.ts";
 import { placesRoutes } from "./places.ts";
 import { terminalRoutes } from "./terminal.ts";
@@ -88,6 +89,7 @@ export const routeModules: RouteModule[] = [
   mobileRoutes, // after automation: it registers the phone as an alert channel
   draftRoutes,
   marksRoutes, // after automation: unread marks are its alerts
+  projectRoutes, // after permissions: a project's default mode goes through its gate
   convoRoutes,
   placesRoutes,
   importRoutes,

@@ -6,7 +6,8 @@ import type { PromptBlock } from "../../../src/core/types.ts";
 export type Route =
   | { name: "new" }
   | { name: "session"; id: string }
-  | { name: "settings"; section: string };
+  | { name: "settings"; section: string }
+  | { name: "project"; id: string };
 
 export type ThemePref = "light" | "dark" | "system";
 
@@ -25,6 +26,7 @@ type UIState = {
   enterSends: boolean;
   newWorkspace: string; // the folder the start box creates a session in ("" = daemon default)
   newModel: string;
+  newProject: string; // the project a new session starts in: a project id, "none", or "" for the folder's
   // Text pushed into a message box (a file mention, a starter): `session` names the
   // session's box, absent for the start box. Several boxes can be on screen.
   // `append`: added below what the box holds instead of replacing it; `notice`: said in the box;
@@ -47,6 +49,8 @@ function parse(): Route {
   // Links in the Rust Keel form: /#SESSION and /#/s/SESSION.
   const h = location.hash.match(/^#\/?(?:s\/)?([\w-]{8,})/);
   if (p === "/" && h) return { name: "session", id: h[1]! };
+  const pr = p.match(/^\/p\/([\w-]+)/);
+  if (pr) return { name: "project", id: pr[1]! };
   const st = p.match(/^\/settings(?:\/([\w-]+))?/);
   if (st) return { name: "settings", section: st[1] ?? "general" };
   return { name: "new" };
@@ -78,6 +82,7 @@ let state: UIState = {
   enterSends: pref("keel.enterSends", true),
   newWorkspace: pref("keel.newWorkspace", ""),
   newModel: "",
+  newProject: "",
   composerSeed: null,
   panel: null, // closed on load; a session he opened it in brings it back (Bridge)
   focusEvent: new URLSearchParams(location.search).get("e"),
@@ -106,7 +111,7 @@ export function useUI<T>(sel: (s: UIState) => T): T {
 }
 
 export function navigate(r: Route, replace = false) {
-  const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : "/";
+  const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : r.name === "project" ? `/p/${r.id}` : "/";
   if (url !== location.pathname || location.hash) (replace ? history.replaceState : history.pushState).call(history, null, "", url);
   setUI({ route: r, peek: false, ...(isPhone() ? { sidebar: false } : {}) });
 }
