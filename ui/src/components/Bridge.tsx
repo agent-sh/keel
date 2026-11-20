@@ -71,16 +71,21 @@ function Tool({ label, onClick, children, testid, on }: { label: string; onClick
 
 function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boolean; pinned: boolean }) {
   const events = useStore((x) => x.events[s.id]);
-  const start = useMemo(() => [...(events ?? [])].reverse().find((e) => e.kind === "turn_start")?.ts, [events]);
-  const now = useNow(w === "work");
+  const start = useMemo(() => events?.findLast((e) => e.kind === "turn_start")?.ts, [events]);
+  const now = useNow(w === "work" && s.phase === "working");
   const focus = useStations((x) => x.focus);
   const agents = useAgentCount(s.id);
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}>
-      <div className="k-station-row">
-        <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
-        {w === "work" && start && s.phase === "working" && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
-        <span className="k-station-meta truncate">{s.workspace_gone ? <span className="k-gone" title={`${s.workspace} is not on disk`}>{folderOf(s)} gone</span> : folderOf(s)}  {modelOf(s.model)}</span>
+      <div className="k-station-row k-station-identity">
+        <h2 className="k-station-title" title={s.title}>{s.title || "New session"}</h2>
+        <span className="k-station-state">
+          <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
+          {w === "work" && start && s.phase === "working" && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
+        </span>
+        <span className="k-station-meta truncate" title={s.workspace}>
+          {s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}
+        </span>
         <span className="k-station-tools">
           {!focus && <Tool label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, -1)}><ChevronLeft /></Tool>}
           {!focus && <Tool label="Move right (Alt Shift ])" onClick={() => stations.move(s.id, 1)}><ChevronRight /></Tool>}
@@ -89,8 +94,7 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
           <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(s.id)}><X /></Tool>
         </span>
       </div>
-      <h2 className="k-station-title" title={s.title}>{s.title || "New session"}</h2>
-      <p className="k-station-line truncate">{lastLine(events, s.workspace) || " "}</p>
+      {!helm && <p className="k-station-line truncate">{lastLine(events, s.workspace) || " "}</p>}
       {pinned && <span className="k-pin-mark" aria-hidden="true" />}
     </header>
   );

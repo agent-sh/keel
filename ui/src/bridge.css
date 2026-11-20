@@ -329,11 +329,21 @@ html[data-resizing] iframe { pointer-events: none; }
 }
 .k-station[data-helm] .k-station-title { font-size: 1.2812rem; }
 .k-station-line { margin-top: 0.1875rem; font-size: 0.875rem; color: var(--muted); }
+/* In an open session, identity and state share a line. Only the other
+   panes need a preview of a conversation that does not hold the keyboard. */
+.k-station-identity { flex-wrap: wrap; column-gap: 0.625rem; row-gap: 0.25rem; }
+.k-station-identity .k-station-title { flex: 1 1 7rem; min-width: 0; margin: 0; -webkit-line-clamp: 1; }
+.k-station-identity .k-station-state { display: flex; align-items: center; gap: 0.4375rem; }
+.k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; }
+.k-station-identity .k-station-meta { flex: 0 1 auto; max-width: 13rem; margin: 0; }
+.k-station-identity .k-station-tools { flex-shrink: 0; margin-left: auto; }
+.k-station-head:has(.k-station-identity) { container-type: inline-size; }
+@container (max-width: 35rem) { .k-station-identity .k-station-meta { display: none; } }
 /* Pinned: a tab hanging from the band. */
 .k-pin-mark { position: absolute; left: 0; top: 0; width: 0.1875rem; height: 1.375rem; background: var(--fg); }
 
 /* The helm's full header: the tools row only (its title is in the head above). */
-.k-station [data-testid="session-header"] { height: 2.5rem; background: transparent; backdrop-filter: none; border-bottom-color: var(--line); }
+.k-station [data-testid="session-header"] { height: 2.375rem; background: transparent; backdrop-filter: none; border-bottom-color: var(--line); }
 .k-station [data-testid="session-header"] [data-testid="session-title"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .k-station [data-testid="session-header"] > .absolute { display: none; }
 /* A narrow pane: the token counts give way (the turn footer has them), the tools stay whole and scroll if they must. */
