@@ -175,30 +175,68 @@ export function activeContext(events: StoredEvent[]): StoredEvent[] {
   return events[cp.at]!.data.mode === "summary" ? [events[cp.at]!, ...kept] : kept;
 }
 
-
 export function toCodexRollout(s: Session, events: StoredEvent[], id: string, now: number): string {
   const out: unknown[] = [];
   const line = (ts: number, type: string, payload: unknown) => out.push({ timestamp: new Date(ts).toISOString(), type, payload });
+  // Codex restores model history from response items, but replays the visible
+  // transcript from event messages (app-server-protocol's ThreadHistoryBuilder).
+  const display = (ts: number, type: string, fields: object) => line(ts, "event_msg", { type, ...fields });
+  type Opening = "user" | "turn_start" | "tail";
+  let turn: { id: string; openedBy: Opening } | undefined;
+  const finish = (ts: number, interrupted = false) => {
+    if (interrupted) display(ts, "turn_aborted", { turn_id: turn?.id, reason: "interrupted" });
+    else if (turn) display(ts, "task_complete", { turn_id: turn.id });
+    turn = undefined;
+  };
+  const begin = (e: StoredEvent, openedBy: Opening) => {
+    turn = { id: e.id, openedBy };
+    display(e.ts, "task_started", { turn_id: turn.id });
+  };
   const start = events[0]?.ts ?? now;
   line(start, "session_meta", { id, timestamp: new Date(start).toISOString(), cwd: s.workspace, originator: "keel", cli_version: "0.0.0", source: "cli" });
   const custom = new Set<string>();
   let model: string | undefined;
+  let prev = start;
   for (const e of events) {
     if (e.kind === "user") {
-      const images = (e.data.images ?? []).filter((b: any) => b.type === "image").map((b: any) => ({ type: "input_image", image_url: `data:${b.media_type};base64,${b.data}` }));
-      line(e.ts, "response_item", { type: "message", role: "user", content: [...images, ...(e.data.text ? [{ type: "input_text", text: e.data.text }] : [])] });
-    } else if (e.kind === "compaction" && e.data.summary) line(e.ts, "compacted", { message: e.data.summary });
+      const images: string[] = (e.data.images ?? []).filter((b: any) => b.type === "image").map((b: any) => `data:${b.media_type};base64,${b.data}`);
+      const text = e.data.text ?? "";
+      const visible = !!text || images.length > 0;
+      if (visible && turn?.openedBy !== "turn_start") {
+        finish(prev);
+        begin(e, "user");
+      }
+      line(e.ts, "response_item", { type: "message", role: "user", content: [...images.map((image_url) => ({ type: "input_image", image_url })), ...(text ? [{ type: "input_text", text }] : [])] });
+      if (visible) display(e.ts, "user_message", { message: text, images: images.length ? images : undefined });
+    } else if (e.kind === "compaction" && e.data.summary) {
+      finish(prev);
+      begin(e, "tail");
+      line(e.ts, "compacted", { message: e.data.summary });
+      display(e.ts, "agent_message", { message: `Summary of the earlier conversation (Keel)\n\n${e.data.summary}` });
+      finish(e.ts);
+    } else if (e.kind === "turn_start") {
+      // Keel stores the opening prompt before turn_start. Later user events
+      // in the same explicit turn steer it; imported history may lack markers.
+      if (turn?.openedBy === "user") turn.openedBy = "turn_start";
+      else {
+        finish(prev);
+        begin(e, "turn_start");
+      }
+    } else if (e.kind === "turn_end") finish(e.ts, e.data.reason === "interrupted" || e.data.reason === "restart");
     else if (e.kind === "note" && e.data.model) line(e.ts, "response_item", { type: "message", role: "user", content: [{ type: "input_text", text: `${NOTE_OPEN}\n${e.data.text}\n${NOTE_CLOSE}` }] });
-    else if (e.kind === "turn_end" && (e.data.reason === "interrupted" || e.data.reason === "restart")) line(e.ts, "event_msg", { type: "turn_aborted", reason: "interrupted" });
     else if (e.kind === "assistant") {
+      const blocks = e.data.blocks ?? [];
+      if (!turn && blocks.some((b: any) => b.type === "text" && b.text)) begin(e, "tail");
       // Who answered: Codex reads the model of each turn from its turn context.
       if (e.data.model && e.data.model !== model) {
         model = e.data.model;
         line(e.ts, "turn_context", { cwd: s.workspace, approval_policy: "on-request", sandbox_policy: { type: "workspace-write" }, model: String(model).replace(/^[\w-]+:/, ""), summary: "auto" });
       }
-      for (const b of e.data.blocks ?? []) {
-        if (b.type === "text" && b.text) line(e.ts, "response_item", { type: "message", role: "assistant", content: [{ type: "output_text", text: b.text }] });
-        else if (b.type === "tool_use") {
+      for (const b of blocks) {
+        if (b.type === "text" && b.text) {
+          line(e.ts, "response_item", { type: "message", role: "assistant", content: [{ type: "output_text", text: b.text }] });
+          display(e.ts, "agent_message", { message: b.text });
+        } else if (b.type === "tool_use") {
           if (b.name === "apply_patch") {
             custom.add(b.id);
             line(e.ts, "response_item", { type: "custom_tool_call", status: "completed", call_id: b.id, name: b.name, input: typeof b.input?.input === "string" ? b.input.input : JSON.stringify(b.input) });
@@ -216,7 +254,9 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
         line(e.ts, "response_item", { type: custom.has(r.tool_use_id) ? "custom_tool_call_output" : "function_call_output", call_id: r.tool_use_id, output });
       }
     }
+    prev = e.ts;
   }
+  finish(prev);
   return toJsonl(out);
 }
 

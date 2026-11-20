@@ -73,6 +73,44 @@ test("a resume handoff carries the active context only", () => {
   expect(sum.map((e) => e.kind)).toEqual(["compaction", "user"]);
 });
 
+test("Codex resume projects compacted and retained text as display events, separate from model history", () => {
+  const summary = ev("compaction", { mode: "summary", summary: "Earlier context" });
+  const prompt = ev("user", { text: "What changed?" });
+  const next = ev("user", { text: "", images: [{ type: "image", media_type: "image/png", data: "iVBORw0KGgo" }] });
+  const evs = [
+    summary, prompt, ev("turn_start", {}), ev("user", { text: "Include the result" }),
+    ev("note", { text: "Model only", model: true }),
+    ev("assistant", { blocks: [{ type: "text", text: "All good" }] }),
+    ev("turn_end", { reason: "end_turn" }),
+    next, ev("assistant", { blocks: [{ type: "text", text: "Checking" }] }),
+    ev("turn_end", { reason: "interrupted" }),
+  ];
+  const rows = toCodexRollout(s, evs, "x", 0).trim().split("\n").map((l) => JSON.parse(l));
+  expect(rows.filter((r) => r.type === "event_msg").map((r) => r.payload)).toEqual([
+    { type: "task_started", turn_id: summary.id },
+    { type: "agent_message", message: "Summary of the earlier conversation (Keel)\n\nEarlier context" },
+    { type: "task_complete", turn_id: summary.id },
+    { type: "task_started", turn_id: prompt.id },
+    { type: "user_message", message: "What changed?" },
+    { type: "user_message", message: "Include the result" },
+    { type: "agent_message", message: "All good" },
+    { type: "task_complete", turn_id: prompt.id },
+    { type: "task_started", turn_id: next.id },
+    { type: "user_message", message: "", images: ["data:image/png;base64,iVBORw0KGgo"] },
+    { type: "agent_message", message: "Checking" },
+    { type: "turn_aborted", turn_id: next.id, reason: "interrupted" },
+  ]);
+  expect(rows.find((r) => r.type === "compacted")?.payload).toEqual({ message: "Earlier context" });
+  expect(rows.filter((r) => r.type === "response_item").map((r) => r.payload.content[0])).toEqual([
+    { type: "input_text", text: "What changed?" },
+    { type: "input_text", text: "Include the result" },
+    { type: "input_text", text: "<keel_note>\nModel only\n</keel_note>" },
+    { type: "output_text", text: "All good" },
+    { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo" },
+    { type: "output_text", text: "Checking" },
+  ]);
+});
+
 test("round trips through Claude Code's and Codex's files keep ids, outcomes, notes, images, times and models", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? "", "keel-export-"));
   const png = { type: "image", media_type: "image/png", data: "iVBORw0KGgo" };
