@@ -9,7 +9,7 @@ import { readText } from "../core/proc.ts";
 // sent as a frame, and delivered to the channels the settings name for its
 // kind. A channel is anything with deliver(); phone push registers one later.
 
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over"] as const;
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
 // Sent means the channel took it, not that the owner saw it.

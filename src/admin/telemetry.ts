@@ -11,6 +11,7 @@ import { promptOf } from "../engine/prompt-store.ts";
 import { errorText } from "../engine/retry.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { errorClass } from "./classes.ts";
+import { armOf, experimentTables } from "./experiments.ts";
 import { registerSettings, settings } from "./settings.ts";
 import { scaleZones, ZONES, zoneBytes, zoneCache, type Zone, type ZoneCache, type Zones } from "./zones.ts";
 
@@ -43,12 +44,13 @@ CREATE TABLE IF NOT EXISTS telemetry_tools (
 );
 CREATE INDEX IF NOT EXISTS telemetry_tools_ts ON telemetry_tools(ts);
 CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS telemetry_toolsets (h TEXT PRIMARY KEY, names TEXT NOT NULL);
 `;
 
 // One attempt in flight. `step0`: when the first attempt of its model step
 // started (a retry sends the same request object again); `first`: the first
 // piece of anything streamed; `text`: the first piece of reply text.
-type Pending = { t0: number; step0: number; attempt: number; first?: number; text?: number; session: string; model: string; purpose: string; turn: string | null; compaction: string; bytes: Zones; prefix: Prefix | null; cacheMs: number | null };
+type Pending = { t0: number; step0: number; attempt: number; first?: number; text?: number; session: string; model: string; purpose: string; turn: string | null; compaction: string; bytes: Zones; prefix: Prefix | null; cacheMs: number | null; toolset: string | null; effort: string | null };
 
 // Fingerprints of what a turn request's cached prefix is made of, stored with
 // the call so the next one (after a daemon restart too) can say what differs:
@@ -108,14 +110,21 @@ export class Telemetry {
   private steps = new WeakMap<ProviderRequest, { attempt: number; t0: number }>();
   // The message marks of each session's last turn request (frozen history).
   private prevMarks = new SessionMap<string[]>(256);
+  // Each session's running turn, as its last request saw it: its tool calls belong to it.
+  private turnOf = new SessionMap<string | null>(256);
+  private toolsets = new Set<string>();
 
   constructor(private store: Store, bus: Bus) {
     store.migrate(SCHEMA);
+    experimentTables(store);
     const cols = [["telemetry_calls", "cache_break", "TEXT"], ["telemetry_tools", "call_id", "TEXT"], ["telemetry_tools", "error", "TEXT"],
       ["telemetry_calls", "purpose", "TEXT"], ["telemetry_calls", "error_class", "TEXT"], ["telemetry_calls", "turn_event", "TEXT"],
       ["telemetry_calls", "attempt", "INTEGER"], ["telemetry_calls", "h_tools", "TEXT"], ["telemetry_calls", "h_system", "TEXT"], ["telemetry_calls", "n_msgs", "INTEGER"],
       ["telemetry_calls", "h_msgs", "TEXT"], ["telemetry_calls", "h_kept", "TEXT"], ["telemetry_calls", "break_detail", "TEXT"], ["telemetry_calls", "step_ms", "INTEGER"], ["telemetry_calls", "text_ms", "INTEGER"], ["telemetry_calls", "compaction_event", "TEXT"], ["telemetry_calls", "cache_ms", "INTEGER"],
       ["telemetry_tools", "outcome", "TEXT"], ["telemetry_tools", "event_id", "TEXT"], ["telemetry_tools", "model", "TEXT"],
+      // What shaped the call: its experiment and arm, the tool names offered, the speed and effort.
+      ["telemetry_calls", "exp_id", "TEXT"], ["telemetry_calls", "arm", "TEXT"], ["telemetry_calls", "toolset", "TEXT"], ["telemetry_calls", "speed", "TEXT"], ["telemetry_calls", "effort", "TEXT"],
+      ["telemetry_tools", "turn_event", "TEXT"], ["telemetry_tools", "exp_id", "TEXT"], ["telemetry_tools", "arm", "TEXT"],
       ...ZONES.map((z) => ["telemetry_calls", `z_${z}`, "INTEGER"])] as const;
     for (const [t, col, type] of cols) if (!store.columnExists(t, col)) store.db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
     store.migrate("CREATE INDEX IF NOT EXISTS telemetry_calls_session ON telemetry_calls(session_id, ts)");
@@ -139,10 +148,13 @@ export class Telemetry {
         step.attempt++;
         this.steps.set(req, step);
         const line = this.lineageOf(s.id);
+        const turn = purpose === "side" ? null : openTurn(line);
+        if (purpose === "turn") this.turnOf.set(s.id, turn);
         const p: Pending = {
           t0: now, step0: step.t0, attempt: step.attempt, session: s.id, model: req.route ?? this.store.session(s.id)?.model ?? s.model, purpose,
-          turn: purpose === "side" ? null : openTurn(line), compaction: line.findLast((e) => e.kind === "compaction")?.id ?? "", bytes,
+          turn, compaction: line.findLast((e) => e.kind === "compaction")?.id ?? "", bytes,
           prefix: purpose === "turn" ? prefixOf(req, marks) : null, cacheMs: req.cacheMs ?? null,
+          toolset: purpose === "reader" ? null : this.toolset(req.tools.map((t) => t.name)), effort: req.effort ?? null,
         };
         this.pending.set(req, p);
       },
@@ -168,12 +180,24 @@ export class Telemetry {
       toolRan: (s, call, result, ran) => {
         // The assistant step that asked for the call: its event and model.
         const ev = this.callEvent(s.id, call.id);
+        const tag = armOf(this.store, s.id);
         this.store.db
-          .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, outcome, event_id, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, outcome, event_id, model, turn_event, exp_id, arm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? excerpt(result.content) : null,
-            ran.outcome, ev?.id ?? null, ev?.model ?? null);
+            ran.outcome, ev?.id ?? null, ev?.model ?? null, this.turnOf.get(s.id) ?? null, tag?.exp_id ?? null, tag?.arm ?? null);
       },
     });
+  }
+
+  // The fingerprint of a set of offered tool names, the names kept once.
+  private toolset(names: string[]): string {
+    const sorted = [...new Set(names)].sort();
+    const h = fp(sorted);
+    if (!this.toolsets.has(h)) {
+      this.store.db.query("INSERT OR IGNORE INTO telemetry_toolsets (h, names) VALUES (?, ?)").run(h, JSON.stringify(sorted));
+      this.toolsets.add(h);
+    }
+    return h;
   }
 
   private take(req: ProviderRequest) {
@@ -203,16 +227,18 @@ export class Telemetry {
     const z = r.outcome === "ok" && prompt > 0 ? scaleZones(p.bytes, prompt) : null;
     const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p.session, p.model, p.t0, u, p.prefix) : null;
     const x = p.prefix;
+    const tag = armOf(this.store, p.session);
     this.store.db
       .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break,
                 purpose, error_class, turn_event, z_tools, z_system, z_history, z_tail, attempt, step_ms, text_ms, compaction_event,
-                h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail, cache_ms)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail, cache_ms, exp_id, arm, toolset, speed, effort)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(p.session, p.t0, p.model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
         typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error?.slice(0, 300) ?? null, brk?.cause ?? null,
         p.purpose, r.cls ?? null, p.turn, z?.tools ?? null, z?.system ?? null, z?.history ?? null, z?.tail ?? null,
         p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction,
-        x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null, p.cacheMs);
+        x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null, p.cacheMs,
+        tag?.exp_id ?? null, tag?.arm ?? null, p.toolset, u.speed ?? u.speed_asked ?? null, p.effort);
   }
 
   // A turn request that read less than half of what it and the last one of the

@@ -51,6 +51,7 @@ import { terminalRoutes } from "./terminal.ts";
 import { remoteRoutes } from "./remote.ts";
 import { acpRoutes } from "./acp.ts";
 import { helperRoutes } from "./helper.ts";
+import { experimentRoutes } from "./experiments.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -105,5 +106,6 @@ export const routeModules: RouteModule[] = [
   surfaceRoutes, // Settings: skills, agent files, instruction files, the hooks file, plugins.toml
   runRoutes, // the command line: keel run, keel send
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
-  telemetryRoutes, // last: its tool timing starts after every gate
+  telemetryRoutes, // its tool timing starts after every gate
+  experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote
 ];
