@@ -125,6 +125,54 @@ test("continued turns after a restart take turns", async () => {
   }
 });
 
+// Feature: an owner's session goes on through any number of restarts by
+// itself. Only a turn continued three times in a row with the daemon down
+// again before a tool call finished is held: the session says why and offers
+// Continue, which starts it again.
+test("an owner session continues through restarts until its turn stops moving", async ({ page }) => {
+  const state = join(ROOT, `restart-owner-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    // The held tool reads a named pipe: it ends when something is written there
+    // (or by itself: a command a crash cut outlives its daemon).
+    const gate = join(state, "release");
+    spawnSync("mkfifo", [gate]);
+    const hold = { name: "Bash", input: { command: `timeout 90 cat ${gate} > /dev/null; echo released` } };
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Owner across restarts" });
+    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+    await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([hold, hold, hold, hold, hold])}` });
+    const view = () => call(`/api/sessions/${session.id}`, undefined, "GET");
+    const holds = async () => ((await view()).events as any[]).filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")).length;
+    // Cut four times with no tool call finished: continued after the first three.
+    for (const n of [1, 2, 3, 4]) {
+      await expect.poll(holds, { timeout: 60_000 }).toBe(n);
+      expect((await view()).running).toBe(true);
+      await page.waitForTimeout(500); // the command runs
+      d.proc.kill(n % 2 ? "SIGTERM" : "SIGKILL");
+      await exited(d.proc);
+      d = await daemon(state);
+    }
+    const note = async () => ((await view()).events as any[]).findLast((e) => e.kind === "note" && e.data.kind === "restart")?.data.text;
+    await expect.poll(note, { timeout: 60_000 }).toContain("3 times in a row");
+    expect([(await view()).running, await holds()]).toEqual([false, 4]);
+    await page.goto(`${d.url}/s/${session.id}`);
+    await page.getByTestId("note").last().scrollIntoViewIfNeeded();
+    await expect(page.getByTestId("note").last()).toContainText("was not continued again");
+    await expect(page.getByTestId("resume")).toBeVisible();
+    await shoot(page, "restart-05-owner-held");
+    await page.getByTestId("resume").click();
+    await expect.poll(holds, { timeout: 30_000 }).toBe(5);
+    spawnSync("sh", ["-c", `echo go > ${gate}`], { timeout: 10_000 });
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 5 calls. Last result: released", { timeout: 30_000 });
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
 // Feature: an agent working in the background survives daemon restarts, and
 // its record always says what its session does. The agent holds on a tool
 // through two restarts: it is continued each time, stays running for its
@@ -146,10 +194,11 @@ test("a background agent is continued across restarts and its record matches wha
       await exited(d.proc);
       d = await daemon(state);
     };
-    // The held tool reads a named pipe: it ends when something is written there.
+    // The held tool reads a named pipe: it ends when something is written there
+    // (or by itself: a command a crash cut outlives its daemon).
     const gate = join(state, "release");
     spawnSync("mkfifo", [gate]);
-    const hold = { name: "Bash", input: { command: `cat ${gate} > /dev/null; echo released` } };
+    const hold = { name: "Bash", input: { command: `timeout 90 cat ${gate} > /dev/null; echo released` } };
     const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Agent across restarts" });
     await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
     const spawnCall = [{ name: "spawn_agent", input: { message: `Holder\nscript:calls ${JSON.stringify([hold, hold, hold])}`, isolation: "none" } }];

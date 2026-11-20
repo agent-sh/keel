@@ -51,12 +51,11 @@ export type TurnHooks = {
   turnStart?: (s: Session) => void;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
   // At startup, a turn a daemon restart cut is about to continue by itself.
-  // `continuation`: the cut turn was itself such a continuation; `stalled`: how
-  // many continuations in a row were cut before they finished a step. The
-  // session's owner answers "continue", or `hold` with the reason it is not
-  // continued (shown in the session). No answer: the engine's rule, which
-  // leaves a cut continuation for the owner to continue.
-  cutTurn?: (s: Session, cut: { continuation: boolean; stalled: number }) => "continue" | { hold: string } | undefined;
+  // `stalled`: how many continuations in a row were cut before they finished a
+  // step. A session's owner (an agent's record) answers "continue", or `hold`
+  // with the reason it is not continued (shown in the session). No answer: the
+  // engine's rule, which continues unless the count reached STALLED_MAX.
+  cutTurn?: (s: Session, cut: { stalled: number }) => "continue" | { hold: string } | undefined;
   // A cut turn was not continued, for the reason given (a hook's, the engine's
   // rule, or a model that did not come back).
   cutTurnHeld?: (s: Session, why: string) => void;

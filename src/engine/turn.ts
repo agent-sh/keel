@@ -1126,9 +1126,10 @@ export class Engine {
 
   // At startup: a turn the last daemon left open (a crash, a kill) is closed
   // the way a stop would close it, and a turn cut by a restart continues by
-  // itself, once: a turn that was itself such a continuation and was cut
-  // again waits for the owner's Continue. A session with an owner of its own
-  // (an agent's, through the cutTurn hook) is continued or held as that says.
+  // itself, through any number of restarts. Only a session whose continued
+  // turns keep being cut before a step is done (STALLED_MAX) is held, with
+  // the reason shown and its Continue. A session with an owner of its own (an
+  // agent's, through the cutTurn hook) may say otherwise.
   async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
     for (const id of openAtBoot) {
       const line = this.lineage(id);
@@ -1149,15 +1150,13 @@ export class Engine {
       const line = this.lineage(s.id);
       const end = line.at(-1);
       if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;
-      // The prompt that started the cut turn.
-      const prompt = line.slice(0, line.findLastIndex((e) => e.kind === "turn_start")).findLast((e) => e.kind === "user");
       const held = (text: string) => {
         this.append(s.id, "note", { kind: "restart", text });
         for (const h of allHooks()) try { h.cutTurnHeld?.(s, text); } catch (e) { this.errors.capture("server", e, { hook: "cutTurnHeld", session: s.id }); }
       };
-      const continuation = prompt?.data.origin === "restart";
-      const verdict = allHooks().map((h) => h.cutTurn?.(s, { continuation, stalled: stalledContinuations(line) })).find(Boolean);
-      if (verdict !== "continue" && (verdict || continuation)) return held(verdict ? verdict.hold : "The daemon restarted again during the continued turn. Continue when you want it to go on.");
+      const stalled = stalledContinuations(line);
+      const verdict = allHooks().map((h) => h.cutTurn?.(s, { stalled })).find(Boolean);
+      if (verdict !== "continue" && (verdict || stalled >= STALLED_MAX)) return held(verdict ? verdict.hold : `This turn was continued after a daemon restart ${stalled} times in a row, and each time the daemon went down again before a tool call finished, so it was not continued again. Continue when you want it to go on.`);
       const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => CUT.has(r.content)) : [])).length;
       try {
         await waitModel(s.model);
@@ -1238,6 +1237,15 @@ export class Engine {
   }
 }
 
+
+// A session continued this many times in a row, each continuation cut by the
+// next restart before it finished a step, is not continued again: something
+// takes the daemon down before the turn can move (a command of its own that
+// restarts or kills the daemon, a crash the turn causes), and each round costs
+// a model request with no one watching. A few quick restarts in a row are
+// ordinary (installs), so the count is not lower; restarts are otherwise never
+// counted: a turn that gets a step done between them goes on.
+export const STALLED_MAX = 3;
 
 // How many turns at the end of a branch, in a row, were continuations after a
 // restart that a restart cut again before they finished a step (a tool call

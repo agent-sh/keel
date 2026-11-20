@@ -14,6 +14,7 @@ import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
 import { carriedPlugins } from "../tools/skills.ts";
 import { checkpointAt } from "../engine/compact.ts";
+import { STALLED_MAX } from "../engine/turn.ts";
 import { toolSpanId, traceIdOf, traceparent } from "../admin/trace.ts";
 
 // Subagents: a child session with its own context that works on one task and
@@ -877,18 +878,10 @@ export function onTurnStart(sessionId: string) {
   update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), handback: false, background: true, stopped_by: null, end_reason: null });
 }
 
-// An agent continued this many times in a row, each continuation cut by the
-// next restart before it finished a step, is not continued again: something
-// takes the daemon down before the agent can move (a command of its own that
-// restarts or kills the daemon, a crash its turn causes), and each round costs
-// a model request with no one watching. A few quick restarts in a row are
-// ordinary (installs), so the count is not lower; restarts are otherwise never
-// counted: an agent that gets a step done between them goes on.
-const STALLED_MAX = 3;
-
 // The one decision on an agent's turn that a daemon restart cut, asked by the
-// engine when it would continue it: a live agent goes on, an ended one's turn
-// is left alone.
+// engine when it would continue it: a live agent goes on unless its turns
+// keep being cut before a step is done (the engine's own guard, said here in
+// an agent's words), and an ended one's turn is left alone.
 export function onCutTurn(sessionId: string, cut: { stalled: number }): "continue" | { hold: string } | undefined {
   const a = byChild(sessionId);
   if (!a) return undefined;
