@@ -7,7 +7,7 @@
 // write the new tokens back atomically and only over the tokens that were read.
 // The Codex CLI reloads the file on a 401 before it refreshes, so it keeps
 // working on what keel-bun wrote.
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fingerprint } from "./creds.ts";
@@ -38,6 +38,24 @@ export function jwtExpiryMs(token: string): number | undefined {
   }
 }
 
+// The client version Codex's models cache was written for, if it names one.
+export function cachedVersion(home: string): string | undefined {
+  try {
+    const v = JSON.parse(readFileSync(join(home, "models_cache.json"), "utf8")).client_version;
+    return typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v) ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The higher of two x.y.z versions, by number; either may be missing.
+export function newerVersion(a?: string, b?: string): string | undefined {
+  if (!a || !b) return a ?? b;
+  const x = a.split(".").map(Number), y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! > y[i]! ? a : b;
+  return a;
+}
+
 export class CodexProvider implements Provider {
   readonly id = "chatgpt";
   readonly label = "ChatGPT sign-in";
@@ -47,7 +65,6 @@ export class CodexProvider implements Provider {
   private file = join(this.home, "auth.json");
   private base = (process.env.KEEL_CODEX_BASE_URL ?? "https://chatgpt.com/backend-api/codex").replace(/\/$/, "");
   private refreshing: Promise<AuthFile> | null = null;
-  private version: string | null = null;
 
   private read(): AuthFile | null {
     try {
@@ -125,18 +142,25 @@ export class CodexProvider implements Provider {
     return h;
   }
 
-  // The client version the backend's listing is asked for: the installed Codex CLI's.
+  // The client version the backend's listing is asked for. The backend lists
+  // only the models a client of that version knows, so it is the newer of the
+  // Codex CLI this daemon would run and the version in Codex's models cache:
+  // the cache is written by whichever Codex ran last, which can be an older
+  // install elsewhere on the machine. Read again at each listing; the CLI is
+  // asked again only when its binary changed (an upgrade).
   private clientVersion(): string {
-    if (this.version) return this.version;
-    try {
-      const cache = JSON.parse(readFileSync(join(this.home, "models_cache.json"), "utf8"));
-      if (/^\d+\.\d+\.\d+$/.test(cache.client_version)) this.version = cache.client_version;
-    } catch {}
-    if (!this.version) {
-      const out = Bun.spawnSync(["codex", "--version"], { stderr: "ignore" }).stdout?.toString() ?? "";
-      this.version = /(\d+\.\d+\.\d+)/.exec(out)?.[1] ?? "0.1.0";
-    }
-    return this.version;
+    return newerVersion(this.cliVersion(), cachedVersion(this.home)) ?? "0.1.0";
+  }
+
+  private cli: { key: string; version: string | undefined } | null = null;
+  private cliVersion(): string | undefined {
+    const bin = Bun.which("codex", { PATH: process.env.PATH ?? "" });
+    let key = "";
+    try { const st = statSync(bin ?? ""); key = `${bin}:${st.size}:${st.mtimeMs}`; } catch {}
+    if (this.cli?.key === key) return this.cli.version;
+    const out = key ? Bun.spawnSync([bin!, "--version"], { stderr: "ignore" }).stdout?.toString() ?? "" : "";
+    this.cli = { key, version: /(\d+\.\d+\.\d+)/.exec(out)?.[1] };
+    return this.cli.version;
   }
 
   async list(): Promise<ListedModel[]> {
