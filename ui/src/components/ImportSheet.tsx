@@ -12,6 +12,7 @@ import { api, reportError, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { takeOver, TOOL } from "./TakeOver.tsx";
 import { ago, cn } from "../lib/utils.ts";
+import { Select } from "./Select.tsx";
 
 type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean } };
 type HarnessState = { harness: Harness; label: string; store: string; installed: boolean; total: number; interactive: number };
@@ -339,10 +340,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             {linked.length > 0 && (
               <label className="ml-auto flex items-center gap-1.5 text-caption text-faint">
                 On
-                <select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="h-7 rounded-md border border-line bg-raised px-1.5 text-caption text-fg outline-none focus-visible:border-accent">
+                <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="h-7 rounded-md border border-line bg-raised px-1.5 text-caption text-fg outline-none focus-visible:border-accent">
                   <option value="">this machine</option>
                   {linked.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
+                </Select>
               </label>
             )}
             <button type="button" title="Read the stores again" onClick={() => load(0, true)} className={cn(!linked.length && "ml-auto", "grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg")}>

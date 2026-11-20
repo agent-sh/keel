@@ -4,6 +4,7 @@ import { activityTarget, auto, openSession, placeName, useAuto, type Activity } 
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { Empty } from "./bits.tsx";
+import { Select } from "../Select.tsx";
 
 const KIND: Record<Activity["kind"], { label: string; icon: typeof Bell }> = {
   alert: { label: "Alerts", icon: Bell },
@@ -102,7 +103,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
             <Search className="size-3.5 shrink-0 text-faint" />
             <input data-testid="activity-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search activity" className="min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
           </label>
-          <select
+          <Select
             data-testid="activity-session"
             aria-label="Session"
             value={sid}
@@ -111,7 +112,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           >
             <option value="">All sessions</option>
             {options.map((p) => <option key={p.session_id} value={p.session_id}>{(sessions[p.session_id]?.title || `Session ${p.session_id.slice(-6)}`).slice(0, 40)}</option>)}
-          </select>
+          </Select>
         </div>
         <div className="flex flex-wrap gap-1">
           {KINDS.map((k) => {

@@ -6,6 +6,7 @@ import { useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { enroll, passkeysUsable } from "../lib/presence.ts";
 import { Card, SettingRow } from "./Settings.tsx";
+import { Select } from "./Select.tsx";
 
 type PermSettings = { default_mode: string; reviewer_model: string | null; reviewer_policy: string };
 
@@ -27,14 +28,14 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
     <div className="flex flex-col gap-6">
       <Card>
         <SettingRow label="New sessions start in" hint={modes.find((m) => m.id === perm?.default_mode)?.description}>
-          <select
+          <Select
             data-testid="default-mode"
             value={perm?.default_mode ?? ""}
             onChange={(e) => putPerm({ default_mode: e.target.value })}
             className="h-8 rounded-md border border-line bg-raised px-2 text-ui outline-none focus:border-line-strong"
           >
             {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
+          </Select>
         </SettingRow>
         <SettingRow label="Reviewer mode's model" hint="Judges the calls a session in reviewer mode would ask you about. High-risk ones still come to you.">
           <div className="flex items-center gap-2" data-testid="reviewer-model">
@@ -142,10 +143,10 @@ function TrustCard() {
       <h3 className="px-1 text-ui font-medium text-muted">Repository files</h3>
       <Card>
         <SettingRow label="A repository's new instruction files and skills" hint="A changed one always waits for you, and a repository's hook file always does. The Trust panel of a session shows what is held.">
-          <select data-testid="trust-new-files" value={v ?? ""} onChange={(e) => put(e.target.value as "auto" | "ask")} className="h-8 rounded-md border border-line bg-raised px-2 text-ui outline-none focus:border-line-strong">
+          <Select data-testid="trust-new-files" value={v ?? ""} onChange={(e) => put(e.target.value as "auto" | "ask")} className="h-8 rounded-md border border-line bg-raised px-2 text-ui outline-none focus:border-line-strong">
             <option value="auto">Load on first sight</option>
             <option value="ask">Wait for me</option>
-          </select>
+          </Select>
         </SettingRow>
       </Card>
     </div>

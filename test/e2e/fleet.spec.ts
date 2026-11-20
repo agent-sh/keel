@@ -3,7 +3,7 @@ import { peerProblem } from "./peer.ts";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, choose } from "./shots.ts";
 
 // Feature: the fleet. Two daemons on this machine stand in for two machines:
 // this one (KEEL_URL) pairs with the other (KEEL_PEER_URL) from the Machines
@@ -46,8 +46,8 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(row.getByTestId("machine-state")).toContainText(/ready|busy/);
     await expect(row).toContainText(ROOT);
     // A placement rule: sessions go to the other machine when Auto is picked.
-    await page.getByLabel("Kind of work").selectOption("session");
-    await page.getByTestId("placement-machine").selectOption({ label: "devbox" });
+    await choose(page.getByLabel("Kind of work"), "session");
+    await choose(page.getByTestId("placement-machine"), { label: "devbox" });
     await page.getByLabel("Note", { exact: true }).fill("work lives there");
     await page.getByTestId("placement-add").click();
     await expect(page.getByTestId("placement-rule")).toContainText("When a session, run it on devbox");

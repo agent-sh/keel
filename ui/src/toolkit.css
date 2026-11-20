@@ -115,3 +115,46 @@
   .k-ledger-list { max-height: 40dvh; border-right: 0; border-bottom: 1px solid var(--line); }
   .k-tally { margin-left: 0; }
 }
+
+/* ---------- Controls drawn by us in every engine ---------- */
+/* A browser or a desktop webview draws these in its own look, which follows
+   neither theme: the tip of a title, the checkbox, a number field's arrows,
+   the triangle of a summary, the select (components/Select.tsx). */
+.k-tip {
+  position: fixed; left: 0; top: 0; z-index: 90; max-width: min(24rem, calc(100vw - 8px)); padding: 4px 8px; border-radius: 4px;
+  background: var(--accent); color: var(--accent-fg); font-family: var(--font-sans); font-size: 12px; line-height: 1.4; font-weight: 500;
+  white-space: pre-line; overflow-wrap: anywhere; pointer-events: none; box-shadow: 0 4px 14px oklch(0 0 0 / 0.18);
+  opacity: 0; transition: opacity 0.12s;
+}
+.k-tip[data-open] { opacity: 1; }
+
+input[type="checkbox"]:not(.sr-only) {
+  appearance: none; -webkit-appearance: none; flex: none; display: inline-grid; place-content: center; width: 15px; height: 15px; margin: 0;
+  border: 1.5px solid var(--line-strong); border-radius: 3px; background: var(--bg); vertical-align: -2.5px;
+  transition: background 0.12s, border-color 0.12s;
+}
+input[type="checkbox"]:not(.sr-only)::before {
+  content: ""; width: 9px; height: 9px; background: var(--accent-fg); transform: scale(0); transition: transform 0.1s;
+  clip-path: polygon(13% 50%, 0 64%, 37% 100%, 100% 24%, 86% 11%, 36% 71%);
+}
+input[type="checkbox"]:not(.sr-only):hover { border-color: var(--muted); }
+input[type="checkbox"]:not(.sr-only):checked, input[type="checkbox"]:not(.sr-only):indeterminate { background: var(--accent); border-color: var(--accent); }
+input[type="checkbox"]:not(.sr-only):checked::before { transform: scale(1); }
+input[type="checkbox"]:not(.sr-only):indeterminate::before { transform: scale(1); clip-path: inset(38% 6%); }
+input[type="checkbox"]:not(.sr-only):disabled { opacity: 0.45; }
+input[type="checkbox"]:not(.sr-only):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary:not(.list-none)::before {
+  content: ""; display: inline-block; flex: none; width: 5px; height: 5px; margin: 0 7px 2px 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform 0.12s; opacity: 0.7;
+}
+details[open] > summary:not(.list-none)::before { transform: rotate(45deg); }
+
+.k-select { display: inline-flex; align-items: center; gap: 6px; min-width: 0; text-align: left; cursor: default; }
+.k-select:disabled { opacity: 0.5; }
+.k-select[data-popup-open] { border-color: var(--ring); }

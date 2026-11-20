@@ -9,6 +9,7 @@ import { reportError, failed } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Card } from "./Settings.tsx";
+import { Select } from "./Select.tsx";
 
 const field = "h-8 w-full rounded-lg border border-line bg-bg px-2.5 text-ui outline-none placeholder:text-faint focus:border-accent focus:ring-2 focus:ring-accent/20";
 const btn = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50 [&>svg]:size-3.5 [&>svg]:text-faint";
@@ -175,9 +176,9 @@ function AddMachine({ offered, preset, onDone }: { offered: Machine[]; preset?: 
           <input className={cn(field, "font-mono text-caption")} placeholder="http://127.0.0.1:PORT" value={url} onChange={(e) => setUrl(e.target.value)} aria-label="Daemon URL" data-testid="machine-add-url" />
         ) : (
           <div className="flex gap-2">
-            <select className={field} value={host} onChange={(e) => setHost(e.target.value)} aria-label="ssh host">
+            <Select className={field} value={host} onChange={(e) => setHost(e.target.value)} aria-label="ssh host">
               {offered.map((h) => <option key={h.name} value={h.name}>{h.name}</option>)}
-            </select>
+            </Select>
             <input className={cn(field, "w-28")} placeholder="Daemon port" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} aria-label="Daemon port there" />
           </div>
         )}
@@ -258,19 +259,19 @@ function Placement({ machines }: { machines: Machine[] }) {
         >
           <Wand2 className="size-3.5 text-faint" />
           <span className="text-caption text-muted">When</span>
-          <select className={cn(field, "w-auto")} value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind of work">
+          <Select className={cn(field, "w-auto")} value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind of work">
             <option value="">any work</option><option value="session">a session</option><option value="subagent">a subagent</option><option value="run">a command</option>
-          </select>
+          </Select>
           {COND.map((c) => (
             <label key={c.key} className={cn("inline-flex h-8 cursor-default items-center gap-1.5 rounded-md border px-2 text-caption", cond[c.key] ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:text-fg")}>
               <input type="checkbox" className="sr-only" checked={!!cond[c.key]} onChange={(e) => setCond({ ...cond, [c.key]: e.target.checked })} />{c.label}
             </label>
           ))}
           <span className="text-caption text-muted">run it on</span>
-          <select className={cn(field, "w-auto")} value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Machine" data-testid="placement-machine">
+          <Select className={cn(field, "w-auto")} value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Machine" data-testid="placement-machine">
             <option value="">machine</option>
             {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          </Select>
           <input className={cn(field, "w-44")} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} aria-label="Note" />
           <button type="submit" className={btn} data-testid="placement-add"><Plus /> Add rule</button>
         </form>

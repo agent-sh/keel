@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, choose } from "./shots.ts";
 
 // Feature: Settings > Usage beyond the overview. Token zones: each request's
 // prompt split into tools, system, frozen history and volatile tail with how
@@ -53,7 +53,7 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
   const panel = page.getByTestId("usage-panel");
   await panel.getByRole("radio", { name: "Token zones" }).click();
   await expect(panel.getByTestId("zones-total")).toContainText("Frozen history");
-  await panel.getByTestId("zones-session").selectOption(real.id);
+  await choose(panel.getByTestId("zones-session"), real.id);
   await expect(panel.getByTestId("zones-turn")).toHaveCount(tok.turns.length);
   await shoot(page, "usage-views-01-zones");
   await panel.getByTestId("zones-turns").scrollIntoViewIfNeeded();
@@ -78,8 +78,8 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
   await panel.getByRole("radio", { name: "Compare" }).click();
   await expect(panel.getByTestId("compare-table")).toContainText("First token, median");
   await panel.getByRole("radio", { name: "Two models" }).click();
-  await panel.getByTestId("compare-model-a").selectOption(HAIKU);
-  await panel.getByTestId("compare-model-b").selectOption(STAND_IN);
+  await choose(panel.getByTestId("compare-model-a"), HAIKU);
+  await choose(panel.getByTestId("compare-model-b"), STAND_IN);
   await expect(panel.getByTestId("compare-table")).toContainText("Rate limited");
   // A count of failures differs by how many, not in rate points.
   const limited = panel.getByTestId("compare-table").locator("tr").filter({ hasText: "Rate limited" });

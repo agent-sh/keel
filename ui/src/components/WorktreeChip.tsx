@@ -6,6 +6,7 @@ import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadWorktree, setStartInWorktree, useStartInWorktree, useWorktree } from "../lib/worktree.ts";
 import { stoppingShells } from "../lib/shells.ts";
+import { confirmAction } from "./Confirm.tsx";
 import { popupClass } from "./ui.tsx";
 
 type Pr = { number: number; url: string; title: string; state: string; isDraft: boolean; head_matches?: boolean; checks?: { summary: string; passed: number; failed: number; pending: number; rows: { name: string; status: string; url?: string }[] } };
@@ -161,7 +162,7 @@ export function WorktreeChip({ session }: { session: Session }) {
                   onClick={() => act(async () => {
                     const del = (q: string) => shells((stop) => api(`/api/sessions/${session.id}/worktree?${q}${stop ? "&stop_shells=1" : ""}`, { method: "DELETE" }), "Removing");
                     let r = await del("");
-                    if (r && !r.removed && confirm(`The worktree ${r.reason}. Remove it and keep its working state on a ref?`)) r = await del("snapshot=1");
+                    if (r && !r.removed && (await confirmAction({ title: "Remove the worktree?", body: `The worktree ${r.reason}. Its working state is kept on a ref.`, action: "Remove", danger: true }))) r = await del("snapshot=1");
                     return r;
                   }, (r) => r && ({ text: r.removed ? `Removed${r.branch_deleted ? ", with its branch" : ""}.` : `Kept: ${r.reason}.` }))}
                 >

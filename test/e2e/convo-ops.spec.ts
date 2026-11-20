@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, choose } from "./shots.ts";
 
 // Feature: conversation operations. A recap written on demand; summarize from
 // a prompt on (the prompt comes back to the message box) and everything up to
@@ -61,13 +61,13 @@ test("recap, summarize a part, skill mode, the model's context tools", async ({ 
   await shoot(page, "convo-03-summarized");
 
   // Skill mode: the skill's instructions hold on the next turn.
-  await page.getByTestId("skill-mode-select").selectOption("sign-off");
+  await choose(page.getByTestId("skill-mode-select"), "sign-off");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.skill_mode).toBe("sign-off");
   await send("Reply with only the word cherry.", 3);
   await expect(page.getByTestId("assistant-text").last()).toContainText(word.toUpperCase());
   expect((await events()).some((e) => e.kind === "note" && e.data.kind === "skill_mode" && e.data.skill_mode === "sign-off")).toBe(true);
   await expect(page.getByTestId("note").filter({ hasText: "Skill mode: sign-off" })).toBeVisible();
-  await page.getByTestId("skill-mode-select").selectOption("");
+  await choose(page.getByTestId("skill-mode-select"), "");
   await shoot(page, "convo-04-skill-mode");
 
   // The model's context tools: it reads its window, then starts fresh with a handoff.

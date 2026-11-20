@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, choose } from "./shots.ts";
 
 // Feature: plan mode. The session reads and plans but changes nothing; the
 // model presents its plan on a card; the owner sends it back once, then
@@ -47,7 +47,7 @@ test("plan mode and plan approval", async ({ page, request }) => {
   await card.locator("textarea").fill(shown);
   await card.getByTestId("plan-edit").click();
 
-  await card.getByTestId("plan-mode").selectOption("auto-edits");
+  await choose(card.getByTestId("plan-mode"), "auto-edits");
   await card.getByTestId("plan-approve").click();
   await expect(card).toHaveCount(0);
   await expect(page.getByTestId("permission-mode")).toHaveText("Auto edits");

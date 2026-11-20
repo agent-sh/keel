@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, choose } from "./shots.ts";
 
 // Feature: transcripts on another machine. The import sheet lists the other
 // machine's Claude Code and Codex sessions (its daemon reads them, never one
@@ -62,7 +62,7 @@ test("fleet transcripts: another machine's sessions, imported to go on there", a
     await page.getByRole("option", { name: /^Import sessions/ }).first().click();
     const sheet = page.getByTestId("import-sheet");
     await expect(sheet).toBeVisible({ timeout: 15_000 });
-    await sheet.getByTestId("import-from").selectOption({ label: peer.name });
+    await choose(sheet.getByTestId("import-from"), { label: peer.name });
     await page.getByTestId("import-search").fill(tag);
     const rows = sheet.getByTestId("import-row");
     await expect(rows).toHaveCount(1, { timeout: 15_000 });

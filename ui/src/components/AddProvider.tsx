@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { actions, api, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { Segmented } from "./Settings.tsx";
+import { Select } from "./Select.tsx";
 
 type Wire = "chat_completions" | "openai_responses" | "anthropic_messages" | "gemini_generate_content";
 type Template = { id: string; label: string; group: "local" | "hosted"; wire: Wire; base_url: string; key_env?: string; billing?: string; catalog?: string; note?: string; doc?: string; models?: number };
@@ -297,12 +298,12 @@ function AddProvider({ edit }: { edit?: string }) {
                     </>
                   )}
                   {form.key !== "none" && (
-                    <select className={field} data-testid="provider-auth" value={form.auth} onChange={(e) => set({ auth: e.target.value })} aria-label="Key header">
+                    <Select className={field} data-testid="provider-auth" value={form.auth} onChange={(e) => set({ auth: e.target.value })} aria-label="Key header">
                       <option value="">Key header: the wire's own</option>
                       <option value="bearer">Authorization: Bearer</option>
                       <option value="x-api-key">x-api-key</option>
                       <option value="x-goog-api-key">x-goog-api-key</option>
-                    </select>
+                    </Select>
                   )}
                 </div>
                 <div className="mt-1 text-micro text-faint">{keyHint}</div>
@@ -335,9 +336,9 @@ function AddProvider({ edit }: { edit?: string }) {
               {error && <p className="text-ui text-danger" data-testid="provider-error">{error}</p>}
               <div className="sticky bottom-0 -mx-6 flex items-center gap-2 border-t border-line bg-bg px-6 py-3">
                 {test?.models.length ? (
-                  <select className={cn(field, "w-64")} data-testid="provider-test-model" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model to test">
+                  <Select className={cn(field, "w-64")} data-testid="provider-test-model" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model to test">
                     {test.models.slice(0, 500).map((m) => <option key={m.model} value={m.model}>{m.name ?? m.model}</option>)}
-                  </select>
+                  </Select>
                 ) : null}
                 <button type="submit" data-testid="provider-test-run" disabled={!!busy || !form.base_url} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50">
                   {busy === "test" && <Loader2 className="size-3.5 animate-spin" />} Test connection

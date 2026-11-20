@@ -8,6 +8,7 @@ import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { navigate, seedComposer } from "../lib/ui.ts";
 import { ago, cn, fmtCost } from "../lib/utils.ts";
+import { Select } from "./Select.tsx";
 
 export function Section({ title, children, testid }: { title: string; children: React.ReactNode; testid?: string }) {
   return (
@@ -207,12 +208,12 @@ function SkillMode({ s }: { s: Session }) {
   return (
     <Section title="Skill mode" testid="skill-mode">
       <Line label="Standing skill" hint={pick ? pick.description.slice(0, 140) : "A skill whose instructions hold on every turn. It reaches the model as a message, so the cached prompt stays."}>
-        <select value={mode} aria-label="Skill mode" data-testid="skill-mode-select" disabled={!skills}
+        <Select value={mode} aria-label="Skill mode" data-testid="skill-mode-select" disabled={!skills}
           onChange={(e) => setSkillMode(s.id, e.target.value || null).catch(reportError)} className={cn(field, "max-w-40")}>
           <option value="">Off</option>
           {(skills ?? []).map((k) => <option key={k.name} value={k.name}>{k.name}</option>)}
           {mode && skills && !pick && <option value={mode}>{mode} (not found)</option>}
-        </select>
+        </Select>
       </Line>
     </Section>
   );
@@ -220,7 +221,7 @@ function SkillMode({ s }: { s: Session }) {
 
 export function SessionPanel({ session: s }: { session: Session }) {
   return (
-    <div className="flex flex-col gap-3 p-4" data-testid="session-panel">
+    <div className="flex h-full flex-col gap-3 overflow-y-auto p-4" data-testid="session-panel">
       <Section title="Marks" testid="marks">
         <Line label="Pinned" hint="Keeps its station on the bridge and the top of the list, on every device.">
           <Toggle on={!!s.settings.pinned_ms} label="Pinned" testid="pin-toggle" onChange={(v) => pin(s.id, v).catch(reportError)} />

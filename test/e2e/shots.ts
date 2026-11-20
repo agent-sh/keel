@@ -1,4 +1,4 @@
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
 export const SHOTS = process.env.KEEL_SHOTS ?? `${process.env.HOME}/.cache/keel-work/bun/shots`;
@@ -44,4 +44,14 @@ export async function openMcp(page: Page, name?: string) {
   if (!page.url().endsWith("/settings/mcp")) await page.goto("/settings/mcp");
   if (name) await page.locator(`[data-testid="mcp-entry"][data-name="${name}"]`).click();
   return page.locator(`[data-testid="mcp-server"]${name ? `[data-name="${name}"]` : ""}`);
+}
+
+// Picks an option of a select (components/Select.tsx) by its value, or by its
+// label with `{ label }`.
+export async function choose(select: Locator, pick: string | { label: string }) {
+  await select.click();
+  const list = select.page().getByRole("listbox");
+  const option = typeof pick === "string" ? list.locator(`[role="option"][data-value=${JSON.stringify(pick)}]`) : list.getByRole("option", { name: pick.label, exact: true });
+  await option.click();
+  await list.waitFor({ state: "hidden" });
 }

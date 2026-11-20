@@ -9,6 +9,7 @@ import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Segmented } from "./Settings.tsx";
 import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, Tile, type Range } from "./UsagePanel.tsx";
+import { Select } from "./Select.tsx";
 
 type ZoneKey = "tools" | "system" | "history" | "tail";
 type ZoneCache = { tokens: number; read: number; written: number; fresh: number };
@@ -90,10 +91,10 @@ export function TokensView({ range }: { range: Range }) {
     <div className="flex flex-col gap-4" data-testid="usage-tokens">
       <label className="flex items-center gap-2 text-ui text-muted">
         Sessions
-        <select data-testid="zones-session" value={session} onChange={(e) => setSession(e.target.value)} className="h-8 max-w-96 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+        <Select data-testid="zones-session" value={session} onChange={(e) => setSession(e.target.value)} className="h-8 max-w-96 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
           <option value="">All sessions</option>
           {recent.map((s) => <option key={s.id} value={s.id}>{s.title || "(untitled)"}</option>)}
-        </select>
+        </Select>
         {!session && <span className="text-caption text-faint">Pick one to see its turns.</span>}
       </label>
       <Panel title="Prompt zones" hint={`${r.measured_calls} measured requests; a zone's tokens are an estimate from its bytes, scaled to what the provider counted`} testid="zones-total">
@@ -342,9 +343,9 @@ export function CompareView() {
   // A name two used models share gets its provider, in the options and the heads.
   const name = (id: string) => (used.some((o) => o !== id && short(o) === short(id)) || (ma !== mb && short(ma) === short(mb) && (id === ma || id === mb)) ? `${short(id)} (${provider(id)})` : short(id));
   const select = (v: string, set: (v: string) => void, label: string) => (
-    <select aria-label={label} data-testid={`compare-${label}`} value={v} onChange={(e) => set(e.target.value)} className="h-8 max-w-72 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+    <Select aria-label={label} data-testid={`compare-${label}`} value={v} onChange={(e) => set(e.target.value)} className="h-8 max-w-72 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
       {used.map((id) => <option key={id} value={id}>{name(id)}</option>)}
-    </select>
+    </Select>
   );
   const heads = mode === "ranges" ? ["This range", "The range before"] : [ma ? name(ma) : "A", mb ? name(mb) : "B"];
   const lower = new Set(["Failed requests", "First token, median", "First token, 95th", "Request time, median", "Request time, 95th", "Cache breaks", "Tool failures", "Spend"]);
@@ -388,9 +389,9 @@ export function CompareView() {
       <div className="flex flex-wrap items-center gap-3">
         <Segmented<Mode> label="Compare" value={mode} onChange={setMode} options={[{ value: "ranges", label: "Two ranges" }, { value: "models", label: "Two models" }]} />
         {mode === "ranges" ? (
-          <select aria-label="ranges" data-testid="compare-preset" value={preset} onChange={(e) => setPreset(e.target.value)} className="h-8 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+          <Select aria-label="ranges" data-testid="compare-preset" value={preset} onChange={(e) => setPreset(e.target.value)} className="h-8 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
             {Object.entries(PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-          </select>
+          </Select>
         ) : (
           <>
             {select(ma, setMa, "model-a")}<span className="text-ui text-muted">against</span>{select(mb, setMb, "model-b")}

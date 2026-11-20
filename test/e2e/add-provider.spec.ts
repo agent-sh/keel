@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { FAKE_KEY, FAKE_MODEL, FAKE_TEXT_MODEL, startFake } from "./fixtures/fake-endpoint.ts";
-import { shoot } from "./shots.ts";
+import { shoot, choose } from "./shots.ts";
 
 // Feature: adding a provider by hand in Settings > Providers. A stand-in
 // OpenAI-compatible server that wants a key and keeps its API under /v1: the
@@ -109,7 +109,7 @@ test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", a
     await page.goto("/settings/providers");
     await page.locator(`[data-testid="provider-row"][data-provider="${id}"]`).getByTestId("provider-models-toggle").click();
     await t.getByTestId("model-edit").click();
-    await t.getByTestId("model-tools").selectOption("true");
+    await choose(t.getByTestId("model-tools"), "true");
     await t.getByTestId("model-editor-save").click();
     await expect(t.locator('[data-cap="tools"]')).toHaveAttribute("data-value", "true");
     await page.goto(`/s/${session}`);

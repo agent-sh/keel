@@ -6,6 +6,7 @@ import { Loader2, Pencil, Radar, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { actions, api, failed, useStore, type ListedModel } from "../lib/store.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
+import { Select } from "./Select.tsx";
 
 type Cap = "tools" | "images" | "reasoning" | "caching";
 const CAPS: { k: Cap; label: string }[] = [
@@ -61,9 +62,9 @@ function Editor({ m, provider, onDone }: { m: ListedModel; provider: string; onD
   const input = "h-7 w-full rounded-md border border-line-strong bg-raised px-2 text-ui outline-none focus:border-accent";
   const tri = (k: "tools" | "images", label: string) => (
     <label className="block"><span className="text-micro text-faint">{label}</span>
-      <select className={input} data-testid={`model-${k}`} value={o[k]} onChange={(e) => setO({ ...o, [k]: e.target.value })}>
+      <Select className={input} data-testid={`model-${k}`} value={o[k]} onChange={(e) => setO({ ...o, [k]: e.target.value })}>
         <option value="">as found</option><option value="true">yes</option><option value="false">no</option>
-      </select>
+      </Select>
     </label>
   );
   return (

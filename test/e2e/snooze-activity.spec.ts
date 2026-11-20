@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, choose } from "./shots.ts";
 
 // Feature: snooze a session (its routine alerts go to the inbox read, a failed
 // turn or a card ends it, its time passing wakes it with one alert), snooze
@@ -54,7 +54,7 @@ test("alerts: snooze per session and global, activity list", async ({ page, requ
   await page.getByTestId("activity-kind-snooze").click();
   await expect(page.getByTestId("activity-item").filter({ hasText: "Snoozed" }).first()).toBeVisible();
   await expect(page.locator('[data-testid="activity-item"]:not([data-kind="snooze"])')).toHaveCount(0);
-  await page.getByTestId("activity-session").selectOption(session.id);
+  await choose(page.getByTestId("activity-session"), session.id);
   await page.getByTestId("activity-search").fill("a turn failed");
   await expect(page.getByTestId("activity-item")).toHaveCount(1);
   await expect(page.getByTestId("activity-item")).toContainText("Snooze ended: a turn failed");

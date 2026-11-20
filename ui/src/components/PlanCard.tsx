@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { Markdown } from "./Markdown.tsx";
+import { Select } from "./Select.tsx";
 
 const MODES = [
   { id: "ask", label: "Ask" },
@@ -62,9 +63,9 @@ function Plan({ c }: { c: Card }) {
           <button data-testid="plan-approve" disabled={!plan.trim()} title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"} onClick={() => send({ approve: true, mode, plan })} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
             Approve and go on in
           </button>
-          <select value={mode} onChange={(e) => setMode(e.target.value)} data-testid="plan-mode" className="h-8 rounded-lg border border-line bg-raised px-2 text-ui outline-none">
+          <Select value={mode} onChange={(e) => setMode(e.target.value)} data-testid="plan-mode" className="h-8 rounded-lg border border-line bg-raised px-2 text-ui outline-none">
             {MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
+          </Select>
           <button data-testid="plan-back" onClick={() => setBack(true)} className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">Keep planning</button>
           {err && <span className="ml-auto text-micro text-danger">{err}</span>}
         </div>

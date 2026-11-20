@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
+import { ContextMenuHost } from "./components/ContextMenu.tsx";
 import { Attention, setBaseTitle } from "./components/Attention.tsx";
 import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -78,6 +79,7 @@ export function App() {
       </div>
       <Overlays />
       <ConfirmHost />
+      <ContextMenuHost />
       <AdminBand />
     </Boundary>
   );
