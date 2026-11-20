@@ -32,10 +32,13 @@ export class PluginProvider implements Provider {
   readonly label: string;
   readonly wire: Wire;
   readonly family: Family;
+  readonly catalog?: string; // the models.dev section the owner named for this route
 
   constructor(readonly proc: PluginProcess, readonly decl: PluginProviderDecl) {
     this.id = `${proc.entry.id}/${decl.id}`;
     this.label = decl.label;
+    const c = proc.entry.providers[decl.id]?.catalog;
+    if (typeof c === "string" && c) this.catalog = c;
     this.wire = decl.wire as Wire;
     this.family = decl.wire === "anthropic_messages" ? "claude" : decl.wire === "gemini_generate_content" ? "gemini" : decl.wire === "openai_responses" ? "gpt" : "other";
   }
@@ -104,6 +107,8 @@ export class PluginProvider implements Provider {
     const ctx = ctxFor(this.id, req, req.efforts ?? []);
     const headers: Record<string, string> = { "content-type": "application/json", accept: this.decl.stream_format === "json_array" ? "application/json" : "text/event-stream" };
     if (this.wire === "anthropic_messages") headers["anthropic-version"] = "2023-06-01";
+    // A speed offer's headers (a beta flag): the plugin adds them to its own.
+    Object.assign(headers, req.extraHeaders);
     const sessionId = req.sessionKey || `keel-${Bun.hash(req.system).toString(16).padStart(24, "0").slice(0, 24)}`;
     return runEvents(codec, req, ctx, onDelta, (body) =>
       this.proc.request({ provider: this.decl, model: req.model, sessionId, operation: "turn", headers, body, signal: req.signal }));

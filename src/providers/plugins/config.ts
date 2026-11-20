@@ -1,5 +1,7 @@
 // plugins.toml (protocol v1): `[plugins.<id>]` with command, args, enabled,
-// env, max_concurrent, settings and `[plugins.<id>.providers.<pid>]`.
+// env, max_concurrent, settings and `[plugins.<id>.providers.<pid>]`. A
+// provider's `catalog` names the models.dev section that describes its route
+// (speed tiers, capabilities), as an endpoint's does.
 // keel-bun reads <config>/plugins.toml; without one it reads the Rust Keel's
 // ~/.config/keel/plugins.toml (read only), so existing plugins work unchanged.
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -15,14 +17,14 @@ export type PluginEntry = {
   env: string[];
   max_concurrent?: number;
   settings: Record<string, unknown>;
-  providers: Record<string, { enabled?: boolean; label?: string; settings?: Record<string, unknown> }>;
+  providers: Record<string, { enabled?: boolean; label?: string; catalog?: string; settings?: Record<string, unknown> }>;
   problem?: string; // a bad entry: the plugin is not started and this says why
   fingerprint: string;
 };
 
 const ID = /^[a-z][a-z0-9_-]{0,47}$/;
 const PLUGIN_KEYS = new Set(["command", "args", "enabled", "env", "max_concurrent", "settings", "providers"]);
-const PROVIDER_KEYS = new Set(["enabled", "label", "settings"]);
+const PROVIDER_KEYS = new Set(["enabled", "label", "catalog", "settings"]);
 
 export function pluginsFile(): string | null {
   const own = join(configDir(), "plugins.toml");

@@ -13,7 +13,7 @@ import { EndpointProvider } from "./endpoint.ts";
 import { MISSING_RECHECK_MS } from "./creds.ts";
 import { GeminiProvider, OpenAIProvider } from "./keyed.ts";
 import { Probes } from "./probe.ts";
-import { Plugins } from "./plugins/index.ts";
+import { PluginProvider, Plugins } from "./plugins/index.ts";
 import { priceOf } from "./pricing.ts";
 import { NoKey, ProviderError } from "./http.ts";
 import { fromHeaders, Limits, type Window } from "./limits.ts";
@@ -245,7 +245,7 @@ export class Providers {
 
   private join(p: Provider, m: ListedModel): ModelInfo {
     const ep = p instanceof EndpointProvider ? p : undefined;
-    const section = ep ? ep.cfg.catalog : SECTION[p.id];
+    const section = ep ? ep.cfg.catalog : p instanceof PluginProvider ? p.catalog : SECTION[p.id];
     const c = this.catalog.lookup(m.model, section);
     const own = this.catalog.own(m.model, section);
     const billing = m.billing?.kind ?? (ep?.cfg.billing === "subscription" ? "subscription" : "per_token");
