@@ -39,6 +39,19 @@ export function findDaemon(v: { url?: string; "state-dir"?: string }): Found {
 // token (KEEL_TOKEN, from the daemon's <state>/api-token).
 export const authHeaders = (): Record<string, string> => (process.env.KEEL_TOKEN ? { authorization: `Bearer ${process.env.KEEL_TOKEN}` } : {});
 
+// An address where another program answers is not a daemon that said no:
+// before a refusal is shown as the daemon's, the address is asked for the
+// daemon's own health answer (once per address, and only after a refusal).
+const keelAt = new Map<string, Promise<boolean>>();
+const isKeel = (base: string) =>
+  keelAt.get(base) ??
+  keelAt.set(base, fetch(base + "/api/health", { signal: AbortSignal.timeout(1500) }).then(async (r) => r.ok && typeof ((await r.json()) as any)?.pid === "number").catch(() => false)).get(base)!;
+// The words for a refused call: the daemon's own, or that no daemon is there.
+export async function refusal(base: string, r: Response, body: any): Promise<string> {
+  if (await isKeel(base)) return body?.error ?? `HTTP ${r.status}`;
+  return `no Keel daemon answers at ${base}: another program does (pass --url, set KEEL_URL, or give the daemon's --state-dir)`;
+}
+
 export class Client {
   constructor(readonly base: string) {}
 
@@ -54,7 +67,7 @@ export class Client {
       throw new ApiError(`no daemon answers at ${this.base} (start one with \`keel serve\`, or pass --url)`, 0);
     }
     const b = (await r.json().catch(() => ({}))) as any;
-    if (!r.ok) throw new ApiError(b.error ?? `HTTP ${r.status}`, r.status);
+    if (!r.ok) throw new ApiError(await refusal(this.base, r, b), r.status);
     return b as T;
   }
   get = <T = any>(path: string) => this.call<T>("GET", path);

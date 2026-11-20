@@ -72,6 +72,24 @@ describe("help, usage and completion", () => {
   });
 });
 
+describe("an address another program answers on", () => {
+  const state = join(SCRATCH, "state-other");
+  test("is said to be no Keel daemon, not shown as the daemon's refusal", async () => {
+    const other = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ error: "Not found" }, { status: 404 }) });
+    try {
+      const url = `http://127.0.0.1:${other.port}`;
+      for (const args of [["status"], ["restart", "--no-wait"], ["sessions"]]) {
+        const r = await keel([...args, "--url", url], { state });
+        expect(r.code).not.toBe(0);
+        expect(r.err).toContain(`no Keel daemon answers at ${url}`);
+        expect(r.err).not.toContain("Not found");
+      }
+    } finally {
+      other.stop(true);
+    }
+  });
+});
+
 describe("keel run with no daemon", () => {
   const state = join(SCRATCH, "state-headless");
   test("prints the answer, a result object, or stream lines, and exits by the outcome", async () => {

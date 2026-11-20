@@ -7,7 +7,7 @@
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
 import { chunks } from "../core/proc.ts";
-import { authHeaders, findDaemon } from "./client.ts";
+import { authHeaders, findDaemon, refusal } from "./client.ts";
 
 const USAGE = `keel debug [ERROR_ID] | --session ID [--turn EVENT]   the debug bundle, as Markdown
 keel debug errors [--all] [--json]                    the open errors, newest first
@@ -22,7 +22,7 @@ async function get(url: string, path: string): Promise<Response> {
   } catch {
     throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
   }
-  if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as any).error ?? `HTTP ${r.status}`);
+  if (!r.ok) throw new Error(await refusal(url, r, await r.json().catch(() => ({}))));
   return r;
 }
 const getJson = async (url: string, path: string) => (await get(url, path)).json() as Promise<any>;

@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { unitTemplate } from "../admin/unit.ts";
 import { lockHolder } from "../admin/daemon.ts";
 import { restore as restoreBackup } from "../admin/storage.ts";
-import { authHeaders, findDaemon } from "./client.ts";
+import { authHeaders, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir } from "../core/paths.ts";
 
 const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
@@ -29,7 +29,7 @@ async function call(url: string, path: string, init?: RequestInit): Promise<any>
     throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
   }
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+  if (!r.ok) throw new Error(await refusal(url, r, body));
   return body;
 }
 
@@ -206,7 +206,7 @@ const uiCmd = wrap("keel ui [status | install BUNDLE.tar.gz | rollback] [--url U
         throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
       });
       st = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(st.error ?? `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(await refusal(url, r, st));
     } else throw new Error(`unknown: keel ui ${sub}`);
     const name = (x: any) => (x ? `${x.version} (${time(x.version)})` : "none");
     out(st, !!v.json, () => [
