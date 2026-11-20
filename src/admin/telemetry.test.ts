@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { Telemetry } from "./telemetry.ts";
+import { changedBlocks } from "../engine/prompt-store.ts";
+import { breakCause, prefixDiff, prefixOf, Telemetry } from "./telemetry.ts";
 
 const withStore = (f: (store: Store) => void) => {
   const root = mkdtempSync(join(tmpdir(), "keel-telemetry-"));
@@ -68,3 +69,22 @@ test("a request is booked to its own branch, route and turn", () => withStore((s
   expect(turn.requests).toBe(1); // the side answers are in no turn
   expect(t.report({}).by_model.map((m) => [m.model, m.calls]).sort()).toEqual([["p:main", 4], ["q:advisor", 1]]);
 }));
+
+test("a cache break is a changed prefix only where a stored fingerprint differs", () => {
+  const tool = (name: string, defer = false) => ({ name, description: "d", input_schema: {}, defer }) as any;
+  const was = prefixOf({ tools: [tool("Bash")], system: "one" }, ["a", "b"]);
+  const prev = { h_tools: was.tools, h_system: was.system, n_msgs: was.n, h_msgs: was.msgs, h_kept: was.kept };
+  // The same request grown by a message, a deferred tool more, the last message rewritten: nothing differs.
+  expect(prefixDiff(prev, prefixOf({ tools: [tool("Bash"), tool("mcp__x__y", true)], system: "one" }, ["a", "b", "c"]))).toEqual([]);
+  expect(prefixDiff(prev, prefixOf({ tools: [tool("Bash")], system: "one" }, ["a", "b2", "c"]))).toEqual([]);
+  expect(prefixDiff(prev, prefixOf({ tools: [tool("Read")], system: "two" }, ["x", "b", "c"]), ["instruction files"])).toEqual(["tools", "system (instruction files)", "history"]);
+  expect(prefixDiff({ ...prev, h_tools: null }, was)).toBeNull();
+  const gap = { modelChanged: false, compacted: false };
+  expect(breakCause({ ...gap, gapMs: 1_000, diff: [] })).toBe("provider_miss");
+  expect(breakCause({ ...gap, gapMs: 3_600_000, diff: [] })).toBe("expired");
+  expect(breakCause({ ...gap, gapMs: 3_600_000, diff: ["system"] })).toBe("prefix_changed");
+  expect(breakCause({ ...gap, gapMs: 1_000, diff: null })).toBe("prefix_changed");
+  const b = (name: string, hash: string) => ({ name, hash, bytes: 1 });
+  expect(changedBlocks([b("core", "1"), b("skills", "2"), b("place", "3")], [b("core", "1"), b("place", "3"), b("mcp", "4")])).toEqual(["mcp", "skills"]);
+  expect(changedBlocks([b("core", "1")], [b("core", "1")])).toEqual([]);
+});

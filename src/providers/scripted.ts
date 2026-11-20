@@ -8,6 +8,7 @@
 // The owner's prompt picks the scenario with a word `script:<name>`. What a
 // request gets depends only on the request and how often that exact request
 // was sent before, so a retry sees the next step of the same scenario.
+import { appendFileSync } from "node:fs";
 import type { Message } from "../core/types.ts";
 import { classify, ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
@@ -54,6 +55,8 @@ export class ScriptedProvider implements Provider {
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     const msgs = req.messages;
+    // For specs that compare what was sent across daemon restarts: one line per request.
+    if (process.env.KEEL_SCRIPTED_LOG) appendFileSync(process.env.KEEL_SCRIPTED_LOG, JSON.stringify({ ts: Date.now(), session: req.sessionKey, purpose: req.purpose ?? "turn", system: req.system, tools: req.tools.map((t) => t.name), messages: msgs.length }) + "\n");
     const last = msgs.at(-1);
     const lastText = textOf(last);
     // A retry is the same request: system, messages, tools, model and effort, byte for byte.

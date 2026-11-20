@@ -9,6 +9,7 @@
 import { ERROR_CLASSES } from "../../admin/classes.ts";
 import { AFTER_REQUESTS, BREAK_CAUSES, type Filter, Telemetry } from "../../admin/telemetry.ts";
 import { ZONES } from "../../admin/zones.ts";
+import { promptOf } from "../../engine/prompt-store.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -81,6 +82,19 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
         if (limit !== undefined && !Number.isFinite(limit)) return json({ error: "limit is not a number" }, 400);
         return json({ examples: t.examples({ tool: q.get("tool") || undefined, session: f.session, limit, since: f.since, until: f.until }) });
+      },
+    },
+    // GET /api/telemetry/prompt?session_id=: the system prompt kept with the
+    // session (a subagent's is its parent's): its blocks with their sizes and
+    // fingerprints, when it was rendered, and the blocks that differed the
+    // last time it changed. `text=1` adds the text itself.
+    "/api/telemetry/prompt": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const p = promptOf(store, q.get("session_id") ?? "");
+        if (!p) return json({ error: "no prompt is kept for this session: it has sent no request yet" }, 404);
+        const { text, ...rest } = p;
+        return json({ ...rest, bytes: Buffer.byteLength(text), hash: Bun.hash(text).toString(36), ...(q.get("text") === "1" ? { text } : {}) });
       },
     },
     "/api/telemetry/vocabulary": {

@@ -17,7 +17,9 @@ under `~/.cache/keel-work/bun/research/`.
 - Each model family gets the tools it was trained on (`src/tools/<family>.ts`).
 - Token efficiency is part of every feature: append-only history (the provider
   cache prefix never changes), cache breakpoints on tools, system and the last
-  user message, a frozen system prompt per session, long tool output spilled to a
+  user message, a system prompt kept with the session (the same bytes across
+  restarts, made again only when one of its blocks really changed: see
+  `src/engine/prompt-store.ts`), long tool output spilled to a
   file (`src/tools/spill.ts`), a long fetched page read by a cheaper reader model
   (`src/engine/reader.ts`), and idle compaction before a long context's cache
   expires (`src/engine/compact.ts`).

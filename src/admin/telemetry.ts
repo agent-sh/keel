@@ -7,6 +7,7 @@ import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { lineage } from "../core/tree.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { promptOf } from "../engine/prompt-store.ts";
 import { errorText } from "../engine/retry.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { errorClass } from "./classes.ts";
@@ -47,14 +48,46 @@ CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL
 // One attempt in flight. `step0`: when the first attempt of its model step
 // started (a retry sends the same request object again); `first`: the first
 // piece of anything streamed; `text`: the first piece of reply text.
-type Pending = { t0: number; step0: number; attempt: number; first?: number; text?: number; session: string; model: string; purpose: string; turn: string | null; compaction: string; bytes: Zones };
+type Pending = { t0: number; step0: number; attempt: number; first?: number; text?: number; session: string; model: string; purpose: string; turn: string | null; compaction: string; bytes: Zones; prefix: Prefix | null };
+
+// Fingerprints of what a turn request's cached prefix is made of, stored with
+// the call so the next one (after a daemon restart too) can say what differs:
+// the tool schemas in the prompt (deferred ones are not), the system text as
+// sent, and the messages (`msgs` over all of them, `kept` over all but the
+// last, which a provider's breakpoint may sit before).
+type Prefix = { tools: string; system: string; n: number; msgs: string; kept: string; marks: string[] };
+const fp = (v: unknown) => Bun.hash(typeof v === "string" ? v : JSON.stringify(v)).toString(36);
+export function prefixOf(req: Pick<ProviderRequest, "tools" | "system">, marks: string[]): Prefix {
+  return {
+    tools: fp(req.tools.filter((t) => !t.defer).map((t) => [t.name, t.description, t.input_schema])),
+    system: fp(req.system), n: marks.length, msgs: fp(marks), kept: fp(marks.slice(0, -1)), marks,
+  };
+}
+
+// The parts of the prefix that differ from the previous turn request's, by
+// its stored fingerprints; null when that call stored none (made before they
+// were recorded). `blocks`: the system prompt blocks the engine replaced in between.
+export function prefixDiff(prev: { h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null }, now: Prefix, blocks: string[] = []): string[] | null {
+  if (prev.h_tools === null || prev.h_system === null || prev.n_msgs === null) return null;
+  const out: string[] = [];
+  if (prev.h_tools !== now.tools) out.push("tools");
+  if (prev.h_system !== now.system) out.push(blocks.length ? `system (${blocks.join(", ")})` : "system");
+  // The history is kept when this request starts with the last one's messages, its last one aside.
+  const same = now.n >= prev.n_msgs && fp(now.marks.slice(0, prev.n_msgs)) === prev.h_msgs;
+  const sameButLast = now.n >= prev.n_msgs - 1 && fp(now.marks.slice(0, Math.max(0, prev.n_msgs - 1))) === prev.h_kept;
+  if (!same && !sameButLast) out.push("history");
+  return out;
+}
 
 // Why a request read less from the prompt cache than the one before it in the
 // same session: the cache lifetime passed (5 minutes is the default lifetime
 // of Anthropic's and Bedrock's cache, and the shortest any provider documents),
-// the model changed, a compaction rewrote the history, or the prefix changed.
+// the model changed, a compaction rewrote the history, the prefix changed (a
+// stored fingerprint of the tools, the system text or the kept history
+// differs from the last request's), or none of these: the request was the
+// same up to the last one's end and the provider's cache missed anyway.
 export const CACHE_TTL_MS = 5 * 60_000;
-export const BREAK_CAUSES = ["expired", "model_switch", "compaction", "prefix_changed"] as const;
+export const BREAK_CAUSES = ["expired", "model_switch", "compaction", "prefix_changed", "provider_miss"] as const;
 
 registerSettings(
   "budget",
@@ -74,7 +107,8 @@ export class Telemetry {
     store.migrate(SCHEMA);
     const cols = [["telemetry_calls", "cache_break", "TEXT"], ["telemetry_tools", "call_id", "TEXT"], ["telemetry_tools", "error", "TEXT"],
       ["telemetry_calls", "purpose", "TEXT"], ["telemetry_calls", "error_class", "TEXT"], ["telemetry_calls", "turn_event", "TEXT"],
-      ["telemetry_calls", "attempt", "INTEGER"], ["telemetry_calls", "step_ms", "INTEGER"], ["telemetry_calls", "text_ms", "INTEGER"], ["telemetry_calls", "compaction_event", "TEXT"],
+      ["telemetry_calls", "attempt", "INTEGER"], ["telemetry_calls", "h_tools", "TEXT"], ["telemetry_calls", "h_system", "TEXT"], ["telemetry_calls", "n_msgs", "INTEGER"],
+      ["telemetry_calls", "h_msgs", "TEXT"], ["telemetry_calls", "h_kept", "TEXT"], ["telemetry_calls", "break_detail", "TEXT"], ["telemetry_calls", "step_ms", "INTEGER"], ["telemetry_calls", "text_ms", "INTEGER"], ["telemetry_calls", "compaction_event", "TEXT"],
       ["telemetry_tools", "outcome", "TEXT"], ["telemetry_tools", "event_id", "TEXT"], ["telemetry_tools", "model", "TEXT"],
       ...ZONES.map((z) => ["telemetry_calls", `z_${z}`, "INTEGER"])] as const;
     for (const [t, col, type] of cols) if (!store.columnExists(t, col)) store.db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
@@ -102,6 +136,7 @@ export class Telemetry {
         const p: Pending = {
           t0: now, step0: step.t0, attempt: step.attempt, session: s.id, model: req.route ?? this.store.session(s.id)?.model ?? s.model, purpose,
           turn: purpose === "side" ? null : openTurn(line), compaction: line.findLast((e) => e.kind === "compaction")?.id ?? "", bytes,
+          prefix: purpose === "turn" ? prefixOf(req, marks) : null,
         };
         this.pending.set(req, p);
       },
@@ -160,23 +195,28 @@ export class Telemetry {
     const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
     // Zones only where the provider counted the prompt.
     const z = r.outcome === "ok" && prompt > 0 ? scaleZones(p.bytes, prompt) : null;
-    const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p.session, p.model, p.t0, u) : null;
+    const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p.session, p.model, p.t0, u, p.prefix) : null;
+    const x = p.prefix;
     this.store.db
       .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break,
-                purpose, error_class, turn_event, z_tools, z_system, z_history, z_tail, attempt, step_ms, text_ms, compaction_event)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                purpose, error_class, turn_event, z_tools, z_system, z_history, z_tail, attempt, step_ms, text_ms, compaction_event,
+                h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(p.session, p.t0, p.model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
-        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error?.slice(0, 300) ?? null, brk,
+        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error?.slice(0, 300) ?? null, brk?.cause ?? null,
         p.purpose, r.cls ?? null, p.turn, z?.tools ?? null, z?.system ?? null, z?.history ?? null, z?.tail ?? null,
-        p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction);
+        p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction,
+        x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null);
   }
 
   // A request that read less than half of what the last one of the session
-  // sent, though its prompt is no shorter, broke the cache. Why, as far as
-  // the history and the clock say.
-  private cacheBreak(sessionId: string, model: string, ts: number, u: any): string | null {
+  // sent, though its prompt is no shorter, broke the cache. Why, by what the
+  // two requests' stored fingerprints, the history and the clock say; `detail`
+  // names the parts of the prefix that differ.
+  private cacheBreak(sessionId: string, model: string, ts: number, u: any, now: Prefix | null): { cause: string; detail: string | null } | null {
     const prev = this.store.db
-      .query<{ ts: number; model: string; prompt: number }, [string]>("SELECT ts, model, input + cache_read + cache_write AS prompt FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
+      .query<{ ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null }, [string]>(
+        "SELECT ts, model, input + cache_read + cache_write AS prompt, h_tools, h_system, n_msgs, h_msgs, h_kept FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
       .get(sessionId);
     if (!prev || prev.prompt <= 0) return null;
     const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
@@ -184,7 +224,10 @@ export class Telemetry {
     // A shorter prompt without a compaction is a side request, not a break.
     if (prompt < prev.prompt * 0.9 && prev.model === model && !compacted) return null;
     if ((u.cache_read ?? 0) >= 0.5 * Math.min(prev.prompt, prompt)) return null;
-    return breakCause({ gapMs: ts - prev.ts, modelChanged: prev.model !== model, compacted });
+    // The blocks of the system prompt the engine replaced since the last request.
+    const changed = promptOf(this.store, sessionId)?.changed;
+    const diff = now ? prefixDiff(prev, now, changed && changed.ts > prev.ts && changed.ts <= ts ? changed.blocks : []) : null;
+    return { cause: breakCause({ gapMs: ts - prev.ts, modelChanged: prev.model !== model, compacted, diff }), detail: diff?.length ? diff.join("; ") : null };
   }
 
   private compactedBetween(sessionId: string, a: number, b: number) {
@@ -312,7 +355,13 @@ export class Telemetry {
         .sort((a, b) => b.tool_calls - a.tool_calls),
       breaks: BREAK_CAUSES.map((cause) => {
         const list = calls.filter((c) => c.cache_break === cause);
-        return { cause, count: list.length, last_ms: list.at(-1)?.ts ?? null, uncached_tokens: list.reduce((n, c) => n + c.input + c.cache_write, 0) };
+        // What differed, where it was recorded: each detail with its count.
+        const details = new Map<string, number>();
+        for (const c of list) if (c.break_detail) details.set(c.break_detail, (details.get(c.break_detail) ?? 0) + 1);
+        return {
+          cause, count: list.length, last_ms: list.at(-1)?.ts ?? null, uncached_tokens: list.reduce((n, c) => n + c.input + c.cache_write, 0),
+          details: [...details.entries()].map(([detail, count]) => ({ detail, count })).sort((a, b) => b.count - a.count),
+        };
       }).filter((b) => b.count),
       // Failures by class, per provider and model: `rate` is per request of that model.
       error_classes: [...byModel.entries()].flatMap(([model, list]) =>
@@ -463,7 +512,7 @@ export const AFTER_REQUESTS = 3;
 
 type CallRow = {
   ts: number; model: string; latency_ms: number | null; ttft_ms: number | null; input: number; output: number; cache_read: number; cache_write: number;
-  cost: number | null; unpriced: number; outcome: string; error: string | null; cache_break: string | null;
+  cost: number | null; unpriced: number; outcome: string; error: string | null; cache_break: string | null; break_detail: string | null;
   purpose: string | null; error_class: string | null; turn_event: string | null; attempt: number | null; step_ms: number | null; text_ms: number | null; z_tools: number | null; z_system: number | null; z_history: number | null; z_tail: number | null;
 };
 
@@ -482,11 +531,16 @@ function classCounts(list: CallRow[]): Record<string, number> {
   return out;
 }
 
-export function breakCause(b: { gapMs: number; modelChanged: boolean; compacted: boolean }): (typeof BREAK_CAUSES)[number] {
+// `diff`: the parts of the prefix that differ from the last request's (null:
+// not recorded for it). A recorded difference is a changed prefix whatever
+// the clock says; with none recorded, a gap past the cache lifetime is an
+// expiry, and a short gap is a miss on the provider's side.
+export function breakCause(b: { gapMs: number; modelChanged: boolean; compacted: boolean; diff?: string[] | null }): (typeof BREAK_CAUSES)[number] {
   if (b.modelChanged) return "model_switch";
   if (b.compacted) return "compaction";
+  if (b.diff?.length) return "prefix_changed";
   if (b.gapMs > CACHE_TTL_MS) return "expired";
-  return "prefix_changed";
+  return b.diff ? "provider_miss" : "prefix_changed";
 }
 
 // One line of a failed result, at most 140 characters.

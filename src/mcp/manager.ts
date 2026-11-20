@@ -4,7 +4,7 @@
 // restarts only the servers whose config changed, and never touches a session's
 // request prefix (MCP tools are deferred, so the eager tool list is fixed).
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
@@ -151,6 +151,12 @@ export class McpManager {
   private disposed = false;
 
   private bundledOffPath: string;
+  // What each server last published as its instructions, kept in the state so
+  // a session's prompt can carry them while the server is still connecting
+  // (a daemon start) or down. Held per config: another command or address is
+  // another server.
+  private publishedPath: string;
+  private published: Record<string, { key: string; instructions: string | null }> = {};
   // The key of each server's source binding (sources.ts binding), kept in the
   // state so an owner's grant for a server outlives a restart.
   private bindKey: Uint8Array;
@@ -158,6 +164,8 @@ export class McpManager {
   constructor(private errors: ErrorTracker, stateDir: string, private workspace: string) {
     this.oauth = new OAuthStore(stateDir);
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
+    this.publishedPath = join(stateDir, "mcp-instructions.json");
+    try { this.published = JSON.parse(readFileSync(this.publishedPath, "utf8")); } catch {} // none kept yet
     const keyPath = join(stateDir, "mcp-bind.key");
     if (!existsSync(keyPath)) {
       mkdirSync(stateDir, { recursive: true });
@@ -362,6 +370,7 @@ export class McpManager {
         e.client = client;
         e.era = client.era;
         e.state = "ready";
+        this.publish(e, client.instructions);
         e.last = Date.now();
         e.failures = 0;
         e.resourcesRev++;
@@ -781,10 +790,47 @@ export class McpManager {
     return [...this.entries.values()].filter((e) => e.state === "ready").map((e) => e.name);
   }
 
-  configured(): { name: string; instructions?: string }[] {
-    return [...this.entries.values()]
-      .filter((e) => e.state !== "disabled" && e.state !== "missing")
-      .map((e) => ({ name: e.name, instructions: e.bundled?.instructions ?? e.client?.instructions }));
+  private configKey(e: Entry) {
+    return canon({ ...e.config, enabled: undefined });
+  }
+
+  private publish(e: Entry, instructions: string | undefined) {
+    const key = this.configKey(e), was = this.published[e.name];
+    if (was && was.key === key && was.instructions === (instructions ?? null)) return;
+    this.published[e.name] = { key, instructions: instructions ?? null };
+    try {
+      writeFileSync(this.publishedPath + ".tmp", JSON.stringify(this.published));
+      renameSync(this.publishedPath + ".tmp", this.publishedPath);
+    } catch (err) {
+      this.errors.capture("server", err, { at: "mcp instructions", mcp: e.name });
+    }
+  }
+
+  // What the server published the last time it connected under this config.
+  private lastPublished(e: Entry): { instructions?: string } | undefined {
+    const p = this.published[e.name];
+    return p && p.key === this.configKey(e) ? { instructions: p.instructions ?? undefined } : undefined;
+  }
+
+  // Each server a session can use, with its instructions: the live ones, else
+  // the ones it last published. A server that has never connected under its
+  // config and is connecting now is waited for, up to `waitMs` in all, so a
+  // session started with the daemon gets its instructions too.
+  async configured(waitMs = 0): Promise<{ name: string; instructions?: string }[]> {
+    const live = () => [...this.entries.values()].filter((e) => e.state !== "disabled" && e.state !== "missing");
+    const unknown = live().filter((e) => e.state === "connecting" && !e.bundled && !this.lastPublished(e));
+    if (waitMs > 0 && unknown.length && !runMode.client) {
+      const settled = async (e: Entry) => {
+        while (e.state === "connecting" && this.entries.get(e.name) === e && !this.disposed) {
+          if (e.connecting) await e.connecting.catch(() => {});
+          else await Bun.sleep(25); // start() connects a moment after it lists
+        }
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(unknown.map(settled)), new Promise((r) => (timer = setTimeout(r, waitMs)))]);
+      clearTimeout(timer);
+    }
+    return live().map((e) => ({ name: e.name, instructions: e.bundled?.instructions ?? e.client?.instructions ?? this.lastPublished(e)?.instructions }));
   }
 }
 

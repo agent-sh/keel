@@ -24,7 +24,7 @@ type Report = {
   by_model: (Stats & { model: string })[];
   tools: { tool: string; tool_calls: number; tool_errors: number; tool_error_rate: number; p50_ms: number | null; p95_ms: number | null; timed: number; total_ms: number | null }[];
   error_kinds: { message: string; count: number; last_ms: number }[];
-  breaks: { cause: string; count: number; last_ms: number | null; uncached_tokens: number }[];
+  breaks: { cause: string; count: number; last_ms: number | null; uncached_tokens: number; details?: { detail: string; count: number }[] }[];
   spend: { day: Spend; month: Spend };
 };
 type Spend = { since_ms: number; usd: number; unpriced_calls: number; limit_usd: number | null };
@@ -35,6 +35,7 @@ export const CAUSE: Record<string, string> = {
   model_switch: "the model changed",
   compaction: "a compaction rewrote the history",
   prefix_changed: "the prompt prefix changed",
+  provider_miss: "the provider's cache missed an unchanged prefix",
 };
 
 // The last failures of one tool, each linked to its session at the call.
@@ -254,6 +255,7 @@ function Overview({ range }: { range: Range }) {
               {r.breaks.map((b) => (
                 <span key={b.cause}>
                   <span className="font-medium tabular-nums text-fg">{b.count}</span> {b.count > 1 ? "breaks" : "break"}: {CAUSE[b.cause] ?? b.cause}
+                  {!!b.details?.length && <span data-testid="break-details"> ({b.details.map((d) => (d.count > 1 ? `${d.detail}, ${d.count} times` : d.detail)).join("; ")})</span>}
                   <span className="text-faint">, {fmtTokens(b.uncached_tokens)} tokens sent again</span>
                 </span>
               ))}

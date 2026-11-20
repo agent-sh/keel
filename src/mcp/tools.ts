@@ -171,13 +171,19 @@ function builtins(m: McpManager): CatalogTool[] {
   ];
 }
 
+// How long a session's first request waits for a server that has never
+// connected under its config (its instructions are not known yet): Codex's
+// default startup wait for an MCP server. A server seen before is not waited
+// for: its last published instructions are used.
+const FIRST_CONNECT_WAIT_MS = 10_000;
+
 export function installMcpTools(m: McpManager) {
   registerShared(SearchTools, McpCall);
   registerCatalog({ name: "mcp", tools: async () => builtins(m) });
   // One frozen line per session so the model knows the servers exist.
   registerHooks({
-    system: () => {
-      const s = m.configured();
+    system: async () => {
+      const s = await m.configured(FIRST_CONNECT_WAIT_MS);
       if (!s.length) return "";
       const lines = s.map((x) => `- ${x.name}${x.instructions ? `: ${oneLine(x.instructions, 200)}` : ""}`);
       return `MCP servers are connected; their tools are deferred: load them with your tool search tool (ToolSearch, or search_tools and mcp_call):\n${lines.join("\n")}`;

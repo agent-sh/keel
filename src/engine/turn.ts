@@ -7,6 +7,7 @@ import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
+import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
 import { lineage } from "../core/tree.ts";
 import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
@@ -186,13 +187,11 @@ const CORE = [
   "Do the task fully. Read before you edit. Keep replies short: lead with the result.",
 ].join("\n");
 
-function sessionPrompt(cwd: string, created: number): string {
+// The per-session part, as its two blocks: the place and the instruction files.
+function sessionParts(cwd: string, created: number): PromptPart[] {
   const inst = instructionFiles(cwd);
-  return [
-    `Working directory: ${cwd}`,
-    `Platform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.`,
-    inst ? `\nInstructions from the owner's files:\n\n${inst}` : "",
-  ].join("\n");
+  const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
+  return [{ name: "place", text: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "" }];
 }
 
 type Running = { abort: AbortController; done: Promise<void> };
@@ -224,11 +223,16 @@ export class Engine {
   // Turns being parked for a daemon stop: their end reason is "restart".
   private parking = new Set<string>();
   private draining = false;
-  // Bounded: a session that dropped out rebuilds its system prompt (its cache
-  // prefix went cold long before 64 other sessions ran) and asks to read a file
-  // again before editing it.
+  // Bounded: a session that dropped out reads its system prompt back from the
+  // store (the same bytes) and asks to read a file again before editing it.
   private seen = new SessionMap<Map<string, number>>(64);
   private systems = new SessionMap<{ text: string; split: number }>(64);
+  private prompts: PromptStore;
+  private rendering = new Map<string, Promise<{ text: string; split: number }>>();
+  // Sessions whose kept prompt was compared with a fresh render in this run,
+  // and sessions that moved (their next request renders for the new place).
+  private checked = new Set<string>();
+  private moved = new Set<string>();
 
   constructor(
     private store: Store,
@@ -237,6 +241,7 @@ export class Engine {
     private errors: ErrorTracker,
     private spillRoot: string,
   ) {
+    this.prompts = new PromptStore(store);
     // A summary prepared ahead survives a restart.
     store.migrate("CREATE TABLE IF NOT EXISTS prepared_summaries (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, covered TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL)");
     store.migrate("CREATE TABLE IF NOT EXISTS queue_holds (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
@@ -283,6 +288,7 @@ export class Engine {
   // to another directory or machine; the cache prefix is rebuilt once).
   forgetSystem(id: string) {
     this.systems.delete(id);
+    this.moved.add(id);
   }
 
   lineage(id: string): StoredEvent[] {
@@ -490,17 +496,57 @@ export class Engine {
   // (its own place, a worktree, is in its task message), so its first request
   // reads the prefix the parent cached instead of writing its own copy.
   private async systemOf(session: Session, info?: ModelInfo): Promise<{ text: string; split: number }> {
-    let system = this.systems.get(session.id);
+    const system = this.systems.get(session.id);
     if (system) return system;
+    // One render at a time per session: a turn and a side question that start
+    // together get the same text.
+    let making = this.rendering.get(session.id);
+    if (!making) {
+      making = this.loadSystem(session, info).finally(() => this.rendering.delete(session.id));
+      this.rendering.set(session.id, making);
+    }
+    return making;
+  }
+
+  // The prompt is kept with the session (session_prompts), so a restart or a
+  // session that dropped out of memory sends the same bytes again. Once per
+  // daemon run it is rendered again for the model it was made for and
+  // compared block by block: it is replaced only when a block really differs
+  // (an instruction file was edited, a skill was added, a server published
+  // other instructions), and the row then names the blocks.
+  private async loadSystem(session: Session, info?: ModelInfo): Promise<{ text: string; split: number }> {
     const parent = session.parent_id && !session.machine ? this.store.session(session.parent_id) : undefined;
+    let system: { text: string; split: number };
     if (parent) system = await this.systemOf(parent, info);
     else {
-      const extra = (await Promise.all(allHooks().map((h) => h.system?.(session, info) ?? ""))).filter(Boolean);
-      const shared = [CORE, ...extra].join("\n\n") + "\n\n";
-      system = { text: shared + sessionPrompt(session.workspace, session.created), split: shared.length };
+      const kept = this.prompts.get(session.id);
+      const moved = this.moved.has(session.id);
+      if (kept && this.checked.has(session.id) && !moved) system = kept;
+      else {
+        // Compared as rendered for the model the kept one was made for; when
+        // that model is gone, the kept text stands until it is back.
+        const forModel = !kept || moved || !kept.model || kept.model === info?.id ? info : await this.providers.resolve(kept.model).then((r) => r.info, () => undefined);
+        if (kept && !forModel) return kept;
+        const made = await this.renderSystem(session, forModel);
+        const changed = kept ? changedBlocks(kept.blocks, made.blocks) : [];
+        if (kept && !changed.length) system = kept;
+        else {
+          this.prompts.put(session.id, made, changed);
+          system = made;
+        }
+        this.checked.add(session.id);
+        this.moved.delete(session.id);
+      }
     }
-    this.systems.set(session.id, system);
+    this.systems.set(session.id, { text: system.text, split: system.split });
     return system;
+  }
+
+  private async renderSystem(session: Session, info?: ModelInfo) {
+    const extra = (await Promise.all(allHooks().map((h) => h.system?.(session, info) ?? ""))).filter(Boolean);
+    const shared: PromptPart[] = [CORE, ...extra].map((t, i) => ({ name: i ? blockName(t) : "core", text: t + "\n\n" }));
+    const parts = [...shared, ...sessionParts(session.workspace, session.created)];
+    return { text: parts.map((p) => p.text).join(""), split: shared.reduce((n, p) => n + p.text.length, 0), blocks: blocksOf(parts), model: info?.id ?? null };
   }
 
   // Measuring hooks never stop a call.
