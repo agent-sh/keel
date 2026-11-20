@@ -148,17 +148,20 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
   );
 }
 
+// An agent's route belongs to its root's group in the index.
+function rootSessionId(sessions: Record<string, Session>, current: string | null) {
+  let s = current ? sessions[current] : undefined;
+  for (let n = 0; s?.parent_id && n < 32; n++) s = sessions[s.parent_id] ?? undefined;
+  return s?.id ?? current;
+}
+
 // A folder shows its newest sessions; the rest open on request (and the open
 // one is always shown, also when it is a subagent's: its parent's row then).
 const SHOWN = 6;
 export function Group({ list, current, every, where }: { list: Session[]; current: string | null; every?: boolean; where?: boolean }) {
   const [more, setAll] = useState(false);
   const all = more || !!every;
-  const root = useStore((x) => {
-    let s = current ? x.sessions[current] : undefined;
-    for (let n = 0; s?.parent_id && n < 32; n++) s = x.sessions[s.parent_id] ?? undefined;
-    return s?.id ?? current;
-  });
+  const root = useStore((x) => rootSessionId(x.sessions, current));
   const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root);
   return (
     <div className="flex flex-col gap-px">
@@ -306,7 +309,9 @@ function Index({ current }: { current: string | null }) {
   const watches = useWatches(base_);
   const listed = base_.filter((s) => (!tag || (s.settings.tags ?? []).includes(tag)) && (!q || matches(s, q)));
   const pinned = listed.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!);
-  const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current));
+  // Keep the open branch in the list even when its root finishes.
+  const root = rootSessionId(sessions, current);
+  const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root));
   const hidden = listed.length - pinned.length - rest.length;
   const cmp = order(arr, watches);
   const grouped = arr.group === "folder" ? groups(rest, cmp, arr.sort === "name") : [];
