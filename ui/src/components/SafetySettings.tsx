@@ -5,7 +5,7 @@ import { api, reportError, failed } from "../lib/store.ts";
 import type { WorktreeStatus } from "../lib/worktree.ts";
 import { useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
-import { enroll, passkeysUsable } from "../lib/presence.ts";
+import { enroll, passkeyBlock } from "../lib/presence.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 import { Select } from "./Select.tsx";
 
@@ -168,6 +168,10 @@ function PasskeysCard() {
   useEffect(() => { load(); }, []);
   if (!info) return null;
   const here = info.passkeys.filter((p) => p.rp_id === location.hostname);
+  const block = passkeyBlock();
+  const addDevice = info.local && (
+    <button data-testid="passkey-code-new" onClick={() => api<{ code: string; expires: number }>("/api/owner-presence/code", { method: "POST" }).then(setCode).catch(reportError)} className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">Add a device</button>
+  );
   const doEnroll = async () => {
     setMsg(null);
     try {
@@ -199,8 +203,14 @@ function PasskeysCard() {
               ))}
             </ul>
           )}
-          {!passkeysUsable() ? (
-            <p className="mt-3 text-caption text-warn">Passkeys work only over HTTPS or at localhost; this page is at {location.origin}.</p>
+          {block ? (
+            <>
+              <p className="mt-3 text-caption text-warn" data-testid="passkey-blocked">
+                {block.why}
+                {block.localhost && <> To enroll this computer, <a data-testid="passkey-localhost" className="font-medium text-accent-ink underline" href={block.localhost}>open this page at localhost</a>.</>}
+              </p>
+              {addDevice && <div className="mt-3 flex flex-wrap items-center gap-2">{addDevice}</div>}
+            </>
           ) : (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {!info.local && <input data-testid="passkey-code" value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} placeholder="Code shown at the desk" className="h-8 w-52 rounded-md border border-line bg-raised px-2 font-mono text-ui outline-none placeholder:font-sans focus:border-line-strong" />}
@@ -208,9 +218,7 @@ function PasskeysCard() {
               <button data-testid="passkey-enroll" disabled={!info.local && !typed.trim()} onClick={doEnroll} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
                 {here.length ? "Enroll another passkey here" : "Enroll this device"}
               </button>
-              {info.local && (
-                <button data-testid="passkey-code-new" onClick={() => api<{ code: string; expires: number }>("/api/owner-presence/code", { method: "POST" }).then(setCode).catch(reportError)} className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">Add a device</button>
-              )}
+              {addDevice}
             </div>
           )}
           {code && (

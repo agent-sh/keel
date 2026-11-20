@@ -6,6 +6,7 @@
 // the challenge is the hash of the action and a nonce, a receipt covers that
 // one action once, within the ceremony's timeout. Only public keys are stored.
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
 } from "@simplewebauthn/server";
@@ -64,6 +65,15 @@ const originOf = (req: Request) => {
   return o;
 };
 
+// The relying party of a ceremony: the page's host name. WebAuthn takes a
+// domain or localhost and refuses an IP address (the browser fails the
+// ceremony with "is an invalid domain"), the loopback address included.
+const rpOf = (origin: string) => {
+  const host = new URL(origin).hostname;
+  if (isIP(host.replace(/^\[|\]$/g, ""))) throw Object.assign(new Error(`a passkey is tied to a name, and this page is open at an address (${host}): open Keel at localhost or at its HTTPS name`), { status: 400 });
+  return host;
+};
+
 export class Presence {
   private ceremonies = new Map<string, Ceremony>();
   private receipts = new Map<string, { action: string; expires: number }>();
@@ -106,7 +116,7 @@ export class Presence {
       if (!c || !this.codes.has(c)) throw Object.assign(new Error("enrolling from another device needs the code shown at the desk (Settings > Safety > Add a device)"), { status: 403 });
       this.codes.delete(c);
     }
-    const rpID = new URL(origin).hostname;
+    const rpID = rpOf(origin);
     const options = await generateRegistrationOptions({
       rpName: "Keel", rpID, userName: "owner", userDisplayName: "Keel owner", timeout: TIMEOUT, attestationType: "none",
       userID: new TextEncoder().encode("keel-owner"),
@@ -135,7 +145,7 @@ export class Presence {
   async authStart(req: Request, action: string) {
     this.sweep();
     const origin = originOf(req);
-    const rpID = new URL(origin).hostname;
+    const rpID = rpOf(origin);
     const keys = this.list().filter((p) => p.rp_id === rpID);
     if (!keys.length) throw Object.assign(new Error(`no passkey is enrolled for ${rpID}: enroll this device in Settings > Safety`), { status: 400 });
     const nonce = randomBytes(16).toString("hex");

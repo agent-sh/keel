@@ -76,3 +76,27 @@ test("passkeys for remote approvals", async ({ page, browser, request }) => {
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// A passkey is tied to a name: the browser refuses an IP address as the
+// relying party, the loopback address included. The page open at that address
+// says so, links to itself at localhost and still hands out a device code; the
+// daemon refuses the ceremony with the reason.
+test("a page open at an address sends passkey enrollment to localhost", async ({ page, request }) => {
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const ADDRESS = `http://127.0.0.1:${BASE.port}`;
+  await page.goto(`${ADDRESS}/settings/safety`);
+  await expect(page.getByTestId("passkey-blocked")).toContainText("open at an address (127.0.0.1)");
+  await expect(page.getByTestId("passkey-enroll")).toHaveCount(0);
+  await expect(page.getByTestId("passkey-code-new")).toBeVisible();
+  await shoot(page, "passkeys-04-address");
+  await expect(page.getByTestId("passkey-localhost")).toHaveAttribute("href", `${DESK}/settings/safety`);
+  await page.getByTestId("passkey-localhost").click();
+  await expect(page).toHaveURL(`${DESK}/settings/safety`);
+  await expect(page.getByTestId("passkey-enroll")).toBeVisible();
+
+  const refused = await request.post("/api/owner-presence/register/start", { headers: { origin: ADDRESS }, data: {} });
+  expect(refused.status()).toBe(400);
+  expect((await refused.json()).error).toContain("open Keel at localhost");
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
+});
