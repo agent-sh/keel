@@ -150,10 +150,11 @@ export const ago = (ms: number) => {
 };
 
 // Open a URL in the browser: KEEL_BROWSER, else the desktop's opener.
-export function openUrl(url: string): boolean {
+export function openUrl(url: string, activationToken?: string): boolean {
   const cmd = process.env.KEEL_BROWSER ? [...process.env.KEEL_BROWSER.split(" ").filter(Boolean), url] : [process.platform === "darwin" ? "open" : "xdg-open", url];
   try {
-    Bun.spawn(cmd, { stdio: ["ignore", "ignore", "ignore"] }).unref();
+    const env = activationToken ? { ...process.env, XDG_ACTIVATION_TOKEN: activationToken } : undefined;
+    Bun.spawn(cmd, { stdio: ["ignore", "ignore", "ignore"], env }).unref();
     return true;
   } catch { return false; }
 }

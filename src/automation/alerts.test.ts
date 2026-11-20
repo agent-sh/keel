@@ -216,3 +216,14 @@ test("a notification's title and body reach gdbus as quoted GVariant strings", (
   expect(parses(json)).toBe(false);
   for (const s of [json, "--help", "C:\\", "it's", "'quoted'", "true", "a\nb\tc", "@s x", "<b>&"]) expect(parses(alerts.gvariantString(s))).toBe(true);
 });
+
+test.skipIf(!Bun.which("dbus-run-session") || !Bun.which("gjs") || !Bun.which("gdbus"))(
+  "clicking the replacement GNOME notification opens its current Keel deep link",
+  () => {
+    const env: NodeJS.ProcessEnv = { ...process.env, KEEL_PRIVATE_DESKTOP_FIXTURE: "1", KEEL_DESKTOP_NOTIFY: "on" };
+    for (const key of ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"]) delete env[key];
+    const run = Bun.spawnSync(["dbus-run-session", "--", process.execPath, join(import.meta.dir, "../../test/fixtures/desktop-alert.ts")], { env, timeout: 10_000 });
+    if (run.exitCode !== 0) throw new Error(run.stderr.toString() || `notification fixture exited ${run.exitCode}`);
+  },
+  12_000,
+);

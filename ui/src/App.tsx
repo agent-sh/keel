@@ -15,6 +15,7 @@ import "./lib/surfaces-ui.ts";
 import { installKeymap } from "./lib/keys.ts";
 import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
+import { focusApproval } from "./lib/automation.ts";
 import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
 
 // Overlays and Settings load on first use; the first page carries the shell only.
@@ -40,6 +41,8 @@ export function App() {
   useEffect(() => {
     const at = getUI().route;
     if (at.name === "session") preloadSession(at.id);
+    const approval = new URLSearchParams(location.search).get("approval");
+    if (approval && at.name === "session") focusApproval(approval);
     // The first socket reloads whatever of this first load failed (a daemon
     // restart under the page), so it waits on all of it, not only the sessions.
     const loads = [actions.loadSessions(), actions.loadModels(), actions.loadErrors()];

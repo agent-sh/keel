@@ -422,7 +422,7 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/alerts/:id/target": {
       GET: (req: any) => {
         const a = alerts.get(req.params.id);
-        return a ? json(alerts.target(a.session_id, a.data?.child_session ?? (a.data?.open_session !== a.session_id ? a.data?.open_session : undefined), a.data?.approval_id)) : bad("no such alert", 404);
+        return a ? json(alerts.alertTarget(a)) : bad("no such alert", 404);
       },
     },
     "/api/activity/:id/target": {

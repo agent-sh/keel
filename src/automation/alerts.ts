@@ -4,6 +4,9 @@ import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { pendingQuestions, questionsWaitingFor } from "../tools/interact.ts";
 import { readText } from "../core/proc.ts";
+import { lockedDaemon } from "../admin/daemon.ts";
+import { openUrl } from "../cli/client.ts";
+import { desktopNotifications } from "./desktop.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -163,6 +166,9 @@ export function target(sessionId: string | null, childId?: string, approvalId?: 
     ...(approvalId ? { approval: card ? card.state : "gone" } : {}),
   };
 }
+
+export const alertTarget = (a: Alert) =>
+  target(a.session_id, a.data?.child_session ?? (a.data?.open_session !== a.session_id ? a.data?.open_session : undefined), a.data?.approval_id);
 
 export const get = (id: string) => getAlert(id);
 const getAlert = (id: string) => {
@@ -425,11 +431,36 @@ export function markUnread(id: string): boolean {
 
 // --- channels ------------------------------------------------------------------
 
-// Desktop: the notification service over the session bus, through gdbus. One
-// notification per session, replaced by the next and closed when the session is
-// read. Always silent (the hint suppress-sound).
-const shown: Record<string, number> = {};
+// Desktop: one silent notification per session, replaced by the next and
+// closed when the session is read. On GNOME, GJS also receives the click;
+// retain passive delivery where only gdbus is installed.
+const shown = new Map<string, number>();
 const gdbusArgs = ["call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications"];
+let desktop: ReturnType<typeof desktopNotifications> | undefined;
+
+function openDesktopAlert(id: string, token?: string) {
+  try {
+    const base = lockedDaemon(D().store.stateDir)?.url;
+    if (!base) return;
+    const url = new URL(base);
+    if (url.hostname === "0.0.0.0" || url.hostname === "[::]") url.hostname = "localhost";
+    const a = getAlert(id);
+    const t = a && alertTarget(a);
+    const approval = a?.kind === "approval" ? a.data?.approval_id : undefined;
+    const session = approval ? (t?.approval === "pending" ? t.parent ?? t.open : null) : t?.open;
+    if (session) {
+      url.pathname = `/s/${encodeURIComponent(session)}`;
+      if (approval) url.searchParams.set("approval", approval);
+      else if (a?.data?.event_id && !t?.child_deleted) url.searchParams.set("e", a.data.event_id);
+    } else {
+      url.pathname = "/";
+      url.searchParams.set("inbox", "1");
+    }
+    if (!openUrl(url.href, token)) throw new Error("could not start the browser");
+  } catch (e) {
+    capture(e, { at: "desktop notification click", alert: id });
+  }
+}
 
 // gdbus reads every argument as GVariant text. A bare string works only by its
 // fallback (wrap in double quotes, escaping the quotes and nothing else), which
@@ -444,25 +475,30 @@ export function gvariantString(s: string) {
 registerChannel({
   id: "desktop",
   label: "Desktop notification",
-  available: () => process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!Bun.which("gdbus"),
+  available: () => process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!(Bun.which("gjs") || Bun.which("gdbus")),
   async deliver(a) {
     const key = a.session_id ?? "_";
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
+    if (Bun.which("gjs")) {
+      if (!desktop || desktop.ended) desktop = desktopNotifications(openDesktopAlert);
+      return desktop.send({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind });
+    }
     const p = Bun.spawn([
       "gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.Notify",
-      "Keel", String(shown[key] ?? 0), "", gvariantString(a.title), gvariantString(a.body), "[]",
+      "Keel", String(shown.get(key) ?? 0), "", gvariantString(a.title), gvariantString(a.body), "[]",
       `{'suppress-sound': <true>, 'urgency': <byte ${urgency}>, 'desktop-entry': <'keel'>, 'category': <${gvariantString(`keel.${a.kind}`)}>}`,
       "int32 -1",
     ], { stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
     if (code !== 0) throw new Error(`gdbus Notify failed: ${err.trim()}`);
     const m = out.match(/uint32 (\d+)/);
-    if (m) shown[key] = Number(m[1]);
+    if (m) shown.set(key, Number(m[1]));
   },
   async withdraw(sessionId) {
-    const id = shown[sessionId];
+    if (desktop && !desktop.ended) await desktop.send({ key: sessionId });
+    const id = shown.get(sessionId);
     if (!id) return;
-    delete shown[sessionId];
+    shown.delete(sessionId);
     await Bun.spawn(["gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.CloseNotification", String(id)], { stdout: "ignore", stderr: "ignore" }).exited;
   },
 });
