@@ -19,6 +19,8 @@ test("experiments: create, run live, stop and decide; an offline report", async 
 
   await page.goto("/settings/experiments");
   const panel = page.getByTestId("experiments-panel");
+  // isVisible does not wait: the panel's list must have loaded before it is asked.
+  await expect(panel.getByTestId("experiment-create").or(panel.getByTestId("experiment-new")).first()).toBeVisible();
   if (!(await panel.getByTestId("experiment-create").isVisible())) await panel.getByTestId("experiment-new").click();
   await expect(panel.getByTestId("experiment-create")).toBeVisible();
 
