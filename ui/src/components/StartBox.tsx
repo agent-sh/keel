@@ -1,9 +1,9 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, Fragment } from "react";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
 import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
-import { Where } from "./Where.tsx";
+import { MachineSep, machineRuns } from "./Where.tsx";
 import { Mark } from "./Mark.tsx";
 import { Composer } from "./Composer.tsx";
 import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
@@ -110,7 +110,7 @@ export function StartBox() {
             <section className="mt-10">
               <h2 className="mb-2 text-caption font-medium text-faint">Recent in {workspace.split("/").pop()}</h2>
               <div className="flex flex-col">
-                {recent.map((s) => (
+                {machineRuns(recent).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
                   <button
                     key={s.id}
                     type="button"
@@ -120,10 +120,9 @@ export function StartBox() {
                   >
                     <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
-                    <Where s={s} />
                     <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{ago(s.updated)}</span>
                   </button>
-                ))}
+                ))}</Fragment>))}
               </div>
             </section>
           )}

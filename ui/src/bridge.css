@@ -193,7 +193,18 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-where.k-where-chip svg { width: 0.875rem; height: 0.875rem; }
 .k-where.k-where-chip:hover { background: color-mix(in oklab, var(--where) 20%, transparent); }
 /* A folder group's heading on another machine: the same tag, at the right. */
-.k-group-head .k-where { margin-left: auto; }
+/* Between machines in the list: this machine's sessions, then each other
+   machine's under a rule in its colour, its name, whether it answers, and how
+   many sessions run there. */
+.k-machine-sep { --where: var(--faint); display: flex; align-items: center; gap: 0.4375rem; margin: 0.875rem 0.375rem 0.25rem; padding-top: 0.5rem; border-top: 1px solid var(--line-strong); font: 700 0.6875rem/1rem var(--font-inst); font-stretch: 75%; letter-spacing: 0.06em; text-transform: uppercase; color: var(--where); }
+.k-machine-sep:first-child { margin-top: 0.125rem; }
+.k-machine-sep[data-machine]:not([data-machine="local"]) { border-top-color: color-mix(in oklab, var(--where) 55%, transparent); }
+.k-machine-sep svg { width: 0.8125rem; height: 0.8125rem; flex-shrink: 0; }
+.k-machine-sep-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-machine-sep-reach { color: var(--st-fail); }
+.k-machine-sep[data-reach="offline"] { --where: var(--faint); }
+.k-machine-sep[data-reach="connecting"] svg { animation: var(--animate-pulse-dot); }
+.k-machine-sep-count { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--faint); }
 /* A folded rail's mark: a pip in the machine's colour at the code's corner. */
 .k-where-pip { --where: var(--muted); position: absolute; right: 0.25rem; top: 0.25rem; width: 0.375rem; height: 0.375rem; border-radius: 1px; background: var(--where); box-shadow: 0 0 0 1.5px var(--panel); }
 .k-where-pip[data-reach="offline"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-fail), 0 0 0 1.5px var(--panel); }

@@ -5,7 +5,7 @@
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
 import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
@@ -15,7 +15,7 @@ import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from 
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { lastLine, useAgentCount, useAgentCounts, useWatch, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
-import { Where, WherePip, whereWords } from "./Where.tsx";
+import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
 import { folderOf, Mark, modelOf } from "./Mark.tsx";
@@ -116,10 +116,9 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       <Mark w={w} />
       <span className="k-row-main">
         <span className="k-row-title">{s.title || "New session"}</span>
-        {(SPELLED.includes(w) || s.machine) && (
+        {SPELLED.includes(w) && (
           <span className="k-row-sub">
-            {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{watchLabel(w, agents)}</span>}
-            <Where s={s} />
+            <span className="k-row-state" data-testid="row-state">{watchLabel(w, agents)}</span>
           </span>
         )}
         {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
@@ -267,7 +266,6 @@ function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }
       <div className="k-rail-card-row">
         <Mark w={w} />
         <span className="k-rail-card-word">{watchLabel(w, agents)}</span>
-        <Where s={s} />
         <span className="k-rail-card-time" title={when(s.updated)}>{ago(s.updated) === "now" ? "just now" : `${ago(s.updated)} ago`}</span>
       </div>
       <p className="k-rail-card-title">{s.title || "New session"}</p>
@@ -322,6 +320,7 @@ function Index({ current }: { current: string | null }) {
     for (const [m, list] of by) for (const [ws, name] of folderNames(list)) out.set(`${m}\u0000${ws}`, name);
     return out;
   }, [grouped]);
+  const sections = useMemo(() => machineRuns(rest), [rest]);
   return (
     <>
       <div role="tablist" aria-label="Session list" className="k-tabs">
@@ -349,8 +348,6 @@ function Index({ current }: { current: string | null }) {
             <Group list={pinned} current={current} every={!!q} where />
           </section>
         )}
-        {arr.group === "project" && tab === "active" && <ProjectGroups list={rest} cmp={cmp} current={current} every={!!q} />}
-        {arr.group === "mine" && tab === "active" && <FolderGroups list={rest} cmp={cmp} current={current} every={!!q} />}
         {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && (
           q
             ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
@@ -360,21 +357,31 @@ function Index({ current }: { current: string | null }) {
             ? <p className="k-empty" data-testid="tag-empty">No sessions match the tag {tag}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setTag(null)}>Show all</button></p>
             : <p className="k-empty">{tab === "active" ? "Sessions you start show up here, grouped by folder." : "Archived sessions show up here. Restore one to bring it back."}</p>
         )}
-        {grouped.map((g) => (
-          <section key={g.key} className="k-group" data-machine={g.machine}>
-            <h2 className="k-group-head" title={g.machine ? `${g.ws} on ${machineName(g.machine)}` : g.ws}>
-              <Folder />
-              <span className="truncate">{heads.get(`${g.machine ?? ""}\u0000${g.ws}`) ?? base(g.ws)}</span>
-              {g.machine && <Where s={{ machine: g.machine }} data-testid="group-machine" />}
-            </h2>
-            <Group list={g.list} current={current} every={!!q} />
-          </section>
-        ))}
-        {flat.length > 0 && (
-          <section className="k-group" data-testid="flat-group">
-            <Group list={flat} current={current} every={!!q} where />
-          </section>
-        )}
+        {sections.map((sec) => {
+          const own = sec.machine === undefined ? grouped.filter((g) => !g.machine) : grouped.filter((g) => g.machine === sec.machine);
+          const ownFlat = flat.filter((s) => (s.machine ?? undefined) === sec.machine);
+          return (
+            <Fragment key={sec.machine ?? "local"}>
+              {sections.length > 1 && <MachineSep machine={sec.machine} count={sec.list.length} />}
+              {arr.group === "project" && tab === "active" && <ProjectGroups list={sec.list} cmp={cmp} current={current} every={!!q} />}
+              {arr.group === "mine" && tab === "active" && <FolderGroups list={sec.list} cmp={cmp} current={current} every={!!q} />}
+              {own.map((g) => (
+                <section key={g.key} className="k-group" data-machine={g.machine}>
+                  <h2 className="k-group-head" title={g.machine ? `${g.ws} on ${machineName(g.machine)}` : g.ws}>
+                    <Folder />
+                    <span className="truncate">{heads.get(`${g.machine ?? ""}\u0000${g.ws}`) ?? base(g.ws)}</span>
+                  </h2>
+                  <Group list={g.list} current={current} every={!!q} />
+                </section>
+              ))}
+              {ownFlat.length > 0 && (
+                <section className="k-group" data-testid="flat-group">
+                  <Group list={ownFlat} current={current} every={!!q} where />
+                </section>
+              )}
+            </Fragment>
+          );
+        })}
         {hidden > 0 && (grouped.length > 0 || flat.length > 0) && (
           <button type="button" className="k-more" data-testid="hidden-done" onClick={() => setArrange({ hideDone: false })}>{hidden} finished hidden</button>
         )}

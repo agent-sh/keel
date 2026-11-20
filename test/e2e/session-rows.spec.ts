@@ -96,7 +96,7 @@ test("a parent with an agent at work reads as working until the agent ends", asy
   }
 });
 
-test("a session on another machine carries the machine's tag, a local one none", async ({ page, request }) => {
+test("sessions on another machine sit under that machine's separator; a local one stays above", async ({ page, request }) => {
   const peerWhy = await peerProblem(request, PEER);
   test.skip(!!peerWhy, peerWhy ?? "");
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
@@ -112,44 +112,46 @@ test("a session on another machine carries the machine's tag, a local one none",
   await request.patch(`/api/fleet/machines/${mid}`, { data: { colour: "oklch(0.62 0.13 200)" } });
   const made: string[] = [];
   try {
-    const placed = (await (await request.post("/api/fleet/sessions", { data: { machine: mid, model: STAND_IN, title: "Tagged by its machine" } })).json()).session;
+    const placed = (await (await request.post("/api/fleet/sessions", { data: { machine: mid, model: STAND_IN, title: "Placed on its machine" } })).json()).session;
     made.push(placed.id);
     const local = (await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Kept on this machine", workspace: WS } })).json()).session;
     made.push(local.id);
 
-    // The row, the pane head and the header chip name the machine, in its colour.
+    // The list: this machine's sessions, then a separator for rowbox, in its colour, over its sessions. No tag on the rows.
     await page.goto(`/s/${placed.id}`);
-    const tag = row(page, placed.id).getByTestId("where");
-    await expect(tag).toHaveText("rowbox");
-    await expect(tag).toHaveAttribute("data-reach", "ok");
-    await expect(tag).toHaveAttribute("style", /oklch\(0\.62 0\.13 200\)/);
-    await expect(page.getByTestId("station-head").getByTestId("where")).toHaveText("rowbox");
+    const seps = page.getByTestId("session-list").getByTestId("machine-sep");
+    await expect(seps).toHaveCount(2);
+    await expect(seps.first()).toHaveAttribute("data-machine", "local");
+    const sep = page.getByTestId("session-list").locator(`[data-testid="machine-sep"][data-machine="${mid}"]`);
+    await expect(sep).toContainText("rowbox");
+    await expect(sep).toHaveAttribute("data-reach", "ok");
+    await expect(sep).toHaveAttribute("style", /oklch\(0\.62 0\.13 200\)/);
+    // The placed session's row comes after its machine's separator, the local one before it.
+    const order = await page.getByTestId("session-list").locator('[data-testid="machine-sep"], [data-testid="session-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-machine") ?? e.getAttribute("data-session")));
+    expect(order.indexOf(local.id)).toBeLessThan(order.indexOf(mid));
+    expect(order.indexOf(placed.id)).toBeGreaterThan(order.indexOf(mid));
+    await expect(row(page, placed.id).getByTestId("where")).toHaveCount(0);
+    // The header's machine chip says where the open session runs.
     await expect(page.getByTestId("machine-chip")).toHaveAttribute("data-machine", mid);
     await expect(page.getByTestId("machine-chip")).toContainText("rowbox");
-    await expect(page).toHaveTitle(/Tagged by its machine on rowbox/);
-    // A local session carries none.
-    await expect(row(page, local.id).getByTestId("where")).toHaveCount(0);
+    await expect(page).toHaveTitle(/Placed on its machine on rowbox/);
     await shoot(page, "session-rows-03-remote-row");
 
-    // The palette too, and not for the local one.
+    // The palette: the machine's sessions are a group of their own.
     await page.keyboard.press("Control+k");
-    await page.getByTestId("palette-input").fill("Tagged by its machine");
-    await expect(page.getByRole("option").filter({ hasText: "Tagged by its machine" }).getByTestId("where")).toHaveText("rowbox");
+    await page.getByTestId("palette-input").fill("on its machine");
+    await expect(page.getByTestId("palette").getByText("Sessions on rowbox")).toBeVisible();
     await shoot(page, "session-rows-04-palette");
-    await page.getByTestId("palette-input").fill("Kept on this machine");
-    await expect(page.getByRole("option").filter({ hasText: "Kept on this machine" })).toBeVisible();
-    await expect(page.getByRole("option").filter({ hasText: "Kept on this machine" }).getByTestId("where")).toHaveCount(0);
     await page.keyboard.press("Escape");
     await page.goto(`/s/${local.id}`);
-    await expect(page.getByTestId("station-head").getByTestId("where")).toHaveCount(0);
     await expect(page.getByTestId("machine-chip")).not.toHaveAttribute("data-machine", /./);
 
-    // The machine stops answering: the tag says offline, in the failure colour.
+    // The machine stops answering: its separator says offline.
     await request.patch(`/api/fleet/machines/${mid}`, { data: { daemon_url: "http://127.0.0.1:9" } });
     await request.post(`/api/fleet/machines/${mid}/check`);
     await page.goto(`/s/${placed.id}`);
-    await expect(tag).toHaveAttribute("data-reach", "offline", { timeout: 15_000 });
-    await expect(tag.getByTestId("where-reach")).toHaveText("offline");
+    await expect(sep).toHaveAttribute("data-reach", "offline", { timeout: 15_000 });
+    await expect(sep).toContainText("offline");
     await expect(page.getByTestId("machine-chip")).toHaveAttribute("data-reach", "offline");
     await shoot(page, "session-rows-05-remote-offline");
   } finally {

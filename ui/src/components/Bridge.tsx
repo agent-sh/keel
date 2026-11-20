@@ -9,7 +9,7 @@
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
 import { ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, Pin, PinOff, Plus, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, Fragment } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { paneMin, panesMax, useWidth } from "../lib/rail.ts";
@@ -18,7 +18,7 @@ import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
 import { lastLine, useAgentCount, useAgentCounts, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
-import { Where, whereWords } from "./Where.tsx";
+import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
@@ -80,7 +80,6 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
       <div className="k-station-row">
         <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
         {w === "work" && start && s.phase === "working" && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
-        <Where s={s} />
         <span className="k-station-meta truncate">{s.workspace_gone ? <span className="k-gone" title={`${s.workspace} is not on disk`}>{folderOf(s)} gone</span> : folderOf(s)}  {modelOf(s.model)}</span>
         <span className="k-station-tools">
           {!focus && <Tool label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, -1)}><ChevronLeft /></Tool>}
@@ -215,15 +214,14 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
         <p className="k-pane-empty-hint">Pick a session below or in the list, or drag one in.</p>
         {offer.length > 0 && (
           <div className="k-pane-empty-list">
-            {offer.map((s) => (
+            {machineRuns(offer).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
               <button key={s.id} type="button" data-testid="pane-offer" data-session={s.id} data-watch={watches[s.id]} onClick={() => put(s.id)}>
                 <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
                 <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
-                <Where s={s} />
                 <span className="k-pane-empty-in">{folderOf(s)}</span>
                 <span className="k-pane-empty-time tabular-nums" title={when(s.updated)}>{ago(s.updated)}</span>
               </button>
-            ))}
+            ))}</Fragment>))}
           </div>
         )}
         <button type="button" className="k-pane-empty-new" data-testid="pane-new" onClick={() => { stations.setActive(slot); navigate({ name: "new" }); }}><Plus />New session here</button>

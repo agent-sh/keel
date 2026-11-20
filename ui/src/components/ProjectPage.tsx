@@ -3,14 +3,14 @@
 // defaults of a new session, and its sessions. Plain controls on the shared
 // tokens; the look belongs to the design of the workbench.
 import { ArrowLeft, FileText, Folder, Plus, Star, Trash2, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode, Fragment } from "react";
 import { newInProject, projects, useProjects, type Project } from "../lib/projects.ts";
 import { safety, useSafety } from "../lib/safety.ts";
 import { failed, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
-import { Where } from "./Where.tsx";
+import { MachineSep, machineRuns } from "./Where.tsx";
 import { confirmAction } from "./Confirm.tsx";
 import { Mark } from "./Mark.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -165,14 +165,13 @@ function Body({ p }: { p: Project }) {
           <aside className="flex min-w-0 flex-col gap-5 lg:col-start-2 lg:row-start-1 lg:row-end-3">
             <Block title="Sessions" hint={list.length ? `${list.length} in the project` : "None yet"} testid="project-sessions">
               <div className="flex flex-col">
-                {list.map((s) => (
+                {machineRuns(list).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
                   <button key={s.id} type="button" data-testid="project-session" data-session={s.id} onClick={() => navigate({ name: "session", id: s.id })} className={cn("flex h-9 items-center gap-2.5 border-b border-line text-left text-ui last:border-0 hover:text-fg", s.archived ? "text-faint" : "text-muted")}>
                     <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
-                    <Where s={s} />
                     <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{s.archived ? "archived" : ago(s.updated)}</span>
                   </button>
-                ))}
+                ))}</Fragment>))}
               </div>
             </Block>
           </aside>

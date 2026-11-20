@@ -2,7 +2,7 @@
 // the machine's colour, and whether it answers when it does not. A session of
 // this machine carries nothing. The same tag is on every surface that names a
 // session (rows, marks, the pane and session headers, the palette).
-import { Server, ServerOff } from "lucide-react";
+import { Monitor, Server, ServerOff } from "lucide-react";
 import type { CSSProperties } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineColour, machineName, machineReach, useFleet, type Reach } from "../lib/fleet.ts";
@@ -57,3 +57,28 @@ export function WherePip({ s }: { s: Pick<Session, "machine"> }) {
 
 // "on devbox" for a label read aloud or a title; nothing for a local session.
 export const whereWords = (s: Pick<Session, "machine">) => (s.machine ? ` on ${machineName(s.machine) ?? s.machine}${machineReach(s.machine).state === "offline" ? " (offline)" : ""}` : "");
+
+// A list's sessions by where they run: this machine's first, then each other
+// machine's by name. One run when every session is here.
+export function machineRuns<T extends Pick<Session, "machine">>(list: T[]): { machine?: string; list: T[] }[] {
+  const by = new Map<string | undefined, T[]>();
+  for (const s of list) (by.get(s.machine ?? undefined) ?? by.set(s.machine ?? undefined, []).get(s.machine ?? undefined)!).push(s);
+  const remote = [...by.keys()].filter((k): k is string => k !== undefined).sort((a, b) => (machineName(a) ?? a).localeCompare(machineName(b) ?? b));
+  return [...(by.has(undefined) || !remote.length ? [{ machine: undefined, list: by.get(undefined) ?? [] }] : []), ...remote.map((m) => ({ machine: m, list: by.get(m)! }))];
+}
+
+// The line between machines in the list: this machine's sessions, then each
+// other machine's under its name in its colour, with whether it answers.
+export function MachineSep({ machine, count }: { machine?: string; count: number }) {
+  const w = useWhere(machine ? { machine } : undefined);
+  const Icon = w?.reach === "offline" ? ServerOff : machine ? Server : Monitor;
+  return (
+    <div className="k-machine-sep" data-testid="machine-sep" data-machine={machine ?? "local"} data-reach={w?.reach} title={w?.title ?? "Sessions on this machine"} style={whereStyle(w?.colour)} role="separator" aria-label={w ? `${w.name}${w.word ? `, ${w.word}` : ""}` : "This machine"}>
+      <Icon aria-hidden="true" />
+      <span className="k-machine-sep-name">{w?.name ?? "This machine"}</span>
+      {w?.word && <span className="k-machine-sep-reach">{w.word}</span>}
+      <span className="k-machine-sep-count">{count}</span>
+    </div>
+  );
+}
+
