@@ -90,6 +90,23 @@ export function relaunchArgv(): string[] {
   return [process.execPath, ...process.execArgv, ...a.slice(1)];
 }
 
+// What a draining daemon takes besides GET, since none of it starts work:
+// its own (errors, awake, the drain), a read whose question is in the body
+// (which paths of a reply are files), what the owner answers a running turn
+// (the drain is waiting for that turn; the passkey check is for an answer
+// from a remote device), and a stop.
+const DRAIN_PASSES = new RegExp(
+  "^/api/(?:" +
+    "(?:errors|awake|drain)(?:/|$)" +
+    "|owner-presence/authenticate/(?:start|finish)$" +
+    "|sessions/[^/]+/(?:" +
+      "files/exist|interrupt|as-agent/stop" +
+      "|(?:approvals|questions|plan|secrets)/[^/]+" +
+      "|(?:jobs|terminal|agents)/[^/]+/stop" +
+    ")$" +
+  ")",
+);
+
 export class Daemon {
   draining: { since_ms: number; restart: boolean; deadline_ms: number } | null = null;
   // The process's start (a hot reload makes a new Daemon in the same process).
@@ -99,8 +116,7 @@ export class Daemon {
   constructor(private deps: Deps) {
     // While draining, nothing that would start work is taken.
     addAdmission((req, path) => {
-      if (!this.draining || req.method === "GET" || req.method === "HEAD") return;
-      if (/^\/api\/(errors|awake|drain|sessions\/[^/]+\/interrupt)(\/|$)/.test(path)) return;
+      if (!this.draining || req.method === "GET" || req.method === "HEAD" || DRAIN_PASSES.test(path)) return;
       return Response.json({ error: "the daemon is draining for a restart; try again when it is back", draining: true }, { status: 503 });
     });
   }

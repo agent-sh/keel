@@ -1,5 +1,7 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: the daemon keeps the machine awake while a turn runs, and a restart
@@ -70,4 +72,80 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
 
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
   for (const s of [a, b]) await request.delete(`/api/sessions/${s.id}`);
+});
+
+// A drain turns new work away and nothing else. Its own daemon on a scratch
+// state and the scripted stand-in, drained while a turn waits for the owner's
+// approval: the open page still asks which paths of a reply are files (a read,
+// sent as a POST) and links them, a prompt the daemon turns away is said in
+// the composer without becoming a record in Errors, and the approval given
+// from the page lets the turn finish, which ends the drain.
+const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
+function ownDaemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
+    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return new Promise((done, reject) => {
+    let out = "";
+    const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
+    const on = (d: Buffer) => {
+      out += d;
+      const m = out.match(/keel listening on (http:\/\/\S+?)\/? /);
+      if (m) { clearTimeout(t); done({ proc, url: m[1]!.replace(/\/$/, "") }); }
+    };
+    proc.stdout!.on("data", on);
+    proc.stderr!.on("data", on);
+  });
+}
+
+test("a draining daemon still answers reads and the answers its running turns wait for", async ({ page }) => {
+  const state = join(ROOT, `drain-${Date.now()}`);
+  mkdirSync(join(state, "work/notes"), { recursive: true });
+  writeFileSync(join(state, "work/notes/plan.md"), "# Plan\nMove the parser.\n");
+  const d = await ownDaemon(state);
+  const call = (path: string, body?: unknown, method = "POST") =>
+    fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const get = async (path: string) => (await (await fetch(d.url + path)).json()) as any;
+  try {
+    // A reply that names a file of the folder, then a turn that asks before it writes.
+    const { session } = (await (await call("/api/sessions", { model: "scripted:stand-in", title: "Read while draining", workspace: join(state, "work"), text: "script:render" })).json()) as any;
+    await call(`/api/sessions/${session.id}/permissions`, { mode: "ask" }, "PUT");
+    await expect.poll(async () => (await get(`/api/sessions/${session.id}`)).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
+    await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch made.txt" } }])}` });
+    await expect.poll(async () => (await get(`/api/sessions/${session.id}/approvals`)).approvals.length, { timeout: 30_000 }).toBe(1);
+    expect((await call("/api/drain", { timeout_seconds: 120 })).status).toBe(200);
+    expect((await get("/api/daemon")).draining).toBeTruthy();
+
+    // New work is turned away; a read is not.
+    expect((await call("/api/sessions", { model: "scripted:stand-in", title: "refused" })).status).toBe(503);
+    const exist = await call(`/api/sessions/${session.id}/files/exist`, { paths: ["notes/plan.md", "src/parse.ts"] });
+    expect(exist.status).toBe(200);
+    expect(((await exist.json()) as any).files).toEqual({ "notes/plan.md": "notes/plan.md" });
+
+    // The page opened during the drain links the file the reply names.
+    const tracked: string[] = [];
+    page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") tracked.push(r.postData() ?? ""); });
+    await page.goto(`${d.url}/s/${session.id}`);
+    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping when the running turns finish");
+    await expect(page.locator('code.k-fileref[data-rel="notes/plan.md"]')).toHaveAttribute("role", "link");
+    await expect(page.locator('code.k-fileref[data-path="src/parse.ts"]').first()).toHaveAttribute("data-checked", "1");
+
+    // A prompt sent now is not taken: the composer says why and keeps the text.
+    await page.getByTestId("composer").fill("more work");
+    await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("composer-notice")).toContainText("draining");
+    await expect(page.getByTestId("composer")).toHaveValue("more work");
+    await shoot(page, "daemon-05-draining-session");
+    await page.evaluate(() => fetch("/api/daemon").then((r) => r.text())); // whatever the page was posting has gone out
+    expect(tracked.filter((t) => t.includes("draining"))).toEqual([]);
+    expect((await get("/api/errors")).errors.filter((e: any) => /draining/.test(e.message))).toEqual([]);
+
+    // The approval is taken: the turn runs its command and ends, and the drain with it.
+    await page.getByTestId("approval").getByTestId("allow-once").click();
+    await expect.poll(() => d.proc.exitCode, { timeout: 30_000 }).toBe(0);
+    expect(existsSync(join(state, "work/made.txt"))).toBe(true);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
 });

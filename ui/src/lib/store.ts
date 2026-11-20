@@ -468,6 +468,9 @@ let drops = 0; // socket drops so far: a network failure around one is the daemo
 export function reportError(err: unknown, context?: unknown) {
   // The daemon recorded this one itself (its answer names the record): once is enough.
   if ((err as { body?: { error_id?: string } } | null)?.body?.error_id) return;
+  // The daemon turned the request away because it is draining: the state the
+  // page's band shows, not a fault. The caller still says so where it happened.
+  if ((err as { body?: { draining?: boolean } } | null)?.body?.draining) return;
   const e = err instanceof Error ? err : new Error(String(err));
   const url = location.pathname;
   const post = () =>
