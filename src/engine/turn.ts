@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
 import type { Bus } from "../core/bus.ts";
-import type { ErrorTracker } from "../core/errors.ts";
+import { errorSession, type ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
@@ -307,6 +307,10 @@ export class Engine {
     return this.held.has(id);
   }
 
+  isDraining() {
+    return this.draining;
+  }
+
   // The session's frozen system prompt is made again at its next turn (it moved
   // to another directory or machine; the cache prefix is rebuilt once).
   forgetSystem(id: string) {
@@ -481,6 +485,10 @@ export class Engine {
   }
 
   private start(id: string) {
+    errorSession.run(id, () => this.startTurn(id));
+  }
+
+  private startTurn(id: string) {
     // An engine a dev hot reload replaced runs no new turn (a child's task, a
     // queued prompt, a report that wakes a parent): the engine now in charge does.
     const successor = (globalThis as { __keelEngine?: Engine }).__keelEngine;

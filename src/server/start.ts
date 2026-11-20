@@ -13,6 +13,7 @@ import { Providers } from "../providers/registry.ts";
 import { serve } from "./app.ts";
 import { routeModules } from "./routes/index.ts";
 import { portHolder, waitForPredecessor } from "../admin/daemon.ts";
+import { relayDiagnostics } from "./diagnostics.ts";
 
 export { defaultStateDir };
 
@@ -37,17 +38,21 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   const errors = new ErrorTracker(store, bus);
   errors.installGlobal();
   const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
-  providers.start();
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
-  const g = globalThis as { __keelEngine?: Engine };
+  const g = globalThis as { __keelEngine?: Engine; __keelStopDiagnostics?: () => void };
   // A hot reload builds a new engine in the same process: the old one parks its turns first.
   // It is replaced first, so a turn the old one would start meanwhile starts here.
   const old = g.__keelEngine;
+  g.__keelStopDiagnostics?.();
   g.__keelEngine = engine;
   if (old) {
     await old.drain(0);
     endStreams();
   }
+  const diagnosticSession = !opts.client && process.env.KEEL_DIAGNOSTIC_SESSION?.trim();
+  const stopDiagnostics = diagnosticSession ? relayDiagnostics({ store, bus, errors, engine }, diagnosticSession) : undefined;
+  g.__keelStopDiagnostics = stopDiagnostics;
+  providers.start();
   process.on("exit", () => providers.plugins.killAll());
   const server = serve(
     { store, bus, engine, providers, errors, workspace: resolve(opts.workspace ?? process.cwd()) },
@@ -69,6 +74,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     void providers.models().then(() => engine.resumeIdle()).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
   }
   const stop = async (drainMs = 0) => {
+    stopDiagnostics?.();
     await engine.drain(drainMs).catch((e) => errors.capture("server", e, { at: "drain" }));
     providers.shutdown();
     server.stop(true);
