@@ -11,10 +11,12 @@ import { useFleet } from "../lib/fleet.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { takeOver, TOOL } from "./TakeOver.tsx";
+import { noteRows, OriginalStrip, ResumeCard, type Intent, type Original, type Wait } from "./ResumeFrom.tsx";
 import { ago, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 
-type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean } };
+// `original`, `wait`: on a machine reached over ssh, what the harness that still runs it does, and a resume waiting for it.
+type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean }; original?: Original; wait?: Wait };
 type HarnessState = { harness: Harness; label: string; store: string; installed: boolean; total: number; interactive: number };
 type Preview = {
   session: Found & { cwd_exists: boolean };
@@ -55,7 +57,7 @@ const paths = (from: string) => from
   ? { list: `/api/fleet/machines/${from}/transcripts`, preview: `/api/fleet/machines/${from}/transcripts/preview`, import: `/api/fleet/machines/${from}/transcripts/import` }
   : { list: "/api/import/sessions", preview: "/api/import/preview", import: "/api/import" };
 
-function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: () => void }) {
+function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row; from: string; resume?: { machineName: string }; intent: Intent; onIntent: (i: Intent) => void; onDone: () => void }) {
   const [p, setP] = useState<Preview | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,6 +100,7 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {err && <p className="mb-3 rounded-md bg-danger-soft px-3 py-2 text-caption text-danger" data-testid="import-error">{err}</p>}
+        {resume && <ResumeCard target={{ machine: from, harness: row.harness, id: row.id }} tool={TOOL[row.harness] ?? row.harness} machineName={resume.machineName} intent={intent} onIntent={onIntent} onDone={onDone} />}
         {!shown && !err && <p className="text-ui text-faint">Reading the session</p>}
         {shown && (() => { const p = shown; return (
           <>
@@ -139,7 +142,7 @@ function PreviewPane({ row, from, onDone }: { row: Row; from: string; onDone: ()
       </div>
       <div className="flex items-center gap-2 border-t border-line px-5 py-3">
         <span className="min-w-0 flex-1 text-caption text-faint">
-          {done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : "A copy: the original stays as it is."}
+          {done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : row.original ? "Import makes a copy and leaves the original running; resuming ends it." : "A copy: the original stays as it is."}
         </span>
         {done ? (
           <>
@@ -232,8 +235,11 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   // The filter the shown rows and count came from.
   const [shownFor, setShownFor] = useState<{ q: string; all: boolean }>({ q: "", all: false });
   const [from, setFrom] = useState("");
+  const [intent, setIntent] = useState<Intent>(null);
   const machines = useFleet((s) => s.machines);
-  const linked = useMemo(() => machines.filter((m) => m.source !== "local" && m.enabled && m.daemon?.state === "linked" && m.workspace_root), [machines]);
+  // Machines whose transcripts can be read: a linked daemon, or one reached over ssh (its helper reads them).
+  const linked = useMemo(() => machines.filter((m) => m.source !== "local" && m.enabled && m.workspace_root && (m.daemon?.state === "linked" || m.transport === "ssh")), [machines]);
+  const ssh = machines.find((m) => m.id === from && m.transport === "ssh");
 
   // Every session the shown list holds (the filter that produced it, never
   // one typed since), counted across its pages and confirmed before the first
@@ -287,6 +293,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
       setNext(r.next_cursor);
       setBuilding(r.index.building);
       setRows((prev) => (cursor ? [...(prev ?? []), ...r.sessions] : r.sessions));
+      if (from) noteRows(from, r.sessions);
       // The row on show is taken from the fresh listing, so its preview reads
       // again (a copy made since the last listing shows) even when it was
       // picked from the listing before this one.
@@ -308,7 +315,24 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     const t = setTimeout(() => load(0), 1500);
     return () => clearTimeout(t);
   }, [open, building, load]);
-  useEffect(() => { setSel(null); setRows(null); setConfirm(null); setFails([]); setBulk(""); }, [harness, from]);
+  useEffect(() => { setSel(null); setRows(null); setConfirm(null); setFails([]); setBulk(""); setIntent(null); }, [harness, from]);
+  // What runs the shown conversations there is looked at again every few
+  // seconds while the sheet is open: a harness starts, works and ends meanwhile.
+  const watched = !!ssh && !!rows?.length;
+  useEffect(() => {
+    if (!open || !watched) return;
+    const t = setInterval(() => {
+      const u = new URLSearchParams({ harness, limit: "60", peek: "1" });
+      if (shownFor.q) u.set("q", shownFor.q);
+      if (shownFor.all) u.set("show", "all");
+      api<{ sessions: Row[] }>(`${paths(from).list}?${u}`).then((r) => {
+        noteRows(from, r.sessions);
+        // A conversation resumed since (its wait ended) now shows as imported.
+        setRows((prev) => prev && prev.map((x) => r.sessions.find((y) => y.id === x.id && y.harness === x.harness) ?? x));
+      }, () => {});
+    }, 4000);
+    return () => clearInterval(t);
+  }, [open, watched, from, harness, shownFor]);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -396,25 +420,27 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               )}
               <div className="min-h-0 flex-1 overflow-y-auto" data-testid="import-list">
                 {rows?.map((r) => (
-                  <button
-                    key={r.path + r.id}
-                    type="button"
-                    data-testid="import-row"
-                    data-id={r.id}
-                    onClick={() => setSel(r)}
-                    className={cn("block w-full border-b border-line/60 px-3 py-2 text-left transition-colors hover:bg-hover", sel?.id === r.id && "bg-accent-soft hover:bg-accent-soft")}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-ui font-medium">{r.title}</span>
-                      {r.imported && <span className="shrink-0 rounded-xs bg-ok/15 px-1.5 text-micro font-medium text-ok" data-testid="import-imported">{r.imported.grew ? "imported · grew" : "imported"}</span>}
-                      {r.kind !== "interactive" && <span className="shrink-0 rounded-xs bg-panel px-1.5 text-micro text-muted">{r.kind}</span>}
-                    </div>
-                    <div className="mt-0.5 flex gap-2 text-micro text-faint">
-                      <span className="min-w-0 flex-1 truncate">{home(r.cwd)}</span>
-                      <span className="shrink-0 tabular-nums">{size(r.size_bytes)}</span>
-                      <span className="shrink-0">{ago(r.updated_ms)}</span>
-                    </div>
-                  </button>
+                  <div key={r.path + r.id} className={cn("border-b border-line/60 transition-colors", sel?.id === r.id ? "bg-accent-soft" : "hover:bg-hover")}>
+                    <button
+                      type="button"
+                      data-testid="import-row"
+                      data-id={r.id}
+                      onClick={() => { setSel(r); setIntent(null); }}
+                      className="block w-full px-3 py-2 text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-ui font-medium">{r.title}</span>
+                        {r.imported && <span className="shrink-0 rounded-xs bg-ok/15 px-1.5 text-micro font-medium text-ok" data-testid="import-imported">{r.imported.grew ? "imported · grew" : "imported"}</span>}
+                        {r.kind !== "interactive" && <span className="shrink-0 rounded-xs bg-panel px-1.5 text-micro text-muted">{r.kind}</span>}
+                      </div>
+                      <div className="mt-0.5 flex gap-2 text-micro text-faint">
+                        <span className="min-w-0 flex-1 truncate">{home(r.cwd)}</span>
+                        <span className="shrink-0 tabular-nums">{size(r.size_bytes)}</span>
+                        <span className="shrink-0">{ago(r.updated_ms)}</span>
+                      </div>
+                    </button>
+                    {ssh && <OriginalStrip target={{ machine: from, harness: r.harness, id: r.id }} tool={TOOL[r.harness] ?? r.harness} onPick={(i) => { setSel(r); setIntent(i); }} onOpen={(id) => { onOpenChange(false); navigate({ name: "session", id }); }} />}
+                  </div>
                 ))}
                 {rows?.length === 0 && <p className="px-3 py-6 text-center text-ui text-faint">No sessions match.</p>}
                 {next !== undefined && (
@@ -423,12 +449,12 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               </div>
             </div>
             {sel ? (
-              <PreviewPane row={sel} from={from} onDone={() => onOpenChange(false)} />
+              <PreviewPane row={sel} from={from} resume={ssh ? { machineName: ssh.name } : undefined} intent={intent} onIntent={setIntent} onDone={() => onOpenChange(false)} />
             ) : (
               <div className="grid flex-1 place-items-center px-10 text-center">
                 <div>
                   <p className="text-ui font-medium">Pick a session to see what an import brings</p>
-                  <p className="mt-1 text-caption text-faint">{from ? "That machine's daemon reads its stores and never writes to them. The copy goes on here with any model, and its tools run on that machine." : "Keel reads the other harness's store and never writes to it. The copy keeps its folder and goes on here with any model."}</p>
+                  <p className="mt-1 text-caption text-faint">{from ? "That machine reads its own stores and never writes to them. The copy goes on here with any model, and its tools run on that machine." : "Keel reads the other harness's store and never writes to it. The copy keeps its folder and goes on here with any model."}</p>
                 </div>
               </div>
             )}

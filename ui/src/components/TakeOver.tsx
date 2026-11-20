@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { api, useStore, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { confirmAction } from "./Confirm.tsx";
+import { ResumeCard } from "./ResumeFrom.tsx";
 
 type Answer = { action: string; session: { id: string }; step?: string; stopped?: boolean; how?: string };
 
@@ -25,7 +26,7 @@ export const TOOL: Record<string, string> = { claude: "Claude Code", codex: "Cod
 // Whether Keel can copy a row of the drive list: a file it names here, or an Antigravity conversation by its id.
 export const copyable = (s: { kind: string; host: string; transcript: boolean }) => !s.host && ((s.transcript && (s.kind === "claude" || s.kind === "codex")) || s.kind === "agy");
 
-type Origin = { origin: null | { label: string; live_source: null | { id: string; since_ms: number } } };
+type Origin = { origin: null | { label: string; harness: string; source_id: string; live_source: null | { id: string; since_ms: number }; machine?: { id: string; name: string; ssh: boolean } } };
 
 export function LiveSourceBanner({ sessionId }: { sessionId: string }) {
   const [o, setO] = useState<Origin["origin"]>(null);
@@ -36,6 +37,8 @@ export function LiveSourceBanner({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     api<Origin>(`/api/sessions/${sessionId}/origin`).then((r) => setO(r.origin), () => setO(null));
   }, [sessionId, n]);
+  // A copy from a machine reached over ssh: while its original still runs there, its state and the choices to resume it here.
+  if (o?.machine?.ssh) return <ResumeCard target={{ machine: o.machine.id, harness: o.harness, id: o.source_id }} tool={o.label} machineName={o.machine.name} every={10_000} />;
   const live = o?.live_source;
   if (!live) return null;
   const tool = TOOL[live.id.split(":")[0]!] ?? o.label;
