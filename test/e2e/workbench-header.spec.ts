@@ -46,3 +46,24 @@ test("the active pane has a single identity line and a background pane keeps its
     for (const id of made) await request.delete(`/api/sessions/${id}`);
   }
 });
+
+test("a narrow running composer keeps Stop and Send on screen", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string; provider: string; context: number }[];
+  const model = models.filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0];
+  test.skip(!model, "requires a scripted scratch daemon");
+  const { session } = await (await request.post("/api/sessions", { data: { title: "Narrow composer", model: model!.id } })).json();
+  try {
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${session.id}`);
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:long-tool" } });
+    await page.getByTestId("composer").fill("Follow up after the command");
+    await expect(page.getByTestId("stop")).toBeInViewport({ ratio: 1 });
+    await expect(page.getByTestId("queue-button")).toBeInViewport({ ratio: 1 });
+    await expect(page.getByTestId("send")).toBeInViewport({ ratio: 1 });
+    await shoot(page, "workbench-narrow-composer");
+    await page.getByTestId("stop").click();
+    await expect(page.getByTestId("stop")).toHaveCount(0);
+  } finally { await request.delete(`/api/sessions/${session.id}`); }
+});

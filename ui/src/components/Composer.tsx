@@ -454,7 +454,7 @@ export function Composer({
         }}
         className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
       />
-      <div className="flex items-center gap-0.5 px-2 pb-2">
+      <div className="flex flex-wrap items-center gap-x-0.5 gap-y-1 px-2 pb-2">
         <button
           type="button"
           title="Attach images or files (or paste, or drop them here)"
@@ -473,7 +473,7 @@ export function Composer({
         {model && <LimitChip model={model} />}
         {notice && <span className="ml-1 min-w-0 truncate text-caption text-warn animate-in" role="status" data-testid="composer-notice">{notice}</span>}
         {!synced && !notice && <span className="ml-1 truncate text-caption text-faint" role="status" data-testid="sync-state">{connected ? "Catching up" : "Reconnecting"}</span>}
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {sid && <ContextMeter sessionId={sid} />}
           {working && onQueue && (
             <button
