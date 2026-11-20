@@ -285,6 +285,7 @@ export class Gate {
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,
   // and grants for that tool alone. Returns the class it judged.
   async check(session: Session, call: ToolCall): Promise<{ deny: string } | { cls: CallClass }> {
+    if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input) : null;
     const name = target?.name ?? call.tool.name;
     const cls: CallClass = landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classifyCall(call));
@@ -324,10 +325,11 @@ export class Gate {
 
   // A card for this one call that only the owner answers (a hook asked): no
   // grant, mode change or reviewer settles it.
-  async askOnce(session: Session, call: ToolCall, name: string, why: string): Promise<{ deny: string } | void> {
+  // `shown`: what the card shows of the call (a mail as its recipients, subject and text).
+  async askOnce(session: Session, call: ToolCall, name: string, why: string, shown?: string): Promise<{ deny: string } | void> {
     const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
-    const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(call.input ?? {}).slice(0, 400);
+    const summary = shown ?? (cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(call.input ?? {}).slice(0, 400));
     return this.card(session, call, name, cls, summary, { risk: "high", why, suggest: [] }, true);
   }
 

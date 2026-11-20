@@ -19,6 +19,13 @@ export function registerShared(...tools: Tool[]) {
   for (const t of tools) if (!shared.some((s) => s.name === t.name)) shared.push(t);
 }
 
+// Tools only some sessions get (the helper's): asked per session, appended in
+// name order after the shared ones, so a session's tool prefix stays stable.
+const perSession = new Map<string, (sessionId: string, family: ModelInfo["family"]) => Tool[]>();
+export const registerSessionTools = (id: string, f: (sessionId: string, family: ModelInfo["family"]) => Tool[]) => void perSession.set(id, f);
+const sessionTools = (id: string | undefined, family: ModelInfo["family"]) =>
+  id ? [...perSession.values()].flatMap((f) => f(id, family)).sort((a, b) => a.name.localeCompare(b.name)) : [];
+
 // For a measurement without a shared tool (the token benchmark's --without).
 export function unregisterShared(name: string) {
   const i = shared.findIndex((t) => t.name === name);
@@ -36,10 +43,10 @@ const SEARCH_PAIR = new Set(["search_tools", "mcp_call"]);
 // `native`: the request can carry deferred tools (src/tools/defer.ts): the
 // rarely used built-ins are deferred and ToolSearch replaces the search pair;
 // the catalog's tools are added per request by withCatalog.
-export function toolsFor(family: ModelInfo["family"], native = false): Tool[] {
+export function toolsFor(family: ModelInfo["family"], native = false, sessionId?: string): Tool[] {
   const base = byFamily.get(family) ?? byFamily.get("claude")!;
   const extra = shared.filter((t) => !t.families || t.families.includes(family));
-  const all = [...base, ...extra.sort((a, b) => a.name.localeCompare(b.name))];
+  const all = [...base, ...extra.sort((a, b) => a.name.localeCompare(b.name)), ...sessionTools(sessionId, family)];
   if (!native) return all;
   const kept = all.filter((t) => !SEARCH_PAIR.has(t.name));
   const deferred = kept.filter((t) => DEFERRED_BUILTINS.has(t.name)).map((t) => ({ ...t, defer: true }));

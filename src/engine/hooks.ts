@@ -76,6 +76,9 @@ export type TurnHooks = {
   turnParking?: (sessionId: string) => void;
   // Before a compaction summarises the history (a memory tool reads it whole first).
   beforeCompact?: (s: Session) => void | Promise<void>;
+  // What a summary of this session keeps above all, when the owner named nothing
+  // (the helper's summary keeps his decisions and commitments, not files).
+  compactFocus?: (s: Session) => string | undefined;
   // A session another agent answers (an ACP agent): its runner takes the whole
   // turn, keeps its own history, and stores what happened through `io`. The
   // first hook that returns a runner wins; the provider loop does not run.

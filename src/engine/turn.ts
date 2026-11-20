@@ -510,7 +510,7 @@ export class Engine {
     // A model known to take no tool definitions (the owner, a probe, its listing
     // or catalog said so) is sent none: it would refuse them or answer garbled.
     const native = info.tools !== false && loadsNatively(provider.wire, info);
-    return { provider, info, tools: info.tools === false ? [] : toolsFor(info.family, native), system: system.text, systemSplit: system.split, effort, native };
+    return { provider, info, tools: info.tools === false ? [] : toolsFor(info.family, native, session.id), system: system.text, systemSplit: system.split, effort, native };
   }
 
   // A subagent on this machine runs on its parent's system prompt byte for byte
@@ -658,7 +658,7 @@ export class Engine {
           this.errors.capture("provider", e, { session: id, fallback: "deferred tools refused; using search_tools" });
           refuseDefer(st.info.id);
           st.native = false;
-          st.tools = toolsFor(st.info.family);
+          st.tools = toolsFor(st.info.family, false, id);
           req = { ...req, tools: st.tools };
           continue;
         }
@@ -1128,6 +1128,7 @@ export class Engine {
   // it, else in parts oldest first, each with the summary of the parts before
   // it. A request the provider still refuses as too long is built again smaller.
   private async summarize(id: string, st: Step, session: Session, events: StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
+    focus ??= allHooks().map((h) => h.compactFocus?.(session)).find(Boolean);
     let usage = emptyUsage();
     const one = async (ask: Message[]) => {
       const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary"); // the summary is not a reply
