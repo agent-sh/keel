@@ -9,7 +9,8 @@ import { safety, useSafety } from "../lib/safety.ts";
 import { failed, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { useWatches, WATCH_LABEL } from "../lib/watch.ts";
+import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
+import { Where } from "./Where.tsx";
 import { confirmAction } from "./Confirm.tsx";
 import { Mark } from "./Mark.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -57,6 +58,7 @@ function Body({ p }: { p: Project }) {
   const all = useStore((s) => s.sessions);
   const list = Object.values(all).filter((s) => members[s.id] === p.id && !s.parent_id).sort((a, b) => Number(a.archived) - Number(b.archived) || b.updated - a.updated);
   const watches = useWatches(list);
+  const agents = useAgentCounts();
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="project-page" data-project={p.id}>
@@ -165,8 +167,9 @@ function Body({ p }: { p: Project }) {
               <div className="flex flex-col">
                 {list.map((s) => (
                   <button key={s.id} type="button" data-testid="project-session" data-session={s.id} onClick={() => navigate({ name: "session", id: s.id })} className={cn("flex h-9 items-center gap-2.5 border-b border-line text-left text-ui last:border-0 hover:text-fg", s.archived ? "text-faint" : "text-muted")}>
-                    <span className="grid w-4 place-items-center" title={WATCH_LABEL[watches[s.id] ?? "idle"]}><Mark w={watches[s.id] ?? "idle"} /></span>
+                    <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
+                    <Where s={s} />
                     <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{s.archived ? "archived" : ago(s.updated)}</span>
                   </button>
                 ))}

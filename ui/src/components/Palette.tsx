@@ -6,7 +6,8 @@ import { actions, reportError, useStore } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames } from "../lib/utils.ts";
-import { useWatches, WATCH_LABEL } from "../lib/watch.ts";
+import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
+import { Where } from "./Where.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
 
@@ -32,6 +33,7 @@ export function Palette() {
   const models = useStore((s) => s.models);
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived), [sessions]);
   const watches = useWatches(live);
+  const agents = useAgentCounts();
   useSyncExternalStore(onCommands, commandsVersion);
   const [q, setQ] = useState("");
   // The highlighted row by its key: rows that arrive later (a search answer)
@@ -82,8 +84,8 @@ export function Palette() {
       if (score > 0) {
         seen.add(s.id);
         out.push({
-          key: `s:${s.id}`, group: "Sessions", label: s.title || "New session", detail: `${names.get(s.workspace)}  ${ago(s.updated)}`,
-          icon: <span className="grid size-4 place-items-center" title={WATCH_LABEL[w[s.id] ?? "idle"]}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5, run: () => navigate({ name: "session", id: s.id }),
+          key: `s:${s.id}`, group: "Sessions", label: s.machine ? <span className="inline-flex min-w-0 items-center gap-2"><span className="truncate">{s.title || "New session"}</span><Where s={s} /></span> : s.title || "New session", detail: `${names.get(s.workspace)}  ${ago(s.updated)}`,
+          icon: <span className="grid size-4 place-items-center" title={watchLabel(w[s.id] ?? "idle", agents[s.id])}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5, run: () => navigate({ name: "session", id: s.id }),
         });
       }
     }

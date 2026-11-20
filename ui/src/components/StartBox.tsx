@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
-import { useWatches, WATCH_LABEL } from "../lib/watch.ts";
+import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
+import { Where } from "./Where.tsx";
 import { Mark } from "./Mark.tsx";
 import { Composer } from "./Composer.tsx";
 import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
@@ -48,6 +49,7 @@ export function StartBox() {
     [sessions, workspace],
   );
   const watches = useWatches(recent);
+  const agents = useAgentCounts();
   // Auto is shown as where it would place the session now: a folder of this
   // machine when it stays here, the other machine's directory when it goes.
   const place = useFleet((s) => s.autoPlace);
@@ -116,8 +118,9 @@ export function StartBox() {
                     data-testid="recent-session"
                     className="group flex h-10 items-center gap-3 border-b border-line text-left text-ui text-muted last:border-0 hover:text-fg"
                   >
-                    <span className="grid w-4 place-items-center" title={WATCH_LABEL[watches[s.id] ?? "idle"]}><Mark w={watches[s.id] ?? "idle"} /></span>
+                    <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
+                    <Where s={s} />
                     <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{ago(s.updated)}</span>
                   </button>
                 ))}

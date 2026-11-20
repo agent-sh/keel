@@ -12,6 +12,7 @@ import { switchSession } from "../lib/switch.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { whenIdle } from "../lib/utils.ts";
+import { machineName, useFleet } from "../lib/fleet.ts";
 
 // The conversation (Markdown, tool rows) is its own chunk: the start page does
 // not need it, and a session link starts loading it with the page.
@@ -49,7 +50,9 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
       else reportError(e, { at: "open session" });
     });
   }, [id, unreached === id && connected]);
-  useEffect(() => { if (focus) setBaseTitle(session?.title ? `${session.title} - Keel` : "Keel"); }, [session?.title, focus]);
+  // A session elsewhere says where in the tab's title too.
+  const on = useFleet((x) => (session?.machine ? machineName(session.machine) ?? "" : "")) || undefined;
+  useEffect(() => { if (focus) setBaseTitle(session?.title ? `${session.title}${on ? ` on ${on}` : ""} - Keel` : "Keel"); }, [session?.title, on, focus]);
   if (!session && (missing === id || gone)) {
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">

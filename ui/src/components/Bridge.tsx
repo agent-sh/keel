@@ -17,7 +17,8 @@ import { byAttention, getStations, opened, shares, stations, target, useStations
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, when } from "../lib/utils.ts";
-import { lastLine, useWatch, WATCH_LABEL, type Watch } from "../lib/watch.ts";
+import { lastLine, useAgentCount, useAgentCounts, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
+import { Where, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
@@ -73,11 +74,13 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
   const start = useMemo(() => [...(events ?? [])].reverse().find((e) => e.kind === "turn_start")?.ts, [events]);
   const now = useNow(w === "work");
   const focus = useStations((x) => x.focus);
+  const agents = useAgentCount(s.id);
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}>
       <div className="k-station-row">
-        <span className="k-station-word"><Mark w={w} />{WATCH_LABEL[w]}</span>
-        {w === "work" && start && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
+        <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
+        {w === "work" && start && s.phase === "working" && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
+        <Where s={s} />
         <span className="k-station-meta truncate">{s.workspace_gone ? <span className="k-gone" title={`${s.workspace} is not on disk`}>{folderOf(s)} gone</span> : folderOf(s)}  {modelOf(s.model)}</span>
         <span className="k-station-tools">
           {!focus && <Tool label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, -1)}><ChevronLeft /></Tool>}
@@ -146,6 +149,7 @@ function useDrop(slot: number | undefined) {
 
 function Station({ s, helm, slot, grow }: { s: Session; helm: boolean; slot?: number; grow?: number }) {
   const w = useWatch(s);
+  const agents = useAgentCount(s.id);
   const ref = useRef<HTMLElement>(null);
   const drop = useDrop(slot);
   // The helm scrolls into view when it changes (keyboard moves, the rail).
@@ -160,7 +164,7 @@ function Station({ s, helm, slot, grow }: { s: Session; helm: boolean; slot?: nu
       data-watch={w}
       data-helm={helm || undefined}
       data-testid="station"
-      aria-label={`${s.title || "New session"}, ${WATCH_LABEL[w]}`}
+      aria-label={`${s.title || "New session"}, ${watchLabel(w, agents)}${whereWords(s)}`}
       onPointerDownCapture={() => { if (!helm) navigate({ name: "session", id: s.id }); }}
       // Keyboard: tabbing into a pane takes the helm. Focus moved by code (an
       // approval card taking the keys in another pane) does not.
@@ -194,6 +198,7 @@ function NewStation({ slot, grow }: { slot?: number; grow?: number }) {
 // sessions not on screen, what needs them first, and takes a dragged one.
 function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boolean }) {
   const { list, watches } = useLive();
+  const agents = useAgentCounts();
   const slots = useStations((x) => x.slots);
   const count = useStations((x) => x.count);
   const offer = useMemo(() => byAttention(list, watches).filter((s) => !slots.includes(s.id)).slice(0, 7), [list, watches, slots]);
@@ -212,8 +217,9 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
           <div className="k-pane-empty-list">
             {offer.map((s) => (
               <button key={s.id} type="button" data-testid="pane-offer" data-session={s.id} data-watch={watches[s.id]} onClick={() => put(s.id)}>
-                <span className="grid w-4 place-items-center" title={WATCH_LABEL[watches[s.id] ?? "idle"]}><Mark w={watches[s.id] ?? "idle"} /></span>
+                <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
                 <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
+                <Where s={s} />
                 <span className="k-pane-empty-in">{folderOf(s)}</span>
                 <span className="k-pane-empty-time tabular-nums" title={when(s.updated)}>{ago(s.updated)}</span>
               </button>
@@ -229,6 +235,7 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
 // Phone: the marks of the stations along the bottom; tap one to go there.
 function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   const { watches } = useLive();
+  const agents = useAgentCounts();
   const fresh = useUI((s) => s.route.name === "new");
   const need = list.filter((s) => watches[s.id] === "need").length;
   return (
@@ -237,7 +244,7 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
       <ol className="k-dock-list">
         {list.map((s) => (
           <li key={s.id}>
-            <button type="button" className="k-dock-mark" data-watch={watches[s.id]} aria-current={helm === s.id ? "page" : undefined} aria-label={`${s.title || "New session"}, ${WATCH_LABEL[watches[s.id]!]}`} onClick={() => navigate({ name: "session", id: s.id })}>
+            <button type="button" className="k-dock-mark" data-watch={watches[s.id]} aria-current={helm === s.id ? "page" : undefined} aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id]!, agents[s.id])}${whereWords(s)}`} onClick={() => navigate({ name: "session", id: s.id })}>
               <Mark w={watches[s.id]!} />
             </button>
           </li>

@@ -37,7 +37,20 @@ export const useFleet = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f
 export const getFleet = () => state;
 
 export const machineName = (id?: string | null) => (id ? state.machines.find((m) => m.id === id)?.name ?? state.view.find((m) => m.id === id)?.name ?? id : undefined);
-export const machineColour = (id?: string | null) => (id ? state.machines.find((m) => m.id === id)?.colour : undefined);
+export const machineColour = (id?: string | null) => (id ? state.machines.find((m) => m.id === id)?.colour ?? state.view.find((m) => m.id === id)?.colour : undefined);
+
+// Whether a machine answers now: "ok" (ready or busy), "connecting" (being
+// reached, or not checked yet), or "offline" (it did not answer), with why.
+export type Reach = { state: "ok" | "connecting" | "offline"; reason?: string };
+export function machineReach(id: string, s: Pick<State, "machines" | "view"> = state): Reach {
+  const m = s.machines.find((x) => x.id === id);
+  const v = s.view.find((x) => x.id === id);
+  if (!m && !v) return { state: "connecting" };
+  const reason = m?.daemon?.reason ?? m?.reason ?? v?.reason;
+  if (m?.state === "offline" || m?.daemon?.state === "offline" || v?.state === "offline" || v?.stale) return { state: "offline", reason };
+  if (m && (["starting", "unknown"].includes(m.state) || m.daemon?.state === "connecting")) return { state: "connecting", reason };
+  return { state: "ok" };
+}
 
 export function setNewMachine(id: string) {
   localStorage.setItem("keel.newMachine", id);

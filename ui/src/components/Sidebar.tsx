@@ -4,17 +4,18 @@
 // it is a column of marks, each a session's state and a short code of its
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Server, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { machineColour, machineName, useFleet } from "../lib/fleet.ts";
+import { machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { lastLine, useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
+import { lastLine, useAgentCount, useAgentCounts, useWatch, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { Where, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
 import { folderOf, Mark, modelOf } from "./Mark.tsx";
@@ -90,6 +91,7 @@ export function openBeside(id: string) {
 function Row({ s, active, where }: { s: Session; active: boolean; where?: boolean }) {
   const restore = s.archived;
   const w = useWatch(s);
+  const agents = useAgentCount(s.id);
   const card = useContext(CardCtx)(s, 450);
   const shown = useStations((x) => x.shown.includes(s.id));
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
@@ -114,7 +116,12 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       <Mark w={w} />
       <span className="k-row-main">
         <span className="k-row-title">{s.title || "New session"}</span>
-        {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{WATCH_LABEL[w]}</span>}
+        {(SPELLED.includes(w) || s.machine) && (
+          <span className="k-row-sub">
+            {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{watchLabel(w, agents)}</span>}
+            <Where s={s} />
+          </span>
+        )}
         {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
       </span>
       {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag max-w-20 shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
@@ -194,6 +201,7 @@ function Marks({ current }: { current: string | null }) {
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.updated - a.updated), [sessions]);
   const codes = useMemo(() => callsigns(list), [list]);
   const watches = useWatches(list);
+  const agents = useAgentCounts();
   const shown = useStations((x) => x.shown);
   const unread = useAuto((s) => s.unread.sessions);
   const bind = useContext(CardCtx);
@@ -219,7 +227,7 @@ function Marks({ current }: { current: string | null }) {
                       data-shown={shown.includes(s.id) || undefined}
                       data-unread={unread[s.id] ? true : undefined}
                       aria-current={current === s.id ? "page" : undefined}
-                      aria-label={`${s.title || "New session"}, ${WATCH_LABEL[watches[s.id]!]}, ${folderOf(s)}, ${ago(s.updated)}`}
+                      aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id]!, agents[s.id])}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}`}
                       {...card}
                       draggable
                       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
@@ -227,6 +235,7 @@ function Marks({ current }: { current: string | null }) {
                     >
                       <Mark w={watches[s.id]!} />
                       <span className="k-tick-code" data-testid="rail-code" aria-hidden="true">{codes[s.id]}</span>
+                      <WherePip s={s} />
                       <span className="sr-only">{s.title || "New session"}</span>
                       <span className="k-tick-badges"><NeedsYou sessionId={s.id} /><SessionBadges sessionId={s.id} /></span>
                     </button>
@@ -247,6 +256,7 @@ const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
 function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }) {
   const s = useStore((x) => x.sessions[given.id]) ?? given;
   const w = useWatch(s);
+  const agents = useAgentCount(s.id);
   const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
   const approvals = useSafety((x) => x.approvals[s.id]?.length ?? 0);
@@ -256,7 +266,8 @@ function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }
     <div className="k-rail-card" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
       <div className="k-rail-card-row">
         <Mark w={w} />
-        <span className="k-rail-card-word">{WATCH_LABEL[w]}</span>
+        <span className="k-rail-card-word">{watchLabel(w, agents)}</span>
+        <Where s={s} />
         <span className="k-rail-card-time" title={when(s.updated)}>{ago(s.updated) === "now" ? "just now" : `${ago(s.updated)} ago`}</span>
       </div>
       <p className="k-rail-card-title">{s.title || "New session"}</p>
@@ -352,9 +363,9 @@ function Index({ current }: { current: string | null }) {
         {grouped.map((g) => (
           <section key={g.key} className="k-group" data-machine={g.machine}>
             <h2 className="k-group-head" title={g.machine ? `${g.ws} on ${machineName(g.machine)}` : g.ws}>
-              {g.machine ? <Server style={machineColour(g.machine) ? { color: machineColour(g.machine) } : undefined} /> : <Folder />}
+              <Folder />
               <span className="truncate">{heads.get(`${g.machine ?? ""}\u0000${g.ws}`) ?? base(g.ws)}</span>
-              {g.machine && <span className="k-group-machine" data-testid="group-machine">{machineName(g.machine)}</span>}
+              {g.machine && <Where s={{ machine: g.machine }} data-testid="group-machine" />}
             </h2>
             <Group list={g.list} current={current} every={!!q} />
           </section>

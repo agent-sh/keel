@@ -5,6 +5,7 @@ import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentStatus, ALERT_STATE, IconButton, StopIcon } from "./bits.tsx";
 import { Mark } from "../Mark.tsx";
+import { Where } from "../Where.tsx";
 
 // The panels load the first time they open.
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
@@ -71,6 +72,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         >
           <AgentStatus status={a.status} />
           <span className={cn("min-w-0 flex-1 truncate", !isLive(a) && !unread[a.session_id] && "text-muted", unread[a.session_id] && "font-medium text-fg")}>{sessions[a.session_id]?.title || a.title}</span>
+          <Where s={{ machine: sessions[a.session_id]?.machine ?? a.machine }} />
           {unread[a.session_id] ? (
             <span data-testid="child-unread" title={`${unread[a.session_id]} unread`} className="flex shrink-0 items-center">
               <span className="size-1.5 rounded-full bg-accent" aria-hidden />

@@ -5,11 +5,12 @@ import { ArrowRight, Check, ChevronDown, ChevronLeft, Cpu, Folder, FolderGit2, H
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
-import { fleet, machineColour, machineName, setNewMachine, useFleet, type RemoteDirs } from "../lib/fleet.ts";
+import { fleet, machineName, setNewMachine, useFleet, type RemoteDirs } from "../lib/fleet.ts";
 import { useStore } from "../lib/store.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
+import { useWhere, WhereBody, whereStyle } from "./Where.tsx";
 
 // Names and one-line summaries of the fleet's tools on their rows.
 export const FLEET_LABEL: Record<string, string> = { keel__session_send: "Message", keel__sessions_list: "Sessions", keel__machines_list: "Machines", keel__send_files: "Send files" };
@@ -44,6 +45,7 @@ export function MachineChip({ session }: { session: Session }) {
   const runs = session.machine ?? undefined;
   const id = lives ?? runs;
   const targets = machines.filter((m) => m.source !== "local" && m.enabled && m.workspace_root && m.id !== runs);
+  const where = useWhere({ machine: id });
   useEffect(() => {
     if (lives) return;
     api<{ handoff: Handoff | null }>(`/api/sessions/${session.id}/handoff`).then((r) => setH(r.handoff)).catch(reportError);
@@ -51,16 +53,23 @@ export function MachineChip({ session }: { session: Session }) {
   }, [session.id, lives]);
   if (!id && !targets.length) return null;
   const name = id ? machineName(id) : machines.find((m) => m.source === "local")?.name ?? "this machine";
-  const chip = (
+  // Elsewhere: the same tag as the rows (Where.tsx), with whether it answers.
+  const chip = where ? (
     <>
-      {dot(id ? machineColour(id) : undefined)}
-      <span className="font-medium text-fg">{name}</span>
+      <WhereBody w={where} />
       {lives && <span className="text-faint">remote</span>}
       {h?.state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
     </>
+  ) : (
+    <>
+      {dot(undefined)}
+      <span className="font-medium text-fg">{name}</span>
+      {h?.state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
+    </>
   );
-  const cls = "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border border-line bg-sunken px-2 text-caption text-muted";
-  if (lives) return <span data-testid="machine-chip" title={`This session lives on ${name}'s daemon; you see and drive it through the link.`} className={cls}>{chip}</span>;
+  const cls = cn("inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border border-line bg-sunken px-2 text-caption text-muted", where && "k-where k-where-chip");
+  const tag = where ? { "data-machine": where.id, "data-reach": where.reach, style: whereStyle(where.colour) } : {};
+  if (lives) return <span data-testid="machine-chip" title={`This session lives on ${name}'s daemon; you see and drive it through the link.${where?.reach === "offline" ? ` ${name} does not answer now.` : ""}`} className={cls} {...tag}>{chip}</span>;
   const move = async (to: string) => {
     setErr("");
     try { setH((await api<{ handoff: Handoff }>(`/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({ machine_id: to, carry }) })).handoff); }
@@ -69,7 +78,7 @@ export function MachineChip({ session }: { session: Session }) {
   const dests = [...(runs ? [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine", sub: "back here" }] : []), ...targets.map((m) => ({ id: m.id, name: m.name, sub: m.workspace_root! }))];
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger data-testid="machine-chip" title={`Its tools run on ${name}, in ${session.workspace}`} className={cn(cls, "hover:text-fg data-popup-open:border-line-strong")}>{chip}</Popover.Trigger>
+      <Popover.Trigger data-testid="machine-chip" title={`Its tools run on ${name}, in ${session.workspace}${where?.reach === "offline" ? `; ${name} does not answer now` : ""}`} className={cn(cls, "hover:text-fg data-popup-open:border-line-strong")} {...tag}>{chip}</Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="end" className="z-50">
           <Popover.Popup className={cn(popupClass, "w-96 p-0")} data-testid="move-popup">
