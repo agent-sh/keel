@@ -272,6 +272,7 @@ export class Providers {
   }
 
   async models(force = false): Promise<ModelInfo[]> {
+    await this.catalog.ready();
     // A command's own daemon reads the stored listings; resolve() still asks one provider for a model they lack.
     if (!force && runMode.client && [...this.listings.values()].some((l) => l.models.length)) return this.current();
     if (force || Date.now() - this.refreshedAt > LISTING_MAX_AGE) {

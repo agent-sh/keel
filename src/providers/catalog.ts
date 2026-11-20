@@ -111,6 +111,7 @@ export class Catalog {
   private byProvider = new Map<string, Map<string, CatalogEntry>>();
   private meta: CatalogProvider[] = [];
   private loaded = 0;
+  private reading?: Promise<void>;
 
   constructor(private cacheDir: string) {}
 
@@ -122,8 +123,7 @@ export class Catalog {
     if (Date.now() - this.loaded < MAX_AGE && this.byId.size) return;
     const file = Bun.file(join(this.cacheDir, "models-dev.compact.json"));
     const full = join(this.cacheDir, "models-dev.json"); // the earlier full copy, read once if nothing else is there
-    let saved: { shape?: string; sections?: Sections; providers?: CatalogProvider[] } | null = null;
-    if (await file.exists()) try { saved = JSON.parse(await file.text()); } catch {}
+    const saved = await this.saved();
     // A copy made by another version of entry() lacks its fields: fetch again.
     const fresh = saved?.shape === SHAPE && Date.now() - file.lastModified < MAX_AGE;
     let sections: Sections | null = fresh ? saved!.sections ?? null : null;
@@ -145,6 +145,26 @@ export class Catalog {
     sections ??= saved?.sections ?? null;
     providers ??= saved?.providers ?? null;
     if (!sections) return;
+    this.apply(sections, providers);
+    this.loaded = fresh ? file.lastModified : Date.now();
+  }
+
+  // The saved copy, whatever its age or shape, in memory before the first
+  // answer: a start that answered without it took every model's window and
+  // efforts for unknown while load() fetched a newer copy.
+  ready(): Promise<void> {
+    if (this.byId.size) return Promise.resolve();
+    return (this.reading ??= this.saved().then((s) => {
+      if (s?.sections && !this.byId.size) this.apply(s.sections, s.providers ?? null);
+    }));
+  }
+
+  private async saved(): Promise<{ shape?: string; sections?: Sections; providers?: CatalogProvider[] } | null> {
+    const file = Bun.file(join(this.cacheDir, "models-dev.compact.json"));
+    try { return (await file.exists()) ? JSON.parse(await file.text()) : null; } catch { return null; }
+  }
+
+  private apply(sections: Sections, providers: CatalogProvider[] | null) {
     this.meta = providers ?? [];
     this.byId.clear();
     this.byProvider.clear();
@@ -157,7 +177,6 @@ export class Catalog {
       }
       this.byProvider.set(pid, section);
     }
-    this.loaded = fresh ? file.lastModified : Date.now();
   }
 
   // The catalog's providers, for adding one by hand.

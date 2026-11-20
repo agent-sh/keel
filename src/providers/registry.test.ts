@@ -115,3 +115,19 @@ test("another provider's catalog entry cannot make an unknown route text-only", 
   expect(by.get("seer")!.images).toBe(true);
   expect(by.get("said-no")!.images).toBe(false);
 });
+
+test("a read after a restart knows the window from the saved catalog while a newer one is fetched", async () => {
+  const state = dir();
+  await Bun.write(join(state, "models-dev.compact.json"), JSON.stringify({ shape: "old", sections: { other: { big: { name: "Big", context: 1_000_000, output: 64_000, efforts: ["high"] } } } }));
+  const f = fake("p");
+  const r = make(state, [f.p]);
+  const a = r.refresh("p");
+  await Bun.sleep(0);
+  f.calls[0]!.resolve([{ model: "big" }]);
+  await a;
+  const r2 = make(state, [fake("p").p]);
+  const big = (await r2.models()).find((m) => m.model === "big")!;
+  expect(big.context).toBe(1_000_000);
+  expect(big.context_assumed).toBeUndefined();
+  expect(big.efforts).toEqual(["high"]);
+});
