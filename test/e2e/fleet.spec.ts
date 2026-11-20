@@ -30,6 +30,7 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
   mkdirSync(ROOT, { recursive: true });
   const token = `peer-${Date.now().toString(36)}`;
   writeFileSync(`${ROOT}/note.txt`, `${token}\n`);
+  const local = (await (await request.post("/api/sessions", { data: { title: "Local fleet fixture" } })).json()).session;
   const made = await (await request.post(`${PEER}/api/sessions`, { data: { workspace: ROOT, title: "Started on the other machine", model: HAIKU } })).json();
 
   try {
@@ -57,7 +58,9 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     const remote = page.locator(`[data-testid="session-row"][data-session$="--${made.session.id}"]`);
     await expect(remote).toBeVisible({ timeout: 15_000 });
     // The list groups it under its machine.
-    await expect(page.locator(`section:has([data-session$="--${made.session.id}"])`).getByTestId("group-machine")).toHaveText("devbox");
+    const mid = await row.getAttribute("data-machine");
+    await expect(page.locator(`[data-testid="machine-sep"][data-machine="${mid}"]`)).toHaveAccessibleName(/^devbox\b/);
+    await expect(page.locator(`section.k-group[data-machine="${mid}"]`).locator(remote)).toBeVisible();
     await page.locator(`[data-testid="session-row"][data-session$="--${made.session.id}"]`).click();
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await expect(page.getByTestId("session-title")).toHaveText("Started on the other machine");
@@ -154,6 +157,7 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
   } finally {
     await request.put("/api/permissions/settings", { data: { default_mode: prev } });
     await request.post("/api/fleet/placement", { data: { rules: prevRules } });
+    await request.delete(`/api/sessions/${local.id}`);
     await request.delete(`${PEER}/api/sessions/${made.session.id}`);
   }
 });

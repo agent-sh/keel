@@ -28,6 +28,7 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
   let sid = "";
   let mid = "";
   let moved = "";
+  const local = (await (await request.post("/api/sessions", { data: { title: "Local SSH fixture" } })).json()).session;
   try {
     // One entry per box: the aliases of the host are its routes.
     await page.goto("/settings/machines");
@@ -58,7 +59,7 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     const popup = page.getByTestId("remote-folder-popup");
     // With no session there yet it opens on the folders; with some, on the recent ones.
     if (await popup.getByTestId("remote-browse").isVisible()) await popup.getByTestId("remote-browse").click();
-    await popup.getByTestId("remote-dir").filter({ hasText: "proj" }).click();
+    await popup.getByTestId("remote-dir").filter({ has: page.getByText("proj", { exact: true }) }).click();
     await expect(popup).toContainText("/proj");
     await shoot(page, "remote-03-folder");
     await popup.getByTestId("remote-use-folder").click();
@@ -78,7 +79,8 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     await expect(bash).toContainText(proj);
     expect(there(`cat ${proj}/notes.txt`)).toContain("hello from keel");
     await expect(page.getByTestId("machine-chip")).toContainText(HOST);
-    await expect(page.locator(`section.k-group[data-machine="${mid}"]`).getByTestId("group-machine")).toHaveText(HOST);
+    await expect(page.locator(`[data-testid="machine-sep"][data-machine="${mid}"]`)).toContainText(HOST);
+    await expect(page.locator(`section.k-group[data-machine="${mid}"] [data-session="${sid}"]`)).toBeVisible();
     await shoot(page, "remote-04-session");
 
     // The terminal pane: the session's commands there, and one of the owner's.
@@ -129,6 +131,7 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     const alive = `for f in ${ROOT}/*/run-*/hands.pid $HOME/.cache/keel-remote/run-*/hands.pid; do [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null && echo alive; done; true`;
     await expect.poll(() => there(alive), { timeout: 15_000 }).toBe("");
   } finally {
+    await request.delete(`/api/sessions/${local.id}`);
     if (moved) await request.delete(`/api/sessions/${moved}`);
     rmSync(LOCAL, { recursive: true, force: true });
     if (sid) await request.delete(`/api/sessions/${sid}`);
