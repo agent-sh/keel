@@ -13,6 +13,7 @@ import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import type { Found, Harness, Read } from "./types.ts";
+import { select, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
@@ -45,7 +46,7 @@ export const digestOf = (events: { kind: string; data: any }[]) => String(Bun.ha
 // An update or an open refused for a reason the owner can act on.
 const refuse = (message: string) => Object.assign(new Error(message), { status: 409 });
 
-export type ListQuery = { harness?: Harness; q?: string; cwd?: string; show?: string; sort?: "updated" | "size" | "title"; limit?: number; cursor?: number };
+export type { ListQuery } from "./offer.ts";
 
 const sourceStat = (f: Found) => {
   try { const s = statSync(f.harness === "keel" || f.harness === "hermes" ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
@@ -214,19 +215,7 @@ export class Imports {
   }
 
   list(q: ListQuery) {
-    const words = (q.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-    const show = new Set((q.show ?? "").split(",").filter(Boolean));
-    let rows = this.all(q.harness).filter((f) => {
-      if (f.kind !== "interactive" && !show.has("all") && !show.has(f.kind === "subagent" ? "subagents" : "headless")) return false;
-      if (q.cwd && f.cwd !== q.cwd) return false;
-      if (words.length) {
-        const hay = `${f.title} ${f.cwd ?? ""} ${f.first_prompt ?? ""} ${f.last_prompt ?? ""} ${f.id}`.toLowerCase();
-        if (!words.every((w) => hay.includes(w))) return false;
-      }
-      return true;
-    });
-    const sort = q.sort ?? "updated";
-    rows.sort((a, b) => (sort === "size" ? b.size_bytes - a.size_bytes : sort === "title" ? a.title.localeCompare(b.title) : b.updated_ms - a.updated_ms));
+    const rows = select(this.all(q.harness), q);
     const limit = Math.min(Math.max(q.limit ?? 50, 1), 500);
     const at = q.cursor ?? 0;
     const page = rows.slice(at, at + limit).map((f) => ({ ...f, imported: this.importedAs(f) }));
