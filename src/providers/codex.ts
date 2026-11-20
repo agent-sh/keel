@@ -203,7 +203,10 @@ export class CodexProvider implements Provider {
     let a = await this.auth();
     const ctx = ctxFor(this.id, req, req.efforts ?? []);
     // The routing hint (model and tier) goes with the handshake: one socket per speed too.
-    const key = `${req.sessionKey ?? ""}|${req.model}|${req.extraHeaders?.["x-codex-routing-hint"] ?? ""}`;
+    // And per purpose: a reader or a side answer on the session's own model
+    // would replace the response the turn's socket holds, and the turn's next
+    // request would be sent whole.
+    const key = `${req.sessionKey ?? ""}|${req.model}|${req.extraHeaders?.["x-codex-routing-hint"] ?? ""}|${req.purpose ?? "turn"}`;
     if (req.sessionKey && this.sockets.usable(key)) {
       const headers = { ...this.headers(a, req.sessionKey), "OpenAI-Beta": "responses_websockets=2026-02-06", ...req.extraHeaders };
       try {
@@ -212,7 +215,7 @@ export class CodexProvider implements Provider {
         return res;
       } catch (e) {
         if (!(e instanceof WsUnavailable)) throw e;
-        this.sockets.disable(key);
+        this.sockets.refused(key);
       }
     }
     const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, httpEvents({

@@ -37,7 +37,8 @@ export type ProviderRequest = {
   sessionKey?: string;
   // Why the engine asks: a step of a turn, a compaction summary, a side
   // answer outside the history, or a reader's one read of long content for a
-  // tool. Read by telemetry; drivers ignore it.
+  // tool. Read by telemetry, and by a driver that keeps a connection per
+  // session to keep the turn's apart from the others'.
   purpose?: "turn" | "summary" | "side" | "reader";
   // false: a one-off request nothing will repeat; no cache breakpoints (a
   // write costs more than plain input when no later request reads it).

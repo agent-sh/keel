@@ -1,9 +1,13 @@
 // The Responses API over a WebSocket (OpenAI "WebSocket mode", what Codex main
-// uses by default): one socket per session and model, a `response.create`
+// uses by default): a socket per session and model, a `response.create`
 // message per request, and after the first only the new input items with
 // `previous_response_id`, so a long agent loop does not resend its history.
 // The server keeps the previous response in a connection-local cache (it works
 // with `store: false`); a socket lives at most 60 minutes.
+//
+// A socket carries one request at a time. Requests of one key that overlap
+// (the readers of one tool call, the judges of parallel calls) each take a
+// socket of their own: a free one of the key, else a new one.
 //
 // A request continues the previous one only when every field but `input` is
 // unchanged and its input starts with the previous input; the items between
@@ -45,38 +49,62 @@ export function continuation(prev: Chan["last"], body: Record<string, any>): { i
 }
 
 export class ResponsesSockets {
-  private chans = new Map<string, Chan>();
+  private chans = new Map<string, Chan[]>();
   private off = new Set<string>();
   // Counted for the measurement in the decision log: whole vs continued requests.
   readonly stats = { whole: 0, continued: 0, fallback: 0 };
 
   constructor(private label: string, private url: () => string) {
     setInterval(() => {
-      for (const [k, c] of this.chans) if (!c.busy && Date.now() - c.used > IDLE_CLOSE) this.drop(k);
+      for (const [k, list] of this.chans) for (const c of [...list]) if (!c.busy && Date.now() - c.used > IDLE_CLOSE) this.drop(k, c);
     }, 60_000).unref?.();
   }
 
   usable(key: string) { return !this.off.has(key); }
-  disable(key: string) { this.off.add(key); this.stats.fallback++; this.drop(key); }
 
-  private drop(key: string) {
-    const c = this.chans.get(key);
-    this.chans.delete(key);
-    if (c && !c.closed) try { c.ws.close(); } catch {}
+  // A request of this key could not get a socket and goes over HTTP. While
+  // another socket of the key is open the transport works (one handshake too
+  // many was refused), so only this request falls back; else the key is off.
+  // A socket that carries a request is never closed here: it ends with it.
+  refused(key: string) {
+    this.stats.fallback++;
+    if (this.chans.get(key)?.some((c) => !c.closed)) return;
+    this.off.add(key);
+  }
+
+  private drop(key: string, c: Chan) {
+    const list = this.chans.get(key);
+    const i = list?.indexOf(c) ?? -1;
+    if (i >= 0) list!.splice(i, 1);
+    if (list && !list.length) this.chans.delete(key);
+    if (!c.closed) try { c.ws.close(); } catch {}
+  }
+
+  // A free socket of the key, taken (busy) for one request: the one whose last
+  // response this request continues, else the one used last, else a new one.
+  private async take(key: string, headers: Record<string, string>, body: Record<string, any>): Promise<Chan> {
+    const free: Chan[] = [];
+    for (const c of [...(this.chans.get(key) ?? [])]) {
+      if (c.busy) continue;
+      if (c.closed || Date.now() - c.opened >= MAX_AGE) this.drop(key, c);
+      else free.push(c);
+    }
+    const c = free.find((x) => continuation(x.last, body)) ?? free.sort((a, b) => b.used - a.used)[0] ?? await this.open(key, headers);
+    c.busy = true;
+    c.used = Date.now();
+    return c;
   }
 
   private open(key: string, headers: Record<string, string>): Promise<Chan> {
-    const cur = this.chans.get(key);
-    if (cur && !cur.closed && Date.now() - cur.opened < MAX_AGE) return Promise.resolve(cur);
-    if (cur) this.drop(key);
     return new Promise((resolve, reject) => {
       // Bun's WebSocket takes request headers (the sign-in and the beta header).
       const ws = new WebSocket(this.url(), { headers } as any);
-      const c: Chan = { ws, opened: Date.now(), used: Date.now(), busy: false, closed: false };
+      // Busy from the start: it belongs to the request that opened it.
+      const c: Chan = { ws, opened: Date.now(), used: Date.now(), busy: true, closed: false };
       const t = setTimeout(() => { try { ws.close(); } catch {} reject(new WsUnavailable("the socket did not open")); }, OPEN_MS);
-      ws.onopen = () => { clearTimeout(t); this.chans.set(key, c); resolve(c); };
+      ws.onopen = () => { clearTimeout(t); const list = this.chans.get(key); list ? list.push(c) : this.chans.set(key, [c]); resolve(c); };
       ws.onerror = () => { clearTimeout(t); c.closed = true; reject(new WsUnavailable("the handshake was refused")); };
-      ws.onclose = () => { c.closed = true; clearTimeout(t); c.onClose?.(); if (this.chans.get(key) === c) this.chans.delete(key); };
+      ws.onclose = () => { c.closed = true; clearTimeout(t); c.onClose?.(); this.drop(key, c); };
       ws.onmessage = (e) => {
         let m: any;
         try { m = JSON.parse(String(e.data)); } catch { return; }
@@ -90,13 +118,10 @@ export class ResponsesSockets {
   events(key: string, headers: Record<string, string>, req: ProviderRequest, onMessage?: (m: any) => void) {
     const self = this;
     return async function* (body: Record<string, any>): AsyncGenerator<SseEvent> {
-      const c = await self.open(key, headers);
-      if (c.busy) throw new WsUnavailable("the session's socket is busy");
-      c.busy = true;
-      c.used = Date.now();
+      const { stream: _s, background: _b, ...whole } = body;
+      const c = await self.take(key, headers, whole);
       const guard = idleGuard(req.signal, streamIdleMs(), self.label);
       try {
-        const { stream: _s, background: _b, ...whole } = body;
         let cont = continuation(c.last, whole);
         for (let attempt = 0; attempt < 2; attempt++) {
           const queue: any[] = [];
@@ -104,7 +129,8 @@ export class ResponsesSockets {
           let gone = false;
           c.listener = (m) => { queue.push(m); guard.touch(); wake?.(); };
           c.onClose = () => { gone = true; wake?.(); };
-          const onAbort = () => { gone = true; self.drop(key); wake?.(); };
+          if (c.closed) gone = true;
+          const onAbort = () => { gone = true; self.drop(key, c); wake?.(); };
           guard.signal.addEventListener("abort", onAbort, { once: true });
           const msg = cont ? { type: "response.create", ...whole, previous_response_id: cont.id, input: cont.input } : { type: "response.create", ...whole };
           cont ? self.stats.continued++ : self.stats.whole++;

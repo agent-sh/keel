@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { continuation } from "./responses-ws.ts";
+import { continuation, ResponsesSockets } from "./responses-ws.ts";
 
 // A request continues the previous response only when nothing but its input
 // grew: the previous answer's own items are skipped, the new ones are sent.
@@ -14,4 +14,57 @@ test("continuation sends only the new input items", () => {
   expect(continuation(prev, { model: "m", tools: [], input: [] })).toBeNull();
   expect(continuation(prev, { model: "m", tools: [], input: [{ ...user, content: [] }, out] })).toBeNull();
   expect(continuation(undefined, { model: "m", input: [user] })).toBeNull();
+});
+
+// A stand-in for the backend: each `response.create` is answered after `ms`
+// with a completed response that names the socket it came on.
+function backend(ms: number) {
+  let sockets = 0;
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req, s) { return s.upgrade(req, { data: { n: ++sockets } }) ? undefined : new Response("no", { status: 400 }); },
+    websocket: {
+      data: {} as { n: number },
+      message(ws, raw) {
+        const m = JSON.parse(String(raw));
+        const n = ws.data.n;
+        setTimeout(() => ws.send(JSON.stringify({ type: "response.completed", response: { id: `resp_${n}_${m.input.length}`, socket: n, previous: m.previous_response_id ?? null, sent: m.input.length } })), ms);
+      },
+    },
+  });
+  return { url: `ws://127.0.0.1:${srv.port}`, opened: () => sockets, stop: () => srv.stop(true) };
+}
+
+async function ask(socks: ResponsesSockets, key: string, body: Record<string, any>) {
+  const req = { signal: new AbortController().signal } as any;
+  let done: any;
+  for await (const e of socks.events(key, {}, req)(body)) done = JSON.parse(e.data).response;
+  return done as { socket: number; previous: string | null; sent: number };
+}
+
+// The readers of one tool call ask at once on the session's key. Each gets a
+// socket of its own; before, the second found the socket busy, the driver
+// closed it under the first ("the socket closed during the answer") and the
+// session's key went to HTTP for good.
+test("requests of one key that overlap each get a socket and all finish", async () => {
+  const b = backend(40);
+  const socks = new ResponsesSockets("test", () => b.url);
+  try {
+    const u = (text: string) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
+    // One request alone opens the key's socket; three at once then overlap on it.
+    const first = await ask(socks, "k", { model: "m", input: [u("a")] });
+    const three = await Promise.all(["b", "c", "d"].map((t) => ask(socks, "k", { model: "m", input: [u(t)] })));
+    expect(new Set(three.map((r) => r.socket)).size).toBe(3);
+    expect(three.map((r) => r.socket)).toContain(first.socket);
+    expect(b.opened()).toBe(3);
+    expect(socks.usable("k")).toBe(true);
+    // Later requests reuse the free sockets; the one that continues an earlier
+    // answer goes to the socket that holds it, with only its new items.
+    const call = { type: "function_call", call_id: "c1", name: "shell", arguments: "{}" };
+    const out = { type: "function_call_output", call_id: "c1", output: "1" };
+    const next = await ask(socks, "k", { model: "m", input: [u("c"), call, out] });
+    expect(next).toMatchObject({ socket: three[1]!.socket, previous: `resp_${three[1]!.socket}_1`, sent: 1 });
+    expect(b.opened()).toBe(3);
+    expect(socks.stats).toEqual({ whole: 4, continued: 1, fallback: 0 });
+  } finally { b.stop(); }
 });
