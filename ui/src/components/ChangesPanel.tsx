@@ -157,7 +157,7 @@ export function ChangesPanel({ session }: { session: Session }) {
               </span>
               <button
                 data-testid="revert-all"
-                onClick={() => ask("Revert everything the session changed?", { turn: firstTurn })}
+                onClick={() => ask("Revert all file changes from this session?", { turn: firstTurn })}
                 className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-ui hover:bg-hover"
               >
                 <RotateCcw className="size-3.5" /> Revert all
@@ -202,10 +202,10 @@ export function ChangesPanel({ session }: { session: Session }) {
                     {!gone && !t.elsewhere && !t.unavailable && <button
                       data-testid="rewind-turn"
                       onClick={(e) => { e.preventDefault(); ask("Rewind files to before this turn?", { turn: t.turn }); }}
-                      className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg"
+                      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg"
                       title="Put files back as they were before this turn"
                     >
-                      <RotateCcw className="size-3.5" /> Rewind
+                      <RotateCcw className="size-3.5" /> Rewind files
                     </button>}
                   </summary>
                   <div className="border-t border-line p-3">
@@ -229,6 +229,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                 : pending && pending.preview.files.length + (includeOutside ? pending.preview.skipped.length : 0) === 0
                 ? "Nothing to restore: the files already match."
                 : "These files go back as they were. An undo point is saved first."}
+              {" This does not rewind chat history for this session or its child sessions."}
             </AlertDialog.Description>
             {pending && (
               <ul className="mt-3 max-h-56 overflow-y-auto rounded-lg bg-code p-2 font-mono text-caption" data-testid="rewind-list">
@@ -261,7 +262,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                 onClick={() => pending && confirm(pending)}
                 className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90"
               >
-                Restore
+                Restore files
               </button>
             </div>
           </AlertDialog.Popup>

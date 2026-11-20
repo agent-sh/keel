@@ -83,12 +83,15 @@ test("checkpoints and rewind", async ({ page, request }) => {
 
   // Rewind to before turn 2.
   await panel.getByTestId("tab-turns").click();
-  await panel.getByTestId("turn-checkpoint").first().getByTestId("rewind-turn").click();
-  await page.getByTestId("rewind-go").click();
+  await panel.getByTestId("turn-checkpoint").first().getByRole("button", { name: "Rewind files", exact: true }).click();
+  const confirm = page.getByTestId("rewind-confirm");
+  await expect(confirm).toHaveAccessibleDescription(/This does not rewind chat history for this session or its child sessions\./);
+  await confirm.getByRole("button", { name: "Restore files", exact: true }).click();
   // a.txt loses turn 2's line; b.txt (reverted above, there before turn 2) comes back.
   await expect(panel.getByTestId("rewind-done")).toContainText("Restored 3 files, kept 1");
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\n");
   expect(existsSync(join(ws, "b.txt"))).toBe(true);
+  await expect(page.getByTestId("turn-end")).toHaveCount(2);
 
   // Rewind to before turn 1: the owner's keep.txt is kept by default, and
   // long.txt, which the owner edited elsewhere since, loses only the turn's
@@ -96,7 +99,6 @@ test("checkpoints and rewind", async ({ page, request }) => {
   const original = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
   writeFileSync(join(ws, "long.txt"), readFileSync(join(ws, "long.txt"), "utf8").replace("line 15\n", "owner 15\n"));
   await panel.getByTestId("turn-checkpoint").last().getByTestId("rewind-turn").click();
-  const confirm = page.getByTestId("rewind-confirm");
   await expect(confirm).toContainText("keep.txt");
   await expect(confirm.getByTestId("rewind-list")).toContainText("the turn's change taken back, the later edit kept");
   await expect(page.getByTestId("include-outside")).not.toBeChecked();
