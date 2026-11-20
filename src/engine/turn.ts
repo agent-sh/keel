@@ -10,7 +10,7 @@ import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
 import { lineage } from "../core/tree.ts";
-import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage } from "../core/types.ts";
+import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
@@ -109,32 +109,40 @@ export function toMessages(events: StoredEvent[]): Message[] {
     if (last && last.role === m.role) (last.content as any[]).push(...m.content);
     else merged.push({ role: m.role, content: [...m.content] } as Message);
   }
-  // Results must lead the user message that follows tool_use.
+  // Results must lead the user message immediately after their calls. A late
+  // result stays in the transcript: moving it back rewrites the cached prefix,
+  // and replaying its output as user text loses the untrusted tool-result role.
+  const projected: Message[] = [];
+  const interrupted = (id: string): ToolResultBlock => ({
+    type: "tool_result", tool_use_id: id, content: "Interrupted by the user before this tool ran.", is_error: true,
+  });
+  const pending = new Map<string, ToolResultBlock | undefined>();
   for (const m of merged) {
-    if (m.role === "user") (m.content as any[]).sort((a, b) => Number(b.type === "tool_result") - Number(a.type === "tool_result"));
-  }
-  // A turn cut mid-tool leaves tool_use without results: close them.
-  for (let i = 0; i < merged.length; i++) {
-    const m = merged[i]!;
-    if (m.role !== "assistant") continue;
-    const uses = m.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
-    if (!uses.length) continue;
-    const next = merged[i + 1];
-    // Results stored as each call settled come back in call order.
-    if (next?.role === "user") {
-      const order = new Map(uses.map((u, k) => [u.id, k]));
-      const rank = (b: any) => (b.type === "tool_result" ? (order.get(b.tool_use_id) ?? uses.length) : uses.length + 1);
-      (next.content as any[]).sort((a, b) => rank(a) - rank(b));
+    if (m.role === "assistant") {
+      for (const b of m.content) if (b.type === "tool_use") pending.set(b.id, undefined);
+      const last = projected.at(-1);
+      if (last?.role === "assistant") last.content.push(...m.content); // an orphan-only user message was omitted
+      else projected.push(m);
+      continue;
     }
-    const have = new Set(next?.role === "user" ? next.content.filter((b) => b.type === "tool_result").map((b: any) => b.tool_use_id) : []);
-    const missing: ToolResultBlock[] = uses.filter((u) => !have.has(u.id)).map((u) => ({
-      type: "tool_result", tool_use_id: u.id, content: "Interrupted by the user before this tool ran.", is_error: true,
-    }));
-    if (!missing.length) continue;
-    if (next?.role === "user") (next.content as any[]).unshift(...missing);
-    else merged.splice(i + 1, 0, { role: "user", content: missing });
+    const rest: UserBlock[] = [];
+    for (const b of m.content) {
+      if (b.type !== "tool_result") rest.push(b);
+      else if (pending.has(b.tool_use_id) && !pending.get(b.tool_use_id)) pending.set(b.tool_use_id, b); // keep the first reply
+    }
+    // Keep missing results first, then actual results in call order, just as
+    // before. An interrupted round already sent to the provider keeps its bytes.
+    const missing: ToolResultBlock[] = [], paired: ToolResultBlock[] = [];
+    for (const [id, r] of pending) {
+      if (r) paired.push(r);
+      else missing.push(interrupted(id));
+    }
+    const content = [...missing, ...paired, ...rest];
+    if (content.length) projected.push({ role: "user", content });
+    pending.clear();
   }
-  return merged;
+  if (pending.size) projected.push({ role: "user", content: Array.from(pending.keys(), interrupted) });
+  return projected;
 }
 
 // A feature may hold back or replace a file's text (a repository's changed

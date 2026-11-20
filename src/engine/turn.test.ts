@@ -1,7 +1,7 @@
 // Pure logic the e2e cannot see: the wire bytes of a branch, and the tree.
 import { expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
-import type { StoredEvent } from "../core/types.ts";
+import type { Message, StoredEvent } from "../core/types.ts";
 import { RESTART_CUT, stalledContinuations, toMessages } from "./turn.ts";
 import { keptMessages } from "./compact.ts";
 
@@ -28,6 +28,54 @@ test("toMessages is a pure function of the branch", () => {
   // the steer lands after the tool results in the same user message
   const m = toMessages(line);
   expect(m.at(-1)!.content.map((c: any) => c.type)).toEqual(["tool_result", "text"]);
+});
+
+test("tool replay keeps paired results and omits late, unrelated and duplicate results", () => {
+  const call = (id: string) => ({ type: "tool_use" as const, id, name: "Read", input: { id } });
+  const result = (tool_use_id: string, content: string) => ({ type: "tool_result" as const, tool_use_id, content });
+  const text = (text: string) => ({ type: "text" as const, text });
+  const record = (id: string, parent: string, ...results: ReturnType<typeof result>[]) => ev(id, parent, "tool_result", { results });
+  const one = result("one", "first output"), two = result("two", "second output");
+  const received = result("received", "completed in the same batch");
+  const current = result("current", "keep the first reply");
+  const late = result("waiting", "the resumed call's late output");
+  const unrelated = result("unknown", "no call in this context");
+  const image = { type: "image" as const, media_type: "image/png", data: "AAAA" };
+  const prefix = [
+    ev("p1", null, "user", { text: "start" }),
+    ev("p2", "p1", "assistant", { blocks: [call("one"), call("two")] }),
+    record("p3", "p2", two), record("p4", "p3", one),
+    ev("p5", "p4", "user", { text: "steer", images: [image] }),
+  ];
+  const prefixMessages: Message[] = [
+    { role: "user", content: [text("start")] },
+    { role: "assistant", content: [call("one"), call("two")] },
+    { role: "user", content: [one, two, image, text("steer")] },
+  ];
+  const line = [...prefix,
+    ev("p6", "p5", "assistant", { blocks: [call("received"), call("waiting")] }),
+    record("p7", "p6", received),
+    ev("p8", "p7", "assistant", { blocks: [call("current")] }),
+    record("p9", "p8", current, late, unrelated, result("current", "discard this duplicate")),
+    ev("p10", "p9", "assistant", { blocks: [text("before")] }),
+    record("p11", "p10", unrelated),
+    ev("p12", "p11", "assistant", { blocks: [text("after")] }),
+  ];
+  const stored = JSON.stringify(line);
+  expect(JSON.stringify(toMessages(prefix))).toBe(JSON.stringify(prefixMessages));
+  expect(JSON.stringify(toMessages(line))).toBe(JSON.stringify([...prefixMessages,
+    { role: "assistant", content: [call("received"), call("waiting")] },
+    { role: "user", content: [{ ...result("waiting", "Interrupted by the user before this tool ran."), is_error: true }, received] },
+    { role: "assistant", content: [call("current")] },
+    { role: "user", content: [current] },
+    { role: "assistant", content: [text("before"), text("after")] },
+  ]));
+  const clear = ev("clear", "p6", "compaction", { mode: "clear" });
+  const next = ev("next", "orphan", "user", { text: "next" });
+  expect(toMessages([...line.slice(0, 6), clear, record("orphan", "clear", late), next])).toEqual([
+    { role: "user", content: [text("next")] },
+  ]);
+  expect(JSON.stringify(line)).toBe(stored);
 });
 
 test("a declined reply is not replayed; a summary replaces what came before", () => {
