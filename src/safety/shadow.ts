@@ -113,7 +113,8 @@ export class Shadow {
     this.skipped = big;
     if (big.length) {
       this.writeExcludes(big);
-      await this.git(["rm", "-q", "--cached", "--ignore-unmatch", "--", ...big], { index, ok: [1] });
+      // Drop a grown file even if its version in the private index differs.
+      await this.git(["--literal-pathspecs", "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--", ...big], { index });
     }
     if (total > SNAP_CAP) {
       this.mode = "written";

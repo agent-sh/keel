@@ -2,7 +2,7 @@
 // e2e cannot stage (a git step that fails, retention, an edit landing between
 // two tool calls of one turn, a restore cut before its result was recorded).
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `ckpt-${process.pid}`);
@@ -153,12 +153,35 @@ test("a confirmed restore takes only what the preview showed, at the version it 
 });
 
 test("a file too large to capture is kept, not removed", async () => {
-  const t = setup({ "notes.txt": "x".repeat(200), "small.txt": "s\n" });
-  const t1 = await t.turn(() => { t.write("notes.txt", "short"); t.write("small.txt", "t\n"); });
-  const p = await t.c.rewind(t.s, { turn: t1, preview: true });
+  const t = setup({ "notes.txt": "x".repeat(200), "small.txt": "s\n", "deleted.txt": "old\n" });
+  const deleted = join(t.ws, "deleted.txt"), created = join(t.ws, "created.txt");
+  const t1 = await t.turn(() => {
+    t.write("notes.txt", "short"); t.write("small.txt", "t\n");
+    rmSync(deleted); t.write("created.txt", "new\n");
+  });
+  const opts = { turn: t1, includeOutside: true };
+  const p = await t.c.rewind(t.s, { ...opts, preview: true });
   expect(p.uncaptured).toEqual(["notes.txt"]);
-  expect(p.files).toEqual(["small.txt"]);
-  await t.c.rewind(t.s, { turn: t1 });
+  expect(p.files.sort()).toEqual(["created.txt", "deleted.txt", "small.txt"]);
+  // Recreated since the preview, but still missing from Git's tree.
+  t.write("deleted.txt", "outside\n");
+  truncateSync(deleted, 1024 * 1024);
+  // A captured addition can grow beyond the cap and disappear from both trees.
+  truncateSync(created, 1024 * 1024);
+  await expect(t.c.rewind(t.s, { ...opts, confirm: { paths: p.files, versions: p.versions } }))
+    .rejects.toMatchObject({ status: 409, message: expect.stringContaining("changed since the preview:") });
+  expect(t.read("small.txt")).toBe("t\n");
+
+  const fresh = await t.c.rewind(t.s, { ...opts, preview: true });
+  expect(fresh.files).toEqual(["small.txt"]);
+  expect(fresh.uncaptured.sort()).toEqual(["created.txt", "deleted.txt", "notes.txt"]);
+  expect(fresh.removes).toEqual([]);
+  expect(Object.keys(fresh.versions)).toEqual(["small.txt"]);
+  const r = await t.c.rewind(t.s, opts);
+  expect(r.files).toEqual(["small.txt"]);
+  expect(r.uncaptured.sort()).toEqual(["created.txt", "deleted.txt", "notes.txt"]);
+  expect(statSync(created).size).toBe(1024 * 1024);
+  expect(statSync(deleted).size).toBe(1024 * 1024);
   expect(t.read("notes.txt")).toBe("short");
   expect(t.read("small.txt")).toBe("s\n");
 });

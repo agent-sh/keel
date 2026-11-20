@@ -91,10 +91,14 @@ export function ChangesPanel({ session }: { session: Session }) {
     load();
   };
   // What the owner confirms is what the preview showed, at the versions it showed.
-  const confirm = (p: Pending) => run({
-    ...p.body, include_outside: includeOutside,
-    confirm: { paths: [...p.preview.files, ...p.preview.merged, ...(includeOutside ? p.preview.skipped : [])], versions: p.preview.versions },
-  });
+  const restorePaths = pending ? [...pending.preview.files, ...pending.preview.merged, ...(includeOutside ? pending.preview.skipped : [])] : [];
+  const confirm = () => {
+    if (!pending || !restorePaths.length) return;
+    return run({
+      ...pending.body, include_outside: includeOutside,
+      confirm: { paths: restorePaths, versions: pending.preview.versions },
+    });
+  };
   const fileDiff = (q: string) => async (path: string) => (await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?${q}&path=${encodeURIComponent(path)}`)).diff;
 
   const firstTurn = here[0]?.turn;
@@ -130,7 +134,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                   {done!.failed.length ? `Restored ${done!.files.length} of ${done!.files.length + done!.failed.length} files` : `Restored ${plural(done!.files.length, "file")}`}
                   {done!.merged.length ? ` (in ${done!.merged.length} only the session's change, around later edits)` : ""}
                   {done!.skipped.length ? `, kept ${done!.skipped.length} changed outside the session` : ""}
-                  {done!.uncaptured.length ? `, kept ${done!.uncaptured.length} too large to have been captured` : ""}.
+                  {done!.uncaptured.length ? `, kept ${done!.uncaptured.length} over the checkpoint size limit` : ""}.
                   {done!.failed.length > 0 && <span className="block text-caption" data-testid="rewind-failed">Not restored: {done!.failed.map((f) => `${f.path} (${f.error})`).join("; ")}</span>}
                 </span>
                 {done!.undo && (
@@ -226,8 +230,8 @@ export function ChangesPanel({ session }: { session: Session }) {
             <AlertDialog.Description className="mt-1 text-ui text-muted">
               {pending?.preview.incomplete
                 ? "The restore this undoes was cut before its result was recorded, so what it changed is not known. Nothing goes back unless you pick it below."
-                : pending && pending.preview.files.length + (includeOutside ? pending.preview.skipped.length : 0) === 0
-                ? "Nothing to restore: the files already match."
+                : !restorePaths.length
+                ? "No files selected to restore."
                 : "These files go back as they were. An undo point is saved first."}
               {" This does not rewind chat history for this session or its child sessions."}
             </AlertDialog.Description>
@@ -241,7 +245,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                 {pending.preview.uncaptured.map((f) => (
                   <li key={f} className="flex items-center gap-2 text-faint" data-testid="rewind-uncaptured">
                     <FileDiff className="size-3.5 shrink-0" /><span className="min-w-0 truncate">{f}</span>
-                    <span className="ml-auto shrink-0 font-sans text-micro">kept: too large to have been captured</span>
+                    <span className="ml-auto shrink-0 font-sans text-micro">kept: over the checkpoint size limit</span>
                   </li>
                 ))}
               </ul>
@@ -259,8 +263,9 @@ export function ChangesPanel({ session }: { session: Session }) {
               <AlertDialog.Close className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover">Cancel</AlertDialog.Close>
               <button
                 data-testid="rewind-go"
-                onClick={() => pending && confirm(pending)}
-                className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90"
+                onClick={confirm}
+                disabled={!restorePaths.length}
+                className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg enabled:hover:opacity-90 disabled:opacity-50"
               >
                 Restore files
               </button>

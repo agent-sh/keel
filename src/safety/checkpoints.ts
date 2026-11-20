@@ -533,16 +533,17 @@ export class Checkpoints {
       outsideFrom = opts.turn;
     }
     const now = await this.now(s);
-    let files = await sh.changed(target, now.tree, scopePaths ?? undefined);
-    if (opts.paths) {
-      const want = new Set(rel(s.workspace, opts.paths.map((p) => (isAbsolute(p) ? p : join(s.workspace, p)))));
-      files = files.filter((f) => want.has(f));
-    }
-    if (undoOf) files = files.filter((f) => undoOf!.touched.has(f));
+    const want = opts.paths && new Set(rel(s.workspace, opts.paths.map((p) => (isAbsolute(p) ? p : join(s.workspace, p)))));
+    const selected = (f: string) => (!want || want.has(f)) && (!undoOf || undoOf.touched.has(f));
+    // A capped file can be missing from both trees, so the tree diff alone
+    // cannot tell us which current files have to be kept.
+    const skippedNow = new Set((now.skipped ?? []).filter((f) => (!scopePaths || scopePaths.includes(f)) && selected(f)));
+    let files = (await sh.changed(target, now.tree, scopePaths ?? undefined)).filter((f) => selected(f) && !skippedNow.has(f));
     const inTarget = await sh.blobs(target, files);
-    // A file the snapshot left out (over the size cap) was there, not absent: never removed.
-    const uncaptured = files.filter((f) => !inTarget.get(f) && skippedAt.has(f));
-    files = files.filter((f) => !uncaptured.includes(f));
+    // The target must say what to restore, and the undo point must capture
+    // what we would overwrite. A file left out by the cap is not absent.
+    const uncaptured = [...skippedNow, ...files.filter((f) => !inTarget.get(f) && skippedAt.has(f))];
+    files = files.filter((f) => inTarget.get(f) || !skippedAt.has(f));
     const outsideSet: Map<string, Checkpoint | null> = outsideFrom !== null ? await this.outside(s, outsideFrom, now.tree)
       : new Map((undoOf ? await sh.changed(undoOf.after.tree, now.tree, files.length ? files : undefined) : files).map((f) => [f, null]));
     const outside = files.filter((f) => outsideSet.has(f));
@@ -568,7 +569,10 @@ export class Checkpoints {
     if (opts.confirm) {
       const { paths, versions: expected } = opts.confirm;
       const seen = new Set(paths);
-      const stale = files.filter((f) => seen.has(f) && versions[f] !== expected[f]);
+      const stale = [
+        ...files.filter((f) => seen.has(f) && versions[f] !== expected[f]),
+        ...[...skippedNow].filter((f) => seen.has(f)),
+      ];
       if (stale.length) throw new Bad(`changed since the preview: ${stale.slice(0, 10).join(", ")}; look at it again`, 409);
       restore = restore.filter((f) => seen.has(f));
       for (const f of [...merges.keys()]) if (!seen.has(f)) merges.delete(f);
