@@ -2,12 +2,26 @@
 // work away while the engine lets running turns finish and parks the rest,
 // and a restart that starts the same binary again. Continuing parked and
 // crash-cut turns is the engine's (Engine.recover, from main.ts).
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Deps } from "../server/app.ts";
 import { addAdmission } from "../server/admission.ts";
 
 const LOCK = "daemon.lock";
+
+// The daemon a service manager runs (KEEL_SUPERVISED) is the machine's own,
+// whatever state folder its unit names: it leaves a note in the user's runtime
+// folder so a bare client command finds it without --url or --state-dir.
+export const serviceNote = () =>
+  join(process.env.XDG_RUNTIME_DIR || join(homedir(), ".cache"), "keel-bun", "service.json");
+
+export function servicedDaemon(): { pid: number; url: string; state_dir: string } | undefined {
+  try {
+    const n = JSON.parse(readFileSync(serviceNote(), "utf8"));
+    return n.pid && n.url && n.state_dir && alive(n.pid) ? n : undefined;
+  } catch { return undefined; }
+}
 
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as any).code === "EPERM"; }
@@ -65,6 +79,15 @@ export function recordUrl(stateDir: string, url: string, client = false) {
     const held = JSON.parse(readFileSync(path, "utf8"));
     if (held.pid !== process.pid) return;
     writeFileSync(path, JSON.stringify({ ...held, url, ...(client ? { client: true } : {}) }), { mode: 0o600 });
+  } catch {}
+  if (client || !process.env.KEEL_SUPERVISED) return;
+  const note = serviceNote();
+  try {
+    mkdirSync(dirname(note), { recursive: true, mode: 0o700 });
+    writeFileSync(note, JSON.stringify({ pid: process.pid, url, state_dir: stateDir }), { mode: 0o600 });
+    process.on("exit", () => {
+      try { if (JSON.parse(readFileSync(note, "utf8")).pid === process.pid) rmSync(note); } catch {}
+    });
   } catch {}
 }
 

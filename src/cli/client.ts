@@ -4,7 +4,7 @@
 import { fstatSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { lockedDaemon } from "../admin/daemon.ts";
+import { lockedDaemon, servicedDaemon } from "../admin/daemon.ts";
 import { defaultStateDir } from "../core/paths.ts";
 
 export const EXIT = { ok: 0, owner: 2, error: 3, timeout: 124, sigint: 130, sigterm: 143 } as const;
@@ -21,10 +21,10 @@ export const clean = (s: unknown) =>
 // One line: newlines shown as \n.
 export const line = (s: unknown) => clean(String(s ?? "").replace(/\r?\n/g, "\\n").replace(/\t/g, " "));
 
-export type Found = { url: string; from: "flag" | "env" | "lock" | "default"; client?: boolean; stateDir: string };
+export type Found = { url: string; from: "flag" | "env" | "lock" | "service" | "default"; client?: boolean; stateDir: string };
 
 // --url, then KEEL_URL, then the address the daemon of the state folder
-// recorded in its lock, then the default bind.
+// recorded in its lock, then the service's daemon, then the default bind.
 export function findDaemon(v: { url?: string; "state-dir"?: string }): Found {
   const stateDir = v["state-dir"] ? join(v["state-dir"]) : defaultStateDir();
   const trim = (u: string) => u.replace(/\/+$/, "");
@@ -32,6 +32,9 @@ export function findDaemon(v: { url?: string; "state-dir"?: string }): Found {
   if (process.env.KEEL_URL) return { url: trim(process.env.KEEL_URL), from: "env", stateDir };
   const held = lockedDaemon(stateDir);
   if (held?.url) return { url: trim(held.url), from: "lock", client: held.client, stateDir };
+  // No daemon in the default folder: the one the service manager runs, if any.
+  const svc = v["state-dir"] ? undefined : servicedDaemon();
+  if (svc) return { url: trim(svc.url), from: "service", stateDir: svc.state_dir };
   return { url: DEFAULT_URL, from: "default", stateDir };
 }
 
