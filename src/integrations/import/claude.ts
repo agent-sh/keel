@@ -7,7 +7,7 @@ import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Builder, clip, resultText, type Found, type Read } from "./types.ts";
-import { damageNotes, headTail, readLines, scanFor } from "./files.ts";
+import { damageNotes, headTail, readLines, scanBack, scanFor } from "./files.ts";
 
 export const claudeRoot = () => process.env.KEEL_IMPORT_CLAUDE_DIR ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
 
@@ -96,9 +96,10 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     if (hit) { first = hit.text; cwd ??= hit.r.cwd; sid ??= hit.r.sessionId; }
   }
   if (!first && !last) return null; // no conversation in it
-  // The head of a long transcript can be all system context before the first
-  // reply: then the first reply in the file names the model.
-  model ??= head.map(modelOf).find(Boolean) ?? scanFor(path, modelOf);
+  // The tail of a long transcript can be all tool output: then the last reply
+  // anywhere in the file names the model (the first one can be from before a
+  // model switch).
+  model ??= scanBack(path, modelOf);
   perm ??= head.map(permOf).findLast(Boolean);
   const sub = basename(dirname(path)) === "subagents";
   return {

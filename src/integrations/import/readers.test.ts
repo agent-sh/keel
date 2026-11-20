@@ -63,6 +63,10 @@ test("a Claude Code import names the model of the latest reply, also past a long
   // Only the first reply, beyond the head the listing samples: still named.
   write([...recs.slice(0, 3), { ...base, type: "user", uuid: "u3", parentUuid: "a1", message: { role: "user", content: "tail " + pad + pad } }]);
   expect(claudeFound(p, 0, 0)?.model).toBe("claude-opus-5-5");
+  // A switch, then a tail of tool output longer than the sample: the later model, not the first.
+  const out = (uuid: string, parent: string) => ({ ...base, type: "user", uuid, parentUuid: parent, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: pad + pad }] } });
+  write([...recs.slice(0, 5), out("o1", "a2"), out("o2", "o1"), out("o3", "o2")]);
+  expect(claudeFound(p, 0, 0)?.model).toBe("global.anthropic.claude-sonnet-5-5");
 });
 
 test("a Rust Keel session whose head is gone is not read as all its branches", async () => {

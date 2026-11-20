@@ -31,6 +31,10 @@ CREATE INDEX IF NOT EXISTS import_links_src ON import_links(harness, source_id);
 CREATE TABLE IF NOT EXISTS import_live (session_id TEXT PRIMARY KEY, drive_id TEXT NOT NULL, since_ms INTEGER NOT NULL);
 `;
 
+// The version of what the readers record for a file: a row an older reader
+// wrote is read again, so a field added later (such as the model) fills in.
+const READER_V = 2;
+
 export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null };
 
 // What the copy holds of its source, so an update can tell the source went on
@@ -74,6 +78,7 @@ export class Imports {
   constructor(private store: Store) {
     store.migrate(SCHEMA);
     if (!store.columnExists("import_links", "digest")) store.db.exec("ALTER TABLE import_links ADD COLUMN digest TEXT");
+    if (!store.columnExists("import_index", "v")) store.db.exec("ALTER TABLE import_index ADD COLUMN v INTEGER NOT NULL DEFAULT 0");
   }
 
   // Walk the file stores; read only new or changed files. Yields to the event
@@ -82,9 +87,9 @@ export class Imports {
     if (this.building) return this.building;
     this.building = (async () => {
       const db = this.store.db;
-      const known = new Map(db.query<{ path: string; size: number; mtime: number }, []>("SELECT path, size, mtime FROM import_index").all().map((r) => [r.path, r]));
+      const known = new Map(db.query<{ path: string; size: number; mtime: number; v: number }, []>("SELECT path, size, mtime, v FROM import_index").all().map((r) => [r.path, r]));
       const seen = new Set<string>();
-      const put = db.query("INSERT INTO import_index (path, harness, size, mtime, found) VALUES (?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, found = excluded.found");
+      const put = this.put();
       let n = 0;
       let walked = 0;
       for (const [harness, files, found] of [["claude", claudeFiles(), claudeFound], ["codex", codexFiles(), codexFound]] as const) {
@@ -94,7 +99,7 @@ export class Imports {
           seen.add(f.path);
           const k = known.get(f.path);
           const mtime = Math.round(f.mtime);
-          if (k && k.size === f.size && k.mtime === mtime) continue;
+          if (k && k.size === f.size && k.mtime === mtime && k.v === READER_V) continue;
           let row: Found | null = null;
           try { row = found(f.path, f.size, f.mtime); } catch {}
           put.run(f.path, harness, f.size, mtime, row ? JSON.stringify(row) : null);
@@ -115,6 +120,27 @@ export class Imports {
       this.builtAt = Date.now();
     })().finally(() => { this.building = null; });
     return this.building;
+  }
+
+  private put() {
+    return this.store.db.query<unknown, [string, string, number, number, string | null]>(
+      `INSERT INTO import_index (path, harness, size, mtime, found, v) VALUES (?, ?, ?, ?, ?, ${READER_V}) ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, found = excluded.found, v = excluded.v`,
+    );
+  }
+
+  // One file's row as it is now: a file that changed since the last walk (a
+  // session still running) or a row an older reader wrote is read again, so an
+  // import takes the model and prompts the file holds today.
+  private current(path: string, harness: "claude" | "codex"): Found | undefined {
+    let st;
+    try { st = statSync(path); } catch { return undefined; }
+    const mtime = Math.round(st.mtimeMs);
+    const k = this.store.db.query<{ size: number; mtime: number; v: number; found: string | null }, [string]>("SELECT size, mtime, v, found FROM import_index WHERE path = ?").get(path);
+    if (k && k.size === st.size && k.mtime === mtime && k.v === READER_V) return k.found ? JSON.parse(k.found) : undefined;
+    let row: Found | null = null;
+    try { row = (harness === "claude" ? claudeFound : codexFound)(path, st.size, st.mtimeMs); } catch {}
+    this.put().run(path, harness, st.size, mtime, row ? JSON.stringify(row) : null);
+    return row ?? undefined;
   }
 
   invalidate() {
@@ -208,7 +234,8 @@ export class Imports {
   }
 
   find(harness: Harness, id: string): Found | undefined {
-    return this.all(harness).find((f) => f.id === id);
+    const f = this.all(harness).find((f) => f.id === id);
+    return f && (f.harness === "claude" || f.harness === "codex") ? this.current(f.path, f.harness) ?? f : f;
   }
 
   // A transcript named by its path (the drive list knows sessions by their file).
@@ -216,7 +243,7 @@ export class Imports {
   // indexed or not: a file of another harness is not read as this one.
   byPath(path: string, harness?: Harness): Found | undefined {
     const hit = this.store.db.query<{ harness: string; found: string | null }, [string]>("SELECT harness, found FROM import_index WHERE path = ?").get(path);
-    if (hit?.found) return !harness || hit.harness === harness ? JSON.parse(hit.found) : undefined;
+    if (hit?.found) return !harness || hit.harness === harness ? this.current(path, hit.harness as "claude" | "codex") : undefined;
     if (harness === "agy" || path.endsWith("/.system_generated/logs/transcript_full.jsonl")) return this.all("agy").find((f) => f.path === path);
     let st;
     try { st = statSync(path); } catch { return undefined; }

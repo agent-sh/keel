@@ -32,6 +32,7 @@ function db(path = hermesDb()): Database | null {
   return open.db;
 }
 
+const PROMPT_CHARS = 2000;
 const PROMPT = "role = 'user' AND active = 1 AND _compressed_summary = 0 AND (display_kind IS NULL OR display_kind = 'steer')";
 
 // Rows already read, by session and the activity time they were read at: a
@@ -52,8 +53,11 @@ export function hermesSessions(path = hermesDb(), budgetMs = Infinity): Found[] 
   const sessions = d.query<any, []>(
     "SELECT id, source, cwd, title, model, archived, parent_session_id AS parent, COALESCE(last_activity_at, ended_at, started_at) AS at FROM sessions WHERE hidden = 0",
   ).all();
-  const first = d.query<{ content: string | null }, [string]>(`SELECT content FROM messages WHERE session_id = ? AND ${PROMPT} ORDER BY id LIMIT 1`);
-  const last = d.query<{ content: string | null }, [string]>(`SELECT content FROM messages WHERE session_id = ? AND ${PROMPT} ORDER BY id DESC LIMIT 1`);
+  // Only the start of each prompt: a listing shows a clipped line, and a clip
+  // of the whole text would keep the whole text alive (a substring holds its
+  // source), a long store's every first and last prompt in memory.
+  const first = d.query<{ content: string | null }, [string]>(`SELECT substr(content, 1, ${PROMPT_CHARS}) AS content FROM messages WHERE session_id = ? AND ${PROMPT} ORDER BY id LIMIT 1`);
+  const last = d.query<{ content: string | null }, [string]>(`SELECT substr(content, 1, ${PROMPT_CHARS}) AS content FROM messages WHERE session_id = ? AND ${PROMPT} ORDER BY id DESC LIMIT 1`);
   const out: Found[] = [];
   const live = new Set<string>();
   for (const r of sessions) {

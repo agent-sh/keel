@@ -67,6 +67,41 @@ export function scanFor<T>(path: string, match: (r: any) => T | undefined): T | 
   }
 }
 
+// The last record that matches, read from the end a chunk at a time (a long
+// transcript's latest reply is near its end).
+export function scanBack<T>(path: string, match: (r: any) => T | undefined): T | undefined {
+  let fd: number;
+  try { fd = openSync(path, "r"); } catch { return undefined; }
+  try {
+    const buf = Buffer.alloc(1 << 20);
+    let at = fstatSync(fd).size;
+    let rest = Buffer.alloc(0);
+    const test = (l: Buffer) => {
+      if (!l.length) return undefined;
+      try { return match(JSON.parse(l.toString("utf8"))); } catch { return undefined; }
+    };
+    while (at > 0) {
+      const len = Math.min(buf.length, at);
+      at -= len;
+      readSync(fd, buf, 0, len, at);
+      const chunk = Buffer.concat([buf.subarray(0, len), rest]);
+      // Whole lines only: the part before the first newline joins the next chunk back.
+      let end = chunk.length;
+      for (;;) {
+        const i = end > 0 ? chunk.lastIndexOf(10, end - 1) : -1;
+        if (i < 0) break;
+        const hit = test(chunk.subarray(i + 1, end));
+        if (hit !== undefined) return hit;
+        end = i;
+      }
+      rest = Buffer.from(chunk.subarray(0, end));
+    }
+    return test(rest);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // The whole records in the first and last `n` bytes of a file (a cut line at
 // either edge is dropped).
 export function headTail(path: string, n: number): { head: any[]; tail: any[] } {
