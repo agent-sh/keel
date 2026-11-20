@@ -674,9 +674,17 @@ export function onTurnEnd(sessionId: string, reason: string) {
     // A blocking spawn returns the park in its tool result. Reviewers and
     // other silent agents stay quiet. Recovery does not replay this notice.
     if (a.background && !isSilent(a.id)) {
-      deliver(a.parent_id, `[harness] Agent ${a.id} parked on ${waitingOn}. It has not finished; its report will arrive after it finishes.`, {
-        kind: "harness", agent_id: a.id, status: "waiting",
+      const park = (on: string) => ({
+        text: `[harness] Agent ${a.id} parked on ${on}. It has not finished; its report will arrive after it finishes.`,
+        meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on },
       });
+      const input = park(waitingOn);
+      deliver(a.parent_id, input.text, input.meta, { refresh: () => {
+        const child = D().store.session(sessionId);
+        if (!child || child.archived || get(a.id)?.status !== "waiting" || engine.isRunning(sessionId)) return;
+        const on = waits.describeActive(sessionId);
+        if (on) return park(on);
+      } });
     }
     return;
   }

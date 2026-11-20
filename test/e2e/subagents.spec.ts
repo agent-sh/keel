@@ -123,22 +123,35 @@ test("a parked subagent notifies its busy parent before the final report", async
   const { session } = await (await request.post("/api/sessions", { data: { model: model!.id, title: "Parked subagent" } })).json();
   try {
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
-    const child = [{ name: "wait_for", input: { kind: "timer", seconds: 12, note: "child-only wait details" } }];
+    const child = (title: string, seconds: number) => ({
+      name: "spawn_agent",
+      input: { message: `${title}\nscript:calls ${JSON.stringify([{ name: "wait_for", input: { kind: "timer", seconds, note: "child-only wait details" } }])}`, isolation: "none" },
+    });
     const calls = [
-      { name: "spawn_agent", input: { message: `Timer helper\nscript:calls ${JSON.stringify(child)}`, isolation: "none" } },
-      { name: "wait_agent", input: { timeout_ms: 3000 } },
+      child("Timer helper", 15), child("Cancelled helper", 60),
+      // Its wake and the park notice share the parent's next input.
+      { name: "wait_for", input: { kind: "timer", seconds: 1, note: "parent timer" } },
+      { name: "wait_agent", input: { timeout_ms: 5000 } },
     ];
     const view = () => request.get(`/api/sessions/${session.id}`).then((r) => r.json());
-    const agent = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents[0];
+    const agents = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { id: string; session_id: string; title: string; status: string }[];
+    const waitIdOf = async (a: { session_id: string }) => {
+      const [{ id }] = (await (await request.get(`/api/sessions/${a.session_id}/background`)).json()).waits;
+      return id as string;
+    };
     await page.goto(`/s/${session.id}`);
     await page.getByTestId("composer").fill(`script:calls ${JSON.stringify(calls)}`);
     await page.getByTestId("composer").press("Enter");
-    await expect.poll(async () => (await agent())?.status).toBe("waiting");
-    const a = await agent();
-    const [{ id: waitId }] = (await (await request.get(`/api/sessions/${a.session_id}/background`)).json()).waits;
+    await expect.poll(async () => (await agents()).filter((a) => a.status === "waiting").length).toBe(2);
+    const kids = await agents();
+    const a = kids.find((a) => a.title === "Timer helper")!;
+    const cancelled = kids.find((a) => a.title === "Cancelled helper")!;
+    const waitId = await waitIdOf(a);
     expect((await view()).running).toBe(true);
+    expect((await request.delete(`/api/waits/${await waitIdOf(cancelled)}`)).ok()).toBe(true);
 
-    const note = page.getByTestId("harness-notice");
+    await expect(page.getByTestId("wake-notice")).toHaveCount(1);
+    const note = page.getByTestId("agent-park-notice");
     await expect(note).toHaveCount(1);
     await note.getByRole("button").click();
     await expect(note).toContainText(`Agent ${a.id} parked on timer wait ${waitId}`);
@@ -147,8 +160,10 @@ test("a parked subagent notifies its busy parent before the final report", async
 
     await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 20_000 });
     const { events } = await view();
-    const parked = events.filter((e: any) => e.kind === "user" && e.data.agent_id === a.id && e.data.status === "waiting");
+    const parked = events.filter((e: any) => e.kind === "user" && e.data.kind === "wake" && e.data.parts?.some((p: any) => p.agent_id === a.id && p.status === "waiting"));
     expect(parked).toHaveLength(1);
+    expect(parked[0].data.text).not.toContain(`Agent ${cancelled.id} parked`);
+    expect(parked[0].data.text).not.toContain("child-only wait details");
     const waited = events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results)
       .find((r: any) => String(r.content).includes('"timed_out":true'));
     expect(JSON.parse(waited.content).status[a.id]).toBe("waiting");

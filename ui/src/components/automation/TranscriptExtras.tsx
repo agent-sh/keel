@@ -147,7 +147,13 @@ export function InputNotice({ e }: { e: StoredEvent }) {
       </div>
     </Shell>
   );
-  if (reportCards || wakeCard) return <div className="flex flex-col gap-2">{reportCards}{wakeCard}</div>;
+  const parks = ((e.data.parts ?? [e.data]) as Record<string, any>[]).filter((p) => p.kind === "harness" && p.status === "waiting" && typeof p.waiting_on === "string");
+  const parkCards = parks.map((p) => (
+    <Shell key={p.agent_id} icon={Timer} label="Agent waiting" sub={p.agent_id} testid="agent-park-notice">
+      <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">Agent {p.agent_id} parked on {p.waiting_on}. It has not finished.</p>
+    </Shell>
+  ));
+  if (reportCards || wakeCard || parkCards.length) return <div className="flex flex-col gap-2">{reportCards}{wakeCard}{parkCards}</div>;
   if (kind === "loop") {
     return (
       <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice">

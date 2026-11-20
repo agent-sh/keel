@@ -49,7 +49,9 @@ export function cursor(before: string | null | undefined): { ts: number; id: str
 // never lands inside a running turn (between a tool call and its result): it
 // starts a turn when the session is idle and waits for the turn to end when it
 // is busy. Inputs waiting together arrive as one message.
-type Pending = { text: string; meta: Record<string, unknown>; onSent?: (e: StoredEvent) => void };
+type Input = { text: string; meta: Record<string, unknown> };
+type Delivery = { coalesceMs?: number; onSent?: (e: StoredEvent) => void; refresh?: () => Input | undefined };
+type Pending = Input & Omit<Delivery, "coalesceMs">;
 const pending = new Map<string, Pending[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -57,11 +59,11 @@ export function hasPending(sessionId: string) {
   return (pending.get(sessionId)?.length ?? 0) > 0;
 }
 
-export function deliver(sessionId: string, text: string, meta: Record<string, unknown>, opts: { coalesceMs?: number; onSent?: (e: StoredEvent) => void } = {}): boolean {
+export function deliver(sessionId: string, text: string, meta: Record<string, unknown>, opts: Delivery = {}): boolean {
   const s = D().store.session(sessionId);
   if (!s || s.archived) return false;
   const list = pending.get(sessionId) ?? [];
-  list.push({ text, meta, onSent: opts.onSent });
+  list.push({ text, meta, onSent: opts.onSent, refresh: opts.refresh });
   pending.set(sessionId, list);
   if (D().engine.isRunning(sessionId)) return true; // flushed by the turn-end hook
   if (opts.coalesceMs) {
@@ -94,11 +96,19 @@ export function flush(sessionId: string) {
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
   if (!s || s.archived) return;
-  const kinds = [...new Set(list.map((p) => p.meta.kind))];
-  const meta = list.length === 1 ? list[0]!.meta : { kind: kinds.length === 1 ? kinds[0] : "wake", parts: list.map((p) => p.meta) };
   try {
-    const r = D().engine.send(sessionId, list.map((p) => p.text).join("\n\n"), { meta });
-    if (r.event) for (const p of list) p.onSent?.(r.event);
+    // Live statuses can change while the recipient is busy. Recheck them
+    // before grouping the parts; a withdrawn status must not start a turn.
+    const current = list.flatMap((p) => {
+      if (!p.refresh) return [p];
+      const next = p.refresh();
+      return next ? [{ ...p, ...next }] : [];
+    });
+    if (!current.length) return;
+    const kinds = [...new Set(current.map((p) => p.meta.kind))];
+    const meta = current.length === 1 ? current[0]!.meta : { kind: kinds.length === 1 ? kinds[0] : "wake", parts: current.map((p) => p.meta) };
+    const r = D().engine.send(sessionId, current.map((p) => p.text).join("\n\n"), { meta });
+    if (r.event) for (const p of current) p.onSent?.(r.event);
   } catch (e) {
     capture(e, { at: "deliver", session: sessionId });
   }
