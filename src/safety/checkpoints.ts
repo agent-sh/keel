@@ -36,6 +36,7 @@ export type TurnSummary = { turn: number; prompt: string; created: number; files
 // around that edit (a clean three-way merge); conflicts: ones where the two overlap (kept as they are).
 export type RewindResult = {
   files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; merged: string[]; conflicts: string[];
+  blocked: { path: string; uncaptured: string }[];
   removes: string[]; uncaptured: string[]; versions: Record<string, string>; incomplete: boolean; undo: string | null; scope: "tree" | "written";
 };
 
@@ -452,13 +453,13 @@ export class Checkpoints {
   // A note for the model after files were put back: the conversation still
   // describes the files before, so it hears what changed (appended, so the
   // cached prefix stays).
-  private tell(s: Session, what: string, r: { files: string[]; removes: string[]; skipped: string[]; uncaptured: string[]; failed: { path: string }[] }) {
+  private tell(s: Session, what: string, r: RewindResult) {
     if (!r.files.length) return;
     const removed = new Set(r.removes);
     const list = (xs: string[]) => xs.slice(0, 30).join(", ") + (xs.length > 30 ? ` and ${xs.length - 30} more` : "");
     const back = r.files.filter((f) => !removed.has(f));
     const gone = r.files.filter((f) => removed.has(f));
-    const kept = [...r.skipped, ...r.uncaptured];
+    const kept = [...r.skipped, ...r.uncaptured, ...r.blocked.map((f) => f.path)];
     const text = [
       `[harness] The owner ${what}. The conversation above is unchanged; these files are not as it describes them now.`,
       back.length ? `Restored: ${list(back)}.` : "",
@@ -491,7 +492,7 @@ export class Checkpoints {
     const after = await this.now(s);
     this.save(s, { turn: undo.turn, at: "after", tree: after.tree, paths: after.paths, of_id: undo.id });
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { rewind: true } });
-    const r: RewindResult = { files: [o.path], failed: [], skipped: [], outside: [], merged: [], conflicts: [], removes: [], uncaptured: [], versions: {}, incomplete: false, undo: undo.id, scope: sh.mode };
+    const r: RewindResult = { files: [o.path], failed: [], skipped: [], outside: [], merged: [], conflicts: [], blocked: [], removes: [], uncaptured: [], versions: {}, incomplete: false, undo: undo.id, scope: sh.mode };
     this.tell(s, `took back one hunk of ${o.path}`, r);
     return r;
   }
@@ -537,8 +538,23 @@ export class Checkpoints {
     const selected = (f: string) => (!want || want.has(f)) && (!undoOf || undoOf.touched.has(f));
     // A capped file can be missing from both trees, so the tree diff alone
     // cannot tell us which current files have to be kept.
-    const skippedNow = new Set((now.skipped ?? []).filter((f) => (!scopePaths || scopePaths.includes(f)) && selected(f)));
-    let files = (await sh.changed(target, now.tree, scopePaths ?? undefined)).filter((f) => selected(f) && !skippedNow.has(f));
+    const capped = new Set(now.skipped ?? []);
+    const skippedNow = new Set([...capped].filter((f) => (!scopePaths || scopePaths.includes(f)) && selected(f)));
+    // Forced checkout can replace a directory or a file in the way of a
+    // directory. Use all capped paths, even outside a scoped restore.
+    const cappedBelow = new Map<string, string>();
+    for (const f of capped) for (const p of parents(f)) if (!cappedBelow.has(p)) cappedBelow.set(p, f);
+    const blocked: RewindResult["blocked"] = [];
+    let files = (await sh.changed(target, now.tree, scopePaths ?? undefined)).filter((f) => {
+      if (!selected(f)) return false;
+      if (!capped.size) return true;
+      if (capped.has(f)) { skippedNow.add(f); return false; }
+      const uncaptured = cappedBelow.get(f) ?? [...parents(f)].find((p) => capped.has(p));
+      if (!uncaptured) return true;
+      skippedNow.add(uncaptured);
+      blocked.push({ path: f, uncaptured });
+      return false;
+    });
     const inTarget = await sh.blobs(target, files);
     // The target must say what to restore, and the undo point must capture
     // what we would overwrite. A file left out by the cap is not absent.
@@ -565,13 +581,14 @@ export class Checkpoints {
     const versions = Object.fromEntries(await sh.versions(now.tree, files));
     const removes = files.filter((f) => !inTarget.get(f));
     const scope = scopePaths ? "written" as const : "tree" as const;
-    if (opts.preview) return { files: restore, failed: [], skipped: skipped.filter((f) => !merges.has(f)), outside, merged: [...merges.keys()], conflicts, removes, uncaptured, versions, incomplete, undo: null, scope };
+    if (opts.preview) return { files: restore, failed: [], skipped: skipped.filter((f) => !merges.has(f)), outside, merged: [...merges.keys()], conflicts, blocked, removes, uncaptured, versions, incomplete, undo: null, scope };
     if (opts.confirm) {
       const { paths, versions: expected } = opts.confirm;
       const seen = new Set(paths);
       const stale = [
         ...files.filter((f) => seen.has(f) && versions[f] !== expected[f]),
         ...[...skippedNow].filter((f) => seen.has(f)),
+        ...blocked.filter((f) => seen.has(f.path)).map((f) => f.path),
       ];
       if (stale.length) throw new Bad(`changed since the preview: ${stale.slice(0, 10).join(", ")}; look at it again`, 409);
       restore = restore.filter((f) => seen.has(f));
@@ -593,7 +610,7 @@ export class Checkpoints {
     this.save(s, { turn: undo.turn, at: "after", tree: after.tree, paths: after.paths, of_id: undo.id });
     if (res.failed.length) this.errors.capture("server", new Error(`rewind: ${res.failed.length} of ${restore.length} files could not be restored`), { at: "rewind", session: s.id, failed: res.failed });
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { rewind: true } });
-    const r: RewindResult = { files: [...res.restored, ...merged], failed: res.failed, skipped: opts.includeOutside ? [] : outside.filter((f) => !restore.includes(f) && !merged.includes(f)), outside, merged, conflicts, removes: removes.filter((f) => res.restored.includes(f)), uncaptured, versions: {}, incomplete, undo: undo.id, scope };
+    const r: RewindResult = { files: [...res.restored, ...merged], failed: res.failed, skipped: opts.includeOutside ? [] : outside.filter((f) => !restore.includes(f) && !merged.includes(f)), outside, merged, conflicts, blocked, removes: removes.filter((f) => res.restored.includes(f)), uncaptured, versions: {}, incomplete, undo: undo.id, scope };
     const turnText = outsideFrom !== null ? this.promptOf(s.id, outsideFrom).split("\n")[0]!.slice(0, 80) : "";
     this.tell(s, undoOf || incomplete ? "undid an earlier file restore" : `put files back as they were before the turn that began with "${turnText}"`, r);
     return r;
@@ -602,6 +619,11 @@ export class Checkpoints {
 
 export class Bad extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
+}
+
+// Shadow tree paths use "/" as the component separator.
+function* parents(path: string): Iterable<string> {
+  for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) yield path.slice(0, at);
 }
 
 // Workspace-relative paths of the files a call writes, where the writes land:

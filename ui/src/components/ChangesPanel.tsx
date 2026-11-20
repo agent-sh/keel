@@ -12,6 +12,7 @@ type Turn = { turn: number; prompt: string; created: number; files: FileChange[]
 type Diff = { files: FileChange[]; diff: string; truncated: boolean; partial?: string; scope: "tree" | "written"; incomplete?: boolean };
 type RewindResult = {
   files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; merged: string[]; conflicts: string[]; removes: string[]; uncaptured: string[];
+  blocked?: { path: string; uncaptured: string }[];
   versions: Record<string, string>; incomplete: boolean; undo: string | null; scope: string;
 };
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -134,7 +135,8 @@ export function ChangesPanel({ session }: { session: Session }) {
                   {done!.failed.length ? `Restored ${done!.files.length} of ${done!.files.length + done!.failed.length} files` : `Restored ${plural(done!.files.length, "file")}`}
                   {done!.merged.length ? ` (in ${done!.merged.length} only the session's change, around later edits)` : ""}
                   {done!.skipped.length ? `, kept ${done!.skipped.length} changed outside the session` : ""}
-                  {done!.uncaptured.length ? `, kept ${done!.uncaptured.length} over the checkpoint size limit` : ""}.
+                  {done!.uncaptured.length ? `, kept ${done!.uncaptured.length} over the checkpoint size limit` : ""}
+                  {done!.blocked?.length ? `, skipped ${plural(done!.blocked.length, "restore path")} to protect large files` : ""}.
                   {done!.failed.length > 0 && <span className="block text-caption" data-testid="rewind-failed">Not restored: {done!.failed.map((f) => `${f.path} (${f.error})`).join("; ")}</span>}
                 </span>
                 {done!.undo && (
@@ -246,6 +248,12 @@ export function ChangesPanel({ session }: { session: Session }) {
                   <li key={f} className="flex items-center gap-2 text-faint" data-testid="rewind-uncaptured">
                     <FileDiff className="size-3.5 shrink-0" /><span className="min-w-0 truncate">{f}</span>
                     <span className="ml-auto shrink-0 font-sans text-micro">kept: over the checkpoint size limit</span>
+                  </li>
+                ))}
+                {pending.preview.blocked?.map(({ path, uncaptured }) => (
+                  <li key={path} className="flex items-start gap-2 text-faint" data-testid="rewind-blocked">
+                    <FileDiff className="size-3.5 shrink-0" />
+                    <span className="min-w-0 break-all">{path}<span className="block font-sans text-micro">Not restored: protects {uncaptured}</span></span>
                   </li>
                 ))}
               </ul>

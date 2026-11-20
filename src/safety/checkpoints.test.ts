@@ -184,6 +184,32 @@ test("a file too large to capture is kept, not removed", async () => {
   expect(statSync(deleted).size).toBe(1024 * 1024);
   expect(t.read("notes.txt")).toBe("short");
   expect(t.read("small.txt")).toBe("s\n");
+
+  const s = setup({ a: "old\n", "b/child": "old\n", "a-side": "old\n", "peer/small": "old\n" });
+  const turn = await s.turn(() => {
+    rmSync(join(s.ws, "a"));
+    rmSync(join(s.ws, "b"), { recursive: true });
+    s.write("a-side", "new\n"); s.write("peer/small", "new\n");
+  });
+  const scoped = { turn, includeOutside: true, paths: ["a", "b/child", "a-side", "peer/small"] };
+  const old = await s.c.rewind(s.s, { ...scoped, preview: true });
+  expect(old.files.sort()).toEqual([...scoped.paths].sort());
+  mkdirSync(join(s.ws, "a"));
+  const tooLarge = ["a/large.bin", "b", "peer/large.bin"];
+  for (const path of tooLarge) {
+    s.write(path, "outside\n");
+    truncateSync(join(s.ws, path), 1024 * 1024);
+  }
+  await expect(s.c.rewind(s.s, { ...scoped, confirm: { paths: old.files, versions: old.versions } }))
+    .rejects.toMatchObject({ status: 409, message: expect.stringContaining("a, b/child") });
+  const safe = await s.c.rewind(s.s, { ...scoped, preview: true });
+  expect(safe.files.sort()).toEqual(["a-side", "peer/small"]);
+  expect(safe.uncaptured.sort()).toEqual(["a/large.bin", "b"]);
+  expect(safe.blocked).toEqual([{ path: "a", uncaptured: "a/large.bin" }, { path: "b/child", uncaptured: "b" }]);
+  const result = await s.c.rewind(s.s, { ...scoped, confirm: { paths: safe.files, versions: safe.versions } });
+  expect(result.files.sort()).toEqual(["a-side", "peer/small"]);
+  for (const path of tooLarge) expect(statSync(join(s.ws, path)).size).toBe(1024 * 1024);
+  expect([s.read("a-side"), s.read("peer/small")]).toEqual(["old\n", "old\n"]);
 });
 
 test("an undo point whose result was never recorded restores nothing unasked", async () => {
