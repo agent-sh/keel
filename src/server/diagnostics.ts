@@ -1,8 +1,10 @@
 import type { ErrorCapture } from "../core/errors.ts";
 import type { Deps } from "./app.ts";
 
-const LABEL = { provider: "Provider", server: "Daemon", tool: "Tool", client: "Browser" };
+const LABEL = { provider: "Provider", server: "Daemon", tool: "Tool" };
 const MAX_ROWS = 8;
+// Enough for 64 full batches, with active repeats kept more recent than quiet IDs.
+const MAX_REPORTED = 512;
 
 // One best-effort wake, not a second error log or a durable job. Never hand
 // captured text to a model. Only the error tracker's own ID crosses sessions.
@@ -11,7 +13,8 @@ export function relayDiagnostics(
   sessionId: string,
   { batchMs = 10_000, spacingMs = 60_000 } = {},
 ) {
-  const pending = new Map<string, { source: ErrorCapture["source"]; count: number }>();
+  const pending = new Map<string, { source: Exclude<ErrorCapture["source"], "client">; count: number }>();
+  const reported = new Set<string>();
   let overflow = 0;
   let notBefore = 0;
   let stopping = false;
@@ -36,14 +39,23 @@ export function relayDiagnostics(
     return last?.kind !== "turn_end" || last.data.reason !== "restart";
   };
 
+  function remember(id: string) {
+    reported.delete(id);
+    reported.add(id);
+    if (reported.size > MAX_REPORTED) reported.delete(reported.values().next().value!);
+  }
+
   function flush() {
     timer = undefined;
     try {
-      if (stopping || engine.isDraining() || !eligible()) return clear();
+      if (stopping || engine.isDraining() || !eligible() || !pending.size) return clear();
       if (!ready()) return; // a later session/queue frame will schedule it
       notBefore = Date.now() + spacingMs;
       const rows = [...pending].map(([id, r]) => `${LABEL[r.source]}: ${r.count} occurrence${r.count === 1 ? "" : "s"} (Errors ID: ${id})`);
       if (overflow) rows.push(`${overflow} additional occurrence${overflow === 1 ? "" : "s"} not listed; see Errors.`);
+      // An overflow count is not an incident receipt. Only IDs in the
+      // outgoing batch are remembered, even if send fails after appending.
+      for (const id of pending.keys()) remember(id);
       clear();
       engine.send(sessionId, [
         "[Keel diagnostics] New captured failures:",
@@ -74,13 +86,18 @@ export function relayDiagnostics(
   }
 
   const offCapture = errors.onCapture(({ id, source, context, turnSession }) => {
+    // Browser reports populate Errors, not a paid turn. A failure processing a
+    // report may be caught by the server's route wrapper under "server".
+    if (source === "client") return;
+    const ctx = context as Record<string, unknown> | undefined;
+    if (source === "server" && ctx?.method === "POST" && (ctx.url === "/api/errors" || ctx.url === "/api/errors/")) return;
     if (stopping || engine.isDraining() || !eligible()) return clear();
-    const ctx = context as { retry?: unknown; fallback?: unknown; then?: unknown; at?: unknown; session?: unknown; session_id?: unknown; sessionId?: unknown; url?: unknown } | undefined;
     // Passing request attempts still belong in Errors/traces, not in a wake.
     // Captures after retries are spent and other captured product faults count.
     if (source === "provider" && (ctx?.retry || ctx?.fallback || ctx?.then === "drop_block for this session" || ctx?.at === "threshold compaction")) return;
     const fromUrl = typeof ctx?.url === "string" ? /^(?:\/s\/|\/api\/sessions\/)([^/?#]+)/.exec(ctx.url)?.[1] : undefined;
     if ([turnSession, ctx?.session, ctx?.session_id, ctx?.sessionId, fromUrl].some((sid) => typeof sid === "string" && own(sid))) return;
+    if (reported.has(id)) return remember(id);
     const row = pending.get(id);
     if (row) row.count++;
     else if (pending.size < MAX_ROWS) pending.set(id, { source, count: 1 });
@@ -88,6 +105,11 @@ export function relayDiagnostics(
     schedule();
   });
   const offBus = bus.on((f) => {
+    if (f.t === "error" && f.error.resolved_ts !== undefined) {
+      // Resolving is not itself a wake. The next occurrence opens a new incident.
+      reported.delete(f.error.id);
+      if (pending.delete(f.error.id) && !pending.size) clear();
+    }
     if (f.t === "session" && f.session.id === sessionId) {
       if (f.deleted || !eligible()) clear();
       else schedule();
