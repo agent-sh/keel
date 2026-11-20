@@ -15,6 +15,26 @@ test("token formats and secret-sounding assignments are found, plain code is not
   expect(detect("API_KEY=$API_KEY and TOKEN=${TOKEN}")).toEqual([]);
 });
 
+// What a coding session prints all day is not a credential: a name that only
+// contains a secret word, a hash, a cursor, a revision or code. Taking one
+// would hide it from the model and change the history it was sent in.
+test("hashes, cursors, revisions and code under token-ish names are not secrets", () => {
+  const h64 = "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d", h40 = h64.slice(3, 43);
+  for (const text of [
+    `tokens_sha256: "${h64}"`, `'tokenizer_revision': '${h40}'`, `tokenizer.json: sha256=${h64}`,
+    `"next_page_token": "CAESEgoQMjAyNi0xMS0yMA"`, "self.token_key_norm = RMSNorm2d_eps1e5",
+    "if self.per_token_activation:\n            hidden2=self.act_fn2_scaled", "detokenize_fn=sentencepiece_v2_decode",
+    "password_reset_test_id: case_0042_expired_link", "secret_scanning_cache_key=v3-linux-x86_64-bun1.4.2",
+    "max_new_tokens=512, tokens_per_s=130.1337679319463", "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+    "api_key = load_key2(cfg)", "token = self.cfg.auth2.token_value",
+  ]) expect({ text, hits: detect(text) }).toEqual({ text, hits: [] });
+  const v = "Ab3dEf9hJk2mNp5qRs8tUv1wXy4zA7cE";
+  for (const [text, value] of [
+    [`export DB_PASSWORD='${v.slice(0, 18)}'`, v.slice(0, 18)], [`"client_secret": "${v}"`, v], [`authToken: "${v}"`, v],
+    [`self.api_key = "${v}"`, v], [`curl -H "X-Api-Key: ${v}" https://x.example`, v], [`GITHUB_TOKEN=${h40}`, h40], [`refresh_token=${v}`, v],
+  ] as [string, string][]) expect({ text, value: detect(text)[0]?.value }).toEqual({ text, value });
+});
+
 test("a value is one placeholder, put back only in its sessions, and named for commands", () => {
   const v = new Vault();
   const a = v.redact(`use ${GH} please`, "s1", "prompt");

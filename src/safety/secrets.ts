@@ -14,6 +14,8 @@ type Entry = { id: string; value: string; kind: string; name?: string; source: S
 // whole match is the secret unless the rule has a group.
 export const RULES: { kind: string; re: RegExp }[] = [
   { kind: "private key", re: /-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S]{64,}?-----END[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----/g },
+  { kind: "Amazon Bedrock key", re: /\bABSK[A-Za-z0-9+/]{109,269}={0,2}/g },
+  { kind: "Amazon Bedrock key", re: /\bbedrock-api-key-YmVkcm9jay5hbWF6b25hd3MuY29t[A-Za-z0-9+/=%]*/g },
   { kind: "AWS access key", re: /\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b/g },
   { kind: "GitHub token", re: /\b(?:ghp|gho|ghu|ghs|ghr)_[0-9A-Za-z]{36}\b/g },
   { kind: "GitHub token", re: /\bgithub_pat_\w{82}\b/g },
@@ -39,9 +41,29 @@ export const RULES: { kind: string; re: RegExp }[] = [
   { kind: "Authorization header", re: /\b(?:Authorization|Proxy-Authorization)\s*:\s*(?:Bearer|Basic|token)\s+([A-Za-z0-9._~+/=-]{16,})/gi },
 ];
 
-// A value assigned to a secret-sounding name (`API_KEY=...`, `"password": "..."`),
-// kept only when it looks random: letters and digits mixed, high entropy.
-const ASSIGN = /\b[\w.-]*(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|credential|auth[_-]?key|private[_-]?key|access[_-]?key)[\w.-]*["']?\s*(?:=|:|:=|=>)\s*["']?([A-Za-z0-9_\-+/=.~!@#$%^&*]{12,200})["']?/gi;
+// A value assigned to a credential's name (`API_KEY=...`, `"password": "..."`),
+// kept only when it looks random: letters and digits mixed, high entropy. The
+// name decides, by its last word: a key, token, secret or password, never a
+// name that only contains one (`tokens_sha256`, `tokenizer_revision`,
+// `next_page_token`, `cache_key`, `token_key_norm`). The value is a literal: a
+// quoted string, or a bare word that ends there (not a call, an index or a
+// dotted name, which are code), on the same line as its name.
+const ASSIGN = /(?<![\w.-])([A-Za-z_][\w.-]*)["']?[ \t]*(?:=>|:=|=|:)[ \t]*(?:(["'])([^"'\s]{12,200})\2|([A-Za-z0-9_\-+/.~!@#%^&*]{12,200}={0,3})(?=$|[\s"'`,;)}\]]|\\[nr]))/gm;
+const SECRET_WORD = /^(?:secret|password|passwd|pwd|passphrase|token|apikey|credentials?|creds)$/;
+// A `key` is a credential after one of these words (api_key, SECRET_ACCESS_KEY, X-Api-Key).
+const KEY_KIND = /^(?:api|access|secret|private|auth|signing|encryption|client|master|account|service|app|license|consumer|session|webhook|deploy)$/;
+// A `token` after one of these words is a position or a vocabulary entry, not a credential.
+const NOT_CREDENTIAL_TOKEN = /^(?:page|next|prev|previous|continuation|cursor|sync|start|end|eos|bos|pad|unk|sep|cls|mask|special|max|min|num|count|total|first|last)$/;
+
+// Whether a variable, field or header name names a credential.
+export function credentialName(name: string): boolean {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const last = words.at(-1), before = words.at(-2);
+  if (!last) return false;
+  if (last === "key") return !!before && KEY_KIND.test(before);
+  if (last === "token") return !before || !NOT_CREDENTIAL_TOKEN.test(before);
+  return SECRET_WORD.test(last);
+}
 
 export function entropy(s: string): number {
   const n = new Map<string, number>();
@@ -65,7 +87,15 @@ export function detect(text: string): Hit[] {
     if (!value.startsWith("[secret:") && !value.startsWith("[value")) hits.push({ start, end: start + value.length, value, kind });
   };
   for (const r of RULES) for (const m of text.matchAll(r.re)) take(m as RegExpExecArray, r.kind);
-  for (const m of text.matchAll(ASSIGN)) if (looksRandom(m[1]!) && !/^\$|\$\{|\$\(/.test(m[1]!)) take(m as RegExpExecArray, "secret value");
+  // A rejected candidate gives its text back: the next one may start inside it.
+  const re = new RegExp(ASSIGN.source, ASSIGN.flags);
+  for (let m: RegExpExecArray | null; (m = re.exec(text));) {
+    const value = m[3] ?? m[4]!;
+    const code = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value) || /^\$|\$\{|\$\(/.test(value);
+    if (!credentialName(m[1]!) || !looksRandom(value) || code) { re.lastIndex = m.index + 1; continue; }
+    const start = m.index + m[0].lastIndexOf(value);
+    if (!value.startsWith("[secret:") && !value.startsWith("[value")) hits.push({ start, end: start + value.length, value, kind: "secret value" });
+  }
   hits.sort((a, b) => a.start - b.start || b.end - a.end);
   const out: Hit[] = [];
   for (const h of hits) if (!out.length || h.start >= out.at(-1)!.end) out.push(h);
