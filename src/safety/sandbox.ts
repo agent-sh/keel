@@ -41,8 +41,11 @@ export function sandboxStatus(): SandboxStatus {
 // must reach the shell as written. Older systemd has no such flag and does
 // no expansion for --scope.
 let head: string[] | undefined;
+// A machine without systemd-run (macOS, a container) has no head: nothing is
+// wrapped, and asking its version would fail every command.
 export function scopeHead(): string[] {
   if (head) return head;
+  if (!Bun.which("systemd-run")) return (head = []);
   const v = Number(/systemd (\d+)/.exec(Bun.spawnSync(["systemd-run", "--version"], { stdout: "pipe", stderr: "ignore" }).stdout.toString())?.[1] ?? 0);
   head = ["systemd-run", "--user", "--scope", "--quiet", "--collect", ...(v >= 254 ? ["--expand-environment=no"] : [])];
   return head;
@@ -63,7 +66,7 @@ function scopeProps(): string[] {
 // scope of its own outside the job's (see startJob).
 export function splitScope(argv: string[]): { props: string[]; argv: string[] } {
   const h = scopeHead();
-  if (!h.every((a, i) => argv[i] === a)) return { props: [], argv };
+  if (!h.length || !h.every((a, i) => argv[i] === a)) return { props: [], argv };
   const end = argv.indexOf("--", h.length);
   return end < 0 ? { props: [], argv } : { props: argv.slice(h.length, end), argv: argv.slice(end + 1) };
 }
