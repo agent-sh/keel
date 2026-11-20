@@ -69,9 +69,16 @@ export function lastWarm(lineage: StoredEvent[], preparedMs = 0): number {
 // of this branch after its last checkpoint, and for idle compaction (which
 // covers the whole context) only notes came after it, such as a job notice its
 // own request stored. Those follow it verbatim when it is applied.
-export function preparedHolds(lineage: StoredEvent[], covered: string, idle: boolean): boolean {
+export function preparedHolds(lineage: StoredEvent[], covered: string, idle: boolean, data?: { statements_done?: string[] }): boolean {
   const at = lineage.findIndex((e) => e.id === covered);
-  if (at < 0 || at <= checkpointAt(lineage).at) return false;
+  const cp = checkpointAt(lineage).at;
+  if (at < 0 || at <= cp) return false;
+  // A summary prepared before scoped requests could mark any quote done.
+  // Reuse it only if each retirement is backed by a recorded scoped request.
+  if (data?.statements_done?.length) {
+    const previous: StoredStatement[] = cp >= 0 && lineage[cp]!.data.mode === "summary" ? lineage[cp]!.data.statements ?? [] : [];
+    if (data.statements_done.some((text) => !previous.some((s) => s.kind === "request" && s.text === text))) return false;
+  }
   return !idle || lineage.slice(at + 1).every((e) => e.kind === "note" || e.kind === "turn_start" || e.kind === "turn_end");
 }
 
@@ -209,8 +216,9 @@ export function settle(lineage: StoredEvent[], text: string, stored: StoredState
     const [what, why] = l.split(/lifted by\s*:/i);
     const q = what ? quoted(what) : null, w = why ? quoted(why) : null;
     if (q === null || w === null) continue;
-    const old = sourceOf(q, prior.map((p) => p.text));
-    const target = old === null ? undefined : prior.find((p) => norm(p.text).includes(norm(old)));
+    const exact = prior.find((p) => p.text === q);
+    const old = exact ? null : sourceOf(q, prior.map((p) => p.text));
+    const target = exact ?? (old === null ? undefined : prior.find((p) => norm(p.text).includes(norm(old))));
     const by = target ? sourceOf(w, target.by === "owner" ? owner : all) : null;
     if (target && by !== null) lifted.push({ text: target.text, by });
   }

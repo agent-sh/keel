@@ -135,6 +135,12 @@ test("a prepared summary holds through notes, not through new words", () => {
   expect(preparedHolds([...line, ev("user", { text: "more" })], reply.id, true)).toBe(false);
   expect(preparedHolds([...line, ev("user", { text: "more" })], reply.id, false)).toBe(true);
   expect(preparedHolds(line, "gone", false)).toBe(false);
+  const quote = "Read the report.";
+  const retirement = { statements_done: [quote] };
+  const above = (kind?: "standing" | "request") => [ev("compaction", { mode: "summary", statements: [{ by: "owner", text: quote, ...(kind ? { kind } : {}) }] }), ...line];
+  expect(preparedHolds(above(), reply.id, true, retirement)).toBe(false);
+  expect(preparedHolds(above("standing"), reply.id, false, retirement)).toBe(false);
+  expect(preparedHolds(above("request"), reply.id, true, retirement)).toBe(true);
 });
 
 const turn = (n: number, out: string) => [
@@ -233,6 +239,16 @@ test("statements are the conversation's own words, carried until lifted", () => 
   expect(lifted.statements!.map((s) => s.text)).not.toContain("Also do not touch vendor/.");
   expect(lifted.statements!.length).toBe(4);
   expect(lifted.statements_lifted).toEqual([{ text: "Also do not touch vendor/.", by: "The vendor rule is over: you may edit vendor/ now." }]);
+  // An exact lifted request must not select the longer standing rule containing it.
+  const overlap = [
+    { by: "owner", kind: "standing", text: "Rule for every export: Run the smoke tests." },
+    { by: "owner", kind: "request", text: "Run the smoke tests." },
+  ] as const;
+  const liftRequest = settle([ev("user", { text: "Skip this one-off smoke test request." })], [
+    "## Statements", "## Lifted", '- "Run the smoke tests." lifted by: "Skip this one-off smoke test request."', "## Story", "x",
+  ].join("\n"), [...overlap]);
+  expect(liftRequest.statements).toEqual([overlap[0]]);
+
   // Done can retire a scoped request, but not a standing rule, even if refiled as a request.
   const finish = [
     "## Statements", "## Requests", '- owner: "Always run the linter before the tests."',

@@ -1052,8 +1052,8 @@ export class Engine {
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
     if (!covered || !worthSummarizing(events)) return;
-    const have = this.store.db.query<{ covered: string }, [string]>("SELECT covered FROM prepared_summaries WHERE session_id = ?").get(id);
-    if (have && preparedHolds(events, have.covered, idle)) return;
+    const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
+    if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data))) return;
     this.preparing.add(id);
     const session = this.store.session(id)!;
     const before = this.used(events, st);
@@ -1076,9 +1076,9 @@ export class Engine {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (!row) return false;
     this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
-    const at = events.findIndex((e) => e.id === row.covered);
-    if (at < 0 || at <= checkpointAt(events).at) return false;
-    this.append(id, "compaction", JSON.parse(row.data));
+    const data = JSON.parse(row.data);
+    if (!preparedHolds(events, row.covered, false, data)) return false;
+    this.append(id, "compaction", data);
     this.emitSession(id);
     return true;
   }
