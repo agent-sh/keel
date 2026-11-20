@@ -106,8 +106,8 @@ function errorRow(r: any): ErrorRecord {
 }
 
 const queueRow = (r: any): QueueItem => {
-  const { images, anchor, ...rest } = r;
-  return { ...rest, steer: !!r.steer, ...(images ? { images: JSON.parse(images) } : {}), ...(anchor ? { anchor } : {}) };
+  const { images, anchor, meta, ...rest } = r;
+  return { ...rest, steer: !!r.steer, ...(images ? { images: JSON.parse(images) } : {}), ...(anchor ? { anchor } : {}), ...(meta ? { meta: JSON.parse(meta) } : {}) };
 };
 
 export class Store {
@@ -136,6 +136,7 @@ export class Store {
     if (!this.columnExists("queue", "images")) this.db.exec("ALTER TABLE queue ADD COLUMN images TEXT");
     // The session's head when the prompt was queued: the branch it was written on.
     if (!this.columnExists("queue", "anchor")) this.db.exec("ALTER TABLE queue ADD COLUMN anchor TEXT");
+    if (!this.columnExists("queue", "meta")) this.db.exec("ALTER TABLE queue ADD COLUMN meta TEXT");
     if (!this.columnExists("sessions", "settings")) this.db.exec("ALTER TABLE sessions ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
     // Bumped by every change of the session row: a reply that carries an older
     // revision than what a page holds does not undo the newer change.
@@ -341,12 +342,13 @@ export class Store {
       .map(queueRow);
   }
 
-  enqueue(session_id: string, text: string, steer: boolean, images?: ImageBlock[]): QueueItem {
+  // `meta`: who sent it when not the owner (an origin, a kind), stored with the prompt when it leaves the queue.
+  enqueue(session_id: string, text: string, steer: boolean, images?: ImageBlock[], meta?: Record<string, unknown>): QueueItem {
     text = this.redact(session_id, "queue", text);
     const id = Bun.randomUUIDv7();
     const { p } = this.db.query<{ p: number }, [string]>("SELECT COALESCE(MAX(pos), 0) + 1 AS p FROM queue WHERE session_id = ?").get(session_id)!;
     const anchor = this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null;
-    this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created, images, anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now(), images?.length ? JSON.stringify(images) : null, anchor);
+    this.db.query("INSERT INTO queue (id, session_id, text, steer, pos, created, images, anchor, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, session_id, text, steer ? 1 : 0, p, Date.now(), images?.length ? JSON.stringify(images) : null, anchor, meta ? JSON.stringify(meta) : null);
     return this.queue(session_id).find((q) => q.id === id)!;
   }
 

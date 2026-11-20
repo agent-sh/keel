@@ -141,7 +141,7 @@ export type SessionSettings = {
 };
 
 // `anchor`: the session's head when it was queued (the branch it was written on).
-export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number; anchor?: string };
+export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number; anchor?: string; meta?: Record<string, unknown> };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);
 // `delta` frames are live streaming text and are not stored. `rev` is the bus's

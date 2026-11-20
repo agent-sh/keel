@@ -240,6 +240,42 @@ test("threshold compaction: nothing new is not summarized, an empty summary does
   expect(line.findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
 });
 
+// Input that is not the owner's, sent while a turn runs, keeps who sent it
+// through the queue: a steer and a queued prompt are not the owner's words.
+test("a steer or queued prompt from momentum or a hook keeps its origin", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const { ownerPrompt } = await import("../core/owner.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "queue-meta-"));
+  const store = new Store(dir);
+  const s = store.createSession({ model: "p:m", workspace: dir });
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+  const usage = { input: 1, output: 1, cache_read: 0, cache_write: 0 };
+  let calls = 0;
+  let engine: any;
+  const provider = {
+    id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async () => {
+      if (++calls === 1) {
+        engine.send(s.id, "from momentum", { mode: "steer", meta: { origin: "momentum" } });
+        engine.send(s.id, "from a hook", { mode: "queue", meta: { origin: "hook" } });
+        return { blocks: [{ type: "tool_use", id: "t1", name: "nope", input: {} }], usage, stop: "tool_use", model: "m" };
+      }
+      return { blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "m" };
+    },
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+  engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  engine.send(s.id, "start");
+  await engine.idle(s.id);
+  await engine.idle(s.id);
+  const prompts = store.events(s.id).filter((e) => e.kind === "user").map((e) => [e.data.text, e.data.origin, ownerPrompt(e.data)]);
+  expect(prompts).toEqual([["start", undefined, true], ["from momentum", "momentum", false], ["from a hook", "hook", false]]);
+});
+
 // A finished tool call takes its abort listener off the turn's shared signal,
 // whether it succeeded, failed or a gate refused it.
 test("a settled tool call leaves no abort listener on the turn's signal", async () => {

@@ -364,7 +364,7 @@ export class Engine {
   send(id: string, text: string, opts: { mode?: "send" | "steer" | "queue"; images?: any[]; meta?: Record<string, unknown> } = {}) {
     const mode = opts.mode ?? "send";
     if (this.running.has(id) || (mode === "queue" && this.store.queue(id).length)) {
-      const q = this.store.enqueue(id, text, mode !== "queue", opts.images);
+      const q = this.store.enqueue(id, text, mode !== "queue", opts.images, opts.meta);
       this.emitQueue(id);
       return { queued: q, steer: q.steer };
     }
@@ -409,7 +409,7 @@ export class Engine {
       this.emitQueue(id);
       await this.interrupt(id);
       this.release(id);
-      this.append(id, "user", { text: q.text, images: q.images, origin: "queued", queue_id: q.id });
+      this.append(id, "user", { text: q.text, images: q.images, origin: "queued", queue_id: q.id, ...q.meta });
       this.start(id);
       this.emitQueue(id);
     } finally {
@@ -449,7 +449,7 @@ export class Engine {
     // Written on another branch: it waits for the owner to say where it goes.
     if (this.offBranch(q)) { this.hold(id); this.emitQueue(id); return; }
     if (!this.store.dequeue(q.id)) return;
-    this.append(id, "user", { text: q.text, images: q.images, origin: q.steer ? "steer" : "queued", queue_id: q.id });
+    this.append(id, "user", { text: q.text, images: q.images, origin: q.steer ? "steer" : "queued", queue_id: q.id, ...q.meta });
     this.start(id);
     this.emitQueue(id);
   }
@@ -712,7 +712,7 @@ export class Engine {
         // Steers sent while the last step ran join here, after its tool results.
         for (const q of this.store.queue(id).filter((q) => q.steer)) {
           if (!this.store.dequeue(q.id)) continue;
-          this.append(id, "user", { text: q.text, images: q.images, origin: "steer", queue_id: q.id });
+          this.append(id, "user", { text: q.text, images: q.images, origin: "steer", queue_id: q.id, ...q.meta });
           this.emitQueue(id);
         }
         session = this.store.session(id)!;
