@@ -1,7 +1,8 @@
 // The permission gate: every tool call passes its session's mode and the
 // standing answers; what they do not settle becomes an approval card the
-// turn waits on. Cards, grants and modes are stored; a card left open by a
-// restart is cancelled (nothing waits on it any more).
+// turn waits on. Cards, grants and modes are stored. A card a restart left
+// open (a crash, a kill, a stop) stays open: the continued turn runs its call
+// again and waits on the same card, and an answer given before that is kept.
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
@@ -37,6 +38,8 @@ export type Approval = {
   why?: string;         // why only "once" is offered
   notice?: string;      // why the owner is asked (the reviewer could not judge it)
   suggest: Suggest[];   // the grant "allow always" would store
+  once?: boolean;       // only the owner answers it (a hook asked)
+  bind?: string;        // the source a tool grant is for
   state: "pending" | "allowed" | "denied" | "cancelled";
   choice?: "once" | "session" | "always" | "deny";
   reason?: string;
@@ -69,6 +72,11 @@ export class Gate {
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
+  // Cards a restart left open, by session and call: nothing waits on them
+  // until the continued turn runs the call again (park, reattach).
+  private parked = new Map<string, string>();
+  // Sessions whose turn the daemon is parking for a stop: their cards stay open.
+  private parking = new Set<string>();
   // Reviewer mode's judge (set by the permission routes, which hold the providers).
   judge: (a: ReviewAsk) => Promise<Verdict> = async () => ({ unavailable: "no reviewer is set up" });
 
@@ -76,17 +84,24 @@ export class Gate {
     store.migrate(SCHEMA);
     if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
     const db = store.db;
-    // Restart: no turn waits on an old card. Its call never ran (callOutcome).
-    for (const r of db.query<{ id: string; data: string }, []>("SELECT id, data FROM approvals WHERE state = 'pending'").all()) {
-      const a = { ...(JSON.parse(r.data) as Approval), state: "cancelled" as const, reason: "the daemon restarted", resolved: Date.now() };
-      db.query("UPDATE approvals SET state = 'cancelled', data = ? WHERE id = ?").run(JSON.stringify(a), r.id);
+    // Restart: an open card waits for its call to come back (callOutcome "waiting").
+    for (const r of db.query<{ data: string }, []>("SELECT data FROM approvals WHERE state = 'pending'").all()) {
+      const a = JSON.parse(r.data) as Approval;
+      this.parked.set(callKey(a.session_id, a.call_id), a.id);
     }
   }
 
+  // The daemon stops: this session's turn is parked, and the card it waits on stays open.
+  park(sessionId: string) {
+    this.parking.add(sessionId);
+  }
+
   // What a call's card recorded, for a call a restart cut before its result
-  // was stored: a denial as the model got it, or a card nothing answered (it
-  // never ran). An allowed call, or one without a card, may have run.
-  callOutcome(sessionId: string, callId: string): { denied: string } | "not_run" | undefined {
+  // was stored: a card that is still open (or answered since) waits for the
+  // call to run again; a denial as the model got it; a card that was closed
+  // unanswered (it never ran). An allowed call, or one without a card, may have run.
+  callOutcome(sessionId: string, callId: string): { denied: string } | "not_run" | "waiting" | undefined {
+    if (this.parked.has(callKey(sessionId, callId))) return "waiting";
     const r = this.store.db.query<{ data: string }, [string, string]>("SELECT data FROM approvals WHERE session_id = ? AND json_extract(data, '$.call_id') = ? ORDER BY created DESC LIMIT 1").get(sessionId, callId);
     const a = r ? (JSON.parse(r.data) as Approval) : undefined;
     if (a?.state === "cancelled") return "not_run";
@@ -271,6 +286,15 @@ export class Gate {
     const name = target?.name ?? call.tool.name;
     const cls: CallClass = landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classifyCall(call));
     const d = this.evaluate(session, name, cls, target?.source);
+    // The call a restart cut while its card was open: that card again, settled
+    // the way an open card is (the owner's answer, a grant or mode since, or waiting).
+    const back = this.unpark(session.id, call.id, false);
+    if (back) {
+      const settled: Partial<Approval> | undefined = back.state !== "pending" ? undefined
+        : "allow" in d ? { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" } : "deny" in d ? { state: "denied", reason: d.deny } : undefined;
+      if (settled) this.finish(back, settled);
+      return (await this.wait({ ...back, ...settled }, session, call, name, cls)) ?? { cls };
+    }
     if ("allow" in d) return { cls };
     if ("deny" in d) return { deny: d.deny };
     if (cls.kind === "control") return { cls };
@@ -311,21 +335,42 @@ export class Gate {
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
     ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string; bind?: string }, once = false): Promise<{ deny: string } | void> {
-    const a: Approval = {
+    const a: Approval = this.unpark(session.id, call.id, once) ?? {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, notice: ask.notice,
       input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: Date.now(),
+      once: once || undefined, bind: ask.bind,
     };
+    return this.wait(a, session, call, name, cls);
+  }
+
+  // A parked card of this call (a one-call card only for askOnce), taken back.
+  private unpark(sessionId: string, callId: string, once: boolean): Approval | undefined {
+    const key = callKey(sessionId, callId);
+    const a = this.parked.has(key) ? this.approval(this.parked.get(key)!) : undefined;
+    if (!a || !!a.once !== once) return undefined;
+    this.parked.delete(key);
+    return a;
+  }
+
+  // The turn waits on the card: shown (again, after a restart) until it is
+  // answered; a card answered while nothing waited on it settles at once.
+  private async wait(a: Approval, session: Session, call: ToolCall, name: string, cls: CallClass): Promise<{ deny: string } | void> {
+    if (a.state === "denied") return { deny: a.choice === "deny" ? ownerDenial(a.reason) : a.reason ?? ownerDenial() };
+    if (a.state === "cancelled") return { deny: "The turn was stopped before the owner answered." };
+    if (a.state === "allowed") return void this.allowedCalls.add(call.id);
     this.save(a);
     const signal = call.ctx.signal;
     // The turn's signal is shared by all its calls: the listener goes when
     // the card is answered, so answered cards do not pile up on it.
     let onAbort = () => {};
     const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
-      this.waiting.set(a.id, { resolve, call, cls, session, name, once, bind: ask.bind });
+      this.waiting.set(a.id, { resolve, call, cls, session, name, once: a.once, bind: a.bind });
       onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
-        this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
+        // Parked for a stop: the card stays open for the next daemon.
+        if (this.parking.has(session.id)) this.parked.set(callKey(session.id, call.id), a.id);
+        else this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
         resolve({ deny: "The turn was stopped before the owner answered." });
       };
       if (signal.aborted) onAbort();
@@ -340,23 +385,27 @@ export class Gate {
     const a = this.approval(id);
     if (!a || a.session_id !== sessionId) return { error: "no such approval", status: 404 };
     const w = this.waiting.get(id);
+    // A card a restart left open is answered all the same: its call runs (or
+    // not) when the continued turn reaches it again.
+    const parked = !w && a.state === "pending" && this.parked.get(callKey(a.session_id, a.call_id)) === id;
+    const session = w?.session ?? (parked ? this.store.session(sessionId) : undefined);
     // A closed card says how it ended; an open one nothing waits on can no longer be answered.
-    if (a.state !== "pending" || !w) return { error: closedWhy(a), status: 409, approval: a };
+    if (a.state !== "pending" || !session) return { error: closedWhy(a), status: 409, approval: a };
     if ((c.choice === "session" || c.choice === "always") && a.risk === "high")
       return { error: `this card covers its one call only (${a.why}): answer once or deny`, status: 400 };
     if (c.choice === "deny") {
       this.finish(a, { state: "denied", choice: "deny", reason: c.reason?.trim() || undefined });
-      w.resolve({ deny: ownerDenial(c.reason?.trim()) });
+      w?.resolve({ deny: ownerDenial(c.reason?.trim()) });
       return { ok: true };
     }
     if (c.choice === "session" || c.choice === "always") {
       const rules = (c.rules?.length ? c.rules : a.suggest).filter((r) => r.pattern?.trim());
       if (!rules.length) return { error: "nothing to grant: give a rule", status: 400 };
       // A tool grant is for the source the card judged (taken from the card, never the client).
-      for (const r of rules) this.addRule(w.session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w.bind : undefined));
+      for (const r of rules) this.addRule(session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined));
     }
     this.finish(a, { state: "allowed", choice: c.choice });
-    w.resolve({ allow: true });
+    w?.resolve({ allow: true });
     // A new grant may settle other open cards it covers.
     if (c.choice !== "once") this.recheck(() => true);
     return { ok: true };
@@ -384,6 +433,8 @@ export class Gate {
     }
   }
 }
+
+const callKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
 
 // What the model gets for a call the owner denied.
 const ownerDenial = (why?: string) => (why ? `The owner denied this call: ${why}` : "The owner denied this call. Do not retry it; take another way or ask.");

@@ -31,6 +31,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   registerHooks({
     beforeTool: (s, call) => g.beforeTool(s, call),
     callOutcome: (sid, callId) => g.callOutcome(sid, callId),
+    turnParking: (sid) => g.park(sid),
   });
 
   const presenceCall = async (f: () => Promise<Response>) => {

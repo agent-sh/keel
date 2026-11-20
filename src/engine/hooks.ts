@@ -64,8 +64,12 @@ export type TurnHooks = {
   cutTurnHeld?: (s: Session, why: string) => void;
   // A call a restart cut, with no stored result: what its approval recorded.
   // `denied`: the text the model gets (the owner's reason in it); `not_run`:
-  // nothing answered it, so it never ran. Nothing known: it may have partly run.
-  callOutcome?: (sessionId: string, callId: string) => { denied: string } | "not_run" | undefined;
+  // nothing answered it, so it never ran; `waiting`: its card is still open (or
+  // was answered since), so the continued turn runs the call again and gets
+  // that card back. Nothing known: it may have partly run.
+  callOutcome?: (sessionId: string, callId: string) => { denied: string } | "not_run" | "waiting" | undefined;
+  // The daemon stops and parks this session's turn (before its signal aborts).
+  turnParking?: (sessionId: string) => void;
   // Before a compaction summarises the history (a memory tool reads it whole first).
   beforeCompact?: (s: Session) => void | Promise<void>;
   // A session another agent answers (an ACP agent): its runner takes the whole

@@ -35,11 +35,31 @@ export const QUESTION_CUT = "No answer was recorded before the daemon restarted:
 // A call cut while it waited for the owner's approval never ran.
 export const APPROVAL_CUT = "The daemon restarted while this call waited for the owner's approval: it did not run. Call it again if it is still needed.";
 const CUT = new Set([RESTART_CUT, QUESTION_CUT, APPROVAL_CUT]);
+const outcomeOf = (session: string, callId: string) => allHooks().map((h) => h.callOutcome?.(session, callId)).find(Boolean);
 const cutText = (session: string, u: { id: string; name: string }) => {
   if (asksOwner(u.name)) return QUESTION_CUT;
-  const o = allHooks().map((h) => h.callOutcome?.(session, u.id)).find(Boolean);
-  return o === "not_run" ? APPROVAL_CUT : o ? o.denied : RESTART_CUT;
+  const o = outcomeOf(session, u.id);
+  return o === "not_run" || o === "waiting" ? APPROVAL_CUT : o ? o.denied : RESTART_CUT;
 };
+// A call a restart cut while its card was open has no result: the next turn
+// runs it again on that card (Gate). These are such calls of the branch.
+const owedCalls = (session: string, line: StoredEvent[]): ToolUseBlock[] => {
+  const done = new Set(line.flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
+  return line.slice(checkpointAt(line).keepFrom).flatMap((e) => (e.kind === "assistant" ? e.data.blocks : []))
+    .filter((b: any) => b.type === "tool_use" && !done.has(b.id) && outcomeOf(session, b.id) === "waiting");
+};
+
+// The message that continues a turn a restart cut. Each cut call's result says
+// what became of it (it may have partly run, or did not run); a call that
+// waited for the owner's approval is asked again on the same card.
+export function restartText(cut: number, owed: number): string {
+  const parts = [
+    cut === 1 ? "the result of the 1 tool call it cut says what became of it" : cut ? `the results of the ${cut} tool calls it cut say what became of each` : "",
+    owed === 1 ? "1 call that waited for the owner's approval was asked again, and its result is the owner's answer"
+      : owed ? `${owed} calls that waited for the owner's approval were asked again, and their results are the owner's answers` : "",
+  ].filter(Boolean);
+  return `[harness] The daemon restarted during your previous turn${parts.length ? `; ${parts.join("; ")}` : ""}. Continue where it left off.`;
+}
 
 // What the model is told about a tool call cut by the output limit.
 export const CUT_CALL = "Not run: this call was cut at the output limit, so its input may be incomplete. Send it again whole if it is still needed.";
@@ -708,7 +728,32 @@ export class Engine {
     let summaryFailed = false;
     let steps = 0;
     const partial = new Map<number, { kind: string; text: string }>();
+    // Each result is stored as it settles, not when the whole batch has:
+    // a crash while one call still runs keeps what the others returned
+    // (a denial and its reason, a finished read). The projection puts a
+    // step's results back in call order. A call whose open card a stop
+    // parks gets none: the next daemon asks on that card again.
+    const settle = (u: ToolUseBlock) => (r: ToolResultBlock) => {
+      if (this.parking.has(id) && outcomeOf(id, u.id) === "waiting") return;
+      const shown = this.shown.get(r.tool_use_id);
+      this.shown.delete(r.tool_use_id);
+      this.store.db.transaction(() => {
+        this.append(id, "tool_result", { results: [r], ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+        for (const h of allHooks()) {
+          try { h.resultStored?.(session, [r]); } catch (e) { this.errors.capture("server", e, { hook: "resultStored", session: id }); }
+        }
+      })();
+    };
     try {
+      // Calls a restart cut while they waited for the owner: asked again on
+      // the same card before the model is asked anything.
+      const owed = owedCalls(id, this.lineage(id));
+      if (owed.length) {
+        this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(owed.map((u) => u.name))] });
+        await Promise.all(owed.map((u) => this.runTool(session, st.tools, u, ctx).then(settle(u))));
+        this.status(id, { kind: "idle" });
+        if (signal.aborted) throw signal.reason;
+      }
       for (;;) {
         // Steers sent while the last step ran join here, after its tool results.
         for (const q of this.store.queue(id).filter((q) => q.steer)) {
@@ -813,22 +858,8 @@ export class Engine {
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = budget > 0 && steps >= budget;
-          // Each result is stored as it settles, not when the whole batch has:
-          // a crash while one call still runs keeps what the others returned
-          // (a denial and its reason, a finished read). The projection puts a
-          // step's results back in call order.
-          const settle = (r: ToolResultBlock) => {
-            const shown = this.shown.get(r.tool_use_id);
-            this.shown.delete(r.tool_use_id);
-            this.store.db.transaction(() => {
-              this.append(id, "tool_result", { results: [r], ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
-              for (const h of allHooks()) {
-                try { h.resultStored?.(session, [r]); } catch (e) { this.errors.capture("server", e, { hook: "resultStored", session: id }); }
-              }
-            })();
-          };
-          await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx)).then(settle)));
-          if (cut) settle({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
+          await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx)).then(settle(u))));
+          if (cut) settle(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
@@ -1159,6 +1190,7 @@ export class Engine {
     if (all.length) await Promise.race([Promise.all(all), Bun.sleep(ms)]);
     await Promise.all([...this.running.entries()].map(async ([id, r]) => {
       this.parking.add(id);
+      for (const h of allHooks()) try { h.turnParking?.(id); } catch (e) { this.errors.capture("server", e, { hook: "turnParking", session: id }); }
       r.abort.abort();
       await r.done;
     }));
@@ -1176,7 +1208,8 @@ export class Engine {
       const lastStart = line.findLastIndex((e) => e.kind === "turn_start");
       if (lastStart < 0 || line.slice(lastStart).some((e) => e.kind === "turn_end")) continue;
       const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
-      const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id)) : []));
+      // A call whose card is still open is left for the continued turn (owedCalls).
+      const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && outcomeOf(id, b.id) !== "waiting") : []));
       if (cut.length) this.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(id, u), is_error: true })) });
       this.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true });
     }
@@ -1194,7 +1227,9 @@ export class Engine {
         this.append(s.id, "note", { kind: "restart", text });
         for (const h of allHooks()) try { h.cutTurnHeld?.(s, text); } catch (e) { this.errors.capture("server", e, { hook: "cutTurnHeld", session: s.id }); }
       };
-      const stalled = stalledContinuations(line);
+      // A turn that waits on the owner's card is waiting, not stalled.
+      const owed = owedCalls(s.id, line).length;
+      const stalled = owed ? 0 : stalledContinuations(line);
       const verdict = allHooks().map((h) => h.cutTurn?.(s, { stalled })).find(Boolean);
       if (verdict !== "continue" && (verdict || stalled >= STALLED_MAX)) return held(verdict ? verdict.hold : `This turn was continued after a daemon restart ${stalled} times in a row, and each time the daemon went down again before a tool call finished, so it was not continued again. Continue when you want it to go on.`);
       const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => CUT.has(r.content)) : [])).length;
@@ -1211,7 +1246,7 @@ export class Engine {
         if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
         this.append(s.id, "user", {
           origin: "restart",
-          text: `[harness] The daemon restarted during your previous turn${cutTools ? `; ${cutTools} tool call${cutTools > 1 ? "s" : ""} it cut ${cutTools > 1 ? "are" : "is"} marked as interrupted` : ""}. Continue where it left off.`,
+          text: restartText(cutTools, owed),
         });
         this.start(s.id);
         this.emitQueue(s.id);

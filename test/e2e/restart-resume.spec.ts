@@ -321,10 +321,11 @@ test("a held queue survives a restart", async ({ page }) => {
 });
 
 // The compiled binary, killed while the page holds an approval card: the
-// reconnected page drops the old card and answering it is refused (409, with
-// how it ended); the cut turn continues and asks again on a new card that
-// settles once; the command waiting on the old card never runs.
-test("an approval pending at a crash is closed, and the continued turn asks again", async ({ page }) => {
+// reconnected page shows the same card again, and nothing ran meanwhile. The
+// continued turn waits on it; allowed, its call runs and the turn goes on to
+// its next card. A stop (SIGTERM, which parks the turn) keeps an open card the
+// same way, and a denial given after it reaches the model.
+test("an approval pending at a crash or a stop is shown again after the restart", async ({ page }) => {
   const state = join(ROOT, `restart-approval-${Date.now()}`);
   made.push(state);
   mkdirSync(state, { recursive: true });
@@ -350,44 +351,59 @@ test("an approval pending at a crash is closed, and the continued turn asks agai
     const card = page.getByTestId("approval");
     await expect(card).toHaveCount(1, { timeout: 15_000 });
     await expect(card.getByTestId("approval-summary")).toContainText("ran-1");
-    const old = (await card.getAttribute("data-approval-id"))!;
+    const first = (await card.getAttribute("data-approval-id"))!;
 
     d.proc.kill("SIGKILL");
     await exited(d.proc);
     expect(ran()).toBe("");
     d = await daemon(state, {}, at);
 
-    // The same page, reconnected by itself: the old card is gone and the turn asks again.
-    await expect(page.locator(`[data-approval-id="${old}"]`)).toHaveCount(0, { timeout: 30_000 });
-    await expect(card).toHaveCount(1, { timeout: 30_000 });
-    await expect(card.getByTestId("approval-summary")).toContainText("ran-2");
-    const fresh = (await card.getAttribute("data-approval-id"))!;
-    expect(fresh).not.toBe(old);
+    // The same page, reconnected by itself: the same card, still open, and nothing ran.
+    await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.locator(`[data-approval-id="${first}"]`)).toHaveCount(1, { timeout: 30_000 });
+    await expect(card).toHaveCount(1);
+    await expect(card.getByTestId("approval-summary")).toContainText("ran-1");
+    await expect(page.getByTestId("working")).toBeVisible({ timeout: 15_000 }); // the continued turn waits on it
     await shoot(page, "restart-04-approval-after-crash");
-    const stale = await call(`/api/sessions/${sid}/approvals/${old}`, { choice: "once" });
-    expect([stale.status, stale.error]).toEqual([409, "cancelled: the daemon restarted"]);
     expect(ran()).toBe("");
 
     await card.getByTestId("allow-once").click();
-    await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 2 calls", { timeout: 15_000 });
-    await expect(card).toHaveCount(0);
-    const again = await call(`/api/sessions/${sid}/approvals/${fresh}`, { choice: "once" });
-    expect([again.status, again.error]).toEqual([409, "already allowed (once)"]);
-    expect(ran()).toBe("ran-2\n");
+    await expect(card.getByTestId("approval-summary")).toContainText("ran-2", { timeout: 15_000 });
+    expect(ran()).toBe("ran-1\n");
+    const second = (await card.getAttribute("data-approval-id"))!;
+    expect(second).not.toBe(first);
 
-    // Recorded once each: the cut turn's end, the call it cut, the continued turn.
+    // A stop parks the turn: the card stays open across it too.
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    d = await daemon(state, {}, at);
+    await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.locator(`[data-approval-id="${second}"]`)).toHaveCount(1, { timeout: 30_000 });
+    await card.getByTestId("deny").click();
+    await page.getByTestId("deny-reason").fill("not ran-2");
+    await page.getByTestId("deny-send").click();
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 2 calls", { timeout: 15_000 });
+    await expect(page.getByTestId("assistant-text").last()).toContainText("not ran-2");
+    await expect(card).toHaveCount(0);
+    expect(ran()).toBe("ran-1\n");
+    const again = await call(`/api/sessions/${sid}/approvals/${first}`, { choice: "once" });
+    expect([again.status, again.error]).toEqual([409, "already allowed (once)"]);
+
+    // Recorded once each: two cut turns, each call's one result in call order, the continued turns.
     const ev = (await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[];
     expect(new Set(ev.map((e) => e.id)).size).toBe(ev.length);
-    expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
-    expect(ev.filter((e) => e.kind === "user").map((e) => e.data.origin ?? "owner")).toEqual(["owner", "restart"]);
+    expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "restart", "end_turn"]);
+    const users = ev.filter((e) => e.kind === "user");
+    expect(users.map((e) => e.data.origin ?? "owner")).toEqual(["owner", "restart", "restart"]);
+    for (const u of users.slice(1)) expect(u.data.text).toContain("1 call that waited for the owner's approval was asked again");
     const results = ev.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
     const uses = ev.filter((e) => e.kind === "assistant").flatMap((e) => e.data.blocks).filter((b: any) => b.type === "tool_use");
     expect(uses).toHaveLength(2);
     expect(results.map((r: any) => r.tool_use_id)).toEqual(uses.map((u: any) => u.id));
-    expect(results[0].is_error).toBe(true);
-    expect(results[0].content).toContain("did not run");
+    expect(results.map((r: any) => !!r.is_error)).toEqual([false, true]);
+    expect(results[1].content).toBe("The owner denied this call: not ran-2");
     const cards = (await call(`/api/sessions/${sid}/approvals?all`, undefined, "GET")).approvals as any[];
-    expect(cards.map((a) => [a.id, a.state]).sort()).toEqual([[old, "cancelled"], [fresh, "allowed"]].sort());
+    expect(cards.map((a) => [a.id, a.state]).sort()).toEqual([[first, "allowed"], [second, "denied"]].sort());
 
     // A parallel batch: the owner denies one call with a reason while the other
     // still runs, then the daemon dies. The denial and its reason reach the

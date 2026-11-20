@@ -97,7 +97,7 @@ test("a restart cut: questions expire, approval outcomes are kept, only a call t
   const { Bus } = await import("../core/bus.ts");
   const { Gate } = await import("../safety/gate.ts");
   const { registerHooks } = await import("./hooks.ts");
-  const { Engine, APPROVAL_CUT, QUESTION_CUT, RESTART_CUT } = await import("./turn.ts");
+  const { Engine, QUESTION_CUT, RESTART_CUT } = await import("./turn.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "recover-"));
   const store = new Store(dir);
   const bus = new Bus();
@@ -122,16 +122,18 @@ test("a restart cut: questions expire, approval outcomes are kept, only a call t
   card("d3", "denied", { reason: "Refused by the rule: no touching here." });
   card("p1", "pending");
   card("a1", "allowed", { choice: "once" });
-  const gate = new Gate(store, bus); // the new daemon: the open card is cancelled
+  const gate = new Gate(store, bus); // the new daemon: the open card waits for its call to come back
   registerHooks({ callOutcome: (sid, call) => gate.callOutcome(sid, call) });
   const engine = new Engine(store, bus, {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
   const none = async () => { throw new Error("no model here"); };
   await engine.recover([s.id], none);
   await engine.recover([s.id], none); // a second boot adds nothing
   const cut = store.events(s.id).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
-  expect(cut).toHaveLength(9);
+  // The call with an open card has no result: the continued turn asks on that card again.
+  expect(cut).toHaveLength(8);
+  expect(gate.callOutcome(s.id, "p1")).toBe("waiting");
   expect(Object.fromEntries(cut.map((r: any) => [r.tool_use_id, r.content]))).toEqual({
-    q1: QUESTION_CUT, q2: QUESTION_CUT, q3: QUESTION_CUT, w1: RESTART_CUT, a1: RESTART_CUT, p1: APPROVAL_CUT,
+    q1: QUESTION_CUT, q2: QUESTION_CUT, q3: QUESTION_CUT, w1: RESTART_CUT, a1: RESTART_CUT,
     d1: "The owner denied this call: leave d1 alone",
     d2: "The owner denied this call. Do not retry it; take another way or ask.",
     d3: "Refused by the rule: no touching here.",
