@@ -36,3 +36,12 @@ test("each provider's over-the-window refusal is a context error", () => {
   expect(kind("Invalid value for tool_choice.")).toBe("invalid");
   expect(kind("max_tokens: 100000 > 64000, which is the maximum allowed number of output tokens")).toBe("invalid");
 });
+
+// A model the plan does not include comes back as a 429 on some plans: it is
+// not a rate limit, and a turn switched onto it fails at once instead of retrying.
+test("a model outside the plan is not a rate limit", () => {
+  const e = classify("p", 429, new Headers(), JSON.stringify({ error: { message: "Your current subscription plan does not yet include access to GLM-5.3-FlashX" } }));
+  expect(e.kind).toBe("invalid");
+  expect(e.retryable).toBe(false);
+  expect(classify("p", 429, new Headers(), JSON.stringify({ error: { message: "Rate limit reached for requests" } })).kind).toBe("rate");
+});

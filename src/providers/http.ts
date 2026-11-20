@@ -68,6 +68,8 @@ export function classify(label: string, status: number, headers: Headers, body: 
   if (status === 401 || status === 403) return new ProviderError("auth", text, status);
   if (status === 402 || /insufficient_quota|quota|billing|credit|balance|usage limit|plan limit/.test(low) && status === 429)
     return new ProviderError("quota", text, status, wait);
+  // A model the plan does not include, sent as a 429 by some plans: waiting does not help.
+  if (/(does not|doesn't) (yet )?include access|not (available|included) (on|in|with) your (current )?(subscription|plan)/.test(low)) return new ProviderError("invalid", text, status);
   if (status === 429) return new ProviderError("rate", text, status, wait);
   if (status === 529 || status === 503 || /overloaded/.test(low)) return new ProviderError("overloaded", text, status, wait);
   if (status >= 500) return new ProviderError("server", text, status, wait);
