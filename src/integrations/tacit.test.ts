@@ -1,14 +1,14 @@
 // What the e2e cannot see: the messages of a summary request that is the
 // first request of a turn, with the hooks that answer a new prompt installed.
 import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { Engine } from "../engine/turn.ts";
 import { hookRoutes } from "../server/routes/hooks.ts";
-import { Tacit } from "./tacit.ts";
+import { MEMORY_CAP, Tacit } from "./tacit.ts";
 
 // A context over its limit is summarized before the turn's first request. That
 // request carries the summary's own ask and none of the new prompt: memory and
@@ -18,7 +18,21 @@ import { Tacit } from "./tacit.ts";
 test("a summary sent before a turn's first request keeps its ask; the prompt's hooks run on the turn request", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "prompt-hooks-"));
   const bin = join(dir, "tacit");
-  writeFileSync(bin, '#!/bin/sh\ncat > /dev/null\nif [ "$2" = prompt ]; then echo MEMORY-FOR-PROMPT; fi\n', { mode: 0o755 });
+  const context = "é".repeat(MEMORY_CAP + 1);
+  writeFileSync(bin, `#!/bin/sh
+input=$(cat)
+case "$2" in
+  prompt) echo MEMORY-FOR-PROMPT ;;
+  pre-tool)
+    case "$input" in
+      *fixture-hit*) printf '%s\\n' '${JSON.stringify({ hookSpecificOutput: { additionalContext: context } })}' ;;
+      *fixture-timeout*) exec sleep 3 ;;
+      *fixture-failure*) exit 1 ;;
+      *fixture-invalid*) echo not-json ;;
+      *) echo '{}' ;;
+    esac ;;
+esac
+`, { mode: 0o755 });
   const ownerHooks = process.env.KEEL_HOOKS;
   process.env.KEEL_HOOKS = join(dir, "hooks.json");
   writeFileSync(process.env.KEEL_HOOKS, JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "cat > /dev/null; echo HOOK-FOR-PROMPT" }] }] } }));
@@ -39,7 +53,8 @@ test("a summary sent before a turn's first request keeps its ask; the prompt's h
     };
     const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] } as any;
     const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
-    new Tacit(store, bus, errors, bin).install();
+    const tacit = new Tacit(store, bus, errors, bin);
+    tacit.install();
     hookRoutes({ store, bus, engine, providers, errors, workspace: dir });
 
     const s = store.createSession({ model: "p:m", workspace: dir });
@@ -58,9 +73,32 @@ test("a summary sent before a turn's first request keeps its ask; the prompt's h
     expect(turn).not.toContain("x".repeat(20_000));
     for (const here of ["THE-NEW-PROMPT", "MEMORY-FOR-PROMPT", "HOOK-FOR-PROMPT"]) expect(turn).toContain(here);
     expect(store.events(s.id).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+
+    expect(await tacit.startBlock(s)).toBeNull();
+    const { rebuilt, bytes: { total: bytesBefore } } = tacit.stats().transcript;
+    expect(await tacit.preToolBlock(s, "read", {})).toBeNull(); // no Tacit call
+    expect(await tacit.preToolBlock(s, "bash", { command: "fixture-hit" })).toBe(context);
+    for (const kind of ["empty", "failure", "invalid", "timeout"])
+      expect(await tacit.preToolBlock(s, "bash", { command: `fixture-${kind}` })).toBeNull();
+    const stats = tacit.stats();
+    expect(stats.hooks["prompt"].outcomes.hit).toBe(1);
+    expect(stats.hooks["session-start"].outcomes.empty).toBe(1);
+    expect(stats.hooks["pre-compact"].outcomes.ok).toBe(1);
+    const preTool = stats.hooks["pre-tool"];
+    expect(preTool.outcomes).toEqual({ hit: 1, empty: 1, failure: 2, timeout: 1, ok: 0 });
+    expect(preTool.context_bytes).toEqual({ total: MEMORY_CAP * 2, max: MEMORY_CAP * 2 });
+    expect(preTool.duration_ms.max).toBeGreaterThan(0);
+    expect(preTool.duration_ms.total).toBeGreaterThan(preTool.duration_ms.max);
+    expect(stats.transcript.failed).toBe(0);
+    expect(stats.transcript.rebuilt - rebuilt).toBe(5);
+    expect(stats.transcript.bytes.total - bytesBefore).toBe(5 * statSync(tacit.transcriptPath(s)).size);
+    expect(stats.transcript.duration_ms.total).toBeGreaterThan(0);
+    const json = JSON.stringify(stats);
+    for (const secret of [context.slice(0, 20), "THE-NEW-PROMPT", "MEMORY-FOR-PROMPT", "fixture-timeout", s.id, dir]) expect(json).not.toContain(secret);
   } finally {
     allHooks().length = installed; // the hooks are process-wide: other test files run without these
     if (ownerHooks === undefined) delete process.env.KEEL_HOOKS;
     else process.env.KEEL_HOOKS = ownerHooks;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

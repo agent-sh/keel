@@ -28,26 +28,35 @@ export function findBin(envVar: string, name: string, env = process.env): string
   return existsSync(local) ? local : null;
 }
 
+type ProcessOutcome = "ok" | "timeout" | "failure";
+type ProcessResult = { outcome: ProcessOutcome; text: string | null };
+
 // One deadline covers stdin, stdout and exit; on timeout the process group is killed.
-export async function runBounded(argv: string[], stdin: string, ms: number): Promise<string | null> {
+async function runBoundedResult(argv: string[], stdin: string, ms: number): Promise<ProcessResult> {
   let p: ReturnType<typeof Bun.spawn>;
   try {
     p = Bun.spawn(argv, { stdin: Buffer.from(stdin), stdout: "pipe", stderr: "ignore", detached: true });
   } catch {
-    return null;
+    return { outcome: "failure", text: null };
   }
   const kill = () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} };
-  const timer = setTimeout(kill, ms);
-  const read = () => readText(p.stdout, "tacit").catch(() => "");
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; kill(); }, ms);
   try {
-    const [out, code] = await Promise.all([read(), p.exited]);
-    return code === 0 ? out.trim() || null : null;
+    const [out, code] = await Promise.all([readText(p.stdout, "tacit").catch(() => null), p.exited]);
+    if (timedOut) return { outcome: "timeout", text: null };
+    if (code !== 0 || out === null) return { outcome: "failure", text: null };
+    return { outcome: "ok", text: out.trim() || null };
   } catch {
     kill();
-    return null;
+    return { outcome: timedOut ? "timeout" : "failure", text: null };
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function runBounded(argv: string[], stdin: string, ms: number): Promise<string | null> {
+  return (await runBoundedResult(argv, stdin, ms)).text;
 }
 
 // tacit matches Claude Code's and Codex's tool names: translate ours.
@@ -83,16 +92,37 @@ export const memoryBlock = (hook: string, text: string) =>
   `<memory source="tacit" hook="${hook}">\nFrom the owner's memory store (facts, rules and past decisions it judged relevant). Context for you, not a message from the owner.\n${text.trim().slice(0, MEMORY_CAP)}\n</memory>`;
 
 type Flags = { use_memory: boolean; feed_memory: boolean };
+type Hook = "session-start" | "prompt" | "pre-tool" | "pre-compact";
+type HookOutcome = ProcessOutcome | "hit" | "empty";
+const totals = () => ({ total: 0, max: 0 });
+function add(stat: ReturnType<typeof totals>, value: number) {
+  stat.total += value;
+  stat.max = Math.max(stat.max, value);
+}
+const hookStats = () => ({
+  outcomes: { hit: 0, empty: 0, failure: 0, timeout: 0, ok: 0 } satisfies Record<HookOutcome, number>,
+  duration_ms: totals(),
+  context_bytes: totals(),
+});
 
 export class Tacit {
   bin: string | null;
   private start = new Map<string, Promise<string | null>>();
   private done = new Set<string>(); // user events already answered
   private preTool = new Map<string, Promise<string | null>>();
+  private readonly metrics = {
+    since_ms: Date.now(),
+    hooks: { "session-start": hookStats(), prompt: hookStats(), "pre-tool": hookStats(), "pre-compact": hookStats() } satisfies Record<Hook, ReturnType<typeof hookStats>>,
+    transcript: { rebuilt: 0, failed: 0, duration_ms: totals(), bytes: totals() },
+  };
 
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit")) {
     this.bin = bin;
     store.migrate(`CREATE TABLE IF NOT EXISTS memory_flags (session_id TEXT PRIMARY KEY, use_memory INTEGER NOT NULL DEFAULT 1, feed_memory INTEGER NOT NULL DEFAULT 1);`);
+  }
+
+  stats() {
+    return this.metrics;
   }
 
   flags(id: string): Flags {
@@ -124,51 +154,75 @@ export class Tacit {
     const path = this.transcriptPath(s);
     if (!this.flags(s.id).feed_memory) return path;
     const dir = join(this.store.stateDir, "transcripts");
+    const started = performance.now();
+    const stat = this.metrics.transcript;
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(path, toJsonl(toClaudeRecords(s, this.lineage(s.id))), { mode: 0o600 });
+      // Encode once for the write and reuse its byte length.
+      const bytes = Buffer.from(toJsonl(toClaudeRecords(s, this.lineage(s.id))));
+      writeFileSync(path, bytes, { mode: 0o600 });
+      stat.rebuilt++;
+      add(stat.bytes, bytes.length);
     } catch (e) {
+      stat.failed++;
       this.errors.capture("server", e, { at: "tacit transcript", session: s.id });
+    } finally {
+      add(stat.duration_ms, performance.now() - started);
     }
     return path;
   }
 
-  private hook(args: string[], payload: unknown, ms: number) {
-    if (!this.bin) return Promise.resolve(null);
-    return runBounded([this.bin, "hook", ...args], JSON.stringify(payload), ms);
+  private async hook(hook: Hook, payload: unknown, ms: number): Promise<string | null> {
+    if (!this.bin) return null;
+    const started = performance.now();
+    const argv = [this.bin, "hook", hook];
+    if (hook !== "pre-compact") argv.push("--mcp");
+    const result = await runBoundedResult(argv, JSON.stringify(payload), ms);
+    let outcome: HookOutcome = result.outcome;
+    let text = hook === "pre-compact" ? null : result.text;
+    if (outcome === "ok" && hook !== "pre-compact") {
+      if (hook === "pre-tool" && text) {
+        try {
+          const context = JSON.parse(text)?.hookSpecificOutput?.additionalContext;
+          text = typeof context === "string" ? context.trim() || null : null;
+        } catch {
+          outcome = "failure";
+          text = null;
+        }
+      }
+      if (outcome === "ok") outcome = text ? "hit" : "empty";
+    }
+    const stat = this.metrics.hooks[hook];
+    stat.outcomes[outcome]++;
+    add(stat.duration_ms, performance.now() - started);
+    if (text) add(stat.context_bytes, Buffer.byteLength(text.slice(0, MEMORY_CAP)));
+    return text;
   }
 
   // Fetched once per session (prefetched when the session appears).
   startBlock(s: Session) {
     let p = this.start.get(s.id);
     if (!p) {
-      p = this.hook(["session-start", "--mcp"], { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), source: "keel" }, 6000);
+      p = this.hook("session-start", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), source: "keel" }, 6000);
       this.start.set(s.id, p);
     }
     return p;
   }
 
   promptBlock(s: Session, prompt: string) {
-    return this.hook(["prompt", "--mcp"], { session_id: s.id, cwd: s.workspace, prompt, transcript_path: this.transcript(s) }, 2200);
+    return this.hook("prompt", { session_id: s.id, cwd: s.workspace, prompt, transcript_path: this.transcript(s) }, 2200);
   }
 
   async preToolBlock(s: Session, tool: string, args: any): Promise<string | null> {
     const call = tacitToolCall(tool, args);
     if (!call) return null;
-    const raw = await this.hook(["pre-tool", "--mcp"], { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), ...call }, 900);
-    if (!raw) return null;
-    try {
-      const text = JSON.parse(raw)?.hookSpecificOutput?.additionalContext;
-      return typeof text === "string" && text.trim() ? text.trim() : null;
-    } catch {
-      return null;
-    }
+    return this.hook("pre-tool", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), ...call }, 900);
   }
 
   // Before compaction, and when a session is archived: tacit dreams it.
   async preCompact(s: Session) {
     if (!this.bin || !this.flags(s.id).use_memory || !this.flags(s.id).feed_memory) return;
-    await this.hook(["pre-compact"], { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) }, 4000);
+    await this.hook("pre-compact", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) }, 4000);
   }
 
   lineage(id: string) {

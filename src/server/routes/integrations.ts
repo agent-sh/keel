@@ -45,6 +45,9 @@ export const integrationRoutes: RouteModule = (deps) => {
     "/api/integrations": {
       GET: () => json({ tacit: { available: !!tacit.bin, bin: tacit.bin }, momentum: { available: !!findBin("MOMENTUM_BIN", "momentum"), socket } }),
     },
+    "/api/integrations/tacit/stats": {
+      GET: () => Response.json(tacit.stats(), { headers: { "cache-control": "no-store" } }),
+    },
     "/api/momentum": { GET: async () => json(await momentumReport()) },
     "/api/sessions/:id/memory": {
       GET: (req: any) => (store.session(req.params.id) ? json({ available: !!tacit.bin, ...tacit.flags(req.params.id) }) : bad("no such session", 404)),

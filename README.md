@@ -50,6 +50,21 @@ history and that turn follows the usual restart behavior.
 the phone, paired with a one-time `keel://pair` code from Settings, then Phone.
 See `android/README.md`.
 
+## Memory observability
+
+`GET /api/integrations/tacit/stats` reports in-memory totals since `since_ms`
+(reset on restart or reload). Each hook records completed outcomes and total
+and maximum elapsed milliseconds, separate from transcript rebuild time.
+`hit` means the hook supplied context, not that it was relevant. `empty` means
+it succeeded without context, and `ok` means pre-compaction succeeded without
+requesting context. `timeout` and `failure` are counted separately.
+
+Context bytes count UTF-8 text after Keel's cap, before its memory wrapper.
+Transcript metrics count rebuilds, failures, elapsed milliseconds, and bytes
+written by successful rebuilds. The endpoint includes no prompts, transcripts,
+facts, or session identifiers. Poll it and compare counter deltas to track
+changes over time.
+
 ## License
 
 MIT
