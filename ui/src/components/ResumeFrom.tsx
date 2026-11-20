@@ -212,12 +212,27 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
       )}
 
       <div className="border-t border-line px-4 py-3">
+        {jobList.length > 0 && ((!waiting && intent === "wait") || intent === "now") && (
+          <div className="mb-3">
+            <p className="text-caption font-medium">{jobList.length === 1 ? "Its background job" : `Its ${jobList.length} background jobs`}</p>
+            <RadioGroup value={jobs} onValueChange={(v) => setJobs(v as "keep" | "end")} className="mt-1.5 flex flex-col gap-1.5">
+              {([["keep", "Keep running", `Keel leaves ${jobList.length === 1 ? "it" : "them"} alone; the copy is told ${jobList.length === 1 ? "it still runs" : "they still run"} there.`], ["end", "End with it", "Ended after the original, and the copy is told to start what is still needed."]] as const).map(([v, name, what]) => (
+                <label key={v} className="flex cursor-pointer items-start gap-2.5">
+                  <Radio.Root value={v} data-testid={`jobs-${v}`} className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong outline-none focus-visible:ring-2 focus-visible:ring-accent/40 data-checked:border-accent">
+                    <Radio.Indicator className="size-2 rounded-full bg-accent" />
+                  </Radio.Root>
+                  <span className="min-w-0"><span className="block text-ui">{name}</span><span className="block text-caption text-muted">{what}</span></span>
+                </label>
+              ))}
+            </RadioGroup>
+          </div>
+        )}
         {waiting ? (
           <div className="flex items-center gap-3" data-testid="resume-waiting">
             <Hourglass className="size-4 shrink-0 text-st-work" />
             <div className="min-w-0 flex-1">
               <p className="text-ui">Waiting until it is idle</p>
-              <p className="text-caption text-muted" data-testid="resume-deadline">Gives up at {clock(wait!.deadline_ms)}, in {fmtWait(wait!.deadline_ms - now)}. Then it is left running and you choose again.{jobList.length > 0 && ` Its background ${jobList.length === 1 ? "job goes" : "jobs go"} on either way.`}</p>
+              <p className="text-caption text-muted" data-testid="resume-deadline">Gives up at {clock(wait!.deadline_ms)}, in {fmtWait(wait!.deadline_ms - now)}. Then it is left running and you choose again.{jobList.length > 0 && (wait!.jobs === "end" ? " Its background jobs end only if Keel resumes the session." : " Its background jobs are left running.")}</p>
             </div>
             <button type="button" data-testid="resume-cancel" onClick={() => void cancelWait(target)} className={quiet}>Cancel</button>
             <button type="button" data-testid="resume-now-instead" onClick={() => onIntent("now")} className={plain}>Resume now</button>
@@ -238,29 +253,14 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
           </div>
         ) : (
           <div className="flex items-center justify-end gap-2" data-testid="resume-choices">
-            {wait?.state === "expired" && <span className="min-w-0 flex-1 text-caption text-warn" data-testid="resume-expired">The wait gave up at {clock(wait.deadline_ms)}: it was still at work.</span>}
+            {wait?.state === "expired" && <span className="min-w-0 flex-1 text-caption text-warn" data-testid="resume-expired">The wait gave up at {clock(wait.deadline_ms)}: Keel could not confirm it was idle.</span>}
             {waitable && <button type="button" data-testid="resume-wait" onClick={() => onIntent("wait")} className={plain}><Hourglass className="size-3.5" /> Wait until idle</button>}
             <button type="button" data-testid="resume-now" onClick={() => onIntent("now")} className={plain}><CircleStop className="size-3.5" /> Resume now</button>
           </div>
         )}
         {intent === "now" && (active || waiting) && (
           <div data-testid="resume-now-form" className={cn(waiting && "mt-3 border-t border-line pt-3")}>
-            {jobList.length > 0 && (
-              <>
-                <p className="text-caption font-medium">{jobList.length === 1 ? "Its background job" : `Its ${jobList.length} background jobs`}</p>
-                <RadioGroup value={jobs} onValueChange={(v) => setJobs(v as "keep" | "end")} className="mt-1.5 flex flex-col gap-1.5">
-                  {([["keep", "Keep running", `Keel leaves ${jobList.length === 1 ? "it" : "them"} alone; the copy is told ${jobList.length === 1 ? "it still runs" : "they still run"} there.`], ["end", "End with it", "Ended after the original, and the copy is told to start what is still needed."]] as const).map(([v, name, what]) => (
-                    <label key={v} className="flex cursor-pointer items-start gap-2.5">
-                      <Radio.Root value={v} data-testid={`jobs-${v}`} className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong outline-none focus-visible:ring-2 focus-visible:ring-accent/40 data-checked:border-accent">
-                        <Radio.Indicator className="size-2 rounded-full bg-accent" />
-                      </Radio.Root>
-                      <span className="min-w-0"><span className="block text-ui">{name}</span><span className="block text-caption text-muted">{what}</span></span>
-                    </label>
-                  ))}
-                </RadioGroup>
-              </>
-            )}
-            <div className={cn("flex items-center gap-2", jobList.length > 0 && "mt-3")}>
+            <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 text-caption text-muted">
                 {seen.in_flight.some((i) => i.kind !== "job") ? "The calls above are interrupted. The copy gets this list in a note, so it can redo them." : "The copy gets this list in a note."}
               </span>

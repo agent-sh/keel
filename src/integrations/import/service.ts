@@ -38,6 +38,9 @@ const READER_V = 2;
 
 export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null };
 
+// Fleet import links encode the source machine as `<machine>:<absolute path>`.
+export const sourceMachine = (path: string) => /^(m[0-9a-f]{8}):\//.exec(path)?.[1];
+
 // What the copy holds of its source, so an update can tell the source went on
 // (the same events, more after them) from a source that rewound or switched
 // branch (earlier events changed), whose later events must not be appended.
@@ -266,13 +269,13 @@ export class Imports {
     this.store.db.query("DELETE FROM import_live WHERE session_id = ?").run(sessionId);
   }
 
-  // The copies of a source, newest first. Two transcripts can carry the same
-  // session id (a copied or moved folder): given the source's file, a copy of
-  // another file with that id is not one of its copies while that file is
-  // still there.
-  links(harness: Harness, id: string, path?: string): Link[] {
+  // The copies of a source, newest first. A source id can appear on more
+  // than one machine. The link names the source machine even if its copy moves.
+  // Local transcripts can also move files: keep the old link when its file is gone.
+  links(harness: Harness, id: string, path?: string, machine?: string): Link[] {
     return this.store.db.query<Link, [string, string]>("SELECT * FROM import_links WHERE harness = ? AND source_id = ? ORDER BY imported_ms DESC").all(harness, id)
-      .filter((l) => this.store.session(l.session_id) && (!path || l.source_path === path || !sourceStat({ harness, path: l.source_path } as Found)));
+      .filter((l) => sourceMachine(l.source_path) === machine && this.store.session(l.session_id) &&
+        (machine || !path || l.source_path === path || !sourceStat({ harness, path: l.source_path } as Found)));
   }
 
   link(sessionId: string): Link | undefined {
@@ -299,7 +302,7 @@ export class Imports {
   // Open never reads the source (the copy stands on its own); `session_id`
   // names which copy when there are several.
   async import(f: Found, o: { mode?: "new" | "update" | "open"; model: string; workspace: string; title?: string; session_id?: string; from?: { machine: string; read: Read } }): Promise<{ action: "created" | "updated" | "opened"; session: Session; imported_events: number; read?: Read }> {
-    const copies = o.from ? this.links(f.harness, f.id) : this.links(f.harness, f.id, f.path);
+    const copies = this.links(f.harness, f.id, f.path, o.from?.machine);
     const prior = o.session_id ? copies.find((l) => l.session_id === o.session_id) : copies[0];
     if (o.session_id && !prior) throw refuse(`${o.session_id} is not a copy of ${f.id}`);
     if (prior && o.mode === "open") return { action: "opened", session: this.store.session(prior.session_id)!, imported_events: 0 };

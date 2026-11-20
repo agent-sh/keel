@@ -36,6 +36,9 @@ export type Helper = { pid: number; pgid: number; command: string; since_ms: num
 // `why` is a sentence part for a sheet and a note; `brief` the same in a few words, for a row.
 export type Activity = { state: "ended" | "idle" | "active"; in_flight: InFlight[]; helpers: Helper[]; why: string; brief: string };
 
+// Wait for the turn and prompts, not independent background jobs.
+export const atWork = (a: Activity) => a.in_flight.some((i) => i.kind !== "job");
+
 const INTERRUPTED = /^\[Request interrupted by user( for tool use)?\]$/;
 const SHELLS = new Set(["Bash", "shell", "exec_command", "shell_command", "local_shell", "container.exec", "run_shell_command"]);
 const SUBAGENTS = new Set(["Agent", "Task", "spawn_agent"]);

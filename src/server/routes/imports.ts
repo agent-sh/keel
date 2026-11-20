@@ -6,7 +6,7 @@ import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
 import { exportTo, parseKeelJsonl, redact, redactDeep, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
-import { HARNESSES, modelFor as pickModel, sharedImports } from "../../integrations/import/service.ts";
+import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine } from "../../integrations/import/service.ts";
 import { offered, scrub, tail } from "../../integrations/import/offer.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, proven } from "../../fleet/link.ts";
@@ -130,7 +130,7 @@ export const importRoutes: RouteModule = (deps) => {
         return json({
           machine_id: m.id, machine: m.name, has_agent_view: false, tools_present: r.tools_present, transport: fleet!.isSsh(m) ? "ssh" : "daemon",
           sessions: r.sessions.map((f: Found) => {
-            const l = imports.links(f.harness, f.id)[0];
+            const l = imports.links(f.harness, f.id, undefined, m.id)[0];
             return {
               ...f,
               imported: l ? { session_id: l.session_id, synced_ms: l.synced_ms, grew: f.size_bytes !== l.source_size || Math.round(f.updated_ms) !== l.source_mtime, went_on: imports.wentOn(l.session_id) } : undefined,
@@ -150,7 +150,7 @@ export const importRoutes: RouteModule = (deps) => {
         const r = await ask<any>(m.id, `/api/fleet/hands/transcript?harness=${encodeURIComponent(u.get("harness") ?? "")}&id=${encodeURIComponent(u.get("id") ?? "")}`);
         if (r instanceof Response) return r;
         const f = r.session as Found;
-        return json({ session: { ...r.session, cwd_exists: r.session.cwd_exists }, counts: r.read.counts, notes: r.read.notes, tail: r.tail, links: imports.links(f.harness, f.id).map((l) => ({ session_id: l.session_id, imported_ms: l.imported_ms, synced_ms: l.synced_ms })) });
+        return json({ session: { ...r.session, cwd_exists: r.session.cwd_exists }, counts: r.read.counts, notes: r.read.notes, tail: r.tail, links: imports.links(f.harness, f.id, undefined, m.id).map((l) => ({ session_id: l.session_id, imported_ms: l.imported_ms, synced_ms: l.synced_ms })) });
       },
     },
     // A transcript of that machine goes on here, its tools running there: in
@@ -162,7 +162,7 @@ export const importRoutes: RouteModule = (deps) => {
         const b = await body(req);
         if (!isHarness(b.harness) || !b.id) return bad("give harness and id");
         if (b.mode && !["new", "update", "open"].includes(b.mode)) return bad(`unknown mode ${b.mode}`);
-        const prior = imports.links(b.harness, String(b.id))[0];
+        const prior = imports.links(b.harness, String(b.id), undefined, m.id)[0];
         if (prior && !b.mode) return json({ error: "this session was imported before: open it, update it, or make a new copy", session_id: prior.session_id }, 409);
         if (prior && b.mode === "open") return json({ action: "opened", session: store.session(prior.session_id) });
         const r = await ask<{ session: Found & { cwd_exists: boolean }; read: Read }>(m.id, `/api/fleet/hands/transcript?harness=${b.harness}&id=${encodeURIComponent(String(b.id))}&full=1`);
@@ -311,7 +311,7 @@ export const importRoutes: RouteModule = (deps) => {
           source = { exists: true, grew: st.size !== l.source_size || Math.round(st.mtimeMs) !== l.source_mtime };
         } catch {}
         // A copy of a transcript read on another machine names that machine (its link is "<machine>:<path>").
-        const far = /^(m[0-9a-f]{8}):\//.exec(l.source_path)?.[1];
+        const far = sourceMachine(l.source_path);
         const fm = far ? fleet?.row(far) : undefined;
         const machine = fm ? { id: fm.id, name: fm.name, ssh: fleet!.isSsh(fm) } : undefined;
         return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id), machine }, source });

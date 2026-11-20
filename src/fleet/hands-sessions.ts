@@ -19,7 +19,7 @@ import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readText } from "../core/proc.ts";
-import { classify, groupsUnder, tailReader, type Activity, type Group, type Proc, type Signals, type Tail } from "../integrations/import/activity.ts";
+import { atWork, classify, groupsUnder, tailReader, type Activity, type Group, type Proc, type Signals, type Tail } from "../integrations/import/activity.ts";
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "../integrations/import/claude.ts";
 import { codexFiles, codexFound, codexHome, readCodex } from "../integrations/import/codex.ts";
 import { linesBack } from "../integrations/import/files.ts";
@@ -257,12 +257,15 @@ const END_MS = 10_000; // what a harness gets to save and leave after it is aske
 // ends it (SIGTERM: both harnesses write their transcript as they go and stop
 // their running command), only when it is still the process the owner was
 // shown. Its interrupted calls end with it; its jobs as the owner chose.
-async function endHarness(f: Found, want: { pid: number; started_ms: number }, jobs: "keep" | "end") {
+async function endHarness(f: Found, want: { pid: number; started_ms: number }, jobs: "keep" | "end", idleBy?: number) {
   const before = await activityOf(f);
   const p = before.process;
   if (!p) return { ended: true, was_running: false, jobs: [], calls: [] };
   if (p.pid !== want.pid || p.started_ms !== want.started_ms) return { ended: false, why: "another process runs this session now than the one shown: look at it again", jobs: [], calls: [] };
   const started = Date.now();
+  // The last word about activity comes from the machine sending the signal.
+  // A new turn can start after the daemon's earlier check.
+  if (idleBy !== undefined && (started >= idleBy || atWork(before))) return { ended: false, deferred: true, jobs: [], calls: [] };
   process.kill(p.pid, "SIGTERM");
   if (!(await gone([p.pid], END_MS))) return { ended: false, why: `it did not exit within ${END_MS / 1000} s of being asked to (SIGTERM)`, jobs: [], calls: [] };
   const took_ms = Date.now() - started;
@@ -282,7 +285,7 @@ async function endHarness(f: Found, want: { pid: number; started_ms: number }, j
     const running = jobs === "end" ? await end(j.pgid!) : (await Bun.sleep(300), (await members(j.pgid!)).length > 0);
     left.push({ label: j.label, command: j.command, pid: j.pid, pgid: j.pgid, since_ms: j.since_ms, running });
   }
-  return { ended: true, was_running: true, how: "SIGTERM", took_ms, jobs: left, calls };
+  return { ended: true, was_running: true, how: "SIGTERM", took_ms, in_flight: before.in_flight, jobs: left, calls };
 }
 
 export function sessionRoutes() {
@@ -333,12 +336,14 @@ export function sessionRoutes() {
     },
     "/api/fleet/hands/harness/end": {
       POST: async (req: Request) => {
+        const received = Date.now();
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
         if (!isHere(b.harness) || typeof b.id !== "string") return bad("give harness and id");
         if (typeof b.pid !== "number" || typeof b.started_ms !== "number") return bad("give the process that was shown: pid and started_ms");
         const f = await find(b.harness, b.id);
         if (!f) return bad(`${b.harness} has no session ${b.id}`, 404);
-        return json(await endHarness(f, { pid: b.pid, started_ms: b.started_ms }, b.jobs === "end" ? "end" : "keep"));
+        const idleBy = typeof b.idle_ms === "number" ? received + Math.max(0, b.idle_ms) : undefined;
+        return json(await endHarness(f, { pid: b.pid, started_ms: b.started_ms }, b.jobs === "end" ? "end" : "keep", idleBy));
       },
     },
   } satisfies Record<string, Record<string, (req: Request) => Promise<Response>>>;

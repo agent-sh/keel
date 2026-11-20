@@ -85,9 +85,17 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
   transcript(home, join(root, ".ssh", tag), sid(3), `Hidden ${tag}`, "sloe");
 
   const made: string[] = [];
+  let localCopy = "";
   const procs: number[] = [];
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   try {
+    // A local import from an explicitly named fixture has the same source id.
+    // It must not be offered as the copy from the SSH machine.
+    const fixture = join(home, ".claude", "projects", proj.replace(/[^A-Za-z0-9]/g, "-"), `${sid(1)}.jsonl`);
+    const local = await request.post("/api/import", { data: { path: fixture, harness: "claude", model: STAND_IN } });
+    expect(local.status()).toBe(201);
+    localCopy = (await local.json()).session.id;
+
     // ---- the list and a plain import, over the ssh link
     await page.goto("/");
     let sheet = await openSheet(page, m.name);
@@ -96,10 +104,12 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     await expect(sheet.getByTestId("original-strip")).toHaveCount(0); // nothing runs them
     await sheet.locator(`[data-testid="import-row"][data-id="${sid(1)}"]`).click();
     await expect(sheet.getByTestId("import-counts")).toContainText(/1\s*prompts/);
+    await expect(sheet.getByTestId("import-go")).toBeEnabled();
     await shoot(page, "resume-01-list");
     await sheet.getByTestId("import-go").click();
     await expect(page.getByTestId("machine-chip")).toContainText(m.name, { timeout: 15_000 });
     made.push(page.url().split("/s/")[1]!);
+    expect(made[0]).not.toBe(localCopy);
     expect((await (await request.get(`/api/sessions/${made[0]}`)).json()).session.workspace).toBe(proj);
     // A transcript whose folder is outside the grant goes on in the granted directory, and says so.
     const far = await (await request.post(`/api/fleet/machines/${m.id}/transcripts/import`, { data: { harness: "claude", id: sid(2) } })).json();
@@ -131,6 +141,7 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     await expect(card.getByTestId("resume-state")).toContainText("still working on this");
     await expect(card.getByTestId("in-flight-item")).toHaveCount(2);
     await expect(card.getByTestId("resume-until")).toContainText(/until \d\d:\d\d/);
+    await expect(card.getByTestId("jobs-keep")).toBeChecked();
     await shoot(page, "resume-03-wait-form");
     await card.getByTestId("resume-wait-go").click();
     await expect(card.getByTestId("resume-deadline")).toContainText(/Gives up at \d\d:\d\d/);
@@ -217,6 +228,7 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
   } finally {
     for (const pid of procs) { try { process.kill(-pid, "SIGKILL"); } catch {} try { process.kill(pid, "SIGKILL"); } catch {} }
     await request.put("/api/permissions/settings", { data: { default_mode: prev } });
+    if (localCopy) await request.delete(`/api/sessions/${localCopy}`);
     for (const id of made) await request.delete(`/api/sessions/${id}`);
     if (enabledHere) await request.delete(`/api/fleet/machines/${m.id}`);
     for (const n of [1, 2, 3, 4, 5]) for (const d of [proj, outside, join(root, ".ssh", tag)]) rmSync(join(home, ".claude", "projects", d.replace(/[^A-Za-z0-9]/g, "-"), `${sid(n)}.jsonl`), { force: true });

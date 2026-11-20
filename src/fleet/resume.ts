@@ -14,7 +14,7 @@ import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import { endedText, liveText } from "../drive/takeover.ts";
 import type { Engine } from "../engine/turn.ts";
-import type { Activity, InFlight } from "../integrations/import/activity.ts";
+import { atWork, type Activity, type InFlight } from "../integrations/import/activity.ts";
 import { HARNESSES, modelFor, type Imports } from "../integrations/import/service.ts";
 import type { Found, Harness, Read } from "../integrations/import/types.ts";
 import type { Providers } from "../providers/registry.ts";
@@ -24,7 +24,7 @@ import { LinkError } from "./link.ts";
 
 export type Seen = Activity & { process?: { pid: number; started_ms: number; status?: string }; checked_ms: number };
 type EndedJob = { label: string; command?: string; pid?: number; pgid?: number; since_ms?: number; running: boolean };
-type Ended = { ended: boolean; was_running?: boolean; why?: string; how?: string; took_ms?: number; jobs: EndedJob[]; calls: EndedJob[] };
+type Ended = { ended: boolean; deferred?: boolean; in_flight?: InFlight[]; was_running?: boolean; why?: string; how?: string; took_ms?: number; jobs: EndedJob[]; calls: EndedJob[] };
 export type Wait = {
   machine_id: string; harness: Harness; id: string; jobs: "keep" | "end"; model?: string;
   state: "waiting" | "resumed" | "expired" | "failed" | "cancelled";
@@ -43,9 +43,6 @@ export class ResumeError extends Error {
   constructor(public status: number, message: string, public more: Record<string, unknown> = {}) { super(message); }
 }
 
-// Work a wait is for: a turn, its calls and subagents. A background job is not
-// waited for (it may run for hours); it goes on when the wait ends the original.
-const atWork = (a: Activity) => a.in_flight.some((i) => i.kind !== "job");
 const POLL_MS = 2000;
 const KEEP_MS = 10 * 60_000; // a finished wait stays on its row this long
 const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -101,7 +98,7 @@ export class Resumes {
   private async copy(m: MachineRow, harness: Harness, id: string, o: { model?: string; title?: string; mode?: "new" | "update" | "open" }) {
     const r = await this.fleet.handsJson<{ session: Found & { cwd_exists: boolean }; read: Read }>(m.id, `/api/fleet/hands/transcript?${this.q(harness, id)}&full=1`, { timeout: 120_000, idempotent: true });
     const f = r.session;
-    const prior = this.imports.links(harness, id)[0];
+    const prior = this.imports.links(harness, id, undefined, m.id)[0];
     const model = o.model || (prior && this.d.store.session(prior.session_id)?.model) || (await modelFor(this.d.providers, f));
     if (!model) throw new ResumeError(409, "no model is available: no provider has credentials");
     const workspace = f.cwd && f.cwd_exists && contains(m.workspace_root!, f.cwd) ? f.cwd : m.workspace_root!;
@@ -140,20 +137,21 @@ export class Resumes {
   }
 
   // Ends the original and makes the copy. `seen`: the state the owner acted on.
-  async finish(m: MachineRow, harness: Harness, id: string, seen: Seen, o: { jobs: "keep" | "end"; model?: string; waited_ms?: number }): Promise<Resumed> {
+  private async finish(m: MachineRow, harness: Harness, id: string, seen: Seen, o: { jobs: "keep" | "end"; model?: string; waited_ms?: number; idle_ms?: number }): Promise<Resumed | null> {
     let ended: Ended = { ended: true, was_running: false, jobs: [], calls: [] };
     if (seen.process) {
       ended = await this.fleet.handsJson<Ended>(m.id, "/api/fleet/hands/harness/end", {
         method: "POST", timeout: 60_000,
-        body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs }),
+        body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs, idle_ms: o.idle_ms }),
       });
+      if (ended.deferred) return null;
       if (!ended.ended) throw new ResumeError(409, `Keel did not end the original on ${m.name}: ${ended.why ?? "no reason given"}. Nothing was copied; end it there, or look again.`);
     }
     const c = await this.copy(m, harness, id, { model: o.model });
     const label = HARNESSES.find((h) => h.harness === harness)?.label ?? harness;
     const how = ended.was_running ? `${ended.how ?? "SIGTERM"}${o.waited_ms ? `, once it was idle after ${mins(o.waited_ms)}` : ""}` : null;
     let text = endedText({ label, id, where: m.name, how, told: false, stoppedNow: !!ended.was_running, gap: c.gap, jobs: [] });
-    const flight = ended.was_running ? seen.in_flight : [];
+    const flight = ended.was_running ? ended.in_flight ?? seen.in_flight : [];
     if (flight.length) {
       text += `\nIt was ended while this was in flight:\n${inFlightLines(flight, ended)}`;
       if (flight.some((i) => i.kind !== "job")) text += "\nRedo the interrupted work that is still needed: it never finished, and its results are not above.";
@@ -169,7 +167,7 @@ export class Resumes {
 
   // The owner's choice. "now": whatever it does, its jobs as chosen; "idle":
   // at once when no turn is in flight, else a wait that ends it once its turn
-  // is over or gives up at the deadline. A wait always leaves its jobs running.
+  // is over or gives up at the deadline. The owner chooses what happens to its jobs.
   async resume(m: MachineRow, harness: Harness, id: string, o: { when: "now" | "idle"; jobs: "keep" | "end"; wait_ms?: number; model?: string }): Promise<Resumed | { action: "waiting"; wait: Wait }> {
     const k = this.key(m.id, harness, id);
     const had = this.waits.get(k);
@@ -178,8 +176,11 @@ export class Resumes {
       this.end(had, "cancelled");
     }
     const seen = await this.activity(m, harness, id);
-    if (o.when === "idle") o = { ...o, jobs: "keep" };
-    if (!atWork(seen) || o.when === "now") return this.finish(m, harness, id, seen, o);
+    if (o.when === "now") return (await this.finish(m, harness, id, seen, o))!;
+    if (!atWork(seen)) {
+      const r = await this.finish(m, harness, id, seen, { ...o, idle_ms: o.wait_ms ?? 30_000 });
+      if (r) return r;
+    }
     if (!(o.wait_ms && o.wait_ms > 0)) throw new ResumeError(400, "give wait_ms: how long Keel waits for it to be idle");
     const w: Wait & { timer?: Timer } = { machine_id: m.id, harness, id, jobs: o.jobs, model: o.model, state: "waiting", started_ms: Date.now(), deadline_ms: Date.now() + o.wait_ms, last: { state: seen.state, why: seen.why, checked_ms: seen.checked_ms } };
     this.waits.set(k, w);
@@ -208,6 +209,8 @@ export class Resumes {
 
   private async tick(w: Wait & { timer?: Timer }) {
     if (w.state !== "waiting") return;
+    const expired = () => this.end(w, "expired", { error: `Keel could not confirm it was idle by ${clock(w.deadline_ms)}: ${w.last?.why ?? "no answer"}` });
+    if (Date.now() >= w.deadline_ms) return expired();
     const m = this.fleet.row(w.machine_id);
     if (!m?.workspace_root) return this.end(w, "failed", { error: "the machine is no longer enabled with a granted directory" });
     try {
@@ -215,9 +218,11 @@ export class Resumes {
       if (w.state !== "waiting") return;
       const changed = w.last?.state !== seen.state || w.last?.why !== seen.why;
       w.last = { state: seen.state, why: seen.why, checked_ms: seen.checked_ms };
+      const idle_ms = w.deadline_ms - Date.now();
+      if (idle_ms <= 0) return expired();
       if (!atWork(seen)) {
-        const r = await this.finish(m, w.harness, w.id, seen, { jobs: w.jobs, model: w.model, waited_ms: Date.now() - w.started_ms });
-        return this.end(w, "resumed", { session_id: r.session.id });
+        const r = await this.finish(m, w.harness, w.id, seen, { jobs: w.jobs, model: w.model, waited_ms: Date.now() - w.started_ms, idle_ms });
+        if (r) return this.end(w, "resumed", { session_id: r.session.id });
       }
       if (changed) this.emit(w);
     } catch (e) {
@@ -229,7 +234,7 @@ export class Resumes {
       w.last = { state: "active", why: `${m.name} did not answer: ${(e as Error).message}`, checked_ms: Date.now() };
       this.emit(w);
     }
-    if (Date.now() >= w.deadline_ms) return this.end(w, "expired", { error: `it was still at work at ${clock(w.deadline_ms)}: ${w.last?.why ?? ""}` });
+    if (Date.now() >= w.deadline_ms) return expired();
     w.timer = setTimeout(() => void this.tick(w), Math.min(POLL_MS, Math.max(100, w.deadline_ms - Date.now())));
   }
 }
