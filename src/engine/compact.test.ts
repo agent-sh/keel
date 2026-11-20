@@ -237,3 +237,28 @@ test("statements are the conversation's own words, carried until lifted", () => 
   expect(handoff.statements!.length).toBe(5);
   expect(handoff.summary).toEndWith("## Story\nGoal: go on with the export.");
 });
+
+// Instruction files of subfolders, skills and MCP prompts the conversation
+// loaded go through every compaction unchanged, the newest copy of each.
+test("fixed context is carried unchanged through compactions", () => {
+  const nested = (v: string) => `<nested-instructions path="/w/pkg/AGENTS.md">\nInstructions ${v}\n</nested-instructions>`;
+  const line = [
+    ev("user", { text: "go" }),
+    ev("tool_result", { results: [{ type: "tool_result", tool_use_id: "t1", content: `file text\n\n${nested("one")}` }] }),
+    ev("tool_result", { results: [{ type: "tool_result", tool_use_id: "t2", content: "Base directory for this skill: /s/review\n\nReview steps." }] }),
+    ev("tool_result", { results: [{ type: "tool_result", tool_use_id: "t3", content: [{ type: "text", text: `other\n${nested("two")}` }] }] }),
+  ];
+  const one = checkpointData(line, "story");
+  expect(one.fixed).toEqual([
+    { key: "skill:/s/review", text: "Base directory for this skill: /s/review\n\nReview steps." },
+    { key: "nested:/w/pkg/AGENTS.md", text: nested("two") },
+  ]);
+  const cp = ev("compaction", { mode: "summary", ...one });
+  const moved = (to: string) => ev("note", { kind: "folder", model: true, from: "/a", to, text: `[harness] The owner moved this session from /a to ${to}. Work in ${to} now.` });
+  const two = checkpointData([...line, cp, moved("/b"), ev("note", { model: true, mcp_prompt: "p", text: '<mcp-prompt server="docs" name="style">\nWrite short.\n</mcp-prompt>' }), moved("/c")], "story 2");
+  expect(two.fixed!.map((f) => f.key)).toEqual(["skill:/s/review", "nested:/w/pkg/AGENTS.md", "mcp-prompt:docs/style", "folder:place"]);
+  expect(two.fixed!.at(-1)!.text).toContain("Work in /c now.");
+  const text = (summaryMessage({ ...two, owner_messages: [] }).content[0] as any).text as string;
+  expect(text).toContain(nested("two"));
+  expect(text).toContain("Review steps.");
+});

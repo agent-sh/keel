@@ -329,15 +329,45 @@ export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES)
   };
 }
 
+// Fixed context the conversation loaded (an instruction file of a subfolder,
+// a skill's body, an MCP prompt, the folder the owner moved the session to
+// with the instructions there) is never summarized: a compaction carries
+// each block as it was loaded, the newest copy per file or skill, and the
+// blocks of the summary before it. Claude Code re-injects invoked skills after
+// a compaction, capped; Keel keeps them whole, as it keeps the system prompt.
+const NESTED_BLOCK = /<nested-instructions path="([^"]+)">[\s\S]*?<\/nested-instructions>/g;
+export function fixedContext(lineage: StoredEvent[], prior: { key: string; text: string }[] = []): { key: string; text: string }[] {
+  const out = new Map(prior.map((f) => [f.key, f.text]));
+  const put = (key: string, text: string) => { out.delete(key); out.set(key, text); };
+  const cp = checkpointAt(lineage);
+  for (let i = Math.max(0, cp.at >= 0 ? cp.keepFrom : 0); i < lineage.length; i++) {
+    const e = lineage[i]!;
+    // Where the session works now (its frozen system prompt names the folder it started in) and the instructions there.
+    if (e.kind === "note" && e.data.model && e.data.kind === "folder") { put(/a git repository\.$/.test(String(e.data.text)) && !e.data.to ? "folder:git" : "folder:place", String(e.data.text)); continue; }
+    const texts: string[] = e.kind === "tool_result"
+      ? (e.data.results ?? []).flatMap((r: any) => (typeof r.content === "string" ? [r.content] : (r.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text)))
+      : e.kind === "note" && e.data.model && (e.data.skill || e.data.mcp_prompt) ? [String(e.data.text ?? "")] : [];
+    for (const t of texts) {
+      for (const m of t.matchAll(NESTED_BLOCK)) put(`nested:${m[1]}`, m[0]);
+      const skill = t.match(/^(?:<skill name="[^"]*">\n)?Base directory for this skill: (\S+)/);
+      if (skill) put(`skill:${skill[1]}`, t);
+      const prompt = t.match(/^<mcp-prompt server="([^"]*)" name="([^"]*)">/);
+      if (prompt) put(`mcp-prompt:${prompt[1]}/${prompt[2]}`, t);
+    }
+  }
+  return [...out].map(([key, text]) => ({ key, text }));
+}
+
 // What a summary checkpoint stores besides how it was made: the settled
-// summary and its statements, and the owner's newest words in what the
-// statements leave of the budget.
+// summary and its statements, the fixed context it carries, and the owner's
+// newest words in what the statements leave of the budget.
 export function checkpointData(lineage: StoredEvent[], summary: string, budget = OWNER_WORDS_BYTES) {
   const cp = checkpointAt(lineage);
   const prev = cp.at >= 0 && lineage[cp.at]!.data.mode === "summary" ? lineage[cp.at]!.data : undefined;
   const settled = settle(lineage, summary, prev?.statements ?? []);
+  const fixed = fixedContext(lineage, prev?.fixed ?? []);
   const said = (settled.statements ?? []).reduce((n, s) => n + utf8Bytes(s.text), 0);
-  return { ...settled, ...keptMessages(lineage, Math.max(0, budget - said)) };
+  return { ...settled, ...(fixed.length ? { fixed } : {}), ...keptMessages(lineage, Math.max(0, budget - said)) };
 }
 
 // What a compaction at this point summarizes. A turn that has not had a reply
@@ -393,8 +423,9 @@ export function excerpt(text: string, budget: number): string | null {
   return head + note(total - headBytes - tailBytes) + tail;
 }
 
-export function summaryMessage(data: { summary: string; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[] }): Message {
-  const head = `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}`;
+export function summaryMessage(data: { summary: string; fixed?: { key: string; text: string }[]; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[] }): Message {
+  const fixed = data.fixed?.length ? `\n\n[Instructions loaded before the compaction (instruction files of subfolders, skills, prompts), carried unchanged:]\n${data.fixed.map((f) => f.text).join("\n\n")}` : "";
+  const head = `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${fixed}`;
   const msgs = data.owner_messages ?? [];
   const wrap = (t: string) => `<message>\n${t}\n</message>`;
   const others = data.other_messages?.length ? `\n\n[Other messages delivered before the compaction (agent reports, wakes, loop runs, tasks, messages from other sessions; not the owner's words), oldest first:]\n${data.other_messages.map(wrap).join("\n")}` : "";
@@ -529,7 +560,7 @@ function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
   if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : replyBytes(e.data.blocks ?? []);
   if (e.kind === "tool_result") return jsonBytes(e.data.results ?? [], per);
   if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
-  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
+  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, fixed: e.data.fixed, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
   if (e.kind !== "user") return 0;
   let n = utf8Bytes(String(e.data.text ?? ""));
   for (const b of (e.data.images ?? []) as any[]) {

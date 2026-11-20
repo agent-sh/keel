@@ -10,8 +10,8 @@
 //
 // Claude Code, OpenCode and Gemini CLI load nested instruction files the same
 // way (on a read, write or listing in that area). Once each means: while an
-// earlier copy is in what the model reads. A compaction that summarized it
-// away, or a rewind to before it, lets the next call there load it again.
+// earlier copy is in what the model reads. A compaction carries each loaded
+// file unchanged; a rewind to before it lets the next call there load it again.
 // The text goes through the same trust filter as the prompt's files.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -100,7 +100,11 @@ export function loadedPaths(store: Store, sessionId: string): Set<string> {
   const cpId = cp.at >= 0 ? events[cp.at]!.id : "";
   let st = seen.get(sessionId);
   const grows = st && st.cp === cpId && st.upto <= events.length && (st.upto === 0 ? true : events[st.upto - 1]!.id === st.lastId);
-  if (!st || !grows) st = { cp: cpId, upto: Math.max(0, cp.at >= 0 ? cp.keepFrom : 0), lastId: null, paths: new Set() };
+  if (!st || !grows) {
+    st = { cp: cpId, upto: Math.max(0, cp.at >= 0 ? cp.keepFrom : 0), lastId: null, paths: new Set() };
+    // The files the checkpoint carries unchanged (src/engine/compact.ts fixedContext).
+    for (const f of cp.at >= 0 ? (events[cp.at]!.data.fixed ?? []) : []) for (const m of String(f.text).matchAll(MARK)) st.paths.add(m[1]!);
+  }
   for (let i = st.upto; i < events.length; i++) {
     for (const t of textsOf(events[i]!)) if (t.includes(OPEN)) for (const m of t.matchAll(MARK)) st.paths.add(m[1]!);
   }
