@@ -88,6 +88,9 @@ function init(deps: Deps) {
         snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");
       }
     },
+    turnStart: (s) => agents.onTurnStart(s.id),
+    cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
+    cutTurnHeld: (s, why) => agents.onCutTurnHeld(s.id, why),
     turnEnd: (s, reason) => {
       afterTurn(s.id, () => {
         const loopRun = loops.runOpenIn(s.id);

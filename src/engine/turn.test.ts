@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { StoredEvent } from "../core/types.ts";
-import { toMessages } from "./turn.ts";
+import { RESTART_CUT, stalledContinuations, toMessages } from "./turn.ts";
 import { ownerMedia, ownerWords } from "./compact.ts";
 
 let seq = 0;
@@ -212,4 +212,21 @@ test("a settled tool call leaves no abort listener on the turn's signal", async 
     await (engine as any).runTool(s, tools, { type: "tool_use", id: name, name, input: {} }, ctx);
     expect(live).toBe(0);
   }
+});
+
+test("continuations cut in a row count only while none finished a step", () => {
+  let n = 0;
+  const e = (kind: string, data: any = {}) => ({ id: `e${++n}`, kind, data }) as unknown as StoredEvent;
+  const cutTurn = (origin?: string, result = RESTART_CUT) => [
+    e("user", { text: "go", origin }), e("turn_start"),
+    e("assistant", { blocks: [{ type: "tool_use", id: `t${n}`, name: "Bash", input: {} }] }),
+    e("tool_result", { results: [{ type: "tool_result", tool_use_id: `t${n}`, content: result, is_error: true }] }),
+    e("turn_end", { reason: "restart" }),
+  ];
+  expect(stalledContinuations(cutTurn())).toBe(0); // the first cut: no continuation yet
+  expect(stalledContinuations([...cutTurn(), ...cutTurn("restart"), ...cutTurn("restart")])).toBe(2);
+  // A continuation that got a tool result ends the run, though it was cut too.
+  const worked = [e("user", { origin: "restart" }), e("turn_start"), e("tool_result", { results: [{ content: "ok" }] }), ...cutTurn().slice(2)];
+  expect(stalledContinuations([...cutTurn(), ...cutTurn("restart"), ...worked, ...cutTurn("restart")])).toBe(1);
+  expect(stalledContinuations([...cutTurn("restart"), e("user", { text: "more" }), e("turn_start"), e("turn_end", { reason: "end_turn" })])).toBe(0);
 });

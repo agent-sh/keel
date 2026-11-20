@@ -46,7 +46,20 @@ export type TurnHooks = {
   // After a step's tool results are stored, before the next model call (a
   // tool that asked for a fresh context gets its checkpoint here).
   stepDone?: (s: Session) => void | Promise<void>;
+  // A turn is starting in the session, whatever started it (a prompt, a queued
+  // one, a report, a continuation after a restart).
+  turnStart?: (s: Session) => void;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
+  // At startup, a turn a daemon restart cut is about to continue by itself.
+  // `continuation`: the cut turn was itself such a continuation; `stalled`: how
+  // many continuations in a row were cut before they finished a step. The
+  // session's owner answers "continue", or `hold` with the reason it is not
+  // continued (shown in the session). No answer: the engine's rule, which
+  // leaves a cut continuation for the owner to continue.
+  cutTurn?: (s: Session, cut: { continuation: boolean; stalled: number }) => "continue" | { hold: string } | undefined;
+  // A cut turn was not continued, for the reason given (a hook's, the engine's
+  // rule, or a model that did not come back).
+  cutTurnHeld?: (s: Session, why: string) => void;
   // A call a restart cut, with no stored result: what its approval recorded.
   // `denied`: the text the model gets (the owner's reason in it); `not_run`:
   // nothing answered it, so it never ran. Nothing known: it may have partly run.

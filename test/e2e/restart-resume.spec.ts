@@ -125,6 +125,109 @@ test("continued turns after a restart take turns", async () => {
   }
 });
 
+// Feature: an agent working in the background survives daemon restarts, and
+// its record always says what its session does. The agent holds on a tool
+// through two restarts: it is continued each time, stays running for its
+// parent, and its one real report reaches the parent. A restart after that
+// changes nothing. A turn started in the finished agent's own session makes it
+// a running agent again, which its parent can close, and that report arrives too.
+// Only an agent whose continued turn never gets a step done between restarts,
+// three times in a row, is ended, as failed, with nothing left running.
+test("a background agent is continued across restarts and its record matches what runs", async ({ page }) => {
+  const state = join(ROOT, `restart-agent-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const restart = async (how: "SIGTERM" | "SIGKILL" = "SIGTERM") => {
+      d.proc.kill(how);
+      await exited(d.proc);
+      d = await daemon(state);
+    };
+    // The held tool reads a named pipe: it ends when something is written there.
+    const gate = join(state, "release");
+    spawnSync("mkfifo", [gate]);
+    const hold = { name: "Bash", input: { command: `cat ${gate} > /dev/null; echo released` } };
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Agent across restarts" });
+    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+    const spawnCall = [{ name: "spawn_agent", input: { message: `Holder\nscript:calls ${JSON.stringify([hold, hold, hold])}`, isolation: "none" } }];
+    await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify(spawnCall)}` });
+
+    const agent = async () => (await call(`/api/sessions/${session.id}/agents`, undefined, "GET")).agents[0];
+    await expect.poll(async () => (await agent())?.session_id, { timeout: 30_000 }).toBeTruthy();
+    const child = (await agent()).session_id as string;
+    const view = (id: string) => call(`/api/sessions/${id}`, undefined, "GET");
+    const holds = async () => ((await view(child)).events as any[]).filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")).length;
+    const reports = async () => ((await view(session.id)).events as any[]).filter((e) => e.kind === "user" && String(e.data.text).includes("<subagent_result"));
+    // The record and the session agree: the agent is live exactly while a turn runs in its session.
+    const state_ = async () => [(await agent()).status, (await view(child)).running];
+
+    await expect.poll(holds, { timeout: 30_000 }).toBe(1);
+    for (const n of [2, 3]) {
+      await page.waitForTimeout(500); // the command runs
+      await restart(n === 2 ? "SIGTERM" : "SIGKILL"); // a stop that parks the turn, then a crash
+      await expect.poll(holds, { timeout: 60_000 }).toBe(n);
+      expect(await state_()).toEqual(["running", true]);
+      expect(await reports()).toHaveLength(0);
+    }
+    await page.goto(`${d.url}/s/${session.id}`);
+    await expect(page.getByTestId("agent-call-status").first()).toContainText(/running/i);
+    await shoot(page, "restart-03-agent-running-after-two");
+
+    // Released: its one report, with the real answer, reaches the parent.
+    spawnSync("sh", ["-c", `echo go > ${gate}`], { timeout: 10_000 });
+    await expect.poll(async () => (await reports()).length, { timeout: 60_000 }).toBe(1);
+    expect((await reports())[0].data.text).toContain("Done with 3 calls. Last result: released");
+    await expect.poll(state_, { timeout: 15_000 }).toEqual(["completed", false]);
+    const turns = async (id: string) => ((await view(id)).events as any[]).filter((e) => e.kind === "turn_start").length;
+    await expect.poll(async () => (await view(session.id)).running, { timeout: 30_000 }).toBe(false);
+
+    // A restart with nothing running decides nothing again.
+    const before = [await turns(child), await turns(session.id)];
+    await restart();
+    await page.waitForTimeout(2_000);
+    expect([await turns(child), await turns(session.id)]).toEqual(before);
+    expect(await state_()).toEqual(["completed", false]);
+    expect(await reports()).toHaveLength(1);
+
+    // A turn started in the agent's own session: the parent sees it running and can close it.
+    await call(`/api/sessions/${child}/messages`, { text: `script:calls ${JSON.stringify([hold])}` });
+    await expect.poll(holds, { timeout: 30_000 }).toBe(4);
+    expect(await state_()).toEqual(["running", true]);
+    const id = (await agent()).id;
+    await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "close_agent", input: { target: id } }])}` });
+    await expect.poll(state_, { timeout: 30_000 }).toEqual(["stopped", false]);
+    await expect.poll(async () => (await reports()).length, { timeout: 30_000 }).toBe(2);
+
+    // Continued three times in a row with the daemon down again before a step
+    // ended: it is not continued a fourth time. It fails, nothing runs in its
+    // session, the parent is told why, and one more restart changes nothing.
+    await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "send_input", input: { target: id, message: `script:calls ${JSON.stringify([hold, hold, hold, hold, hold])}` } }])}` });
+    for (const n of [5, 6, 7, 8]) {
+      await expect.poll(holds, { timeout: 60_000 }).toBe(n);
+      expect(await state_()).toEqual(["running", true]);
+      await page.waitForTimeout(500);
+      await restart("SIGKILL");
+    }
+    await expect.poll(state_, { timeout: 60_000 }).toEqual(["failed", false]);
+    await expect.poll(async () => (await reports()).length, { timeout: 30_000 }).toBe(3);
+    expect((await reports())[2].data.text).toContain("was not continued again");
+    const after = await turns(child);
+    await restart();
+    await page.waitForTimeout(2_000);
+    expect([await turns(child), await state_()]).toEqual([after, ["failed", false]]);
+    const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
+    expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+    await page.goto(`${d.url}/s/${session.id}`);
+    await expect(page.getByTestId("agent-report")).toHaveCount(3, { timeout: 30_000 });
+    await shoot(page, "restart-04-agent-reports");
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
 // A queue held by a stop stays held across a restart: the pause and its Resume
 // are still shown, nothing runs by itself, and Resume sends the edited prompts in order.
 test("a held queue survives a restart", async ({ page }) => {

@@ -456,6 +456,8 @@ export class Engine {
     // queued prompt, a report that wakes a parent): the engine now in charge does.
     const successor = (globalThis as { __keelEngine?: Engine }).__keelEngine;
     if (this.draining && successor && successor !== this) return successor.adopt(id);
+    const starting = this.store.session(id);
+    if (starting) for (const h of allHooks()) try { h.turnStart?.(starting); } catch (e) { this.errors.capture("server", e, { hook: "turnStart", session: id }); }
     const abort = new AbortController();
     const done = this.loop(id, abort.signal)
       .catch((e) => {
@@ -1075,7 +1077,8 @@ export class Engine {
   // At startup: a turn the last daemon left open (a crash, a kill) is closed
   // the way a stop would close it, and a turn cut by a restart continues by
   // itself, once: a turn that was itself such a continuation and was cut
-  // again waits for the owner's Continue.
+  // again waits for the owner's Continue. A session with an owner of its own
+  // (an agent's, through the cutTurn hook) is continued or held as that says.
   async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
     for (const id of openAtBoot) {
       const line = this.lineage(id);
@@ -1098,17 +1101,19 @@ export class Engine {
       if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;
       // The prompt that started the cut turn.
       const prompt = line.slice(0, line.findLastIndex((e) => e.kind === "turn_start")).findLast((e) => e.kind === "user");
-      if (prompt?.data.origin === "restart") {
-        this.append(s.id, "note", { kind: "restart", text: "The daemon restarted again during the continued turn. Continue when you want it to go on." });
-        return;
-      }
+      const held = (text: string) => {
+        this.append(s.id, "note", { kind: "restart", text });
+        for (const h of allHooks()) try { h.cutTurnHeld?.(s, text); } catch (e) { this.errors.capture("server", e, { hook: "cutTurnHeld", session: s.id }); }
+      };
+      const continuation = prompt?.data.origin === "restart";
+      const verdict = allHooks().map((h) => h.cutTurn?.(s, { continuation, stalled: stalledContinuations(line) })).find(Boolean);
+      if (verdict !== "continue" && (verdict || continuation)) return held(verdict ? verdict.hold : "The daemon restarted again during the continued turn. Continue when you want it to go on.");
       const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => CUT.has(r.content)) : [])).length;
       try {
         await waitModel(s.model);
       } catch (e) {
         const rec = this.errors.capture("provider", e, { session: s.id, at: "resume after restart" });
-        this.append(s.id, "note", { kind: "restart", text: `The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.` });
-        return;
+        return held(`The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.`);
       }
       await slots.take();
       try {
@@ -1183,6 +1188,25 @@ export class Engine {
   }
 }
 
+
+// How many turns at the end of a branch, in a row, were continuations after a
+// restart that a restart cut again before they finished a step (a tool call
+// that ran to its result). A continuation that got a step done ends the count:
+// the work moves between restarts.
+export function stalledContinuations(line: StoredEvent[]): number {
+  let n = 0;
+  for (let end = line.length - 1; end >= 0; ) {
+    const e = line[end]!;
+    if (e.kind !== "turn_end" || e.data.reason !== "restart") break;
+    const start = line.findLastIndex((x, i) => i < end && x.kind === "turn_start");
+    const prompt = line.findLastIndex((x, i) => i < start && x.kind === "user");
+    if (prompt < 0 || line[prompt]!.data.origin !== "restart") break;
+    if (line.slice(start, end).some((x) => x.kind === "tool_result" && x.data.results.some((r: any) => !CUT.has(r.content)))) break;
+    n++;
+    end = prompt - 1;
+  }
+  return n;
+}
 
 // Continued turns after a restart: this many run at once, each start at least
 // this far after the previous one. Three covers the usual one to three open

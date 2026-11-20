@@ -398,8 +398,8 @@ test("recovery settles a child whose turn had ended before the daemon went down,
   sends.length = 0;
   agents.recover();
   await settled();
-  expect(agents.get(done.id)).toMatchObject({ status: "completed", restarts: 0 });
+  expect(agents.get(done.id)).toMatchObject({ status: "completed" });
   expect(sends.some((x) => x.id === done.session_id)).toBe(false);
-  expect(agents.get(cut.id)).toMatchObject({ status: "running", restarts: 1 });
+  expect(agents.get(cut.id)).toMatchObject({ status: "running" });
   expect(sends.filter((x) => x.id === cut.session_id).map((x) => x.text).join("")).toContain("Continue your task");
 });

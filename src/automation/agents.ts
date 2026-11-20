@@ -53,7 +53,6 @@ export type AgentRecord = {
   result?: string | null;
   handback: boolean;
   first_seq: number;
-  restarts: number;
   worktree?: string | null; // the folder of its own git worktree, when it has one
   branch?: string | null;
   machine?: string | null; // the fleet machine its tools run on, when not this one
@@ -130,10 +129,11 @@ CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
 let wtsCache: Worktrees | undefined;
 const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir, "worktrees")));
 
-type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number };
+// `restarts`: a column from when a restart count decided an agent's end; unused.
+type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, ...rest } = r;
-  void def; void schema_tries;
+  const { def, output_schema, schema_tries, restarts, ...rest } = r;
+  void def; void schema_tries; void restarts;
   return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema };
 };
 
@@ -655,6 +655,9 @@ const INCOMPLETE = new Set(["refusal", "max_tokens", "max_steps"]);
 export function onTurnEnd(sessionId: string, reason: string) {
   const a = byChild(sessionId);
   if (!a || (isEnded(a) && !stopping.has(a.id))) return;
+  // Parked for a daemon stop: the agent has not ended. The next daemon
+  // continues the turn or ends the agent (onCutTurn, onCutTurnHeld).
+  if (reason === "restart" && !stopping.has(a.id)) return;
   const { engine } = D();
   if (engine.isRunning(sessionId) || hasPending(sessionId)) return;
   if (!stopping.has(a.id) && waits.activeFor(sessionId) > 0) {
@@ -686,8 +689,9 @@ function lastRound(a: AgentRecord): string {
   return "";
 }
 
-async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: StopBy | null; end_reason: string }) {
+async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: StopBy | null; end_reason: string; note?: string }) {
   let result = collectResult(a, status === "incomplete" ? how.end_reason : undefined);
+  if (how.note) result += `${result ? "\n\n" : ""}${how.note}`;
   const row = D().store.db.query<{ output_schema: string | null; schema_tries: number }, [string]>("SELECT output_schema, schema_tries FROM agents WHERE id = ?").get(a.id)!;
   if (row.output_schema && status === "completed") {
     const text = lastRound(a);
@@ -731,14 +735,16 @@ async function worktreeNote(a: AgentRecord): Promise<string> {
 }
 
 // The first stop names who stopped it; a stop after that changes nothing.
+// What decides is what runs: a record that says ended while a turn runs in
+// its session is stopped too, and settled with that turn's report.
 export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined {
   const a = get(id);
   if (!a) return undefined;
-  if (a.status !== "running" && a.status !== "waiting") return a;
+  const { engine } = D();
+  if (isEnded(a) && !engine.isRunning(a.session_id)) return a;
   if (stopping.has(id)) return a;
   waits.cancelForSession(a.session_id);
   stopping.set(id, by);
-  const { engine } = D();
   dropPending(a.session_id);
   // The child's own turn records the same actor as its record and report.
   if (engine.isRunning(a.session_id)) engine.interrupt(a.session_id, by);
@@ -857,8 +863,51 @@ function outsideWorktree(a: AgentRecord, sessionId: string, input: any): string 
   return undefined;
 }
 
-// After a restart: results still owed are delivered; an agent recorded as live
-// with nothing scheduled continues once by itself, then is reported failed.
+// A turn started in an agent's session while its record says ended (the owner
+// wrote on its page, or anything else started one): the agent runs, so its
+// record says so, its parent lists it and can stop it, and the report of this
+// turn is handed back like any other. The new task begins at that prompt.
+export function onTurnStart(sessionId: string) {
+  const a = byChild(sessionId);
+  if (!a || !isEnded(a)) return;
+  const parent = D().store.session(a.parent_id);
+  if (!parent || parent.archived) return; // no one to report to: it stays the owner's own turn
+  const evs = D().store.events(sessionId);
+  const prompt = evs.findLast((e) => e.kind === "user");
+  update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), handback: false, background: true, stopped_by: null, end_reason: null });
+}
+
+// An agent continued this many times in a row, each continuation cut by the
+// next restart before it finished a step, is not continued again: something
+// takes the daemon down before the agent can move (a command of its own that
+// restarts or kills the daemon, a crash its turn causes), and each round costs
+// a model request with no one watching. A few quick restarts in a row are
+// ordinary (installs), so the count is not lower; restarts are otherwise never
+// counted: an agent that gets a step done between them goes on.
+const STALLED_MAX = 3;
+
+// The one decision on an agent's turn that a daemon restart cut, asked by the
+// engine when it would continue it: a live agent goes on, an ended one's turn
+// is left alone.
+export function onCutTurn(sessionId: string, cut: { stalled: number }): "continue" | { hold: string } | undefined {
+  const a = byChild(sessionId);
+  if (!a) return undefined;
+  if (isEnded(a)) return { hold: "The daemon restarted during this turn. Its agent had already ended, so the turn was not continued. Continue when you want it to go on." };
+  if (cut.stalled >= STALLED_MAX) return { hold: `This agent was continued after a daemon restart ${cut.stalled} times in a row, and each time the daemon went down again before it finished a step, so it was not continued again. Send it a message to continue it.` };
+  return "continue";
+}
+
+// The engine did not continue a live agent's cut turn: nothing runs for it, so
+// it ends as failed with what it had and the reason, and its parent is told.
+export function onCutTurnHeld(sessionId: string, why: string) {
+  const a = byChild(sessionId);
+  if (!a || isEnded(a)) return;
+  settling.set(a.id, finish(a, "failed", { stopped_by: null, end_reason: "restart", note: why }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
+}
+
+// After a restart: results still owed are delivered, and an agent recorded as
+// live is matched to its session. A turn the restart cut is the engine's to
+// continue, and it asks this module then (onCutTurn): nothing is decided here.
 // The reason the session's last turn ended, when it ended by itself after the
 // last input it got (not parked by a restart, nothing sent after it).
 function endedTurn(sessionId: string): string | undefined {
@@ -870,6 +919,15 @@ function endedTurn(sessionId: string): string | undefined {
     if (e.kind === "turn_end") return e.data.reason && e.data.reason !== "restart" ? String(e.data.reason) : undefined;
   }
   return undefined;
+}
+
+// Whether the engine's recovery has a cut turn of this session to decide on:
+// one the last daemon left open, or one it parked.
+function cutTurn(sessionId: string): boolean {
+  const { store } = D();
+  if (store.bootWorking.includes(sessionId)) return true;
+  const end = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null).at(-1);
+  return end?.kind === "turn_end" && end.data.reason === "restart";
 }
 
 export function recover() {
@@ -886,16 +944,12 @@ export function recover() {
     if (waits.activeFor(a.session_id) > 0) { update(a.id, { status: "waiting", background: true }); continue; }
     // Its turn had ended (the end is stored before the end hooks run) and the
     // daemon went down before the hook settled it: settle it now, once, the
-    // way the hook would have. Only a turn that was cut is continued.
+    // way the hook would have.
     const ended = endedTurn(a.session_id);
     if (ended) { onTurnEnd(a.session_id, ended); continue; }
-    if (a.restarts < 1) {
-      update(a.id, { restarts: a.restarts + 1, background: true, status: "running" });
-      deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
-      continue;
-    }
-    const rec = update(a.id, { status: "failed", ended: Date.now(), result: `${collectResult(a)}\n\nThe daemon restarted twice while this agent worked; it was not continued again.`, handback: true, background: true })!;
-    handback(rec);
+    update(a.id, { background: true, status: "running" });
+    // No turn to continue (its task was stored and never started): start it.
+    if (!cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
   }
   sendAllOwed(D().store.db.query<Owed, []>("SELECT * FROM agent_owed ORDER BY created, rowid").all());
 }
