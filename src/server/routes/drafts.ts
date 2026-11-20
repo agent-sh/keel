@@ -163,7 +163,10 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
     "/api/sessions/:id/presence": {
       POST: async (req: any) => {
         if (!store.session(req.params.id)) return bad("no such session", 404);
-        const b = (await req.json().catch(() => null)) as { draft?: unknown; page?: unknown } | null;
+        // A page that reloads mid-request aborts the body; Bun can raise that past
+        // req.json().catch, so the body is read as text inside one try.
+        let b: { draft?: unknown; page?: unknown } | null = null;
+        try { b = JSON.parse(await req.text()); } catch {}
         const page = typeof b?.page === "string" ? b.page.slice(0, 64) : "";
         if (b?.draft === true) {
           const pages = typed.get(req.params.id) ?? new Map<string, number>();
