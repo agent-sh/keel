@@ -95,10 +95,12 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
   registerHooks({
     system: () =>
       "Secrets: text like [secret:1a2b3c4d] or [value of $NAME] stands for a secret kept out of the conversation. Write it as it is where the value is needed: a tool input that contains it runs with the real value, and output shows the placeholder again. In a shell command it stands for a quoted variable holding the value, so write it as one word, never inside other syntax. Named ones are also in your commands' environment as $NAME. To get a secret, use request_secret; never ask for one in the chat.",
-    // The system prompt (instruction files) is sent redacted too, and no
+    // The system prompt (instruction files) is sent redacted too, and no new
     // message of a request carries a known value: whatever path put one there,
-    // it does not reach a model.
-    beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output"), messages: vault.mask(req.messages) }),
+    // it does not reach a model. History already sent to that model goes as it
+    // went (vault.maskSent): stored events are redacted when written, so only a
+    // value found later is in an earlier one, and that model has it already.
+    beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output"), messages: vault.maskSent(`${s.id} ${req.route ?? req.model}`, req.messages) }),
     // A value is put back only where a credential is used: a shell command on
     // this machine, as a quoted variable set on that command's process alone
     // (and named secrets in the environment of the session's jobs). Every

@@ -159,3 +159,20 @@ test("the request mask covers every field but the provider's own bytes", () => {
   const clean = [{ role: "user", content: [{ type: "text", text: "plain" }] }];
   expect(v.mask(clean)).toBe(clean);
 });
+
+// A value found late is masked going forward only: what a model was sent goes
+// again byte for byte (its cache and signed thinking stay), what is new is
+// masked, and another model gets none of it.
+test("a value found later never changes history already sent", () => {
+  const v = new Vault();
+  const value = "fixture-late-value-0123456789";
+  const m1 = { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: `printed ${value}` }] };
+  const first = v.maskSent("s1 m", [m1]);
+  expect(first[0]).toBe(m1);
+  v.add(value, "test", "output", "s1");
+  const m2 = { role: "user", content: [{ type: "text", text: `again ${value}` }] };
+  const second = v.maskSent("s1 m", [m1, m2]) as any[];
+  expect(second[0]).toBe(m1);
+  expect(JSON.stringify(second[1])).not.toContain(value);
+  expect(JSON.stringify(v.maskSent("s1 other", [m1, m2]))).not.toContain(value);
+});

@@ -421,6 +421,29 @@ export class Vault {
     return (changed ? out : messages) as T;
   }
 
+  // A request's messages masked going forward only. A message this route was
+  // already sent goes again exactly as it went, even when a value in it became
+  // known since: the provider holds it already, and an edit there would change
+  // the cached prefix and fail every signed thinking block after it, so the
+  // whole history would be written to the cache again. Messages after the part
+  // sent before are masked. `key` is the session and the model the request
+  // goes to: another model, or the first request after a restart, has no part
+  // sent before, so every known value is masked there and a value never
+  // reaches a provider that did not have it.
+  private sent = new Map<string, { marks: string[]; out: any[] }>();
+  maskSent<T extends any[]>(key: string, messages: T): T {
+    const marks = messages.map((m) => Bun.hash(JSON.stringify(m)).toString(36));
+    const prev = this.sent.get(key);
+    let k = 0;
+    if (prev) while (k < marks.length && k < prev.marks.length && marks[k] === prev.marks[k]) k++;
+    const tail = this.byValue.size ? this.mask(messages.slice(k)) : messages.slice(k);
+    const out = [...(prev?.out.slice(0, k) ?? []), ...tail];
+    this.sent.delete(key);
+    this.sent.set(key, { marks, out });
+    if (this.sent.size > 64) this.sent.delete(this.sent.keys().next().value!);
+    return (out.every((m, i) => m === messages[i]) ? messages : out) as T;
+  }
+
   // A tool input bound for another machine: each placeholder of this
   // session's secrets in its named form, never the value. That machine puts
   // back a secret it holds under the same name (resolveNamed); a secret with
