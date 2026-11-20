@@ -25,6 +25,7 @@ import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
 import { archive } from "../lib/sessops.ts";
 import { ProjectGroups } from "./SidebarProjects.tsx";
+import { FolderGroups } from "./SidebarFolders.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -299,8 +300,8 @@ function Index({ current }: { current: string | null }) {
   const hidden = listed.length - pinned.length - rest.length;
   const cmp = order(arr, watches);
   const grouped = arr.group === "folder" ? groups(rest, cmp, arr.sort === "name") : [];
-  // By project, the archive is one list (a project's archived sessions are on its page).
-  const flat = arr.group === "flat" || (arr.group === "project" && tab !== "active") ? [...rest].sort(cmp) : [];
+  // By project or by his folders, the archive is one list (a project's archived sessions are on its page).
+  const flat = arr.group === "flat" || ((arr.group === "project" || arr.group === "mine") && tab !== "active") ? [...rest].sort(cmp) : [];
   // Same-named folders read apart (beta/api, alpha/api); a machine's folders are named among its own.
   const heads = useMemo(() => {
     const by = new Map<string, string[]>();
@@ -337,7 +338,8 @@ function Index({ current }: { current: string | null }) {
           </section>
         )}
         {arr.group === "project" && tab === "active" && <ProjectGroups list={rest} cmp={cmp} current={current} every={!!q} />}
-        {arr.group !== "project" && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && (
+        {arr.group === "mine" && tab === "active" && <FolderGroups list={rest} cmp={cmp} current={current} every={!!q} />}
+        {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && (
           q
             ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
             : hidden > 0

@@ -1,10 +1,13 @@
-// Projects in the palette: a new project, and each project's page.
+// Projects and folders of sessions in the palette: a new project, each
+// project's page, a new folder.
 import { registerCommand } from "../lib/keys.ts";
+import { folders, getFolders } from "../lib/folders.ts";
 import { createProject, getProjects, subscribeProjects } from "../lib/projects.ts";
 import { reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 
 registerCommand({ id: "project-new", label: "New project", group: "Projects", words: "project instructions folders", run: () => void createProject().catch(reportError) });
+registerCommand({ id: "folder-new", label: "New folder of sessions", group: "Projects", words: "folder group organize sidebar", run: () => void folders.create(`Folder ${getFolders().folders.length + 1}`).catch(reportError) });
 const seen = new Set<string>();
 subscribeProjects(() => {
   const list = getProjects().projects;

@@ -1,6 +1,6 @@
 // How the session list is arranged: one compact control above it. A filter
 // box (title or folder words), and one menu for the rest: grouped by project,
-// by working folder or one flat list, sorted by recent work, name or state, finished sessions
+// by the owner's own folders, by working folder or one flat list, sorted by recent work, name or state, finished sessions
 // shown or hidden. The arrangement is kept; the filter words are not.
 import { Menu } from "@base-ui/react/menu";
 import { Check, Search, SlidersHorizontal, X } from "lucide-react";
@@ -10,7 +10,7 @@ import { WATCH_RANK, type Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 
-export type Arrange = { group: "project" | "folder" | "flat"; sort: "recent" | "name" | "state"; hideDone: boolean };
+export type Arrange = { group: "project" | "mine" | "folder" | "flat"; sort: "recent" | "name" | "state"; hideDone: boolean };
 const DEFAULT: Arrange = { group: "folder", sort: "recent", hideDone: false };
 const KEY = "keel.listArrange";
 
@@ -40,7 +40,7 @@ export function order(a: Arrange, watches: Record<string, Watch>) {
   return (x: Session, y: Session) => y.updated - x.updated;
 }
 
-const GROUPS: [Arrange["group"], string][] = [["project", "By project"], ["folder", "By working folder"], ["flat", "One list"]];
+const GROUPS: [Arrange["group"], string][] = [["project", "By project"], ["mine", "By my folders"], ["folder", "By working folder"], ["flat", "One list"]];
 const SORTS: { v: Arrange["sort"]; label: string }[] = [
   { v: "recent", label: "Recent activity" },
   { v: "state", label: "State (needs you first)" },
