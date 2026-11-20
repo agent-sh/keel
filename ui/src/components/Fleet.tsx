@@ -1,11 +1,12 @@
 // Small fleet pieces used across the workbench: the machine a session's tools
 // run on (header chip, tool row badge), and the machine a new session starts on.
 import { Popover } from "@base-ui/react/popover";
-import { ArrowRight, Check, ChevronDown, Cpu, Server, Wand2 } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ChevronLeft, Cpu, Folder, FolderGit2, History, Server, Wand2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
-import { fleet, machineColour, machineName, setNewMachine, useFleet } from "../lib/fleet.ts";
+import { fleet, machineColour, machineName, setNewMachine, useFleet, type RemoteDirs } from "../lib/fleet.ts";
+import { useStore } from "../lib/store.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
@@ -203,4 +204,71 @@ export function useNewMachine(): string {
   const rules = useFleet((s) => s.rules.length);
   if (chosen === "auto") return rules ? "auto" : "";
   return machines.some((m) => m.id === chosen && m.workspace_root && m.state !== "offline") ? chosen : "";
+}
+
+// The folder a new session works in on an ssh machine: its recent folders
+// there, then browsing inside the directory granted there (over ssh).
+export function RemoteFolderPicker({ machine, value, onChange }: { machine: string; value: string; onChange: (path: string) => void }) {
+  const m = useFleet((s) => s.machines.find((x) => x.id === machine));
+  const sessions = useStore((s) => s.sessions);
+  const [open, setOpen] = useState(false);
+  const [browse, setBrowse] = useState<RemoteDirs | null>(null);
+  const [err, setErr] = useState("");
+  const root = m?.workspace_root ?? "";
+  const shown = value || root;
+  const recent = [...new Set(Object.values(sessions).filter((s) => s.machine === machine && !s.archived).sort((a, b) => b.updated - a.updated).map((s) => s.workspace))].slice(0, 5);
+  const home = m?.facts?.home;
+  const rel = (p: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
+  const go = (path?: string) => { setErr(""); fleet.dirs(machine, path).then(setBrowse).catch((e) => setErr(failed(e, { at: "RemoteFolderPicker" }))); };
+  const pick = (p: string) => { onChange(p); setOpen(false); setBrowse(null); };
+  return (
+    <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (o && !recent.length) go(shown); if (!o) setBrowse(null); }}>
+      <Popover.Trigger data-testid="remote-folder-picker" title={`${shown} on ${m?.name ?? machine}`} className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 text-ui text-muted shadow-1 hover:text-fg data-popup-open:text-fg">
+        <Folder className="size-3.5 shrink-0 text-accent" />
+        <span className="truncate font-medium text-fg">{shown.split("/").pop() || "Folder"}</span>
+        <span className="hidden truncate font-mono text-micro text-faint sm:inline">{shown.slice(0, shown.lastIndexOf("/"))}</span>
+        <ChevronDown className="size-3.5 shrink-0 opacity-60" />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner sideOffset={6} align="start" className="z-50">
+          <Popover.Popup className={cn(popupClass, "w-[min(26rem,calc(100vw-1.5rem))] p-0")} data-testid="remote-folder-popup">
+            {!browse && !recent.length ? (
+              !err && <p className="px-3 py-5 text-center text-ui text-faint" data-testid="remote-reading">Reading the folders on {m?.name}.</p>
+            ) : !browse ? (
+              <div className="p-1">
+                <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-micro font-medium text-faint"><History className="size-3" /> Recent on {m?.name}</div>
+                {recent.map((p) => (
+                  <button key={p} type="button" onClick={() => pick(p)} className={cn("flex h-10 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover", p === shown && "bg-hover")}>
+                    <Folder className="size-4 shrink-0 text-faint" />
+                    <span className="min-w-0"><span className="block truncate text-ui font-medium">{p.split("/").pop()}</span><span className="block truncate font-mono text-micro text-faint">{p}</span></span>
+                  </button>
+                ))}
+                <div className="my-1 h-px bg-line" />
+                <button type="button" data-testid="remote-browse" onClick={() => go(shown)} className="flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-ui text-muted hover:bg-hover hover:text-fg"><Folder className="size-4 text-faint" /> Browse folders on {m?.name}</button>
+              </div>
+            ) : (
+              <div className="flex max-h-[min(26rem,70vh)] flex-col">
+                <div className="flex items-center gap-1 border-b border-line p-1.5">
+                  <button type="button" aria-label="Up one folder" disabled={!browse.parent} onClick={() => browse.parent && go(browse.parent)} className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg disabled:opacity-30"><ChevronLeft className="size-4" /></button>
+                  <span className="min-w-0 flex-1 truncate font-mono text-caption text-muted" title={browse.path}>{rel(browse.path)}</span>
+                  <button type="button" data-testid="remote-use-folder" onClick={() => pick(browse.path)} className="h-7 shrink-0 rounded-sm bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover">Use this folder</button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-1">
+                  {browse.dirs.length === 0 && <p className="px-3 py-5 text-center text-ui text-faint">No folders inside.</p>}
+                  {browse.dirs.map((d) => (
+                    <button key={d.path} type="button" data-testid="remote-dir" onClick={() => go(d.path)} onDoubleClick={() => pick(d.path)} className="flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-ui hover:bg-hover">
+                      {d.is_git ? <FolderGit2 className="size-4 shrink-0 text-accent" /> : <Folder className="size-4 shrink-0 text-faint" />}
+                      <span className="truncate">{d.name}</span>
+                      {d.is_git && <span className="ml-auto text-micro text-faint">git</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {err && <p className="border-t border-line px-3 py-2 text-caption text-danger">{err}</p>}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  );
 }

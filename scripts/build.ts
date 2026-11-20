@@ -49,6 +49,11 @@ if (process.argv[2] === "--ui") {
 const out = process.argv[2] ?? "dist/keel";
 // Another platform's binary: bun-linux-x64, bun-darwin-arm64, ...
 const target = process.argv[3] as Bun.Build.Target | undefined;
+// The helper an ssh machine runs (src/fleet/sshlink.ts), carried as text: the
+// binary has no source to bundle it from.
+const hands = await Bun.build({ entrypoints: ["src/fleet/hands-main.ts"], target: "bun", minify: true, define });
+if (!hands.success) fail(hands);
+const handsJs = await hands.outputs[0]!.text();
 const res = await Bun.build({
   entrypoints: ["src/main.ts"],
   compile: target ? { outfile: out, target } : { outfile: out },
@@ -56,7 +61,7 @@ const res = await Bun.build({
   splitting: true,
   sourcemap: "none",
   plugins: [tailwind],
-  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built) },
+  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs) },
 });
 if (!res.success) fail(res);
 await uiBundle(`${out}-ui.tar.gz`);

@@ -64,3 +64,44 @@ export async function sshReach(alias: string): Promise<{ ok: true; detail: strin
   clearTimeout(timer);
   return code === 0 ? { ok: true, detail: out.trim() } : { ok: false, reason: (err.trim().split("\n").pop() || `ssh exited ${code}`).slice(0, 300) };
 }
+
+// The hosts of the configuration grouped by the box they reach: aliases whose
+// `ssh -G` gives the same user and host key name (HostKeyAlias, else HostName)
+// are routes to one machine. The machine is named by the alias that names it
+// directly (its HostName is the key), else the first alias that is not an
+// address. `ssh -G` reads the configuration only; nothing connects.
+export type HostGroup = { key: string; alias: string; routes: string[]; user?: string; hostname?: string; port?: number };
+
+const isAddress = (a: string) => /^\d+(\.\d+){3}$/.test(a) || a.includes(":");
+let groupsCache: { stamp: string; groups: HostGroup[] } | undefined;
+
+export function resolveAlias(alias: string): { user?: string; hostname?: string; port?: number; hostkeyalias?: string } {
+  const r = Bun.spawnSync([sshProgram(), "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+  const out: Record<string, string> = {};
+  if (r.exitCode === 0) for (const l of r.stdout.toString().split("\n")) { const i = l.indexOf(" "); if (i > 0) out[l.slice(0, i)] ??= l.slice(i + 1).trim(); }
+  return { user: out.user, hostname: out.hostname, port: out.port ? Number(out.port) : undefined, hostkeyalias: out.hostkeyalias && out.hostkeyalias !== "none" ? out.hostkeyalias : undefined };
+}
+
+export function hostGroups(home = homedir()): HostGroup[] {
+  const hosts = sshHosts(home);
+  let stamp = hosts.join(",");
+  try { stamp += statSync(join(home, ".ssh", "config")).mtimeMs; } catch {}
+  if (groupsCache?.stamp === stamp) return groupsCache.groups;
+  const byKey = new Map<string, HostGroup & { direct?: string }>();
+  for (const a of hosts) {
+    const r = resolveAlias(a);
+    const key = `${r.user ?? ""}@${(r.hostkeyalias ?? r.hostname ?? a).toLowerCase()}`;
+    const g = byKey.get(key) ?? { key, alias: a, routes: [], user: r.user, hostname: r.hostname, port: r.port };
+    g.routes.push(a);
+    if (!r.hostkeyalias && !g.direct && !isAddress(a)) g.direct = a;
+    byKey.set(key, g);
+  }
+  const groups = [...byKey.values()].map(({ direct, ...g }) => {
+    const alias = direct ?? g.routes.find((r) => !isAddress(r)) ?? g.routes[0]!;
+    return { ...g, alias, routes: [alias, ...g.routes.filter((r) => r !== alias)] };
+  });
+  groupsCache = { stamp, groups };
+  return groups;
+}
+
+export const groupOf = (alias: string) => hostGroups().find((g) => g.routes.includes(alias));

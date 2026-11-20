@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execArgv, outsideRoot } from "./hands.ts";
 import { remoteExec } from "./remote.ts";
-import { proof } from "./link.ts";
+import { linkFetch, proof } from "./link.ts";
 import { sshHosts } from "./sshconfig.ts";
 
 test("ssh hosts: concrete aliases in file order, includes followed, patterns skipped", () => {
@@ -94,7 +94,8 @@ test("keel__run_on asks the far daemon to confine its command as the session's o
     },
   });
   try {
-    const fleet = { step() {}, peer: async () => ({ url: `http://127.0.0.1:${srv.port}`, myId: "me", key, daemonId }) } as any;
+    const peer = { url: `http://127.0.0.1:${srv.port}`, myId: "me", key, daemonId };
+    const fleet = { step() {}, hands: (_id: string, path: string, init: any) => linkFetch(peer, path, init) } as any;
     const ctx = { sessionId: "s", cwd: "/", signal: new AbortController().signal, spillDir: "/", seen: new Map(), confined: { sandbox: "workspace-write" as const, network: false } };
     await remoteExec(fleet, { id: "m", name: "m", workspace_root: "/r" } as any, ctx, "make");
     expect(sent.confined).toEqual({ sandbox: "workspace-write", network: false });

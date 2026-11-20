@@ -44,8 +44,7 @@ export class RemoteAgents implements RemotePlacer {
   }
 
   private async sh(m: MachineRow, cwd: string, script: string): Promise<{ code: number; out: string }> {
-    const p = await this.fleet.peer(m.id);
-    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: m.workspace_root }), timeout: 11 * 60_000 });
+    const r = await this.fleet.hands(m.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: m.workspace_root }), timeout: 11 * 60_000 });
     const b = (await r.json()) as { code?: number; out?: string; error?: string };
     return { code: b.code ?? 1, out: b.out ?? b.error ?? "" };
   }
@@ -72,7 +71,7 @@ export class RemoteAgents implements RemotePlacer {
     const cwd = o.cwd ? (isAbsolute(o.cwd) ? resolve(o.cwd) : resolve(base, o.cwd)) : base;
     if (!contains(root, cwd)) throw new Error(`${cwd} is outside the directory granted on ${m.name} (${root})`);
     try {
-      const st = (await (await linkFetch(await this.fleet.peer(m.id), "/api/fleet/hands/stat", { method: "POST", body: JSON.stringify({ path: cwd, root }) })).json()) as { dir?: boolean };
+      const st = (await (await this.fleet.hands(m.id, "/api/fleet/hands/stat", { method: "POST", body: JSON.stringify({ path: cwd, root }) })).json()) as { dir?: boolean };
       if (!st.dir) throw new Error(`${cwd} is not a directory on ${m.name}`);
       if (!o.worktree) return { machine: m.id, name: m.name, cwd };
       // An agent that edits gets its own worktree there when its directory is in a repository.
@@ -193,11 +192,10 @@ export class RemoteAgents implements RemotePlacer {
     let bytes = 0;
     const sent: string[] = [];
     try {
-      const peer = await this.fleet.peer(m.id);
       for (const f of files) {
         const to = join(child.workspace, relative(ws, f));
         const data = readFileSync(f);
-        const r = await linkFetch(peer, `/api/fleet/hands/put?path=${encodeURIComponent(to)}&root=${encodeURIComponent(m.workspace_root)}`, { method: "POST", body: data, headers: { "content-type": "application/octet-stream" }, timeout: 120_000 });
+        const r = await this.fleet.hands(m.id, `/api/fleet/hands/put?path=${encodeURIComponent(to)}&root=${encodeURIComponent(m.workspace_root)}`, { method: "POST", body: data, headers: { "content-type": "application/octet-stream" }, timeout: 120_000 });
         if (!r.ok) {
           const b = (await r.json().catch(() => ({}))) as { error?: string };
           return err(`Error [FAILED]: ${m.name} refused ${relative(ws, f)}: ${b.error ?? `HTTP ${r.status}`}. ${sent.length} file(s) were copied before it.`);

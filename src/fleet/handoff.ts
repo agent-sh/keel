@@ -64,8 +64,7 @@ export class Handoffs {
       const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
       return { code, out: out + err };
     }
-    const p = await this.fleet.peer(machine.id);
-    const r = await linkFetch(p, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: machine.workspace_root }), timeout: 11 * 60_000 });
+    const r = await this.fleet.hands(machine.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: machine.workspace_root }), timeout: 11 * 60_000 });
     const b = (await r.json()) as { code: number; out: string; error?: string };
     return { code: b.code ?? 1, out: b.out ?? b.error ?? "" };
   }
@@ -114,13 +113,11 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
   }
 
   private async put(machine: MachineRow, path: string, data: Uint8Array) {
-    const p = await this.fleet.peer(machine.id);
-    const r = await linkFetch(p, `/api/fleet/hands/put?path=${encodeURIComponent(path)}&root=${encodeURIComponent(machine.workspace_root!)}`, { method: "POST", body: data as unknown as BodyInit, headers: { "content-type": "application/octet-stream" }, timeout: 10 * 60_000 });
+    const r = await this.fleet.hands(machine.id, `/api/fleet/hands/put?path=${encodeURIComponent(path)}&root=${encodeURIComponent(machine.workspace_root!)}`, { method: "POST", body: data as unknown as BodyInit, headers: { "content-type": "application/octet-stream" }, timeout: 10 * 60_000 });
     if (!r.ok) throw new Error(`sending the bundle: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
   }
   private async get(machine: MachineRow, path: string): Promise<Uint8Array> {
-    const p = await this.fleet.peer(machine.id);
-    const r = await linkFetch(p, `/api/fleet/hands/get?path=${encodeURIComponent(path)}&root=${encodeURIComponent(machine.workspace_root!)}`, { timeout: 10 * 60_000 });
+    const r = await this.fleet.hands(machine.id, `/api/fleet/hands/get?path=${encodeURIComponent(path)}&root=${encodeURIComponent(machine.workspace_root!)}`, { timeout: 10 * 60_000 });
     if (!r.ok) throw new Error(`fetching the bundle: HTTP ${r.status}`);
     return new Uint8Array(await r.arrayBuffer());
   }
@@ -294,6 +291,7 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
   }
 
   private note(id: string, text: string) {
+    if (!this.store.session(id)) return; // deleted while it moved: nothing to tell
     const e = this.store.append(id, "note", { kind: "handoff", text });
     this.bus.emit({ t: "event", event: e });
   }

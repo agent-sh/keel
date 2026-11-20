@@ -10,7 +10,9 @@ import { type Facts, type MachineRow, meta, migrate } from "./db.ts";
 import { freeCores, localFacts, VERSION } from "./facts.ts";
 import { CONNECT_MS, freePort, LinkError, linkFetch, linkJson, listenerUids, loopbackUrl, newKey, type Peer } from "./link.ts";
 import { place, type Place, type Rule, type Want } from "./placement.ts";
-import { plainAlias, SSH_BASE, SSH_ONE_SHOT, sshHosts, sshProgram, sshReach } from "./sshconfig.ts";
+import { groupOf, hostGroups, plainAlias, SSH_BASE, SSH_ONE_SHOT, sshProgram } from "./sshconfig.ts";
+import { loginCommand, parseProbe, PROBE_SCRIPT, SshLink } from "./sshlink.ts";
+import { join } from "node:path";
 import { chunks, readText } from "../core/proc.ts";
 
 export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
@@ -41,11 +43,41 @@ export class Fleet {
   private links = new Map<string, DaemonLink>();
   private localFactsCache?: Facts;
   private localFactsAt?: number;
+  private ssh = new Map<string, SshLink>();
+  private sockDir: string;
+  // What each ssh host said at its last reach (the offered list shows it).
+  private reached = new Map<string, { state: string; reason?: string; facts?: Facts; route?: string; machine_id?: string; checked_ms: number }>();
 
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker) {
     migrate(store);
     this.id = meta(store, "daemon_id", () => `d${Buffer.from(crypto.getRandomValues(new Uint8Array(8))).toString("hex")}`);
     this.name = process.env.KEEL_SERVER_NAME || meta(store, "server_name", () => hostname());
+    // A unix socket path has room for about 100 bytes (ssh adds 17 to its control path while it starts).
+    const dir = join(store.stateDir, "ssh");
+    this.sockDir = dir.length < 60 ? dir : join(process.env.XDG_RUNTIME_DIR || "/run/user/" + process.getuid!(), `keel-ssh-${this.id}`);
+  }
+
+  // A machine reached over ssh with no daemon of its own: its tools go to the
+  // helper the daemon puts there (src/fleet/sshlink.ts).
+  isSsh(m: MachineRow) { return m.source === "ssh" && !m.daemon_port; }
+
+  sshLink(m: MachineRow): SshLink {
+    let l = this.ssh.get(m.id);
+    if (!l) {
+      const alias = m.ssh_host!;
+      l = new SshLink(m.id, () => groupOf(alias)?.routes ?? [alias], this.sockDir, (msg) => console.error(`keel fleet: ${msg}`));
+      this.ssh.set(m.id, l);
+    }
+    return l;
+  }
+
+  // One request to a machine's hands: over the paired link of its daemon, or to
+  // the helper of an ssh machine. Throws LinkError when it cannot be reached.
+  async hands(id: string, path: string, init: RequestInit & { timeout?: number; retryMs?: number; idempotent?: boolean } = {}): Promise<Response> {
+    const m = this.row(id);
+    if (!m) throw new LinkError("no such machine");
+    if (this.isSsh(m)) return this.sshLink(m).fetch(path, init);
+    return linkFetch(await this.peer(id), path, init);
   }
 
   start() {
@@ -58,6 +90,8 @@ export class Fleet {
     for (const r of relays) { r.abort.abort(); clearTimeout(r.timer); }
     for (const t of this.tunnels.values()) t.then((t) => t.proc.kill()).catch(() => {});
     this.tunnels.clear();
+    for (const l of this.ssh.values()) l.close();
+    this.ssh.clear();
   }
 
   // ---- records
@@ -106,13 +140,34 @@ export class Fleet {
     const t = this.tunnels.get(id);
     if (t) { t.then((t) => t.proc.kill()).catch(() => {}); this.tunnels.delete(id); }
     this.links.delete(id);
+    this.ssh.get(id)?.close();
+    this.ssh.delete(id);
     this.emitMachines();
   }
 
   // Hosts of the ssh configuration not enabled yet, offered as `ssh:<alias>`.
+  // One per box: aliases of one host are its routes, and a host that answered
+  // with the machine id of an enabled one is that machine.
   offered(): string[] {
-    const enabled = new Set(this.rows().map((m) => m.ssh_host).filter(Boolean));
-    return sshHosts().filter((h) => !enabled.has(h));
+    return this.offeredGroups().map((g) => g.alias);
+  }
+  offeredGroups() {
+    const enabled = new Set(this.rows().flatMap((m) => (m.ssh_host ? groupOf(m.ssh_host)?.routes ?? [m.ssh_host] : [])));
+    const ids = new Set(this.rows().map((m) => this.facts(m.id) as (Facts & { machine_id?: string }) | undefined).map((f) => f?.machine_id).filter(Boolean));
+    const seen = new Set<string>();
+    return hostGroups().filter((g) => {
+      if (g.routes.some((r) => enabled.has(r))) return false;
+      const mid = this.reached.get(g.alias)?.machine_id;
+      if (mid && (ids.has(mid) || seen.has(mid))) return false;
+      if (mid) seen.add(mid);
+      return true;
+    });
+  }
+  offeredView() {
+    return this.offeredGroups().map((g) => {
+      const r = this.reached.get(g.alias);
+      return { id: `ssh:${g.alias}`, name: g.alias, source: "ssh", enabled: false, state: r?.state ?? "unknown", reason: r?.reason, facts: r?.facts, checked_ms: r?.checked_ms, ssh_host: g.alias, routes: g.routes, route: r?.route, detail: r?.facts ? `${r.facts.os} ${r.facts.arch}, ${r.facts.cpus} cores` : undefined };
+    });
   }
 
   // The public shape of a machine: never the link key.
@@ -127,6 +182,7 @@ export class Fleet {
       daemon: { ...link, daemon_id: m.link_daemon_id ?? link.daemon_id },
       ssh_host: m.ssh_host ?? undefined, workspace_root: m.workspace_root ?? undefined, colour: m.colour ?? undefined,
       daemon_url: m.daemon_url ?? undefined, daemon_port: m.daemon_port ?? undefined, max_jobs: m.max_jobs ?? undefined,
+      ...(this.isSsh(m) ? { transport: "ssh", routes: groupOf(m.ssh_host!)?.routes ?? [m.ssh_host!], route: this.ssh.get(m.id)?.route, helper: this.ssh.get(m.id)?.installed } : { transport: "daemon" }),
     };
   }
 
@@ -249,6 +305,7 @@ export class Fleet {
 
   async check(id: string): Promise<MachineRow> {
     const m = this.row(id)!;
+    if (this.isSsh(m)) return this.checkSshMachine(m);
     this.set(id, { state: m.state === "unknown" ? "starting" : m.state });
     this.links.set(id, { state: "connecting" });
     this.emitMachines();
@@ -273,9 +330,51 @@ export class Fleet {
     return this.row(id)!;
   }
 
+  // An enabled ssh machine: its facts over its master connection, on the
+  // first route that answers. Nothing is installed by a check.
+  private async checkSshMachine(m: MachineRow): Promise<MachineRow> {
+    const id = m.id;
+    this.set(id, { state: m.state === "unknown" ? "starting" : m.state });
+    this.emitMachines();
+    try {
+      const l = this.sshLink(m);
+      const p = await l.readFacts();
+      const q = this.queues.get(id);
+      const busy = (q?.waiting.length ?? 0) > 0 || p.load1 >= p.cpus;
+      const { platform: _p, ...facts } = p;
+      this.set(id, { state: busy ? "busy" : "ready", reason: null, checked_ms: Date.now(), facts: JSON.stringify({ ...facts, root: m.workspace_root ?? undefined, measured_ms: Date.now() }) });
+      this.links.set(id, { state: "linked", server_name: l.route });
+    } catch (e) {
+      const reason = (e as Error).message;
+      this.set(id, { state: "offline", reason, checked_ms: Date.now() });
+      this.links.set(id, { state: "offline", reason });
+      if (!(e instanceof LinkError)) this.errors.capture("server", e, { at: "fleet ssh check", machine: id });
+    }
+    this.emitMachines();
+    return this.row(id)!;
+  }
+
+  // An ssh host not enabled: one connection per route in order, no master
+  // kept, nothing installed; the facts when it answers.
   async checkSsh(alias: string) {
-    const r = await sshReach(alias);
-    return r.ok ? { id: `ssh:${alias}`, name: alias, source: "ssh", enabled: false, state: "ready", detail: r.detail } : { id: `ssh:${alias}`, name: alias, source: "ssh", enabled: false, state: "offline", reason: r.reason };
+    const g = groupOf(alias);
+    const errs: string[] = [];
+    for (const route of g?.routes ?? [alias]) {
+      if (!plainAlias(route)) continue;
+      const p = Bun.spawn([sshProgram(), ...SSH_ONE_SHOT, route, loginCommand(PROBE_SCRIPT)], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+      const timer = setTimeout(() => p.kill(), 15_000);
+      const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+      clearTimeout(timer);
+      if (code === 0 && /^os=/m.test(out)) {
+        const { platform: _p, ...facts } = parseProbe(out);
+        this.reached.set(g?.alias ?? alias, { state: "ready", facts: { ...facts, measured_ms: Date.now() }, route, machine_id: facts.machine_id, checked_ms: Date.now() });
+        return { ...this.offeredView().find((o) => o.name === (g?.alias ?? alias)), id: `ssh:${alias}`, state: "ready", route, facts };
+      }
+      errs.push(`${route}: ${(err.trim().split("\n").pop() || (code === null || p.killed ? "no answer within 15 s" : `ssh exited ${code}`)).slice(0, 200)}`);
+    }
+    const reason = errs.join("; ");
+    this.reached.set(g?.alias ?? alias, { state: "offline", reason, checked_ms: Date.now() });
+    return { id: `ssh:${alias}`, name: alias, source: "ssh", enabled: false, state: "offline", reason, routes: g?.routes };
   }
 
   facts(id: string): Facts | undefined {
@@ -366,6 +465,8 @@ export class Fleet {
   }
 
   remoteSessions(id: string): { sessions: Session[]; stale: boolean; retry_at_ms?: number } {
+    const row = this.row(id);
+    if (row && this.isSsh(row)) return { sessions: [], stale: false }; // its sessions are this daemon's
     const r = this.relays.get(id);
     if (!r) {
       const m = this.row(id);

@@ -6,13 +6,16 @@ import type { Session } from "../../../src/core/types.ts";
 import { asRemote, relayed, splitId } from "./fleet-ids.ts";
 import { actions, api, apply, dropSession, getState, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
-export type Facts = { hostname: string; os: string; arch: string; cpus: number; load1: number; mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[]; sandbox: boolean; keel_version: string; root?: string; measured_ms?: number };
+export type Facts = { hostname: string; os: string; arch: string; cpus: number; load1: number; mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[]; sandbox: boolean; keel_version: string; root?: string; measured_ms?: number; helper_dir?: string; home?: string };
 export type Machine = {
   id: string; name: string; source: "local" | "daemon" | "ssh"; enabled: boolean; state: string; reason?: string; checked_ms?: number;
   auto_connect?: boolean; messages?: "allow" | "hold"; queue?: { running: number; waiting: number; limit?: number }; facts?: Facts;
   daemon?: { state: string; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
   ssh_host?: string; workspace_root?: string; colour?: string; daemon_url?: string; daemon_port?: number; max_jobs?: number; detail?: string;
+  // An ssh machine with no daemon of its own: the aliases that reach it, the one in use, what Keel put there.
+  transport?: "ssh" | "daemon"; routes?: string[]; route?: string; helper?: { runtime: string; helper: string; uploaded: string[]; dir: string };
 };
+export type RemoteDirs = { path: string; parent: string | null; root: string; is_git: boolean; dirs: { name: string; path: string; is_git: boolean }[] };
 export type FleetMachineView = { id: string; name: string; state: string; sessions: Session[]; reason?: string; colour?: string; stale?: boolean; retry_at_ms?: number };
 
 type State = {
@@ -98,13 +101,14 @@ export const fleet = {
   // Where Auto places a new session, asked again each time it is shown.
   previewAuto: () => api<Place>("/api/fleet/place", { method: "POST", body: JSON.stringify({ kind: "session" }) }).then((p) => (set({ autoPlace: p }), p)),
   // Auto sends the place the start box showed (expect); the daemon says when it changed.
-  createOn: (machine: string, text: string, model?: string, images?: unknown[], localWorkspace?: string, expect?: string) =>
-    api<{ session: Session }>("/api/fleet/sessions", { method: "POST", body: JSON.stringify({ machine, text, model, images, local_workspace: localWorkspace, expect_machine: expect }) })
+  createOn: (machine: string, text: string, model?: string, images?: unknown[], localWorkspace?: string, expect?: string, workspace?: string) =>
+    api<{ session: Session }>("/api/fleet/sessions", { method: "POST", body: JSON.stringify({ machine, text, model, images, local_workspace: localWorkspace, expect_machine: expect, workspace }) })
       .then((r) => (apply({ t: "session", session: r.session }), r.session))
       .catch((e) => {
         if (machine === "auto") void fleet.previewAuto().catch(reportError);
         throw e;
       }),
+  dirs: (id: string, path?: string) => api<RemoteDirs>(`/api/fleet/machines/${encodeURIComponent(id)}/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   saveRules: (rules: Rule[]) => api<{ rules: Rule[] }>("/api/fleet/placement", { method: "POST", body: JSON.stringify({ rules }) }).then((r) => set({ rules: r.rules })),
 };
 

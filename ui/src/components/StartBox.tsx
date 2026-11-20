@@ -10,7 +10,7 @@ import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
-import { MachinePicker, useNewMachine } from "./Fleet.tsx";
+import { MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
 import { fleet, useFleet } from "../lib/fleet.ts";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
 
@@ -35,6 +35,11 @@ export function StartBox() {
   }, [defaultModel]);
   const inWorktree = useStartInWorktree();
   const machine = useNewMachine();
+  // An ssh machine's folder, kept per machine (its granted directory until one is picked).
+  const sshMachine = useFleet((s) => s.machines.find((m) => m.id === machine && m.transport === "ssh"));
+  const [remoteDir, setRemoteDir] = useState("");
+  useEffect(() => { setRemoteDir(sshMachine ? localStorage.getItem(`keel.remoteFolder.${sshMachine.id}`) ?? "" : ""); }, [sshMachine?.id]);
+  const pickRemote = (p: string) => { setRemoteDir(p); if (sshMachine) localStorage.setItem(`keel.remoteFolder.${sshMachine.id}`, p); };
   const loaded = useStore((s) => s.loaded);
   const noModels = useStore((s) => s.loaded.models && s.models.length === 0);
   const firstRun = loaded.sessions && !Object.values(sessions).some((s) => !s.archived);
@@ -57,10 +62,11 @@ export function StartBox() {
       <div className="flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
         <div className="mt-auto w-full max-w-[46rem] pb-[8vh] pt-6 md:mb-auto md:mt-[18vh] md:pb-0 md:pt-0">
           <h1 className="mb-1.5 text-display font-semibold tracking-[-0.025em] text-fg">What should we work on?</h1>
-          <p className="mb-6 text-base text-muted">{autoThere ? `Keel works on ${place!.machine}, in its granted directory.` : `Keel works in the folder below${machine && machine !== "auto" ? ", on the machine you picked" : ""}.`} Paste screenshots, mention files with @, and steer while it runs.</p>
+          <p className="mb-6 text-base text-muted">{autoThere ? `Keel works on ${place!.machine}, in its granted directory.` : `Keel works in the folder below${machine && machine !== "auto" ? `, on ${sshMachine?.name ?? "the machine you picked"}` : ""}.`} Paste screenshots, mention files with @, and steer while it runs.</p>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <MachinePicker />
             {(!machine || (machine === "auto" && !autoThere)) && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
+            {sshMachine && <RemoteFolderPicker machine={sshMachine.id} value={remoteDir} onChange={pickRemote} />}
             {!machine && <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>}
             {!machine && <ProjectPicker workspace={workspace} />}
           </div>
@@ -81,7 +87,7 @@ export function StartBox() {
               autoFocus
               onSend={async (t, images) => {
                 const s = machine
-                  ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined)
+                  ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined, sshMachine ? remoteDir || undefined : undefined)
                   : inWorktree && (await isGitFolder(workspace))
                   ? await createInWorktree(t, model || undefined, workspace || undefined, images)
                   : await actions.create(t, model || undefined, workspace || undefined, images, { project: startProject(workspace, newProject) });

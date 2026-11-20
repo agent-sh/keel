@@ -3,18 +3,12 @@
 // daemon's API, sessions placed on a machine, and the paired-only endpoints
 // another daemon calls (facts, live stream, hands).
 import { holdStream } from "../streams.ts";
-import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { instructionFiles } from "../../engine/turn.ts";
-import { localFacts } from "../../fleet/facts.ts";
 import { Fleet } from "../../fleet/fleet.ts";
-import { execArgv, namedSecrets, runHands, WORKSPACE_TOOLS } from "../../fleet/hands.ts";
-import { vault } from "../../safety/secrets.ts";
-
-// The script field of a handoff or keel__run_on command.
-const SCRIPT: ReadonlySet<string> = new Set(["script"]);
-import { listJobs, logPath, ownerRun, readJobLog, stopOne, waitOne } from "../../tools/terminal.ts";
+import { WORKSPACE_TOOLS } from "../../fleet/hands.ts";
+import { handsRoutes } from "../../fleet/hands-routes.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven, standingFrom } from "../../fleet/link.ts";
 import { innerHeaders, isLocal, type Standing } from "../../safety/presence.ts";
 import { remoteRun } from "../../fleet/remote.ts";
@@ -22,56 +16,25 @@ import { Handoffs, MoveError } from "../../fleet/handoff.ts";
 import { forgetOwnership, portalOf, portalPath, sessionPorts, setOpen } from "../../fleet/portal.ts";
 import { bridge, isUpgrade, present, sameText, upHeaders, upstream } from "../../fleet/portal-proxy.ts";
 import { validate as validatePlacement } from "../../fleet/placement.ts";
-import { plainAlias, sshHosts } from "../../fleet/sshconfig.ts";
+import { groupOf, hostGroups, plainAlias } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
 import { bindNotices } from "../../fleet/notice.ts";
 import { registerSendFiles, RemoteAgents } from "../../fleet/agents.ts";
 import { setRemotePlacer } from "../../automation/agents.ts";
-import { realpathSync } from "node:fs";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { contains } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
-import { readText } from "../../core/proc.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
-// A path with its links resolved, through the deepest part that exists: a link
-// inside the granted directory cannot carry a write out of it.
-function realOf(p: string): string {
-  let at = resolve(p);
-  const rest: string[] = [];
-  for (;;) {
-    try { return resolve(realpathSync(at), ...rest.reverse()); } catch {}
-    const up = dirname(at);
-    if (up === at) return resolve(p);
-    rest.push(at.slice(up.length + (up.endsWith("/") ? 0 : 1)));
-    at = up;
-  }
-}
 const bad = (error: string, status = 400) => json({ error }, status);
 const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
 const COLOUR = /^(#[0-9a-f]{3,8}|[a-z]+|(rgb|hsl|oklch)a?\([^)]*\))$/i;
 const KEEPALIVE_MS = 5_000; // under Bun's 10 s idle timeout: a long call keeps its connection
 
 export let fleet: Fleet | undefined;
-
-// A JSON answer that may take minutes: spaces go out while it works (valid
-// JSON whitespace), so the connection is not closed as idle.
-function keepalive(work: () => Promise<unknown>): Response {
-  const enc = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(c) {
-      const tick = setInterval(() => { try { c.enqueue(enc.encode(" ")); } catch {} }, KEEPALIVE_MS);
-      let out: unknown;
-      try { out = await work(); } catch (e) { out = { error: (e as Error).message }; }
-      clearInterval(tick);
-      try { c.enqueue(enc.encode(JSON.stringify(out))); c.close(); } catch {}
-    },
-  });
-  return new Response(stream, { headers: { "content-type": "application/json" } });
-}
 
 export const fleetRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, engine, errors } = deps;
@@ -122,8 +85,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       const facts = f.facts(m.id);
       let inst = "";
       try {
-        const p = await f.peer(m.id);
-        const r = await linkFetch(p, "/api/fleet/hands/instructions", { method: "POST", body: JSON.stringify({ cwd: s.workspace, root: m.workspace_root }) });
+        const r = await f.hands(m.id, "/api/fleet/hands/instructions", { method: "POST", body: JSON.stringify({ cwd: s.workspace, root: m.workspace_root }), idempotent: true });
         inst = ((await r.json()) as any).text ?? "";
       } catch (e) {
         if (!(e instanceof LinkError)) errors.capture("server", e, { at: "fleet instructions", machine: m.id });
@@ -214,9 +176,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     return m ? f.view(m) : undefined;
   };
   const machinesList = async () => {
-    const enabled = new Set(f.rows().map((m) => m.ssh_host).filter(Boolean));
-    const offered = sshHosts().filter((h) => !enabled.has(h)).map((h) => ({ id: `ssh:${h}`, name: h, source: "ssh", enabled: false, state: "unknown", ssh_host: h }));
-    return [await f.localView(), ...f.rows().map((m) => f.view(m)), ...offered];
+    return [await f.localView(), ...f.rows().map((m) => f.view(m)), ...f.offeredView()];
   };
 
   // Every session across machines, from the relays: never waits on a link.
@@ -225,7 +185,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     const machines: any[] = [{ id: "local", name: f.name, state: "ready", sessions: local }];
     const recents: any[] = local.map((s) => ({ machine_id: "local", machine: f.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" }));
     for (const m of f.rows()) {
-      if (!m.link_key && m.state === "unknown") continue;
+      if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
       machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
@@ -234,6 +194,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     recents.sort((a, b) => b.updated_ms - a.updated_ms);
     return { daemon_id: f.id, machines, recents };
   };
+
+  // The hands, for paired daemons only.
+  const handsLinked = Object.fromEntries(Object.entries(handsRoutes({ spillRoot, capture: (e, c) => errors.capture("tool", e, c), instructions: instructionFiles })).map(([path, h]) => [path, Object.fromEntries(Object.entries(h).map(([m, fn]) => [m, linked(fn as any)]))]));
 
   return {
     "/api/fleet": { GET: () => json(fleetView()) },
@@ -277,11 +240,26 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         let m;
         if (b.ssh_host !== undefined) {
           const host = String(b.ssh_host);
-          if (!plainAlias(host) || !sshHosts().includes(host)) return bad(`${host} is not a concrete host of the ssh configuration`);
-          if (f.rows().some((r) => r.ssh_host === host)) return bad(`${host} is already enabled`);
-          const port = Number(b.daemon_port);
-          if (!Number.isInteger(port) || port < 1 || port > 65535) return bad("daemon_port must be the port its daemon listens on there");
-          m = f.add({ name: String(b.name || host), source: "ssh", ssh_host: host, daemon_port: port, workspace_root: root });
+          const group = groupOf(host);
+          if (!plainAlias(host) || !group) return bad(`${host} is not a concrete host of the ssh configuration`);
+          const same = f.rows().find((r) => r.ssh_host && group.routes.includes(r.ssh_host));
+          if (same) return bad(`${host} reaches ${same.name}, which is already enabled`);
+          // With a daemon port: a Keel daemon runs there, reached through ssh -L.
+          // Without: the machine itself, its tools through the helper Keel puts there.
+          const port = b.daemon_port === undefined || b.daemon_port === null || b.daemon_port === "" ? null : Number(b.daemon_port);
+          if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) return bad("daemon_port must be the port its daemon listens on there");
+          const name = String(b.name || group.alias);
+          if (f.rows().some((r) => r.name.toLowerCase() === name.toLowerCase())) return bad(`a machine is already named ${name}`);
+          m = f.add({ name, source: "ssh", ssh_host: group.alias, daemon_port: port ?? undefined, workspace_root: root });
+          if (port === null) {
+            // The account is the owner's own: its home is the directory granted unless he names one.
+            const checked = await f.check(m.id);
+            if (!root && checked.facts) {
+              const home = (JSON.parse(checked.facts) as { home?: string }).home;
+              if (home) f.update(m.id, { workspace_root: home });
+            }
+            return json({ id: m.id, machines: await machinesList() }, 201);
+          }
         } else {
           const url = loopbackUrl(String(b.daemon_url ?? ""));
           if (!url) return bad("daemon_url must be http on a loopback address (reach another machine through its ssh host)");
@@ -335,7 +313,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (id === "local") return json(await f.localView());
         if (id.startsWith("ssh:")) {
           const alias = id.slice(4);
-          if (!sshHosts().includes(alias)) return bad("no such machine", 404);
+          if (!hostGroups().some((g) => g.routes.includes(alias))) return bad("no such machine", 404);
           return json(await f.checkSsh(alias));
         }
         if (!f.row(id)) return bad("no such machine", 404);
@@ -344,11 +322,32 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       },
     },
 
+    // The folders inside a folder of an ssh machine, for the folder picker:
+    // inside its granted directory, over its master connection.
+    "/api/fleet/machines/:id/dirs": {
+      GET: async (req: any) => {
+        const m = f.row(req.params.id);
+        if (!m || !f.isSsh(m)) return bad("no such ssh machine", 404);
+        if (!m.workspace_root) return bad(`${m.name} has no granted directory`);
+        const want = new URL(req.url).searchParams.get("path") || m.workspace_root;
+        const p = isAbsolute(want) ? resolve(want) : resolve(m.workspace_root, want);
+        if (!contains(m.workspace_root, p)) return bad(`${p} is outside the directory granted on ${m.name}`, 403);
+        try {
+          const r = await f.sshLink(m).dirs(p);
+          return json({ path: r.path, parent: r.path === m.workspace_root || !contains(m.workspace_root, dirname(r.path)) ? null : dirname(r.path), is_git: r.is_git, root: m.workspace_root, dirs: r.dirs.map((d) => ({ ...d, path: `${r.path.replace(/\/$/, "")}/${d.name}` })) });
+        } catch (e) {
+          if (!(e instanceof LinkError)) throw e;
+          return bad((e as Error).message, 502);
+        }
+      },
+    },
+
     // /api/fleet/machines/:id/api/<rest> is /api/<rest> on that machine's daemon.
     "/api/fleet/machines/:id/api/*": async (req: any) => {
       const url = new URL(req.url);
       const id = decodeURIComponent(url.pathname.split("/")[4] ?? "");
       if (!f.row(id)) return bad("no such machine", 404);
+      if (f.isSsh(f.row(id)!)) return bad("that machine has no daemon of its own", 404);
       const rest = url.pathname.slice(`/api/fleet/machines/${url.pathname.split("/")[4]}/api/`.length);
       let decoded: string;
       try { decoded = decodeURIComponent(rest); } catch { return bad("a path that cannot be read"); }
@@ -426,8 +425,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (!contains(m.workspace_root, ws)) return bad(`${ws} is outside the directory granted on ${m.name}`);
         let st: any;
         try {
-          const p = await f.peer(m.id);
-          const r = await linkFetch(p, "/api/fleet/hands/stat", { method: "POST", body: JSON.stringify({ path: ws, root: m.workspace_root }) });
+          // An ssh machine's first session puts its helper there: minutes at most (an upload).
+          const r = await f.hands(m.id, "/api/fleet/hands/stat", { method: "POST", body: JSON.stringify({ path: ws, root: m.workspace_root }), idempotent: true });
           st = await r.json();
         } catch (e) {
           if (!(e instanceof LinkError)) throw e;
@@ -581,9 +580,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
 
     // ---- what a paired daemon calls
 
-    "/api/fleet/facts": {
-      GET: linked(async (req) => json(await localFacts(new URL(req.url).searchParams.get("root") ?? undefined))),
-    },
+    ...handsLinked,
 
     // This daemon's live frames, for the other daemon's relay. Opens with the
     // sessions it shows; a comment line every 5 s keeps the stream and proves it alive.
@@ -613,103 +610,6 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       }),
     },
 
-    // One workspace tool call for a paired daemon's session. The answer is JSON
-    // preceded by spaces sent while the call runs, so the connection stays open.
-    "/api/fleet/hands": {
-      POST: linked(async (req) => {
-        const q = await body(req);
-        const enc = new TextEncoder();
-        const ctl = new AbortController();
-        req.signal?.addEventListener("abort", () => ctl.abort(), { once: true });
-        const stream = new ReadableStream({
-          async start(c) {
-            const tick = setInterval(() => { try { c.enqueue(enc.encode(" ")); } catch {} }, KEEPALIVE_MS);
-            let out;
-            try {
-              out = await runHands(q, spillRoot, ctl.signal);
-            } catch (e) {
-              const rec = errors.capture("tool", e, { at: "fleet hands", tool: q.tool });
-              out = { content: `Tool failed on this machine: ${rec.message}`, is_error: true };
-            }
-            clearInterval(tick);
-            try { c.enqueue(enc.encode(JSON.stringify(out))); c.close(); } catch {}
-          },
-          cancel: () => ctl.abort(),
-        });
-        return new Response(stream, { headers: { "content-type": "application/json" } });
-      }),
-    },
-
-    // The terminal pane of a paired daemon's session placed here: its jobs on
-    // this machine, a log read, a stop, the owner's command and waiting for it.
-    "/api/fleet/hands/terminal": {
-      POST: linked(async (req) => {
-        const b = await body(req);
-        const sid = String(b.session ?? "");
-        if (!/^[\w-]+$/.test(sid)) return bad("no session");
-        switch (b.op) {
-          case "list": return json({ jobs: listJobs(spillRoot, sid) });
-          case "log": return json({ log: readJobLog(spillRoot, sid, String(b.job ?? ""), Number(b.from ?? 0)) });
-          case "stop": return json({ stopped: await stopOne(sid, String(b.job ?? "")) });
-          case "run": {
-            const cwd = resolve(String(b.cwd ?? ""));
-            if (!b.root || !contains(resolve(b.root), cwd) || !existsSync(cwd)) return bad(`not a directory inside the granted one: ${cwd}`);
-            const j = ownerRun(spillRoot, sid, String(b.command ?? ""), cwd);
-            return json({ job: { id: j.id, command: j.command, cwd } });
-          }
-          case "wait": {
-            const id = String(b.job ?? "");
-            return keepalive(async () => ({ job: await waitOne(spillRoot, sid, id, 5 * 60_000, req.signal), log: logPath(spillRoot, sid, id) }));
-          }
-          default: return bad("unknown op");
-        }
-      }),
-    },
-
-    "/api/fleet/hands/instructions": {
-      POST: linked(async (req) => {
-        const b = await body(req);
-        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd))) return json({ text: "" });
-        return json({ text: existsSync(b.cwd) ? instructionFiles(resolve(b.cwd)) : "" });
-      }),
-    },
-
-    "/api/fleet/hands/stat": {
-      POST: linked(async (req) => {
-        const b = await body(req);
-        const p = resolve(String(b.path ?? ""));
-        if (!b.root || !contains(resolve(b.root), p)) return json({ exists: false, dir: false, error: "outside the granted directory" });
-        try {
-          const st = statSync(p);
-          return json({ exists: true, dir: st.isDirectory() });
-        } catch {
-          return json({ exists: false, dir: false });
-        }
-      }),
-    },
-
-    // One script in the granted directory, for a handoff's git steps: no tool
-    // state (a tool's shell keeps its own working directory between calls).
-    "/api/fleet/hands/exec": {
-      POST: linked(async (req) => {
-        const b = await body(req);
-        const cwd = resolve(String(b.cwd ?? ""));
-        if (!b.root || !contains(resolve(b.root), cwd) || !existsSync(cwd)) return json({ code: 127, out: `not a directory inside the granted one: ${cwd}` });
-        const named = namedSecrets({ script: String(b.script ?? "") }, SCRIPT);
-        if ("error" in named) return json({ error: named.error });
-        const argv = execArgv(named.value.script, resolve(b.root), b.confined && typeof b.confined === "object" ? b.confined : undefined);
-        if ("error" in argv) return json({ error: argv.error });
-        return keepalive(async () => {
-          const p = Bun.spawn(argv, {
-            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...named.env }, signal: req.signal,
-            timeout: 10 * 60_000, // the longest a shell call may run in any family
-          });
-          const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
-          return { code, out: vault.mask((out + err).slice(-200_000)) };
-        });
-      }),
-    },
-
     // The portal of one of this daemon's sessions, for a paired daemon that
     // shows it: the dev server's answer as it is (the caller rewrites it), and
     // its socket, whose first frame proves the pairing.
@@ -727,27 +627,6 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       h.set("x-keel-portal-point", t.point ? "1" : "0");
       h.delete("content-length"); h.delete("content-encoding"); h.delete("transfer-encoding");
       return proven(new Response(r.body, { status: r.status, headers: h }), c, f.id);
-    },
-
-    // A file into or out of the granted directory (a handoff's git bundle).
-    "/api/fleet/hands/put": {
-      POST: linked(async (req) => {
-        const u = new URL(req.url).searchParams;
-        const p = resolve(u.get("path") ?? "");
-        if (!u.get("root") || !contains(resolve(u.get("root")!), p) || !contains(realOf(u.get("root")!), realOf(p))) return bad("outside the granted directory");
-        mkdirSync(dirname(p), { recursive: true });
-        await Bun.write(p, await req.arrayBuffer());
-        return json({ ok: true });
-      }),
-    },
-    "/api/fleet/hands/get": {
-      GET: linked(async (req) => {
-        const u = new URL(req.url).searchParams;
-        const p = resolve(u.get("path") ?? "");
-        if (!u.get("root") || !contains(resolve(u.get("root")!), p)) return bad("outside the granted directory");
-        const file = Bun.file(p);
-        return (await file.exists()) ? new Response(file, { headers: { "content-type": "application/octet-stream" } }) : bad("no such file", 404);
-      }),
     },
 
     // Any /api route of this daemon, for a paired daemon's forwarder.

@@ -49,6 +49,27 @@ function FactsLine({ m }: { m: Machine }) {
   );
 }
 
+// On or off for one machine: on enables it (an ssh host needs nothing else),
+// off removes it (refused while sessions run their tools there).
+function Toggle({ on, busy, label, onChange }: { on: boolean; busy?: boolean; label: string; onChange: (on: boolean) => void }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} aria-label={label} disabled={busy} data-testid="machine-toggle" onClick={() => onChange(!on)}
+      className={cn("relative h-5 w-9 shrink-0 rounded-full border transition-colors disabled:opacity-50", on ? "border-accent bg-accent" : "border-line-strong bg-sunken")}>
+      <span className={cn("absolute top-1/2 size-3.5 -translate-y-1/2 rounded-full shadow-1 transition-all", on ? "left-[1.125rem] bg-accent-fg" : "left-0.5 bg-raised")} />
+    </button>
+  );
+}
+
+// The aliases of one machine in the ssh configuration: the one in use first.
+function Routes({ routes, using }: { routes?: string[]; using?: string }) {
+  if (!routes?.length) return null;
+  return (
+    <span className="flex flex-wrap items-center gap-1" data-testid="machine-routes" title="Aliases of your ssh configuration that reach this machine; the first that answers is used">
+      {routes.map((r) => <span key={r} className={cn("rounded-sm px-1.5 font-mono text-micro", r === using ? "bg-accent-soft text-accent-ink" : "bg-sunken text-faint")}>{r}</span>)}
+    </span>
+  );
+}
+
 function LocalRow({ m }: { m: Machine }) {
   return (
     <div className="flex gap-3.5 py-4" data-testid="machine-row" data-machine="local">
@@ -85,25 +106,29 @@ function MachineRow({ m }: { m: Machine }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="text-base font-medium" data-testid="machine-name">{m.name}</span>
-          <span className="truncate font-mono text-micro text-faint">{m.ssh_host ? `${m.ssh_host} :${m.daemon_port}` : m.daemon_url}</span>
+          {m.transport === "ssh" ? <Routes routes={m.routes} using={m.route ?? m.ssh_host} /> : <span className="truncate font-mono text-micro text-faint">{m.ssh_host ? `${m.ssh_host} :${m.daemon_port}` : m.daemon_url}</span>}
           <span className="ml-auto flex items-center gap-1">
             <StatePill state={m.state} />
             <button type="button" className={ghost} disabled={busy} onClick={() => run(() => fleet.check(m.id))} data-testid="machine-check" title="Check it now">
               <RefreshCw className={cn(busy && "animate-spin")} /> Check
             </button>
             <button type="button" className={ghost} onClick={() => setEdit((e) => !e)}>Edit</button>
-            <button
-              type="button"
-              className={cn(ghost, "hover:text-danger")}
-              aria-label={`Remove ${m.name}`}
-              onClick={async () => { if (await confirmAction({ title: `Remove ${m.name}?`, body: "Its link and its key go. Sessions there stay on that machine.", action: "Remove", danger: true })) run(() => fleet.remove(m.id)); }}
-            ><Trash2 /></button>
+            {m.transport === "ssh" ? (
+              <Toggle on label={`Disable ${m.name}`} busy={busy} onChange={() => run(() => fleet.remove(m.id))} />
+            ) : (
+              <button
+                type="button"
+                className={cn(ghost, "hover:text-danger")}
+                aria-label={`Remove ${m.name}`}
+                onClick={async () => { if (await confirmAction({ title: `Remove ${m.name}?`, body: "Its link and its key go. Sessions there stay on that machine.", action: "Remove", danger: true })) run(() => fleet.remove(m.id)); }}
+              ><Trash2 /></button>
+            )}
           </span>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption">
           <span className={cn("inline-flex items-center gap-1.5", link?.state === "linked" ? "text-ok" : link?.state === "offline" ? "text-danger" : "text-faint")} data-testid="machine-link">
             <Link2 className="size-3.5" />
-            {link?.state === "linked" ? `linked to ${link.server_name ?? "its daemon"}${link.version ? ` ${link.version}` : ""}` : link?.state === "offline" ? "link down" : link?.state === "connecting" ? "linking" : "not linked"}
+            {m.transport === "ssh" ? (link?.state === "linked" ? `over ssh via ${m.route ?? m.ssh_host}` : link?.state === "offline" ? "does not answer over ssh" : "not reached yet") : link?.state === "linked" ? `linked to ${link.server_name ?? "its daemon"}${link.version ? ` ${link.version}` : ""}` : link?.state === "offline" ? "link down" : link?.state === "connecting" ? "linking" : "not linked"}
           </span>
           <span className="text-muted">{m.workspace_root ? <>granted <span className="font-mono text-micro text-fg">{m.workspace_root}</span></> : <span className="text-warn">no directory granted: nothing runs there</span>}</span>
           {m.queue && <span className="text-faint tabular-nums">jobs {m.queue.running} running, {m.queue.waiting} waiting{m.queue.limit ? `, limit ${m.queue.limit}` : ""}</span>}
@@ -115,6 +140,11 @@ function MachineRow({ m }: { m: Machine }) {
           </div>
         )}
         <FactsLine m={m} />
+        {m.transport === "ssh" && (
+          <div className="mt-1.5 text-caption text-faint" data-testid="machine-helper">
+            {m.helper ? <>Keel's helper there: <span className="font-mono text-micro text-muted">{m.helper.dir}</span>{m.helper.uploaded.length ? ` (put there now: ${m.helper.uploaded.map((u) => u.split("/").slice(-2).join("/")).join(", ")})` : ""}</> : m.facts?.helper_dir ? <>Keel's helper there: <span className="font-mono text-micro text-muted">{m.facts.helper_dir}</span></> : "Nothing of Keel is there yet: the first session puts a small helper under ~/.cache/keel-remote."}
+          </div>
+        )}
         {edit && (
           <form
             className="mt-3 grid gap-2 rounded-lg border border-line bg-sunken/60 p-3 sm:grid-cols-[1fr_8rem_auto]"
@@ -123,7 +153,7 @@ function MachineRow({ m }: { m: Machine }) {
             <input className={cn(field, "font-mono text-caption")} placeholder="Directory granted there, absolute" value={root} onChange={(e) => setRoot(e.target.value)} aria-label="Granted directory" />
             <input className={field} placeholder="Max jobs" inputMode="numeric" value={jobs} onChange={(e) => setJobs(e.target.value.replace(/\D/g, ""))} aria-label="Max jobs" />
             <button type="submit" className={btn} disabled={busy}>Save</button>
-            <label className="flex items-center gap-2 text-caption text-muted sm:col-span-3">
+            <label className={cn("flex items-center gap-2 text-caption text-muted sm:col-span-3", m.transport === "ssh" && "hidden")}>
               <input type="checkbox" checked={m.messages !== "hold"} onChange={(e) => run(() => fleet.patch(m.id, { messages: e.target.checked ? "allow" : "hold" }))} />
               Deliver messages from its sessions (off: they wait for you)
             </label>
@@ -193,20 +223,32 @@ function AddMachine({ offered, preset, onDone }: { offered: Machine[]; preset?: 
   );
 }
 
-function SshHost({ m, onEnable }: { m: Machine; onEnable: () => void }) {
+function SshHost({ m, onDaemon }: { m: Machine; onDaemon: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const f = m.facts;
+  const act = async (work: () => Promise<unknown>) => { setBusy(true); setErr(""); try { await work(); } catch (e) { setErr(failed(e, { at: "MachinesPanel" })); } finally { setBusy(false); } };
   return (
-    <div className="flex items-center gap-3 border-t border-line py-2.5 first:border-0" data-testid="ssh-host" data-host={m.name}>
-      <Terminal className="size-3.5 text-faint" />
-      <span className="font-mono text-caption">{m.name}</span>
-      {m.state !== "unknown" && <StatePill state={m.state} />}
-      {(m.detail || m.reason) && <span className={cn("min-w-0 truncate text-caption", m.reason ? "text-danger" : "text-faint")}>{m.reason ?? m.detail}</span>}
-      <span className="ml-auto flex gap-1">
-        <button type="button" className={ghost} disabled={busy} onClick={async () => { setBusy(true); await fleet.check(m.id).catch(reportError); setBusy(false); }}>
-          <RefreshCw className={cn(busy && "animate-spin")} /> Reach
-        </button>
-        <button type="button" className={ghost} onClick={onEnable}><Plus /> Enable</button>
-      </span>
+    <div className="border-t border-line py-3 first:border-0" data-testid="ssh-host" data-host={m.name}>
+      <div className="flex items-center gap-3">
+        <Terminal className="size-3.5 shrink-0 text-faint" />
+        <span className="text-ui font-medium">{m.name}</span>
+        <Routes routes={m.routes && m.routes.length > 1 ? m.routes : undefined} using={m.route} />
+        {m.state !== "unknown" && <StatePill state={m.state} />}
+        <span className="ml-auto flex items-center gap-1">
+          <button type="button" className={ghost} disabled={busy} data-testid="ssh-reach" onClick={() => act(() => fleet.check(m.id))}>
+            <RefreshCw className={cn(busy && "animate-spin")} /> Reach
+          </button>
+          <button type="button" className={ghost} onClick={onDaemon} title="A Keel daemon of its own runs there: link to it through ssh">Its daemon</button>
+          <Toggle on={false} busy={busy} label={`Enable ${m.name}`} onChange={() => act(() => fleet.add({ ssh_host: m.name }))} />
+        </span>
+      </div>
+      {f && m.state !== "offline" && (
+        <div className="mt-1 pl-6.5 text-caption text-muted tabular-nums" data-testid="ssh-facts">
+          {f.os} {f.arch} · {f.cpus} cores · load {f.load1} · {gb(f.mem_available_mb)} free of {gb(f.mem_total_mb)}{f.gpu ? <span className="text-fg"> · {f.gpu}</span> : null}
+        </div>
+      )}
+      {(m.reason || err) && <div className="mt-1 truncate pl-6.5 text-caption text-danger" title={err || m.reason}>{err || m.reason}</div>}
     </div>
   );
 }
@@ -281,7 +323,7 @@ function Placement({ machines }: { machines: Machine[] }) {
   );
 }
 
-const HOSTS_SHOWN = 4;
+const HOSTS_SHOWN = 12; // one row per box: a long list only past a dozen machines
 
 export function MachinesSettings() {
   const machines = useFleet((s) => s.machines);
@@ -304,18 +346,18 @@ export function MachinesSettings() {
           ) : (
             <div className="flex items-center gap-3 py-3.5">
               <button type="button" className={btn} onClick={() => setAdding(true)} data-testid="machine-add-open"><Plus /> Add a machine</button>
-              <span className="text-caption text-faint">A machine is another Keel daemon. Seeing it is not leave to use it: only the directory you grant runs commands.</span>
+              <span className="text-caption text-faint">An ssh machine needs nothing installed; another Keel daemon is linked by its URL. Only the directory you grant runs commands.</span>
             </div>
           )}
         </div>
       </Card>
       {heading("Placement", <span className="normal-case tracking-normal">· where new work goes when you pick Auto; the first rule that holds wins</span>)}
       <Placement machines={machines} />
-      {offered.length > 0 && heading("ssh hosts, not enabled", <span className="normal-case tracking-normal">· from your ssh configuration</span>)}
+      {offered.length > 0 && heading("ssh machines, not enabled", <span className="normal-case tracking-normal">· from your ssh configuration, aliases of one machine as its routes; enabling one grants its home folder (Edit narrows it)</span>)}
       {offered.length > 0 && (
         <Card>
           <div className="py-1">
-            {(allHosts ? offered : offered.slice(0, HOSTS_SHOWN)).map((m) => <SshHost key={m.id} m={m} onEnable={() => { setPreset(m.name); setAdding(true); }} />)}
+            {(allHosts ? offered : offered.slice(0, HOSTS_SHOWN)).map((m) => <SshHost key={m.id} m={m} onDaemon={() => { setPreset(m.name); setAdding(true); }} />)}
             {offered.length > HOSTS_SHOWN && (
               <button type="button" className="h-9 w-full border-t border-line text-left text-caption text-faint hover:text-muted" onClick={() => setAllHosts((a) => !a)}>
                 {allHosts ? "Show fewer" : `${offered.length - HOSTS_SHOWN} more hosts`}

@@ -7,7 +7,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { contains } from "../../core/paths.ts";
 import type { Session, StoredEvent } from "../../core/types.ts";
-import { LinkError, linkFetch } from "../../fleet/link.ts";
+import { LinkError } from "../../fleet/link.ts";
 import { addNotice, cleanTerm } from "../../tools/jobs.ts";
 import { listJobs, logPath, ownerNote, ownerRun, readJobLog, stopOne, TAIL, type TermJob } from "../../tools/terminal.ts";
 import type { RouteModule } from "../app.ts";
@@ -94,8 +94,7 @@ export const terminalRoutes: RouteModule = (deps) => {
   const placed = (s: Session) => (s.machine && fleet ? fleet.row(s.machine) : undefined);
   async function onPeer(s: Session, op: string, extra: Record<string, unknown> = {}, timeout?: number): Promise<any> {
     const m = placed(s)!;
-    const p = await fleet!.peer(m.id);
-    const r = await linkFetch(p, "/api/fleet/hands/terminal", { method: "POST", body: JSON.stringify({ op, session: s.id, root: m.workspace_root, ...extra }), timeout });
+    const r = await fleet!.hands(m.id, "/api/fleet/hands/terminal", { method: "POST", body: JSON.stringify({ op, session: s.id, root: m.workspace_root, ...extra }), timeout, idempotent: op !== "run" && op !== "stop" });
     const b = (await r.json().catch(() => ({}))) as any;
     if (!r.ok || b.error) throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { status: r.status === 200 ? 400 : r.status });
     return b;
