@@ -4,7 +4,8 @@
 // the step `expected.json` states. Plus the cross-family projection rules.
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import type { Message } from "../../core/types.ts";
+import type { Message, StoredEvent } from "../../core/types.ts";
+import { toMessages } from "../../engine/turn.ts";
 import { project } from "../project.ts";
 import { priceOf } from "../pricing.ts";
 import { JsonArrayDecoder, SseDecoder } from "../sse.ts";
@@ -153,6 +154,33 @@ test("tool screenshots reach a Chat Completions route once each, after the paire
   expect(last[1].image_url.url).toContain("SHOT_A");
   expect(last[2].text).toContain("c2");
   expect(last[3].image_url.url).toContain("SHOT_B");
+});
+
+test("Messages wire corrects mislabeled images when replaying stored tool results", () => {
+  const samples = ([
+    ["image/jpeg", "\x89PNG\r\n\x1a\n", "image/png"],
+    ["image/jpeg", "\xff\xd8\xff", "image/jpeg"],
+    ["image/png", "GIF89a", "image/gif"],
+    ["image/png", "RIFF\x00\x00\x00\x00WEBP", "image/webp"],
+    ["image/png", "unknown header", "image/png"],
+  ] as const).map(([declared, header, expected]) => ({ declared, data: btoa(header + "synthetic payload"), expected }));
+  const text = { type: "text", text: "capture complete" };
+  const events: StoredEvent[] = ([
+    { kind: "user", data: { text: "capture an image" } },
+    { kind: "assistant", data: { blocks: [{ type: "tool_use", id: "c1", name: "capture", input: {} }] } },
+    { kind: "tool_result", data: { results: [{
+      type: "tool_result", tool_use_id: "c1", is_error: true,
+      content: [text, ...samples.map(({ declared, data }) => ({ type: "image", media_type: declared, data }))],
+    }] } },
+  ] as const).map((e, i) => ({ ...e, id: String(i), parent: i ? String(i - 1) : null, session_id: "fixture", seq: i, ts: 0 }));
+  const stored = JSON.stringify(events);
+  const replay: StoredEvent[] = JSON.parse(stored);
+  const body = JSON.parse(JSON.stringify(anthropicWire.body({ ...req, messages: toMessages(replay) }, { ...ctx, origin: "bedrock:m" })));
+  expect(body.messages[2].content).toEqual([{
+    type: "tool_result", tool_use_id: "c1", is_error: true, cache_control: { type: "ephemeral", ttl: "1h" },
+    content: [text, ...samples.map(({ expected, data }) => ({ type: "image", source: { type: "base64", media_type: expected, data } }))],
+  }]);
+  expect(JSON.stringify(replay)).toBe(stored);
 });
 
 test("a call is priced per part; an unstated cache read rate is unknown, not free", () => {

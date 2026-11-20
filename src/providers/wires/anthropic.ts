@@ -1,6 +1,6 @@
 // Anthropic Messages wire: the body (shared by the Anthropic and Bedrock drivers and the plugin
 // route) and the reader of its SSE events.
-import type { AssistantBlock, Message } from "../../core/types.ts";
+import type { AssistantBlock, ImageBlock, Message } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { project } from "../project.ts";
 import { bindReply, carry, unbind, type Binder } from "./binding.ts";
@@ -15,7 +15,20 @@ import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } f
 export const CACHE_TTL: "5m" | "1h" = "1h";
 const CACHE: { type: "ephemeral"; ttl: "5m" | "1h" } = { type: "ephemeral", ttl: CACHE_TTL };
 
-const image = (b: { media_type: string; data: string }) => ({ type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } });
+function imageMediaType(b: ImageBlock): string {
+  // Tool MIME labels may come from a file extension or an MCP server. Repair
+  // known mismatches here so replay works without rewriting stored results.
+  // 16 base64 characters cover the longest signature (12 bytes for WebP).
+  let head: string;
+  try { head = atob(b.data.slice(0, 16)); } catch { return b.media_type; }
+  if (head.startsWith("\x89PNG\r\n\x1a\n")) return "image/png";
+  if (head.startsWith("\xff\xd8\xff")) return "image/jpeg";
+  if (head.startsWith("GIF87a") || head.startsWith("GIF89a")) return "image/gif";
+  if (head.startsWith("RIFF") && head.startsWith("WEBP", 8)) return "image/webp";
+  return b.media_type;
+}
+
+const image = (b: ImageBlock) => ({ type: "image", source: { type: "base64", media_type: imageMediaType(b), data: b.data } });
 
 // History to the wire. Cache breakpoints: tools + system are frozen (one
 // breakpoint on the system), and a rolling breakpoint on the last user message
