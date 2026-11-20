@@ -64,8 +64,13 @@ const commandText = (t: string) => {
 // The model a record answered with ("<synthetic>" marks Claude Code's own notices).
 const modelOf = (r: any): string | undefined => (r?.type === "assistant" && typeof r.message?.model === "string" && r.message.model !== "<synthetic>" ? r.message.model : undefined);
 
+// Claude Code's permission modes as Keel's (recorded on each prompt).
+const PERM: Record<string, Found["perm_mode"]> = { default: "ask", acceptEdits: "auto-edits", bypassPermissions: "full-auto", plan: "plan" };
+const permOf = (r: any): Found["perm_mode"] => (r?.type === "user" && typeof r.permissionMode === "string" ? PERM[r.permissionMode] : undefined);
+
 export function claudeFound(path: string, size: number, mtime: number): Found | null {
   const { head, tail } = headTail(path, 48 * 1024);
+  let perm: Found["perm_mode"];
   let cwd: string | undefined, model: string | undefined, first: string | undefined, entry: string | undefined, sid: string | undefined;
   for (const r of head) {
     cwd ??= r.cwd;
@@ -82,6 +87,7 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     else { const p = promptOf(r); if (p) last = commandText(p); }
     cwd ??= r.cwd;
     model = modelOf(r) ?? model; // the latest reply's model: a session can switch models
+    perm = permOf(r) ?? perm;
   }
   // A Claude Code transcript whose head and tail hold no prompt (long tool
   // outputs around it) is read through for its first one.
@@ -93,6 +99,7 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
   // The head of a long transcript can be all system context before the first
   // reply: then the first reply in the file names the model.
   model ??= head.map(modelOf).find(Boolean) ?? scanFor(path, modelOf);
+  perm ??= head.map(permOf).findLast(Boolean);
   const sub = basename(dirname(path)) === "subagents";
   return {
     harness: "claude",
@@ -105,6 +112,7 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     updated_ms: Math.round(mtime),
     size_bytes: size,
     model,
+    perm_mode: perm,
     kind: sub ? "subagent" : entry && /^sdk/.test(entry) ? "headless" : "interactive",
     parent_id: sub ? basename(dirname(dirname(path))) : undefined,
   };

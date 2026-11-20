@@ -42,7 +42,7 @@ test("a Claude Code reply recorded as stopped stays stopped", async () => {
   expect((await readClaude(p)).events.find((e) => e.kind === "assistant")?.data.stop).toBe("interrupted");
 });
 
-test("a Claude Code import names the model of the latest reply, also past a long head", async () => {
+test("a Claude Code import names the model of the latest reply, also past a long head, and the mode it ran in", async () => {
   const p = join(dir, "m.jsonl");
   const base = { sessionId: "m", cwd: dir, isSidechain: false, timestamp: new Date().toISOString() };
   const reply = (uuid: string, parent: string, model: string) => ({ ...base, type: "assistant", uuid, parentUuid: parent, message: { id: uuid, role: "assistant", model, content: [{ type: "text", text: "ok" }] } });
@@ -51,7 +51,7 @@ test("a Claude Code import names the model of the latest reply, also past a long
     { ...base, type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "go " + pad } },
     { ...base, type: "attachment", uuid: "at", parentUuid: "u1", attachment: { text: pad } },
     reply("a1", "at", "claude-opus-5-5"),
-    { ...base, type: "user", uuid: "u2", parentUuid: "a1", message: { role: "user", content: "more " + pad } },
+    { ...base, type: "user", uuid: "u2", parentUuid: "a1", permissionMode: "bypassPermissions", message: { role: "user", content: "more " + pad } },
     reply("a2", "u2", "global.anthropic.claude-sonnet-5-5"),
     { ...base, type: "assistant", uuid: "n", parentUuid: "a2", message: { id: "n", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "notice" }] } },
   ];
@@ -59,6 +59,7 @@ test("a Claude Code import names the model of the latest reply, also past a long
   write(recs);
   expect(claudeFound(p, 0, 0)?.model).toBe("global.anthropic.claude-sonnet-5-5");
   expect((await readClaude(p)).found.model).toBe("global.anthropic.claude-sonnet-5-5");
+  expect(claudeFound(p, 0, 0)?.perm_mode).toBe("full-auto"); // bypassPermissions
   // Only the first reply, beyond the head the listing samples: still named.
   write([...recs.slice(0, 3), { ...base, type: "user", uuid: "u3", parentUuid: "a1", message: { role: "user", content: "tail " + pad + pad } }]);
   expect(claudeFound(p, 0, 0)?.model).toBe("claude-opus-5-5");

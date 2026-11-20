@@ -13,6 +13,7 @@ import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import type { Found, Harness, Read } from "./types.ts";
+import * as perm from "../../server/routes/permissions.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
   { harness: "claude", label: "Claude Code", store: claudeRoot },
@@ -308,6 +309,8 @@ export class Imports {
     const found = r.found;
     const s = this.store.createSession({ title: o.title ?? found.title, model: o.model, workspace: o.workspace });
     if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
+    // It goes on in the permission mode it ran in at the source (high-risk commands still ask in every mode).
+    if (found.perm_mode) perm.gate?.setPerm(s.id, { mode: found.perm_mode });
     for (const e of r.events) this.store.append(s.id, e.kind, e.data);
     const counts = r.counts;
     const summary = `Imported from ${label}${o.from ? " on another machine" : ""} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
