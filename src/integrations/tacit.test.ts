@@ -1,14 +1,85 @@
 // What the e2e cannot see: the messages of a summary request that is the
 // first request of a turn, with the hooks that answer a new prompt installed.
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
+import type { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { Engine } from "../engine/turn.ts";
 import { hookRoutes } from "../server/routes/hooks.ts";
 import { MEMORY_CAP, Tacit } from "./tacit.ts";
+
+test("Tacit reuses only the retained transcript of the same version", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tacit-transcript-"));
+  const store = new Store(dir);
+  try {
+    const failures: unknown[] = [];
+    const tacit = new Tacit(store, new Bus(), { capture: (_: string, error: unknown) => failures.push(error) } as unknown as ErrorTracker, null);
+    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    const first = store.append(s.id, "user", { text: "First branch" });
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "Synthetic reply" }] });
+    const read = (session = s) => readFileSync(tacit.transcript(session), "utf8");
+    const stats = tacit.stats().transcript;
+    const initial = read();
+    const path = tacit.transcriptPath(s);
+    expect(initial).toContain("First branch");
+    expect(read()).toBe(initial); // exact JSONL bytes, including UUIDs
+    expect(stats).toMatchObject({ rebuilt: 1, reused: 1, failed: 0, bytes: { total: Buffer.byteLength(initial) } });
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+
+    // Same original Session object, but the head is now on a sibling branch.
+    store.append(s.id, "user", { text: "Fresh branch" }, first.id);
+    const fresh = read();
+    expect(fresh).toContain("Fresh branch");
+    expect(fresh).not.toContain("Synthetic reply");
+    expect(stats.rebuilt).toBe(2);
+    store.updateSession(s.id, { head: first.id });
+    expect(read()).not.toContain("Fresh branch");
+    expect(stats.rebuilt).toBe(3);
+
+    const moved = store.updateSession(s.id, { workspace: join(dir, "moved") });
+    expect(JSON.parse(read(moved)).cwd).toBe(moved.workspace);
+    expect(stats.rebuilt).toBe(4);
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "No stored model" }] });
+    const beforeModel = read(moved);
+    const changedModel = store.updateSession(s.id, { model: "fixture:new-model" });
+    const modelUpdated = read(changedModel);
+    expect(beforeModel).toContain('"model":"model"');
+    expect(modelUpdated).toContain('"model":"new-model"');
+    expect(stats.rebuilt).toBe(6);
+
+    rmSync(path);
+    mkdirSync(path); // a failed replacement must leave no cached version or temporary file
+    expect(existsSync(tacit.transcript(changedModel))).toBe(false);
+    expect(stats).toMatchObject({ rebuilt: 6, reused: 1, failed: 1 });
+    expect(failures).toHaveLength(1);
+    expect(readdirSync(join(dir, "transcripts"))).toEqual([`${s.id}.jsonl`]);
+    rmSync(path, { recursive: true });
+    const restored = read(changedModel);
+    expect(restored).toContain('"model":"new-model"');
+    expect(restored).not.toBe(modelUpdated);
+    expect(read(changedModel)).toBe(restored);
+    expect(stats).toMatchObject({ rebuilt: 7, reused: 2 });
+
+    tacit.forget(s.id);
+    expect(read(changedModel)).not.toBe(restored);
+    tacit.setFlags(s.id, { feed_memory: false });
+    expect(existsSync(tacit.transcript(changedModel))).toBe(false);
+    expect(stats).toMatchObject({ rebuilt: 8, reused: 2 });
+    tacit.setFlags(s.id, { feed_memory: true });
+    read(changedModel);
+    expect(stats.rebuilt).toBe(9);
+    store.deleteSession(s.id);
+    expect(existsSync(tacit.transcript(changedModel))).toBe(false);
+    expect(stats).toMatchObject({ rebuilt: 9, reused: 2 });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // A context over its limit is summarized before the turn's first request. That
 // request carries the summary's own ask and none of the new prompt: memory and
@@ -75,7 +146,9 @@ esac
     expect(store.events(s.id).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
 
     expect(await tacit.startBlock(s)).toBeNull();
-    const { rebuilt, bytes: { total: bytesBefore } } = tacit.stats().transcript;
+    const path = tacit.transcript(s);
+    const transcriptBefore = readFileSync(path);
+    const { rebuilt, reused, bytes: { total: bytesBefore } } = tacit.stats().transcript;
     expect(await tacit.preToolBlock(s, "read", {})).toBeNull(); // no Tacit call
     expect(await tacit.preToolBlock(s, "bash", { command: "fixture-hit" })).toBe(context);
     for (const kind of ["empty", "failure", "invalid", "timeout"])
@@ -90,8 +163,10 @@ esac
     expect(preTool.duration_ms.max).toBeGreaterThan(0);
     expect(preTool.duration_ms.total).toBeGreaterThan(preTool.duration_ms.max);
     expect(stats.transcript.failed).toBe(0);
-    expect(stats.transcript.rebuilt - rebuilt).toBe(5);
-    expect(stats.transcript.bytes.total - bytesBefore).toBe(5 * statSync(tacit.transcriptPath(s)).size);
+    expect(stats.transcript.rebuilt - rebuilt).toBe(0);
+    expect(stats.transcript.reused - reused).toBe(5);
+    expect(stats.transcript.bytes.total - bytesBefore).toBe(0);
+    expect(readFileSync(path).equals(transcriptBefore)).toBe(true);
     expect(stats.transcript.duration_ms.total).toBeGreaterThan(0);
     const json = JSON.stringify(stats);
     for (const secret of [context.slice(0, 20), "THE-NEW-PROMPT", "MEMORY-FOR-PROMPT", "fixture-timeout", s.id, dir]) expect(json).not.toContain(secret);

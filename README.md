@@ -81,10 +81,10 @@ it succeeded without context, and `ok` means pre-compaction succeeded without
 requesting context. `timeout` and `failure` are counted separately.
 
 Context bytes count UTF-8 text after Keel's cap, before its memory wrapper.
-Transcript metrics count rebuilds, failures, elapsed milliseconds, and bytes
-written by successful rebuilds. The endpoint includes no prompts, transcripts,
-facts, or session identifiers. Poll it and compare counter deltas to track
-changes over time.
+Transcript metrics count reused versions, rebuilds, failures, elapsed
+milliseconds, and bytes written by successful rebuilds. Reuse writes no bytes.
+The endpoint includes no prompts, transcripts, facts, or session identifiers.
+Poll it and compare counter deltas to track changes over time.
 
 ## License
 

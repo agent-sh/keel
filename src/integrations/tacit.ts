@@ -8,10 +8,11 @@
 // request after it carries the same bytes (append-only; the prefix holds).
 // A pre-tool block is appended to that call's result. Every block is marked
 // with its source: memory is context, never the owner's words.
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
+import { SessionMap } from "../core/session-map.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { registerHooks } from "../engine/hooks.ts";
@@ -105,15 +106,40 @@ const hookStats = () => ({
   context_bytes: totals(),
 });
 
+// A missing, replaced or edited file cannot witness the cached version.
+function fileStamp(path: string): string | undefined {
+  try {
+    const f = lstatSync(path, { throwIfNoEntry: false });
+    if (f?.isFile()) return `${f.dev}:${f.ino}:${f.size}:${f.mtimeMs}:${f.ctimeMs}`;
+  } catch {
+    // Without a stamp, try rebuilding rather than trusting the path.
+  }
+}
+
+function writeTranscript(path: string, bytes: Buffer) {
+  // Hooks may already be reading this path. Publish a complete file at once.
+  const tmp = `${path}.${crypto.randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, bytes, { mode: 0o600, flag: "wx" });
+    renameSync(tmp, path);
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch {}
+    throw e;
+  }
+}
+
 export class Tacit {
   bin: string | null;
   private start = new Map<string, Promise<string | null>>();
   private done = new Set<string>(); // user events already answered
   private preTool = new Map<string, Promise<string | null>>();
+  // One version per session, no transcript bytes kept here. Store deletion
+  // clears SessionMaps; evicting an idle one just costs a rebuild next time.
+  private transcriptVersions = new SessionMap<{ head: Session["head"]; model: string; workspace: string; stamp: string }>(64);
   private readonly metrics = {
     since_ms: Date.now(),
     hooks: { "session-start": hookStats(), prompt: hookStats(), "pre-tool": hookStats(), "pre-compact": hookStats() } satisfies Record<Hook, ReturnType<typeof hookStats>>,
-    transcript: { rebuilt: 0, failed: 0, duration_ms: totals(), bytes: totals() },
+    transcript: { reused: 0, rebuilt: 0, failed: 0, duration_ms: totals(), bytes: totals() },
   };
 
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit")) {
@@ -139,6 +165,7 @@ export class Tacit {
     this.store.db
       .query("INSERT INTO memory_flags (session_id, use_memory, feed_memory) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET use_memory = excluded.use_memory, feed_memory = excluded.feed_memory")
       .run(id, next.use_memory ? 1 : 0, next.feed_memory ? 1 : 0);
+    if (!next.feed_memory) this.transcriptVersions.delete(id);
     this.bus.emit({ t: "feature", name: "memory", session_id: id, data: next });
     return next;
   }
@@ -146,26 +173,44 @@ export class Tacit {
   // The transcript tacit reads: the session in Claude Code's format, or a path
   // that names no file for a session kept away from memory.
   transcriptPath(s: Session): string {
-    const dir = join(this.store.stateDir, "transcripts");
-    return this.flags(s.id).feed_memory ? join(dir, `${s.id}.jsonl`) : join(dir, "not-fed-to-memory");
+    return this.transcriptFile(this.flags(s.id).feed_memory ? s.id : undefined);
+  }
+
+  private transcriptFile(id?: string): string {
+    return join(this.store.stateDir, "transcripts", id ? `${id}.jsonl` : "not-fed-to-memory");
   }
 
   transcript(s: Session): string {
-    const path = this.transcriptPath(s);
-    if (!this.flags(s.id).feed_memory) return path;
-    const dir = join(this.store.stateDir, "transcripts");
+    if (!this.flags(s.id).feed_memory) return this.transcriptFile();
+    const path = this.transcriptFile(s.id);
     const started = performance.now();
     const stat = this.metrics.transcript;
     try {
-      mkdirSync(dir, { recursive: true });
+      // Hook callers can hold an old head. Use the current head for both the
+      // cache and the lineage, with the caller's metadata as in the encoder.
+      const current = this.store.session(s.id);
+      if (!current) return this.transcriptFile();
+      const { head } = current;
+      const { model, workspace } = s;
+      const cached = this.transcriptVersions.get(s.id);
+      if (cached && cached.head === head && cached.model === model && cached.workspace === workspace && cached.stamp === fileStamp(path)) {
+        stat.reused++;
+        return path;
+      }
+      this.transcriptVersions.delete(s.id);
+      mkdirSync(dirname(path), { recursive: true });
       // Encode once for the write and reuse its byte length.
-      const bytes = Buffer.from(toJsonl(toClaudeRecords(s, this.lineage(s.id))));
-      writeFileSync(path, bytes, { mode: 0o600 });
+      const bytes = Buffer.from(toJsonl(toClaudeRecords(s, lineage(this.store.events(s.id), head))));
+      writeTranscript(path, bytes);
+      const stamp = fileStamp(path);
+      if (stamp !== undefined) this.transcriptVersions.set(s.id, { head, model, workspace, stamp });
       stat.rebuilt++;
       add(stat.bytes, bytes.length);
     } catch (e) {
       stat.failed++;
       this.errors.capture("server", e, { at: "tacit transcript", session: s.id });
+      // Keep the hook fail-open without handing it a previous version.
+      return this.transcriptFile();
     } finally {
       add(stat.duration_ms, performance.now() - started);
     }
@@ -231,6 +276,7 @@ export class Tacit {
 
   forget(id: string) {
     this.start.delete(id);
+    this.transcriptVersions.delete(id);
   }
 
   install() {
