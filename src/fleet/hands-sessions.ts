@@ -19,7 +19,7 @@ import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readText } from "../core/proc.ts";
-import { atWork, classify, groupsUnder, tailReader, type Activity, type Group, type Proc, type Signals, type Tail } from "../integrations/import/activity.ts";
+import { classify, groupsUnder, tailReader, type Activity, type Group, type Proc, type Signals, type Tail } from "../integrations/import/activity.ts";
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "../integrations/import/claude.ts";
 import { codexFiles, codexFound, codexHome, readCodex } from "../integrations/import/codex.ts";
 import { linesBack } from "../integrations/import/files.ts";
@@ -86,7 +86,7 @@ async function find(harness: Here, id: string): Promise<Found | undefined> {
     if (k && (k.size !== st.size || k.mtime !== st.mtimeMs)) {
       const row = (harness === "claude" ? claudeFound : codexFound)(f.path, st.size, st.mtimeMs);
       seen.set(f.path, { size: st.size, mtime: st.mtimeMs, found: row });
-      return row && offered(row) ? row : undefined;
+      return row?.id === id && offered(row) ? row : undefined;
     }
   } catch { return undefined; }
   return f;
@@ -97,6 +97,7 @@ async function find(harness: Here, id: string): Promise<Found | undefined> {
 export async function processTable(): Promise<Proc[]> {
   const p = Bun.spawn(["ps", "-axo", "pid=,ppid=,pgid=,lstart=,args="], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, LC_ALL: "C" } });
   const out = await readText(p.stdout);
+  if (await p.exited !== 0) throw new Error("Could not read the process table. The original was not stopped.");
   const rows: Proc[] = [];
   for (const l of out.split("\n")) {
     const m = l.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/);
@@ -140,11 +141,10 @@ async function claudeSessions(): Promise<Listed[]> {
         if (typeof r.pid === "number" && typeof r.sessionId === "string") by.set(r.pid, { pid: r.pid, sessionId: r.sessionId, status: r.status, waitingFor: r.waitingFor, procStart: r.procStart, startedAt: r.startedAt });
       } catch {}
     }
-    // Its word on each of them: asked at most every few seconds (the command
-    // starts a process there), while the records above are read every time.
+    // A fresh record takes precedence over the cached command.
     for (const r of await claudeListed()) {
       const mine = by.get(r.pid);
-      if (!mine || mine.sessionId === r.sessionId) by.set(r.pid, { ...mine, ...r, listed: true });
+      if (!mine || mine.sessionId === r.sessionId) by.set(r.pid, { ...r, ...mine, listed: !mine });
     }
     return [...by.values()];
   }
@@ -167,28 +167,31 @@ function sameProcess(l: Listed, p: Proc): boolean {
   }
 }
 
-const named = (p: Proc, word: string) => new RegExp(`(^|/)${word}(\\s|$)`).test(p.args.split(" --")[0]!);
+// An id in a prompt is not the identity of the session that displayed it.
+function namedResume(p: Proc, harness: string, id: string): boolean {
+  const [bin, flag, value] = p.args.trim().split(/\s+/);
+  return bin?.split("/").at(-1) === harness && (harness === "codex" ? flag === "resume" : ["--resume", "-r", "--session-id"].includes(flag ?? "")) && value === id;
+}
 
-// The harness process that runs a transcript's session, with its own word on
-// its state where it gives one.
-function harnessOf(f: Found, { procs, claude }: Now): { proc: Proc; status?: Signals["status"]; waiting_for?: string } | null {
+function harnessOf(f: Found, { procs, claude }: Now): { proc: Proc; status?: Signals["status"]; waiting_for?: string; blocked?: string } | null {
   const by = new Map(procs.map((p) => [p.pid, p]));
   if (f.harness === "claude") {
-    const l = claude.find((r) => r.sessionId === f.id && by.has(r.pid) && sameProcess(r, by.get(r.pid)!));
-    if (l) return { proc: by.get(l.pid)!, status: ["busy", "idle", "waiting"].includes(l.status as string) ? l.status : undefined, waiting_for: l.waitingFor };
-    const p = procs.find((p) => named(p, "claude") && p.args.includes(f.id));
-    return p ? { proc: p } : null;
+    const holders = claude.filter((r) => r.sessionId === f.id && by.has(r.pid) && sameProcess(r, by.get(r.pid)!));
+    const l = holders[0];
+    if (l) return { proc: by.get(l.pid)!, status: l.status, waiting_for: l.waitingFor, blocked: holders.length > 1 ? "Multiple processes hold this session. End the extra writers first." : undefined };
+  } else {
+    // An app-server can hold multiple threads. Ending it to take over one is not safe.
+    for (const p of procs) {
+      const [bin, verb] = p.args.trim().split(/\s+/);
+      if (bin?.split("/").at(-1) !== "codex") continue;
+      try {
+        for (const fd of readdirSync(`/proc/${p.pid}/fd`)) {
+          try { if (readlinkSync(`/proc/${p.pid}/fd/${fd}`) === f.path) return { proc: p, blocked: verb === "app-server" ? "This thread uses a shared app-server. End the thread there first." : undefined }; } catch {}
+        }
+      } catch {}
+    }
   }
-  // Codex: the process that holds the rollout open (Linux), else the one resumed by its id.
-  for (const p of procs) {
-    if (!named(p, "codex")) continue;
-    try {
-      for (const fd of readdirSync(`/proc/${p.pid}/fd`)) {
-        try { if (readlinkSync(`/proc/${p.pid}/fd/${fd}`) === f.path) return { proc: p }; } catch {}
-      }
-    } catch {}
-  }
-  const p = procs.find((p) => named(p, "codex") && p.args.includes(f.id));
+  const p = procs.find((p) => namedResume(p, f.harness, f.id));
   return p ? { proc: p } : null;
 }
 
@@ -229,7 +232,7 @@ function tailSince(f: Found, since: number): Tail {
 }
 
 export type Running = { pid: number; started_ms: number; status?: string };
-export type Seen = Activity & { process?: Running; groups: Group[]; checked_ms: number };
+export type Seen = Activity & { blocked?: string; revision?: string; process?: Running; groups: Group[]; checked_ms: number };
 
 export async function activityOf(f: Found, at?: Now): Promise<Seen> {
   at ??= await now();
@@ -239,7 +242,9 @@ export async function activityOf(f: Found, at?: Now): Promise<Seen> {
   if (!h) return { ...classify({ alive: false, tail: none, groups: [] }), groups: [], checked_ms: Date.now() };
   const groups = groupsUnder(procs, h.proc.pid, f.harness === "claude" ? carrying(f.id, procs) : []);
   const a = classify({ alive: true, status: h.status, waiting_for: h.waiting_for, tail: tailSince(f, h.proc.started_ms), groups });
-  return { ...a, process: { pid: h.proc.pid, started_ms: h.proc.started_ms, status: h.status }, groups, checked_ms: Date.now() };
+  if (h.blocked) { a.state = "active"; a.why = h.blocked; a.brief = "shared writer"; a.in_flight.push({ kind: "turn", label: h.blocked }); }
+  const revision = Bun.hash(JSON.stringify([h.proc.pid, h.proc.started_ms, a.in_flight])).toString(16);
+  return { ...a, blocked: h.blocked, revision, process: { pid: h.proc.pid, started_ms: h.proc.started_ms, status: h.status }, groups, checked_ms: Date.now() };
 }
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -257,33 +262,38 @@ const END_MS = 10_000; // what a harness gets to save and leave after it is aske
 // ends it (SIGTERM: both harnesses write their transcript as they go and stop
 // their running command), only when it is still the process the owner was
 // shown. Its interrupted calls end with it; its jobs as the owner chose.
-async function endHarness(f: Found, want: { pid: number; started_ms: number }, jobs: "keep" | "end", idleBy?: number) {
+async function endHarness(f: Found, want: { pid: number; started_ms: number; revision: string; deadline_ms?: number; idle: boolean }, jobs: "keep" | "end") {
   const before = await activityOf(f);
+  if (before.blocked) return { ended: false, why: before.blocked, jobs: [], calls: [] };
   const p = before.process;
   if (!p) return { ended: true, was_running: false, jobs: [], calls: [] };
   if (p.pid !== want.pid || p.started_ms !== want.started_ms) return { ended: false, why: "another process runs this session now than the one shown: look at it again", jobs: [], calls: [] };
+  if (want.idle && (Date.now() >= want.deadline_ms! || before.in_flight.some((i) => i.kind !== "job") || before.revision !== want.revision)) return { ended: false, deferred: true, jobs: [], calls: [] };
+  if (before.revision !== want.revision) return { ended: false, changed: true, why: "the work in flight changed: review it again", jobs: [], calls: [] };
   const started = Date.now();
-  // The last word about activity comes from the machine sending the signal.
-  // A new turn can start after the daemon's earlier check.
-  if (idleBy !== undefined && (started >= idleBy || atWork(before))) return { ended: false, deferred: true, jobs: [], calls: [] };
   process.kill(p.pid, "SIGTERM");
   if (!(await gone([p.pid], END_MS))) return { ended: false, why: `it did not exit within ${END_MS / 1000} s of being asked to (SIGTERM)`, jobs: [], calls: [] };
   const took_ms = Date.now() - started;
-  const group = (pgid: number) => before.groups.find((g) => g.pgid === pgid);
-  const members = async (pgid: number) => (await processTable()).filter((x) => x.pgid === pgid && x.started_ms >= (group(pgid)?.started_ms ?? 0)).map((x) => x.pid);
-  const end = async (pgid: number) => {
-    if (!(await members(pgid)).length) return false;
-    try { process.kill(-pgid, "SIGTERM"); } catch {}
-    return !(await gone(await members(pgid), 5000));
+  // Never signal a numeric process group after its leader has exited: the
+  // group can be shared, or its number reused. Verify each original member.
+  const remaining = async (item: Activity["in_flight"][number]) => {
+    const g = before.groups.find((g) => g.pid === item.pid);
+    if (!g?.members) return [];
+    const live = await processTable();
+    return g.members.filter((m) => live.some((p) => p.pid === m.pid && p.started_ms === m.started_ms && p.pgid === g.pgid)).map((m) => m.pid);
   };
-  // The calls its turn was in: a shell that outlived it is ended with it.
-  const calls = [];
-  for (const c of before.in_flight.filter((i) => i.kind !== "job")) calls.push({ label: c.label, command: c.command, since_ms: c.since_ms, running: c.pgid ? await end(c.pgid) : false });
-  const left = [];
-  for (const j of before.in_flight.filter((i) => i.kind === "job")) {
-    // Left alone, one may still end by the harness's own hand as it leaves.
-    const running = jobs === "end" ? await end(j.pgid!) : (await Bun.sleep(300), (await members(j.pgid!)).length > 0);
-    left.push({ label: j.label, command: j.command, pid: j.pid, pgid: j.pgid, since_ms: j.since_ms, running });
+  const after = async (item: Activity["in_flight"][number], stop: boolean) => {
+    const pids = await remaining(item);
+    if (!stop) return pids.length > 0;
+    for (const pid of pids) { try { process.kill(pid, "SIGTERM"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; } }
+    return !(await gone(pids, 5000));
+  };
+  type Outcome = Activity["in_flight"][number] & { running: boolean };
+  const calls: Outcome[] = [];
+  const left: Outcome[] = [];
+  for (const item of before.in_flight) {
+    const job = item.kind === "job";
+    (job ? left : calls).push({ ...item, running: await after(item, !job || jobs === "end") });
   }
   return { ended: true, was_running: true, how: "SIGTERM", took_ms, in_flight: before.in_flight, jobs: left, calls };
 }
@@ -339,11 +349,10 @@ export function sessionRoutes() {
         const received = Date.now();
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
         if (!isHere(b.harness) || typeof b.id !== "string") return bad("give harness and id");
-        if (typeof b.pid !== "number" || typeof b.started_ms !== "number") return bad("give the process that was shown: pid and started_ms");
+        if (typeof b.revision !== "string" || typeof b.pid !== "number" || typeof b.started_ms !== "number") return bad("give the process that was shown: pid and started_ms");
         const f = await find(b.harness, b.id);
         if (!f) return bad(`${b.harness} has no session ${b.id}`, 404);
-        const idleBy = typeof b.idle_ms === "number" ? received + Math.max(0, b.idle_ms) : undefined;
-        return json(await endHarness(f, { pid: b.pid, started_ms: b.started_ms }, b.jobs === "end" ? "end" : "keep", idleBy));
+        return json(await endHarness(f, { pid: b.pid, started_ms: b.started_ms, revision: b.revision, idle: typeof b.idle_ms === "number", deadline_ms: received + b.idle_ms }, b.jobs === "end" ? "end" : "keep"));
       },
     },
   } satisfies Record<string, Record<string, (req: Request) => Promise<Response>>>;

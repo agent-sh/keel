@@ -22,7 +22,7 @@ import type { MachineRow } from "./db.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError } from "./link.ts";
 
-export type Seen = Activity & { process?: { pid: number; started_ms: number; status?: string }; checked_ms: number };
+export type Seen = Activity & { revision?: string; process?: { pid: number; started_ms: number; status?: string }; checked_ms: number };
 type EndedJob = { label: string; command?: string; pid?: number; pgid?: number; since_ms?: number; running: boolean };
 type Ended = { ended: boolean; deferred?: boolean; in_flight?: InFlight[]; was_running?: boolean; why?: string; how?: string; took_ms?: number; jobs: EndedJob[]; calls: EndedJob[] };
 export type Wait = {
@@ -30,7 +30,7 @@ export type Wait = {
   state: "waiting" | "resumed" | "expired" | "failed" | "cancelled";
   started_ms: number; deadline_ms: number; ended_ms?: number;
   last?: { state: Activity["state"]; why: string; checked_ms: number };
-  session_id?: string; error?: string;
+  session_id?: string; error?: string; process?: Seen["process"];
 };
 export type Resumed = {
   action: "taken_over"; session: any; imported_events: number; counts?: unknown; notes: string[];
@@ -57,7 +57,10 @@ export function inFlightLines(items: InFlight[], ended: Pick<Ended, "jobs" | "ca
     const fate = e?.running ? `left running there (pid ${j.pid}${since(j.since_ms)})` : "ended with it";
     lines.push(`- background job, ${fate}: ${j.label}${j.command && j.command !== j.label ? ` [${j.command}]` : ""}`);
   }
-  for (const c of items.filter((i) => i.kind === "tool" || i.kind === "subagent")) lines.push(`- ${c.kind === "tool" ? "call" : "subagent"}, interrupted${since(c.since_ms)}: ${c.label}`);
+  for (const c of items.filter((i) => i.kind === "tool" || i.kind === "subagent")) {
+    const still = ended.calls.some((e) => e.pid === c.pid && e.running);
+    lines.push(`- ${c.kind === "tool" ? "call" : "subagent"}, ${still ? `still running there (pid ${c.pid}); check before retrying` : "interrupted"}${since(c.since_ms)}: ${c.label}`);
+  }
   for (const c of items.filter((i) => i.kind === "turn" || i.kind === "prompt")) lines.push(`- ${c.label}`);
   return lines.join("\n");
 }
@@ -142,7 +145,7 @@ export class Resumes {
     if (seen.process) {
       ended = await this.fleet.handsJson<Ended>(m.id, "/api/fleet/hands/harness/end", {
         method: "POST", timeout: 60_000,
-        body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs, idle_ms: o.idle_ms }),
+        body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs, revision: seen.revision, idle_ms: o.idle_ms }),
       });
       if (ended.deferred) return null;
       if (!ended.ended) throw new ResumeError(409, `Keel did not end the original on ${m.name}: ${ended.why ?? "no reason given"}. Nothing was copied; end it there, or look again.`);
@@ -154,7 +157,7 @@ export class Resumes {
     const flight = ended.was_running ? ended.in_flight ?? seen.in_flight : [];
     if (flight.length) {
       text += `\nIt was ended while this was in flight:\n${inFlightLines(flight, ended)}`;
-      if (flight.some((i) => i.kind !== "job")) text += "\nRedo the interrupted work that is still needed: it never finished, and its results are not above.";
+      if (flight.some((i) => i.kind !== "job")) text += "\nCheck any surviving process before redoing interrupted work.";
       if (ended.jobs.some((j) => j.running)) text += "\nA job left running still does the original's work on that machine: look at it before starting it again.";
       if (ended.jobs.some((j) => !j.running)) text += "\nA job that ended with it did not finish: start it again if it is still needed.";
     }
@@ -168,7 +171,7 @@ export class Resumes {
   // The owner's choice. "now": whatever it does, its jobs as chosen; "idle":
   // at once when no turn is in flight, else a wait that ends it once its turn
   // is over or gives up at the deadline. The owner chooses what happens to its jobs.
-  async resume(m: MachineRow, harness: Harness, id: string, o: { when: "now" | "idle"; jobs: "keep" | "end"; wait_ms?: number; model?: string }): Promise<Resumed | { action: "waiting"; wait: Wait }> {
+  async resume(m: MachineRow, harness: Harness, id: string, o: { when: "now" | "idle"; jobs: "keep" | "end"; wait_ms?: number; model?: string; revision?: string }): Promise<Resumed | { action: "waiting"; wait: Wait }> {
     const k = this.key(m.id, harness, id);
     const had = this.waits.get(k);
     if (had?.state === "waiting") {
@@ -176,13 +179,14 @@ export class Resumes {
       this.end(had, "cancelled");
     }
     const seen = await this.activity(m, harness, id);
+    if (seen.process && (o.when === "now" || o.revision) && seen.revision !== o.revision) throw new ResumeError(409, "The original or its work changed. Review what is running before ending it.");
     if (o.when === "now") return (await this.finish(m, harness, id, seen, o))!;
     if (!atWork(seen)) {
       const r = await this.finish(m, harness, id, seen, { ...o, idle_ms: o.wait_ms ?? 30_000 });
       if (r) return r;
     }
     if (!(o.wait_ms && o.wait_ms > 0)) throw new ResumeError(400, "give wait_ms: how long Keel waits for it to be idle");
-    const w: Wait & { timer?: Timer } = { machine_id: m.id, harness, id, jobs: o.jobs, model: o.model, state: "waiting", started_ms: Date.now(), deadline_ms: Date.now() + o.wait_ms, last: { state: seen.state, why: seen.why, checked_ms: seen.checked_ms } };
+    const w: Wait & { timer?: Timer } = { machine_id: m.id, harness, id, jobs: o.jobs, model: o.model, state: "waiting", process: seen.process, started_ms: Date.now(), deadline_ms: Date.now() + o.wait_ms, last: { state: seen.state, why: seen.why, checked_ms: seen.checked_ms } };
     this.waits.set(k, w);
     this.emit(w);
     w.timer = setTimeout(() => void this.tick(w), POLL_MS);
@@ -216,6 +220,7 @@ export class Resumes {
     try {
       const seen = await this.activity(m, w.harness, w.id);
       if (w.state !== "waiting") return;
+      if (seen.process && (w.process?.pid !== seen.process.pid || w.process?.started_ms !== seen.process.started_ms)) return this.end(w, "failed", { error: "Another process runs this session now. Review it again." });
       const changed = w.last?.state !== seen.state || w.last?.why !== seen.why;
       w.last = { state: seen.state, why: seen.why, checked_ms: seen.checked_ms };
       const idle_ms = w.deadline_ms - Date.now();

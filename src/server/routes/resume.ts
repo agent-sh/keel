@@ -70,7 +70,7 @@ export const resumeRoutes: RouteModule = (deps: Deps) => {
         if (b.jobs !== undefined && b.jobs !== "keep" && b.jobs !== "end") return bad("jobs is keep or end");
         if (b.wait_ms !== undefined && !(typeof b.wait_ms === "number" && b.wait_ms > 0)) return bad("wait_ms must be a number above 0");
         try {
-          const r = await service().resume(t.m, t.harness, t.id, { when: b.when, jobs: b.jobs ?? "keep", wait_ms: b.wait_ms, model: b.model });
+          const r = await service().resume(t.m, t.harness, t.id, { when: b.when, jobs: b.jobs ?? "keep", wait_ms: b.wait_ms, model: b.model, revision: b.revision });
           return json(r, r.action === "waiting" ? 202 : 200);
         } catch (e) {
           return failed(t.m, e);

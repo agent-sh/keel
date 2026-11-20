@@ -53,7 +53,7 @@ test("the harness's own group serves it; groups of their own are its work", () =
     proc(300, 1, 300, "sh bench.sh"), // a job whose shell ended, known by its environment
     proc(400, 1, 400, "vim"),
   ];
-  expect(groupsUnder(procs, 100, [300]).map((g) => [g.pgid, g.pid, g.args.length])).toEqual([[200, 200, 2], [300, 300, 1]]);
+  expect(groupsUnder(procs, 100, [300]).map((g) => [g.pgid, g.pid, g.args.length])).toEqual([[100, 101, 1], [200, 200, 2], [300, 300, 1]]);
 });
 
 test("a process is matched to the command that started it", () => {
@@ -65,15 +65,15 @@ test("a process is matched to the command that started it", () => {
 const group = (pgid: number, command: string): Group => ({ pgid, pid: pgid, started_ms: 1000, command, args: [command] });
 const none: Tail = { open: [], background: [], shells: [], turn: "unknown" };
 
-test("classification: a quiet child shell is work, a hook is not, the harness's word decides the rest", () => {
+test("classification: unidentified children hold the wait even without a transcript record", () => {
   const t = claude([user(1, "go"), says(2, [bash("job", "nohup sh bench.sh > log &")]), user(3, result("job")), says(4, [bash("fg", "sleep 600; make test")])]);
   const active = classify({ alive: true, tail: t, groups: [group(7, "sh bench.sh"), group(8, "sh -c sleep 600; make test"), group(9, "/bin/sh -c notify hook wait")] });
-  expect([active.state, active.brief, active.why]).toEqual(["active", "1 job, 1 call", "1 background job, 1 call running"]);
-  expect(active.in_flight.map((i) => [i.kind, i.pgid])).toEqual([["job", 7], ["tool", 8]]); // jobs first
-  expect(active.helpers.map((h) => h.pgid)).toEqual([9]);
+  expect([active.state, active.brief, active.why]).toEqual(["active", "1 job, 2 calls", "1 background job, 2 calls running"]);
+  expect(active.in_flight.map((i) => [i.kind, i.pgid])).toEqual([["job", 7], ["tool", 8], ["tool", 9]]); // jobs first
+  expect(active.helpers).toEqual([]);
 
-  // The harness says idle and only a hook runs under it: idle.
-  expect(classify({ alive: true, status: "idle", tail: none, groups: [group(9, "/bin/sh -c notify hook wait")] }).state).toBe("idle");
+  // A quiet child could belong to a subagent whose call is not in this transcript.
+  expect(classify({ alive: true, status: "idle", tail: none, groups: [group(9, "/bin/sh -c notify hook wait")] }).state).toBe("active");
   // It says idle, but a job the transcript names still runs: active.
   expect(classify({ alive: true, status: "idle", tail: t, groups: [group(7, "sh bench.sh")] }).in_flight.map((i) => i.kind)).toEqual(["job"]);
   // It says idle and the open call has no process: the call is stale.

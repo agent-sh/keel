@@ -117,6 +117,24 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     expect(far.session.workspace).toBe(root);
     expect((await notes(request, far.session.id)).join("\n")).toContain(`is not inside the directory granted on ${m.name}`);
 
+    // A rollout goes through the same list, preview and import on the helper.
+    const rollouts = join(home, ".codex", "sessions");
+    mkdirSync(rollouts, { recursive: true });
+    const rollout = join(rollouts, `rollout-${sid(6)}.jsonl`);
+    const records = [
+      { type: "session_meta", payload: { id: sid(6), cwd: proj, source: "cli" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `Codex fruit ${tag}` }] } },
+    ];
+    writeFileSync(rollout, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const base = `/api/fleet/machines/${m.id}/transcripts`;
+    const list = await (await request.get(`${base}?harness=codex&q=${tag}&refresh=1`)).json();
+    expect(list.sessions.map((f: any) => f.id)).toEqual([sid(6)]);
+    const preview = await (await request.get(`${base}/preview?harness=codex&id=${sid(6)}`)).json();
+    expect(preview.tail[0].text).toBe(`Codex fruit ${tag}`);
+    const copyThere = await (await request.post(`${base}/import`, { data: { harness: "codex", id: sid(6), model: STAND_IN } })).json();
+    made.push(copyThere.session.id);
+    expect(copyThere.session).toMatchObject({ machine: m.id, workspace: proj });
+
     // ---- two originals at work: a child shell that stays quiet, and a job of its own
     const waited = harness(home, proj, sid(4), `Waited for ${tag}`, 30, 600);
     const cut = harness(home, proj, sid(5), `Resumed now ${tag}`, 600, 600);
@@ -129,6 +147,9 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     await expect(row(sid(5)).getByTestId("original-strip")).toHaveAttribute("data-state", "active");
     const seen = await (await request.get(`/api/fleet/machines/${m.id}/transcripts/activity?harness=claude&id=${sid(5)}`)).json();
     expect(seen.in_flight.map((i: any) => i.kind)).toEqual(["job", "tool"]); // the job first
+    const stale = await request.post(`${base}/resume`, { data: { harness: "claude", id: sid(5), when: "now", revision: "older-view" } });
+    expect(stale.status()).toBe(409);
+    expect(alive(cut)).toBe(true);
     procs.push(...seen.in_flight.map((i: any) => i.pid));
     // The job of the one waited for is left running by the wait: ended with the test.
     const kept = await (await request.get(`/api/fleet/machines/${m.id}/transcripts/activity?harness=claude&id=${sid(4)}`)).json();
@@ -233,6 +254,7 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     if (enabledHere) await request.delete(`/api/fleet/machines/${m.id}`);
     for (const n of [1, 2, 3, 4, 5]) for (const d of [proj, outside, join(root, ".ssh", tag)]) rmSync(join(home, ".claude", "projects", d.replace(/[^A-Za-z0-9]/g, "-"), `${sid(n)}.jsonl`), { force: true });
     rmSync(proj, { recursive: true, force: true });
+    rmSync(join(home, ".codex", "sessions", `rollout-${sid(6)}.jsonl`), { force: true });
     rmSync(outside, { recursive: true, force: true });
     rmSync(join(root, ".ssh", tag), { recursive: true, force: true });
   }

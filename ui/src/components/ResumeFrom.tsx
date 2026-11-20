@@ -26,7 +26,7 @@ type InFlight = { kind: "job" | "tool" | "subagent" | "turn" | "prompt"; label: 
 type Seen = {
   state: "ended" | "idle" | "active"; why: string; brief?: string; in_flight: InFlight[];
   helpers: { pid: number; command: string; since_ms: number }[];
-  process?: { pid: number; started_ms: number; status?: string }; checked_ms: number; wait?: Wait;
+  process?: { pid: number; started_ms: number; status?: string }; checked_ms: number; revision?: string; wait?: Wait;
 };
 export type Intent = "wait" | "now" | null;
 type Target = { machine: string; harness: string; id: string };
@@ -160,7 +160,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
     setErr("");
     try {
       const r = await api<{ action: string; session?: { id: string } }>(`/api/fleet/machines/${target.machine}/transcripts/resume`, {
-        method: "POST", body: JSON.stringify({ harness: target.harness, id: target.id, when, jobs, wait_ms: when === "idle" ? waitMs : undefined }),
+        method: "POST", body: JSON.stringify({ harness: target.harness, id: target.id, revision: seen.revision, when, jobs, wait_ms: when === "idle" ? waitMs : undefined }),
       });
       onIntent(null);
       if (r.action === "taken_over" && r.session) { setSeen(null); onDone(); navigate({ name: "session", id: r.session.id }); }
@@ -216,7 +216,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
           <div className="mb-3">
             <p className="text-caption font-medium">{jobList.length === 1 ? "Its background job" : `Its ${jobList.length} background jobs`}</p>
             <RadioGroup value={jobs} onValueChange={(v) => setJobs(v as "keep" | "end")} className="mt-1.5 flex flex-col gap-1.5">
-              {([["keep", "Keep running", `Keel leaves ${jobList.length === 1 ? "it" : "them"} alone; the copy is told ${jobList.length === 1 ? "it still runs" : "they still run"} there.`], ["end", "End with it", "Ended after the original, and the copy is told to start what is still needed."]] as const).map(([v, name, what]) => (
+              {([["keep", "Keep running", "Keel leaves jobs alone. The original may stop them on exit; the copy reports which survived."], ["end", "End with it", "Ended after the original, and the copy is told to start what is still needed."]] as const).map(([v, name, what]) => (
                 <label key={v} className="flex cursor-pointer items-start gap-2.5">
                   <Radio.Root value={v} data-testid={`jobs-${v}`} className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong outline-none focus-visible:ring-2 focus-visible:ring-accent/40 data-checked:border-accent">
                     <Radio.Indicator className="size-2 rounded-full bg-accent" />

@@ -21,11 +21,11 @@ export type Tail = {
 
 export type Proc = { pid: number; ppid: number; pgid: number; started_ms: number; args: string };
 // A process group the harness started outside its own: a tool's shell, a job.
-export type Group = { pgid: number; pid: number; started_ms: number; command: string; args: string[] };
+export type Group = { pgid: number; pid: number; started_ms: number; command: string; args: string[]; shared?: boolean; members?: Pick<Proc, "pid" | "started_ms">[] };
 
 export type Signals = {
   alive: boolean;                               // the harness process of this session runs
-  status?: "busy" | "idle" | "waiting";         // its own word, where it gives one
+  status?: string;         // its own word, where it gives one
   waiting_for?: string;
   tail: Tail;
   groups: Group[];
@@ -154,13 +154,17 @@ export function groupsUnder(procs: Proc[], harnessPid: number, extra: number[] =
   const groups = new Map<number, Proc[]>();
   for (const pid of under) {
     const p = by.get(pid)!;
-    if (p.pgid === root.pgid) continue;
+    if (p.pgid === root.pgid) {
+      // A tool or subagent can run in the terminal's group. Never signal that group.
+      groups.set(-p.pid, [p]);
+      continue;
+    }
     groups.set(p.pgid, [...(groups.get(p.pgid) ?? []), p]);
   }
   return [...groups.entries()].map(([pgid, ps]) => {
     ps.sort((a, b) => a.started_ms - b.started_ms || a.pid - b.pid);
     const lead = ps.find((p) => p.pid === pgid) ?? ps[0]!;
-    return { pgid, pid: lead.pid, started_ms: lead.started_ms, command: lead.args, args: ps.map((p) => p.args) };
+    return { pgid: lead.pgid, shared: pgid < 0, members: ps.map(({ pid, started_ms }) => ({ pid, started_ms })), pid: lead.pid, started_ms: lead.started_ms, command: lead.args, args: ps.map((p) => p.args) };
   }).sort((a, b) => a.started_ms - b.started_ms);
 }
 
@@ -193,25 +197,29 @@ export function classify(s: Signals): Activity {
   const named = (g: Group, calls: Call[]) => calls.find((c) => c.command && g.args.some((a) => runs(a, c.command!)));
   const jobs: InFlight[] = [];
   const helpers: Helper[] = [];
+  const unclassified: InFlight[] = [];
   const running = new Map<string, Group>();
   for (const g of s.groups) {
     const fg = named(g, tail.open.filter((c) => !running.has(c.id)));
     if (fg) { running.set(fg.id, g); continue; }
-    const job = named(g, tail.background) ?? named(g, tail.shells);
+    const job = !g.shared && (named(g, tail.background) ?? named(g, tail.shells));
     if (job) jobs.push({ kind: "job", label: clip(job.label, 200), command: clip(g.command, 300), pid: g.pid, pgid: g.pgid, since_ms: g.started_ms });
-    else helpers.push({ pid: g.pid, pgid: g.pgid, command: clip(g.command, 300), since_ms: g.started_ms });
+    else unclassified.push({ kind: "tool", label: `Child process: ${clip(g.command, 200)}`, pid: g.pid, pgid: g.shared ? undefined : g.pgid, since_ms: g.started_ms });
   }
   // A call the transcript leaves open counts while its process runs, or while
   // the harness says it works; with no word from the harness, while its turn is open.
   const asked = s.status === "busy" || (s.status === undefined && tail.turn !== "closed");
   const calls: InFlight[] = tail.open.filter((c) => running.has(c.id) || asked).map((c) => {
     const g = running.get(c.id);
-    return { kind: c.kind, label: c.label, command: c.command && clip(c.command, 300), pid: g?.pid, pgid: g?.pgid, since_ms: g?.started_ms ?? c.ts };
+    return { kind: c.kind, label: c.label, command: c.command && clip(c.command, 300), pid: g?.pid, pgid: g?.shared ? undefined : g?.pgid, since_ms: g?.started_ms ?? c.ts };
   });
+  calls.push(...unclassified);
   // A subagent started in the background has no process of its own.
   const agents: InFlight[] = tail.background.filter((c) => c.kind === "subagent").map((c) => ({ kind: "subagent", label: c.label, since_ms: c.ts }));
   const rest: InFlight[] = [];
   if (!calls.length && (s.status === "busy" || (s.status === undefined && tail.turn === "open"))) rest.push({ kind: "turn", label: "a reply is being written" });
+  if (s.status && !["idle", "busy", "waiting"].includes(s.status)) rest.push({ kind: "turn", label: `harness state: ${clip(s.status, 80)}` });
+  if (!s.status && tail.turn === "unknown" && !calls.length) rest.push({ kind: "turn", label: "the harness has not confirmed it is idle" });
   if (s.status === "waiting") rest.push({ kind: "prompt", label: `it waits on ${s.waiting_for || "a prompt"} where it runs` });
   const in_flight = [...jobs, ...calls, ...agents, ...rest];
   const parts = [
