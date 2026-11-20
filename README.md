@@ -15,6 +15,12 @@ Providers are found from the environment: `ANTHROPIC_API_KEY` for the Anthropic
 API; `AWS_BEARER_TOKEN_BEDROCK`, AWS keys or `ANTHROPIC_BEDROCK_BASE_URL` for
 Amazon Bedrock. Models come from each provider's own listing.
 
+## Phone
+
+`android/` holds Keel for Android: sessions, approvals, questions and push on
+the phone, paired with a one-time `keel://pair` code from Settings, then Phone.
+See `android/README.md`.
+
 ## License
 
 MIT

@@ -41,22 +41,31 @@ export type MobileCtx = Deps & { mobile: MobileStore; gate: () => Gate | undefin
 
 const urlOrigin = (u: string) => { try { return new URL(u).origin; } catch { return null; } };
 
-export function pairLink(base: string, code: string) {
+// The link the phone app opens: `keel://pair` for the Keel app, `hermes://pair`
+// for a phone still on the Hermes app (the same /v1 surface answers both).
+export type PairApp = "keel" | "hermes";
+export function pairLink(base: string, code: string, app: PairApp = "keel") {
   const q = new URLSearchParams({ u: base.replace(/\/+$/, ""), c: code, n: host() });
-  return `hermes://pair?${q.toString().replace(/\+/g, "%20")}`;
+  return `${app}://pair?${q.toString().replace(/\+/g, "%20")}`;
 }
 
 // --- shapes the app reads ---------------------------------------------------------
 
 // The chat's newest message on its shown branch, for the inbox line: the app
 // keeps a preview the server sends over one it guesses from a batch of messages.
-export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null };
+
+// Where a chat stands, as the phone's list shows it: a card waits for the
+// owner, a turn runs, or how the last turn ended.
+export type ChatStatus = "needs_you" | "working" | "failed" | "stopped" | "done" | "idle";
+export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string };
 
 export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   const c: Record<string, unknown> = {
     id: s.id, title: s.title || "New chat", kind: "chat", created: secs(s.created), updated: secs(s.updated), unread: x.unread ?? 0,
     pinned: s.settings.pinned_ms ? 1 : 0, archived: s.archived ? 1 : 0, seq: lastSeq, parent_id: s.parent_id ?? null,
   };
+  if (x.status) c.status = x.status;
+  if (x.failure) c.failure = x.failure;
   if (x.preview !== undefined) Object.assign(c, { preview: x.preview?.text ?? "", last_role: x.preview?.role ?? "", preview_id: x.preview?.id ?? null });
   return c;
 }
@@ -225,7 +234,27 @@ export function mobileApi(ctx: MobileCtx) {
     return out;
   }
   const unread = () => { try { return alerts.unreadCounts().sessions; } catch { return {} as Record<string, number>; } };
-  const chatFull = (s: Session, u = unread()) => chatOf(s, lastSeq(s.id), { unread: u[s.id] ?? 0, preview: preview(s) });
+  // How the last turn on the shown branch ended, walking back from the head.
+  // A failed turn says why, in a line.
+  function status(s: Session): { status: ChatStatus; failure?: string } {
+    if (pendingApprovals(s.id).length) return { status: "needs_you" };
+    if (engine.isRunning(s.id)) return { status: "working" };
+    let id = s.head;
+    for (let i = 0; id && i < 200; i++) {
+      const e = store.event(id);
+      if (!e) break;
+      if (e.kind === "error") return { status: "failed", failure: String(e.data.message ?? "the turn failed").split("\n")[0]!.slice(0, 200) };
+      if (e.kind === "turn_end") {
+        if (e.data.reason === "interrupted") return { status: "stopped" };
+        if (NORMAL_STOP.has(e.data.reason)) return { status: "done" };
+        return { status: "failed", failure: OUTCOME[e.data.reason] ?? `ended: ${e.data.reason}` };
+      }
+      if (e.kind === "user" && !originOf(e, () => undefined, () => null)) return { status: "idle" };
+      id = e.parent;
+    }
+    return { status: "idle" };
+  }
+  const chatFull = (s: Session, u = unread()) => chatOf(s, lastSeq(s.id), { unread: u[s.id] ?? 0, preview: preview(s), ...status(s) });
 
   // Questions the model asked that wait for the owner, as approval cards. Each
   // pending call is read from its own tool call, however far back it is.
@@ -240,7 +269,8 @@ export function mobileApi(ctx: MobileCtx) {
       description: options.join(" / "), options, unavailable: !tu,
       // One entry per question, by id: a card of several takes one answer each.
       questions: qs.map((q) => ({ id: q.id, question: q.question, options: q.options.map((o) => o.label), multi: q.multi })),
-      actions: [["Answer", "once", "primary"], ["Dismiss", "deny", "danger"]], state: "pending", choice: null, ts: e ? secs(e.ts) : null,
+      // Just after its tool call's row in the chat (traceOf), not before the words of the reply that asks.
+      actions: [["Answer", "once", "primary"], ["Dismiss", "deny", "danger"]], state: "pending", choice: null, ts: e ? (e.ts + (e.seq % 1000) / 1000 + 0.0008) / 1000 : null,
     };
   }
   // A question that stopped waiting, with what was picked (by question id), as
@@ -428,12 +458,16 @@ export function mobileApi(ctx: MobileCtx) {
                   const q = questionCard(s, a.data.call_id);
                   send({ type: "approval", seq: mobile.globalSeq(), approval: q });
                   send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(q) });
+                  send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
                 }
               }
               else if (f.t === "feature" && f.name === "approval") {
                 const a = approvalOf(f.data as Approval);
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });
                 if (a.state === "pending") send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(a) });
+                // The chat's row says it needs the owner, then that it does not.
+                const s = store.session(a.chat_id);
+                if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
             } catch (e) {
               errors.capture("server", e, { at: "mobile event stream" });
@@ -514,14 +548,16 @@ export function mobileApi(ctx: MobileCtx) {
   return {
     "/v1/health": { GET: () => json({ ok: true, name: host(), profile: "keel", api: 1, security: { signature_replay: REPLAY_VERSION }, degraded: [] }) },
     "/v1/pair": { POST: pair },
+    // The page a pairing QR or link opens in the phone's browser: it hands the
+    // code to the Keel app, or to the Hermes app on a phone that has that one.
     "/pair": {
       GET: (req: Req) => {
         const code = new URL(req.url).searchParams.get("c") ?? "";
-        const link = pairLink(mobile.setting("public_url") ?? new URL(req.url).origin, code).replace(/"/g, "&quot;");
-        return new Response(
-          `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Pair Keel</title><body style="background:#0c0e12;color:#edf1f7;font-family:system-ui;display:flex;flex-direction:column;align-items:center;justify-content:center;height:90vh;gap:16px"><div style="font-size:32px;font-weight:700">Keel</div><a href="${link}" style="background:#3b82f6;color:#fff;padding:14px 24px;border-radius:10px;text-decoration:none;font-weight:600">Open in Hermes Mobile</a></body>`,
-          { headers: { "content-type": "text/html; charset=utf-8" } },
-        );
+        const base = mobile.setting("public_url") ?? new URL(req.url).origin;
+        const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+        return new Response(pairPage(esc(pairLink(base, code, "keel")), esc(pairLink(base, code, "hermes"))), {
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" },
+        });
       },
     },
     "/v1/me": {
@@ -749,9 +785,11 @@ export function mobileApi(ctx: MobileCtx) {
       })),
     },
     "/v1/push-config": {
-      GET: signed(() => {
-        const config = push.clientConfig();
-        return json({ enabled: !!config, config: config ?? {} });
+      // `app` names the asking app's package, so each app gets its own Firebase entry.
+      GET: signed((req) => {
+        const app = new URL(req.url).searchParams.get("app")?.trim() || undefined;
+        const { config, missing } = push.clientConfig(app);
+        return json({ enabled: !!config, config: config ?? {}, ...(config ? {} : { missing }) });
       }),
     },
     "/v1/push/ack": {
@@ -762,6 +800,26 @@ export function mobileApi(ctx: MobileCtx) {
       })),
     },
   };
+}
+
+// The pairing page, in the workbench's colors: steel and ink, ink buttons.
+function pairPage(keel: string, hermes: string) {
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Pair with Keel</title>
+<style>
+:root{--bg:#ebeef1;--raised:#f9fafb;--line:#ccd1d7;--fg:#11161f;--muted:#464e58;--ink:#11161f;--ink-fg:#f3f5f8}
+@media (prefers-color-scheme:dark){:root{--bg:#12181e;--raised:#181f27;--line:#262c33;--fg:#e4e8ed;--muted:#a5acb4;--ink:#e4e8ed;--ink-fg:#11161d}}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--fg);font:16px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+main{width:min(22rem,88vw);display:flex;flex-direction:column;gap:1.25rem}
+h1{margin:0;font:600 1.6rem/1.2 "Martian Mono",ui-monospace,monospace;letter-spacing:-.03em}p{margin:0;color:var(--muted)}
+a{display:block;text-align:center;text-decoration:none;font-weight:600;border-radius:.5rem;padding:.875rem 1.125rem}
+.open{background:var(--ink);color:var(--ink-fg)}.alt{border:1px solid var(--line);background:var(--raised);color:var(--fg);font-weight:500}
+small{color:var(--muted)}
+</style>
+<main><svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#0e6a80"/><path d="M6 11.5h20c-1.1 4.9-5 7.6-10 7.6s-8.9-2.7-10-7.6z" fill="#f4faf9"/><path d="M14.6 18.6h2.8l-.7 6.4h-1.4z" fill="#f4faf9"/></svg>
+<h1>Pair this phone</h1><p>Open the link in the Keel app on this phone. The code works once and expires soon.</p>
+<a class="open" data-app="keel" href="${keel}">Open in Keel</a>
+<a class="alt" data-app="hermes" href="${hermes}">Open in the Hermes app instead</a>
+<small>Keep this link private: whoever opens it first pairs a device.</small></main></html>`;
 }
 
 // Token counts as the app reads them: prompt_tokens is every input token,

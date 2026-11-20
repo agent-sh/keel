@@ -33,11 +33,12 @@ async function pair(argv: string[]): Promise<number> {
   }
   m.setPublicUrl(url);
   const ttl = Math.min(86_400, Math.max(60, Number(values.ttl) || 600));
-  const link = pairLink(url, m.createPairCode(ttl));
+  const code = m.createPairCode(ttl);
+  const link = pairLink(url, code);
   const svg = join(stateDirOf(values["state-dir"]), "pair-qr.svg");
   writeFileSync(svg, renderSVG(link, { border: 2 }));
   console.log(renderUnicodeCompact(link, { border: 2 }));
-  console.log(`Pair link: ${link}\nSaved QR SVG: ${svg}\nThe code is good once, for ${ttl} s.`);
+  console.log(`Pair link (Keel app): ${link}\nFor the Hermes app: ${pairLink(url, code, "hermes")}\nSaved QR SVG: ${svg}\nThe code is good once, for ${ttl} s.`);
   return 0;
 }
 

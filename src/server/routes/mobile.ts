@@ -113,7 +113,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         const ttl = Math.min(86_400, Math.max(60, Number(b.ttl_seconds) || 600));
         const code = mobile.createPairCode(ttl);
         const pair_link = pairLink(url, code);
-        return json({ code, public_url: url, pair_link, qr_svg: renderSVG(pair_link, { border: 2 }), ttl_seconds: ttl, expires_ms: Date.now() + ttl * 1000 });
+        return json({ code, public_url: url, pair_link, hermes_link: pairLink(url, code, "hermes"), qr_svg: renderSVG(pair_link, { border: 2 }), ttl_seconds: ttl, expires_ms: Date.now() + ttl * 1000 });
       },
     },
     "/api/mobile/devices": { GET: () => json({ devices: deviceRows() }) },

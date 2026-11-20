@@ -13,7 +13,7 @@ type Device = {
   id: string; name: string; nolock: boolean; revoked: boolean; created: number; last_seen: number;
   push: { registered: boolean; unacknowledged: number; warning: boolean; receipts: boolean; last: PushRec | null; previous: PushRec | null };
 };
-type Bundle = { code: string; public_url: string; pair_link: string; qr_svg: string; expires_ms: number };
+type Bundle = { code: string; public_url: string; pair_link: string; hermes_link: string; qr_svg: string; expires_ms: number };
 type Settings = { public_url: string; push: { configured: boolean; path: string } };
 
 const since = (ms: number) => (ago(ms) === "now" ? "just now" : `${ago(ms)} ago`);
@@ -35,6 +35,7 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [hermesCopied, setHermesCopied] = useState(false);
   useEffect(() => { if (settings && !url) setUrl(settings.public_url); }, [settings]);
   // The code is good once: a phone that paired closes it.
   useEffect(() => { if (paired) setBundle(null); }, [paired?.id]);
@@ -78,7 +79,7 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
             <div className="size-48 shrink-0 overflow-hidden rounded-md border border-line bg-white p-1 shadow-1" data-testid="pair-qr" dangerouslySetInnerHTML={{ __html: bundle.qr_svg }} />
             <div className="min-w-0 flex-1 space-y-3 text-ui">
               <ol className="list-decimal space-y-1 pl-4 text-muted">
-                <li>Open Hermes on the phone and choose to pair a machine.</li>
+                <li>Open Keel on the phone and choose Scan code.</li>
                 <li>Scan this code. The phone makes its own keys; approvals use a fingerprint or PIN.</li>
               </ol>
               <div className="flex items-center gap-2">
@@ -92,7 +93,17 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
                   {copied ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
                 </button>
               </div>
-              <div className="text-caption text-faint">Expires in <Countdown until={bundle.expires_ms} onEnd={end} /></div>
+              <div className="text-caption text-faint">
+                Expires in <Countdown until={bundle.expires_ms} onEnd={end} />.{" "}
+                <button
+                  type="button"
+                  data-testid="pair-hermes"
+                  onClick={() => copyText(bundle.hermes_link).then(() => { setHermesCopied(true); setTimeout(() => setHermesCopied(false), 1500); }, reportError)}
+                  className="text-muted underline decoration-line-strong underline-offset-2 hover:text-fg"
+                >
+                  {hermesCopied ? "Copied the Hermes app link" : "Copy the link for the Hermes app"}
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -79,7 +79,7 @@ test("pair a phone, approve from it, push, revoke", async ({ page, request }) =>
     await expect(page.getByTestId("pair-qr").locator("svg")).toBeVisible();
     await shoot(page, "mobile-01-pair-qr");
     const link = new URL((await bundle.getAttribute("data-link"))!);
-    expect(link.protocol).toBe("hermes:");
+    expect(link.protocol).toBe("keel:");
     expect(link.searchParams.get("u")).toBe("https://keel.example.test");
     const code = link.searchParams.get("c")!;
 

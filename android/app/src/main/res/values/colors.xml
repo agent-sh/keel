@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The Keel mark's tile and hull, as in the workbench's icon. -->
+    <color name="sea">#0E6A80</color>
+    <color name="hull">#F4FAF9</color>
+    <color name="bg">#EBEEF1</color>
+</resources>

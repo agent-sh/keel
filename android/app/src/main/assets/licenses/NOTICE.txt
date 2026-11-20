@@ -1,0 +1,19 @@
+Keel for Android
+Copyright (c) 2026 Avi Fenesh
+Application code: MIT License (the repository's LICENSE; in the APK:
+assets/licenses/Keel-MIT.txt).
+
+Request signing, Keystore keys, encrypted preferences and pairing are adapted
+from Hermes for Android (https://github.com/avifenesh/hermes-android-app),
+Copyright (c) 2026 Avi Fenesh, MIT License.
+
+Fonts, SIL Open Font License 1.1 (texts in assets/licenses/):
+- Martian Mono, Copyright 2020 The Martian Mono Project Authors
+- IBM Plex Sans, Copyright 2019 IBM Corp.
+- JetBrains Mono, Copyright 2020 The JetBrains Mono Project Authors
+
+Icons: Lucide (https://lucide.dev), ISC License, Copyright (c) 2026 Lucide
+Icons and Contributors. Path data is embedded in ui/Icons.kt.
+
+Libraries: AndroidX, Jetpack Compose, Kotlin coroutines, OkHttp (Apache 2.0);
+Firebase Messaging and Google Play services code scanner (Google terms).

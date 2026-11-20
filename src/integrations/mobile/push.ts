@@ -24,13 +24,38 @@ export function accountPath(): string {
 export const configured = () => existsSync(accountPath());
 
 // The app's Firebase client configuration beside the key, for GET /v1/push-config.
-export function clientConfig(): unknown | null {
-  if (!configured()) return null;
-  try {
-    return JSON.parse(readFileSync(join(accountPath(), "..", "fcm-client.json"), "utf8"));
-  } catch {
-    return null;
+// `google-services.json`, as Firebase hands it out, holds one entry per Android
+// package of the project: the asking app gets its own. `fcm-client.json` (api_key,
+// app_id, project_id, sender_id) serves an app that names no package.
+export const SERVICES_FILE = "google-services.json";
+export function clientConfig(app?: string): { config: Record<string, string> | null; missing?: string } {
+  if (!configured()) return { config: null, missing: accountPath() };
+  const dir = join(accountPath(), "..");
+  if (app) {
+    const path = join(dir, SERVICES_FILE);
+    let services: unknown = null;
+    try {
+      services = JSON.parse(readFileSync(path, "utf8"));
+    } catch {}
+    const config = services ? configForPackage(services, app) : null;
+    if (config) return { config };
+    if (app !== "dev.avifenesh.hermes") return { config: null, missing: path };
   }
+  try {
+    return { config: JSON.parse(readFileSync(join(dir, "fcm-client.json"), "utf8")) };
+  } catch {
+    return { config: null, missing: join(dir, app ? SERVICES_FILE : "fcm-client.json") };
+  }
+}
+
+// One package's client entry of a google-services.json, in the app's shape.
+export function configForPackage(services: any, pkg: string): Record<string, string> | null {
+  const info = services?.project_info;
+  const client = ((services?.client ?? []) as any[]).find((c) => c?.client_info?.android_client_info?.package_name === pkg);
+  const key = client?.api_key?.find?.((k: any) => typeof k?.current_key === "string")?.current_key;
+  const appId = client?.client_info?.mobilesdk_app_id;
+  if (!info?.project_id || !info.project_number || typeof key !== "string" || typeof appId !== "string") return null;
+  return { api_key: key, app_id: appId, project_id: String(info.project_id), sender_id: String(info.project_number) };
 }
 
 type Account = { project_id: string; client_email: string; private_key: string; token_uri: string };
