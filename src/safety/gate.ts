@@ -10,7 +10,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall, ToolGate } from "../engine/hooks.ts";
 import { confine } from "./sandbox.ts";
-import { contains, realOf } from "../core/paths.ts";
+import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { classify, decide, isMode, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
 // An edit is judged by where it sits (its folders' links resolved) and by
@@ -263,7 +263,10 @@ export class Gate {
   private evaluate(session: Session, name: string, cls: CallClass, bind?: string): Decision {
     const p = this.perm(session.id);
     // Edits are judged where they land (links resolved), so the workspace is too.
-    return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind });
+    let root = session;
+    for (let n = 0; root.parent_id && !root.machine && n < 32; n++) root = this.store.session(root.parent_id) ?? root;
+    const scratch = session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))];
+    return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch });
   }
 
   // The beforeTool hook: the gate first; a call it lets through runs confined

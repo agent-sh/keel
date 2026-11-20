@@ -92,7 +92,8 @@ function shellText(input: any): string | null {
 
 export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
 
-export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string };
+// `scratch`: folders of the harness's own the session writes in like its workspace (its artifacts folder).
+export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[] };
 
 export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read" || c.kind === "control") return { allow: true };
@@ -124,7 +125,8 @@ export function decide(c: CallClass, f: Facts): Decision {
     const covered = (p: string) => editRules.some((r) => contains(r.pattern, p));
     // The repository's own metadata never edits itself in auto-edits mode.
     const protectedPath = (p: string) => /(^|\/)\.git(\/|$)/.test(relative(f.workspace, p));
-    const open = c.paths.filter((p) => !covered(p) && !(f.mode === "auto-edits" && contains(f.workspace, p) && !protectedPath(p)));
+    const mine = (p: string) => (contains(f.workspace, p) && !protectedPath(p)) || !!f.scratch?.some((d) => contains(d, p));
+    const open = c.paths.filter((p) => !covered(p) && !(f.mode === "auto-edits" && mine(p)));
     if (!open.length) return { allow: true };
     const dirs = [...new Set(open.map((p) => (contains(f.workspace, p) && !protectedPath(p) ? f.workspace : dirname(p))))];
     return { ask: { risk: "low", suggest: dirs.map((d) => ({ kind: "edit", pattern: d })) } };

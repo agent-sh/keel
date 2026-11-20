@@ -44,6 +44,7 @@ import { runRoutes } from "./run.ts";
 import { marksRoutes } from "./marks.ts";
 import { projectRoutes } from "./projects.ts";
 import { sessionFolderRoutes } from "./session-folders.ts";
+import { artifactRoutes } from "./artifacts.ts";
 import { convoRoutes } from "./convo.ts";
 import { placesRoutes } from "./places.ts";
 import { terminalRoutes } from "./terminal.ts";
@@ -92,6 +93,7 @@ export const routeModules: RouteModule[] = [
   marksRoutes, // after automation: unread marks are its alerts
   projectRoutes, // after permissions: a project's default mode goes through its gate
   sessionFolderRoutes,
+  artifactRoutes, // after checkpoints: a turn's end reads the checkpoint that turn made
   convoRoutes,
   placesRoutes,
   importRoutes,

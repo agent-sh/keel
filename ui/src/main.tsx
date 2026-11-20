@@ -18,6 +18,7 @@ import "./features/sessops.tsx";
 import "./features/terminal.tsx";
 import "./features/observe.tsx";
 import "./features/projects.tsx";
+import "./features/artifacts.tsx";
 
 // Install metadata. Added here, not in index.html, because the bundler tries
 // to resolve every link in the page as a file to bundle.

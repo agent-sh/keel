@@ -6,6 +6,11 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 export const defaultStateDir = () =>
   resolve(process.env.KEEL_STATE_DIR || join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
 
+// Where a session puts files made for the owner to look at (its artifacts):
+// harness scratch beside the state, so edits there run where workspace edits do.
+// A subagent on this machine uses its parent's (it runs on the parent's prompt).
+export const artifactsDir = (stateDir: string, sessionId: string) => join(stateDir, "artifacts", sessionId);
+
 // contains(root, p): true when `p` is `root` or below it. Both must be absolute and already
 // resolved the same way (realpath where symlinks matter). A child named
 // "..foo" is inside; "../x" and another drive are not.

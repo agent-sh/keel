@@ -15,6 +15,7 @@ import { Mark } from "./Mark.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { Select } from "./Select.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { ArtifactBrowser, useArtifacts } from "./ArtifactsPanel.tsx";
 
 const field = "h-8 min-w-0 rounded-md border border-line bg-sunken px-2.5 text-ui outline-none focus:ring-2 focus:ring-ring";
 const button = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
@@ -158,7 +159,8 @@ function Body({ p }: { p: Project }) {
               </div>
             </Block>
           </div>
-          <aside className="flex min-w-0 flex-col gap-5">
+          <ProjectArtifacts p={p} members={members} />
+          <aside className="flex min-w-0 flex-col gap-5 lg:col-start-2 lg:row-start-1 lg:row-end-3">
             <Block title="Sessions" hint={list.length ? `${list.length} in the project` : "None yet"} testid="project-sessions">
               <div className="flex flex-col">
                 {list.map((s) => (
@@ -174,5 +176,15 @@ function Body({ p }: { p: Project }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Everything the project's sessions made, newest first.
+function ProjectArtifacts({ p, members }: { p: Project; members: Record<string, string> }) {
+  const list = useArtifacts(`/api/projects/${p.id}/artifacts`, (id) => !!id && members[id] === p.id);
+  return (
+    <Block title="Artifacts" hint="What the project's sessions made: files they created or changed, and what they put in their artifacts folders." testid="project-artifacts">
+      <div className="-mx-5 -mb-4 h-[34rem] border-t border-line"><ArtifactBrowser list={list} testid="project-artifacts-list" withSession /></div>
+    </Block>
   );
 }
