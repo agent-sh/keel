@@ -33,7 +33,9 @@ export function findDaemon(v: { url?: string; "state-dir"?: string }): Found {
   const held = lockedDaemon(stateDir);
   if (held?.url) return { url: trim(held.url), from: "lock", client: held.client, stateDir };
   // No daemon in the default folder: the one the service manager runs, if any.
-  const svc = v["state-dir"] ? undefined : servicedDaemon();
+  // Only when no state folder was named (flag or KEEL_STATE_DIR): a command
+  // given its own folder never reaches another folder's daemon.
+  const svc = v["state-dir"] || process.env.KEEL_STATE_DIR ? undefined : servicedDaemon();
   if (svc) return { url: trim(svc.url), from: "service", stateDir: svc.state_dir };
   return { url: DEFAULT_URL, from: "default", stateDir };
 }
