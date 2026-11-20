@@ -11,6 +11,7 @@ import { claudeRoot } from "./import/claude.ts";
 import { codexHome } from "./import/codex.ts";
 import { FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN } from "./import/types.ts";
 import { INPUT_LABEL, inputKind } from "../core/inputs.ts";
+import { ownerPrompt } from "../core/owner.ts";
 import { checkpointAt } from "../engine/compact.ts";
 
 export const EXPORT_VERSION = 2;
@@ -181,16 +182,15 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
   // Codex restores model history from response items, but replays the visible
   // transcript from event messages (app-server-protocol's ThreadHistoryBuilder).
   const display = (ts: number, type: string, fields: object) => line(ts, "event_msg", { type, ...fields });
-  type Opening = "user" | "turn_start" | "tail";
-  let turn: { id: string; openedBy: Opening } | undefined;
+  let turnId: string | undefined;
   const finish = (ts: number, interrupted = false) => {
-    if (interrupted) display(ts, "turn_aborted", { turn_id: turn?.id, reason: "interrupted" });
-    else if (turn) display(ts, "task_complete", { turn_id: turn.id });
-    turn = undefined;
+    if (interrupted) display(ts, "turn_aborted", { turn_id: turnId, reason: "interrupted" });
+    else if (turnId) display(ts, "task_complete", { turn_id: turnId });
+    turnId = undefined;
   };
-  const begin = (e: StoredEvent, openedBy: Opening) => {
-    turn = { id: e.id, openedBy };
-    display(e.ts, "task_started", { turn_id: turn.id });
+  const begin = (e: StoredEvent) => {
+    turnId = e.id;
+    display(e.ts, "task_started", { turn_id: turnId });
   };
   const start = events[0]?.ts ?? now;
   line(start, "session_meta", { id, timestamp: new Date(start).toISOString(), cwd: s.workspace, originator: "keel", cli_version: "0.0.0", source: "cli" });
@@ -201,32 +201,28 @@ export function toCodexRollout(s: Session, events: StoredEvent[], id: string, no
     if (e.kind === "user") {
       const images: string[] = (e.data.images ?? []).filter((b: any) => b.type === "image").map((b: any) => `data:${b.media_type};base64,${b.data}`);
       const text = e.data.text ?? "";
-      const visible = !!text || images.length > 0;
-      if (visible && turn?.openedBy !== "turn_start") {
+      // inputKind also recognizes older peer deliveries with only a text envelope.
+      const visible = (!!text || images.length > 0) && ownerPrompt(e.data) && !inputKind(e.data);
+      if (visible) {
+        // Codex rollback cuts at user response items, including steers within
+        // one Keel turn. Give each visible prompt its own boundary. Hidden
+        // harness inputs still carry their original model-side boundaries.
         finish(prev);
-        begin(e, "user");
+        begin(e);
       }
       line(e.ts, "response_item", { type: "message", role: "user", content: [...images.map((image_url) => ({ type: "input_image", image_url })), ...(text ? [{ type: "input_text", text }] : [])] });
       if (visible) display(e.ts, "user_message", { message: text, images: images.length ? images : undefined });
     } else if (e.kind === "compaction" && e.data.summary) {
       finish(prev);
-      begin(e, "tail");
+      begin(e);
       line(e.ts, "compacted", { message: e.data.summary });
       display(e.ts, "agent_message", { message: `Summary of the earlier conversation (Keel)\n\n${e.data.summary}` });
       finish(e.ts);
-    } else if (e.kind === "turn_start") {
-      // Keel stores the opening prompt before turn_start. Later user events
-      // in the same explicit turn steer it; imported history may lack markers.
-      if (turn?.openedBy === "user") turn.openedBy = "turn_start";
-      else {
-        finish(prev);
-        begin(e, "turn_start");
-      }
     } else if (e.kind === "turn_end") finish(e.ts, e.data.reason === "interrupted" || e.data.reason === "restart");
     else if (e.kind === "note" && e.data.model) line(e.ts, "response_item", { type: "message", role: "user", content: [{ type: "input_text", text: `${NOTE_OPEN}\n${e.data.text}\n${NOTE_CLOSE}` }] });
     else if (e.kind === "assistant") {
       const blocks = e.data.blocks ?? [];
-      if (!turn && blocks.some((b: any) => b.type === "text" && b.text)) begin(e, "tail");
+      if (!turnId && blocks.some((b: any) => b.type === "text" && b.text)) begin(e);
       // Who answered: Codex reads the model of each turn from its turn context.
       if (e.data.model && e.data.model !== model) {
         model = e.data.model;
