@@ -1,4 +1,4 @@
-// keel status | drain | restart | upgrade | storage | cleanup | backup |
+// keel status | drain | restart | upgrade | ui | storage | cleanup | backup |
 // backups | restore | report | usage | service: the daemon's administration
 // from a terminal. Each asks the running daemon over HTTP, except restore
 // (the daemon must be stopped) and service (writes the systemd unit).
@@ -190,7 +190,35 @@ const service = wrap("keel service install [--bind HOST:PORT] [--print] [--exec 
     return 0;
   });
 
+// The page without a restart (src/server/ui-bundle.ts): what is served, a bundle
+// from `bun scripts/build.ts --ui OUT` to serve now, or back to the one before.
+const uiCmd = wrap("keel ui [status | install BUNDLE.tar.gz | rollback] [--url URL] [--json]\n  Serves a new UI bundle at once: running turns go on and open pages reload into it.\n  A bundle built from other daemon sources is refused (it needs a restart onto a new binary).",
+  {},
+  async (v, pos) => {
+    const url = urlOf(v.url);
+    const [sub = "status", file] = pos;
+    let st: any;
+    if (sub === "status") st = await call(url, "/api/ui");
+    else if (sub === "rollback") st = await call(url, "/api/ui/rollback", { method: "POST" });
+    else if (sub === "install") {
+      if (!file) throw new Error("keel ui install BUNDLE.tar.gz");
+      const r = await fetch(url + "/api/ui", { method: "POST", body: Bun.file(file), headers: { "content-type": "application/gzip", ...authHeaders() } }).catch(() => {
+        throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
+      });
+      st = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(st.error ?? `HTTP ${r.status}`);
+    } else throw new Error(`unknown: keel ui ${sub}`);
+    const name = (x: any) => (x ? `${x.version} (${time(x.version)})` : "none");
+    out(st, !!v.json, () => [
+      `serving  ${st.active.source === "installed" ? `installed ${name({ version: Number(st.active.version) })}` : `embedded ${st.embedded.version}`}`,
+      `kept     ${name(st.current)}, before it ${name(st.previous)}`,
+      `api      ${st.api}`,
+    ].join("\n"));
+    return 0;
+  });
+
 export const adminCommands = {
+  ui: uiCmd,
   status,
   drain: drainCmd(false),
   restart: drainCmd(true),

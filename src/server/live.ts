@@ -18,6 +18,8 @@ export class Live {
   private started = Date.now();
   // A session's queue and turn status now (the app sets it once the engine exists).
   state?: (id: string) => { queue: any[]; held: boolean; status: any };
+  // The page version served now (a page that loaded another reloads).
+  ui?: () => string;
 
   constructor(private store: Store, private bus: Bus, private publish: (topic: string, data: string) => void) {
     bus.on((f) => {
@@ -46,7 +48,7 @@ export class Live {
 
   open(ws: Bun.ServerWebSocket<unknown>) {
     ws.subscribe(ALL);
-    send(ws, { t: "hello", pid: process.pid, started_ms: this.started });
+    send(ws, { t: "hello", pid: process.pid, started_ms: this.started, ui: this.ui?.() });
   }
 
   message(ws: Bun.ServerWebSocket<unknown>, raw: string | Buffer) {

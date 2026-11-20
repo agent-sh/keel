@@ -6,6 +6,7 @@ import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, 
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
 import { seedComposer } from "./ui.ts";
+import { servedUi } from "./hotui.ts";
 
 export type ProvidersReport = {
   providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem })[];
@@ -451,7 +452,8 @@ export function connect() {
     if (f.t === "pong") { clearTimeout(deadline); deadline = undefined; }
     else if (f.t === "draft") { if (newer(`${f.session_id}:draft`, f.rev)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); }
     else if (f.t === "replayed") { if (socket === ws) onReplayed?.(); }
-    else if (f.t !== "hello") apply(f);
+    else if (f.t === "hello" || f.t === "ui") servedUi(f.t === "ui" ? f.version : f.ui);
+    else apply(f);
   };
   ws.onclose = () => {
     clearInterval(pinger);

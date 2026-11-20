@@ -70,5 +70,8 @@ scripts/dev.sh <port>          # dev daemon with hot reload on Bedrock, scratch 
 bunx tsc --noEmit -p .          # typecheck
 KEEL_URL=http://127.0.0.1:<port> bunx playwright test   # e2e against that dev daemon (required)
 bun test ./test/cli              # the command line e2e (builds the binary, scripted model)
-bun scripts/build.ts            # dist/keel, one binary
+bun scripts/build.ts            # dist/keel, one binary (and dist/keel-ui.tar.gz, its page as a bundle)
+bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.tar.gz --url URL
+                               # a UI-only change on a running daemon: no restart, turns go on, pages reload;
+                               # refused when src/ differs from the daemon's build (that needs a restart)
 ```

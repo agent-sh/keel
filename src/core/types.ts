@@ -158,13 +158,15 @@ export type Frame = (
   // A feature module's live update (approvals, checkpoints, worktrees): the UI
   // routes it by `name` to the module's own client state.
   | { t: "feature"; name: string; session_id?: string; data: any }
+  // A new page was installed (src/server/ui-bundle.ts): open pages reload into it.
+  | { t: "ui"; version: string }
 ) & { rev?: number };
 
 // What only the WebSocket sends (never on the bus): the greeting, the end of a
 // replay, the reply a running turn has streamed so far, a ping's answer.
 export type DraftBlocks = Record<number, { kind: "text" | "thinking" | "tool_input"; text: string; name?: string }>;
 export type SocketFrame =
-  | { t: "hello"; pid: number; started_ms: number }
+  | { t: "hello"; pid: number; started_ms: number; ui?: string }
   | { t: "replayed"; cursors: Record<string, number> }
   | { t: "draft"; session_id: string; blocks: DraftBlocks; rev?: number }
   | { t: "pong"; nonce?: number };

@@ -1,7 +1,51 @@
 // One self-contained binary: daemon + bundled UI (HTML import, Tailwind).
+//   bun scripts/build.ts [OUT [TARGET]]   the binary (default dist/keel), and OUT-ui.tar.gz beside it
+//   bun scripts/build.ts --ui OUT.tar.gz  only the UI bundle, for `keel ui install OUT.tar.gz`
+//                                         (a running daemon built from the same src/ serves it at once)
 import tailwind from "bun-plugin-tailwind";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { sourceApi, UI_PREFIX, type UiManifest } from "../src/server/ui-bundle.ts";
 
+const root = resolve(import.meta.dir, "..");
 const t0 = performance.now();
+const built = Date.now();
+const api = sourceApi(root);
+const define = { "process.env.NODE_ENV": '"production"' };
+const fail = (res: Bun.BuildOutput) => {
+  for (const l of res.logs) console.error(l);
+  process.exit(1);
+};
+
+async function uiBundle(out: string) {
+  const dir = mkdtempSync(join(tmpdir(), "keel-ui-"));
+  try {
+    const res = await Bun.build({ entrypoints: [join(root, "ui/index.html")], outdir: dir, target: "browser", minify: true, splitting: true, sourcemap: "none", publicPath: UI_PREFIX, plugins: [tailwind], define });
+    if (!res.success) fail(res);
+    const files: Record<string, Uint8Array> = {};
+    const walk = (d: string): void => {
+      for (const n of readdirSync(d)) {
+        const p = join(d, n);
+        if (statSync(p).isDirectory()) walk(p);
+        else files[relative(dir, p)] = readFileSync(p);
+      }
+    };
+    walk(dir);
+    const manifest: UiManifest = { format: 1, version: built, api, files: Object.keys(files).sort() };
+    await Bun.Archive.write(out, { ...files, "manifest.json": JSON.stringify(manifest, null, 1) }, { compress: "gzip" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[2] === "--ui") {
+  const out = process.argv[3] ?? "dist/keel-ui.tar.gz";
+  await uiBundle(out);
+  console.log(`built ${out} (UI ${built}, api ${api}) in ${((performance.now() - t0) / 1000).toFixed(2)}s`);
+  process.exit(0);
+}
+
 const out = process.argv[2] ?? "dist/keel";
 // Another platform's binary: bun-linux-x64, bun-darwin-arm64, ...
 const target = process.argv[3] as Bun.Build.Target | undefined;
@@ -12,10 +56,8 @@ const res = await Bun.build({
   splitting: true,
   sourcemap: "none",
   plugins: [tailwind],
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built) },
 });
-if (!res.success) {
-  for (const l of res.logs) console.error(l);
-  process.exit(1);
-}
-console.log(`built ${out} in ${((performance.now() - t0) / 1000).toFixed(2)}s`);
+if (!res.success) fail(res);
+await uiBundle(`${out}-ui.tar.gz`);
+console.log(`built ${out} and ${out}-ui.tar.gz (api ${api}) in ${((performance.now() - t0) / 1000).toFixed(2)}s`);

@@ -25,6 +25,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["status", "the running daemon"],
     ["drain", "let running turns finish, then stop"],
     ["restart", "drain, then start again (also: upgrade)"],
+    ["ui", "serve a new UI bundle without a restart; rollback"],
     ["storage", "what the state folder holds"],
     ["cleanup", "delete old archived sessions"],
     ["backup", "a checked copy of the database"],

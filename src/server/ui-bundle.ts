@@ -1,0 +1,159 @@
+// The UI without a daemon restart. `bun scripts/build.ts --ui OUT` packs the
+// page as a versioned bundle (a .tar.gz with manifest.json); `keel ui install
+// OUT` sends it to the daemon (POST /api/ui), which checks it was built from
+// the same daemon sources (`api`, a hash of src/), keeps it under
+// <state>/ui/<version>/ with the one before it for `keel ui rollback`, swaps
+// the served page in place (server.reload: no socket and no turn is cut) and
+// tells every open page over /ws (frame `ui`). A page reloads itself when the
+// owner is not typing, else it offers the reload.
+//
+// The page embedded in the binary stays the fallback. At start the newer of
+// the two is served: an installed bundle built after the binary, from the same
+// sources, wins; one from other sources (the binary moved on) is passed over.
+// Pages of every bundle still held keep their files: an open page that loads a
+// chunk after a swap still finds it.
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileRoute } from "./compress.ts";
+
+declare const __KEEL_API__: string | undefined;
+declare const __KEEL_UI_BUILT__: number | undefined;
+
+export type UiManifest = { format: 1; version: number; api: string; files: string[] };
+export const UI_PREFIX = "/_ui/";
+
+// The daemon side of the contract: every daemon source but the tests. A UI
+// change that needs a daemon change cannot be installed without a restart.
+export function sourceApi(root: string): string {
+  const h = new Bun.CryptoHasher("sha256");
+  const files = [...new Bun.Glob("src/**/*.ts").scanSync({ cwd: root })].filter((f) => !f.endsWith(".test.ts")).sort();
+  for (const f of files) h.update(f + "\0").update(readFileSync(join(root, f))).update("\0");
+  return h.digest("hex").slice(0, 16);
+}
+
+// What this daemon was built from: stamped in by scripts/build.ts, read from the sources when run from them.
+export const daemonApi = () => (typeof __KEEL_API__ === "string" ? __KEEL_API__ : sourceApi(resolve(import.meta.dir, "../..")));
+
+// The page's version rides in its HTML, so a page always knows which one it loaded.
+export function stamp(html: string, version: string): string {
+  return html.replace(/<head>/i, `<head><meta name="keel-ui" content="${version}" />`);
+}
+
+const SAFE = /^(?!.*\.\.)[\w.-]+(\/[\w.-]+)*$/;
+
+export function checkManifest(m: any, api: string, have: Set<string>): UiManifest {
+  const bad = (why: string) => Object.assign(new Error(`not a UI bundle: ${why}`), { status: 400 });
+  if (!m || m.format !== 1) throw bad("manifest.json is missing or of another format");
+  if (!Number.isSafeInteger(m.version) || m.version <= 0) throw bad("no version");
+  if (!Array.isArray(m.files) || !m.files.includes("index.html")) throw bad("no index.html");
+  for (const f of m.files) {
+    if (typeof f !== "string" || !SAFE.test(f) || f === "manifest.json") throw bad(`file name ${JSON.stringify(f)}`);
+    if (!have.has(f)) throw bad(`${f} is listed but missing`);
+  }
+  if (m.api !== api) throw Object.assign(new Error(`this UI was built from other daemon sources (${m.api}, the daemon is ${api}): it needs a daemon restart onto a new binary`), { status: 409, code: "api_mismatch" });
+  return { format: 1, version: m.version, api: m.api, files: m.files };
+}
+
+type Held = { manifest: UiManifest; dir: string; page: (req: Request) => Response; files: Map<string, (req: Request) => Response> };
+type Pointer = { current?: number; previous?: number };
+
+export class UiBundles {
+  private root: string;
+  private held = new Map<number, Held>();
+  private ptr: Pointer = {};
+  // Which page is served now: an installed version, or the embedded one.
+  active: { source: "installed" | "embedded"; version: string } = { source: "embedded", version: "dev" };
+
+  constructor(stateDir: string, private api: string, readonly embedded: { version: string; built: number }, private onError: (e: Error) => void) {
+    this.root = join(stateDir, "ui");
+    mkdirSync(this.root, { recursive: true });
+    try { this.ptr = JSON.parse(readFileSync(join(this.root, "current.json"), "utf8")); } catch {}
+    for (const v of [this.ptr.current, this.ptr.previous]) if (v) this.hold(v);
+    const cur = this.ptr.current ? this.held.get(this.ptr.current) : undefined;
+    // At start the newer wins; one built from other sources never does.
+    if (cur && cur.manifest.api === api && cur.manifest.version > embedded.built) this.active = { source: "installed", version: String(cur.manifest.version) };
+    else this.active = { source: "embedded", version: embedded.version };
+  }
+
+  private hold(v: number): Held | undefined {
+    const dir = join(this.root, String(v));
+    try {
+      const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as UiManifest;
+      const files = new Map<string, (req: Request) => Response>();
+      for (const f of manifest.files) if (f !== "index.html") files.set(f, fileRoute(join(dir, f), Bun.file(join(dir, f)).type, `${v}-${f}`, undefined, this.onError));
+      const html = stamp(readFileSync(join(dir, "index.html"), "utf8"), String(v));
+      const page = fileRoute(new TextEncoder().encode(html), "text/html;charset=utf-8", `${v}`, "no-cache", this.onError);
+      const h = { manifest, dir, page, files };
+      this.held.set(v, h);
+      return h;
+    } catch (e) {
+      this.onError(Object.assign(e as Error, { message: `UI bundle ${v}: ${(e as Error).message}` }));
+      return undefined;
+    }
+  }
+
+  status() {
+    const of = (v?: number) => (v && this.held.get(v) ? { version: v, api: this.held.get(v)!.manifest.api } : null);
+    return { active: this.active, api: this.api, embedded: this.embedded, current: of(this.ptr.current), previous: of(this.ptr.previous) };
+  }
+
+  // The routes for the page: the active bundle's, else the embedded ones as given.
+  routes(pages: string[], embedded: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = { ...embedded };
+    out[`${UI_PREFIX}*`] = (req: Request) => {
+      const name = new URL(req.url).pathname.slice(UI_PREFIX.length);
+      for (const h of this.held.values()) {
+        const f = h.files.get(name);
+        if (f) return f(req);
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const cur = this.active.source === "installed" ? this.held.get(Number(this.active.version)) : undefined;
+    if (cur) for (const p of pages) out[p] = cur.page;
+    return out;
+  }
+
+  async install(bytes: Uint8Array): Promise<UiManifest> {
+    let entries: Map<string, File>;
+    try { entries = await new Bun.Archive(bytes).files(); } catch (e) { throw Object.assign(new Error(`not a UI bundle: ${(e as Error).message}`), { status: 400 }); }
+    const mf = entries.get("manifest.json");
+    let raw: unknown;
+    try { raw = mf ? JSON.parse(await mf.text()) : undefined; } catch {}
+    const m = checkManifest(raw, this.api, new Set(entries.keys()));
+    const dir = join(this.root, String(m.version));
+    const tmp = `${dir}.part-${process.pid}`;
+    rmSync(tmp, { recursive: true, force: true });
+    for (const f of [...m.files, "manifest.json"]) {
+      mkdirSync(join(tmp, f, ".."), { recursive: true });
+      writeFileSync(join(tmp, f), new Uint8Array(await entries.get(f)!.arrayBuffer()));
+    }
+    // The same version again replaces its files; the pointer is what the swap is.
+    this.held.delete(m.version);
+    rmSync(dir, { recursive: true, force: true });
+    renameSync(tmp, dir);
+    if (!this.hold(m.version)) throw new Error(`UI bundle ${m.version} could not be read back`);
+    const before = this.active.source === "installed" ? Number(this.active.version) : undefined;
+    this.point({ current: m.version, previous: before !== m.version ? before : this.ptr.previous });
+    return m;
+  }
+
+  // Drops the served bundle: back to the one before, or to the embedded page when none is kept.
+  rollback(): void {
+    const prev = this.ptr.previous;
+    this.point(prev && this.held.get(prev) ? { current: prev } : {});
+  }
+
+  private point(p: Pointer) {
+    this.ptr = p;
+    const f = join(this.root, "current.json");
+    writeFileSync(`${f}.part`, JSON.stringify(p));
+    renameSync(`${f}.part`, f);
+    this.active = p.current ? { source: "installed", version: String(p.current) } : { source: "embedded", version: this.embedded.version };
+    // Two kept: what is served and the one before it.
+    const keep = new Set([p.current, p.previous].filter(Boolean).map(String));
+    for (const v of [...this.held.keys()]) if (!keep.has(String(v))) this.held.delete(v);
+    for (const d of readdirSync(this.root)) if (/^\d+$/.test(d) && !keep.has(d)) rmSync(join(this.root, d), { recursive: true, force: true });
+  }
+}
+
+export const embeddedBuilt = () => (typeof __KEEL_UI_BUILT__ === "number" ? __KEEL_UI_BUILT__ : 0);

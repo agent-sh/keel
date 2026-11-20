@@ -89,28 +89,36 @@ function assetHandler(a: Asset) {
 // is made at once (tens of ms for all files); brotli runs in the background and
 // is served once ready (a failure is reported and gzip stays). `undefined` when the bundle was not built ahead (the dev
 // server bundles on request, with HMR, and serves the files itself).
-export function bundleRoutes(bundle: Bun.HTMLBundle, pages: string[], onError: (e: Error) => void): Record<string, (req: Request) => Response> | undefined {
+// One file served from memory: gzip made at once, brotli in the background (a
+// failure is reported and gzip stays). `src` is a path or the bytes themselves.
+export function fileRoute(src: string | Uint8Array, type: string, etag: string, cache = IMMUTABLE, onError: (e: Error) => void = () => {}) {
+  const raw = typeof src === "string" ? new Uint8Array(readFileSync(src)) : new Uint8Array(src);
+  const a: Asset = { type, etag, cache, raw };
+  if (TEXT.test(type) && raw.length >= MIN_BYTES) {
+    a.gzip = Bun.gzipSync(raw, { level: 9 });
+    brotliCompress(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } }, (err, out) => {
+      if (err) onError(err);
+      else a.br = new Uint8Array(out);
+    });
+  }
+  return assetHandler(a);
+}
+
+// Routes serving a bundle built ahead of time (the compiled binary): the HTML at
+// each of `pages` (with `stampPage` applied), every output file at its path under the bundle's root.
+// `undefined` when the bundle was not built ahead (the dev
+// server bundles on request, with HMR, and serves the files itself).
+export function bundleRoutes(bundle: Bun.HTMLBundle, pages: string[], onError: (e: Error) => void, stampPage: (html: string) => string = (h) => h): Record<string, (req: Request) => Response> | undefined {
   if (!bundle.files?.length) return undefined;
   const root = dirname(bundle.index);
   const routes: Record<string, (req: Request) => Response> = {};
-  const add = (path: string, type: string, etag: string, cache = IMMUTABLE) => {
-    const raw = new Uint8Array(readFileSync(path));
-    const a: Asset = { type, etag, cache, raw };
-    if (TEXT.test(type) && raw.length >= MIN_BYTES) {
-      a.gzip = Bun.gzipSync(raw, { level: 9 });
-      brotliCompress(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } }, (err, out) => {
-        if (err) onError(err);
-        else a.br = new Uint8Array(out);
-      });
-    }
-    return assetHandler(a);
-  };
   for (const f of bundle.files) {
     if (f.path === bundle.index) continue;
-    routes[f.path.slice(root.length)] = add(f.path, f.headers["content-type"], f.headers.etag);
+    routes[f.path.slice(root.length)] = fileRoute(f.path, f.headers["content-type"], f.headers.etag, IMMUTABLE, onError);
   }
   const html = bundle.files.find((f) => f.path === bundle.index);
-  const page = add(bundle.index, html?.headers["content-type"] ?? "text/html;charset=utf-8", html?.headers.etag ?? String(Bun.hash(readFileSync(bundle.index))), PAGE);
+  const text = stampPage(readFileSync(bundle.index, "utf8"));
+  const page = fileRoute(new TextEncoder().encode(text), html?.headers["content-type"] ?? "text/html;charset=utf-8", String(Bun.hash(text)), PAGE, onError);
   for (const p of pages) routes[p] = page;
   return routes;
 }

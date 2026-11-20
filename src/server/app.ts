@@ -13,6 +13,7 @@ import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch } from "./switch.ts";
 import { bundleRoutes, compressJson } from "./compress.ts";
+import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
 
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
@@ -111,16 +112,30 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       }
     };
 
-  const server = Bun.serve({
-    hostname: opts.hostname,
-    port: opts.port,
-    idleTimeout: IDLE_S,
-    reusePort: false, // one daemon per port (Bun 1.4 binds a taken port anyway: start.ts checks first)
-    development: opts.development ? { hmr: true, console: true } : false,
-    routes: withModules({
-      // A built binary serves its bundle compressed (compress.ts); the dev
-      // server bundles on request with HMR and serves the files itself.
-      ...(bundleRoutes(index, PAGES, (e) => errors.capture("server", e, { at: "bundle compression" })) ?? Object.fromEntries(PAGES.map((p) => [p, index]))),
+  // The page: the one embedded in the binary, or a bundle installed since (ui-bundle.ts).
+  // A built binary serves its bundle compressed (compress.ts); the dev
+  // server bundles on request with HMR and serves the files itself.
+  const uiError = (e: Error) => errors.capture("server", e, { at: "ui bundle" });
+  const built = embeddedBuilt();
+  const ui = new UiBundles(store.stateDir, daemonApi(), { version: built ? String(built) : "dev", built: built || Date.now() }, uiError);
+  const embeddedUi = bundleRoutes(index, PAGES, uiError, (h) => stamp(h, ui.embedded.version)) ?? Object.fromEntries(PAGES.map((p) => [p, index]));
+  const swapUi = () => {
+    server.reload({ ...options, routes: { ...ui.routes(PAGES, embeddedUi), ...routes } });
+    bus.emit({ t: "ui", version: ui.active.version });
+    return json(ui.status());
+  };
+  live.ui = () => ui.active.version;
+
+  const routes = withModules({
+      // GET: what is served; POST: a bundle (.tar.gz) to serve now; rollback: the one before.
+      "/api/ui": {
+        GET: wrap(() => json(ui.status())),
+        POST: wrap(async (req) => {
+          await ui.install(new Uint8Array(await req.arrayBuffer()));
+          return swapUi();
+        }),
+      },
+      "/api/ui/rollback": { POST: wrap(() => (ui.rollback(), swapUi())) },
 
       "/api/models": {
         GET: wrap(async (req) => {
@@ -265,9 +280,15 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       },
 
       "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
-    }, modules, deps, wrap, !!opts.development),
+    }, modules, deps, wrap, !!opts.development);
 
-    fetch(req, srv) {
+  const options = {
+    hostname: opts.hostname,
+    port: opts.port,
+    idleTimeout: IDLE_S,
+    reusePort: false, // one daemon per port (Bun 1.4 binds a taken port anyway: start.ts checks first)
+    development: opts.development ? { hmr: true, console: true } : false,
+    fetch(req: Request, srv: Bun.Server<undefined>) {
       const url = new URL(req.url);
       if (url.pathname === "/ws") {
         const refused = admit(req, srv);
@@ -288,6 +309,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       backpressureLimit: 16 * 1024 * 1024,
       closeOnBackpressureLimit: true,
     },
-  });
+  } satisfies Partial<Bun.Serve.Options<unknown>>;
+  const server = Bun.serve({ ...options, routes: { ...ui.routes(PAGES, embeddedUi), ...routes } } as any);
   return server;
 }

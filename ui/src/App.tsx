@@ -20,6 +20,7 @@ import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
 // Overlays and Settings load on first use; the first page carries the shell only.
 const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
 const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
+import { UpdateNotice } from "./components/UpdateNotice.tsx";
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
 // The bridge (stations, sessions) is its own chunk, fetched with the page.
 const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
@@ -94,6 +95,7 @@ function Overlays() {
       <OnFirstOpen open={palette}><Palette /></OnFirstOpen>
       <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
       <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
+      <UpdateNotice />
     </>
   );
 }
