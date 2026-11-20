@@ -12,7 +12,7 @@ import { fmtPct, Panel } from "./UsagePanel.tsx";
 type Interval = { estimate: number; lo: number; hi: number; n: number; method: string };
 type Metric = string;
 type MetricInfo = { label: string; better: "lower" | "higher"; unit: string };
-type Arm = { name: string; weight?: number; tools_off?: string[]; settings?: Record<string, unknown>; system_append?: string; cache_life?: string; model?: string };
+type Arm = { name: string; weight?: number; tools_off?: string[]; settings?: Record<string, unknown>; system_append?: string; cache_life?: string; tool_text?: Record<string, string>; model?: string };
 type Decision = { winner: string | null; verdict: "won" | "inconclusive" | "regression"; text: string; remove: string; ts: number };
 export type Experiment = {
   id: string; name: string; hypothesis: string; mode: "offline" | "live"; template?: string; arms: Arm[]; primary: Metric;
@@ -60,6 +60,7 @@ function armDiff(a: Arm) {
   for (const [k, v] of Object.entries(a.settings ?? {})) parts.push(`${k}: ${JSON.stringify(v)}`);
   if (a.system_append) parts.push(`prompt addition (${a.system_append.length} chars)`);
   if (a.cache_life) parts.push(`${a.cache_life} cache`);
+  if (a.tool_text) parts.push(`own text for ${Object.keys(a.tool_text).join(", ")}`);
   if (a.model) parts.push(a.model);
   return parts.join(", ") || "current configuration";
 }
@@ -140,7 +141,7 @@ function Create({ templates, metrics, onMade }: { templates: Template[]; metrics
         <input id="exp-name" className={field} value={name} onChange={(e) => setName(e.target.value)} data-testid="experiment-name" />
         <label className="pt-1.5 text-muted" htmlFor="exp-hyp">Hypothesis</label>
         <textarea id="exp-hyp" className={cn(field, "h-auto min-h-[3.5rem] resize-y py-1.5")} value={hypothesis} onChange={(e) => setHypothesis(e.target.value)} data-testid="experiment-hypothesis" />
-        <label className="pt-1.5 text-muted" htmlFor="exp-arms">Arms <span className="block text-caption text-faint">the first is the control: tools_off, settings, system_append, cache_life{t?.mode === "offline" ? ", model" : ""}</span></label>
+        <label className="pt-1.5 text-muted" htmlFor="exp-arms">Arms <span className="block text-caption text-faint">the first is the control: tools_off, settings, system_append, cache_life, tool_text{t?.mode === "offline" ? ", model" : ""}</span></label>
         <textarea id="exp-arms" spellCheck={false} className={cn(field, "h-auto min-h-[7rem] resize-y py-1.5 font-mono text-caption")} value={arms} onChange={(e) => setArms(e.target.value)} data-testid="experiment-arms" />
         <label className="self-center text-muted" htmlFor="exp-primary">Judged by</label>
         <div><Select value={primary} onChange={(e) => setPrimary(e.target.value)} aria-label="Primary metric">{Object.entries(metrics).map(([k, m]) => <option key={k} value={k}>{m.label} ({m.better} is better)</option>)}</Select></div>

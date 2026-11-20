@@ -6,6 +6,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { want as catalogWant } from "./catalog-mcp.ts";
 import { TICKETS } from "./tracker-mcp.ts";
+import { readaccounts, readinterviews } from "./reading.ts";
 
 export type Check = { ok: boolean; why: string };
 export type Task = {
@@ -16,6 +17,8 @@ export type Task = {
   check: (dir: string, reply: string) => Check;
   // MCP servers the task needs (the bench configures them only when such a task runs).
   mcp?: Record<string, { command: string; args: string[] }>;
+  // Material a model writes once (scripts/bench/reading.ts), cached under `cache`, added to `files` before any run.
+  prepare?: (writer: import("./reading.ts").Writer, cache: string) => Promise<void>;
 };
 
 const run = (dir: string, cmd: string[]) => {
@@ -648,11 +651,13 @@ const readnotes: Task = {
     const text = reply.toLowerCase();
     const want: [string, RegExp, number][] = [["payment vendor", /payment|vendor/, 9], ["four-day week", /four-day|4-day|four day/, 11], ["monorepo", /monorepo|single repo|one repo/, 7]];
     const miss = want.filter(([, re, at]) => !text.split("\n").some((l) => re.test(l) && l.includes(String(at)))).map(([n]) => n);
-    const wrong = ["offsite", "on-call", "plants"].filter((d) => text.includes(d));
+    // A standing decision named as reversed is wrong; one named as standing is not.
+    const claimed = text.split("\n").filter((l) => /revers\w*\s+in\s+meeting\s+\d+/.test(l)).join("\n");
+    const wrong = ["offsite", "on-call", "plants"].filter((d) => claimed.includes(d));
     if (miss.length) return { ok: false, why: `missed ${miss.join(", ")}` };
     if (wrong.length) return { ok: false, why: `named standing decisions: ${wrong.join(", ")}` };
     return { ok: true, why: "all three reversals" };
   },
 };
 
-export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker, webdocs, catalog, readlog, readspec, readcode, readnotes];
+export const TASKS: Task[] = [explain, bugfix, feature, rename, audit, tracker, webdocs, catalog, readlog, readspec, readcode, readnotes, readinterviews, readaccounts];

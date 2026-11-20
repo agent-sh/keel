@@ -83,10 +83,11 @@ async function bench(opts: { model: string; label: string; reps: number; tasks: 
   if (opts.noDefer) (await import("../../src/tools/defer.ts")).refuseDefer(resolved.info.id);
   // An experiment arm per session: its tools, its prompt addition and its cache lifetime.
   const armOf = new Map<string, BenchArm>();
+  const { withToolText } = await import("../../src/admin/experiments.ts");
   (await import("../../src/tools/registry.ts")).registerToolsOff("bench-arm", (sid) => armOf.get(sid)?.tools_off ?? []);
   registerHooks({
     sessionSystem: (s) => armOf.get(s.id)?.system_append ?? "",
-    beforeRequest: (s, req) => { const life = req.purpose !== "reader" ? armOf.get(s.id)?.cache_life : undefined; return life ? { ...req, cacheLife: life } : req; },
+    beforeRequest: (s, req) => { const life = req.purpose !== "reader" ? armOf.get(s.id)?.cache_life : undefined; return withToolText(life ? { ...req, cacheLife: life } : req, armOf.get(s.id)); },
   });
 
   // The request shape, measured as it leaves the engine (after every hook).
@@ -99,6 +100,25 @@ async function bench(opts: { model: string; label: string; reps: number; tasks: 
       return req;
     },
   });
+
+  // Tasks whose material a model writes: written once by the cheapest model
+  // that reads for this one (the readers' own choice), cached for every run.
+  const writing = TASKS.filter((t) => t.prepare && (!opts.tasks.length || opts.tasks.includes(t.id)));
+  if (writing.length) {
+    const { readerChoices } = await import("../../src/engine/reader.ts");
+    const { smallModels } = await import("../../src/engine/readers.ts");
+    const w = readerChoices(await providers.models(), resolved.info, 20_000, process.env, (m) => providers.catalog.lookup(m.model)?.price, smallModels())[0]!;
+    const { provider, info } = await providers.resolve(w.id);
+    const writer = {
+      id: info.id,
+      async write(prompt: string) {
+        const res = await provider.stream({ model: info.model, route: info.id, system: "You write realistic business documents for a test corpus.", messages: [{ role: "user", content: [{ type: "text", text: prompt }] }], tools: [], maxTokens: Math.min(info.output || 16_000, 16_000), signal: AbortSignal.timeout(300_000), cache: false }, () => {});
+        return res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n");
+      },
+    };
+    console.log(`writing material for ${writing.map((t) => t.id).join(", ")} with ${info.name} (cached under ${join(OUT, "material")})`);
+    for (const t of writing) await t.prepare!(writer, join(OUT, "material"));
+  }
 
   const results = join(OUT, "results", `${opts.label}.jsonl`);
   mkdirSync(dirname(results), { recursive: true });

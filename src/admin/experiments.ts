@@ -12,6 +12,7 @@
 // path is removed.
 import type { Session } from "../core/types.ts";
 import type { Store } from "../core/store.ts";
+import type { ProviderRequest } from "../providers/types.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { registerToolsOff } from "../tools/registry.ts";
 import { assignArm, diffInterval, meanInterval, msprt, type Interval, type Unit } from "./stats.ts";
@@ -38,8 +39,16 @@ export type Arm = {
   settings?: Record<string, unknown>; // session settings: effort, speed, compact_at, idle_compact
   system_append?: string;              // text added to the system prompt (kept with the session)
   cache_life?: "short" | "long";
+  tool_text?: Record<string, string>;  // a tool's description in this arm, by tool name
   model?: string;                      // offline only: the model the arm runs on
 };
+
+// A request with the arm's tool descriptions in place (one per session, so its prefix holds).
+export function withToolText(req: ProviderRequest, arm: Arm | undefined): ProviderRequest {
+  const text = arm?.tool_text;
+  if (!text || req.purpose === "reader") return req;
+  return { ...req, tools: req.tools.map((t) => (typeof text[t.name] === "string" ? { ...t, description: text[t.name]! } : t)) };
+}
 // `mde`: the smallest change worth stopping for, in the metric's unit (or a
 // share of the control's mean when `relative`). It sets the mSPRT mixture.
 export type Guard = { metric: Metric; mde: number; relative?: boolean };
@@ -127,6 +136,7 @@ export function validate(e: Partial<Experiment>): void {
     names.add(a.name);
     if (a.weight !== undefined && !(a.weight >= 0)) throw bad(`arm ${a.name}: weight is a number of 0 or more`);
     if (a.cache_life !== undefined && a.cache_life !== "short" && a.cache_life !== "long") throw bad(`arm ${a.name}: cache_life is short or long`);
+    if (a.tool_text !== undefined && (typeof a.tool_text !== "object" || Object.values(a.tool_text).some((v) => typeof v !== "string" || !v.trim()))) throw bad(`arm ${a.name}: tool_text maps tool names to their descriptions`);
     if (a.model && e.mode === "live") throw bad(`arm ${a.name}: a live arm keeps the owner's model; compare models offline`);
   }
   if (!e.arms.some((a) => (a.weight ?? 1) > 0)) throw bad("no arm has a weight above 0");
@@ -200,6 +210,7 @@ function describe(a: Arm): string {
   for (const [k, v] of Object.entries(a.settings ?? {})) parts.push(`${k} ${JSON.stringify(v)}`);
   if (a.system_append) parts.push("the added system prompt text");
   if (a.cache_life) parts.push(`the ${a.cache_life} cache lifetime`);
+  if (a.tool_text) parts.push(`the description of ${Object.keys(a.tool_text).join(", ")} it was given`);
   if (a.model) parts.push(`model ${a.model}`);
   return parts.join(", ") || "the current configuration";
 }
@@ -255,8 +266,9 @@ export class Experiments {
       // After the cache split: the prefix every session shares stays the same in both arms.
       sessionSystem: (s) => this.armFor(s.id)?.system_append ?? "",
       beforeRequest: (s, req) => {
-        const life = req.purpose !== "reader" ? this.armFor(s.id)?.cache_life : undefined;
-        return life && !s.parent_id ? { ...req, cacheLife: life } : req;
+        const arm = this.armFor(s.id);
+        const life = req.purpose !== "reader" ? arm?.cache_life : undefined;
+        return withToolText(life && !s.parent_id ? { ...req, cacheLife: life } : req, arm);
       },
     });
   }
