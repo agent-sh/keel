@@ -13,7 +13,7 @@ import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, 
 import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
-import { sandboxStatus, splitScope } from "../safety/sandbox.ts";
+import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
 
 export type Job = {
   id: string;            // short text id (Claude task_id)
@@ -138,7 +138,7 @@ export function startJob(o: StartOpts): Job {
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
-  const scoped = (a: string[]) => box.slice ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--slice=app.slice", `--unit=${unit}`, ...props, "--", ...a] : a;
+  const scoped = (a: string[]) => box.slice ? [...scopeHead(), "--slice=app.slice", `--unit=${unit}`, ...props, "--", ...a] : a;
   // Known secret values never reach the log: its output is filtered on the way in.
   const pairs = secretPairs();
   if (o.pty) {

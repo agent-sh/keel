@@ -125,3 +125,11 @@ test("a stop signals only the process the job started as", async () => {
     }
   }
 });
+
+test("a command reaches the shell as written: its own braced variables and exit code survive the job scope", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-"));
+  const j = startJob({ sessionId: "s-expand", command: 'x=5; a=(p q); echo "[${x}][${a[1]}][${#x}][$$]" | grep -c "\\[5\\]\\[q\\]\\[1\\]\\[[0-9]"; exit 7', cwd: root, logDir: join(root, "spill/s-expand/jobs") });
+  expect(await waitJob(j, 10000)).toBe(true);
+  expect(takeUnread(j).trim()).toBe("1");
+  expect(j.exitCode).toBe(7);
+});

@@ -35,6 +35,19 @@ export function sandboxStatus(): SandboxStatus {
   return status;
 }
 
+// The systemd-run head of a scope. systemd 254 and later expand $VAR and
+// ${VAR} in the command line before it runs (--expand-environment, on by
+// default), which blanks a shell's own ${x} and ${PIPESTATUS[0]}: the command
+// must reach the shell as written. Older systemd has no such flag and does
+// no expansion for --scope.
+let head: string[] | undefined;
+export function scopeHead(): string[] {
+  if (head) return head;
+  const v = Number(/systemd (\d+)/.exec(Bun.spawnSync(["systemd-run", "--version"], { stdout: "pipe", stderr: "ignore" }).stdout.toString())?.[1] ?? 0);
+  head = ["systemd-run", "--user", "--scope", "--quiet", "--collect", ...(v >= 254 ? ["--expand-environment=no"] : [])];
+  return head;
+}
+
 // Resource limits of the scope. The lower weights let the desktop and the
 // daemon win under contention without slowing an idle machine; a memory cap
 // only when the owner sets one.
@@ -49,10 +62,10 @@ function scopeProps(): string[] {
 // scope takes the properties into it, so nothing of the command lands in a
 // scope of its own outside the job's (see startJob).
 export function splitScope(argv: string[]): { props: string[]; argv: string[] } {
-  const head = ["systemd-run", "--user", "--scope", "--quiet", "--collect"];
-  if (!head.every((a, i) => argv[i] === a)) return { props: [], argv };
-  const end = argv.indexOf("--", head.length);
-  return end < 0 ? { props: [], argv } : { props: argv.slice(head.length, end), argv: argv.slice(end + 1) };
+  const h = scopeHead();
+  if (!h.every((a, i) => argv[i] === a)) return { props: [], argv };
+  const end = argv.indexOf("--", h.length);
+  return end < 0 ? { props: [], argv } : { props: argv.slice(h.length, end), argv: argv.slice(end + 1) };
 }
 
 // The argv that runs `argv` confined by the session's profile.
@@ -78,5 +91,5 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
   }
   for (const p of typeof scratch === "string" ? [scratch] : scratch ?? []) if (p && existsSync(p)) b.push("--bind", p, p);
   b.push("--", ...argv);
-  return st.scope ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", ...scopeProps(), "--", ...b] : b;
+  return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;
 }
