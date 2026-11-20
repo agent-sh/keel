@@ -124,15 +124,16 @@ test("written-only checkpoints keep a file's executable bit and follow a write t
 });
 
 test("a confirmed restore takes only what the preview showed, at the version it showed", async () => {
-  const t = setup({ "turn.txt": "0\n", "A": "0\n", "B": "0\n" });
-  const t1 = await t.turn(() => t.write("turn.txt", "1\n"));
+  const t = setup({ "turn.txt": "0\n", "A": "0\n", "B": "0\n", "deleted.txt": "0\n" });
+  const t1 = await t.turn(() => { t.write("turn.txt", "1\n"); rmSync(join(t.ws, "deleted.txt")); });
   t.write("A", "owner\n");
   const p = await t.c.rewind(t.s, { turn: t1, preview: true });
   expect(p.skipped).toEqual(["A"]);
   t.write("B", "owner\n");
   const confirm = { paths: [...p.files, ...p.skipped], versions: p.versions };
   const r = await t.c.rewind(t.s, { turn: t1, includeOutside: true, confirm });
-  expect(r.files.sort()).toEqual(["A", "turn.txt"]);
+  expect(r.files.sort()).toEqual(["A", "deleted.txt", "turn.txt"]);
+  expect(t.read("deleted.txt")).toBe("0\n");
   expect(t.read("B")).toBe("owner\n");
   // A file edited again after its preview is not written from the old one.
   t.write("A", "again\n");
@@ -140,6 +141,15 @@ test("a confirmed restore takes only what the preview showed, at the version it 
   t.write("A", "and again\n");
   await expect(t.c.rewind(t.s, { turn: t1, includeOutside: true, confirm: { paths: p2.files, versions: p2.versions } })).rejects.toThrow(/changed since the preview/);
   expect(t.read("A")).toBe("and again\n");
+  // Git records a change to executable status even when the bytes stay put.
+  const a = join(t.ws, "A");
+  chmodSync(a, 0o644);
+  const p3 = await t.c.rewind(t.s, { turn: t1, preview: true, includeOutside: true });
+  chmodSync(a, 0o755);
+  await expect(t.c.rewind(t.s, { turn: t1, includeOutside: true, confirm: { paths: p3.files, versions: p3.versions } }))
+    .rejects.toMatchObject({ status: 409, message: expect.stringContaining("changed since the preview: A") });
+  expect(t.read("A")).toBe("and again\n");
+  expect(statSync(a).mode & 0o777).toBe(0o755);
 });
 
 test("a file too large to capture is kept, not removed", async () => {

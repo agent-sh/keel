@@ -223,16 +223,27 @@ export class Shadow {
     return this.lock(async () => (await this.git(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b, ...(paths ? ["--", ...paths] : [])])).split("\0").filter(Boolean));
   }
 
-  // The blob each path has in `tree` ("" for a path it does not hold).
-  async blobs(tree: string, paths: string[]): Promise<Map<string, string>> {
-    const out = new Map(paths.map((p) => [p, ""]));
+  private async treeValues(tree: string, paths: string[], absent: string, value: (mode: string, oid: string) => string): Promise<Map<string, string>> {
+    const out = new Map(paths.map((p) => [p, absent]));
     if (!paths.length) return out;
     const ls = await this.lock(() => this.git(["ls-tree", "-r", "-z", tree, "--", ...paths]));
     for (const rec of ls.split("\0").filter(Boolean)) {
       const tab = rec.indexOf("\t");
-      out.set(rec.slice(tab + 1), rec.slice(0, tab).split(" ")[2]!);
+      const [mode, , oid] = rec.slice(0, tab).split(" ");
+      out.set(rec.slice(tab + 1), value(mode!, oid!));
     }
     return out;
+  }
+
+  // The object ID each path has in `tree` ("" for a path it does not hold).
+  blobs(tree: string, paths: string[]): Promise<Map<string, string>> {
+    return this.treeValues(tree, paths, "", (_mode, oid) => oid);
+  }
+
+  // Opaque preview tokens include Git's tree mode, not full Unix permissions.
+  // Neither a bare object ID nor "" from an older preview matches these.
+  versions(tree: string, paths: string[]): Promise<Map<string, string>> {
+    return this.treeValues(tree, paths, "v1:absent", (mode, oid) => `v1:${mode}:${oid}`);
   }
 
   // Put the files at `paths` back as they are in `tree`; a path the tree does

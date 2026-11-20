@@ -561,13 +561,14 @@ export class Checkpoints {
         else if (m) conflicts.push(f);
       }
     }
-    const versions = Object.fromEntries(await sh.blobs(now.tree, files));
+    const versions = Object.fromEntries(await sh.versions(now.tree, files));
     const removes = files.filter((f) => !inTarget.get(f));
     const scope = scopePaths ? "written" as const : "tree" as const;
     if (opts.preview) return { files: restore, failed: [], skipped: skipped.filter((f) => !merges.has(f)), outside, merged: [...merges.keys()], conflicts, removes, uncaptured, versions, incomplete, undo: null, scope };
     if (opts.confirm) {
-      const seen = new Set(opts.confirm.paths);
-      const stale = files.filter((f) => seen.has(f) && versions[f] !== (opts.confirm!.versions[f] ?? ""));
+      const { paths, versions: expected } = opts.confirm;
+      const seen = new Set(paths);
+      const stale = files.filter((f) => seen.has(f) && versions[f] !== expected[f]);
       if (stale.length) throw new Bad(`changed since the preview: ${stale.slice(0, 10).join(", ")}; look at it again`, 409);
       restore = restore.filter((f) => seen.has(f));
       for (const f of [...merges.keys()]) if (!seen.has(f)) merges.delete(f);
