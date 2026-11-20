@@ -13,7 +13,8 @@ export type ThemePref = "light" | "dark" | "system";
 type UIState = {
   route: Route;
   theme: ThemePref;
-  sidebar: boolean; // desktop: shown; phone: the drawer is open
+  sidebar: boolean; // desktop: the list is wanted (rail.ts says whether it fits); phone: the drawer is open
+  peek: boolean; // desktop, no room for the list: it lays over the stations
   palette: boolean;
   shortcuts: boolean;
   errors: boolean;
@@ -63,7 +64,8 @@ const isPhone = () => matchMedia("(max-width: 767px)").matches;
 let state: UIState = {
   route: parse(),
   theme: (localStorage.getItem("keel.theme") as ThemePref) || "system",
-  sidebar: isPhone() ? false : pref("keel.rail", false), // desktop: the rail shows the full index
+  sidebar: isPhone() ? false : pref("keel.list", true), // desktop: the list, unless it was folded by choice
+  peek: false,
   palette: false,
   shortcuts: false,
   errors: false,
@@ -96,18 +98,18 @@ export function useUI<T>(sel: (s: UIState) => T): T {
 export function navigate(r: Route, replace = false) {
   const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : "/";
   if (url !== location.pathname || location.hash) (replace ? history.replaceState : history.pushState).call(history, null, "", url);
-  setUI({ route: r, ...(isPhone() ? { sidebar: false } : {}) });
+  setUI({ route: r, peek: false, ...(isPhone() ? { sidebar: false } : {}) });
 }
 addEventListener("popstate", () => setUI({ route: parse() }));
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 
 export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel", v: unknown) {
-  if (!(k === "sidebar" && isPhone())) localStorage.setItem(`keel.${k === "sidebar" ? "rail" : k}`, JSON.stringify(v));
+  if (!(k === "sidebar" && isPhone())) localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);
 }
 
 // Crossing to phone width closes the drawer; back on a wide screen the owner's choice returns.
-matchMedia("(max-width: 767px)").addEventListener("change", (e) => setUI({ sidebar: e.matches ? false : pref("keel.rail", false) }));
+matchMedia("(max-width: 767px)").addEventListener("change", (e) => setUI({ sidebar: e.matches ? false : pref("keel.list", true), peek: false }));
 
 const media = matchMedia("(prefers-color-scheme: dark)");
 function applyTheme() {

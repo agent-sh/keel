@@ -1,16 +1,18 @@
-// The keel: the rail along the left edge. Folded (the default) it is a column
-// of marks, every session's state at a glance, grouped by what it needs
-// from you, with a bracket on the ones that have a station. Unfolded (Ctrl B)
-// it is the full index: sessions by folder and machine, and the archive. On
-// a phone it is a drawer.
-import { Archive, ArchiveRestore, Bug, Folder, ListTree, Moon, PanelLeftClose, Pin, Plus, Search, Server, Settings, Sun, SunMoon, Tag } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+// The keel: the rail along the left edge. It is the list whenever there is
+// room: sessions by folder and machine, each with its title, state and time,
+// and the archive. Folded (Ctrl B, or no room beside the stations asked for)
+// it is a column of marks, each a session's state and a short code of its
+// title, banded by what it needs from you. A card beside the entry under the
+// pointer or the focus says the rest. On a phone the list is a drawer.
+import { Archive, ArchiveRestore, Bug, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Server, Settings, Sun, SunMoon, Tag } from "lucide-react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineColour, machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
 import { useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
-import { navigate, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
+import { callsigns, LIST, RAIL, toggleList, useRail } from "../lib/rail.ts";
+import { navigate, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { lastLine, useWatch, useWatches, WATCH_LABEL, type Watch } from "../lib/watch.ts";
 import { useAuto } from "../lib/automation.ts";
@@ -35,9 +37,45 @@ function groups(sessions: Session[]) {
     .sort((a, b) => b.list[0]!.updated - a.list[0]!.updated);
 }
 
+// The card beside an entry: shown at once for a mark (it has no words of its
+// own), after a pause for a list row (its title is already there), and at
+// once for either on keyboard focus.
+type Card = { s: Session; y: number };
+const CardCtx = createContext<(s: Session, wait: number) => Record<string, (e: { currentTarget: HTMLElement }) => void>>(() => ({}));
+function useCard() {
+  const [card, setCard] = useState<Card | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hide = () => { clearTimeout(timer.current); setCard(null); };
+  const bind = (s: Session, wait: number) => {
+    const show = (ms: number) => (e: { currentTarget: HTMLElement }) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      clearTimeout(timer.current);
+      const set = () => setCard({ s, y: r.top + r.height / 2 });
+      if (ms) timer.current = setTimeout(set, ms); else set();
+    };
+    return { onPointerEnter: show(wait), onPointerLeave: hide, onFocus: show(0), onBlur: hide, onClick: hide };
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return { card, bind, hide };
+}
+
+// Up and Down step through the entries, Home and End reach the ends.
+function stepRows(e: KeyboardEvent<HTMLElement>) {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return;
+  const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-testid="session-row"]')];
+  const i = rows.indexOf(document.activeElement as HTMLElement);
+  if (i < 0) return;
+  e.preventDefault();
+  (e.key === "Home" ? rows[0] : e.key === "End" ? rows.at(-1) : rows[i + (e.key === "ArrowDown" ? 1 : -1)])?.focus();
+}
+
+// States a row spells out; a finished or untouched session is its mark alone.
+const SPELLED: Watch[] = ["need", "work", "fail", "resume", "stop"];
+
 function Row({ s, active }: { s: Session; active: boolean }) {
   const restore = s.archived;
   const w = useWatch(s);
+  const card = useContext(CardCtx)(s, 450);
   const shown = useStations((x) => x.shown.includes(s.id));
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
   return (
@@ -46,15 +84,20 @@ function Row({ s, active }: { s: Session; active: boolean }) {
       tabIndex={0}
       data-testid="session-row"
       data-session={s.id}
+      data-watch={w}
       data-shown={shown || undefined}
       data-unread={unread || undefined}
       aria-current={active ? "page" : undefined}
-      onClick={() => navigate({ name: "session", id: s.id })}
-      onKeyDown={(e) => e.key === "Enter" && navigate({ name: "session", id: s.id })}
+      {...card}
+      onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
+      onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && navigate({ name: "session", id: s.id })}
       className="k-row group"
     >
       <Mark w={w} />
-      <span className="k-row-title">{s.title || "New session"}</span>
+      <span className="k-row-main">
+        <span className="k-row-title">{s.title || "New session"}</span>
+        {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{WATCH_LABEL[w]}</span>}
+      </span>
       {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag max-w-20 shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
       <NeedsYou sessionId={s.id} />
       <SessionBadges sessionId={s.id} />
@@ -124,15 +167,11 @@ const BANDS: { w: Watch[]; label: string; short: string }[] = [
 function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id).sort((a, b) => b.updated - a.updated), [sessions]);
+  const codes = useMemo(() => callsigns(list), [list]);
   const watches = useWatches(list);
   const shown = useStations((x) => x.shown);
   const unread = useAuto((s) => s.unread.sessions);
-  const [card, setCard] = useState<{ id: string; y: number } | null>(null);
-  const show = (id: string) => (e: { currentTarget: HTMLElement }) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    setCard({ id, y: r.top + r.height / 2 });
-  };
-  const hide = () => setCard(null);
+  const bind = useContext(CardCtx);
   return (
     <>
       {BANDS.map((b) => {
@@ -142,58 +181,66 @@ function Marks({ current }: { current: string | null }) {
           <section key={b.label} className="k-marks" data-watch={b.w[0]} aria-label={`${b.label}: ${items.length}`} data-testid="rail-band">
             <h3 className="k-marks-head" aria-hidden="true"><span>{b.short}</span><span className="tabular-nums">{items.length}</span></h3>
             <ol>
-              {items.map((s) => (
-                <li key={s.id}>
-                  <button
-                    type="button"
-                    className="k-tick"
-                    data-testid="session-row"
-                    data-session={s.id}
-                    data-watch={watches[s.id]}
-                    data-shown={shown.includes(s.id) || undefined}
-                    data-unread={unread[s.id] ? true : undefined}
-                    aria-current={current === s.id ? "page" : undefined}
-                    aria-label={`${s.title || "New session"}, ${WATCH_LABEL[watches[s.id]!]}, ${ago(s.updated)}`}
-                    onPointerEnter={show(s.id)}
-                    onPointerLeave={hide}
-                    onFocus={show(s.id)}
-                    onBlur={hide}
-                    onClick={() => { hide(); navigate({ name: "session", id: s.id }); }}
-                  >
-                    <Mark w={watches[s.id]!} />
-                    <span className="sr-only">{s.title || "New session"}</span>
-                    <span className="k-tick-badges"><NeedsYou sessionId={s.id} /><SessionBadges sessionId={s.id} /></span>
-                  </button>
-                  <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
-                </li>
-              ))}
+              {items.map((s) => {
+                const card = bind(s, 0);
+                return (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      className="k-tick"
+                      data-testid="session-row"
+                      data-session={s.id}
+                      data-watch={watches[s.id]}
+                      data-shown={shown.includes(s.id) || undefined}
+                      data-unread={unread[s.id] ? true : undefined}
+                      aria-current={current === s.id ? "page" : undefined}
+                      aria-label={`${s.title || "New session"}, ${WATCH_LABEL[watches[s.id]!]}, ${folderOf(s)}, ${ago(s.updated)}`}
+                      {...card}
+                      onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
+                    >
+                      <Mark w={watches[s.id]!} />
+                      <span className="k-tick-code" data-testid="rail-code" aria-hidden="true">{codes[s.id]}</span>
+                      <span className="sr-only">{s.title || "New session"}</span>
+                      <span className="k-tick-badges"><NeedsYou sessionId={s.id} /><SessionBadges sessionId={s.id} /></span>
+                    </button>
+                    <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
+                  </li>
+                );
+              })}
             </ol>
           </section>
         );
       })}
-      {card && sessions[card.id] && <RailCard s={sessions[card.id]!} w={watches[card.id] ?? "idle"} y={card.y} unread={unread[card.id] ?? 0} />}
     </>
   );
 }
 
-// The card beside a mark: what the session is, where, and what it needs.
-function RailCard({ s, w, y, unread }: { s: Session; w: Watch; y: number; unread: number }) {
+// The card beside an entry: what the session is, where, and what it last did.
+const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
+function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }) {
+  const s = useStore((x) => x.sessions[given.id]) ?? given;
+  const w = useWatch(s);
+  const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
   const approvals = useSafety((x) => x.approvals[s.id]?.length ?? 0);
   const line = lastLine(events, s.workspace);
-  const top = Math.min(Math.max(y, 72), innerHeight - 72);
+  const top = Math.min(Math.max(y, 96), innerHeight - 96);
   return (
-    <div className="k-rail-card" data-watch={w} style={{ top }} data-testid="rail-card" aria-hidden="true">
+    <div className="k-rail-card" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
       <div className="k-rail-card-row">
         <Mark w={w} />
         <span className="k-rail-card-word">{WATCH_LABEL[w]}</span>
-        <span className="k-rail-card-time">{ago(s.updated)}</span>
+        <span className="k-rail-card-time" title={when(s.updated)}>{ago(s.updated) === "now" ? "just now" : `${ago(s.updated)} ago`}</span>
       </div>
       <p className="k-rail-card-title">{s.title || "New session"}</p>
-      <p className="k-rail-card-meta">{folderOf(s)}<span aria-hidden="true"> / </span>{modelOf(s.model)}</p>
       {approvals > 0 && <p className="k-rail-card-need">{approvals === 1 ? "An approval waits for you" : `${approvals} approvals wait for you`}</p>}
       {line && <p className="k-rail-card-line">{line}</p>}
       {unread > 0 && approvals === 0 && <p className="k-rail-card-new">New since you looked</p>}
+      <dl className="k-rail-card-meta">
+        <dt>Folder</dt><dd title={s.workspace}><b>{folderOf(s)}</b>{s.machine ? ` on ${machineName(s.machine)}` : ""} in {home(s.workspace.replace(/\/[^/]*\/?$/, "")) || "/"}</dd>
+        <dt>Model</dt><dd>{modelOf(s.model)}</dd>
+        <dt>Active</dt><dd>{when(s.updated)}</dd>
+      </dl>
     </div>
   );
 }
@@ -247,7 +294,7 @@ function Index({ current }: { current: string | null }) {
           ))}
         </div>
       )}
-      <nav className="k-index" data-testid="session-list" aria-label="Sessions">
+      <nav className="k-index" data-testid="session-list" aria-label="Sessions" onKeyDown={stepRows}>
         {pinned.length > 0 && (
           <section className="k-group" data-testid="pinned-group">
             <h2 className="k-group-head"><Pin /><span className="truncate">Pinned</span></h2>
@@ -279,21 +326,37 @@ export function Sidebar({ open }: { open: boolean }) {
   const connected = useStore((s) => s.connected);
   const route = useUI((s) => s.route);
   const theme = useUI((s) => s.theme);
+  const rail = useRail();
   const current = route.name === "session" ? route.id : null;
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
+  const { card, bind, hide } = useCard();
+  useEffect(hide, [open, current]);
+  // The one control that shows the list or folds it, in the same corner either way.
+  const Toggle = open ? PanelLeftClose : PanelLeftOpen;
+  const toggle = (
+    <button
+      type="button"
+      className="k-act k-fold"
+      data-testid="rail-toggle"
+      aria-expanded={open}
+      aria-controls="k-sessions"
+      aria-label={open ? "Fold the session list" : "Show the session list"}
+      title={open ? "Fold the session list (Ctrl B)" : rail.tight ? "Show the session list over the stations (Ctrl B)" : "Show the session list (Ctrl B)"}
+      onClick={() => toggleList()}
+    >
+      <Toggle />
+    </button>
+  );
 
   return (
-    <aside className="k-rail" data-open={open || undefined} data-testid="sidebar" aria-label="Sessions">
+    <aside className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-testid="sidebar" aria-label="Sessions">
       <div className="k-rail-brand">
         <span className="k-logo" data-live={connected || undefined} title={connected ? "Connected to the daemon" : "Reconnecting to the daemon"}><Logo /></span>
         <span className="k-brand-name">Keel</span>
-        {open && (
-          <button type="button" onClick={() => savePref("sidebar", false)} title="Fold the list (Ctrl B)" aria-label="Fold the list" className="k-act k-fold">
-            <PanelLeftClose />
-          </button>
-        )}
+        {open && toggle}
       </div>
       <div className="k-rail-acts">
+        {!open && toggle}
         <button type="button" className="k-act" data-testid="new-session" aria-label="New session" title="New session (Ctrl Shift O)" aria-current={route.name === "new" ? "page" : undefined} onClick={() => navigate({ name: "new" })}>
           <Plus /><span className="k-act-label">New session</span>{open && <Kbd keys="mod+shift+o" className="ml-auto" />}
         </button>
@@ -301,16 +364,16 @@ export function Sidebar({ open }: { open: boolean }) {
           <Search /><span className="k-act-label">Search and commands</span>{open && <Kbd keys="mod+k" className="ml-auto" />}
         </button>
       </div>
-      {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" aria-label="Sessions by state"><Marks current={current} /></nav>}
+      <CardCtx.Provider value={bind}>
+        <div id="k-sessions" className="k-rail-body">
+          {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" aria-label="Sessions by state" onKeyDown={stepRows}><Marks current={current} /></nav>}
+        </div>
+      </CardCtx.Provider>
+      {card && <RailCard s={card.s} y={card.y} left={(open ? LIST : RAIL) + 8} />}
       <div className="k-rail-foot">
         {!open && (
-          <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; savePref("sidebar", true); }}>
+          <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; toggleList(true); }}>
             <Archive />
-          </button>
-        )}
-        {!open && (
-          <button type="button" className="k-act" data-testid="show-sidebar" aria-label="All sessions by folder" title="All sessions by folder (Ctrl B)" onClick={() => savePref("sidebar", true)}>
-            <ListTree />
           </button>
         )}
         <button type="button" className="k-act" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>

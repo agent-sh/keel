@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, Pin, PinOff,
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
+import { LIST, RAIL, useRail, useWidth } from "../lib/rail.ts";
 import { getStations, pickStations, stations, useStations } from "../lib/stations.ts";
 import { useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
@@ -19,18 +20,6 @@ import { Boundary, SessionView } from "./SessionView.tsx";
 import { StartBox } from "./StartBox.tsx";
 
 const STATION = 560; // narrowest station worth working in, px
-const RAIL = 64;
-
-function useWidth() {
-  const [w, setW] = useState(innerWidth);
-  useEffect(() => {
-    const f = () => setW(innerWidth);
-    addEventListener("resize", f);
-    return () => removeEventListener("resize", f);
-  }, []);
-  return w;
-}
-
 // The stations on screen, in order, for the keyboard commands and the rail.
 let shownNow: string[] = [];
 const helmNow = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
@@ -175,14 +164,14 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
 
 export function Bridge() {
   const route = useUI((s) => s.route);
-  const sidebar = useUI((s) => s.sidebar);
+  const rail = useRail();
   const width = useWidth();
   const phone = width < 768;
   const { list, watches } = useLive();
   const st = useStations((s) => s);
   const helm = route.name === "session" ? route.id : null;
   const fresh = route.name === "new";
-  const railW = sidebar && !phone ? 280 : RAIL;
+  const railW = rail.list && !rail.over && !phone ? LIST : RAIL; // a laid-over list takes no room
   // Room on a wide screen is what fits; on a phone it is the stations you
   // swipe between: the helm and what needs you or works.
   // An open side panel widens the helm by about one station.

@@ -29,7 +29,6 @@ test("pin, tags, done, step budget, peer marks, archive with a job", async ({ pa
   await expect(page.getByTestId("session-tag")).toHaveCount(2);
   expect((await api()).settings.tags).toEqual([word, "review"]);
   expect((await (await request.get(`/api/sessions?tag=${word}`)).json()).sessions.map((s: any) => s.id)).toEqual([session.id]);
-  await page.getByTestId("show-sidebar").first().click();
   const pinned = page.getByTestId("pinned-group");
   await expect(pinned.locator(`[data-session="${session.id}"]`)).toBeVisible();
   await expect(pinned.locator(`[data-session="${session.id}"]`).getByTestId("row-tag").first()).toHaveText(word);

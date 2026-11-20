@@ -127,7 +127,6 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
   // The full index: same-named folders read apart, and a tag picked in Sessions does not empty Archived.
   const near = (await (await request.post("/api/sessions", { data: { model: M, workspace: `${home}/.cache/keel-work/bun/e2e-ws/alpha/api` } })).json()).session;
   await request.patch(`/api/sessions/${near.id}`, { data: { title: `Near ${tag}`, tags: [`t${tag}`] } });
-  await page.getByTestId("show-sidebar").click();
   const heads = page.getByTestId("session-list").locator(".k-group-head");
   await expect(heads.filter({ hasText: "alpha/api" })).toHaveCount(1);
   await expect(heads.filter({ hasText: "beta/api" })).toHaveCount(1);

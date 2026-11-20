@@ -9,6 +9,7 @@ import { actions, getState, reportError } from "./store.ts";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import { getUI, navigate, notePick, savePref, setTheme, setUI, type ThemePref } from "./ui.ts";
 import { resolveModelArg } from "./picker.ts";
+import { toggleList } from "./rail.ts";
 import { switchSession } from "./switch.ts";
 import { stopHere } from "./automation.ts";
 
@@ -68,7 +69,7 @@ registerCommand(
   { id: "new-here", label: "New session in this folder", group: "Sessions", words: "clear fresh", when: () => !!current(), run: () => newIn(current()!.workspace) },
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
   { id: "prev-session", label: "Previous session", group: "Sessions", keys: "mod+shift+[", inInput: true, run: () => step(-1) },
-  { id: "sidebar", label: "Toggle the sidebar", group: "View", keys: "mod+b", inInput: true, run: () => savePref("sidebar", !getUI().sidebar) },
+  { id: "sidebar", label: "Show or fold the session list", group: "View", keys: "mod+b", inInput: true, words: "sidebar rail toggle", run: () => toggleList() },
   { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => navigator.clipboard.writeText(lastReply(current()!.id)) },
   // In an agent's session Escape goes back to the session that started it, as
@@ -144,7 +145,7 @@ slash.add(
       await safety.setPerm(session!.id, { mode: mode.id });
     },
   },
-  { id: "agents", label: "Show every session and its agents, by folder", run: () => savePref("sidebar", true) },
+  { id: "agents", label: "Show every session and its agents, by folder", run: () => toggleList(true) },
 );
 // A placeholder never replaces a command a lane registered (import order varies).
 for (const p of [

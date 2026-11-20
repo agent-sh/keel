@@ -12,6 +12,7 @@ import "./lib/integrations-ui.ts";
 import "./lib/port-ui.ts";
 import "./lib/surfaces-ui.ts";
 import { installKeymap } from "./lib/keys.ts";
+import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
 import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
 
@@ -47,6 +48,14 @@ export function App() {
   useEffect(() => { if (route.name !== "session") setBaseTitle(route.name === "settings" ? "Settings - Keel" : "Keel"); }, [route]);
 
   const sidebar = useUI((s) => s.sidebar);
+  const rail = useRail();
+  // Escape puts a laid-over list away (and nothing else: not the running turn).
+  useEffect(() => {
+    if (!rail.over) return;
+    const f = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); toggleList(false); } };
+    addEventListener("keydown", f, true);
+    return () => removeEventListener("keydown", f, true);
+  }, [rail.over]);
   const page = route.name === "settings";
   return (
     <Boundary>
@@ -61,8 +70,8 @@ export function App() {
         }}
       >
         {/* Desktop: the rail, folded or open. Phone: the open rail as a drawer. */}
-        <div className="k-rail-wrap" data-drawer={sidebar || undefined}><Sidebar open={sidebar || phone()} /></div>
-        {sidebar && <div className="k-scrim" onClick={() => savePref("sidebar", false)} aria-hidden="true" />}
+        <div className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}><Sidebar open={rail.list} /></div>
+        {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => toggleList(false)} aria-hidden="true" />}
         {page ? (
           <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}</Suspense></main>
         ) : <Suspense fallback={null}><Bridge /></Suspense>}

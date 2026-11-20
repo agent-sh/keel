@@ -26,9 +26,16 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-scrim { display: none; }
 
 /* ---------- The keel (rail) ---------- */
-.k-rail-wrap { flex-shrink: 0; height: 100%; z-index: 40; }
+.k-rail-wrap { position: relative; flex-shrink: 0; height: 100%; z-index: 40; }
 .k-rail { display: flex; flex-direction: column; height: 100%; width: 64px; background: var(--panel); border-right: 1px solid var(--line); }
-.k-rail[data-open] { width: 280px; }
+.k-rail[data-open] { width: 300px; }
+.k-rail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* No room for the list beside the stations: asked for, it lays over them and
+   the marks' column keeps its place underneath. */
+.k-rail-wrap[data-over] { width: 64px; }
+.k-rail-wrap[data-over] .k-rail { position: absolute; inset: 0 auto 0 0; box-shadow: var(--shadow-3); animation: k-list-over 160ms var(--ease-out); }
+@keyframes k-list-over { from { opacity: 0.6; transform: translateX(-14px); } }
+.k-scrim[data-over] { display: block; position: fixed; inset: 0; z-index: 35; background: color-mix(in oklch, var(--overlay) 45%, transparent); }
 .k-rail-brand { display: flex; align-items: center; justify-content: center; gap: 9px; height: 52px; flex-shrink: 0; }
 .k-rail[data-open] .k-rail-brand { justify-content: flex-start; padding: 0 8px 0 18px; }
 .k-logo { display: grid; place-items: center; color: var(--fg); }
@@ -78,40 +85,48 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-marks[data-watch="need"] .k-marks-head { color: var(--st-need); }
 .k-marks[data-watch="work"] .k-marks-head { color: var(--st-work); }
 .k-marks[data-watch="fail"] .k-marks-head { color: var(--st-fail); }
-.k-tick { position: relative; display: grid; place-items: center; width: 40px; height: 26px; border-radius: 4px; }
+/* A mark is the session's state and a short code of its title, so no two read alike. */
+.k-tick { position: relative; display: flex; align-items: center; gap: 6px; width: 50px; height: 28px; padding-left: 8px; border-radius: 4px; }
 .k-tick:hover, .k-tick:focus-visible { background: var(--hover); }
+.k-tick .k-mark { width: 8px; height: 8px; }
+.k-tick-code { font: 700 11.5px/1 var(--font-inst); font-stretch: 75%; letter-spacing: 0.03em; color: var(--fg); }
 /* Finished and seen: the mark goes quiet. Unread ones keep a full mark. */
-.k-tick[data-watch="done"]:not([data-unread]):not([aria-current]) .k-mark { opacity: 0.4; transform: scale(0.8); }
+.k-tick[data-watch="done"]:not([data-unread]):not([aria-current]) .k-mark { opacity: 0.45; transform: scale(0.8); }
+.k-tick:is([data-watch="done"], [data-watch="idle"]):not([data-unread]):not([aria-current]):not(:hover) .k-tick-code { color: var(--muted); font-weight: 600; }
 /* A station on screen: a bracket on the rail's edge. */
-.k-tick[data-shown]::before { content: ""; position: absolute; left: -12px; top: 4px; bottom: 4px; width: 3px; border-radius: 0 2px 2px 0; background: var(--line-strong); }
+.k-tick[data-shown]::before { content: ""; position: absolute; left: -7px; top: 4px; bottom: 4px; width: 3px; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-tick[aria-current]::before { background: var(--fg); }
 .k-tick[aria-current] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line-strong); }
 
-/* The card beside a mark (hover or focus): title, place, what it needs. */
+/* The card beside an entry (hover or focus): the whole title, what it needs,
+   where it runs and when it last moved. */
 .k-rail-card {
-  position: fixed; left: 70px; z-index: 50; width: 300px; transform: translateY(-50%); pointer-events: none;
-  padding: 10px 14px 11px; border-radius: 5px; border: 1px solid var(--line-strong); border-left: 3px solid var(--st-done);
-  background: var(--raised); box-shadow: var(--shadow-3); animation: k-card-in 90ms var(--ease-out);
+  position: fixed; z-index: 50; width: 340px; transform: translateY(-50%); pointer-events: none;
+  padding: 11px 14px 10px; border-radius: 5px; border: 1px solid var(--line-strong); border-left: 3px solid var(--st-done);
+  background: var(--raised); box-shadow: var(--shadow-3); animation: k-card-in 110ms var(--ease-out);
 }
-@keyframes k-card-in { from { opacity: 0; transform: translate(-4px, -50%); } }
+@keyframes k-card-in { from { opacity: 0; transform: translate(-5px, -50%); } }
 .k-rail-card[data-watch="need"] { border-left-color: var(--st-need); }
 .k-rail-card[data-watch="work"] { border-left-color: var(--st-work); }
 .k-rail-card[data-watch="fail"] { border-left-color: var(--st-fail); }
-.k-rail-card[data-watch="idle"] { border-left-color: var(--st-idle); }
+.k-rail-card:is([data-watch="idle"], [data-watch="stop"], [data-watch="resume"]) { border-left-color: var(--st-idle); }
 .k-rail-card-row { display: flex; align-items: center; gap: 7px; }
 .k-rail-card-row .k-mark { width: 8px; height: 8px; }
 .k-rail-card-word { font: 700 11px/16px var(--font-inst); font-stretch: 75%; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-done); }
 .k-rail-card[data-watch="need"] .k-rail-card-word { color: var(--st-need); }
 .k-rail-card[data-watch="work"] .k-rail-card-word { color: var(--st-work); }
 .k-rail-card[data-watch="fail"] .k-rail-card-word { color: var(--st-fail); }
-.k-rail-card[data-watch="idle"] .k-rail-card-word { color: var(--faint); }
+.k-rail-card:is([data-watch="idle"], [data-watch="stop"], [data-watch="resume"]) .k-rail-card-word { color: var(--faint); }
 .k-rail-card-time { margin-left: auto; font: 11px/16px var(--font-inst); font-stretch: 75%; color: var(--faint); }
-.k-rail-card-title { margin-top: 5px; font-size: 14px; font-weight: 600; line-height: 1.35; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.k-rail-card-meta { margin-top: 3px; font: 11.5px/16px var(--font-inst); font-stretch: 75%; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.k-rail-card-line { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.k-rail-card-title { margin-top: 6px; font-size: 14.5px; font-weight: 600; line-height: 1.35; letter-spacing: -0.005em; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.k-rail-card-line { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card-need, .k-rail-card-new { margin-top: 6px; font-size: 12.5px; font-weight: 500; }
 .k-rail-card-need { color: var(--st-need); }
 .k-rail-card-new { color: var(--muted); }
+.k-rail-card-meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); font: 11px/16px var(--font-inst); font-stretch: 75%; }
+.k-rail-card-meta dt { color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; font-size: 9.5px; }
+.k-rail-card-meta dd { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.k-rail-card-meta dd b { font-weight: 700; color: var(--fg); }
 
 /* Open: the full index. */
 .k-tabs { display: flex; gap: 2px; margin: 0 10px 4px; padding: 2px; border-radius: 4px; background: var(--sunken); }
@@ -123,17 +138,29 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-group-head { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; font-size: 12px; font-weight: 500; color: var(--faint); }
 .k-group-head svg { width: 14px; height: 14px; flex-shrink: 0; }
 .k-group-machine { margin-left: auto; padding: 0 6px; border-radius: 8px; background: var(--sunken); font-size: 11px; color: var(--muted); }
-.k-row { position: relative; display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 6px 0 9px; border-radius: 4px; font-size: 13px; color: var(--muted); user-select: none; }
+/* A row: the mark, the title over two lines at most, the state spelled out
+   when it is not simply finished, the time. */
+.k-row { position: relative; display: flex; align-items: flex-start; gap: 9px; min-height: 30px; padding: 6px 6px 6px 9px; border-radius: 4px; font-size: 13px; line-height: 18px; color: var(--muted); user-select: none; }
+.k-row > .k-mark { margin-top: 4px; }
+.k-row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.k-row-state { margin-top: 1px; font: 700 9.5px/15px var(--font-inst); font-stretch: 75%; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.k-row[data-watch="need"] .k-row-state { color: var(--st-need); }
+.k-row[data-watch="work"] .k-row-state { color: var(--st-work); }
+.k-row[data-watch="fail"] .k-row-state { color: var(--st-fail); }
+.k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.k-row > :is(.k-needs, .k-row-tag, svg, [data-testid="snoozed-mark"]) { margin-top: 1px; }
 .k-row:hover { background: var(--hover); color: var(--fg); }
 .k-row[aria-current] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
 .k-row[data-shown]::before { content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px; width: 3px; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
-.k-row-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-row-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+/* Finished and seen rows step back; what moved or needs him stays in ink. */
+.k-row:not([data-watch="done"], [data-watch="idle"]) .k-row-title { color: var(--fg); }
 /* Unread: the title in ink and a little heavier, instead of a dot on every row. */
 .k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 550; }
 .k-row [data-testid="unread-dot"] { display: none; }
-.k-row-time { font: 11px var(--font-inst); font-stretch: 75%; color: var(--faint); }
-.k-row-act { width: 24px; height: 24px; place-items: center; border-radius: 3px; color: var(--faint); }
+.k-row-time { flex-shrink: 0; min-width: 22px; text-align: right; font: 11px/18px var(--font-inst); font-stretch: 75%; color: var(--faint); }
+.k-row-act { flex-shrink: 0; margin: -3px 0; width: 24px; height: 24px; place-items: center; border-radius: 3px; color: var(--faint); }
 .k-row-act:hover { background: var(--hover); color: var(--fg); }
 .k-row-act svg { width: 14px; height: 14px; }
 .k-needs { flex-shrink: 0; padding: 0 6px; border-radius: 8px; font: 600 10.5px/16px var(--font-inst); font-stretch: 75%; color: var(--accent-fg); background: var(--st-need); }
@@ -248,6 +275,7 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
   .k-rail-wrap[data-drawer] { transform: none; visibility: visible; }
   .k-rail-wrap .k-rail { width: min(86vw, 320px); }
   .k-scrim { display: block; position: fixed; inset: 0; z-index: 30; background: var(--overlay); }
+  .k-rail-card { display: none; }
   .k-stations { height: calc(100% - 52px - env(safe-area-inset-bottom)); scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
   .k-station { min-width: 100%; flex: 0 0 100%; border-right: 0; }
   .k-station-head { padding: 10px 14px 8px 16px; }

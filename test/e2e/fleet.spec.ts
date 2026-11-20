@@ -56,11 +56,9 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     // One session list: the other daemon's session, under its machine.
     const remote = page.locator(`[data-testid="session-row"][data-session$="--${made.session.id}"]`);
     await expect(remote).toBeVisible({ timeout: 15_000 });
-    // The full index groups it under its machine.
-    await page.getByTestId("show-sidebar").click();
+    // The list groups it under its machine.
     await expect(page.locator(`section:has([data-session$="--${made.session.id}"])`).getByTestId("group-machine")).toHaveText("devbox");
     await page.locator(`[data-testid="session-row"][data-session$="--${made.session.id}"]`).click();
-    await page.getByLabel("Fold the list").click();
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await expect(page.getByTestId("session-title")).toHaveText("Started on the other machine");
     // Its model is the other daemon's: the picker names it and offers that daemon's listing.
