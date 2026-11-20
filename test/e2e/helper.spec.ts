@@ -88,10 +88,15 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
   const { session: other } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Billing run" } })).json();
   await request.post(`/api/sessions/${other.id}/messages`, { data: { text: "script:billing" } });
   writeFileSync(join(mail, "inbox.json"), JSON.stringify([
-    msg(`dana-${Date.now()}`, "Dana <dana@example.com>", "The auditor needs the March invoices today", ["INBOX", "UNREAD", "IMPORTANT"]),
+    msg(`dana-${Date.now()}`, "Dana <dana@example.com>", "The auditor needs the March invoices today", ["INBOX", "UNREAD", "IMPORTANT", "Label_7"]),
     msg(`promo-${Date.now()}`, "Shop <deals@example.com>", "50% off everything", ["INBOX", "UNREAD", "CATEGORY_PROMOTIONS"]),
   ]));
+  // The account's own labels: a message with a label memory has no name for brings the list in as records.
+  writeFileSync(join(mail, "labels.json"), JSON.stringify([{ id: "Label_7", name: "Clients/Acme" }, { id: "Label_9", name: "Finance/Receipts" }]));
   expect((await (await request.post("/api/helper/check")).json()).important).toBe(1);
+  const { items: labels } = await (await request.get("/api/helper/memory?q=mail.label")).json();
+  expect(labels.find((r: any) => r.key === "mail.label.label_7")?.value).toBe("Clients/Acme");
+  expect(labels.find((r: any) => r.key === "mail.label.label_9")?.value).toBe("Finance/Receipts");
   const events = page.getByTestId("helper-event");
   await expect(events.filter({ hasText: "auditor" })).toBeVisible();
   await expect(events.filter({ hasText: "Billing run" })).toBeVisible({ timeout: 30_000 });

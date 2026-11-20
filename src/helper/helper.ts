@@ -33,7 +33,7 @@ export type HelperSettings = {
   mail_every_min: number; // 0: no periodic mail check
   wake_gap_min: number;
 };
-type State = HelperSettings & { last_wake: number; mail_baseline: boolean };
+type State = HelperSettings & { last_wake: number; mail_baseline: boolean; labels_synced?: number };
 
 // A burst of events is gathered this long before a wake (one wake, not one per event).
 export const COALESCE_MS = 60_000;
@@ -204,6 +204,24 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
   // what is there (a backlog is not news); bulk categories are skipped; the
   // rest is triaged by the reader model, and only what needs them wakes the
   // helper.
+  // The account's label names kept as memory records (mail.label.<id>), read
+  // again when a message carries a user label memory has no name for: the
+  // helper and the mail tools then look names up instead of reading files.
+  // System labels (INBOX, IMPORTANT, CATEGORY_*) are their own names.
+  async syncLabels(found: MailMsg[]): Promise<number> {
+    if (!this.source.labels) return 0;
+    const unknown = found.some((m) => m.labels.some((l) => /^Label_/.test(l) && !this.records.index.get(`mail.label.${l}`)));
+    if (!unknown && this.state().labels_synced) return 0;
+    let list: { id: string; name: string }[];
+    try { list = await this.source.labels(); } catch (e) { this.deps.errors.capture("server", e, { at: "helper mail labels" }); return 0; }
+    this.save({ labels_synced: Date.now() });
+    const have = (id: string, name: string) => this.records.index.get(`mail.label.${id}`)?.value === name;
+    const todo = list.filter((l) => !have(l.id, l.name));
+    if (!todo.length) return 0;
+    this.records.put(todo.map((l) => ({ key: `mail.label.${l.id}`, value: l.name, kind: "reference", aliases: [l.name], topics: ["mail", "labels"] })), "import", true);
+    return todo.length;
+  }
+
   async checkMail(): Promise<{ new: number; important: number }> {
     const s = this.session();
     if (!s || !this.state().on || !this.source.available()) return { new: 0, important: 0 };
@@ -211,6 +229,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     const found = await this.source.search(MAIL_QUERY, MAIL_MAX);
     const seen = new Set(db.query<{ id: string }, []>("SELECT id FROM helper_mail_seen").all().map((r) => r.id));
     const fresh = found.filter((m) => !seen.has(m.id));
+    await this.syncLabels(found);
     const ins = db.query("INSERT OR IGNORE INTO helper_mail_seen (id, ts) VALUES (?, ?)");
     for (const m of fresh) ins.run(m.id, Date.now());
     db.query("DELETE FROM helper_mail_seen WHERE ts < ?").run(Date.now() - 14 * 86400_000);

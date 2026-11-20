@@ -23,6 +23,8 @@ export type MailSource = {
   modify(id: string, add: string[], remove: string[]): Promise<void>;
   send(m: Outgoing): Promise<{ id: string }>;
   events(fromIso: string, toIso: string, max: number): Promise<CalEvent[]>;
+  // The account's own labels (id and name), for keeping their names in memory.
+  labels?(): Promise<{ id: string; name: string }[]>;
 };
 
 const BODY_CHARS = 12_000;
@@ -123,6 +125,10 @@ export class GoogleSource implements MailSource {
   async read(id: string) {
     return toMsg(await this.api(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`), true);
   }
+  async labels() {
+    const r = await this.api("https://gmail.googleapis.com/gmail/v1/users/me/labels");
+    return (r.labels ?? []).filter((l: any) => l.type === "user" && l.id && l.name).map((l: any) => ({ id: String(l.id), name: String(l.name) }));
+  }
   async modify(id: string, add: string[], remove: string[]) {
     await this.api(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}/modify`, { method: "POST", body: JSON.stringify({ addLabelIds: add, removeLabelIds: remove }) });
   }
@@ -152,6 +158,9 @@ export class StandinSource implements MailSource {
   async search(q: string, max: number) {
     const words = q.toLowerCase().split(/\s+/).filter((w) => w && !w.includes(":"));
     return this.inbox().filter((m) => words.every((w) => `${m.from} ${m.subject} ${m.snippet}`.toLowerCase().includes(w))).slice(0, max).map(({ body: _, ...m }) => m);
+  }
+  async labels() {
+    try { return JSON.parse(readFileSync(join(this.dir, "labels.json"), "utf8")) as { id: string; name: string }[]; } catch { return []; }
   }
   async read(id: string) {
     const m = this.inbox().find((x) => x.id === id);
