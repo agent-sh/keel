@@ -10,10 +10,6 @@ import type { StoredEvent } from "../core/types.ts";
 import { priceOf } from "../providers/pricing.ts";
 import type { ModelInfo, Wire } from "../providers/types.ts";
 
-// Anthropic's default cache lifetime, measured from the start of the request;
-// OpenAI keeps a prefix for 5 to 10 minutes of inactivity. The shorter one.
-export const CACHE_TTL_MS = 5 * 60_000;
-
 const MIN = 60_000;
 
 // A gap this close to a short cache lifetime counts as past it: the request

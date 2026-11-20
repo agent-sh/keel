@@ -14,6 +14,12 @@ export type WireCtx = {
 // an hour per breakpoint; on the other wires the provider sets the lifetime.
 const LIVES: Partial<Record<Wire, { short: number; long: number }>> = { anthropic_messages: { short: 5 * 60_000, long: 60 * 60_000 } };
 export const cacheLives = (wire?: Wire) => (wire ? LIVES[wire] : undefined);
+// The lifetime a request asks for: its choice, else the wire's default (the
+// Anthropic wire asks for an hour unless told "short", see wires/anthropic.ts).
+export const askedLife = (wire: Wire | undefined, life: "short" | "long" | undefined) => {
+  const l = cacheLives(wire);
+  return l ? l[life ?? "long"] : undefined;
+};
 
 export interface WireParser {
   event(e: SseEvent): void;

@@ -7,7 +7,7 @@
 // is rewritten: a summary is a new event, the old branch stays.
 import type { Message, Session, StoredEvent } from "../../core/types.ts";
 import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, keptMessages } from "../../engine/compact.ts";
-import { CACHE_TTL_MS } from "../../engine/cachewarn.ts";
+import { warmUntil } from "../../admin/telemetry.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerShared } from "../../tools/registry.ts";
 import { discoverSkills, renderForOwner } from "../../tools/skills.ts";
@@ -128,8 +128,9 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
       const info = await modelOf(s);
       const window = info?.context;
       const compacts = s.settings.compact_at ?? (window ? Math.floor(window * COMPACT_SHARE) : undefined);
-      const lastCall = line.findLast((e) => e.kind === "assistant");
-      const warm = lastCall ? Math.max(0, Math.round((lastCall.ts + CACHE_TTL_MS - Date.now()) / 1000)) : 0;
+      // By the lifetime the last request asked for; null where the provider states none.
+      const until = warmUntil(store, s.id);
+      const warm = until === undefined ? null : Math.max(0, Math.round((until - Date.now()) / 1000));
       return ok(JSON.stringify({ context_used_tokens: used, context_window: window, tokens_left: window ? Math.max(0, window - used) : undefined, compacts_at_tokens: compacts, cache_warm_seconds: warm }));
     },
   };

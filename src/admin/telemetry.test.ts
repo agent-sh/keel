@@ -8,6 +8,7 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { changedBlocks } from "../engine/prompt-store.ts";
+import { PromptStore } from "../engine/prompt-store.ts";
 import { breakCause, prefixDiff, prefixOf, Telemetry } from "./telemetry.ts";
 
 const withStore = (f: (store: Store) => void) => {
@@ -38,6 +39,7 @@ test("a request is booked to its own branch, route and turn", () => withStore((s
   const s = store.createSession({ model: "p:main", workspace: "/" });
   const root = store.append(s.id, "user", { text: "Start" });
   store.append(s.id, "assistant", { blocks: [{ type: "text", text: "ok" }], model: "p:main", usage: {}, stop: "end_turn" });
+  new PromptStore(store);
   const t = new Telemetry(store, new Bus());
   const hooks = allHooks().at(-1)!;
   const send = (purpose: "turn" | "side" | "summary", prompt: number, route = "p:main") => {
@@ -81,7 +83,10 @@ test("a cache break is a changed prefix only where a stored fingerprint differs"
   expect(prefixDiff({ ...prev, h_tools: null }, was)).toBeNull();
   const gap = { modelChanged: false, compacted: false };
   expect(breakCause({ ...gap, gapMs: 1_000, diff: [] })).toBe("provider_miss");
-  expect(breakCause({ ...gap, gapMs: 3_600_000, diff: [] })).toBe("expired");
+  // Expired only past the lifetime the request before asked for, and never where its route states none.
+  expect(breakCause({ ...gap, gapMs: 3_600_000, lifeMs: 300_000, diff: [] })).toBe("expired");
+  expect(breakCause({ ...gap, gapMs: 780_000, lifeMs: 3_600_000, diff: [] })).toBe("provider_miss");
+  expect(breakCause({ ...gap, gapMs: 3_600_000, lifeMs: null, diff: [] })).toBe("provider_miss");
   expect(breakCause({ ...gap, gapMs: 3_600_000, diff: ["system"] })).toBe("prefix_changed");
   expect(breakCause({ ...gap, gapMs: 1_000, diff: null })).toBe("prefix_changed");
   const b = (name: string, hash: string) => ({ name, hash, bytes: 1 });

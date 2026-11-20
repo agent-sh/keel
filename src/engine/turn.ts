@@ -23,7 +23,7 @@ import { pickReader, readerPrompt } from "./reader.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
-import { cacheLives } from "../providers/wires/common.ts";
+import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, backoffMs, errorText, retryable, sleep } from "./retry.ts";
@@ -570,6 +570,7 @@ export class Engine {
     if (purpose === "reader") req.cache = false;
     else for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
     if (session.parent_id && purpose !== "reader") req.cacheLife = this.cacheLife(id, st);
+    if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
     for (let attempt = 0; ; attempt++) {

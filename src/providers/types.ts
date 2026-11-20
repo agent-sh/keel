@@ -45,6 +45,10 @@ export type ProviderRequest = {
   // The cache lifetime asked for, where the wire offers a choice (cacheLives):
   // "short" its shortest, "long" its longest; absent = the wire's default.
   cacheLife?: "short" | "long";
+  // How long the prefix this request writes is kept, in ms: the lifetime it
+  // asked for, else the one its route documents; absent when the provider
+  // states none. Set by the engine, read by telemetry; drivers ignore it.
+  cacheMs?: number;
   // The qualified model id (provider:model) the request goes to, for
   // measuring; `model` is the name on the wire.
   route?: string;
