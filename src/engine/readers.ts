@@ -7,10 +7,16 @@
 import { addUsage, emptyUsage, type Usage } from "../core/types.ts";
 import type { ModelInfo, Price } from "../providers/types.ts";
 import { bytesPerToken } from "./compact.ts";
+import { registerSettings, settings } from "../admin/settings.ts";
 import {
   chunkChars, chunkMaterial, compilePrompt, materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, READERS_AT_ONCE,
   readerChoices, readRate, type Chunk, type Material,
 } from "./reader.ts";
+
+// The owner's small models, best first: they read before any other choice.
+registerSettings("small_models", { ids: [] }, (v) =>
+  Array.isArray(v.ids) && v.ids.every((x: unknown) => typeof x === "string" && x.length > 0) ? undefined : "ids is a list of model ids");
+export const smallModels = (): string[] => settings().small_models?.ids ?? [];
 
 export type ReaderAnswer = { text: string; usage: Usage; stop?: string };
 
@@ -37,6 +43,7 @@ export type ReadOutcome = {
   chars: number;           // material read
   usage: Usage;            // every reader call of the job
   cost?: number;           // USD, where priced
+  plan?: boolean;          // every reader that read is on a subscription: no per-token cost
   working?: { model: string; tokens: number; cost?: number }; // the working model reading the same material once, uncached (at least)
   compiled: boolean;
 };
@@ -50,7 +57,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const total = items.reduce((n, m) => n + m.text.length, 0);
   // Choices that hold one full part; the first one sizes the parts.
   const need = Math.ceil(Math.min(total, READ_CHUNK_CHARS) / bytesPerToken(cur.id)) + 10_000;
-  const choices = readerChoices(models, cur, need, env, list);
+  const choices = readerChoices(models, cur, need, env, list, smallModels());
   const first = choices[0]!;
   const unread: string[] = [];
   // Past the cap the material is not read: named, so the working model knows.
@@ -77,6 +84,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   // about what the working model would take in to read the same material.
   let partTokens = 0;
   const used = new Set<string>();
+  const billed = new Set<string>();
   const tell = (compiling = false) => { try { host.progress?.({ parts: parts.map((p) => ({ ...p })), compiling }); } catch (e) { host.capture(e, { at: "reader progress" }); } };
 
   // One request, through the choices in order; the failure of each is captured once.
@@ -92,6 +100,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
         const text = r.text.trim();
         if (r.stop === "refusal" || !text) throw new Error(`the reader (${m.name}) ${r.stop === "refusal" ? "refused" : "gave no answer"}`);
         used.add(m.name);
+        billed.add(m.billing);
         return { text, model: m };
       } catch (e) {
         if (signal.aborted) throw e;
@@ -145,6 +154,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const tokens = partTokens || chars / bytesPerToken(cur.id);
   return {
     text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled,
+    ...(billed.size === 1 && billed.has("subscription") ? { plan: true } : {}),
     working: { model: cur.name, tokens: Math.round(tokens), cost: rate === undefined || cur.billing !== "per_token" ? undefined : (tokens * rate) / 1e6 },
   };
 }

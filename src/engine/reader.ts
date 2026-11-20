@@ -42,6 +42,9 @@ export function readRate(m: ModelInfo, listPrice: (m: ModelInfo) => Price | unde
 
 // The models that read for a session on `current`, best first; each holds
 // `needTokens`. In order:
+//   0. the owner's small models (setting `small_models`, full ids in order),
+//      whatever their provider: readers send no conversation and no tools, so
+//      any family can read for any other;
 //   1. the owner's choice, KEEL_READER_MODEL (a full id);
 //   2. the configured small model, ANTHROPIC_DEFAULT_HAIKU_MODEL, for a Claude
 //      session when the session's provider lists it;
@@ -52,11 +55,12 @@ export function readRate(m: ModelInfo, listPrice: (m: ModelInfo) => Price | unde
 // A model with no known rate is never picked by price.
 export function readerChoices(
   models: ModelInfo[], current: ModelInfo, needTokens: number,
-  env: Record<string, string | undefined> = process.env, listPrice?: (m: ModelInfo) => Price | undefined,
+  env: Record<string, string | undefined> = process.env, listPrice?: (m: ModelInfo) => Price | undefined, ownSmall: string[] = [],
 ): ModelInfo[] {
   const out: ModelInfo[] = [];
   const fits = (m: ModelInfo) => m.context >= needTokens;
   const add = (m: ModelInfo | undefined | false | "") => { if (m && fits(m) && !out.some((o) => o.id === m.id)) out.push(m); };
+  for (const id of ownSmall) add(models.find((m) => m.id === id));
   add(env.KEEL_READER_MODEL ? models.find((m) => m.id === env.KEEL_READER_MODEL) : undefined);
   const small = env.ANTHROPIC_DEFAULT_HAIKU_MODEL?.replace(/\[[^\]]*\]$/, "");
   add(current.family === "claude" && small ? models.find((m) => m.provider === current.provider && m.model === small) : undefined);

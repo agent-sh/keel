@@ -109,7 +109,7 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
   }
   const o = await ctx.readMaterial(items, question, ctx.callId);
   o.unread.push(...skipped);
-  const shown = { readers: { question, sources: items.length, chars: o.chars, parts: o.parts, models: o.models, usage: o.usage, cost: o.cost, working: o.working, unread: o.unread, compiled: o.compiled } };
+  const shown = { readers: { question, sources: items.length, chars: o.chars, parts: o.parts, models: o.models, usage: o.usage, cost: o.cost, plan: o.plan, working: o.working, unread: o.unread, compiled: o.compiled } };
   if (!o.text) {
     // No reader read anything: the material as a long output, saved whole.
     const spilled = await spill(wholeText(items), ctx.spillDir, "readers");

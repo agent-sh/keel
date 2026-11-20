@@ -107,3 +107,13 @@ test("a failed reader hands its part to the next choice; the findings are compil
   expect(all3.unread.length).toBe(all3.parts.length);
   expect(all3.unread[0]).toContain("every reader failed");
 });
+
+test("the owner's small models read first, in their order, from any provider, skipping one not listed or too small", () => {
+  const plan = m("luna", undefined, { provider: "plan", id: "plan:luna", family: "gpt", billing: "subscription" });
+  const fall = m("haiku", 0.8, { provider: "q", id: "q:haiku" });
+  const models = [...all, plan, fall];
+  const ids = (need: number, own: string[]) => readerChoices(models, big, need, {}, undefined, own).map((x) => x.id);
+  expect(ids(1000, ["gone:model", "plan:luna", "q:haiku"]).slice(0, 2)).toEqual(["plan:luna", "q:haiku"]);
+  expect(ids(1000, ["q:haiku", "plan:luna"]).slice(0, 2)).toEqual(["q:haiku", "plan:luna"]);
+  expect(ids(40_000, ["p:tiny", "q:haiku"])[0]).toBe("q:haiku");
+});

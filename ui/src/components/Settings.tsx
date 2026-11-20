@@ -5,6 +5,7 @@ import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
+import { SmallModels } from "./SmallModels.tsx";
 
 // Settings building blocks other lanes reuse for their sections.
 export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
@@ -101,6 +102,9 @@ function Models() {
       <Card>
         <SettingRow label="Default model" hint="New sessions start on it. It comes from the daemon's configuration.">
           <span className="text-ui text-muted">{models.find((m) => m.id === def)?.name ?? (def || "None")}</span>
+        </SettingRow>
+        <SettingRow label="Small models" hint="They read long material for every session (files and logs handed to readers, a long page, new mail), best first; the next one reads when one is not listed or fails. Empty: the cheapest model of the session's own provider.">
+          <SmallModels />
         </SettingRow>
         <SettingRow label="Listings" hint={`${models.length} models from ${byProvider.length} providers, as each provider lists them.`}>
           <button

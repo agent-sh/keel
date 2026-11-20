@@ -55,7 +55,8 @@ test("readers: a folder of logs is read in parts and compiled into one answer", 
   await expect(card.getByTestId("readers-answer")).not.toContainText(/not (been )?read/i);
   await expect(card.getByTestId("readers-summary")).toContainText("4 sources");
   await expect(card.getByTestId("readers-summary")).toContainText("findings compiled");
-  await expect(card.getByTestId("readers-cost")).toContainText("$");
+  // A priced reader shows its cost; one on a plan says so.
+  await expect(card.getByTestId("readers-cost")).toContainText(/\$|on plan/);
   await card.scrollIntoViewIfNeeded();
   await shoot(page, "readers-01-compiled-answer");
 

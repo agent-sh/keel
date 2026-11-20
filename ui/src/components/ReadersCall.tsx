@@ -10,7 +10,7 @@ import { Markdown } from "./Markdown.tsx";
 
 type Shown = {
   question: string; whole?: boolean; sources: number; chars: number; parts?: PartState[]; models?: string[];
-  cost?: number; working?: { model: string; cost?: number }; unread?: string[]; skipped?: string[]; compiled?: boolean;
+  cost?: number; plan?: boolean; working?: { model: string; cost?: number }; unread?: string[]; skipped?: string[]; compiled?: boolean;
 };
 type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string };
 
@@ -66,7 +66,7 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
             </span>
           )}
           {shown?.models?.length ? <span className="text-muted">{shown.models.join(", ")}</span> : null}
-          {shown?.cost !== undefined && <span className="font-mono text-muted" data-testid="readers-cost">{fmtCost(shown.cost)}</span>}
+          {shown?.cost !== undefined ? <span className="font-mono text-muted" data-testid="readers-cost">{fmtCost(shown.cost)}</span> : shown?.plan ? <span className="text-muted" data-testid="readers-cost">on plan</span> : null}
           {shown?.unread?.length ? <span className="text-danger">{shown.unread.length} unread</span> : null}
           {(state === "running" || state === "live") && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
           {state === "error" && <span className="text-danger">failed</span>}
