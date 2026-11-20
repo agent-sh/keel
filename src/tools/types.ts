@@ -6,6 +6,9 @@ import type { ReadOutcome } from "../engine/readers.ts";
 
 export type ToolContext = {
   sessionId: string;
+  // Set by the engine: whether this text is in what the model sees now (the
+  // context after the last compaction or clear, on the branch shown).
+  inContext?: (text: string) => boolean;
   cwd: string;
   signal: AbortSignal;
   spillDir: string;

@@ -40,6 +40,17 @@ test("skills: listed, run by the owner, loaded by the model", async ({ page, req
   await expect(page.getByTestId("assistant-text").last()).toContainText("BIRDFACT-heron");
   await shoot(page, "skills-03-model-loaded");
 
+  // After a clear the skill is gone from what the model sees: loading it again sends its body, not "already loaded".
+  expect((await request.post(`/api/sessions/${session.id}/clear`)).ok()).toBe(true);
+  await box.fill("Load the bird-fact skill with the Skill tool, with args heron, and follow it.");
+  await box.press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 90_000 });
+  const evs = (await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[];
+  const skillIds = new Set(evs.filter((e) => e.kind === "assistant").flatMap((e) => e.data.blocks).filter((b: any) => b.type === "tool_use" && b.name === "Skill").map((b: any) => b.id));
+  const last = evs.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).filter((r: any) => skillIds.has(r.tool_use_id)).map((r: any) => JSON.stringify(r.content)).at(-1);
+  expect(last).toContain("BIRDFACT-$ARGUMENTS".replace("$ARGUMENTS", "heron"));
+  expect(last).not.toContain("already loaded");
+
   // Past the listing's budget (a share of the default model's window), the skills
   // loaded least are listed by name only, and Settings > Skills says so.
   const { listing } = await (await request.get(`/api/skills?cwd=${encodeURIComponent(ws)}`)).json();

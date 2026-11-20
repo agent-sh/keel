@@ -8,7 +8,6 @@ import { dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
-import { SessionMap } from "../core/session-map.ts";
 
 export type Skill = {
   name: string;
@@ -262,9 +261,6 @@ export function renderSkill(body: string, args: string, names: string[], vars: R
   return out;
 }
 
-// session -> rendered texts already sent; a session that dropped out gets a skill's text once more.
-const loaded = new SessionMap<Set<string>>(64);
-
 export function loadSkill(name: string, args: string, ctx: ToolContext) {
   const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => s.name === name || s.name === name.replace(/^\//, ""));
   if (!skill) {
@@ -277,10 +273,9 @@ export function loadSkill(name: string, args: string, ctx: ToolContext) {
     CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root } : {}), CLAUDE_PROJECT_DIR: gitRoot(ctx.cwd) ?? ctx.cwd,
     CLAUDE_SESSION_ID: ctx.sessionId, KEEL_SESSION_ID: ctx.sessionId,
   });
-  const sent = loaded.get(ctx.sessionId) ?? new Set();
-  loaded.set(ctx.sessionId, sent);
-  if (sent.has(text)) return ok(`The skill "${skill.name}" is already loaded above; follow it.`);
-  sent.add(text);
+  // Sent again unless the model can still see it: after a clear, a rewind or
+  // another branch it is gone from the context even though it was loaded.
+  if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.`);
   usage?.record(skill.name);
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}`);
 }

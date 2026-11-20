@@ -747,6 +747,7 @@ export class Engine {
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);
     const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id),
+      inContext: (text) => JSON.stringify(toMessages(this.lineage(id))).includes(JSON.stringify(text).slice(1, -1)),
       read: (source, text, prompt) => this.read(id, source, text, prompt, signal),
       readMaterial: (items, question, callId) => this.readMaterial(id, items, question, signal, callId) };
 
