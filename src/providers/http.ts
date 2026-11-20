@@ -55,7 +55,7 @@ export function classify(label: string, status: number, headers: Headers, body: 
   const text = `${label}: HTTP ${status}: ${clip(scrub(msg.trim() || "no body"))}`;
   const low = body.toLowerCase();
   const wait = retryAfter(headers);
-  if (/context.{0,20}(length|window)|too many tokens|prompt is too long|maximum context|input.{0,20}too long/.test(low))
+  if (/context.{0,20}(length|window)|too many tokens|prompt is too long|maximum context|input.{0,20}too long|input token count|exceeds? the maximum number of tokens|exceed.{0,20}token limit|exceed.{0,30}context/.test(low))
     return new ProviderError("context", text, status);
   if (status === 401 || status === 403) return new ProviderError("auth", text, status);
   if (status === 402 || /insufficient_quota|quota|billing|credit|balance|usage limit|plan limit/.test(low) && status === 429)

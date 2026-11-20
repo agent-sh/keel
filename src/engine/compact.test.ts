@@ -5,7 +5,7 @@
 // adds nothing, a note for the model adds its text, an attached text file adds
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
-import { contextTokens, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, ownerMedia, ownerWords, summaryMessage, utf8Bytes } from "./compact.ts";
+import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, ownerMedia, ownerWords, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -15,12 +15,12 @@ const tail = (...e: any[]) => contextTokens([...measured, ...e]).estimated;
 test("the estimated tail follows the next request", () => {
   expect(tail(ev("assistant", { blocks: [{ type: "text", text: "x".repeat(4000) }], usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 }, stop: "refusal" }))).toBe(0);
   expect(tail(ev("note", { text: "x".repeat(4000) }))).toBe(0);
-  expect(tail(ev("note", { text: "x".repeat(4000), model: true }))).toBe(1000);
+  expect(tail(ev("note", { text: "x".repeat(4000), model: true }))).toBe(4000 / BYTES_PER_TOKEN);
   const file = { type: "attachment", id: "a".repeat(64), name: "log.txt", media_type: "text/plain", size: 96_000 };
   expect(tail(ev("user", { text: "", images: [file] }))).toBeGreaterThan(24_000);
   expect(utf8Bytes("מוכן")).toBe(8);
   expect(utf8Bytes("🌍")).toBe(4);
-  expect(tail(ev("user", { text: "ש".repeat(1000) }))).toBe(500);
+  expect(tail(ev("user", { text: "ש".repeat(1000) }))).toBe(2000 / BYTES_PER_TOKEN);
 });
 
 const file = (name: string, size: number) => ({ type: "attachment", id: "0".repeat(64), name, media_type: "application/pdf", size });
@@ -57,4 +57,69 @@ test("files travel with their message through repeated compactions, the older on
   const over = run(half + 1);
   expect(over[0]).toEqual({ type: "text", text: "[An attached file (a.pdf) the owner sent with this message is no longer in the context.]" });
   expect(over.slice(1)).toEqual([{ type: "text", text: "<message>\nolder caption\n</message>" }, file("b.pdf", half + 1), { type: "text", text: "<message>\nnewer caption\n</message>" }] as any);
+});
+
+// A history no provider has counted (an imported one) is estimated whole at
+// the model's bytes a token; a model's ratio follows what its provider reports.
+test("an unmeasured history is counted at the model's own bytes a token", () => {
+  const big = [ev("user", { text: "go" }), ev("assistant", { blocks: [{ type: "text", text: "x".repeat(100_000) }], stop: "end_turn", imported: true })];
+  const t = contextTokens(big, "lab:dense");
+  expect(t.measured).toBe(0);
+  expect(t.used).toBeGreaterThan(100_000 / BYTES_PER_TOKEN);
+  // Too small a request teaches nothing; a real one sets the ratio, the next moves it a fifth of the way.
+  expect(learnRatio("lab:dense", 3_000, 1_000)).toBeUndefined();
+  expect(learnRatio("lab:dense", 400_000, 100_000)).toBe(4);
+  expect(learnRatio("lab:dense", 300_000, 100_000)).toBeCloseTo(3.8);
+  expect(bytesPerToken("lab:dense")).toBeCloseTo(3.8);
+  expect(bytesPerToken("lab:never-seen")).toBe(BYTES_PER_TOKEN);
+  expect(contextTokens(big, "lab:dense").used).toBeLessThan(t.used);
+  // A request refused as over the window proves a lower ratio; one that proves nothing new changes nothing.
+  expect(capRatio("lab:dense", 500_000, 100_000)).toBeUndefined();
+  expect(capRatio("lab:dense", 200_000, 100_000)).toBeCloseTo(1.8);
+  expect(contextTokens(big, "lab:dense").used).toBeGreaterThan(t.used);
+});
+
+const turn = (n: number, out: string) => [
+  { role: "user" as const, content: [{ type: "text" as const, text: `prompt ${n}` }] },
+  { role: "assistant" as const, content: [{ type: "thinking", thinking: "hidden", signature: "s" } as any, { type: "tool_use" as const, id: `t${n}`, name: "Bash", input: { command: `run ${n}` } }] },
+  { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: `t${n}`, content: out }] },
+  { role: "assistant" as const, content: [{ type: "text" as const, text: `done ${n}` }] },
+];
+
+test("a history too long for one request: outputs shortened oldest first, then parts", () => {
+  const msgs = [1, 2, 3, 4].flatMap((n) => turn(n, `START${n} ${"o".repeat(6_000)} END${n}`));
+  // It fits: one part, nothing shortened, no reasoning in it.
+  const whole = transcriptParts(msgs, 100_000);
+  expect(whole.parts).toHaveLength(1);
+  expect(whole.clipped).toBe(0);
+  expect(whole.parts[0]).not.toContain("hidden");
+  expect(whole.parts[0]).toContain("[assistant called Bash (t3)]");
+  // A little over: only the oldest outputs lose their middle, and it is still one part.
+  const some = transcriptParts(msgs, 16_000);
+  expect(some.parts).toHaveLength(1);
+  expect(some.clipped).toBe(3);
+  expect(some.parts[0]).toMatch(/START1 o+\n\[\.\.\. \d+ bytes/);
+  expect(some.parts[0]).toContain(`START4 ${"o".repeat(6_000)} END4`);
+  // Far over: every output shortened and the transcript in parts, oldest first,
+  // each within the budget, with every prompt and reply in exactly one of them.
+  const long = [...Array(30).keys()].flatMap((n) => turn(n, "o".repeat(6_000)));
+  const cut = transcriptParts(long, 20_000);
+  expect(cut.clipped).toBe(30);
+  expect(cut.parts.length).toBeGreaterThan(2);
+  for (const p of cut.parts) expect(utf8Bytes(p)).toBeLessThanOrEqual(20_000);
+  const joined = cut.parts.join("");
+  for (let n = 0; n < 30; n++) expect(joined.split(`[user]\nprompt ${n}\n`)).toHaveLength(2);
+  expect(joined.indexOf("prompt 3\n")).toBeLessThan(joined.indexOf("prompt 17\n"));
+  // One piece larger than a part keeps its start and end.
+  const giant = transcriptParts([{ role: "user", content: [{ type: "text", text: `HEAD ${"g".repeat(50_000)} TAIL` }] }], 5_000);
+  expect(giant.parts).toHaveLength(1);
+  expect(utf8Bytes(giant.parts[0]!)).toBeLessThanOrEqual(5_001);
+  expect(giant.parts[0]).toContain("HEAD");
+  expect(giant.parts[0]).toContain("TAIL");
+  // A later part's request carries the summary so far and says more follows.
+  const mid = partPrompt("PART", 1, 3, "SO FAR", 30);
+  expect(mid).toContain("<summary>\nSO FAR\n</summary>");
+  expect(mid).toContain('<transcript part="2" of="3">');
+  expect(mid).toContain("The next part follows");
+  expect(partPrompt("PART", 2, 3, "SO FAR", 0, "the port")).toContain("Keep above all: the port");
 });

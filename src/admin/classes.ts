@@ -15,7 +15,7 @@ const KIND: Record<string, ErrorClass> = {
 const WORDS: [RegExp, ErrorClass][] = [
   [/overloaded/i, "overloaded"],
   [/rate.?limit|too many requests|throttl/i, "rate_limit"],
-  [/prompt is too long|context.?(window|length)|maximum context|too many tokens|input is too long/i, "context_overflow"],
+  [/prompt is too long|context.?(window|length)|maximum context|too many tokens|input is too long|input token count|exceeds? the maximum number of tokens|exceed.{0,30}context/i, "context_overflow"],
   [/unauthori[sz]ed|forbidden|invalid.{0,12}(api.?key|token|credential)|expired.{0,12}token|no credentials/i, "auth"],
   [/quota|billing|insufficient.{0,10}(credit|balance|funds)|payment/i, "quota"],
   [/econnreset|econnrefused|etimedout|socket|terminated|stream (ended|closed|broke|went silent)|premature close|fetch failed|network|timed? ?out/i, "stream_drop"],

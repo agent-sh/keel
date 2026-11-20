@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ProviderError, streamEvents } from "./http.ts";
+import { classify, ProviderError, streamEvents } from "./http.ts";
 
 // A stream that sends one event and then nothing is cut after the idle
 // timeout as a retryable network failure, not left hanging.
@@ -24,3 +24,15 @@ test("a stalled stream is cut as a retryable failure", async () => {
     server.stop(true);
   }
 }, 3000);
+
+// A request over the model's window is refused in each provider's own words;
+// all of them must read as an overflow (the turn compacts and goes on).
+test("each provider's over-the-window refusal is a context error", () => {
+  const kind = (message: string) => classify("p", 400, new Headers(), JSON.stringify({ error: { message } })).kind;
+  expect(kind("prompt is too long: 215000 tokens > 200000 maximum")).toBe("context");
+  expect(kind("This model's maximum context length is 128000 tokens.")).toBe("context");
+  expect(kind("The input token count exceeds the maximum number of tokens allowed (1048576); input token count: 1371861.")).toBe("context");
+  expect(kind("the request exceeds the available context size, try increasing it")).toBe("context");
+  expect(kind("Invalid value for tool_choice.")).toBe("invalid");
+  expect(kind("max_tokens: 100000 > 64000, which is the maximum allowed number of output tokens")).toBe("invalid");
+});

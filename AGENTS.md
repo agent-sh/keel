@@ -21,6 +21,12 @@ under `~/.cache/keel-work/bun/research/`.
   file (`src/tools/spill.ts`), a long fetched page read by a cheaper reader model
   (`src/engine/reader.ts`), and idle compaction before a long context's cache
   expires (`src/engine/compact.ts`).
+- A request counted over the model's window is never sent: the context is
+  compacted first. A context no provider has counted yet (an imported history)
+  is counted from its bytes at the model's own bytes a token, learned from what
+  its provider reports (`token_ratios`). A history too long for one summary
+  request is read as a text transcript: long tool outputs shortened oldest first,
+  then in parts, each with the summary of the parts before it.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the

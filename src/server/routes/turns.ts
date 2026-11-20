@@ -1,7 +1,7 @@
 // Turn control and the session tree: queue, resume, compaction, context, head
 // (branch switch), fork.
 import { leafOf, lineage } from "../../core/tree.ts";
-import { checkpointAt, contextTokens, COMPACT_SHARE, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
+import { bytesPerToken, checkpointAt, contextTokens, COMPACT_SHARE, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
 import { resolveAttachments } from "../../engine/attachments.ts";
 import { toMessages } from "../../engine/turn.ts";
 import type { RouteModule } from "../app.ts";
@@ -94,7 +94,7 @@ export const turnRoutes: RouteModule = (deps) => {
         if (!s) return bad("no such session", 404);
         const info = (await providers.models()).find((m) => m.id === s.model);
         const events = engine.lineage(s.id);
-        const t = contextTokens(events);
+        const t = contextTokens(events, s.model);
         const zones: Record<string, number> = { conversation: 0, thinking: 0, tool_calls: 0, tool_results: 0, summary: 0 };
         // The summary is the blocks the checkpoint event produced (they lead the
         // first message), not any text that reads like one.
@@ -126,7 +126,7 @@ export const turnRoutes: RouteModule = (deps) => {
           estimated_tokens: t.estimated,
           last_usage: t.last ?? null,
           compacts_at_tokens: s.settings.compact_at ?? Math.floor(window * COMPACT_SHARE),
-          zones: Object.entries(zones).map(([key, bytes]) => ({ key, bytes, estimated_tokens: Math.round(bytes / 4) })),
+          zones: Object.entries(zones).map(([key, bytes]) => ({ key, bytes, estimated_tokens: Math.round(bytes / bytesPerToken(s.model)) })),
           usage_total: s.usage,
         });
       },

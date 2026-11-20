@@ -9,7 +9,7 @@
 // request gets depends only on the request and how often that exact request
 // was sent before, so a retry sees the next step of the same scenario.
 import type { Message } from "../core/types.ts";
-import { ProviderError } from "./http.ts";
+import { classify, ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 
 export const SCRIPTED_ENV = "KEEL_SCRIPTED_PROVIDER";
@@ -18,6 +18,13 @@ export const scriptedEnabled = () => process.env[SCRIPTED_ENV] === "1";
 // A small window, so a few long replies reach the compaction threshold.
 const WINDOW = 8_000;
 const OUTPUT = 2_000;
+// The strict stand-in counts like a real provider: the whole request (system,
+// tools and messages) at 2.5 bytes a token, the ratio of long tool-heavy
+// sessions, and refuses one over its window in a provider's own words. Its
+// window holds the system prompt and the tools a few times over.
+const STRICT = "stand-in-strict";
+const STRICT_WINDOW = 80_000;
+const STRICT_BYTES = 2.5;
 
 const textOf = (m: Message | undefined) =>
   (m?.content as any[] | undefined)?.filter((b) => b.type === "text").map((b) => b.text).join("\n") ?? "";
@@ -40,6 +47,7 @@ export class ScriptedProvider implements Provider {
       { model: "stand-in", name: "Scripted stand-in", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
       { model: "stand-in-backup", name: "Scripted backup", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
       // Says it reads no images: the composer holds a new screenshot for it.
+      { model: STRICT, name: "Scripted strict window", context: STRICT_WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
       { model: "stand-in-text", name: "Scripted text only", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, images: false },
     ];
   }
@@ -55,6 +63,13 @@ export class ScriptedProvider implements Provider {
     // Everything but the newest message counts as read from cache.
     const usage = { input: tokens(last), cache_read: tokens(msgs.slice(0, -1)) + tokens(req.system) / 8, cache_write: 0, output: 0 };
     usage.cache_read = Math.round(usage.cache_read);
+    if (req.model === STRICT) {
+      const count = (v: unknown) => Math.ceil(Buffer.byteLength(typeof v === "string" ? v : JSON.stringify(v)) / STRICT_BYTES);
+      const total = count(req.system) + count(req.tools.map((t: any) => [t.name, t.description, t.input_schema])) + count(msgs);
+      if (total > STRICT_WINDOW) throw classify("Scripted", 400, new Headers(), JSON.stringify({ error: { code: 400, message: `The input token count exceeds the maximum number of tokens allowed (${STRICT_WINDOW}); input token count: ${total}.`, status: "INVALID_ARGUMENT" } }));
+      usage.input = count(last);
+      usage.cache_read = total - usage.input;
+    }
 
     const reply = async (text: string, stop = "end_turn", extra: any[] = []): Promise<ProviderResult> => {
       for (const part of text.match(/.{1,40}/gs) ?? []) {
@@ -65,6 +80,9 @@ export class ScriptedProvider implements Provider {
       return { blocks: [{ type: "text", text }, ...extra], usage, stop, model: req.model };
     };
 
+    // A history read as a transcript in parts: the summary names the part it reached.
+    const part = lastText.match(/^\[harness\] The context is being compacted, .* in (\d+) parts, oldest first; this is part (\d+)\./);
+    if (part) return reply(`Goal: the owner is checking a history longer than the window. State: read part ${part[2]} of ${part[1]} of the transcript${lastText.includes("<summary>") ? ", after the summary of the parts before it" : ""}.`);
     if (lastText.includes("[harness] The context is being compacted")) {
       return reply("Goal: the owner is checking how the harness handles provider failures. State: the scripted scenario ran; next, answer the newest prompt.");
     }

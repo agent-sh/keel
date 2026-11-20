@@ -163,9 +163,9 @@ export function questionForm(name: string, input: Json): { message: string; requ
 }
 
 // What the context holds now and what it can hold, for usage_update.
-export function usageOf(events: StoredEvent[], context: number | undefined, cost: number | undefined): Json | null {
+export function usageOf(events: StoredEvent[], context: number | undefined, cost: number | undefined, model?: string): Json | null {
   if (!context) return null;
-  return { sessionUpdate: "usage_update", used: contextTokens(events).used, size: context, ...(typeof cost === "number" ? { cost: { amount: Number(cost.toFixed(6)), currency: "USD" } } : {}) };
+  return { sessionUpdate: "usage_update", used: contextTokens(events, model).used, size: context, ...(typeof cost === "number" ? { cost: { amount: Number(cost.toFixed(6)), currency: "USD" } } : {}) };
 }
 
 export type DaemonApi = {
@@ -503,7 +503,7 @@ export class AcpBridge {
       const r = await this.daemon.get(`/api/sessions/${sessionId}`);
       if (!this.models) await this.modelOptions();
       const m = this.models!.find((x) => x.id === r.session.model);
-      const u = usageOf(lineage(r.events ?? [], r.session.head ?? null), m?.context, r.session.usage?.cost);
+      const u = usageOf(lineage(r.events ?? [], r.session.head ?? null), m?.context, r.session.usage?.cost, r.session.model);
       if (u) this.notify(sessionId, u);
     } catch (e) {
       this.log(`usage of ${sessionId}: ${(e as Error).message}`);

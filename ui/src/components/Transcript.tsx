@@ -266,6 +266,7 @@ function Checkpoint({ e, s, undoable }: { e: StoredEvent; s: Session; undoable?:
             <Layers className="size-3.5" />
             {e.data.label ? e.data.label : e.data.trigger === "idle" ? "Context compacted: the cache expired while the session was idle, so a summary written before it did replaces the history" : e.data.ahead ? "Context compacted with a summary prepared ahead; the newest steps stay as they were" : e.data.auto ? "Context compacted automatically" : "Context compacted"}
             {e.data.tokens_before ? `, ${fmtTokens(e.data.tokens_before)} tokens into a summary` : ""}
+            {e.data.parts ? ` (too long for one request: read as a transcript${e.data.parts > 1 ? ` in ${e.data.parts} parts` : ""}${e.data.outputs_shortened ? `, ${e.data.outputs_shortened} long tool outputs shortened` : ""})` : ""}
             <ChevronDown className="size-3 -rotate-90 transition-transform group-open/cp:rotate-0" />
           </span>
         </Divider>

@@ -124,7 +124,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
       const s = store.session(ctx.sessionId);
       if (!s) return fail("NOT_AVAILABLE: this session is gone.");
       const line = engine.lineage(s.id);
-      const used = contextTokens(line).used;
+      const used = contextTokens(line, s.model).used;
       const info = await modelOf(s);
       const window = info?.context;
       const compacts = s.settings.compact_at ?? (window ? Math.floor(window * COMPACT_SHARE) : undefined);
@@ -154,7 +154,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
       const line = engine.lineage(s.id);
       append(s.id, "compaction", {
         mode: "summary", summary: h, owner_messages: ownerWords(line), owner_media: ownerMedia(line), auto: true, trigger: "model",
-        tokens_before: contextTokens(line).used, label: "The model started a fresh context with a handoff note",
+        tokens_before: contextTokens(line, s.model).used, label: "The model started a fresh context with a handoff note",
       });
       emitSession(s.id);
     },
@@ -232,7 +232,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           const before = line.slice(0, at);
           head = append(s.id, "compaction", {
             mode: "summary", summary, owner_messages: ownerWords(before), owner_media: ownerMedia(before), focus, auto: false, trigger: "owner",
-            covered: line[at - 1]!.id, range: "up_to", from_event: ev.id, tokens_before: contextTokens(line).used, usage, model: res.model_id,
+            covered: line[at - 1]!.id, range: "up_to", from_event: ev.id, tokens_before: contextTokens(line, s.model).used, usage, model: res.model_id,
             label: "Summarized everything before a prompt; it and what follows stay as they were",
           });
         }

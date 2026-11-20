@@ -88,7 +88,7 @@ type Entry = { text: string; media: PromptBlock[] };
 
 // The owner's own messages since the last checkpoint (and those the last
 // summary kept), with their images and files.
-function ownerEntries(lineage: StoredEvent[]): Entry[] {
+function ownerEntries(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): Entry[] {
   let all: Entry[] = [];
   const at: number[] = []; // the index of each message's event
   lineage.forEach((e, i) => {
@@ -112,12 +112,12 @@ function ownerEntries(lineage: StoredEvent[]): Entry[] {
   let bytes = 0;
   for (let i = all.length - 1; i >= 0; i--) {
     const b = Buffer.byteLength(all[i]!.text);
-    if (bytes + b <= OWNER_WORDS_BYTES) {
+    if (bytes + b <= budget) {
       bytes += b;
       kept.unshift({ ...all[i]! });
       continue;
     }
-    const part = excerpt(all[i]!.text, OWNER_WORDS_BYTES - bytes);
+    const part = excerpt(all[i]!.text, budget - bytes);
     if (part !== null) kept.unshift({ ...all[i]!, text: part });
     break;
   }
@@ -159,13 +159,15 @@ export function excerpt(text: string, budget: number): string | null {
   return head + note(total - headBytes - tailBytes) + tail;
 }
 
-export function ownerWords(lineage: StoredEvent[]): string[] {
-  return ownerEntries(lineage).map((e) => e.text);
+// `budget`: the bytes of owner words to keep, when the model's window is too
+// small for OWNER_WORDS_BYTES (they must fit it beside the summary).
+export function ownerWords(lineage: StoredEvent[], budget?: number): string[] {
+  return ownerEntries(lineage, budget).map((e) => e.text);
 }
 
 // Aligned with ownerWords; absent when no kept message carried an image or a file.
-export function ownerMedia(lineage: StoredEvent[]): PromptBlock[][] | undefined {
-  const m = ownerEntries(lineage).map((e) => e.media);
+export function ownerMedia(lineage: StoredEvent[], budget?: number): PromptBlock[][] | undefined {
+  const m = ownerEntries(lineage, budget).map((e) => e.media);
   return m.some((x) => x.length) ? m : undefined;
 }
 
@@ -182,10 +184,53 @@ export function summaryMessage(data: { summary: string; owner_messages?: string[
   return { role: "user", content };
 }
 
+// UTF-8 bytes of request content per token, for the part of a context no
+// provider has counted yet (an imported history, the events since the last
+// reply). Measured replies of long tool-heavy sessions sit between 2.1 and 3.0
+// bytes a token across Claude and Gemini models (JSON, code and paths split
+// finer than prose), so the 4 bytes a token of English prose undercounts by up
+// to half. A model's own ratio is learned from what its provider reports.
+export const BYTES_PER_TOKEN = 2.5;
+const RATIO_MIN = 1;
+const RATIO_MAX = 5;
+const RATIO_RATE = 0.2; // each new reply moves the learned ratio a fifth of the way (Gemini CLI's adaptive estimate)
+// Below this many counted tokens a request says little about the ratio.
+const RATIO_SAMPLE_TOKENS = 2_000;
+const ratios = new Map<string, number>();
+
+export const bytesPerToken = (model?: string): number => (model && ratios.get(model)) || BYTES_PER_TOKEN;
+
+// A reply's request: the bytes Keel counted for it and the input tokens the
+// provider reported. Returns the model's ratio when the sample moved it.
+export function learnRatio(model: string, bytes: number, tokens: number): number | undefined {
+  if (tokens < RATIO_SAMPLE_TOKENS || bytes <= 0) return undefined;
+  const sample = Math.min(RATIO_MAX, Math.max(RATIO_MIN, bytes / tokens));
+  const have = ratios.get(model);
+  const next = have ? have + (sample - have) * RATIO_RATE : sample;
+  ratios.set(model, next);
+  return next;
+}
+// A request the provider refused as over its window held more than `window`
+// tokens in `bytes` bytes: a ratio that counted it under the window comes down
+// to what the refusal proves, less a tenth. Returns the ratio when it changed.
+export function capRatio(model: string, bytes: number, window: number): number | undefined {
+  if (bytes <= 0 || window <= 0) return undefined;
+  const cap = Math.max(RATIO_MIN, (bytes / window) * 0.9);
+  if (cap >= bytesPerToken(model)) return undefined;
+  ratios.set(model, cap);
+  return cap;
+}
+export function setRatio(model: string, ratio: number) {
+  if (ratio >= RATIO_MIN && ratio <= RATIO_MAX) ratios.set(model, ratio);
+}
+
 // Tokens the next request will carry: what the provider counted on the last
-// response of this context, plus the bytes appended since at ~4 bytes a token.
-export function contextTokens(lineage: StoredEvent[]): { used: number; measured: number; estimated: number; last?: Usage } {
+// response of this context, plus the bytes appended since at the model's
+// bytes a token. A context with no counted reply (an imported history) is
+// estimated whole.
+export function contextTokens(lineage: StoredEvent[], model?: string): { used: number; measured: number; estimated: number; last?: Usage } {
   const cp = checkpointAt(lineage);
+  const per = bytesPerToken(model);
   let measured = 0;
   let last: Usage | undefined;
   // A reply measured before the checkpoint counted the history it replaced.
@@ -200,18 +245,28 @@ export function contextTokens(lineage: StoredEvent[]): { used: number; measured:
     }
   }
   let bytes = 0;
-  for (let i = after; i < lineage.length; i++) bytes += tailBytes(lineage[i]!);
-  const estimated = Math.round(bytes / 4);
+  for (let i = after; i < lineage.length; i++) bytes += tailBytes(lineage[i]!, per);
+  const estimated = Math.round(bytes / per);
   return { used: measured + estimated, measured, estimated, last };
 }
 
+// The bytes of the context as the next request carries it (the checkpoint's
+// summary and everything after it), in the estimate's own measure.
+export function contextBytes(lineage: StoredEvent[], model?: string): number {
+  const cp = checkpointAt(lineage);
+  const per = bytesPerToken(model);
+  let bytes = 0;
+  for (let i = Math.max(0, Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at)); i < lineage.length; i++) bytes += tailBytes(lineage[i]!, per);
+  return bytes;
+}
+
 // UTF-8 bytes of a value as JSON, with each image counted at its estimated
-// token cost (4 bytes a token, as the rest of the estimate) instead of its base64.
-function jsonBytes(v: unknown): number {
+// token cost (`per` bytes a token, as the rest of the estimate) instead of its base64.
+function jsonBytes(v: unknown, per = BYTES_PER_TOKEN): number {
   let images = 0;
   const text = JSON.stringify(v, (_k, x) => {
     if (x && typeof x === "object" && x.type === "image" && typeof x.data === "string") {
-      images += imageTokens(x) * 4;
+      images += imageTokens(x) * per;
       return { type: "image" };
     }
     return x;
@@ -243,16 +298,99 @@ const PATH_NOTE_BYTES = 330;
 // the model adds its text, and an attached file adds what it resolves to (its
 // text when it goes inline, else the note with its path; a PDF read natively
 // is model-specific and counted as that note).
-function tailBytes(e: StoredEvent): number {
+function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
   if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : utf8Bytes(JSON.stringify(e.data.blocks ?? []));
-  if (e.kind === "tool_result") return jsonBytes(e.data.results ?? []);
+  if (e.kind === "tool_result") return jsonBytes(e.data.results ?? [], per);
   if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
-  if (e.kind === "compaction") return jsonBytes(e.data);
+  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media }, per) : 0;
   if (e.kind !== "user") return 0;
   let n = utf8Bytes(String(e.data.text ?? ""));
   for (const b of (e.data.images ?? []) as any[]) {
-    if (b.type !== "attachment") n += jsonBytes(b);
+    if (b.type !== "attachment") n += jsonBytes(b, per);
     else n += b.size <= TEXT_INLINE && (TEXT_MEDIA.test(b.media_type) || b.media_type === "application/octet-stream") ? b.size + PATH_NOTE_BYTES : PATH_NOTE_BYTES;
   }
   return n;
+}
+
+// --- A history too long for one summary request ---
+// The summary is normally written on the session's own request (its cached
+// prefix). When that request would not fit the model's window, the history
+// goes as a plain-text transcript instead (no media, no reasoning, as OpenCode
+// and pi serialize it): tool outputs are shortened oldest first until it fits
+// one request; when it still does not, it is cut into parts read oldest
+// first, each with the summary of the parts before it, so nothing is left out.
+
+// What a shortened tool output keeps (its start and end), as OpenCode and pi cut them.
+export const TRANSCRIPT_CLIP = 2_000;
+
+type Piece = { text: string; output?: boolean };
+
+function pieces(m: Message): Piece[] {
+  const out: Piece[] = [];
+  const who = m.role === "assistant" ? "assistant" : "user";
+  for (const b of m.content as any[]) {
+    if (b.type === "text") { if (b.text) out.push({ text: `[${who}]\n${b.text}\n` }); }
+    else if (b.type === "tool_use") out.push({ text: `[assistant called ${b.name} (${b.id})]\n${JSON.stringify(b.input ?? {})}\n` });
+    else if (b.type === "tool_result") {
+      const body = typeof b.content === "string" ? b.content : (b.content ?? []).map((c: any) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n");
+      out.push({ text: `[result of ${b.tool_use_id}${b.is_error ? ", an error" : ""}]\n${body}\n`, output: true });
+    } else if (b.type === "image") out.push({ text: `[${who} sent an image]\n` });
+    else if (b.type === "attachment") out.push({ text: `[${who} attached the file ${b.name}]\n` });
+    // thinking and other provider blocks are not part of the transcript
+  }
+  return out;
+}
+
+// The conversation as transcript parts of at most `budget` UTF-8 bytes each,
+// oldest first. `clipped`: tool outputs that were shortened to fit.
+export function transcriptParts(messages: Message[], budget: number): { parts: string[]; clipped: number } {
+  const all = messages.flatMap(pieces);
+  const size = all.map((p) => utf8Bytes(p.text));
+  let total = size.reduce((a, b) => a + b, 0);
+  let clipped = 0;
+  for (let i = 0; i < all.length && total > budget; i++) {
+    if (!all[i]!.output || size[i]! <= TRANSCRIPT_CLIP) continue;
+    const cut = excerpt(all[i]!.text, TRANSCRIPT_CLIP);
+    if (cut === null) continue;
+    total -= size[i]!;
+    all[i] = { text: cut.endsWith("\n") ? cut : cut + "\n", output: true };
+    size[i] = utf8Bytes(all[i]!.text);
+    total += size[i]!;
+    clipped++;
+  }
+  const parts: string[] = [];
+  let cur = "";
+  let bytes = 0;
+  for (let i = 0; i < all.length; i++) {
+    let text = all[i]!.text;
+    let n = size[i]!;
+    // One piece larger than a part keeps its start and end.
+    if (n > budget) {
+      text = (excerpt(text, budget) ?? "") + "\n";
+      n = utf8Bytes(text);
+    }
+    if (bytes + n > budget && cur) {
+      parts.push(cur);
+      cur = "";
+      bytes = 0;
+    }
+    cur += text;
+    bytes += n;
+  }
+  if (cur) parts.push(cur);
+  return { parts, clipped };
+}
+
+// The request for one part: the summary of the parts before it, the part, and
+// what to write. The last part asks for the summary the context continues from.
+export function partPrompt(part: string, k: number, n: number, sofar: string, clipped: number, focus?: string): string {
+  return [
+    `[harness] The context is being compacted, and the conversation is too long to read in one request. It is given as a plain-text transcript${n > 1 ? ` in ${n} parts, oldest first; this is part ${k + 1}` : ""}.${clipped ? " Long tool outputs in it were shortened to their start and end." : ""}`,
+    sofar ? `\nYour summary of the parts before this one:\n<summary>\n${sofar}\n</summary>` : "",
+    `\n<transcript${n > 1 ? ` part="${k + 1}" of="${n}"` : ""}>\n${part}</transcript>\n`,
+    k < n - 1
+      ? `Write the summary of the conversation up to the end of this part: ${sofar ? "your summary above brought up to date with this part, keeping everything in it that still matters" : "everything in it that the work still needs"}. The next part follows in the next request, with your summary.`
+      : sofar ? "This is the last part. Write the final summary: your summary above brought up to date with this part." : "",
+    summaryPrompt(focus).replace("[harness] The context is being compacted. ", ""),
+  ].filter(Boolean).join("\n");
 }

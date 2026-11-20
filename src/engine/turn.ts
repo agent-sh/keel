@@ -19,7 +19,7 @@ import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, lastWarm, ownerMedia, ownerWords, PREPARE_SHARE, summaryMessage, summaryPrompt } from "./compact.ts";
 import { retention } from "./cachewarn.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
@@ -197,6 +197,15 @@ function sessionPrompt(cwd: string, created: number): string {
 
 type Running = { abort: AbortController; done: Promise<void> };
 // `native`: the request carries deferred tools (src/tools/defer.ts), refreshed per request.
+// A transcript request the provider refused as too long is built again at
+// these shares of the room (OpenCode's ladder), then the failure stands.
+const SHRINK_STEPS = [1, 0.7, 0.5, 0.35];
+// A part never gets smaller than this, however small the window.
+const MIN_PART_BYTES = 2_000;
+// Room kept in each part's request for the summary of the parts before it:
+// what the model can write in one reply, at most a quarter of the window.
+const SUMMARY_ROOM_BYTES = (st: Step) => Math.floor(Math.min(st.info.output, st.info.context / 4) * bytesPerToken(st.info.id));
+
 type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
 
 const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortError" });
@@ -232,6 +241,9 @@ export class Engine {
     store.migrate("CREATE TABLE IF NOT EXISTS prepared_summaries (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, covered TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL)");
     store.migrate("CREATE TABLE IF NOT EXISTS queue_holds (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
     this.held = new Set(store.db.query<{ session_id: string }, []>("SELECT session_id FROM queue_holds").all().map((r) => r.session_id));
+    // Each model's bytes a token, learned from what its provider counted.
+    store.migrate("CREATE TABLE IF NOT EXISTS token_ratios (model TEXT PRIMARY KEY, ratio REAL NOT NULL, ts INTEGER NOT NULL)");
+    for (const r of store.db.query<{ model: string; ratio: number }, []>("SELECT model, ratio FROM token_ratios").all()) setRatio(r.model, r.ratio);
   }
 
   private hold(id: string) {
@@ -644,11 +656,16 @@ export class Engine {
         if (budget > 0 && steps === budget) this.append(id, "user", { text: `[harness] This is the last model step this turn may take (the session's step budget is ${budget}). Do not call tools: reply with where the work stands and what is left to do.`, origin: "harness" });
         let events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
-        const used = contextTokens(events).used;
-        if (events.some((e) => e.kind === "assistant") && used >= limit) {
+        const used = this.used(events, st);
+        // A history with no reply of its own yet (one long first message) is
+        // summarized only when it cannot be sent as it is.
+        if (used >= limit && (used >= st.info.context || events.some((e) => e.kind === "assistant")) && events.at(-1)?.kind !== "compaction") {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
           if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st });
           events = this.lineage(id);
+          // A request counted over the window is never sent.
+          const now = this.used(events, st);
+          if (now >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): continue on a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
         } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events)) {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
@@ -662,8 +679,10 @@ export class Engine {
           res = await this.call(id, st, messages, signal, partial, session);
         } catch (e) {
           // The request no longer fits the window: compact once and go on.
-          if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit) {
+          // (A context that is a fresh summary already has nothing left to compact.)
+          if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit && events.findLast((x) => x.kind !== "note" && x.kind !== "turn_start" && !(x.kind === "user" && x.data.origin === "harness"))?.kind !== "compaction") {
             compactedForFit = true;
+            this.refused(st, events);
             await this.compactNow(id, { auto: true, trigger: "overflow", signal, step: st });
             continue;
           }
@@ -676,6 +695,7 @@ export class Engine {
         }
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
         const u: Usage = res.usage; // priced by the registry from the model's listed price
+        this.learn(st, events, u);
         usage = addUsage(usage, u);
         this.store.addUsage(id, u);
         this.emitSession(id);
@@ -755,7 +775,7 @@ export class Engine {
       if (!signal.aborted) {
         const events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
-        if (contextTokens(events).used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
+        if (this.used(events, st) >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
         this.scheduleIdle(id, st);
       }
       for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
@@ -857,7 +877,7 @@ export class Engine {
     if (!session || session.settings.idle_compact === false) return;
     const events = this.lineage(id);
     const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
-    if (contextTokens(events).used < idleMinTokens(limit)) return;
+    if (this.used(events, st) < idleMinTokens(limit)) return;
     const life = retention(st.provider.wire, events, st.info.id).sure;
     if (life < 2 * IDLE_MARGIN_MS) return; // a five-minute cache leaves no idle time to use
     const due = lastWarm(events) + life - IDLE_MARGIN_MS - Date.now();
@@ -884,16 +904,14 @@ export class Engine {
     if (have && events.some((e) => e.id === have.covered) && events.findIndex((e) => e.id === have.covered) > checkpointAt(events).at && (!idle || have.covered === covered.id)) return;
     this.preparing.add(id);
     const session = this.store.session(id)!;
-    const ask: Message[] = [...toMessages(events), { role: "user", content: [{ type: "text", text: summaryPrompt() }] }];
-    const before = contextTokens(events).used;
+    const before = this.used(events, st);
     const t0 = Date.now();
-    this.call(id, st, ask, new AbortController().signal, new Map(), session, true, "summary")
+    this.summarize(id, st, session, events, new AbortController().signal)
       .then((res) => {
-        this.store.addUsage(id, res.usage);
         this.emitSession(id);
-        const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-        if (res.stop === "refusal" || !summary) return;
-        const data = { mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const summary = res.summary;
+        if (!summary) return;
+        const data = { mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), owner_messages: ownerWords(events, this.wordsBudget(st)), owner_media: ownerMedia(events, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
       .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
@@ -913,6 +931,89 @@ export class Engine {
     return true;
   }
 
+  // Bytes of what every request carries before the conversation.
+  private prefixBytes(st: Step): number {
+    return utf8Bytes(st.system ?? "") + utf8Bytes(JSON.stringify((st.tools ?? []).map((t) => [t.name, t.description, t.input_schema])));
+  }
+
+  // Tokens the next request of this context carries, as this model counts
+  // them. A context no reply has measured (an imported history, a fresh
+  // checkpoint) is estimated whole from its bytes; the system prompt and the
+  // tools are not in that estimate (they fit in the room the compaction share leaves).
+  private used(events: StoredEvent[], st: Step): number {
+    return contextTokens(events, st.info.id).used;
+  }
+
+  // What the provider counted for a request against the bytes Keel counted
+  // for it: the model's bytes a token, kept across restarts.
+  private learn(st: Step, events: StoredEvent[], u: Usage) {
+    try {
+      const ratio = learnRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), u.input + u.cache_read + u.cache_write);
+      if (ratio) this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [st.info.id, ratio, Date.now()]);
+    } catch (e) {
+      this.errors.capture("server", e, { at: "learning the token ratio", model: st.info.id });
+    }
+  }
+
+  // The owner's words kept verbatim through a compaction: OWNER_WORDS_BYTES,
+  // or a quarter of a window too small to hold that beside the summary.
+  private wordsBudget(st: Step): number {
+    return Math.min(OWNER_WORDS_BYTES, Math.floor((st.info.context / 4) * bytesPerToken(st.info.id)));
+  }
+
+  // The provider refused this context as over the model's window: Keel's count
+  // of it was too low, so the model's bytes a token come down to fit the refusal.
+  private refused(st: Step, events: StoredEvent[]) {
+    const ratio = capRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), st.info.context);
+    if (ratio) this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [st.info.id, ratio, Date.now()]);
+  }
+
+  // The summary of a context. Written on the session's own request (tools and
+  // system unchanged, so that call reads the history from cache) when the
+  // request fits the model's window. A history that does not fit (an imported
+  // one, a window smaller than the model it came from) is read as a text
+  // transcript: tool outputs shortened oldest first until one request holds
+  // it, else in parts oldest first, each with the summary of the parts before
+  // it. A request the provider still refuses as too long is built again smaller.
+  private async summarize(id: string, st: Step, session: Session, events: StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
+    let usage = emptyUsage();
+    const one = async (ask: Message[]) => {
+      const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary"); // the summary is not a reply
+      usage = addUsage(usage, res.usage);
+      this.store.addUsage(id, res.usage);
+      return res.stop === "refusal" ? "" : res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+    };
+    const messages = toMessages(events);
+    let over: unknown;
+    if (!(this.used(events, st) >= st.info.context)) {
+      try {
+        return { summary: await one([...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(focus) }] }]), usage };
+      } catch (e) {
+        if (signal.aborted || (e as any)?.kind !== "context") throw e;
+        over = e;
+        this.refused(st, events);
+      }
+    }
+    // What one request can hold of the transcript: the compaction share of
+    // the window less the request's own prefix, in this model's bytes a token.
+    const room = Math.floor(st.info.context * COMPACT_SHARE * bytesPerToken(st.info.id)) - this.prefixBytes(st);
+    for (const share of SHRINK_STEPS) {
+      const { parts, clipped } = transcriptParts(messages, Math.max(MIN_PART_BYTES, Math.floor(room * share) - SUMMARY_ROOM_BYTES(st)));
+      try {
+        let summary = "";
+        for (let k = 0; k < parts.length; k++) {
+          summary = await one([{ role: "user", content: [{ type: "text", text: partPrompt(parts[k]!, k, parts.length, summary, clipped, focus) }] }]);
+          if (!summary) return { summary, usage };
+        }
+        return { summary, usage, parts: parts.length, clipped };
+      } catch (e) {
+        if (signal.aborted || (e as any)?.kind !== "context") throw e;
+        over = e;
+      }
+    }
+    throw over;
+  }
+
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a
   // call that would not fit) or on the owner's request between turns.
   // `trigger`: what started it (the threshold, a request that did not fit, the owner).
@@ -922,27 +1023,33 @@ export class Engine {
     const messages = toMessages(events);
     if (!messages.length || (events.at(-1)?.kind === "compaction")) throw Object.assign(new Error("nothing to compact"), { status: 409 });
     const st = opts.step ?? (await this.step(session, session.model));
-    const before = contextTokens(events).used;
+    const before = this.used(events, st);
     for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact" }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;
     const t0 = Date.now();
     try {
-      // The same tools and system as the session's turns: that prefix is read from cache.
-      const ask: Message[] = [...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(opts.focus) }] }];
-      const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary"); // the summary is not a reply
+      const res = await this.summarize(id, st, session, events, signal, opts.focus);
       const u: Usage = res.usage;
-      this.store.addUsage(id, u);
-      const summary = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-      if (res.stop === "refusal" || !summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
+      const summary = res.summary;
+      if (!summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
       // Bound to the branch it summarized; the owner's compaction also to no turn having started since.
       const moved = headMoved(events.at(-1)?.id, this.store.session(id)?.head);
-      if (moved) throw moved;
+      // Inside a turn, a note a hook stored for the summary request itself (memory
+      // for the prompt, when the summary is the turn's first request) follows the
+      // summarized events on the same branch: it stays verbatim after the summary.
+      let covered: string | undefined;
+      if (moved) {
+        const now = this.lineage(id);
+        const at = now.findIndex((e) => e.id === events.at(-1)!.id);
+        if (!opts.auto || at < 0 || now.slice(at + 1).some((e) => e.kind !== "note")) throw moved;
+        covered = events.at(-1)!.id;
+      }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", summary, owner_messages: ownerWords(events), owner_media: ownerMedia(events), focus: opts.focus, auto: !!opts.auto,
-        trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0,
+        mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), owner_messages: ownerWords(events, this.wordsBudget(st)), owner_media: ownerMedia(events, this.wordsBudget(st)), focus: opts.focus, auto: !!opts.auto,
+        trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);
       return ev;
@@ -1039,6 +1146,9 @@ export class Engine {
       if (last?.role === "user" && m === extra[0] && m.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, ...m.content] };
       else messages.push(m);
     }
+    // A request counted over the window is never sent.
+    const used = this.used(this.lineage(id), st);
+    if (used >= st.info.context) throw Object.assign(new Error(`The conversation is larger than ${st.info.name}'s window (about ${used} of ${st.info.context} tokens): compact it first.`), { status: 409, code: "context_over_window" });
     const res = await this.call(id, st, messages, signal, new Map(), session, true);
     this.store.addUsage(id, res.usage);
     this.emitSession(id);
