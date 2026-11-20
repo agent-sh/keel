@@ -41,12 +41,12 @@ test("Tacit reuses only the retained transcript of the same version", () => {
     expect(stats.rebuilt).toBe(3);
 
     const moved = store.updateSession(s.id, { workspace: join(dir, "moved") });
-    expect(JSON.parse(read(moved)).cwd).toBe(moved.workspace);
+    expect(JSON.parse(read()).cwd).toBe(moved.workspace);
     expect(stats.rebuilt).toBe(4);
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "No stored model" }] });
     const beforeModel = read(moved);
     const changedModel = store.updateSession(s.id, { model: "fixture:new-model" });
-    const modelUpdated = read(changedModel);
+    const modelUpdated = read(moved);
     expect(beforeModel).toContain('"model":"model"');
     expect(modelUpdated).toContain('"model":"new-model"');
     expect(stats.rebuilt).toBe(6);

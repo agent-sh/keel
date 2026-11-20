@@ -186,12 +186,11 @@ export class Tacit {
     const started = performance.now();
     const stat = this.metrics.transcript;
     try {
-      // Hook callers can hold an old head. Use the current head for both the
-      // cache and the lineage, with the caller's metadata as in the encoder.
+      // Hook callers can hold an old session snapshot. Use one current
+      // snapshot for the cache key and all the fields the encoder reads.
       const current = this.store.session(s.id);
       if (!current) return this.transcriptFile();
-      const { head } = current;
-      const { model, workspace } = s;
+      const { head, model, workspace } = current;
       const cached = this.transcriptVersions.get(s.id);
       if (cached && cached.head === head && cached.model === model && cached.workspace === workspace && cached.stamp === fileStamp(path)) {
         stat.reused++;
@@ -200,7 +199,7 @@ export class Tacit {
       this.transcriptVersions.delete(s.id);
       mkdirSync(dirname(path), { recursive: true });
       // Encode once for the write and reuse its byte length.
-      const bytes = Buffer.from(toJsonl(toClaudeRecords(s, lineage(this.store.events(s.id), head))));
+      const bytes = Buffer.from(toJsonl(toClaudeRecords(current, lineage(this.store.events(s.id), head))));
       writeTranscript(path, bytes);
       const stamp = fileStamp(path);
       if (stamp !== undefined) this.transcriptVersions.set(s.id, { head, model, workspace, stamp });
