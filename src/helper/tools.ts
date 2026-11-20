@@ -3,6 +3,8 @@
 // (registerSessionTools); every other session's tools are unchanged.
 import * as alerts from "../automation/alerts.ts";
 import { clip } from "../automation/core.ts";
+import { agentCounts, sessionState } from "../automation/state.ts";
+import { watchWord } from "../core/watch.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { lineage } from "../core/tree.ts";
 import { whose } from "../engine/compact.ts";
@@ -47,7 +49,7 @@ function find(ref: string): Session {
 
 const sessions: Tool = {
   name: "helper__sessions",
-  description: "The owner's sessions now: id, title, folder, state (working, idle, failed), what waits for them (approvals, questions), unread alerts, running agents, last activity and the last 24 hours' cost. Archived ones with archived: true.",
+  description: "The owner's sessions now: id, title, folder, state (needs you, working, failed, stopped, done, not started; a session whose agents still work is working), what waits for them (approvals, questions), unread alerts, last activity and the last 24 hours' cost. Archived ones with archived: true.",
   input_schema: { type: "object", properties: { archived: { type: "boolean" } }, additionalProperties: false },
   readOnly: true,
   run: (input) => guard(() => {
@@ -58,17 +60,17 @@ const sessions: Tool = {
     let unread: Record<string, number> = {};
     try { unread = alerts.unreadCounts().sessions; } catch {}
     const cost = costs(Date.now() - 86400_000);
-    const kids = store.sessions().filter((s) => s.parent_id);
+    const counts = agentCounts();
     return list.slice(0, 80).map((s) => {
       const st = engine.statusOf(s.id);
-      const state = s.archived ? "archived" : engine.isRunning(s.id) ? `working (${st.kind})` : s.settings.failed_ms ? "failed" : s.phase === "error" ? "error" : s.settings.done_ms ? "done" : "idle";
+      const now = sessionState(s, { counts });
+      const state = s.archived ? "archived" : watchWord(now.watch, now.agents, engine.isRunning(s.id) && now.watch === "work" ? `working (${st.kind})` : undefined);
       const ids = [s.id, ...store.descendants(s.id)];
       const ap = approvals.filter((a) => ids.includes(a.session_id)).length;
       const qs = ids.reduce((n, id) => n + pendingQuestions(id).length, 0);
-      const agents = kids.filter((k) => k.parent_id === s.id && engine.isRunning(k.id)).length;
       const c = ids.reduce((n, id) => n + (cost.get(id)?.cost ?? 0), 0);
       const needs = [ap && `${ap} approval${ap > 1 ? "s" : ""}`, qs && `${qs} question${qs > 1 ? "s" : ""}`].filter(Boolean).join(", ");
-      return `${s.id}\t${s.title || "(untitled)"}\t${s.workspace}${s.machine ? ` on ${s.machine}` : ""}\t${state}${needs ? `\twaits for owner: ${needs}` : ""}${unread[s.id] ? `\t${unread[s.id]} unread` : ""}${agents ? `\t${agents} agents running` : ""}\tactive ${ago(s.updated)}${c ? `\t$${c.toFixed(2)} 24h` : ""}`;
+      return `${s.id}\t${s.title || "(untitled)"}\t${s.workspace}${s.machine ? ` on ${s.machine}` : ""}\t${state}${needs ? `\twaits for owner: ${needs}` : ""}${unread[s.id] ? `\t${unread[s.id]} unread` : ""}\tactive ${ago(s.updated)}${c ? `\t$${c.toFixed(2)} 24h` : ""}`;
     }).join("\n");
   }),
 };
@@ -84,7 +86,7 @@ const sessionRead: Tool = {
     if (s.settings.helper) return "That is this conversation.";
     const evs = lineage(store.events(s.id), s.head);
     const n = Math.min(20, Math.max(1, Number(input.turns) || 4));
-    const out: string[] = [`${s.title || "(untitled)"} (${s.id}) in ${s.workspace}, model ${s.model}, ${engine.isRunning(s.id) ? "working" : s.phase}, last turn ended: ${s.settings.last_end ?? "none"}`];
+    const out: string[] = [`${s.title || "(untitled)"} (${s.id}) in ${s.workspace}, model ${s.model}, ${sessionState(s).word}, last turn ended: ${s.settings.last_end ?? "none"}`];
     const summary = evs.findLast((e) => e.kind === "compaction" && e.data.mode === "summary");
     let from = 0;
     let prompts = 0;
@@ -102,7 +104,7 @@ const sessionRead: Tool = {
     }
     flush();
     const kids = store.sessions().filter((k) => k.parent_id === s.id);
-    if (kids.length) out.push(`Agents: ${kids.slice(-10).map((k) => `${k.title || k.id} (${engine.isRunning(k.id) ? "working" : k.phase})`).join("; ")}`);
+    if (kids.length) out.push(`Agents: ${kids.slice(-10).map((k) => `${k.title || k.id} (${sessionState(k).word})`).join("; ")}`);
     return out.join("\n");
   }),
 };

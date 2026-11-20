@@ -982,4 +982,6 @@ export function stopChildrenOf(parentId: string) {
 }
 
 export const isEnded = (a: AgentRecord) => a.status !== "running" && a.status !== "waiting";
+// Its result goes to its own panel, never to the parent's conversation (a reviewer).
+export const isSilent = (id: string) => !!defOf(id)?.silent;
 export type { StoredEvent };

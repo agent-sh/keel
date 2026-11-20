@@ -1,5 +1,7 @@
 // The fleet's tools for every family: what machines the session can use, and
 // one shell command on another machine without moving the session.
+import { agentCounts, sessionState } from "../automation/state.ts";
+import { watchOf, watchWord } from "../core/watch.ts";
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Fleet } from "./fleet.ts";
@@ -74,7 +76,7 @@ const runOn: Tool = {
 
 const sessionsList: Tool = {
   name: "keel__sessions_list",
-  description: "List the owner's other sessions, on this daemon and on linked machines: the address to send to, title, machine, directory and phase. Leaves out this session and archived ones.",
+  description: "List the owner's other sessions, on this daemon and on linked machines: the address to send to, title, machine, directory and state (needs you, working, failed, stopped, done, not started; a session whose agents still work is working, with how many). Leaves out this session and archived ones.",
   input_schema: { type: "object", properties: { machine: { type: "string", description: "Only this machine's sessions" } }, additionalProperties: false },
   readOnly: true,
   async run(input, ctx) {
@@ -82,7 +84,10 @@ const sessionsList: Tool = {
     const want = typeof input.machine === "string" ? input.machine.toLowerCase() : "";
     const rows = messages.addressable().filter((a) => a.session.id !== ctx.sessionId && !a.session.parent_id && (!want || a.machine.toLowerCase() === want || a.machine_id === want));
     if (!rows.length) return ok("No other sessions.");
-    return ok(rows.slice(0, 100).map((a) => `${a.to}\t${a.session.title || "(untitled)"}\t${a.machine}\t${a.session.workspace}\t${a.session.phase}`).join("\n"));
+    // A linked daemon's row says what that daemon last showed of it.
+    const counts = agentCounts();
+    const state = (a: (typeof rows)[number]) => (a.local ? sessionState(a.session, { counts }).word : watchWord(watchOf(a.session, undefined)));
+    return ok(rows.slice(0, 100).map((a) => `${a.to}\t${a.session.title || "(untitled)"}\t${a.machine}\t${a.session.workspace}\t${state(a)}`).join("\n"));
   },
 };
 

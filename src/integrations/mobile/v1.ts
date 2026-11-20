@@ -13,6 +13,7 @@ import type { Deps } from "../../server/app.ts";
 import { answer, closedQuestions, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
+import { sessionState } from "../../automation/state.ts";
 import { lineage } from "../../core/tree.ts";
 import * as push from "./push.ts";
 import {
@@ -55,9 +56,10 @@ export function pairLink(base: string, code: string, app: PairApp = "keel") {
 // keeps a preview the server sends over one it guesses from a batch of messages.
 
 // Where a chat stands, as the phone's list shows it: a card waits for the
-// owner, a turn runs, or how the last turn ended.
+// owner, a turn runs or its agents still work (agents: how many), or how the
+// last turn ended.
 export type ChatStatus = "needs_you" | "working" | "failed" | "stopped" | "done" | "idle";
-export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string };
+export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number };
 
 export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   const c: Record<string, unknown> = {
@@ -66,6 +68,7 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   };
   if (x.status) c.status = x.status;
   if (x.failure) c.failure = x.failure;
+  if (x.agents) c.agents = x.agents;
   if (x.preview !== undefined) Object.assign(c, { preview: x.preview?.text ?? "", last_role: x.preview?.role ?? "", preview_id: x.preview?.id ?? null });
   return c;
 }
@@ -236,9 +239,11 @@ export function mobileApi(ctx: MobileCtx) {
   const unread = () => { try { return alerts.unreadCounts().sessions; } catch { return {} as Record<string, number>; } };
   // How the last turn on the shown branch ended, walking back from the head.
   // A failed turn says why, in a line.
-  function status(s: Session): { status: ChatStatus; failure?: string } {
-    if (pendingApprovals(s.id).length) return { status: "needs_you" };
-    if (engine.isRunning(s.id)) return { status: "working" };
+  function status(s: Session): { status: ChatStatus; failure?: string; agents?: number } {
+    const st = sessionState(s, { from: { store, engine } });
+    const agents = st.agents ? { agents: st.agents } : {};
+    if (pendingApprovals(s.id).length) return { status: "needs_you", ...agents };
+    if (st.watch === "work" || engine.isRunning(s.id)) return { status: "working", ...agents };
     let id = s.head;
     for (let i = 0; id && i < 200; i++) {
       const e = store.event(id);
@@ -460,6 +465,11 @@ export function mobileApi(ctx: MobileCtx) {
                   send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(q) });
                   send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
                 }
+              }
+              else if (f.t === "feature" && f.name === "automation" && f.data?.kind === "agent" && f.data.data?.parent_id) {
+                // An agent started or ended: its parent's row says whether it still works.
+                const s = store.session(f.data.data.parent_id);
+                if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
               else if (f.t === "feature" && f.name === "approval") {
                 const a = approvalOf(f.data as Approval);

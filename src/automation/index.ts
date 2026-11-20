@@ -15,6 +15,7 @@ import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
+import { liveAgents } from "./state.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
 
@@ -96,13 +97,31 @@ function init(deps: Deps) {
         const loopRun = loops.runOpenIn(s.id);
         loops.onTurnEnd(s.id, reason);
         agents.onTurnEnd(s.id, reason);
-        const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || agents.list(s.id).some((a) => !agents.isEnded(a));
+        // A session whose agents still work has not finished: its alert waits
+        // for their reports (they start its next turn, whose end tells).
+        const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || liveAgents(s.id) > 0;
         const child = !!deps.store.session(s.id)?.parent_id;
         if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`);
         alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more });
         if (!child) goals.afterTurn(s.id, reason, { judge: !more }).catch((e) => capture(e, { at: "goal" }));
       });
     },
+  });
+
+  // The last agent of a parent whose turn already ended, ending with no report
+  // for it (a reviewer's findings go to their own panel): no turn of the
+  // parent follows, so the alert its turn held back is raised now.
+  const settled = new Set<string>();
+  deps.bus.on((f) => {
+    if (f.t !== "feature" || f.name !== "automation" || (f.data as { kind: string }).kind !== "agent") return;
+    const a = (f.data as { data: agents.AgentRecord }).data;
+    if (!agents.isEnded(a)) return void settled.delete(a.id);
+    if (settled.has(a.id)) return;
+    settled.add(a.id);
+    if (a.handback || !agents.isSilent(a.id)) return;
+    const p = deps.store.session(a.parent_id);
+    if (!p || p.archived || p.parent_id || deps.engine.isRunning(p.id) || hasPending(p.id) || waits.activeFor(p.id) > 0 || liveAgents(p.id) > 0) return;
+    alerts.onTurnEnd(p.id, p.settings.last_end ?? "end_turn", { subagent: false, loopRun: loops.runOpenIn(p.id), more: false });
   });
 
   // Archiving a session cancels its waits and stops its agents at once (not at
