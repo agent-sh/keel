@@ -35,6 +35,8 @@ export KEEL_MCP_REGISTRY="${KEEL_MCP_REGISTRY:-file://$DEV/registry.json}"
 # file lives in the scratch config folder.
 export TACIT_BIN="${TACIT_BIN:-$(cd "$(dirname "$0")/.." && pwd)/test/e2e/fixtures/tacit-standin.sh}"
 export KEEL_SCRIPTED_PROVIDER="${KEEL_SCRIPTED_PROVIDER:-1}"
+# The helper's mail is a stand-in folder beside the state, never the owner's mailbox.
+export KEEL_MAIL_STANDIN="${KEEL_MAIL_STANDIN:-$DEV/mail}"
 # Voice goes to the parlar stand-in beside the state, never the owner's own
 # parlar (its mic and speaker); KEEL_PARLAR picks another.
 if [ -z "${KEEL_PARLAR:-}" ]; then

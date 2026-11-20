@@ -140,6 +140,7 @@ export type SessionSettings = {
   drop_thinking?: boolean; // the provider refused this session's sent-back thinking once: "drop_block" from then on
   folder_id?: string;  // the owner's folder of sessions it is filed in (src/server/routes/session-folders.ts)
   project?: string;    // a project's id, or "none"; absent = the project that holds its folder (src/server/routes/projects.ts)
+  helper?: boolean; // the owner's always-on helper conversation (src/helper/)
 };
 
 // `anchor`: the session's head when it was queued (the branch it was written on).

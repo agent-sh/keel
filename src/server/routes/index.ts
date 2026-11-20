@@ -50,6 +50,7 @@ import { placesRoutes } from "./places.ts";
 import { terminalRoutes } from "./terminal.ts";
 import { remoteRoutes } from "./remote.ts";
 import { acpRoutes } from "./acp.ts";
+import { helperRoutes } from "./helper.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -85,6 +86,7 @@ export const routeModules: RouteModule[] = [
   observeRoutes, // after admin: it reads the settings admin loads
   automationRoutes,
   integrationRoutes,
+  helperRoutes, // after integrations: its note for a prompt follows the tacit memory note
   driveRoutes,
   fleetRoutes, // after the gates: sends a placed session's workspace calls to their machine
   terminalRoutes, // after fleet: a placed session's commands are asked of its machine
