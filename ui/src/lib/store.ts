@@ -194,6 +194,7 @@ export const actions = {
       status: r.status && newer(`${id}:status`, r.rev, true) ? { ...state.status, [id]: r.status } : state.status,
       drafts,
     });
+    void loadLegacyQuestions(id);
   },
   async loadArchived() {
     const { sessions } = await api<{ sessions: Session[] }>("/api/sessions?archived=1");
@@ -312,6 +313,49 @@ function draftStep(cur: Record<number, DraftBlock>, f: Frame): Record<number, Dr
 const draftSession = (f: Frame) => (f.t === "event" ? f.event.session_id : f.t === "delta" || f.t === "status" ? f.session_id : undefined);
 
 const questionSnapshots = new Map<string, Extract<Frame, { t: "questions" }>["pending"]>();
+const legacyQuestions = new Map<string, Extract<Frame, { t: "questions" }>["pending"]>();
+const loadingQuestions = new Set<string>();
+
+function publishQuestions() {
+  const questionCalls: State["questionCalls"] = {};
+  const questionChildren: State["questionChildren"] = {};
+  for (const pending of [...questionSnapshots.values(), ...legacyQuestions.values()]) for (const q of pending) {
+    (questionCalls[q.session_id] ??= []).push(q.call_id);
+    if (q.parent_id) {
+      const children = (questionChildren[q.parent_id] ??= []);
+      if (!children.includes(q.session_id)) children.push(q.session_id);
+    }
+  }
+  set({ questionCalls, questionChildren });
+}
+
+function forgetLegacyQuestions(id: string) {
+  if (legacyQuestions.delete(id)) publishQuestions();
+}
+
+// Peers predating the global snapshot still expose their authoritative
+// pending IDs on the per-session route. Never infer them from a transcript.
+async function loadLegacyQuestions(id: string) {
+  const peer = splitId(id);
+  if (!peer || questionSnapshots.has(peer.machine) || loadingQuestions.has(id)) return;
+  loadingQuestions.add(id);
+  try {
+    // apiPath forwards this as /api/fleet/machines/<peer>/api/sessions/<id>/questions.
+    const { pending } = await api<{ pending: string[] }>(`/api/sessions/${id}/questions`, { signal: AbortSignal.timeout(5_000) });
+    const session = state.sessions[id];
+    if (questionSnapshots.has(peer.machine) || !session) return;
+    if (pending.length) legacyQuestions.set(id, pending.map((call_id) => ({ session_id: id, call_id, parent_id: session.parent_id ?? undefined })));
+    else if (!legacyQuestions.delete(id)) return;
+    publishQuestions();
+  } catch (e) {
+    if ((e as { status?: number }).status === 404) forgetLegacyQuestions(id);
+    // A busy or disconnected peer can be asked again on the next poll.
+  } finally {
+    loadingQuestions.delete(id);
+  }
+}
+
+let questionPoll: ReturnType<typeof setInterval> | undefined;
 
 // A row that left a list without word of why (another daemon's fresh list no
 // longer has it): out of the session list, neither archived nor gone. One
@@ -338,6 +382,7 @@ export function apply(f: Frame) {
       const { [s.id]: _s, ...sessions } = state.sessions;
       const { [s.id]: _e, ...events } = state.events;
       set({ sessions, events, gone: { ...state.gone, [s.id]: s.parent_id ?? state.sessions[s.id]?.parent_id ?? true } });
+      forgetLegacyQuestions(s.id);
       return;
     }
     if (!state.sessions[s.id] && s.archived) return;
@@ -369,16 +414,8 @@ export function apply(f: Frame) {
     const machine = f.machine ?? "local";
     if (!newer(`${machine}:questions`, f.rev)) return;
     questionSnapshots.set(machine, f.pending);
-    const questionCalls: State["questionCalls"] = {};
-    const questionChildren: State["questionChildren"] = {};
-    for (const pending of questionSnapshots.values()) for (const q of pending) {
-      (questionCalls[q.session_id] ??= []).push(q.call_id);
-      if (q.parent_id) {
-        const children = (questionChildren[q.parent_id] ??= []);
-        if (!children.includes(q.session_id)) children.push(q.session_id);
-      }
-    }
-    set({ questionCalls, questionChildren });
+    for (const id of legacyQuestions.keys()) if (splitId(id)?.machine === machine) legacyQuestions.delete(id);
+    publishQuestions();
   } else if (f.t === "error") {
     // A repeat or a resolve updates the kind's row; the latest goes on top.
     set({ errors: [f.error, ...state.errors.filter((e) => e.id !== f.error.id)].slice(0, 200) });
@@ -434,7 +471,8 @@ export function connect() {
   let deadline: ReturnType<typeof setTimeout> | undefined;
   ws.onopen = () => {
     retry = 500;
-    const cursors = Object.fromEntries(Object.entries(state.events).filter(([id]) => !splitId(id)).map(([id, list]) => [id, list.at(-1)?.seq ?? 0]));
+    const loaded = Object.entries(state.events);
+    const cursors = Object.fromEntries(loaded.filter(([id]) => !splitId(id)).map(([id, list]) => [id, list.at(-1)?.seq ?? 0]));
     // A draft from before the drop may be stale (a retry restarts it, the reply
     // may have finished meanwhile): the replay sends the current one of each
     // loaded session, and a session opened later reads it from its snapshot.
@@ -453,12 +491,15 @@ export function connect() {
     // Queue and status of the open sessions moved meanwhile (their events come by the
     // replay); one deleted meanwhile is dropped. On the page's first socket the
     // snapshots were just taken and the replay brings queue and status: no second load.
-    for (const id of first ? [] : Object.keys(cursors)) {
+    // The local resume cannot replay events from a peer, even when the
+    // daemon-to-peer relay stayed up. Catch those transcripts up by HTTP too.
+    for (const [id] of first ? [] : loaded) {
       loads.push(actions.loadSession(id).catch((e) => {
         if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
         const { [id]: _, ...events } = state.events;
         const { [id]: __, ...sessions } = state.sessions;
         set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
+        forgetLegacyQuestions(id);
       }));
     }
     // Caught up when this socket's replay came and the reloads landed; a late
@@ -467,6 +508,11 @@ export function connect() {
     Promise.all([replayed, ...loads]).then(() => { if (socket === ws && state.connected) set({ synced: true }); });
     // Features load their own state here, the first open included.
     for (const l of features) l.reconnect?.();
+    questionPoll = setInterval(() => {
+      for (const id of Object.keys(state.events)) {
+        if (state.sessions[id]?.phase === "working" || legacyQuestions.has(id)) void loadLegacyQuestions(id);
+      }
+    }, 1_000);
     pinger = setInterval(() => {
       ws.send(JSON.stringify({ op: "ping", nonce: Date.now() }));
       deadline ??= setTimeout(() => ws.close(), 10_000);
@@ -484,6 +530,7 @@ export function connect() {
     clearInterval(pinger);
     clearTimeout(deadline);
     if (socket !== ws) return;
+    clearInterval(questionPoll);
     drops++;
     set({ connected: false, synced: false });
     setTimeout(connect, (retry = Math.min(retry * 2, 8000)));

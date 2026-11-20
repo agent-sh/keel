@@ -10,7 +10,7 @@ import { Fleet } from "../../fleet/fleet.ts";
 import { WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { handsRoutes } from "../../fleet/hands-routes.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven, standingFrom } from "../../fleet/link.ts";
-import { innerHeaders, isLocal, type Standing } from "../../safety/presence.ts";
+import { forwardedStanding, innerHeaders, isLocal, type Standing } from "../../safety/presence.ts";
 import { remoteRun } from "../../fleet/remote.ts";
 import { Handoffs, MoveError } from "../../fleet/handoff.ts";
 import { forgetOwnership, portalOf, portalPath, sessionPorts, setOpen } from "../../fleet/portal.ts";
@@ -181,7 +181,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   };
 
   // Every session across machines, from the relays: never waits on a link.
-  const fleetView = () => {
+  const fleetView = (showQuestions: boolean) => {
     const local = store.sessions();
     const machines: any[] = [{ id: "local", name: f.name, state: "ready", sessions: local }];
     const recents: any[] = local.map((s) => ({ machine_id: "local", machine: f.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" }));
@@ -189,7 +189,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
-      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, questions: r.questions, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
+      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
       if (!r.stale) for (const s of r.sessions) recents.push({ machine_id: m.id, machine: m.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" });
     }
     recents.sort((a, b) => b.updated_ms - a.updated_ms);
@@ -200,7 +200,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   const handsLinked = Object.fromEntries(Object.entries(handsRoutes({ spillRoot, capture: (e, c) => errors.capture("tool", e, c), instructions: instructionFiles })).map(([path, h]) => [path, Object.fromEntries(Object.entries(h).map(([m, fn]) => [m, linked(fn as any)]))]));
 
   return {
-    "/api/fleet": { GET: () => json(fleetView()) },
+    // Only the browser's fleet view needs third-party question snapshots. A
+    // paired daemon gets this daemon's questions from its own relay stream.
+    "/api/fleet": { GET: (req: Request) => json(fleetView(!forwardedStanding(req))) },
 
     "/api/fleet/identity": {
       GET: (req: Request) => proven(json(f.identity()), paired(req), f.id),

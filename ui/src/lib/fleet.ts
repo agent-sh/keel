@@ -76,7 +76,7 @@ export const fleet = {
     if (mine < viewApplied) return;
     viewApplied = mine;
     set({ view: r.machines });
-    const cur = getState().sessions;
+    const { sessions: cur, events } = getState();
     const next: Record<string, Session> = Object.fromEntries(Object.entries(cur).filter(([id]) => !splitId(id)));
     for (const m of r.machines) {
       if (m.id === "local") continue;
@@ -84,7 +84,11 @@ export const fleet = {
       if (questions) apply(questions);
       for (const s of m.sessions) {
         const rs = asRemote(m.id, s);
-        next[rs.id] = cur[rs.id] && cur[rs.id]!.updated > rs.updated ? cur[rs.id]! : rs;
+        const held = cur[rs.id];
+        // The relay's session listing can lag its event frames. The loaded
+        // transcript takes its head from those frames or the session snapshot.
+        next[rs.id] = held && held.updated > rs.updated ? held
+          : held && events[rs.id] ? { ...rs, head: held.head } : rs;
       }
     }
     for (const s of Object.values(next)) apply({ t: "session", session: s });

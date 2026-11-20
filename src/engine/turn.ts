@@ -960,7 +960,15 @@ export class Engine {
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
     if (!tool) return { type: "tool_result", tool_use_id: u.id, content: `No tool named ${u.name}.`, is_error: true };
-    const callTool = (name: string, input: any, id: string) => this.runTool(session, tools, { type: "tool_use", id, name, input }, ctx);
+    const callTool = (name: string, input: any, id: string): Promise<ToolResultBlock> => {
+      // Nested calls have no question card of their own, and the program can
+      // exit without awaiting its calls. Ask in a top-level call instead.
+      if (tools.some((t) => t.name === name && t.asksOwner)) return Promise.resolve({
+        type: "tool_result", tool_use_id: id, is_error: true,
+        content: `${name} cannot wait for the owner inside run_code. Call it directly outside the program.`,
+      });
+      return this.runTool(session, tools, { type: "tool_use", id, name, input }, ctx);
+    };
     const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id, callTool } };
     // An interrupt answers at once, whether or not a gate or the tool honors the signal.
     // The listener goes when the call settles: the turn's signal is shared by all its calls.
