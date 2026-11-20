@@ -7,7 +7,6 @@ import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session,
 import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
-import { toolKind } from "../lib/tools.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens, fmtWait } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -314,7 +313,7 @@ function AssistantBlocks({ blocks, results, s }: { blocks: AssistantBlock[]; res
         if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} sessionId={s.machine ? undefined : s.id} /></div> : null;
         // A thought may carry only opaque state for replay (an encrypted item): nothing to show.
         if (b.type === "thinking") return b.thinking.trim() ? <Thinking key={i} text={b.thinking} /> : null;
-        if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results.get(b.id)} sessionId={s.id} cwd={s.workspace} waiting={s.phase === "working"} />;
+        if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results.get(b.id)} sessionId={s.id} cwd={s.workspace} />;
         return null;
       })}
     </>
@@ -586,10 +585,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => clearTimeout(t);
   }, [from]);
 
+  // A question card waiting on the owner says so itself; no "Working" under it.
+  const asking = useStore((s) => !!s.questionCalls[sessionId]?.length);
   if (!events) return <div className="flex-1" />;
   const lastStart = [...events].reverse().find((e) => e.kind === "turn_start");
-  // A question card waiting on the owner says so itself; no "Working" under it.
-  const asking = session.phase === "working" && events.some((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use" && toolKind(b.name) === "ask" && !results.has(b.id)));
 
   // Per turn: the prompt that started it and the text of its replies, for the footer's actions.
   let prompt: StoredEvent | undefined;

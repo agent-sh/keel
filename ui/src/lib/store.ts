@@ -35,6 +35,10 @@ export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: strin
 
 type State = {
   sessions: Record<string, Session>;
+  // Ready to answer, not historical question tool calls. A child's call
+  // belongs to it; its parent needs the owner too.
+  questionCalls: Record<string, string[]>;
+  questionChildren: Record<string, string[]>;
   // Deleted while this page was open: the parent's id for a subagent's session (its view links back), else true.
   gone: Record<string, string | true>;
   events: Record<string, StoredEvent[]>;
@@ -56,7 +60,7 @@ type State = {
 };
 
 let state: State = { loaded: { sessions: false, models: false },
-  sessions: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
+  sessions: {}, questionCalls: {}, questionChildren: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
 };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => {
@@ -307,6 +311,8 @@ function draftStep(cur: Record<number, DraftBlock>, f: Frame): Record<number, Dr
 }
 const draftSession = (f: Frame) => (f.t === "event" ? f.event.session_id : f.t === "delta" || f.t === "status" ? f.session_id : undefined);
 
+const questionSnapshots = new Map<string, Extract<Frame, { t: "questions" }>["pending"]>();
+
 // A row that left a list without word of why (another daemon's fresh list no
 // longer has it): out of the session list, neither archived nor gone. One
 // that was opened asks its daemon instead, which says what became of it.
@@ -359,6 +365,20 @@ export function apply(f: Frame) {
     if (!newer(`${f.session_id}:status`, f.rev)) return;
     const d = draftStep(state.drafts[f.session_id] ?? {}, f);
     set({ status: { ...state.status, [f.session_id]: f.status }, drafts: d ? { ...state.drafts, [f.session_id]: d } : state.drafts });
+  } else if (f.t === "questions") {
+    const machine = f.machine ?? "local";
+    if (!newer(`${machine}:questions`, f.rev)) return;
+    questionSnapshots.set(machine, f.pending);
+    const questionCalls: State["questionCalls"] = {};
+    const questionChildren: State["questionChildren"] = {};
+    for (const pending of questionSnapshots.values()) for (const q of pending) {
+      (questionCalls[q.session_id] ??= []).push(q.call_id);
+      if (q.parent_id) {
+        const children = (questionChildren[q.parent_id] ??= []);
+        if (!children.includes(q.session_id)) children.push(q.session_id);
+      }
+    }
+    set({ questionCalls, questionChildren });
   } else if (f.t === "error") {
     // A repeat or a resolve updates the kind's row; the latest goes on top.
     set({ errors: [f.error, ...state.errors.filter((e) => e.id !== f.error.id)].slice(0, 200) });

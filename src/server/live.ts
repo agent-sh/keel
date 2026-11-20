@@ -8,6 +8,7 @@
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { ClientFrame, DraftBlocks, Frame, SocketFrame } from "../core/types.ts";
+import { allPendingQuestions } from "../tools/interact.ts";
 
 const LIVE = "live"; // events and deltas, after a resume
 const ALL = "all"; // everything else, from the start
@@ -49,6 +50,7 @@ export class Live {
   open(ws: Bun.ServerWebSocket<unknown>) {
     ws.subscribe(ALL);
     send(ws, { t: "hello", pid: process.pid, started_ms: this.started, ui: this.ui?.() });
+    ws.send(JSON.stringify({ t: "questions", pending: allPendingQuestions(), rev: this.bus.rev() } satisfies Frame));
   }
 
   message(ws: Bun.ServerWebSocket<unknown>, raw: string | Buffer) {

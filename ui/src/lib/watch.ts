@@ -12,23 +12,6 @@ import { shortPath, stripAnsi, toolKind, type ToolKind } from "./tools.ts";
 
 export { WATCH_LABEL, WATCH_RANK, watchLabel, type Watch } from "../../../src/core/watch.ts";
 
-const openQuestion = (events: StoredEvent[] | undefined) => {
-  if (!events) return false;
-  const answered = new Set<string>();
-  for (const e of events) if (e.kind === "tool_result") for (const r of e.data.results) answered.add(r.tool_use_id);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i]!;
-    if (e.kind === "turn_end") return false;
-    if (e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use" && toolKind(b.name) === "ask" && !answered.has(b.id))) return true;
-  }
-  return false;
-};
-
-// The shared word (src/core/watch.ts), with what only the page knows: the
-// approvals it holds and whether the running turn asks a question.
-export const watchOf = (s: Session, events: StoredEvent[] | undefined, approvals: number, agents = 0): Watch =>
-  sharedWatch(s, events, { approvals, agents, asking: s.phase === "working" && openQuestion(events) });
-
 // Agents still at work, per parent session (the automation store keeps every live one).
 export function useAgentCounts(): Record<string, number> {
   const agents = useAuto((x) => x.agents);
@@ -40,8 +23,9 @@ export const useAgentCount = (id: string | undefined) =>
 export function useWatch(s: Session | undefined): Watch {
   const events = useStore((x) => (s ? x.events[s.id] : undefined));
   const n = useSafety((x) => (s ? x.approvals[s.id]?.length ?? 0 : 0));
+  const asking = useStore((x) => !!s && !!(x.questionCalls[s.id]?.length || x.questionChildren[s.id]?.length));
   const agents = useAgentCount(s?.id);
-  return s ? watchOf(s, events, n, agents) : "idle";
+  return s ? sharedWatch(s, events, { approvals: n, asking, agents }) : "idle";
 }
 
 // The word as shown, with the agents that keep it working.
@@ -53,10 +37,12 @@ export function useWatchLabel(s: Session | undefined): string {
 // All sessions' watch words in one pass (for boards and lists).
 export function useWatches(list: Session[]): Record<string, Watch> {
   const events = useStore((x) => x.events);
+  const calls = useStore((x) => x.questionCalls);
+  const children = useStore((x) => x.questionChildren);
   const approvals = useSafety((x) => x.approvals);
   const agents = useAgentCounts();
   const out: Record<string, Watch> = {};
-  for (const s of list) out[s.id] = watchOf(s, events[s.id], approvals[s.id]?.length ?? 0, agents[s.id] ?? 0);
+  for (const s of list) out[s.id] = sharedWatch(s, events[s.id], { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length), agents: agents[s.id] });
   return out;
 }
 

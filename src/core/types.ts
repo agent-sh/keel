@@ -146,6 +146,8 @@ export type SessionSettings = {
 // `anchor`: the session's head when it was queued (the branch it was written on).
 export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number; anchor?: string; meta?: Record<string, unknown> };
 
+export type PendingQuestion = { session_id: string; call_id: string; parent_id?: string };
+
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);
 // `delta` frames are live streaming text and are not stored. `rev` is the bus's
 // order of the frame, set when it is emitted and never lower after a restart: a
@@ -157,6 +159,7 @@ export type Frame = (
   | { t: "session"; session: Session; deleted?: boolean } // deleted: the session is gone; pages drop it
   | { t: "queue"; session_id: string; queue: QueueItem[]; held: boolean }
   | { t: "status"; session_id: string; status: TurnStatus }
+  | { t: "questions"; pending: PendingQuestion[]; machine?: string } // all live questions of one daemon
   | { t: "error"; error: ErrorRecord }
   // A feature module's live update (approvals, checkpoints, worktrees): the UI
   // routes it by `name` to the module's own client state.

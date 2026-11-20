@@ -33,6 +33,10 @@ export function relayed(machine: string, f: Frame): Frame | null {
     case "delta": return { ...f, session_id: map(f.session_id)! };
     case "queue": return { ...f, session_id: map(f.session_id)! };
     case "status": return { ...f, session_id: map(f.session_id)! };
+    case "questions": return {
+      ...f, machine,
+      pending: f.pending.map((q) => ({ ...q, session_id: map(q.session_id)!, parent_id: map(q.parent_id) })),
+    };
     case "feature": {
       // An automation update names its sessions inside the payload (a goal's or
       // a checklist's session, an agent's parent): those are the other daemon's too.

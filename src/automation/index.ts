@@ -75,7 +75,6 @@ function init(deps: Deps) {
       if (QUESTION_TOOLS.has(call.tool.name)) {
         const q = (call.input?.questions ?? [])[0];
         const text = String(q?.question ?? call.input?.question ?? call.input?.prompt ?? "The agent asks a question.");
-        alerts.openQuestions.add(s.id);
         alerts.raise("question", s.id, `Question: ${deps.store.session(s.id)?.title || "a session"}`, text, { call_id: call.id, open_session: s.id });
       }
       return undefined;
@@ -84,7 +83,6 @@ function init(deps: Deps) {
       // A plan the tool refused is not the plan: the saved list stays as it was.
       if (goals.isPlanTool(call.tool.name) && !result.is_error) goals.fromPlanTool(s.id, call.tool.name, call.input);
       if (QUESTION_TOOLS.has(call.tool.name)) {
-        alerts.openQuestions.delete(s.id);
         alerts.readWhere("call_id", call.id);
         // The answer to a question is the owner's word: it ends a snooze.
         snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");

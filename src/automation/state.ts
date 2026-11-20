@@ -6,7 +6,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { watchLabel, watchOf, watchWord, type Watch } from "../core/watch.ts";
 import * as perm from "../server/routes/permissions.ts";
-import { pendingQuestions } from "../tools/interact.ts";
+import { questionsWaitingFor } from "../tools/interact.ts";
 import { D } from "./core.ts";
 
 export type SessionState = { watch: Watch; agents: number; label: string; word: string };
@@ -30,6 +30,6 @@ export function sessionState(s: Session, o: { counts?: Map<string, number>; from
   const row = running && s.phase !== "working" ? { ...s, phase: "working" as const } : s;
   const agents = o.counts ? o.counts.get(s.id) ?? 0 : liveAgents(s.id, d);
   const approvals = perm.gate?.approvals({ session: s.id, pending: true }).length ?? 0;
-  const watch = watchOf(row, undefined, { approvals, asking: pendingQuestions(s.id).length > 0, agents });
+  const watch = watchOf(row, undefined, { approvals, asking: questionsWaitingFor(s.id), agents });
   return { watch, agents, label: watchLabel(watch, agents), word: watchWord(watch, agents) };
 }

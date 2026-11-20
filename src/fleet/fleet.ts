@@ -17,7 +17,8 @@ import { chunks, readText } from "../core/proc.ts";
 
 export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
 
-type Relay = { abort: AbortController; sessions: Map<string, Session>; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer };
+type Questions = Extract<Frame, { t: "questions" }>;
+type Relay = { abort: AbortController; sessions: Map<string, Session>; questions?: Questions; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer };
 type Tunnel = { proc: Bun.Subprocess; port: number };
 type Queue = { running: number; waiting: { resolve: () => void; reject: (e: Error) => void }[] };
 
@@ -471,10 +472,11 @@ export class Fleet {
       if (f.session.archived) relay.sessions.delete(f.session.id);
       else relay.sessions.set(f.session.id, f.session);
     }
+    if (f.t === "questions") relay.questions = f;
     this.bus.emit({ t: "feature", name: "fleet_frame", data: { machine: id, frame: f as Frame } });
   }
 
-  remoteSessions(id: string): { sessions: Session[]; stale: boolean; retry_at_ms?: number } {
+  remoteSessions(id: string): { sessions: Session[]; questions?: Questions; stale: boolean; retry_at_ms?: number } {
     const row = this.row(id);
     if (row && this.isSsh(row)) return { sessions: [], stale: false }; // its sessions are this daemon's
     const r = this.relays.get(id);
@@ -483,7 +485,7 @@ export class Fleet {
       if (m?.link_key) this.ensureRelay(id); // nobody opened it yet: in the background
       return { sessions: [], stale: true };
     }
-    return { sessions: [...r.sessions.values()].sort((a, b) => b.updated - a.updated), stale: r.stale || !r.live, retry_at_ms: r.retryAt };
+    return { sessions: [...r.sessions.values()].sort((a, b) => b.updated - a.updated), questions: r.questions, stale: r.stale || !r.live, retry_at_ms: r.retryAt };
   }
 
   emitMachines() {

@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
-import { actions, failed } from "../lib/store.ts";
+import { actions, failed, useStore } from "../lib/store.ts";
 import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
 import {
   patchFiles, planItems, questions, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind,
@@ -36,7 +36,7 @@ const LABEL: Partial<Record<ToolKind, string>> = {
   search: "Search", glob: "Find", list: "List", web: "Web search", fetch: "Fetch", plan: "Plan", ask: "Question", skill: "Skill",
 };
 
-type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string; waiting?: boolean };
+type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string };
 
 function summary(kind: ToolKind, name: string, input: any, cwd?: string): string {
   switch (kind) {
@@ -73,13 +73,13 @@ function planSummary(items: PlanItem[]): string {
   return `${done}/${items.length} done${now ? ` · ${now.active ?? now.text}` : ""}`;
 }
 
-export function ToolCall({ use, result, live, sessionId, cwd, waiting }: Props) {
+export function ToolCall({ use, result, live, sessionId, cwd }: Props) {
   if (AGENT_TOOLS.has(use.name)) return <AgentCall use={use} result={result} live={live} />;
   if (use.name === "run_code") return <CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />;
   if (use.name === "AskReaders" || use.name === "ask_readers") return <ReadersCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />;
   const kind = toolKind(use.name);
   const input: any = use.input ?? {};
-  if (kind === "ask" && !live) return <QuestionCard use={use} result={result} sessionId={sessionId} waiting={waiting} />;
+  if (kind === "ask" && !live) return <QuestionCard use={use} result={result} sessionId={sessionId} />;
   if (kind === "plan" && !live) return <PlanCard items={planItems(use.name, input)} explanation={input.explanation} rejected={result?.is_error ? resultText(result) : undefined} />;
   return <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} />;
 }
@@ -311,7 +311,7 @@ export function PlanCard({ items, explanation, compact, rejected }: { items: Pla
 // switch, a remount) until the question settles. Never sent by themselves.
 const answerDrafts = new Map<string, { picked: Record<string, string[]>; other: Record<string, string> }>();
 
-function QuestionCard({ use, result, sessionId, waiting }: Props) {
+function QuestionCard({ use, result, sessionId }: Props) {
   const qs = questions(use.name, use.input);
   const key = `${sessionId}:${use.id}`;
   const [picked, setPicked] = useState<Record<string, string[]>>(() => answerDrafts.get(key)?.picked ?? {});
@@ -320,13 +320,13 @@ function QuestionCard({ use, result, sessionId, waiting }: Props) {
   const inflight = useRef(false);
   const [err, setErr] = useState("");
   const answered = !!result && !result.is_error;
-  const open = !result && waiting;
+  const open = useStore((s) => !result && !!sessionId && !!s.questionCalls[sessionId]?.includes(use.id));
   // What the owner answered, by question (stored with the result); older records have only the result text.
   const given = (result as (ToolResultBlock & { shown?: { answers?: Record<string, { picked: string[]; other?: string }> } }) | undefined)?.shown?.answers;
   useEffect(() => {
-    if (result) answerDrafts.delete(key);
+    if (!open) answerDrafts.delete(key);
     else if (Object.keys(picked).length || Object.values(other).some((t) => t)) answerDrafts.set(key, { picked, other });
-  }, [key, result, picked, other]);
+  }, [key, open, picked, other]);
   const toggle = (q: { id: string; multi: boolean }, label: string) => setPicked((p) => {
     const cur = p[q.id] ?? [];
     return { ...p, [q.id]: q.multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label] };

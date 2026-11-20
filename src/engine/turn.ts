@@ -16,6 +16,7 @@ import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, toolsFor } from "../tools/registry.ts";
+import { allPendingQuestions } from "../tools/interact.ts";
 import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
 import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
@@ -755,6 +756,8 @@ export class Engine {
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);
     const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id),
+      parentId: session.parent_id ?? undefined,
+      questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }),
       inContext: (text) => JSON.stringify(toMessages(this.lineage(id))).includes(JSON.stringify(text).slice(1, -1)),
       read: (source, text, prompt) => this.read(id, source, text, prompt, signal),
       readMaterial: (items, question, callId) => this.readMaterial(id, items, question, signal, callId) };

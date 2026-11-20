@@ -2,7 +2,7 @@ import * as activity from "./activity.ts";
 import { D, alertHook, capture, clip, cursor, emit } from "./core.ts";
 import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
-import { pendingQuestions } from "../tools/interact.ts";
+import { pendingQuestions, questionsWaitingFor } from "../tools/interact.ts";
 import { readText } from "../core/proc.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
@@ -367,9 +367,8 @@ export function tickSnoozes() {
 export function hasOpenCard(sessionId: string): boolean {
   const kids = D().store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE parent_id = ?").all(sessionId).map((r) => r.id);
   if ([sessionId, ...kids].some((id) => (perm.gate?.approvals({ session: id, pending: true }).length ?? 0) > 0)) return true;
-  return openQuestions.has(sessionId) || kids.some((k) => openQuestions.has(k));
+  return questionsWaitingFor(sessionId);
 }
-export const openQuestions = new Set<string>();
 
 // Reads alerts: these ids, one session's, or all. `seen` is the inbox revision
 // the page had when the owner acted: an alert that became unread after it (a

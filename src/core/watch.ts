@@ -18,8 +18,8 @@ export const WATCH_LABEL: Record<Watch, string> = {
 export const WATCH_RANK: Record<Watch, number> = { need: 0, work: 1, fail: 2, resume: 3, stop: 4, done: 5, idle: 6 };
 const ENDED: Record<string, Watch> = { error: "fail", interrupted: "stop", restart: "resume" };
 
-// What the caller knows besides the session row: cards waiting for the owner,
-// whether the running turn is asking a question, and the agents still at work.
+// What the caller knows besides the session row: approvals, live questions
+// (its own or an agent's), and the agents still at work.
 export type WatchFacts = { approvals?: number; asking?: boolean; agents?: number };
 
 // An agent still at work: running, or waiting on something it set up.
@@ -35,8 +35,8 @@ export function liveAgentCounts(agents: Iterable<{ parent_id: string; status: st
 // The session's own state, from its events when they are loaded, else from
 // the marks the daemon keeps on it (failed_ms, last_end).
 function own(s: Session, events: StoredEvent[] | undefined, f: WatchFacts): Watch {
-  if ((f.approvals ?? 0) > 0) return "need";
-  if (s.phase === "working") return f.asking ? "need" : "work";
+  if ((f.approvals ?? 0) > 0 || f.asking) return "need";
+  if (s.phase === "working") return "work";
   if (s.phase === "error") return "fail";
   if (events) {
     for (let i = events.length - 1; i >= 0; i--) {

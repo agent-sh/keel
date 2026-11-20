@@ -27,6 +27,7 @@ import { contains } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
+import { allPendingQuestions } from "../../tools/interact.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -188,7 +189,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
-      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
+      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, questions: r.questions, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
       if (!r.stale) for (const s of r.sessions) recents.push({ machine_id: m.id, machine: m.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" });
     }
     recents.sort((a, b) => b.updated_ms - a.updated_ms);
@@ -596,6 +597,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
             forget = holdStream(ctl);
             const send = (x: unknown) => { try { ctl.enqueue(enc.encode(`data: ${JSON.stringify(x)}\n\n`)); } catch { stop(); } };
             send({ t: "snapshot", sessions: store.sessions() });
+            send({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() });
             off = bus.on((fr) => {
               if (fr.t === "feature" && fr.name === "fleet_outbox") { if (fr.data?.daemon_id === c.daemonId) send(fr); return; }
               if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay

@@ -2,7 +2,7 @@
 // and the machine a new session starts on. Sessions of other daemons go into
 // the main store under "<machine>--<id>".
 import { useSyncExternalStore } from "react";
-import type { Session } from "../../../src/core/types.ts";
+import type { Frame, Session } from "../../../src/core/types.ts";
 import { asRemote, relayed, splitId } from "./fleet-ids.ts";
 import { actions, api, apply, dropSession, getState, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
@@ -16,7 +16,7 @@ export type Machine = {
   transport?: "ssh" | "daemon"; routes?: string[]; route?: string; helper?: { runtime: string; helper: string; uploaded: string[]; dir: string };
 };
 export type RemoteDirs = { path: string; parent: string | null; root: string; is_git: boolean; dirs: { name: string; path: string; is_git: boolean }[] };
-export type FleetMachineView = { id: string; name: string; state: string; sessions: Session[]; reason?: string; colour?: string; stale?: boolean; retry_at_ms?: number };
+export type FleetMachineView = { id: string; name: string; state: string; sessions: Session[]; questions?: Extract<Frame, { t: "questions" }>; reason?: string; colour?: string; stale?: boolean; retry_at_ms?: number };
 
 type State = {
   machines: Machine[];
@@ -80,6 +80,8 @@ export const fleet = {
     const next: Record<string, Session> = Object.fromEntries(Object.entries(cur).filter(([id]) => !splitId(id)));
     for (const m of r.machines) {
       if (m.id === "local") continue;
+      const questions = m.questions && relayed(m.id, m.questions);
+      if (questions) apply(questions);
       for (const s of m.sessions) {
         const rs = asRemote(m.id, s);
         next[rs.id] = cur[rs.id] && cur[rs.id]!.updated > rs.updated ? cur[rs.id]! : rs;
