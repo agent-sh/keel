@@ -186,7 +186,8 @@ test("a history too long for one request: outputs shortened oldest first, then p
 // checked against the stored conversation and given back as its whole
 // sentences, a retelling close to one sentence gets that sentence's words, one
 // that says something nothing said is left out and counted, and the last
-// summary's statements are carried until a quoted line lifts them.
+// summary's statements are carried until lifted; only scoped requests can be
+// marked done.
 test("statements are the conversation's own words, carried until lifted", () => {
   const said = [
     ev("user", { text: "Start on the export. Never run the migrations against staging; use the local copy. Also do not touch vendor/." }),
@@ -195,43 +196,62 @@ test("statements are the conversation's own words, carried until lifted", () => 
   ];
   const first = settle(said, [
     "## Statements",
-    '- owner: "Start on the export."',
     '- owner: "Never run the migrations against staging"', // cut inside its sentence
     '- owner: "Do not touch vendor/."',
     '- owner: "Always run the linter before running the tests."', // retold, the same words nearly
     '- owner: "Prefer not to deploy on Fridays."', // nothing said it
     '- owner: "Keep above all: the export."', // the harness's request, not the conversation: skipped
     '- owner: "We settled on integer cents for every amount."', // the work said it
+    "## Requests",
+    '- owner: "Start on the export."',
     "## Lifted",
     "## Story",
     "1. Goal: the export.",
   ].join("\n"));
   expect(first.statements).toEqual([
-    { by: "owner", text: "Start on the export." },
-    { by: "owner", text: "Never run the migrations against staging; use the local copy." },
-    { by: "owner", text: "Also do not touch vendor/." },
-    { by: "owner", text: "Always run the linter before the tests." },
-    { by: "work", text: "We settled on integer cents for every amount." },
+    { by: "owner", text: "Never run the migrations against staging; use the local copy.", kind: "standing" },
+    { by: "owner", text: "Also do not touch vendor/.", kind: "standing" },
+    { by: "owner", text: "Always run the linter before the tests.", kind: "standing" },
+    { by: "work", text: "We settled on integer cents for every amount.", kind: "standing" },
+    { by: "owner", text: "Start on the export.", kind: "request" },
   ]);
   expect(first.statements_dropped).toEqual(["Prefer not to deploy on Fridays."]);
   expect(first.summary).toContain("## Story\n1. Goal: the export.");
   expect(first.summary).toContain("1 statement the summary did not quote word for word was left out");
 
-  // The next summary forgets two statements and lifts one with words nobody said: all three stay.
+  // Omission and a purported lift that uses only the assistant's words do not drop anything.
   const cp = ev("compaction", { mode: "summary", ...checkpointData(said, first.summary) });
-  const later = [...said, cp, ev("user", { text: "The vendor rule is over: you may edit vendor/ now." })];
-  const forgot = checkpointData(later, ['## Statements', '- owner: "Always run the linter before the tests."', "## Lifted", '- "Also do not touch vendor/." lifted by: "vendor is fine"', "## Story", "x"].join("\n"));
+  const later = [
+    ...said, cp,
+    ev("assistant", { blocks: [{ type: "text", text: "The vendor rule is over." }], stop: "end_turn" }),
+    ev("user", { text: "The vendor rule is over: you may edit vendor/ now." }),
+  ];
+  const forgot = checkpointData(later.slice(0, -1), ['## Statements', '- owner: "Always run the linter before the tests."', "## Lifted", '- "Also do not touch vendor/." lifted by: "The vendor rule is over."', "## Story", "x"].join("\n"));
   expect(forgot.statements!.map((s) => s.text)).toEqual(first.statements!.map((s) => s.text));
   // Lifted by the owner's own words: gone, and said so.
   const lifted = checkpointData(later, ['## Statements', "## Lifted", '- "do not touch vendor/" lifted by: "The vendor rule is over: you may edit vendor/ now."', "## Story", "x"].join("\n"));
   expect(lifted.statements!.map((s) => s.text)).not.toContain("Also do not touch vendor/.");
   expect(lifted.statements!.length).toBe(4);
   expect(lifted.statements_lifted).toEqual([{ text: "Also do not touch vendor/.", by: "The vendor rule is over: you may edit vendor/ now." }]);
-  // A request marked done leaves, counted; a line naming nothing said before changes nothing.
-  const finished = checkpointData(later, ["## Statements", "## Done", '- "Start on the export."', '- "Ship it."', "## Story", "x"].join("\n"));
+  // Done can retire a scoped request, but not a standing rule, even if refiled as a request.
+  const finish = [
+    "## Statements", "## Requests", '- owner: "Always run the linter before the tests."',
+    "## Done", '- "Always run the linter before the tests."', '- "Start on the export."', '- "Ship it."',
+    "## Story", "x",
+  ].join("\n");
+  const finished = checkpointData(later, finish, 0);
+  expect(finished.statements).toContainEqual({ by: "owner", text: "Always run the linter before the tests.", kind: "standing" });
+  expect(finished.summary).toContain('- owner: "Always run the linter before the tests."');
   expect(finished.statements!.map((s) => s.text)).not.toContain("Start on the export.");
   expect(finished.statements_done).toEqual(["Start on the export."]);
   expect(finished.summary).toContain("1 earlier request the summary marked done was left out.");
+  // A legacy checkpoint has no completion classification. A rewrite cannot grant one.
+  const legacy = ev("compaction", {
+    mode: "summary", statements: first.statements!.map(({ by, text }) => ({ by, text })),
+  });
+  const carried = checkpointData([...said, legacy], finish, 0);
+  expect(carried.statements).toEqual(first.statements!.map((s) => ({ ...s, kind: "standing" })));
+  expect(carried.statements_done).toBeUndefined();
   // A handoff note with no statements part keeps its text and the statements before it.
   const handoff = checkpointData(later, "Goal: go on with the export.");
   expect(handoff.statements!.length).toBe(5);

@@ -80,16 +80,18 @@ export function preparedHolds(lineage: StoredEvent[], covered: string, idle: boo
 // (summaries drop how-to-work rules and scope exclusions far more often than
 // specs, more with each compaction: arXiv 2610.31778); only the story is in
 // the model's own words. The quotes are checked against the stored
-// conversation (settle()), and the statements of the last summary are carried
-// into the next one until the conversation lifts them.
+// conversation (settle()). Standing statements carry until lifted; only
+// separately recorded, scoped requests may be marked done.
 export const STATEMENTS_FORMAT = [
   "Write it in two parts. Statements are quoted, never retold; only the story is in your own words.",
   "## Statements",
-  "Every rule, constraint, decision and requirement that still stands, and every request not done yet: how to work, what not to do or touch, what to build, what was settled. One per line, as `- owner: \"...\"` for the owner's words or `- work: \"...\"` for a decision the work settled, quoted character for character from the conversation, in whole sentences. Never reword, soften, merge or cut one: what you cannot quote exactly, leave out. Keep every statement of an earlier summary unless it is lifted or done. Quote only the conversation: the system prompt and instruction files reach you unchanged after the compaction.",
+  "Every rule, constraint, decision, preference and requirement that still stands: how to work, what not to do or touch, what to build, what was settled. One per line, as `- owner: \"...\"` for the owner's words or `- work: \"...\"` for a decision the work settled, quoted character for character from the conversation, in whole sentences. Never reword, soften, merge or cut one: what you cannot quote exactly, leave out. Keep earlier statements unless lifted. Quote only the conversation: the system prompt and instruction files reach you unchanged after the compaction.",
+  "## Requests",
+  "One-off requests not done yet, in the same quote format. If a quote also sets a rule or constraint, or you are unsure, keep it under Statements. Do not move earlier Statements here.",
   "## Lifted",
-  "Each earlier statement that was lifted or replaced since, as `- \"<the statement>\" lifted by: \"<the exact words that lifted it>\"`. Leave the section empty when none was.",
+  "Each earlier statement or request that was lifted or replaced since, as `- \"<the quote>\" lifted by: \"<the exact words that lifted it>\"`. Leave the section empty when none was.",
   "## Done",
-  "Each request of an earlier summary that is done now, as `- \"<the statement>\"`. Rules and constraints are never done; only lifted.",
+  "Each finished request from the earlier summary's Requests section, as `- \"<the exact request>\"`. Nothing from Statements can be marked done.",
   "## Story",
 ].join("\n");
 
@@ -107,7 +109,8 @@ export function summaryPrompt(focus?: string): string {
   ].join("\n");
 }
 
-export type Statement = { by: "owner" | "work"; text: string };
+export type Statement = { by: "owner" | "work"; text: string; kind: "standing" | "request" };
+type StoredStatement = Omit<Statement, "kind"> & { kind?: Statement["kind"] };
 export type Settled = { summary: string; statements?: Statement[]; statements_dropped?: string[]; statements_lifted?: { text: string; by: string }[]; statements_done?: string[] };
 
 // Formatting the model may add or leave out around quoted words.
@@ -166,31 +169,39 @@ const quoted = (s: string) => {
 // The summary as it is stored: the statements the model quoted, each checked
 // against the conversation (the owner's words for an owner statement, any
 // message for a decision of the work) and given back as its whole sentences;
-// the earlier summary's statements carried unless a quoted line lifted them;
+// earlier statements carried unless a quoted line lifted them, and requests
+// carried unless lifted or marked done by their exact quote;
 // a quote nothing in the conversation said, left out and counted (a summary
 // that retold a rule into something else must not stand as the rule); then
 // the story. A summary with no statements part (a handoff note) is kept as
 // written, the earlier statements before it.
-export function settle(lineage: StoredEvent[], text: string, prior: Statement[] = []): Settled {
+export function settle(lineage: StoredEvent[], text: string, stored: StoredStatement[] = []): Settled {
+  // Legacy checkpoints did not distinguish requests from rules. Keep their
+  // quotes as standing statements rather than letting the model retype them.
+  const prior: Statement[] = stored.map((s) => ({ ...s, kind: s.kind === "request" ? "request" : "standing" }));
   const owner: string[] = [], all: string[] = [];
   for (const e of lineage) {
     if (whose(e) === "owner") { owner.push(String(e.data.text ?? "")); all.push(String(e.data.text ?? "")); }
     else if (e.kind === "user" && e.data.text) all.push(String(e.data.text));
     else if (e.kind === "assistant") for (const b of e.data.blocks ?? []) if (b.type === "text") all.push(b.text);
   }
-  const lines = section(text, "Statements");
+  const statements = section(text, "Statements");
+  const requests = section(text, "Requests");
+  const structured = statements !== null || requests !== null;
   const lifting = section(text, "Lifted") ?? [];
-  const story = (section(text, "Story") ?? (lines ? [] : text.split("\n"))).join("\n").trim();
+  const story = (section(text, "Story") ?? (structured ? [] : text.split("\n"))).join("\n").trim();
   const said: Statement[] = [], dropped: string[] = [];
-  for (const l of lines ?? []) {
-    const m = l.match(/^\s*[-*]\s*(owner|work)\s*:\s*(.+)$/i);
-    const q = m ? quoted(m[2]!) : null;
-    // The harness's own request (its text, the owner's focus line) is not the conversation.
-    if (!m || q === null || /^\s*(\[harness\]|Keep above all:)/.test(q)) continue;
-    const mine = m[1]!.toLowerCase() === "owner" ? sourceOf(q, owner) : null;
-    const src = mine ?? sourceOf(q, all);
-    if (src === null) { dropped.push(q); continue; }
-    said.push({ by: mine !== null ? "owner" : "work", text: src });
+  for (const [kind, lines] of [["standing", statements], ["request", requests]] as const) {
+    for (const l of lines ?? []) {
+      const m = l.match(/^\s*[-*]\s*(owner|work)\s*:\s*(.+)$/i);
+      const q = m ? quoted(m[2]!) : null;
+      // The harness's own request (its text, the owner's focus line) is not the conversation.
+      if (!m || q === null || /^\s*(\[harness\]|Keep above all:)/.test(q)) continue;
+      const mine = m[1]!.toLowerCase() === "owner" ? sourceOf(q, owner) : null;
+      const src = mine ?? sourceOf(q, all);
+      if (src === null) { dropped.push(q); continue; }
+      said.push({ by: mine !== null ? "owner" : "work", text: src, kind });
+    }
   }
   // Lifted: an earlier statement named, and words of the conversation that lift it.
   const lifted: { text: string; by: string }[] = [];
@@ -203,35 +214,42 @@ export function settle(lineage: StoredEvent[], text: string, prior: Statement[] 
     const by = target ? sourceOf(w, target.by === "owner" ? owner : all) : null;
     if (target && by !== null) lifted.push({ text: target.text, by });
   }
-  // Done: earlier requests the summary names as finished; they leave, counted.
-  const done: string[] = [];
-  for (const l of section(text, "Done") ?? []) {
-    const q = /^\s*[-*]/.test(l) ? quoted(l) : null;
-    const old = q === null ? null : sourceOf(q, prior.map((p) => p.text));
-    const target = old === null ? undefined : prior.find((p) => norm(p.text).includes(norm(old)));
-    if (target && !lifted.some((x) => x.text === target.text) && !done.includes(target.text)) done.push(target.text);
-  }
-  const gone = new Set([...lifted.map((l) => l.text), ...done]);
+  const gone = new Set(lifted.map((l) => l.text));
   const out: Statement[] = [];
-  const same = (a: string, b: string) => norm(a) === norm(b) || norm(a).includes(norm(b)) || norm(b).includes(norm(a));
+  const same = (a: Statement, b: Statement) => {
+    const x = norm(a.text), y = norm(b.text);
+    return x === y || (a.kind === "standing" && b.kind === "standing" && (x.includes(y) || y.includes(x)));
+  };
   for (const s of [...prior.filter((p) => !gone.has(p.text)), ...said]) {
-    const k = out.findIndex((o) => same(o.text, s.text));
+    const k = out.findIndex((o) => same(o, s));
     if (k < 0) out.push(s);
-    else if (s.text.length > out[k]!.text.length) out[k] = { ...out[k]!, text: s.text };
+    else if (s.kind === "standing") {
+      const old = out[k]!;
+      if (old.kind === "request" || s.text.length > old.text.length) out[k] = { ...old, text: s.text, kind: "standing" };
+    }
   }
-  if (!out.length && !dropped.length && !lifted.length && !done.length) return { summary: lines ? story : text.trim() };
+  // Done can retire only an exact quote already recorded as a scoped request.
+  // Check after merging so an exact quote also kept as standing cannot be retired.
+  const eligible = new Set(prior.filter((p) => p.kind === "request" && !gone.has(p.text)).map((p) => p.text));
+  const markedDone = new Set((section(text, "Done") ?? []).filter((l) => /^\s*[-*]/.test(l)).map(quoted));
+  const done = out.filter((s) => s.kind === "request" && eligible.has(s.text) && markedDone.has(s.text)).map((s) => s.text);
+  const active = out.filter((s) => s.kind !== "request" || !done.includes(s.text));
+  if (!active.length && !dropped.length && !lifted.length && !done.length) return { summary: structured ? story : text.trim() };
   const q = (t: string) => `"${t}"`;
+  const entries = (kind: Statement["kind"]) => active.filter((s) => s.kind === kind).map((s) => `- ${s.by}: ${q(s.text)}`);
+  const open = entries("request");
   const head = [
     "## Statements",
     "The conversation's own words, carried through every compaction until lifted:",
-    ...out.map((s) => `- ${s.by}: ${q(s.text)}`),
+    ...entries("standing"),
+    ...(open.length ? ["", "## Requests", ...open] : []),
     ...(dropped.length ? ["", `(${dropped.length} statement${dropped.length > 1 ? "s" : ""} the summary did not quote word for word ${dropped.length > 1 ? "were" : "was"} left out; the stored history keeps the original words.)`] : []),
     ...(done.length ? ["", `(${done.length} earlier request${done.length > 1 ? "s" : ""} the summary marked done ${done.length > 1 ? "were" : "was"} left out.)`] : []),
     ...(lifted.length ? ["", "## Lifted", ...lifted.map((l) => `- ${q(l.text)} lifted by: ${q(l.by)}`)] : []),
   ];
   return {
     summary: `${head.join("\n")}\n\n## Story\n${story}`,
-    statements: out,
+    statements: active,
     ...(dropped.length ? { statements_dropped: dropped } : {}),
     ...(lifted.length ? { statements_lifted: lifted } : {}),
     ...(done.length ? { statements_done: done } : {}),
