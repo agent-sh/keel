@@ -158,10 +158,13 @@ test("fleet messages: a missing or unproven receipt does not confirm delivery", 
     const calls = ["Check the receipt.", "Check the proof."].map((text) => ({
       name: "keel__session_send", input: { to: `${name}/receiver`, text, notify_when_idle: true },
     }));
-    await request.post(`/api/sessions/${sender}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+    const posted = await request.post(`/api/sessions/${sender}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+    expect(posted.ok()).toBe(true);
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${sender}`)).json()).running).toBe(false);
 
     await page.goto(`/s/${sender}`);
     const sendsShown = page.locator('[data-tool="keel__session_send"]');
+    await expect(sendsShown).toHaveCount(2);
     for (const [i, reason] of ["no usable receipt", "did not prove the pairing"].entries()) {
       const send = sendsShown.nth(i);
       await send.click({ timeout: 15_000 });
