@@ -46,18 +46,21 @@ export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: b
         const body = cleanNote(String(e.data.text ?? ""));
         const facts = body.split("\n").filter((l) => /^\s*-\s/.test(l)).length;
         const hooks: string[] = hook ? [hook] : e.data.memory?.hooks ?? [];
-        const label = hook ? "hook" : `memory${facts ? ` ${facts}` : ""}`;
+        // The helper's own note (src/helper/): the events and remembered items a prompt brought.
+        const mine = e.data.memory?.source === "helper";
+        const label = hook ? "hook" : `${mine ? "helper" : "memory"}${facts ? ` ${facts}` : ""}`;
+        const from = hook ? "From a hook" : mine ? "Helper context" : "Memory from tacit";
         return (
           <span key={e.id} className="k-note-chip-wrap" data-testid="memory-note">
             <Popover.Root>
-              <Popover.Trigger className="k-note-chip" title={`${hook ? "From a hook" : "Memory from tacit"}${facts ? `, ${facts} fact${facts === 1 ? "" : "s"}` : ""}${hooks.length ? `, ${hooks.join(", ")}` : ""}`}>
+              <Popover.Trigger className="k-note-chip" title={`${from}${facts ? `, ${facts} fact${facts === 1 ? "" : "s"}` : ""}${hooks.length ? `, ${hooks.join(", ")}` : ""}`}>
                 {hook ? <Webhook className="size-3" /> : <Brain className="size-3" />} {label}
                 <span className="sr-only">{hooks.join(", ")}</span>
               </Popover.Trigger>
               <Popover.Portal>
                 <Popover.Positioner sideOffset={6} align="start" className="z-50 outline-none">
                   <Popover.Popup className="k-note-pop">
-                    <p className="k-note-pop-head">{hook ? "From a hook" : "Memory from tacit"}{hooks.length ? `, ${hooks.join(", ")}` : ""}</p>
+                    <p className="k-note-pop-head">{from}{hooks.length ? `, ${hooks.join(", ")}` : ""}</p>
                     <pre className="whitespace-pre-wrap break-words font-mono text-micro leading-relaxed text-muted" data-testid="memory-text">{body}</pre>
                   </Popover.Popup>
                 </Popover.Positioner>
@@ -71,7 +74,7 @@ export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: b
 }
 
 const cleanNote = (text: string) => text
-  .replace(/<(memory|hook)[^>]*>\n?/g, "")
-  .replace(/<\/(memory|hook)>/g, "")
+  .replace(/<(memory|hook|digest|remembered)[^>]*>\n?/g, "")
+  .replace(/<\/(memory|hook|digest|remembered)>/g, "")
   .replace(/^From the owner's memory store.*\n/gm, "")
   .trim();

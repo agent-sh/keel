@@ -4,7 +4,7 @@
 // it is a column of marks, each a session's state and a short code of its
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Server, Settings, Sun, SunMoon, Tag } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Server, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineColour, machineName, useFleet } from "../lib/fleet.ts";
@@ -26,6 +26,7 @@ import { Logo } from "./Logo.tsx";
 import { archive } from "../lib/sessops.ts";
 import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
+import { openHelper } from "../lib/helper.ts";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -190,7 +191,7 @@ const BANDS: { w: Watch[]; label: string; short: string }[] = [
 ];
 function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
-  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id).sort((a, b) => b.updated - a.updated), [sessions]);
+  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.updated - a.updated), [sessions]);
   const codes = useMemo(() => callsigns(list), [list]);
   const watches = useWatches(list);
   const shown = useStations((x) => x.shown);
@@ -283,7 +284,7 @@ function Index({ current }: { current: string | null }) {
   // Each tab keeps its own tag: one picked in Sessions does not empty Archived.
   const [tags_, setTags] = useState<Record<string, string | null>>({});
   const base_ = useMemo(
-    () => (tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
+    () => (tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
     [sessions, tab, archived],
   );
   const tags = useMemo(() => [...new Set(base_.flatMap((s) => s.settings.tags ?? []))].sort((a, b) => a.localeCompare(b)), [base_]);
@@ -378,6 +379,7 @@ export function Sidebar({ open }: { open: boolean }) {
   const theme = useUI((s) => s.theme);
   const rail = useRail();
   const current = route.name === "session" ? route.id : null;
+  const onHelper = useStore((s) => (current ? !!s.sessions[current]?.settings.helper : false));
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
   const { card, bind, hide } = useCard();
   const grip = useRef<{ from: number; to: number | null }>({ from: 0, to: null });
@@ -434,6 +436,10 @@ export function Sidebar({ open }: { open: boolean }) {
         </button>
         <button type="button" className="k-act" data-testid="open-palette" aria-label="Search and commands" title="Search and commands (Ctrl K)" onClick={() => setUI({ palette: true })}>
           <Search /><span className="k-act-label">Search and commands</span>{open && <Kbd keys="mod+k" className="ml-auto" />}
+        </button>
+        {/* The helper: one conversation kept above the sessions (src/helper/). */}
+        <button type="button" className="k-act" data-testid="open-helper" aria-label="Helper" title="Helper (Ctrl J)" aria-current={onHelper ? "page" : undefined} onClick={() => void openHelper().catch(reportError)}>
+          <Sparkles /><span className="k-act-label">Helper</span>{open && <Kbd keys="mod+j" className="ml-auto" />}
         </button>
       </div>
       <CardCtx.Provider value={bind}>
