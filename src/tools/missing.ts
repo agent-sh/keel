@@ -5,12 +5,17 @@
 // to look instead, so the next call lands without a directory listing.
 import { readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative, isAbsolute } from "node:path";
+import { placeholdersIn } from "../safety/secrets.ts";
 
 const exists = (p: string) => { try { statSync(p); return true; } catch { return false; } };
 const list = (dir: string): string[] | null => { try { return readdirSync(dir); } catch { return null; } };
 
 export function notFound(p: string, cwd: string, what: "File" | "Directory" = "File"): string {
   const out = [`${what} does not exist: ${p}`];
+  // A path a model copied from text where a secret was replaced: the reason
+  // it is not there is the placeholder, not a removed folder.
+  const marks = placeholdersIn(p);
+  if (marks.length) out.push(`${marks.join(", ")} in this path is a secret's placeholder. Only a shell command's script is given a secret's value, never a path, so nothing has this name. Use a path without it: one relative to the session's folder, or cd inside the command, where ~ and $HOME expand.`);
   const moved = reroot(p, cwd);
   const folder = dirname(p);
   let names = list(folder);

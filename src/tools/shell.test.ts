@@ -23,6 +23,12 @@ test("a command whose working directory is gone says so and runs nothing", async
   expect(a.content).toContain("Nothing ran");
   expect(a.content).not.toContain("posix_spawn");
 
+  // A path copied from text where a secret was replaced: the placeholder is the reason.
+  const mark = "[secret:" + "0a1b2c3d]";
+  const p = await exec.run({ cmd: "echo ran", workdir: join(root, mark, "worktree") }, ctx("gpt"));
+  expect(p.is_error).toBe(true);
+  expect(p.content).toContain(`${mark} in this path is a secret's placeholder`);
+
   const shell = geminiTools.find((t) => t.name === "run_shell_command")!;
   const b = await shell.run({ command: "echo ran", dir_path: gone }, ctx("gemini"));
   expect(b.is_error).toBe(true);

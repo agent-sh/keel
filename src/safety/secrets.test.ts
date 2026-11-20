@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { detect, Vault } from "./secrets.ts";
+import { detect, publicNames, Vault } from "./secrets.ts";
 
 const GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const AWS = "AKIA" + "QWERTYUIOPASDFGH";
@@ -33,6 +33,28 @@ test("hashes, cursors, revisions and code under token-ish names are not secrets"
     [`export DB_PASSWORD='${v.slice(0, 18)}'`, v.slice(0, 18)], [`"client_secret": "${v}"`, v], [`authToken: "${v}"`, v],
     [`self.api_key = "${v}"`, v], [`curl -H "X-Api-Key: ${v}" https://x.example`, v], [`GITHUB_TOKEN=${h40}`, h40], [`refresh_token=${v}`, v],
   ] as [string, string][]) expect({ text, value: detect(text)[0]?.value }).toEqual({ text, value });
+});
+
+// The login name, the host's name and the home path's folders are on every
+// line a session prints. A keyring label has the shape of a URL with a
+// password: the login name taken there was replaced in every path of every
+// session, and no path with a placeholder in it opens. The word a document
+// writes where a credential goes is not one either.
+test("the machine's own names and template words are never secrets", () => {
+  const url = (head: string, pw: string, host: string) => head + ":" + pw + "@" + host;
+  publicNames.add("jordanlee");
+  const label = url("keyring:https://github.com", "jordanlee", "copilot-cli");
+  expect(detect(label)).toEqual([]);
+  const v = new Vault();
+  expect(v.redact(`${label}\n/home/jordanlee/projects/app`, "s1", "output")).toBe(`${label}\n/home/jordanlee/projects/app`);
+  expect(v.list()).toEqual([]);
+  for (const pw of ["<token>", "$DB_PASSWORD", "${DB_PASSWORD}", "{{redis_password}}", "password", "TOKEN", "********"]) {
+    const text = url("postgres://app", pw, "db.internal:5432/x");
+    expect({ text, hits: detect(text) }).toEqual({ text, hits: [] });
+  }
+  // A real one is still taken, and so is a login name nobody declared public.
+  expect(detect(url("postgres://app", "s3cretPass9", "db.internal:5432/x"))[0]!.value).toBe("s3cretPass9");
+  expect(detect(url("keyring:https://github.com", "samrivera", "copilot-cli"))[0]!.kind).toBe("password in a URL");
 });
 
 test("a value is one placeholder, put back only in its sessions, and named for commands", () => {

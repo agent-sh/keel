@@ -35,7 +35,8 @@ const G = globalThis as any;
 
 // Keys, tokens and the home folder out of anything a report carries.
 const SECRET = /(sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}|\b[A-Za-z0-9+/]{40,}={0,2})/g;
-const KEYED = /((?:api[_-]?key|token|secret|password|passwd|authorization|bearer|cookie)["']?\s*[:=]\s*["']?)[^\s"',}]{6,}/gi;
+// Keel's own placeholder ([secret:1a2b3c4d]) holds no value: it stays, with the text after it.
+const KEYED = /((?:api[_-]?key|token|secret|password|passwd|authorization|bearer|cookie)["']?\s*[:=]\s*["']?)(?![0-9a-f]{8}\])[^\s"',}]{6,}/gi;
 export function redact(v: unknown): unknown {
   const home = homedir();
   const walk = (x: any): any => {

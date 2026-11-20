@@ -9,6 +9,7 @@
 // seen again after a restart gets its old placeholder, and a call naming one
 // whose value is gone is refused by name instead of running with its text.
 import { createHmac, randomBytes } from "node:crypto";
+import { homedir, hostname, userInfo } from "node:os";
 
 export type SecretMeta = { id: string; kind: string; name?: string; source: Source; sessions: string[]; created: number; placeholder: string };
 type Source = "prompt" | "output" | "card" | "command";
@@ -78,6 +79,23 @@ export function entropy(s: string): number {
 }
 const looksRandom = (v: string) => v.length >= 12 && /[A-Za-z]/.test(v) && /\d/.test(v) && entropy(v) >= 3.5 && !/^(?:true|false|null|undefined)$/i.test(v);
 
+// What anyone on the machine can read is not a secret: the login name, the
+// host's name and the folders of the home path. One of them read as a
+// credential (a keyring label, `keyring:https://github.com:<login>@copilot-cli`,
+// has the shape of a password in a URL) would be replaced in every path of
+// every session from then on, and a path with a placeholder in it opens
+// nothing. A value the owner gives is theirs to name: only detection skips these.
+export const publicNames: Set<string> = new Set(machineNames());
+// Nor is the word a document writes where a credential goes: <token>, $PASS, {{password}}, ****, password.
+const TEMPLATE = /^(?:<[^<>]*>|\$\{?\w+\}?|\{\{?[^{}]*\}?\}|%[\w(].*|(.)\1+|pass(?:word|wd)?|secret|token|credentials?)$/i;
+function machineNames(): string[] {
+  const out: (string | undefined)[] = [process.env.USER, process.env.LOGNAME];
+  try { out.push(userInfo().username); } catch {}
+  try { const host = hostname(); out.push(host, host.split(".")[0]); } catch {}
+  try { out.push(...homedir().split(/[\\/]/)); } catch {}
+  return out.filter((n): n is string => !!n);
+}
+
 export type Hit = { start: number; end: number; value: string; kind: string };
 
 // Every secret in the text, longest first where they overlap.
@@ -102,7 +120,7 @@ export function detect(text: string): Hit[] {
   }
   hits.sort((a, b) => a.start - b.start || b.end - a.end);
   const out: Hit[] = [];
-  for (const h of hits) if (!out.length || h.start >= out.at(-1)!.end) out.push(h);
+  for (const h of hits) if (!publicNames.has(h.value) && !TEMPLATE.test(h.value) && (!out.length || h.start >= out.at(-1)!.end)) out.push(h);
   return out;
 }
 
@@ -111,6 +129,8 @@ export function detect(text: string): Hit[] {
 export const SHELL_FIELDS: ReadonlySet<string> = new Set(["command", "cmd"]);
 const PLACE = /\[secret:([0-9a-f]{8})\]|\[value of \$([A-Za-z_][A-Za-z0-9_]*)\]/g;
 const PLACE_AT = new RegExp(PLACE.source, "y");
+// The placeholders written in a text, each once.
+export const placeholdersIn = (text: string): string[] => [...new Set(text.match(PLACE) ?? [])];
 const RESERVED = /^(PATH|HOME|USER|SHELL|PWD|OLDPWD|TERM|LANG|LC_\w*|TZ|TMPDIR|IFS|PS\d|BASH_ENV|ENV|BASH_\w*|LD_\w*|DYLD_\w*|GIT_\w*|SSH_\w*|PYTHON\w*|NODE_OPTIONS|NODE_PATH|PERL5\w*|RUBY\w*|KEEL_\w*|XDG_\w*|DISPLAY|WAYLAND_\w*|DBUS_\w*)$/;
 
 export const nameError = (name: string): string | null =>
