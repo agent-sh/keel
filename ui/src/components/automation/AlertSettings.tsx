@@ -36,12 +36,12 @@ export default function AlertSettings() {
   return (
     <div className="flex flex-col gap-4" data-testid="alert-routes">
       <Card>
-        <SettingRow label="When a turn finishes" hint="Finished turns of a session you are watching stay in the page.">
+        <SettingRow label="When a turn finishes" hint="Not watching: a finish goes to the inbox, and to the desktop or phone only after a turn of five minutes or more; a session you are watching keeps it in the page. Always: every finish goes out.">
           <Segmented
             label="When a turn finishes"
             value={settings.completion}
             onChange={(v) => auto.saveSettings({ completion: v }).catch(reportError)}
-            options={[{ value: "never", label: "Never" }, { value: "background", label: "Not watching" }, { value: "always", label: "Always" }]}
+            options={[{ value: "never", label: "Never" }, { value: "background", label: "Long turns" }, { value: "always", label: "Always" }]}
           />
         </SettingRow>
         <SettingRow label="Test" hint="An alert of the kind From the agent, through its routes.">

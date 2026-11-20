@@ -178,3 +178,26 @@ test("a finished notice quotes this turn's reply and names it, or none", () => {
   expect(three.a.body).toBe("The turn finished.");
   expect(three.a.data?.event_id).toBeUndefined();
 });
+
+test("the desktop gets what needs the owner; a routine finish stays in the inbox, one row per session", async () => {
+  const { session } = scratch();
+  const s = session("S");
+  const kid = session("Agent", s);
+  const sent: string[] = [];
+  alerts.registerChannel({ id: "desktop", label: "Desktop", available: () => true, deliver: (a) => void sent.push(`${a.kind}:${a.title}`) });
+  for (const k of alerts.KINDS) alerts.saveSettings({ route: { kind: k, channel: "desktop", on: true } });
+  alerts.raise("finished", s, "short", "done", { ran_ms: 20_000 });
+  const short = alerts.raise("finished", s, "short again", "done", { ran_ms: 30_000 });
+  expect(short?.data?.inbox_only).toEqual({ routine: true });
+  expect(alerts.list({ unread: true }).filter((a) => a.kind === "finished")).toHaveLength(1); // the repeat replaced it
+  alerts.raise("finished", s, "long", "done", { ran_ms: alerts.LONG_TURN_MS });
+  alerts.raise("approval", kid, "approve", "a write", { approval_id: "ap1" });
+  alerts.raise("failed", s, "failed", "stopped");
+  alerts.raise("snooze_over", s, "snooze over", "back");
+  await settle();
+  expect(sent).toEqual(["finished:long", "approval:approve", "failed:failed"]);
+  alerts.saveSettings({ completion: "always" });
+  alerts.raise("finished", s, "asked for", "done", { ran_ms: 1000 });
+  await settle();
+  expect(sent.at(-1)).toBe("finished:asked for");
+});

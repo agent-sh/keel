@@ -270,6 +270,21 @@ export function retry(id: string): Alert | undefined {
 
 const DECISION: Partial<Record<AlertKind, string>> = { approval: "approval_id", question: "call_id" };
 
+// The channels that interrupt the owner (a desktop banner, the phone). They
+// carry what needs him or what he would want to know now: a question or an
+// approval, a failure that stopped his session, a loop that failed, a usage
+// limit, and what the model was told to tell him (agent). A routine finish
+// stays in the inbox (its count on the bell and the row's dot), unless the
+// turn ran long, or completion is "always" (he asked to hear every finish).
+// Long is five minutes: a turn that short is one he is usually still at the
+// desk for (watching it, or in the next pane), while one that ran minutes is
+// one he left to do something else; Claude Code's own idle notice waits a
+// minute of nothing to do, and a finish is less urgent than an input wait.
+const INTERRUPTS = new Set(["desktop", "push"]);
+export const LONG_TURN_MS = 5 * 60_000;
+const routine = (kind: AlertKind, data: unknown, st: AlertSettings) =>
+  kind === "snooze_over" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
+
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown): Alert | undefined {
   try {
     const { store } = D();
@@ -291,12 +306,14 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
       // replaces its row; a different one (a sibling agent's) stands beside it.
       store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?`).run(kind, String(decision));
     } else if (sid) {
-      // A newer notice of the same kind from the same source replaces the unread one.
-      store.db.query("UPDATE alerts SET read = 1, kept = 0 WHERE session_id = ? AND kind = ? AND read = 0 AND COALESCE(json_extract(data, '$.child_session'), '') = ?")
+      // A newer notice of the same kind from the same source replaces the unread
+      // one: one live row per session and kind (the activity list keeps each).
+      store.db.query("DELETE FROM alerts WHERE session_id = ? AND kind = ? AND read = 0 AND COALESCE(json_extract(data, '$.child_session'), '') = ?")
         .run(sid, kind, s?.parent_id ? sessionId! : "");
     }
     const chosen = st.routes[kind] ?? [];
-    const routed = chosen.filter((c) => channels.get(c)?.available());
+    const quietKind = routine(kind, data, st);
+    const routed = chosen.filter((c) => channels.get(c)?.available() && !(quietKind && INTERRUPTS.has(c)));
     // A snoozed session's routine alert is put away read; a global snooze keeps
     // everything off the channels.
     const f = snooze.filter(kind, sid);
@@ -305,7 +322,8 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     const sendTo = watched || !f.deliver || f.quiet ? [] : routed;
     // Why nothing left the inbox when nothing did: no route chosen, or the
     // chosen ones are not set up (judged now, when it was raised).
-    const inboxOnly = sendTo.length || watched || !f.deliver || f.quiet ? {} : { inbox_only: chosen.length ? { not_set_up: chosen } : { no_route: true } };
+    const inboxOnly = sendTo.length || watched || !f.deliver || f.quiet ? {}
+      : { inbox_only: !chosen.length ? { no_route: true } : quietKind && chosen.some((c) => INTERRUPTS.has(c) && channels.get(c)?.available()) ? { routine: true } : { not_set_up: chosen } };
     const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}) };
     const extra = { ...child, ...flags, ...inboxOnly };
     const stored = Object.keys(extra).length ? { ...(data as object), ...extra } : data;
@@ -491,5 +509,7 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
     text = (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
     if (text) event = e.id;
   }
-  raise("finished", sessionId, title, clip(text.split("\n")[0]!, 300) || "The turn finished.", event ? { event_id: event } : undefined);
+  // How long the turn ran: a long one is worth a desktop notice (LONG_TURN_MS).
+  const ran_ms = start >= 0 ? Date.now() - all[start]!.ts : undefined;
+  raise("finished", sessionId, title, clip(text.split("\n")[0]!, 300) || "The turn finished.", event || ran_ms !== undefined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}) } : undefined);
 }

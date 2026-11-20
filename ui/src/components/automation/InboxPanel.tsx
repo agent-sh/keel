@@ -167,6 +167,7 @@ function Route({ a }: { a: Alert }) {
   const only = a.data?.inbox_only;
   if (only?.no_route) parts.push("inbox only, no route chosen");
   else if (only?.not_set_up) parts.push(`inbox only, ${only.not_set_up.map(name).join(", ")} not set up`);
+  else if (only?.routine) parts.push("inbox only, a routine finish");
   return <>{parts.map((p) => <span key={p} className="contents"><Dot className="size-3" aria-hidden /><span>{p}</span></span>)}</>;
 }
 
