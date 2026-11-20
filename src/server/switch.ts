@@ -10,10 +10,31 @@ import type { Session, SessionSettings } from "../core/types.ts";
 import { speedOffer, type Providers } from "../providers/registry.ts";
 import type { ModelInfo } from "../providers/types.ts";
 
+// Effort levels from least to most: a level the new model does not list goes
+// to the nearest one it does (xhigh on a model that stops at high runs high).
+const LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+export function nearestEffort(want: string, offered: string[]): string | undefined {
+  if (offered.includes(want)) return want;
+  const w = LADDER.indexOf(want);
+  if (w < 0) return undefined;
+  let best: string | undefined;
+  let gap = Infinity;
+  for (const e of offered) {
+    const i = LADDER.indexOf(e);
+    // On a tie the lower level wins: the switch never makes a request dearer than asked.
+    if (i >= 0 && (Math.abs(i - w) < gap || (Math.abs(i - w) === gap && i < w))) { best = e; gap = Math.abs(i - w); }
+  }
+  return best;
+}
+
 // What the new model keeps of the session's settings.
 export function carrySettings(settings: SessionSettings, info: ModelInfo): SessionSettings {
   const out = { ...settings };
-  if (out.effort && !info.efforts.includes(out.effort)) delete out.effort;
+  if (out.effort) {
+    const e = nearestEffort(out.effort, info.efforts);
+    if (e) out.effort = e;
+    else delete out.effort;
+  }
   if (out.speed) {
     const o = speedOffer(info, out.speed);
     if (o) out.speed = o.id;
@@ -22,7 +43,20 @@ export function carrySettings(settings: SessionSettings, info: ModelInfo): Sessi
   return out;
 }
 
-export async function switchNote(providers: Providers, from: string, to: ModelInfo): Promise<{ kind: "model"; text: string; from: string; to: string }> {
+// Who asked for the switch: the owner (the page, the API) or `keel run`.
+export type SwitchBy = "owner" | "cli";
+
+// The note in the transcript. The new model is told it took over by the
+// engine, at the request it first answers (see Engine.tellSwitch).
+export type SwitchNote = {
+  kind: "model"; text: string; from: string; to: string; by: SwitchBy;
+  // The effort moved with it (mapped to the nearest level, or the model's default).
+  effort?: { from?: string; to?: string };
+  // Made while a turn ran: the turn goes on on the new model from its next request.
+  running?: boolean;
+};
+
+export async function switchNote(providers: Providers, from: string, to: ModelInfo, o: { by?: SwitchBy; effort?: { from?: string; to?: string }; running?: boolean } = {}): Promise<SwitchNote> {
   const was = (await providers.models()).find((m) => m.id === from);
   // Two routes may list one name: then each end says its provider (its id
   // when the two providers' labels are the same too).
@@ -30,13 +64,22 @@ export async function switchNote(providers: Providers, from: string, to: ModelIn
   const same = was?.name === to.name;
   const apart = label(from) !== label(to.id);
   const end = (name: string | undefined, id: string) => (!name ? id : same ? `${name} (${apart ? label(id) : id})` : name);
-  return { kind: "model", text: `Model changed from ${end(was?.name, from)} to ${end(to.name, to.id)}.`, from, to: to.id };
+  const e = o.effort && o.effort.from !== o.effort.to ? o.effort : undefined;
+  const effortText = e ? (e.to ? ` Effort ${e.from} is now ${e.to}.` : ` ${to.name} does not take effort ${e.from}: it runs at its default.`) : "";
+  return {
+    kind: "model",
+    text: `Model changed from ${end(was?.name, from)} to ${end(to.name, to.id)}.${effortText}${o.running ? " The running turn goes on with it from its next request." : ""}`,
+    from, to: to.id, by: o.by ?? "owner",
+    ...(e ? { effort: e } : {}),
+    ...(o.running ? { running: true } : {}),
+  };
 }
 
 // Commits a validated model change: the session first, then its note, then
 // one event for each.
-export async function commitSwitch(store: Store, bus: Bus, providers: Providers, s: Session, info: ModelInfo, patch: Parameters<Store["updateSession"]>[1]): Promise<Session> {
-  const note = info.id !== s.model ? await switchNote(providers, s.model, info) : undefined;
+export async function commitSwitch(store: Store, bus: Bus, providers: Providers, s: Session, info: ModelInfo, patch: Parameters<Store["updateSession"]>[1], o: { by?: SwitchBy; running?: boolean } = {}): Promise<Session> {
+  const effort = { from: s.settings.effort, to: patch.settings ? patch.settings.effort : s.settings.effort };
+  const note = info.id !== s.model ? await switchNote(providers, s.model, info, { ...o, effort: effort.from ? effort : undefined }) : undefined;
   const next = store.updateSession(s.id, { ...patch, model: info.id });
   if (note) bus.emit({ t: "event", event: store.append(s.id, "note", note) });
   return next;

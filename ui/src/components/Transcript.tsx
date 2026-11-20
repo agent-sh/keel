@@ -654,6 +654,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             if (e.kind === "note" && (e.data.hook || e.data.memory)) { notes.push(e); return null; }
             if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "note" && e.data.kind === "fork") return <ForkNote key={e.id} e={e} />;
+            // What the new model is told after a switch: the switch note above already says it.
+            if (e.kind === "note" && e.data.kind === "model_told") return null;
+            // A model switch: who made it and when, inline where it took effect.
+            if (e.kind === "note" && e.data.kind === "model") {
+              const at = new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+              return <Divider key={e.id} testid="model-note"><span>{e.data.text} <span className="text-faint">{e.data.by === "cli" ? "From keel run" : "By you"}, {at}</span></span></Divider>;
+            }
             if (e.kind === "note") {
               // A note for the model (a background job ended) reads short here: no tags, no log path.
               const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;

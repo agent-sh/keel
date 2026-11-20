@@ -351,7 +351,7 @@ export function skillListing(cwd: string, window?: number): string {
   return `Skills you can load with the skill tool when a task matches one (the body comes back as its result):\n${lines.join("\n")}${note}`;
 }
 
-// Built with the session's system prompt, which stays frozen: the budget is the window of the model it starts on.
+// Built with the session's system prompt, which stays frozen: the budget is the window of the model it runs on (made again when the session switches model).
 registerHooks({ system: (s, model) => skillListing(s.workspace, model && !model.context_assumed ? model.context : undefined) });
 
 export const skillTool = (name: string, nameKey: string, argsKey: string | null, description?: string): Tool => ({

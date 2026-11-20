@@ -220,7 +220,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           }
           const core = body.title !== undefined || body.model !== undefined || body.archived !== undefined || body.settings !== undefined;
           const patch = { title: body.title?.trim(), archived: body.archived, settings };
-          let next = moving ? await commitSwitch(store, bus, providers, s, moving, patch) : core ? store.updateSession(s.id, { ...patch, model: body.model }) : s;
+          let next = moving ? await commitSwitch(store, bus, providers, s, moving, patch, { running: engine.isRunning(s.id) }) : core ? store.updateSession(s.id, { ...patch, model: body.model }) : s;
           for (const p of mine) await p.apply(next, body);
           next = store.session(s.id)!;
           bus.emit({ t: "session", session: next });

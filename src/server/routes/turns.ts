@@ -137,7 +137,10 @@ export const turnRoutes: RouteModule = (deps) => {
         if (!s) return bad("no such session", 404);
         if (engine.isRunning(s.id)) return bad("a turn is running", 409);
         const b = (await req.json().catch(() => ({}))) as any;
-        const ev = await engine.compactNow(s.id, { focus: b.focus ? String(b.focus).slice(0, 2000) : undefined });
+        // `for_model`: the model the session moves to next; the owner's words kept verbatim fit its window too.
+        const next = b.for_model ? (await providers.models()).find((m) => m.id === b.for_model) : undefined;
+        if (b.for_model && !next) return bad(`model ${b.for_model} is not listed`);
+        const ev = await engine.compactNow(s.id, { focus: b.focus ? String(b.focus).slice(0, 2000) : undefined, next });
         return json({ ok: true, event: ev });
       },
     },

@@ -159,7 +159,7 @@ export const runRoutes: RouteModule = (deps) => {
         const info = (await providers.models()).find((m) => m.id === target);
         if (b.effort && info && !info.efforts.includes(b.effort)) throw fail(`${info.name} does not take effort ${b.effort} (it takes ${info.efforts.join(", ") || "none"})`);
         if (s) {
-          if (target !== s.model && info) s = await commitSwitch(store, bus, providers, s, info, { settings: carrySettings(s.settings, info) });
+          if (target !== s.model && info) s = await commitSwitch(store, bus, providers, s, info, { settings: carrySettings(s.settings, info) }, { by: "cli" });
           else if (target !== s.model) s = store.updateSession(s.id, { model: target });
         } else {
           const workspace = resolve(b.cwd || deps.workspace);

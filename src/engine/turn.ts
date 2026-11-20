@@ -22,7 +22,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { pickReader, readerPrompt } from "./reader.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, keptMessages, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
-import { PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
+import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
 import { resolveAttachments } from "./attachments.ts";
@@ -248,7 +248,7 @@ export class Engine {
   // Bounded: a session that dropped out reads its system prompt back from the
   // store (the same bytes) and asks to read a file again before editing it.
   private seen = new SessionMap<Map<string, number>>(64);
-  private systems = new SessionMap<{ text: string; split: number }>(64);
+  private systems = new SessionMap<{ text: string; split: number; model?: string }>(64);
   private prompts: PromptStore;
   private rendering = new Map<string, Promise<{ text: string; split: number }>>();
   // Sessions whose kept prompt was compared with a fresh render in this run,
@@ -506,8 +506,7 @@ export class Engine {
   private async step(session: Session, model: string): Promise<Step> {
     const { provider, info } = await this.providers.resolve(model);
     const system = await this.systemOf(session, info);
-    const want = session.settings.effort;
-    const effort = want && info.efforts.includes(want) ? want : info.efforts.includes("high") ? "high" : undefined;
+    const effort = effectiveEffort(info, session.settings.effort);
     // A model known to take no tool definitions (the owner, a probe, its listing
     // or catalog said so) is sent none: it would refuse them or answer garbled.
     const native = info.tools !== false && loadsNatively(provider.wire, info);
@@ -517,9 +516,16 @@ export class Engine {
   // A subagent on this machine runs on its parent's system prompt byte for byte
   // (its own place, a worktree, is in its task message), so its first request
   // reads the prefix the parent cached instead of writing its own copy.
-  private async systemOf(session: Session, info?: ModelInfo): Promise<{ text: string; split: number }> {
+  // A session moved to another model (its own, not a subagent riding on its
+  // parent's prompt) gets its prompt rendered again for that model: blocks
+  // that depend on the model (the skill listing is cut to its window) follow it.
+  private async systemOf(session: Session, info?: ModelInfo, own = true): Promise<{ text: string; split: number }> {
     const system = this.systems.get(session.id);
-    if (system) return system;
+    const local = session.parent_id && !session.machine;
+    if (system && own && !local && info?.id === session.model && system.model && system.model !== info.id) {
+      this.systems.delete(session.id);
+      this.moved.add(session.id);
+    } else if (system) return system;
     // One render at a time per session: a turn and a side question that start
     // together get the same text.
     let making = this.rendering.get(session.id);
@@ -539,7 +545,7 @@ export class Engine {
   private async loadSystem(session: Session, info?: ModelInfo): Promise<{ text: string; split: number }> {
     const parent = session.parent_id && !session.machine ? this.store.session(session.parent_id) : undefined;
     let system: { text: string; split: number };
-    if (parent) system = await this.systemOf(parent, info);
+    if (parent) system = await this.systemOf(parent, info, false);
     else {
       const kept = this.prompts.get(session.id);
       const moved = this.moved.has(session.id);
@@ -551,8 +557,12 @@ export class Engine {
         if (kept && !forModel) return kept;
         const made = await this.renderSystem(session, forModel);
         const changed = kept ? changedBlocks(kept.blocks, made.blocks) : [];
-        if (kept && !changed.length) system = kept;
-        else {
+        // A prompt made again for a new model is kept as made for it, so the
+        // next run compares it against that model.
+        if (kept && !changed.length) {
+          system = kept;
+          if (moved && forModel && kept.model !== forModel.id) this.prompts.put(session.id, made);
+        } else {
           this.prompts.put(session.id, made, changed);
           system = made;
         }
@@ -560,7 +570,7 @@ export class Engine {
         this.moved.delete(session.id);
       }
     }
-    this.systems.set(session.id, { text: system.text, split: system.split });
+    this.systems.set(session.id, { text: system.text, split: system.split, model: parent ? undefined : this.prompts.get(session.id)?.model ?? undefined });
     return system;
   }
 
@@ -572,6 +582,25 @@ export class Engine {
     const shared: PromptPart[] = [CORE, ...extra].map((t, i) => sent({ name: i ? blockName(t) : "core", text: t + "\n\n" }));
     const parts = [...shared, ...sessionParts(session.workspace, session.created).map(sent)];
     return { text: parts.map((p) => p.text).join(""), split: shared.reduce((n, p) => n + p.text.length, 0), blocks: blocksOf(parts), model: info?.id ?? null };
+  }
+
+  // The first request on a model other than the one that wrote the last reply
+  // tells it so, once (Codex sends a model_switch message the same way): the
+  // replies above are another model's, and it should not take their claims
+  // about itself as its own. Stored as a note for the model, so the bytes
+  // stay the same on every later request. Nothing when no model replied yet.
+  private async tellSwitch(id: string, events: StoredEvent[], st: Step): Promise<boolean> {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.kind === "compaction" || (e.kind === "note" && e.data.kind === "model_told")) return false;
+      if (e.kind !== "assistant") continue;
+      const was: string = e.data.model;
+      if (!was || was === st.info.id) return false;
+      const name = (await this.providers.models()).find((m) => m.id === was)?.name ?? was;
+      this.append(id, "note", { kind: "model_told", model: true, from: was, to: st.info.id, text: `[harness] The session's model changed: you are ${st.info.name} from here. The replies above came from another model (the last one from ${name}); go on with the work as it stands.` });
+      return true;
+    }
+    return false;
   }
 
   // Measuring hooks never stop a call.
@@ -762,6 +791,8 @@ export class Engine {
           this.emitQueue(id);
         }
         session = this.store.session(id)!;
+        // A model or effort chosen while the turn runs takes effect at its next request.
+        if (session.model !== st.info.id || effectiveEffort(st.info, session.settings.effort) !== st.effort) st = await this.step(session, session.model);
         // The owner's step budget for one turn (none by default).
         const budget = session.settings.max_steps ?? 0;
         if (budget > 0 && steps >= budget) {
@@ -799,6 +830,7 @@ export class Engine {
         } else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
         }
+        if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
         const messages = toMessages(events);
         let res: ProviderResult;
         try {
@@ -816,7 +848,7 @@ export class Engine {
           if (signal.aborted) {
             // Keep what the owner already saw of the reply.
             const text = [...partial.entries()].sort(([a], [b]) => a - b).filter(([, p]) => p.kind === "text" && p.text.trim()).map(([, p]) => ({ type: "text" as const, text: p.text }));
-            if (text.length) this.append(id, "assistant", { blocks: text, model: session.model, usage: emptyUsage(), stop: "interrupted" });
+            if (text.length) this.append(id, "assistant", { blocks: text, model: st.info.id, usage: emptyUsage(), stop: "interrupted" });
           }
           throw e;
         }
@@ -1073,8 +1105,11 @@ export class Engine {
 
   // The owner's words kept verbatim through a compaction: OWNER_WORDS_BYTES,
   // or a quarter of a window too small to hold that beside the summary.
-  private wordsBudget(st: Step): number {
-    return Math.min(OWNER_WORDS_BYTES, Math.floor((st.info.context / 4) * bytesPerToken(st.info.id)));
+  // `next`: the model the session switches to after this summary (the owner
+  // compacts before a switch): its window bounds the words too.
+  private wordsBudget(st: Step, next?: ModelInfo): number {
+    const quarter = (m: ModelInfo) => Math.floor((m.context / 4) * bytesPerToken(m.id));
+    return Math.min(OWNER_WORDS_BYTES, quarter(st.info), next ? quarter(next) : Infinity);
   }
 
   // The provider refused this context as over the model's window: Keel's count
@@ -1133,7 +1168,7 @@ export class Engine {
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a
   // call that would not fit) or on the owner's request between turns.
   // `trigger`: what started it (the threshold, a request that did not fit, the owner).
-  async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner"; signal?: AbortSignal; step?: Step } = {}) {
+  async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner"; signal?: AbortSignal; step?: Step; next?: ModelInfo } = {}) {
     const session = this.store.session(id)!;
     const events = this.lineage(id);
     // A turn with no reply yet: the prompts that opened it stay out of the summary and follow it whole.
@@ -1171,7 +1206,7 @@ export class Engine {
       }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...keptMessages(upto, this.wordsBudget(st)), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", summary, ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...keptMessages(upto, this.wordsBudget(st, opts.next)), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);

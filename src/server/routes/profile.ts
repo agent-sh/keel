@@ -44,7 +44,7 @@ function toolProfile(info: ModelInfo, wire?: string) {
   return { tool_profile: { label, family: info.family, edit_grammar }, eager_tools: names };
 }
 
-export const profileRoutes: RouteModule = ({ store, bus, providers }) => {
+export const profileRoutes: RouteModule = ({ store, bus, providers, engine }) => {
   const answer = async (id: string) => {
     const s = store.session(id);
     if (!s) return null;
@@ -84,7 +84,7 @@ export const profileRoutes: RouteModule = ({ store, bus, providers }) => {
           if (!o) return json({ error: `${info.name} has no ${b!.speed} speed on ${info.provider}` }, 400);
           settings.speed = o.id;
         } else if (b!.speed === "standard" || !speedOffer(info, settings.speed)) delete settings.speed;
-        bus.emit({ t: "session", session: await commitSwitch(store, bus, providers, s, info, { settings }) });
+        bus.emit({ t: "session", session: await commitSwitch(store, bus, providers, s, info, { settings }, { running: engine.isRunning(s.id) }) });
         return json(await answer(s.id));
       },
     },
