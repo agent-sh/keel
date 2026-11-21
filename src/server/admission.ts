@@ -19,6 +19,7 @@
 // `?token=` on /ws. The phone API (/v1, /pair) signs its own requests and the
 // portal carries a capability key in its path: neither needs it.
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
@@ -78,32 +79,53 @@ export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false
 
 // The uid holding the other end of a loopback connection, from the kernel's
 // socket table; undefined where there is none (not Linux), null when the
-// connection is not in it. Reading the table costs milliseconds on a busy
-// machine, so an answer is kept for a second per client port.
-const uidCache = new Map<string, { uid: number | null; at: number }>();
-function peerUid(peerPort: number, serverPort: number): number | null | undefined {
-  const k = `${peerPort}:${serverPort}`;
-  const hit = uidCache.get(k);
-  if (hit && Date.now() - hit.at < 1000) return hit.uid;
-  const want = (p: number) => `:${p.toString(16).toUpperCase().padStart(4, "0")}`;
-  const local = want(peerPort), rem = want(serverPort);
-  let found = false;
-  let uid: number | null = null;
-  for (const t of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-    let text: string;
-    try { text = readFileSync(t, "utf8"); } catch { continue; }
-    found = true;
-    for (const line of text.split("\n")) {
-      const f = line.trim().split(/\s+/);
-      if (f[1]?.endsWith(local) && f[2]?.endsWith(rem)) { uid = Number(f[7]); break; }
+// connection is not in it. The kernel writes the whole table for each read,
+// which costs milliseconds on a machine with thousands of sockets, so the
+// table is read off the loop (one read at a time, shared by the connections
+// that arrive while it runs) and searched for the one line, and an answer is
+// kept for a second per client port. Only a new client port waits for a read;
+// what the loop does for it is the search.
+export type Tables = (string | null)[];
+const readTables = (): Promise<Tables> => Promise.all(["/proc/net/tcp", "/proc/net/tcp6"].map((t) => readFile(t, "utf8").catch(() => null)));
+
+export function uidLookup(read: () => Promise<Tables> = readTables, now: () => number = Date.now) {
+  const cache = new Map<string, { uid: number | null; at: number }>();
+  let reading: Promise<Tables> | undefined;
+  const table = () => (reading ??= read().finally(() => (reading = undefined)));
+  const hex = (p: number) => p.toString(16).toUpperCase().padStart(4, "0");
+  // The line whose local end is the client's port and whose remote end is ours:
+  // its eighth field is the uid.
+  const find = (tables: Tables, peerPort: number, serverPort: number): number | null | undefined => {
+    if (tables.every((t) => t === null)) return undefined;
+    const line = new RegExp(`^\\s*\\d+: [0-9A-F]+:${hex(peerPort)} [0-9A-F]+:${hex(serverPort)} (?:\\S+\\s+){4}(\\d+)`, "m");
+    for (const t of tables) {
+      const m = t === null ? null : line.exec(t);
+      if (m) return Number(m[1]);
     }
-    if (uid !== null) break;
-  }
-  if (!found) return undefined;
-  if (uidCache.size > 4096) uidCache.clear();
-  uidCache.set(k, { uid, at: Date.now() });
-  return uid;
+    return null;
+  };
+  const keep = (k: string, uid: number | null | undefined) => {
+    if (uid === undefined) return uid;
+    if (cache.size > 4096) cache.clear();
+    cache.set(k, { uid, at: now() });
+    return uid;
+  };
+  return (peerPort: number, serverPort: number): number | null | undefined | Promise<number | null | undefined> => {
+    const k = `${peerPort}:${serverPort}`;
+    const hit = cache.get(k);
+    if (hit && now() - hit.at < 1000) return hit.uid;
+    return (async () => {
+      // A read already under way may have started before this connection was
+      // made: when it does not list it, one that starts now does.
+      if (reading) {
+        const uid = find(await reading, peerPort, serverPort);
+        if (typeof uid === "number") return keep(k, uid);
+      }
+      return keep(k, find(await table(), peerPort, serverPort));
+    })();
+  };
 }
+const peerUid = uidLookup();
 
 let token = "";
 // The access token, made once per state folder with mode 0600.
@@ -133,22 +155,23 @@ export function hasToken(req: Request, allowQuery = false): boolean {
 // page, the portal's capability key, the token exchange itself, and health.
 const OWN_AUTH = /^\/(v1\/|pair$|portal\/|fleet-portal\/|api\/remote\/enter$|api\/health$)/;
 
-export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined): Response | undefined {
+export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined): Response | undefined | Promise<Response | undefined> {
   const ip = srv?.requestIP(req);
   const loopback = !!ip && LOOPBACK_IP.test(ip.address);
   peers.set(req, { loopback: !!ip ? loopback : true });
   if (OWN_AUTH.test(new URL(req.url).pathname)) return undefined;
-  let why: string | null = null;
-  if (forwarded(req)) why = "a request through a proxy or tunnel";
-  else if (ip && !loopback) why = `a request from ${ip.address}`;
-  else if (ip && srv?.port) {
-    const uid = peerUid(ip.port, srv.port);
+  const answer = (why: string | null) => (!why || hasToken(req, new URL(req.url).pathname === "/ws") ? undefined : refuse(`${why} needs the access token (Settings > Safety > Remote access)`));
+  if (forwarded(req)) return answer("a request through a proxy or tunnel");
+  if (ip && !loopback) return answer(`a request from ${ip.address}`);
+  if (!ip || !srv?.port) return answer(null);
+  const owner = (uid: number | null | undefined) => {
     const me = process.getuid?.();
-    if (uid === null) why = "a connection the kernel does not list";
-    else if (uid !== undefined && me !== undefined && uid !== me && uid !== 0) why = `a process of another account (uid ${uid})`;
-  }
-  if (!why || hasToken(req, new URL(req.url).pathname === "/ws")) return undefined;
-  return refuse(`${why} needs the access token (Settings > Safety > Remote access)`);
+    if (uid === null) return answer("a connection the kernel does not list");
+    if (uid !== undefined && me !== undefined && uid !== me && uid !== 0) return answer(`a process of another account (uid ${uid})`);
+    return answer(null);
+  };
+  const uid = peerUid(ip.port, srv.port);
+  return uid instanceof Promise ? uid.then(owner) : owner(uid);
 }
 
 // The portal proxies a session's own dev server under a capability key in its
@@ -163,16 +186,21 @@ const OAUTH_CALLBACKS = new Set(["/api/mcp/oauth/callback"]);
 const oauthReturn = (req: Request, path: string) =>
   req.method === "GET" && OAUTH_CALLBACKS.has(path) && req.headers.get("sec-fetch-mode") === "navigate";
 
-export function admit(req: Request, srv?: Bun.Server<unknown>): Response | undefined {
+// The answer is a promise only for a client port not seen in the last second
+// (its owner is being read from the kernel's table); the callers await it.
+export function admit(req: Request, srv?: Bun.Server<unknown>): Response | undefined | Promise<Response | undefined> {
   const path = new URL(req.url).pathname;
   const hostOnly = PORTAL.test(path) || oauthReturn(req, path);
   const guard = hostOnly ? (allowedHost(req.headers.get("host")) ? undefined : refuse("host not allowed")) : originCheck(req);
   if (guard) return guard;
+  const rest = (who: Response | undefined) => {
+    if (who) return who;
+    for (const c of checks) {
+      const r = c(req, path);
+      if (r) return r;
+    }
+    return undefined;
+  };
   const who = callerCheck(req, srv);
-  if (who) return who;
-  for (const c of checks) {
-    const r = c(req, path);
-    if (r) return r;
-  }
-  return undefined;
+  return who instanceof Promise ? who.then(rest) : rest(who);
 }

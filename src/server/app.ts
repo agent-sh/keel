@@ -104,7 +104,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       const label = () => `answering ${req.method} ${new URL(req.url).pathname}`;
       const answered = inFlight(req, label);
       try {
-        const refused = admit(req, srv);
+        const refused = await admit(req, srv);
         if (refused) return refused;
         const res = await timed(label, () => h(req, srv));
         return await timed(label, () => compressJson(req, res));
@@ -346,10 +346,10 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     maxRequestBodySize: KEEL_FILE_MAX,
     reusePort: false, // one daemon per port (Bun 1.4 binds a taken port anyway: start.ts checks first)
     development: opts.development ? { hmr: true, console: true } : false,
-    fetch(req: Request, srv: Bun.Server<undefined>) {
+    async fetch(req: Request, srv: Bun.Server<undefined>) {
       const url = new URL(req.url);
       if (url.pathname === "/ws") {
-        const refused = admit(req, srv);
+        const refused = await admit(req, srv);
         if (refused) return refused;
         if (srv.upgrade(req)) return;
         return bad("websocket upgrade failed");
