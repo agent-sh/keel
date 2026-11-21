@@ -111,13 +111,13 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
   const pick = (i: number) => actions.setHead(s.id, vs[i]!.id).catch(reportError);
   if (editing) return <EditPrompt e={e} s={s} onDone={() => setEditing(false)} />;
   return (
-    <div id={`e-${e.id}`} className="group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
+    <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
       {origin === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-steer">Steered into the turn</span>}
       {e.data.edited_from === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-edited-steer">An edited steer, sent as a new turn</span>}
       {origin === "queued" && <span className="text-micro font-medium text-faint" data-testid="origin-queued">From the queue</span>}
       {e.data.images?.length > 0 && <Images blocks={e.data.images} />}
       {text && (
-        <div className="relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">
+        <div className="k-user-words relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">
           <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{text}</div>
           {long && (
             <button type="button" onClick={() => setFull(!full)} className="mt-1 text-caption font-medium text-accent-ink hover:underline">
@@ -404,7 +404,7 @@ function TurnFooter({ e, reply, prompt, s, last, notes = [] }: { e: StoredEvent;
       )}
       <Extra on="assistant" e={e} s={s} />
       <TurnNotes notes={notes} working={s.phase === "working"} />
-      <span className="ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
+      <span className="k-turn-end ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
         {REASONS[e.data.reason] && <span className={e.data.reason === "error" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}</span>}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
@@ -755,7 +755,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             }
             if (e.kind === "error") {
               return (
-                <div key={e.id} className="flex items-start gap-2.5 rounded-lg border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-ui text-danger" data-testid="turn-error">
+                <div key={e.id} className="k-turn-error flex items-start gap-2.5 rounded-lg border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-ui text-danger" data-testid="turn-error">
                   <CircleAlert className="mt-0.5 size-4 shrink-0" />
                   <span className="whitespace-pre-wrap break-words">{e.data.message}</span>
                 </div>

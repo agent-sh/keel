@@ -58,7 +58,7 @@ export function WorktreeChip({ session }: { session: Session }) {
       <Popover.Trigger
         data-testid="worktree-chip"
         className={cn(
-          "inline-flex h-7 max-w-56 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg data-popup-open:bg-hover",
+          "k-worktree-chip inline-flex h-7 max-w-56 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg data-popup-open:bg-hover",
           wt.state !== "active" && "text-warn",
         )}
       >

@@ -122,7 +122,7 @@ function Card({ a, first, asker, list }: { a: Approval; first: boolean; asker?: 
       data-approval-id={a.id}
       data-risk={a.risk}
       className={cn(
-        "animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
+        "k-approval animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
         a.risk === "high" ? "border-danger/50" : "border-accent/40",
       )}
       onKeyDown={(e) => {

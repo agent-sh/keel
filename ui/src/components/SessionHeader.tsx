@@ -209,7 +209,7 @@ export function SessionHeader({ session }: { session: Session }) {
   const live = useBackgroundLive(session.id) > 0 && out.includes("background");
 
   return (
-    <header ref={head} className="relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line bg-bg/85 px-2 backdrop-blur-md md:px-4" data-testid="session-header">
+    <header ref={head} className="k-session-header relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line bg-bg/85 px-2 backdrop-blur-md md:px-4" data-testid="session-header">
       <SidebarButton />
       <div data-flex="" className="flex min-w-0 flex-1 items-center gap-2.5 pl-1">
         {editing ? (
@@ -224,7 +224,7 @@ export function SessionHeader({ session }: { session: Session }) {
           />
         ) : (
           <h1
-            className="min-w-0 truncate rounded-sm px-1 text-base font-medium hover:bg-hover"
+            className="k-session-title min-w-0 truncate rounded-sm px-1 text-base font-medium hover:bg-hover"
             data-testid="session-title"
             onDoubleClick={() => setEditing(true)}
             title="Double-click to rename"
@@ -237,7 +237,7 @@ export function SessionHeader({ session }: { session: Session }) {
             type="button"
             title={`${session.workspace}\nClick to copy the path`}
             onClick={(e) => void copyOrSay(session.workspace, e.currentTarget)}
-            className="hidden h-6 shrink-0 items-center gap-1 rounded-sm px-1.5 text-caption text-faint hover:bg-hover hover:text-muted sm:inline-flex"
+            className="k-head-folder hidden h-6 shrink-0 items-center gap-1 rounded-sm px-1.5 text-caption text-faint hover:bg-hover hover:text-muted sm:inline-flex"
           >
             <Folder className="size-3.5" />
             {folder}
@@ -247,7 +247,7 @@ export function SessionHeader({ session }: { session: Session }) {
       <div data-tools="" className="k-head-tools">
       {input_ + u.output > 0 && !out.includes("usage") && <span
         data-tool="usage"
-        className="hidden shrink-0 px-2 text-caption tabular-nums text-faint md:inline"
+        className="k-session-usage hidden shrink-0 px-2 text-caption tabular-nums text-faint md:inline"
         title={`Input ${input_.toLocaleString()} tokens (${u.cache_read.toLocaleString()} read from cache), output ${u.output.toLocaleString()}`}
         data-testid="session-usage"
       >

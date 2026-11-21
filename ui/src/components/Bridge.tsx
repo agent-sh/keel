@@ -61,9 +61,9 @@ function closeStation(id: string) {
   if (helmNow() === id) navigate(next ? { name: "session", id: next } : { name: "new" });
 }
 
-function Tool({ label, onClick, children, testid, on }: { label: string; onClick: () => void; children: React.ReactNode; testid?: string; on?: boolean }) {
+function Tool({ label, onClick, children, testid, on, move }: { label: string; onClick: () => void; children: React.ReactNode; testid?: string; on?: boolean; move?: boolean }) {
   return (
-    <button type="button" className="k-tool" title={label} aria-label={label} aria-pressed={on} data-testid={testid} onClick={(e) => { e.stopPropagation(); onClick(); }}>
+    <button type="button" className={move ? "k-tool k-tool-move" : "k-tool"} title={label} aria-label={label} aria-pressed={on} data-testid={testid} onClick={(e) => { e.stopPropagation(); onClick(); }}>
       {children}
     </button>
   );
@@ -87,8 +87,8 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
           {s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}
         </span>
         <span className="k-station-tools">
-          {!focus && <Tool label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, -1)}><ChevronLeft /></Tool>}
-          {!focus && <Tool label="Move right (Alt Shift ])" onClick={() => stations.move(s.id, 1)}><ChevronRight /></Tool>}
+          {!focus && <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, -1)}><ChevronLeft /></Tool>}
+          {!focus && <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(s.id, 1)}><ChevronRight /></Tool>}
           <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(s.id, !pinned).catch(reportError)}>{pinned ? <PinOff /> : <Pin />}</Tool>
           <Tool label={focus ? "Show all panes (Alt Enter)" : "Focus this pane (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id: s.id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
           <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(s.id)}><X /></Tool>

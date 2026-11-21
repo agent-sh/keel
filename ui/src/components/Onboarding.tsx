@@ -25,13 +25,13 @@ export function SetupProviders() {
   const list = report?.providers ?? [];
   const failing = list.filter((p) => p.available && p.listing.state === "failed");
   return (
-    <section className="mb-6 rounded-lg border border-warn/50 bg-raised p-4" data-testid="setup-providers" aria-labelledby="setup-title">
+    <section className="k-setup-providers mb-6 rounded-lg border border-warn/50 bg-raised p-4" data-testid="setup-providers" aria-labelledby="setup-title">
       <h2 id="setup-title" className="text-base font-medium">Connect a model provider</h2>
       <p className="mt-1 text-ui text-muted">
         No provider lists a model yet, so a session cannot start. Keel finds keys in the environment and the keyring, signs in to ChatGPT and Grok plans, and takes any OpenAI-compatible endpoint.
       </p>
       {failing.length > 0 && (
-        <ul className="mt-3 flex flex-col gap-1.5" data-testid="setup-failing">
+        <ul className="k-setup-failing mt-3 flex flex-col gap-1.5" data-testid="setup-failing">
           {failing.map((p) => (
             <li key={p.id} className="text-caption">
               <span className="font-medium text-fg">{p.label}</span> <span className="text-danger">has a key but its listing failed: {p.listing.error}</span>
@@ -67,7 +67,7 @@ const STARTERS = [
 // message box (nothing is sent until Enter).
 export function FirstSteps() {
   return (
-    <section className="mt-8" data-testid="first-steps" aria-labelledby="first-title">
+    <section className="k-first-steps mt-8" data-testid="first-steps" aria-labelledby="first-title">
       <h2 id="first-title" className="mb-2 text-caption font-medium text-faint">To start, pick one or write your own</h2>
       <div className="flex flex-wrap gap-2">
         {STARTERS.map((s) => (
@@ -75,7 +75,7 @@ export function FirstSteps() {
             key={s.label}
             type="button"
             onClick={() => seedComposer(s.text, undefined)}
-            className={cn("h-8 rounded-md border border-line px-3 text-ui text-muted hover:bg-hover hover:text-fg")}
+            className={cn("k-starter h-8 rounded-md border border-line px-3 text-ui text-muted hover:bg-hover hover:text-fg")}
             data-testid="starter"
           >
             {s.label}

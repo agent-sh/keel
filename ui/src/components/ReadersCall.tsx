@@ -55,12 +55,12 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
   const oneModel = new Set(parts.map((p) => p.model).filter(Boolean)).size <= 1;
   const other = shown?.working && !(shown.models?.length === 1 && shown.models[0] === shown.working.model);
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind="readers">
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="k-tool-call group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind="readers">
       <Collapsible.Trigger className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui hover:bg-hover">
         <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" ? "bg-danger-soft text-danger" : state === "running" || state === "live" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
           <BookOpenText className="size-3.5" />
         </span>
-        <span className="shrink-0 font-medium">Readers</span>
+        <span className="k-tool-name shrink-0 font-medium">Readers</span>
         <span className="min-w-0 truncate text-muted">{input.question ?? ""}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-micro tabular-nums">
           {parts.length > 0 && (

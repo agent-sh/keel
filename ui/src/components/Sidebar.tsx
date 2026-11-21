@@ -480,7 +480,7 @@ export function Sidebar({ open }: { open: boolean }) {
       <div className="k-rail-acts">
         {!open && toggle}
         {!open && <PaneCount />}
-        <button type="button" className="k-act" data-testid="new-session" aria-label="New session" title="New session (Ctrl Shift O)" aria-current={route.name === "new" ? "page" : undefined} onClick={() => navigate({ name: "new" })}>
+        <button type="button" className="k-new-session k-act" data-testid="new-session" aria-label="New session" title="New session (Ctrl Shift O)" aria-current={route.name === "new" ? "page" : undefined} onClick={() => navigate({ name: "new" })}>
           <Plus /><span className="k-act-label">New session</span>{open && <Kbd keys="mod+shift+o" className="ml-auto" />}
         </button>
         <button type="button" className="k-act" data-testid="open-palette" aria-label="Search and commands" title="Search and commands (Ctrl K)" onClick={() => setUI({ palette: true })}>
@@ -510,7 +510,7 @@ export function Sidebar({ open }: { open: boolean }) {
           <Bug />{errors > 0 && <span className="k-act-n">{errors}</span>}
         </button>
         <AutomationFooter />
-        <button type="button" className="k-act" data-testid="theme-toggle" onClick={() => setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system")} title={`Theme: ${theme}`} aria-label={`Theme: ${theme}. Change`}>
+        <button type="button" className="k-theme-toggle k-act" data-testid="theme-toggle" onClick={() => setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system")} title={`Theme: ${theme}`} aria-label={`Theme: ${theme}. Change`}>
           <ThemeIcon />
         </button>
       </div>

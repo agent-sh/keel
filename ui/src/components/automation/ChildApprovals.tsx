@@ -21,7 +21,7 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
   const asking = new Set([...kids.filter((k) => open[k.session_id]?.length).map((k) => k.session_id), ...(questions ?? [])]);
   if (!asking.size) return null;
   return (
-    <div data-testid="child-approvals">
+    <div data-testid="child-approvals" className="k-child-approvals">
       {[...asking].map((id) => {
         const title = kids.find((k) => k.session_id === id)?.title || sessions[id]?.title;
         const agent = title ? `Agent ${title}` : "Subagent";

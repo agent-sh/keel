@@ -106,12 +106,12 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
     requestAnimationFrame(() => requestAnimationFrame(() => { root.current?.scrollIntoView({ block: "center" }); root.current?.classList.add("flash"); setTimeout(() => root.current?.classList.remove("flash"), 1600); }));
   }, [focused]);
   return (
-    <Collapsible.Root ref={root} open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={live ? "live" : state} data-kind={kind}>
+    <Collapsible.Root ref={root} open={open} onOpenChange={setOpen} className="k-tool-call group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={live ? "live" : state} data-kind={kind}>
       <Collapsible.Trigger className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui hover:bg-hover">
         <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" || state === "refused" ? "bg-danger-soft text-danger" : state === "running" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
           <Icon className="size-3.5" />
         </span>
-        <span className="shrink-0 font-medium">{LABEL[kind] ?? FLEET_LABEL[use.name] ?? use.name}</span>
+        <span className="k-tool-name shrink-0 font-medium">{LABEL[kind] ?? FLEET_LABEL[use.name] ?? use.name}</span>
         <span className={cn("min-w-0 truncate text-muted", kind === "shell" && input.description ? "text-ui" : "font-mono text-caption")}>{summary(kind, use.name, input, cwd)}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-micro tabular-nums">
           <MachineBadge sessionId={sessionId} callId={use.id} />
@@ -186,7 +186,7 @@ function Terminal({ name, input, out, error }: { name: string; input: any; out: 
   // Output keeps the program's colors, as in a terminal (a test run's red and green).
   const body = shellBody(name, out).trimEnd();
   return (
-    <div className="m-2.5 overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
+    <div className="k-terminal m-2.5 overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
       {cmd && (
         <Copyable text={String(cmd)} label="Copy the command" testid="copy-command">
           <pre className="border-b border-line px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-fg">
@@ -225,7 +225,7 @@ function editDiff(kind: ToolKind, input: any): Diff | null {
 
 function DiffView({ diff }: { diff: Diff }) {
   return (
-    <div className="m-2.5 flex flex-col gap-2" data-testid="diff">
+    <div className="k-diff m-2.5 flex flex-col gap-2" data-testid="diff">
       {diff.files.map((f, i) => (
         <div key={i} className="overflow-hidden rounded-md border border-line bg-code">
           {f.path && (
@@ -269,7 +269,7 @@ export function PlanCard({ items, explanation, compact, rejected }: { items: Pla
   // Only the live checklist (the dock) pulses; plans in the transcript are history.
   const done = items.filter((i) => i.status === "completed").length;
   return (
-    <div className={cn("rounded-lg border bg-raised shadow-1 animate-in", rejected ? "border-warn/40" : "border-line", compact ? "px-3 py-2" : "px-3.5 py-3")} data-testid="plan" data-rejected={rejected ? "" : undefined}>
+    <div className={cn("k-plan rounded-lg border bg-raised shadow-1 animate-in", rejected ? "border-warn/40" : "border-line", compact ? "px-3 py-2" : "px-3.5 py-3")} data-testid="plan" data-rejected={rejected ? "" : undefined}>
       {!compact && (
         <div className="mb-2 flex items-center gap-2 text-ui">
           <ListChecks className="size-3.5 text-muted" />
@@ -278,7 +278,7 @@ export function PlanCard({ items, explanation, compact, rejected }: { items: Pla
             <>
               <span className="text-caption text-faint tabular-nums">{done}/{items.length}</span>
               <div className="ml-auto h-1 w-24 overflow-hidden rounded-full bg-line">
-                <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${items.length ? (100 * done) / items.length : 0}%` }} />
+                <div className="k-plan-fill h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${items.length ? (100 * done) / items.length : 0}%` }} />
               </div>
             </>
           )}
@@ -348,7 +348,7 @@ function QuestionCard({ use, result, sessionId }: Props) {
     }
   };
   return (
-    <div className={cn("rounded-lg border bg-raised animate-in", open ? "border-accent/50 shadow-2" : "border-line shadow-1")} data-testid="question" data-state={open ? "open" : answered ? "answered" : "closed"}>
+    <div className={cn("k-question rounded-lg border bg-raised animate-in", open ? "border-accent/50 shadow-2" : "border-line shadow-1")} data-testid="question" data-state={open ? "open" : answered ? "answered" : "closed"}>
       <div className="flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui">
         <MessageCircleQuestion className={cn("size-3.5", open ? "text-accent-ink" : "text-muted")} />
         <span className="font-medium">{open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>

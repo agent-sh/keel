@@ -61,7 +61,7 @@ export function TrustPanel({ session }: { session: Session }) {
             <p className="k-empty px-1" data-testid="trust-clear">Nothing is held: every file loads as you trusted it.</p>
           )}
           {trusted.length > 0 && (
-            <ul className="flex flex-col rounded-xl border border-line bg-raised py-1" data-testid="trusted-files">
+            <ul className="k-trusted-files flex flex-col rounded-xl border border-line bg-raised py-1" data-testid="trusted-files">
               {trusted.map((f) => {
                 const Icon = ICON[f.kind];
                 return (
@@ -131,7 +131,7 @@ function HeldFile({ f, cwd, onDone }: { f: File; cwd: string; onDone: () => void
     } catch (e) { setErr(failed(e, { at: "TrustPanel" })); }
   };
   return (
-    <div className="overflow-hidden rounded-xl border border-warn/40 bg-raised" data-testid="held-file" data-kind={f.kind}>
+    <div className="k-held-file overflow-hidden rounded-xl border border-warn/40 bg-raised" data-testid="held-file" data-kind={f.kind}>
       <div className="flex items-center gap-2 px-3 py-2">
         <Icon className="size-4 shrink-0 text-warn" />
         <span className="min-w-0 flex-1 truncate font-mono text-caption">{f.rel}</span>
@@ -151,7 +151,7 @@ function BatchCard({ b, onDone }: { b: Batch; onDone: () => void }) {
   const [err, setErr] = useState("");
   const act = async (f: () => Promise<unknown>) => { setErr(""); try { await f(); onDone(); } catch (e) { setErr(failed(e, { at: "TrustPanel" })); } };
   return (
-    <div className="rounded-xl border border-line bg-raised px-3 py-2" data-testid="quarantine-batch">
+    <div className="k-quarantine-batch rounded-xl border border-line bg-raised px-3 py-2" data-testid="quarantine-batch">
       <p className="text-caption text-muted">{when(b.created)} · {b.paths.length} file{b.paths.length === 1 ? "" : "s"}</p>
       <ul className="mt-1 flex flex-col">
         {b.paths.map((p) => <li key={p} className="truncate font-mono text-caption">{p}</li>)}

@@ -20,12 +20,12 @@ export function CodeCall({ use, result, live, sessionId, cwd }: Props) {
   const failed = calls.filter((c) => c.result?.is_error).length;
   const firstLine = code.split("\n").find((l) => l.trim() && !l.trim().startsWith("//"))?.trim() ?? "";
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-tool={use.name} data-state={state} data-kind="code">
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="k-tool-call group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-tool={use.name} data-state={state} data-kind="code">
       <Collapsible.Trigger className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui hover:bg-hover">
         <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" ? "bg-danger-soft text-danger" : state === "running" || state === "live" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
           <Braces className="size-3.5" />
         </span>
-        <span className="shrink-0 font-medium">Code</span>
+        <span className="k-tool-name shrink-0 font-medium">Code</span>
         <span className="min-w-0 truncate font-mono text-caption text-muted">{firstLine}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-micro tabular-nums">
           {calls.length > 0 && (

@@ -97,3 +97,16 @@ test("every time is on the 24-hour clock", () => {
   const lines = daemon.flatMap((f) => readFileSync(f, "utf8").split("\n").map((l, i) => ({ l, at: `${relative(import.meta.dir, f)}:${i + 1}` })));
   expect(lines.filter(({ l }) => /toLocaleTimeString\(|toLocaleString\([^)]*\bhour\b/.test(l) && !/hourCycle: "h23"/.test(l)).map((x) => x.at)).toEqual([]);
 });
+
+test("the look is set by components and tokens, not by test ids or utility names", () => {
+  // A stylesheet names a part by its own class. It never reaches for an element by its
+  // test id, by the words of its title, or by a utility class the component happens to carry.
+  expect(found(sheets, /\[data-testid[^\]]*\]/)).toEqual([]);
+  expect(found(sheets, /\[(title|aria-label)[*^$~|]?=/)).toEqual([]);
+  const utility = /(?<![\w-])\.(rounded|font|bg|text|border|shadow|flex|grid|absolute|relative|hidden|size|animate|[whp][xy]?|m[xytblr]?|gap)(-[\w\\[\].:/%-]+)?(?=[\s,.:>{)\[+~]|$)|\\:/;
+  const selectors = sheets.flatMap((f) => readFileSync(f, "utf8").split("\n").map((l, i) => ({ sel: l.split("{")[0]!, at: `${relative(UI, f)}:${i + 1}` })).filter(({ sel }) => /^[.\[:@*a-z]/.test(sel.trim()) && !sel.trim().startsWith("@")));
+  // Three things are utilities by design: the title sizes and the code face join a face's role,
+  // an icon in a state color keeps the fill, and a pulsing dot is still inside a pane.
+  const named = selectors.filter(({ sel }) => utility.test(sel.replace(/\.(text-display|text-title|font-mono|animate-pulse-dot)\b/g, "")) && !/^svg\.text-/.test(sel.trim()));
+  expect(named.map((x) => `${x.at}: ${x.sel.trim()}`)).toEqual([]);
+});

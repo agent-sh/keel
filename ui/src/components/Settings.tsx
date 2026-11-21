@@ -200,7 +200,7 @@ export function Settings({ section }: { section: string }) {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="settings">
+    <div className="k-settings flex min-h-0 flex-1 flex-col" data-testid="settings">
       <header className="k-page-head k-surface-head">
         {!sidebar && (
           <button type="button" aria-label="Show the sidebar" onClick={() => savePref("sidebar", true)} className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg md:hidden">

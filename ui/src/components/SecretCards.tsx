@@ -49,7 +49,7 @@ function RequestCard({ r }: { r: SecretRequest }) {
     try { await f(); } catch (e) { setErr((e as Error).message); reportError(e, { at: "secret request" }); } finally { setBusy(false); }
   };
   return (
-    <div className={shell} data-testid="secret-request">
+    <div className={`k-secret-request ${shell}`} data-testid="secret-request">
       <Head title={`The model asks for ${r.name}`} />
       {r.purpose && <p className="px-4 pt-1.5 text-caption text-muted">{r.purpose}</p>}
       <form className="flex items-center gap-1.5 px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (value) act(() => secrets.give(r.session_id, r.id, value)); }}>
@@ -63,7 +63,7 @@ function RequestCard({ r }: { r: SecretRequest }) {
           placeholder="Paste the value: it goes to commands only, never to the model"
           className={input}
         />
-        <button type="submit" disabled={busy || !value} data-testid="secret-give" className={primary}>Give</button>
+        <button type="submit" disabled={busy || !value} data-testid="secret-give" className={`k-secret-give ${primary}`}>Give</button>
         <button type="button" disabled={busy} data-testid="secret-decline" onClick={() => act(() => secrets.decline(r.session_id, r.id))} className={quiet}>Decline</button>
       </form>
       <p className="px-4 pb-3 -mt-1 text-micro text-faint">{err ? <span className="text-danger">{err}</span> : `Held in memory for this session as $${r.name}; a restart forgets it.`}</p>
@@ -80,7 +80,7 @@ function FoundCard({ m, sessionId }: { m: SecretMeta; sessionId: string }) {
     try { await secrets.rename(m.id, name.trim() || null); secrets.dismiss(sessionId, m.id); } catch (e) { setErr(failed(e, { at: "SecretCards" })); }
   };
   return (
-    <div className={shell} data-testid="secret-found">
+    <div className={`k-secret-found ${shell}`} data-testid="secret-found">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <Head title={`A ${m.kind} in ${where} was kept out of the history`} />

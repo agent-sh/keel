@@ -37,7 +37,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   };
   if (!kids.length) return null;
   return (
-    <div className="ml-3 border-l border-line pl-2" data-testid="session-children">
+    <div className="k-session-children ml-3 border-l border-line pl-2" data-testid="session-children">
       <button
         type="button"
         aria-expanded={expanded}
@@ -65,7 +65,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
             onPick(a.session_id);
           }}
           className={cn(
-            "group/child flex items-center gap-2 rounded-md px-1.5 py-1 text-caption cursor-default outline-none",
+            "k-child-session group/child flex items-center gap-2 rounded-md px-1.5 py-1 text-caption cursor-default outline-none",
             "hover:bg-raised",
             current === a.session_id && "bg-raised shadow-1",
           )}
@@ -99,9 +99,9 @@ export function SessionBadges({ sessionId }: { sessionId: string }) {
   const snoozed = useAuto((s) => s.snoozes[sessionId]);
   return (
     <>
-      {snoozed && !snoozed.suspended && <Moon data-testid="snoozed-mark" className="size-3 shrink-0 text-faint" aria-label={`Snoozed ${snoozeText(snoozed)}`} />}
+      {snoozed && !snoozed.suspended && <Moon data-testid="snoozed-mark" className="k-snoozed-mark size-3 shrink-0 text-faint" aria-label={`Snoozed ${snoozeText(snoozed)}`} />}
       {(loops || waits) && <Repeat className="size-3 shrink-0 text-faint" aria-label="Scheduled work" />}
-      {unread > 0 && <span data-testid="unread-dot" title={`${unread} unread`} className="size-2 shrink-0 rounded-full bg-accent" />}
+      {unread > 0 && <span data-testid="unread-dot" title={`${unread} unread`} className="k-unread-dot size-2 shrink-0 rounded-full bg-accent" />}
     </>
   );
 }

@@ -63,7 +63,7 @@ export function ReviewFindings({ session }: { session: Session }) {
   const hiddenOpen = hidden.reduce((n, r) => n + (r.state === "done" ? r.findings.filter((f) => f.state === "open").length : 0), 0);
 
   return (
-    <section className="rounded-xl border border-line bg-raised p-3" data-testid="reviewer">
+    <section className="k-reviewer rounded-xl border border-line bg-raised p-3" data-testid="reviewer">
       <div className="flex items-center gap-2 px-0.5">
         <ScanSearch className="size-4 text-accent" />
         <h3 className="text-ui font-medium">Independent review</h3>
@@ -138,7 +138,7 @@ function ReviewCard({ r, sessionId, lit }: { r: Review; sessionId: string; lit: 
   const agent = r.agent_id ? (r.agent_title ?? "an agent") : null;
   const recipient = agent ?? "the model";
   return (
-    <div className={cn("rounded-lg border border-line bg-bg transition-shadow", lit && "ring-2 ring-accent/40")} data-testid="review" data-state={r.state} data-review-id={r.id}>
+    <div className={cn("k-review rounded-lg border border-line bg-bg transition-shadow", lit && "ring-2 ring-accent/40")} data-testid="review" data-state={r.state} data-review-id={r.id}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-line px-3 py-2 text-caption">
         {r.state === "running" ? <Loader2 className="size-3.5 animate-spin text-accent" /> : r.state === "failed" ? <CircleAlert className="size-3.5 text-danger" /> : r.state === "stopped" ? <CircleStop className="size-3.5 text-faint" /> : <Check className="size-3.5 text-ok" />}
         <span className="font-medium">
@@ -192,7 +192,7 @@ function ReviewCard({ r, sessionId, lit }: { r: Review; sessionId: string; lit: 
       )}
       {open.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 border-t border-line px-3 py-2">
-          <button data-testid="findings-fix" disabled={!picked.size || pending} onClick={() => act("fix", [...picked])} className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
+          <button data-testid="findings-fix" disabled={!picked.size || pending} onClick={() => act("fix", [...picked])} className="k-findings-fix inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
             {pending ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send {picked.size} to {recipient}
           </button>
           <button data-testid="findings-dismiss" disabled={!picked.size || pending} onClick={() => act("dismiss", [...picked])} className="inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40">
@@ -221,7 +221,7 @@ function FindingRow({ f, checked, onCheck, onReopen }: { f: Finding; checked: bo
     setMiss(d.found === undefined ? `${f.file} is not in this diff.` : d.found ? "" : `Line ${f.line}${f.end_line ? `-${f.end_line}` : ""} is outside the changed lines shown.`);
   };
   return (
-    <li className={cn("flex items-start gap-2.5 px-3 py-1.5", f.state !== "open" && "opacity-60")} data-testid="finding" data-state={f.state}>
+    <li className={cn("k-finding flex items-start gap-2.5 px-3 py-1.5", f.state !== "open" && "opacity-60")} data-testid="finding" data-state={f.state}>
       {f.state === "open" ? (
         <input type="checkbox" checked={checked} onChange={(e) => onCheck(e.target.checked)} className="mt-1 size-3.5 accent-[var(--color-accent)]" aria-label={`Pick ${f.title}`} />
       ) : (

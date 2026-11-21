@@ -88,7 +88,7 @@ export function SessionUsage({ session }: { session: Session }) {
   }, [session.id, kids]);
   const money = (c?: number) => (c !== undefined ? fmtCost(c) : "not priced");
   return (
-    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="session-usage">
+    <div className="k-session-usage flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="session-usage">
       {delegated && (
         <div className="grid grid-cols-3 gap-2" data-testid="usage-task">
           <Tile testid="usage-direct" label="This session" value={money(total.cost)} sub={`${requests} requests`} />

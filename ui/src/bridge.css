@@ -46,7 +46,7 @@
 .k-rail[data-open] .k-rail-acts { align-items: stretch; padding: 0 0.625rem 0.5rem; }
 .k-rail-foot { padding-block: 0.5rem max(0.5rem, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .k-rail[data-open] .k-rail-foot { flex-direction: row; padding-inline: 0.5rem; }
-.k-rail[data-open] .k-rail-foot [data-testid="theme-toggle"] { margin-left: auto; }
+.k-rail[data-open] .k-rail-foot .k-theme-toggle { margin-left: auto; }
 .k-act {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 0.5625rem;
   min-width: 2.5rem; height: var(--spacing-ctl-xl); padding: 0 0.5625rem; border-radius: 0.25rem; color: var(--muted); font-size: var(--text-ui);
@@ -58,7 +58,7 @@
 .k-act-label { display: none; }
 .k-rail[data-open] .k-rail-acts .k-act { justify-content: flex-start; height: var(--spacing-ctl-lg); }
 .k-rail[data-open] .k-act-label { display: inline; }
-.k-rail[data-open] [data-testid="new-session"] { color: var(--fg); font-weight: 600; }
+.k-rail[data-open] .k-new-session { color: var(--fg); font-weight: 600; }
 .k-act-count {
   position: absolute; right: 1px; top: 1px; min-width: 1rem; height: 1rem; padding: 0 0.25rem; border-radius: 0.5rem;
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need);
@@ -155,7 +155,7 @@
 .k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
 .k-row[data-watch="fail"] .k-row-state { color: var(--st-fail-ink); }
 .k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
-.k-row > :is(.k-needs, .k-row-tag, svg, [data-testid="snoozed-mark"]) { margin-top: 1px; }
+.k-row > :is(.k-needs, .k-row-tag, svg, .k-snoozed-mark) { margin-top: 1px; }
 .k-row:hover { background: var(--hover); color: var(--fg); }
 .k-row[aria-current] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
 .k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.375rem; bottom: 0.375rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
@@ -165,7 +165,7 @@
 .k-row:not([data-watch="done"], [data-watch="idle"]) .k-row-title { color: var(--fg); }
 /* Unread: the title in ink and a little heavier, instead of a dot on every row. */
 .k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 550; }
-.k-row [data-testid="unread-dot"] { display: none; }
+.k-row .k-unread-dot { display: none; }
 .k-row-time { flex-shrink: 0; min-width: 1.375rem; text-align: right; font-size: var(--text-micro); line-height: 1.25rem; color: var(--faint); }
 /* Where a session runs when that is not here (Where.tsx): a tag tinted with the
    machine's colour, its server glyph in that colour; one that does not answer
@@ -336,21 +336,20 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pin-mark { position: absolute; left: 0; top: 0; width: 0.1875rem; height: 1.375rem; background: var(--fg); }
 
 /* The helm's full header: the tools row only (its title is in the head above). */
-.k-station [data-testid="session-header"] { height: 2.375rem; background: transparent; backdrop-filter: none; border-bottom-color: var(--line); }
-.k-station [data-testid="session-header"] [data-testid="session-title"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.k-station [data-testid="session-header"] > .absolute { display: none; }
+.k-station .k-session-header { height: 2.375rem; background: transparent; backdrop-filter: none; border-bottom-color: var(--line); }
+.k-station .k-session-header .k-session-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 /* A narrow pane: the token counts give way (the turn footer has them). The row
    never scrolls: SessionHeader keeps in it what fits and lists the rest behind More. */
-.k-station [data-testid="session-header"] { overflow: hidden; }
-.k-station [data-testid="session-header"] > * { flex-shrink: 0; }
+.k-station .k-session-header { overflow: hidden; }
+.k-station .k-session-header > * { flex-shrink: 0; }
 /* The tools that can fold sit in one group that may shrink: on the frame before
    a narrower row is measured again, it clips at its left end and the controls
    that never fold keep their place. The padding keeps focus rings whole. */
-.k-station [data-testid="session-header"] > .k-head-tools { flex: 0 1 auto; min-width: 0; }
+.k-station .k-session-header > .k-head-tools { flex: 0 1 auto; min-width: 0; }
 .k-head-tools { display: flex; align-items: center; justify-content: flex-end; gap: 0.375rem; overflow: hidden; padding: 0.25rem; margin: -0.25rem; }
 .k-head-tools > * { flex-shrink: 0; }
-.k-station [data-testid="session-header"] { container-type: inline-size; }
-@container (max-width: 36rem) { [data-testid="session-usage"] { display: none !important; } }
+.k-station .k-session-header { container-type: inline-size; }
+@container (max-width: 36rem) { .k-session-usage { display: none !important; } }
 /* A tool's place in the row; one with nothing to show takes no room. */
 .k-head-tool { display: flex; align-items: center; gap: 0.375rem; }
 .k-head-tool:empty { display: none; }
@@ -375,13 +374,13 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-stow-slot > * { min-width: 0; max-width: 100%; white-space: nowrap; }
 .k-stow-item { display: flex; width: 100%; align-items: center; min-height: 2.5rem; padding: 0 0.625rem; border-radius: 0.25rem; text-align: left; font-size: var(--text-ui); color: var(--fg); outline: none; }
 /* One right edge: the bare branch name ends where the pills do. The list has room for the mode's name at any width. */
-.k-stow-slot [data-testid="worktree-chip"] { padding-right: 0; }
-.k-stow-slot [data-testid="permission-mode"] { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; white-space: nowrap; }
+.k-stow-slot .k-worktree-chip { padding-right: 0; }
+.k-stow-slot .k-permission-mode { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; white-space: nowrap; }
 /* Plain actions follow the controls, under a rule. */
 .k-stow-row + .k-stow-act { margin-top: 0.25rem; padding-top: 0.25rem; border-top: 1px solid var(--line); }
 
 /* Inside a station the transcript fills it, a little tighter than reading width. */
-.k-station [data-testid="transcript"] { max-width: 46rem; padding-top: 1.375rem; gap: 0.875rem; }
+.k-station .k-transcript { max-width: 46rem; padding-top: 1.375rem; gap: 0.875rem; }
 .k-station .k-compose-in { max-width: 46rem; }
 /* The reading size fits the pane. A pane among four is too narrow for 18 px
    text at a readable measure (38 characters a line): under 28rem, where the
@@ -397,41 +396,41 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-transcript .prose-keel :is(h3, h4), .k-transcript .prose-keel table { font-size: var(--text-base); }
   .k-transcript .code-block pre { font-size: var(--text-caption); }
 }
-.k-stations[data-focus] [data-testid="transcript"], .k-stations[data-focus] .k-compose-in { max-width: 56rem; }
-.k-station:not([data-helm]) [data-testid="composer-box"] { background: transparent; }
+.k-stations[data-focus] .k-transcript, .k-stations[data-focus] .k-compose-in { max-width: 56rem; }
+.k-station:not([data-helm]) .k-composer-box { background: transparent; }
 
 /* The new-session station. */
 /* The new-session station: the question in the text face, the box near the
    top third where the eye already is, the folder's recent sessions with
    their state marks below. */
 .k-station-new h1 { font-family: var(--font-sans); font-stretch: 100%; font-size: var(--text-title); font-weight: 600; letter-spacing: -0.018em; }
-.k-station-new .md\:mt-\[18vh\] { margin-top: 11vh; }
-.k-station-new [data-testid="recent-session"] .k-mark { width: 0.5rem; height: 0.5rem; }
+.k-station-new .k-start-box { margin-top: 11vh; }
+.k-station-new .k-recent-session .k-mark { width: 0.5rem; height: 0.5rem; }
 
 /* ---------- Components in the Bridge language ---------- */
 .prose-keel { font-size: var(--text-read); line-height: 1.65; }
 /* The owner's words: an ink rule on the left, no bubble. */
-[data-testid="user-message"] { align-items: stretch; }
-[data-testid="user-message"] > .rounded-xl { max-width: none; border-radius: 0.1875rem; background: var(--sunken); border-left: 0.1875rem solid var(--fg); padding: 0.625rem 0.875rem; font-size: var(--text-read); }
+.k-user-message { align-items: stretch; }
+.k-user-message > .k-user-words { max-width: none; border-radius: 0.1875rem; background: var(--sunken); border-left: 0.1875rem solid var(--fg); padding: 0.625rem 0.875rem; font-size: var(--text-read); }
 /* Tool calls: instrument rows; the left edge is the call's state. */
-[data-testid="tool-call"] { border-radius: 0.25rem; box-shadow: none; border-color: var(--line); border-left-width: 0.1875rem; }
-[data-testid="tool-call"] > button { height: var(--spacing-ctl-xl); border-radius: 0; }
-[data-testid="tool-call"][data-state="running"], [data-testid="tool-call"][data-state="live"] { border-left-color: var(--st-work); }
-[data-testid="tool-call"][data-state="error"] { border-left-color: var(--st-fail); }
-[data-testid="tool-call"][data-state="ok"] { border-left-color: var(--line-strong); }
-[data-testid="tool-call"] > button > .font-medium { font-weight: 600; font-size: var(--text-caption); }
-[data-testid="terminal"], [data-testid="diff"] > div { border-radius: 0.1875rem; }
-[data-testid="turn-end"], [data-testid="session-usage"] { font-size: var(--text-micro); }
-[data-testid="plan"] { border-radius: 0.25rem; box-shadow: none; border-left: 0.1875rem solid var(--line-strong); }
+.k-tool-call { border-radius: 0.25rem; box-shadow: none; border-color: var(--line); border-left-width: 0.1875rem; }
+.k-tool-call > button { height: var(--spacing-ctl-xl); border-radius: 0; }
+.k-tool-call[data-state="running"], .k-tool-call[data-state="live"] { border-left-color: var(--st-work); }
+.k-tool-call[data-state="error"] { border-left-color: var(--st-fail); }
+.k-tool-call[data-state="ok"] { border-left-color: var(--line-strong); }
+.k-tool-call > button > .k-tool-name { font-weight: 600; font-size: var(--text-caption); }
+.k-terminal, .k-diff > div { border-radius: 0.1875rem; }
+.k-turn-end, .k-session-usage { font-size: var(--text-micro); }
+.k-plan { border-radius: 0.25rem; box-shadow: none; border-left: 0.1875rem solid var(--line-strong); }
 /* Composer: a flat console field; violet ring when it has the keyboard. */
-[data-testid="composer-box"] { border-radius: 0.3125rem; box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
-[data-testid="composer-box"]:focus-within { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
-[data-testid="send"] { border-radius: 0.25rem; }
+.k-composer-box { border-radius: 0.3125rem; box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
+.k-composer-box:focus-within { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
+.k-send { border-radius: 0.25rem; }
 /* Approvals and open questions: the one thing in violet. */
-[data-testid="approval"], [data-testid="question"][data-state="open"] { border-radius: 0.3125rem; border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 13%, transparent); }
-[data-testid="approval"][data-risk="high"] { border-color: var(--st-fail); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-fail) 13%, transparent); }
-[data-testid="question"] { border-radius: 0.3125rem; box-shadow: none; }
-[data-testid="turn-error"] { border-radius: 0.25rem; border-left: 0.1875rem solid var(--st-fail); }
+.k-approval, .k-question[data-state="open"] { border-radius: 0.3125rem; border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 13%, transparent); }
+.k-approval[data-risk="high"] { border-color: var(--st-fail); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-fail) 13%, transparent); }
+.k-question { border-radius: 0.3125rem; box-shadow: none; }
+.k-turn-error { border-radius: 0.25rem; border-left: 0.1875rem solid var(--st-fail); }
 /* Popups and dialogs: an ink band on top, like a station. */
 [role="dialog"], [role="menu"], [role="listbox"] { box-shadow: var(--shadow-3); }
 [role="dialog"] { border-top: 0.1875rem solid var(--band) !important; }
@@ -449,7 +448,7 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
   .k-station-title { font-size: var(--text-read); }
   .k-station[data-helm] .k-station-title { font-size: var(--text-head); }
-  .k-station-tools [title^="Move"] { display: none; }
+  .k-station-tools .k-tool-move { display: none; }
   .k-station-tools { opacity: 1; }
   .k-dock {
     display: flex; align-items: center; gap: 0.25rem; position: fixed; inset: auto 0 0 0; z-index: 20;
@@ -467,22 +466,22 @@ html[data-resizing] iframe { pointer-events: none; }
 }
 
 /* The station head already names the folder: the helm header drops its folder chip. */
-.k-station [data-testid="session-header"] button[title*="Click to copy the path"] { display: none; }
-.k-station [data-testid="session-header"] > div:has(> [data-testid="session-title"]) { flex: 1; }
+.k-station .k-session-header .k-head-folder { display: none; }
+.k-station .k-session-header > div:has(> .k-session-title) { flex: 1; }
 
 /* Badges on a folded mark: the unread dot and the like at its corner; "needs you" is read, not shown (the diamond says it). */
 .k-tick-badges { position: absolute; top: 2px; right: 0.1875rem; display: flex; gap: 2px; }
 .k-tick-badges svg { display: none; }
 /* Unread is the mark's own fullness here (a seen one goes quiet), not a dot. */
-.k-tick-badges [data-testid="unread-dot"] { display: none; }
+.k-tick-badges .k-unread-dot { display: none; }
 .k-tick-badges .k-needs { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.k-tick-badges [data-testid="snoozed-mark"] { display: block; width: 0.5625rem; height: 0.5625rem; color: var(--muted); }
+.k-tick-badges .k-snoozed-mark { display: block; width: 0.5625rem; height: 0.5625rem; color: var(--muted); }
 /* Agents a session started: small marks under its own, on the folded rail. */
-.k-tick-kids [data-testid="session-children"] { display: flex; flex-direction: column; align-items: center; margin: 0; padding: 0; border: 0; }
-.k-tick-kids [data-testid="session-children"] > button { display: none; }
-.k-tick-kids [data-testid="child-session"] { width: 1.375rem; height: 0.75rem; padding: 0; font-size: 0; justify-content: center; gap: 0; }
-.k-tick-kids [data-testid="child-session"] > * { display: none; }
-.k-tick-kids [data-testid="child-session"]::before { content: ""; width: 0.3125rem; height: 0.3125rem; border-radius: 50%; background: var(--line-strong); }
+.k-tick-kids .k-session-children { display: flex; flex-direction: column; align-items: center; margin: 0; padding: 0; border: 0; }
+.k-tick-kids .k-session-children > button { display: none; }
+.k-tick-kids .k-child-session { width: 1.375rem; height: 0.75rem; padding: 0; font-size: 0; justify-content: center; gap: 0; }
+.k-tick-kids .k-child-session > * { display: none; }
+.k-tick-kids .k-child-session::before { content: ""; width: 0.3125rem; height: 0.3125rem; border-radius: 50%; background: var(--line-strong); }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
 @media (max-width: 767px) { .k-station-meta { display: none; } .k-station-tools { margin-left: auto; } }
 
@@ -517,7 +516,7 @@ html[data-resizing] iframe { pointer-events: none; }
 @media (min-width: 768px) { .k-side > .k-surface-head { padding-right: 1rem; } }
 
 /* ---------- Settings: a station of its own ---------- */
-[data-testid="settings"] { background: var(--bg); container: settings / inline-size; }
+.k-settings { background: var(--bg); container: settings / inline-size; }
 /* A page's head is the surface head with the band on it; its way out is Back, on the left. */
 .k-page-head { position: relative; box-sizing: content-box; padding: 0 1rem 0 0.5rem; border-top: 0.1875rem solid var(--band); background: var(--raised); }
 /* Narrow, by the page's own width: a bar names the section and is its title;
@@ -587,13 +586,13 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Tool rows open and close at their own height (Base UI sets the variable). */
 .k-tool-panel { height: var(--collapsible-panel-height); transition: height 180ms var(--ease-out); }
 .k-tool-panel[data-starting-style], .k-tool-panel[data-ending-style] { height: 0; }
-[data-testid="tool-call"] > button svg:last-child { transition: transform 180ms var(--ease-out); }
+.k-tool-call > button svg:last-child { transition: transform 180ms var(--ease-out); }
 /* A tool row that just finished settles: its edge eases from amber to its result. */
-[data-testid="tool-call"] { transition: border-left-color 400ms var(--ease-out); }
+.k-tool-call { transition: border-left-color 400ms var(--ease-out); }
 
 /* ---------- Night (dark) ---------- */
 /* The owner's prompts keep their rule, in steel: not a white bar per message at 3 AM. */
-.dark [data-testid="user-message"] > .rounded-xl { border-left-color: var(--band); }
+.dark .k-user-message > .k-user-words { border-left-color: var(--band); }
 /* Inside a station the band already says it works and a running tool row has its amber edge:
    the inline pulsing dots stay still (the clocks still count). One moving thing per station. */
 .k-station .animate-pulse-dot { animation: none; opacity: 0.75; }
@@ -606,39 +605,39 @@ button.k-note-chip:hover, button.k-note-chip[data-popup-open] { color: var(--fg)
 .k-note-pop { width: min(36rem, 90vw); max-height: 50vh; overflow: auto; padding: 0.625rem 0.75rem; border-radius: 0.3125rem; border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
 .k-note-pop-head { margin-bottom: 0.375rem; font-weight: 600; font-size: var(--text-micro); color: var(--faint); }
 /* A turn's footer wraps whole items on a narrow station instead of breaking words. */
-div:has(> [data-testid="turn-end"]) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row-gap: 2px; }
-[data-testid="turn-end"] { flex-wrap: wrap; row-gap: 2px; }
-[data-testid="turn-end"] > span, .k-notes { white-space: nowrap; }
+div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row-gap: 2px; }
+.k-turn-end { flex-wrap: wrap; row-gap: 2px; }
+.k-turn-end > span, .k-notes { white-space: nowrap; }
 
 /* ---------- Cards, each saying what it wants from the owner ---------- */
 /* A secret the model asks for: it waits on them, so it is violet like an approval; the value is set in mono. */
-[data-testid="secret-request"] { border-radius: 0.3125rem; border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 12%, transparent); background: var(--raised); }
-[data-testid="secret-request"] input { font-family: var(--font-mono); letter-spacing: 0.08em; border-radius: 0.1875rem; }
-[data-testid="secret-give"] { border-radius: 0.1875rem; }
+.k-secret-request { border-radius: 0.3125rem; border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 12%, transparent); background: var(--raised); }
+.k-secret-request input { font-family: var(--font-mono); letter-spacing: 0.08em; border-radius: 0.1875rem; }
+.k-secret-give { border-radius: 0.1875rem; }
 /* A secret caught in a message: handled already, worth a look. An amber edge, no alarm. */
-[data-testid="secret-found"] { border-radius: 0.25rem; box-shadow: none; border-left: 0.1875rem solid var(--st-work); }
+.k-secret-found { border-radius: 0.25rem; box-shadow: none; border-left: 0.1875rem solid var(--st-work); }
 /* No provider yet: an unconnected instrument. Dashed frame, amber edge, the failing provider's name in mono. */
-[data-testid="setup-providers"] { border-radius: 0.3125rem; border: 1px dashed var(--line-strong); border-left: 0.1875rem solid var(--st-work); background: var(--raised); box-shadow: none; }
-[data-testid="setup-failing"] { font-size: var(--text-caption); }
+.k-setup-providers { border-radius: 0.3125rem; border: 1px dashed var(--line-strong); border-left: 0.1875rem solid var(--st-work); background: var(--raised); box-shadow: none; }
+.k-setup-failing { font-size: var(--text-caption); }
 /* Starters: four plain switches, not pills. */
-[data-testid="starter"] { border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-ui); }
-[data-testid="starter"]:hover { box-shadow: inset 0 0 0 1px var(--line-strong), inset 3px 0 0 var(--fg); }
-[data-testid="first-steps"] { color: var(--muted); }
+.k-starter { border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-ui); }
+.k-starter:hover { box-shadow: inset 0 0 0 1px var(--line-strong), inset 3px 0 0 var(--fg); }
+.k-first-steps { color: var(--muted); }
 /* Plan: done steps take the done color, the one in progress the work color. */
-[data-testid="plan"] [data-status="completed"] svg { color: var(--st-done); }
-[data-testid="plan"] [data-status="in_progress"] svg { color: var(--st-work); }
-[data-testid="plan"] .bg-accent { background: var(--fg); }
+.k-plan [data-status="completed"] svg { color: var(--st-done); }
+.k-plan [data-status="in_progress"] svg { color: var(--st-work); }
+.k-plan .k-plan-fill { background: var(--fg); }
 /* Review: the reviewer's report is an instrument panel; each finding has an edge, one to act on is stronger. */
-[data-testid="review"], [data-testid="reviewer"] { border-radius: 0.25rem; box-shadow: none; }
-[data-testid="finding"] { border-radius: 0.1875rem; box-shadow: inset 3px 0 0 var(--line-strong); padding-left: 0.625rem; }
-[data-testid="finding"]:has(input:checked) { box-shadow: inset 3px 0 0 var(--st-need); }
-[data-testid="findings-fix"] { border-radius: 0.1875rem; }
+.k-review, .k-reviewer { border-radius: 0.25rem; box-shadow: none; }
+.k-finding { border-radius: 0.1875rem; box-shadow: inset 3px 0 0 var(--line-strong); padding-left: 0.625rem; }
+.k-finding:has(input:checked) { box-shadow: inset 3px 0 0 var(--st-need); }
+.k-findings-fix { border-radius: 0.1875rem; }
 /* Trust: a held file waits on them (violet); quarantine is a safety catch (red); trusted files are quiet. */
-[data-testid="held-file"] { border-radius: 0.25rem; box-shadow: inset 3px 0 0 var(--st-need); }
-[data-testid="quarantine-batch"] { border-radius: 0.25rem; box-shadow: inset 3px 0 0 var(--st-fail); }
-[data-testid="trusted-files"] { color: var(--muted); }
+.k-held-file { border-radius: 0.25rem; box-shadow: inset 3px 0 0 var(--st-need); }
+.k-quarantine-batch { border-radius: 0.25rem; box-shadow: inset 3px 0 0 var(--st-fail); }
+.k-trusted-files { color: var(--muted); }
 /* Approvals a subagent waits on, in the parent's station: the same violet. */
-[data-testid="child-approvals"] > * { border-radius: 0.3125rem; }
+.k-child-approvals > * { border-radius: 0.3125rem; }
 
 /* ---------- Alerts: the inbox speaks in the state colors ---------- */
 .k-alert-icon, .k-alert, .k-inbox-count { --k-st: var(--st-idle); }

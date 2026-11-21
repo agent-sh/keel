@@ -49,7 +49,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
           )}
         >
           <Icon className="size-3.5" />
-          <span data-testid="permission-mode" className="max-sm:sr-only">{mode?.name ?? perm.mode}</span>
+          <span data-testid="permission-mode" className="k-permission-mode max-sm:sr-only">{mode?.name ?? perm.mode}</span>
           {perm.sandbox !== "off" && <span className="rounded bg-accent-soft px-1 text-micro text-accent">sandbox</span>}
           <ChevronDown className="size-3 opacity-60" />
         </Popover.Trigger>
