@@ -122,18 +122,30 @@ function TaskRow({ t, sid }: { t: Task; sid: string }) {
   const [text, setText] = useState(t.text);
   const [base, setBase] = useState(t.text);
   const [editing, setEditing] = useState(false);
-  const [conflict, setConflict] = useState<string | null>(null);
+  // The owner's draft against a row that changed under it. `theirs`: the text
+  // the daemon refused the edit with, when the page had not heard of the
+  // change yet (the other edit's frame was still on its way).
+  const [conflict, setConflict] = useState<{ mine: string; theirs?: string } | null>(null);
   const act = (p: Promise<unknown>) => p.catch(reportError);
   const done = t.status === "completed" || t.status === "cancelled";
   const begin = () => { setText(t.text); setBase(t.text); setConflict(null); setEditing(true); };
-  const save = (mine: string, was: string) => act(auto.editTask(sid, t.id, { text: mine, was }).then(() => setConflict(null)));
+  // A rename the daemon refused (the row changed meanwhile) is the owner's
+  // choice, not an error: the chooser opens with the daemon's text and the draft kept.
+  const save = (mine: string, was: string) => act(auto.editTask(sid, t.id, { text: mine, was }).then(() => setConflict(null), (e) => {
+    const current = (e as { status?: number; body?: { current?: Task } }).status === 409 ? (e as { body?: { current?: Task } }).body?.current : undefined;
+    if (!current) throw e;
+    setConflict({ mine, theirs: current.text });
+  }));
   const leave = () => {
     setEditing(false);
     const mine = text.trim();
     if (!mine || mine === base) return; // nothing typed: nothing sent
-    if (t.text !== base) setConflict(mine); // it changed meanwhile: the owner chooses
+    if (t.text !== base) setConflict({ mine }); // it changed meanwhile: the owner chooses
     else save(mine, base);
   };
+  // What the row reads now: as the page has it once it moved off the text the
+  // draft started from, else as the daemon answered.
+  const theirs = t.text !== base ? t.text : conflict?.theirs ?? t.text;
   return (
     <div className="group flex flex-col rounded-md px-3 py-1.5 hover:bg-hover" data-testid="task-row" data-status={t.status} data-task-id={t.id}>
       <div className="flex items-start gap-2">
@@ -173,8 +185,8 @@ function TaskRow({ t, sid }: { t: Task; sid: string }) {
       {editing && t.text !== base && <p className="mt-1 pl-6 text-caption text-warn" data-testid="task-changed">Changed meanwhile: it now reads "{t.text}".</p>}
       {conflict !== null && (
         <div className="mt-1 flex flex-wrap items-center gap-2 pl-6 text-caption" data-testid="task-conflict">
-          <span className="text-warn">It was changed to "{t.text}" while you edited.</span>
-          <button type="button" className={button} onClick={() => save(conflict, t.text)} data-testid="task-keep-mine">Use "{conflict}"</button>
+          <span className="text-warn">It was changed to "{theirs}" while you edited.</span>
+          <button type="button" className={button} onClick={() => save(conflict.mine, theirs)} data-testid="task-keep-mine">Use "{conflict.mine}"</button>
           <button type="button" className={button} onClick={() => setConflict(null)} data-testid="task-keep-theirs">Keep it</button>
         </div>
       )}
