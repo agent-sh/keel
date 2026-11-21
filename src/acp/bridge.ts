@@ -176,7 +176,15 @@ export type DaemonApi = {
   frames(on: (f: Json) => void): Promise<() => void>;
 };
 
-type Waiting = { resolve: (v: Json) => void };
+// One session/prompt call. It is settled once, by the end of the turn that took
+// its prompt in: `after` is the seq of the stored prompt (null until the daemon
+// says where it went), `queueId` its queue row while it waits behind a running turn.
+type Prompt = { resolve: (r: Json) => void; reject: (e: Error) => void; after: number | null; queueId?: string; cancelled: boolean; settled: boolean };
+// What this editor waits on in one session: its open prompts, the reply text
+// streamed so far, and what passed while a prompt was still on its way to the
+// daemon (the queued prompts stored since, the turn ends since).
+// `seq`: the last event seen, where a prompt counts from when the daemon's answer names no event.
+type Live = { prompts: Prompt[]; streamed: string; error?: string; seq: number; delivered: Map<string, number>; ends: { seq: number; reason: string; error?: string }[] };
 
 const LIST_PAGE = 200;
 
@@ -184,7 +192,7 @@ const LIST_PAGE = 200;
 export class AcpBridge {
   private nextId = 1;
   private pending = new Map<number, (msg: Json) => void>();
-  private turns = new Map<string, { resolve: (r: Json) => void; reject: (e: Error) => void; streamed: string; cancelled: boolean; error?: string }>();
+  private live = new Map<string, Live>();
   private caps: Json = {};
   private tools = new Map<string, string>(); // tool_use id -> tool name
   private asked = new Set<string>();         // approvals sent to the editor
@@ -235,7 +243,85 @@ export class AcpBridge {
 
   close() {
     this.stopFrames?.();
-    for (const t of this.turns.values()) t.resolve({ stopReason: "cancelled" });
+    for (const [id, l] of [...this.live]) for (const p of [...l.prompts]) if (this.take(id, p)) p.resolve({ stopReason: "cancelled" });
+  }
+
+  // A prompt's call leaves the session's open prompts to be answered; false when it was answered before.
+  private take(sessionId: string, p: Prompt): boolean {
+    if (p.settled) return false;
+    p.settled = true;
+    const l = this.live.get(sessionId);
+    if (l) {
+      l.prompts = l.prompts.filter((x) => x !== p);
+      if (!l.prompts.length) this.live.delete(sessionId);
+    }
+    return true;
+  }
+
+  // The turn that took these prompts in has ended: each call gets that end.
+  private settle(sessionId: string, prompts: Prompt[], reason: string, error?: string) {
+    const open = prompts.filter((p) => this.take(sessionId, p));
+    if (!open.length) return;
+    const stopReason = reason === "interrupted" || reason === "restart" ? "cancelled"
+      : reason === "max_tokens" ? "max_tokens" : reason === "refusal" ? "refusal" : reason === "max_steps" ? "max_turn_requests" : "end_turn";
+    const answer = () => {
+      for (const p of open) {
+        if (reason === "error" && !p.cancelled) p.reject(Object.assign(new Error(error ?? "the turn failed"), { code: -32603 }));
+        else p.resolve({ stopReason: p.cancelled ? "cancelled" : stopReason });
+      }
+    };
+    // The context and cost as the turn left them, before the turn's answer.
+    if (reason === "error" && open.every((p) => !p.cancelled)) answer();
+    else void this.usage(sessionId).finally(answer);
+  }
+
+  // The daemon said where a prompt went: into the history (its stored event), or
+  // into the queue behind a running turn. A turn end that passed meanwhile is its
+  // end only when it came after the stored prompt.
+  private place(sessionId: string, p: Prompt, r: Json) {
+    const l = this.live.get(sessionId);
+    if (!l || p.settled) return;
+    const sent = r?.event?.event || r?.event?.queued ? r.event : r; // a command's answer wraps the prompt's
+    if (sent?.queued?.id) {
+      p.queueId = String(sent.queued.id);
+      p.after = l.delivered.get(p.queueId) ?? null;
+    } else p.after = typeof sent?.event?.seq === "number" ? sent.event.seq : l.seq;
+    const end = p.after === null ? undefined : l.ends.find((e) => e.seq > p.after!);
+    if (!l.prompts.some((x) => x.after === null && !x.queueId)) l.ends = [];
+    if (end) this.settle(sessionId, [p], end.reason, end.error);
+    // Cancelled while it was on its way: it is stopped where it landed.
+    else if (p.cancelled && p.queueId && p.after === null) void this.unqueue(sessionId, p);
+    else if (p.cancelled) void this.daemon.send("POST", `/api/sessions/${sessionId}/interrupt`, {}).catch(() => {});
+  }
+
+  // A prompt still waiting in the queue is taken out, so it never starts a turn
+  // the editor gave up on; its call ends as cancelled.
+  private async unqueue(sessionId: string, p: Prompt) {
+    const gone = await this.daemon.send("DELETE", `/api/sessions/${sessionId}/queue/${p.queueId}`).then(() => true, () => false);
+    if (gone && p.after === null) this.settle(sessionId, [p], "interrupted");
+  }
+
+  // The editor stops what it asked for: its queued prompts leave the queue and the running turn is cut.
+  private async stop(sessionId: string) {
+    for (const p of [...(this.live.get(sessionId)?.prompts ?? [])]) {
+      p.cancelled = true;
+      if (p.queueId && p.after === null) await this.unqueue(sessionId, p);
+    }
+    await this.daemon.send("POST", `/api/sessions/${sessionId}/interrupt`, {});
+  }
+
+  // The queue changed. A prompt of ours that is no longer in it and not in the
+  // history either was removed in the workbench (the daemon still holds one it is
+  // sending now, and says so): its call ends as cancelled instead of waiting forever.
+  private async queueChanged(sessionId: string, queue: Json[]) {
+    for (const p of [...(this.live.get(sessionId)?.prompts ?? [])]) {
+      if (!p.queueId || p.after !== null || queue.some((q) => q.id === p.queueId)) continue;
+      const gone = await this.daemon.send("PATCH", `/api/sessions/${sessionId}/queue/${p.queueId}`, {}).then(() => false, (e) => e?.code === -32002);
+      if (!gone || p.after !== null) continue;
+      const r = await this.daemon.get(`/api/sessions/${sessionId}`).catch(() => null);
+      if (!r || p.after !== null || (r.events ?? []).some((e: Json) => e.kind === "user" && e.data?.queue_id === p.queueId)) continue;
+      this.settle(sessionId, [p], "interrupted");
+    }
   }
 
   // The daemon's listing, read again when a session is opened (it changes as
@@ -314,11 +400,7 @@ export class AcpBridge {
       case "session/close": {
         // Ends this editor's hold on the session: a running turn is stopped; the session stays in Keel.
         const id = String(p.sessionId);
-        const t = this.turns.get(id);
-        if (t) {
-          t.cancelled = true;
-          await this.daemon.send("POST", `/api/sessions/${id}/interrupt`, {}).catch(() => {});
-        }
+        if (this.live.has(id)) await this.stop(id).catch(() => {});
         return {};
       }
       case "session/list": {
@@ -343,23 +425,28 @@ export class AcpBridge {
         const { text, images } = await promptOf(p.prompt, this.daemon.upload?.bind(this.daemon));
         if (!text.trim() && !images.length) throw Object.assign(new Error("the prompt is empty"), { code: -32602 });
         await this.ensureFrames();
-        const done = new Promise<Json>((resolve, reject) => this.turns.set(id, { resolve, reject, streamed: "", cancelled: false }));
+        // Each call is its own entry: a second prompt while the first runs joins
+        // the running turn or waits behind it, as the daemon decides, and neither
+        // call takes the other's answer.
+        const live = this.live.get(id) ?? this.live.set(id, { prompts: [], streamed: "", delivered: new Map(), ends: [], seq: -1 }).get(id)!;
+        let mine!: Prompt;
+        const done = new Promise<Json>((resolve, reject) => live.prompts.push((mine = { resolve, reject, after: null, cancelled: false, settled: false })));
         // An advertised command (/server:prompt args) runs as the workbench runs it.
         const cmd = /^\/([\w.-]+):(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
         const known = cmd && this.commandsOf.get(id)?.has(`${cmd[1]}:${cmd[2]}`);
         try {
-          if (known) await this.daemon.send("POST", `/api/sessions/${id}/mcp-prompt`, { server: cmd![1], prompt: cmd![2], args: cmd![3] ?? "" });
-          else await this.daemon.send("POST", `/api/sessions/${id}/messages`, { text, images });
+          const sent = known
+            ? await this.daemon.send("POST", `/api/sessions/${id}/mcp-prompt`, { server: cmd![1], prompt: cmd![2], args: cmd![3] ?? "" })
+            : await this.daemon.send("POST", `/api/sessions/${id}/messages`, { text, images });
+          this.place(id, mine, sent);
         } catch (e) {
-          this.turns.delete(id);
-          throw e;
+          // Not sent: this call fails, and the session's other prompts go on.
+          if (this.take(id, mine)) throw e;
         }
         return await done;
       }
       case "session/cancel": {
-        const t = this.turns.get(String(p.sessionId));
-        if (t) t.cancelled = true;
-        await this.daemon.send("POST", `/api/sessions/${p.sessionId}/interrupt`, {});
+        await this.stop(String(p.sessionId));
         return undefined; // a notification
       }
       case "session/set_mode":
@@ -406,13 +493,22 @@ export class AcpBridge {
 
   private event(sessionId: string, e: StoredEvent, replay?: { results: Map<string, Json>; running: boolean }) {
     if (e.kind === "user") {
-      if (!replay) return; // the editor sent it
+      if (!replay) {
+        // The editor sent it. A queued prompt is now stored: the turn end after it is its end.
+        const l = this.live.get(sessionId);
+        const qid = typeof e.data?.queue_id === "string" ? e.data.queue_id : "";
+        if (l && qid) {
+          l.delivered.set(qid, e.seq);
+          for (const p of l.prompts) if (p.queueId === qid && p.after === null) p.after = e.seq;
+        }
+        return;
+      }
       const input = inputKind(e.data);
       if (input) {
         this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `[${INPUT_LABEL[input]}]\n\n${e.data.text ?? ""}` }, _meta: { keel: { input } } });
       } else for (const content of userContent(e.data)) this.notify(sessionId, { sessionUpdate: "user_message_chunk", content });
     } else if (e.kind === "assistant") {
-      const t = replay ? undefined : this.turns.get(sessionId);
+      const t = replay ? undefined : this.live.get(sessionId);
       const texts = (e.data.blocks ?? []).filter((b: Json) => b.type === "text" && b.text).map((b: Json) => b.text as string);
       if (replay) for (const text of texts) this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
       else {
@@ -442,34 +538,39 @@ export class AcpBridge {
     } else if (e.kind === "compaction") {
       this.compaction(sessionId, e);
     } else if (e.kind === "turn_end" && !replay) {
-      const t = this.turns.get(sessionId);
-      if (!t) return;
-      this.turns.delete(sessionId);
+      const l = this.live.get(sessionId);
+      if (!l) return;
       const reason = String(e.data.reason ?? "end_turn");
-      if (reason === "error" && !t.cancelled) return t.reject(Object.assign(new Error(t.error ?? "the turn failed"), { code: -32603 }));
-      const stopReason = t.cancelled || reason === "interrupted" || reason === "restart" ? "cancelled"
-        : reason === "max_tokens" ? "max_tokens" : reason === "refusal" ? "refusal" : reason === "max_steps" ? "max_turn_requests" : "end_turn";
-      // The context and cost as the turn left them, before the turn's answer.
-      void this.usage(sessionId).finally(() => t.resolve({ stopReason }));
+      const error = l.error;
+      l.error = undefined;
+      l.streamed = "";
+      // A prompt still on its way to the daemon may turn out to be this turn's: its end is kept for it.
+      if (l.prompts.some((p) => p.after === null && !p.queueId)) l.ends.push({ seq: e.seq, reason, error });
+      // The end of a turn that ran before a prompt was stored is not that prompt's.
+      this.settle(sessionId, l.prompts.filter((p) => p.after !== null && e.seq > p.after), reason, error);
     } else if (e.kind === "error" && !replay) {
-      const t = this.turns.get(sessionId);
+      const t = this.live.get(sessionId);
       if (t) t.error = String(e.data.message ?? "the turn failed");
       this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n\nKeel: ${e.data.message}` } });
     }
   }
 
   private onFrame(f: Json) {
-    if (f.t === "delta" && this.turns.has(f.session_id)) {
-      const t = this.turns.get(f.session_id)!;
+    if (f.t === "delta" && this.live.has(f.session_id)) {
+      const t = this.live.get(f.session_id)!;
       if (f.kind === "text") {
         t.streamed += f.text;
         this.notify(f.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: f.text } });
       } else if (f.kind === "thinking") this.notify(f.session_id, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: f.text } });
-    } else if (f.t === "event" && this.turns.has(f.event.session_id)) {
+    } else if (f.t === "event" && this.live.has(f.event.session_id)) {
+      const l = this.live.get(f.event.session_id)!;
+      if (typeof f.event.seq === "number" && f.event.seq > l.seq) l.seq = f.event.seq;
       this.event(f.event.session_id, f.event);
-    } else if (f.t === "session" && this.turns.has(f.session.id) && f.session.title) {
+    } else if (f.t === "queue" && this.live.has(f.session_id)) {
+      void this.queueChanged(f.session_id, f.queue ?? []);
+    } else if (f.t === "session" && this.live.has(f.session.id) && f.session.title) {
       this.notify(f.session.id, { sessionUpdate: "session_info_update", title: f.session.title });
-    } else if (f.t === "feature" && f.name === "approval" && f.data?.state === "pending" && this.turns.has(f.data.session_id) && !this.asked.has(f.data.id)) {
+    } else if (f.t === "feature" && f.name === "approval" && f.data?.state === "pending" && this.live.has(f.data.session_id) && !this.asked.has(f.data.id)) {
       this.asked.add(f.data.id);
       void this.ask(f.data);
     } else if (f.t === "feature" && f.name === "approval" && f.data?.state !== "pending" && this.asking.has(f.data?.id)) {

@@ -12,12 +12,15 @@ test("an editor's permission request carries the card's reason", () => {
 });
 
 // A daemon stand-in: sessions, their events, a model listing, and the frame stream.
+// A prompt is stored at the next seq unless `post` answers for the daemon.
 function fixture(sessions: any[], events: Record<string, any[]>) {
   let on: (f: any) => void = () => {};
+  let n = 0;
   const out: any[] = [];
   const calls: string[] = [];
   const d = {
     models: [{ id: "p:alpha", name: "Alpha", provider: "p" }],
+    post: undefined as undefined | ((method: string, path: string) => any),
     get: async (path: string) => {
       calls.push(`GET ${path}`);
       if (path === "/api/models") return { models: d.models, default: "p:alpha" };
@@ -26,12 +29,16 @@ function fixture(sessions: any[], events: Record<string, any[]>) {
       const s = sessions.find((x) => path === `/api/sessions/${x.id}`);
       return { session: s, events: events[s.id] ?? [], running: false };
     },
-    send: async (method: string, path: string) => (calls.push(`${method} ${path}`), {}),
+    send: async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      const r = await d.post?.(method, path);
+      return r ?? (path.endsWith("/messages") ? { event: { id: `u${++n}`, seq: n } } : {});
+    },
     frames: async (f: (x: any) => void) => ((on = f), () => {}),
   };
   const bridge = new AcpBridge(d, (m) => out.push(m));
   const updates = (id: string) => out.filter((m) => m.method === "session/update" && m.params.sessionId === id).map((m) => m.params.update);
-  return { d, bridge, out, calls, updates, frame: (f: any) => on(f) };
+  return { d, bridge, out, calls, updates, frame: (f: any) => on(f.t === "event" && f.event.seq === undefined ? { ...f, event: { ...f.event, seq: ++n } } : f) };
 }
 let seq = 0;
 const ev = (kind: string, data: any, parent: string | null, id = `e${++seq}`) => ({ id, session_id: "s", seq, parent, kind, data, ts: seq });
@@ -109,6 +116,77 @@ test("a prompt's live reply: missed text sent, the turn's end said as it was", a
   const failed = await turn([{ t: "event", event: { session_id: "s", kind: "error", data: { message: "fixture provider unavailable" } } }, end("error")]);
   expect(failed.text).toContain("fixture provider unavailable");
   expect(failed.answer.error.message).toBe("fixture provider unavailable");
+});
+
+test("overlapping prompts each end once, at the end of the turn that took them", async () => {
+  const f = fixture([{ id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 }], {});
+  const stored: ((r: any) => void)[] = [];
+  f.d.post = (_m, path) => (path.endsWith("/messages") ? new Promise((r) => stored.push(r)) : undefined);
+  const prompt = (id: number, text: string) => f.bridge.handle({ jsonrpc: "2.0", id, method: "session/prompt", params: { sessionId: "s", prompt: [{ type: "text", text }] } });
+  const answers = (id: number) => f.out.filter((m) => m.id === id).map((m) => m.result?.stopReason ?? m.error?.message);
+  const event = (seq: number, kind: string, data: any) => f.frame({ t: "event", event: { session_id: "s", seq, kind, data } });
+  const one = prompt(1, "first");
+  await Bun.sleep(0);
+  event(5, "turn_end", { reason: "max_tokens" }); // an earlier turn ends while the first prompt is on its way
+  stored[0]!({ event: { id: "u1", seq: 10 } });
+  await Bun.sleep(0);
+  expect(answers(1)).toEqual([]);
+  const two = prompt(2, "second"); // while the first runs: the daemon queues it
+  await Bun.sleep(0);
+  stored[1]!({ queued: { id: "q1" }, steer: true });
+  await Bun.sleep(0);
+  event(12, "turn_end", { reason: "end_turn" });
+  await one;
+  expect(answers(1)).toEqual(["end_turn"]);
+  expect(answers(2)).toEqual([]);
+  event(13, "user", { text: "second", origin: "queued", queue_id: "q1" });
+  event(16, "turn_end", { reason: "max_steps" });
+  await two;
+  expect(answers(2)).toEqual(["max_turn_requests"]);
+  expect(answers(1)).toEqual(["end_turn"]);
+  // A steer the running turn took in ends with that turn, and so does the prompt that started it.
+  const three = prompt(3, "third");
+  await Bun.sleep(0);
+  stored[2]!({ event: { id: "u3", seq: 20 } });
+  const four = prompt(4, "fourth");
+  await Bun.sleep(0);
+  event(22, "user", { text: "fourth", origin: "steer", queue_id: "q2" }); // stored before the daemon's answer arrives
+  event(24, "error", { message: "fixture provider unavailable" });
+  event(25, "turn_end", { reason: "error" });
+  await three;
+  expect(answers(3)).toEqual(["fixture provider unavailable"]);
+  expect(answers(4)).toEqual([]);
+  stored[3]!({ queued: { id: "q2" }, steer: true });
+  await four;
+  expect(answers(4)).toEqual(["fixture provider unavailable"]);
+});
+
+test("a queued prompt the editor cancels or the workbench removes ends as cancelled", async () => {
+  const f = fixture([{ id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 }], {});
+  let queued = 0;
+  f.d.post = (method, path) => {
+    if (path.endsWith("/messages")) return { queued: { id: `q${++queued}` }, steer: true }; // a turn of the workbench is running
+    if (method === "PATCH") throw Object.assign(new Error("no such queued prompt (it may have been sent)"), { code: -32002 });
+  };
+  const prompt = (id: number) => f.bridge.handle({ jsonrpc: "2.0", id, method: "session/prompt", params: { sessionId: "s", prompt: [{ type: "text", text: "go" }] } });
+  const answers = (id: number) => f.out.filter((m) => m.id === id).map((m) => m.result?.stopReason ?? m.error?.message);
+  const one = prompt(1);
+  await Bun.sleep(0);
+  f.frame({ t: "event", event: { session_id: "s", kind: "turn_end", data: { reason: "end_turn" } } }); // the workbench's turn, not ours
+  await Bun.sleep(0);
+  expect(answers(1)).toEqual([]);
+  await f.bridge.handle({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: "s" } });
+  await one;
+  expect(answers(1)).toEqual(["cancelled"]);
+  expect(f.calls.filter((c) => !c.startsWith("GET ")).slice(-2)).toEqual(["DELETE /api/sessions/s/queue/q1", "POST /api/sessions/s/interrupt"]);
+  const two = prompt(2);
+  await Bun.sleep(0);
+  f.frame({ t: "queue", session_id: "s", queue: [{ id: "q2" }], held: false });
+  await Bun.sleep(0);
+  expect(answers(2)).toEqual([]);
+  f.frame({ t: "queue", session_id: "s", queue: [], held: false }); // removed in the workbench
+  await two;
+  expect(answers(2)).toEqual(["cancelled"]);
 });
 
 test("loading again reads the model listing again", async () => {
