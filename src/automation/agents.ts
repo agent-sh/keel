@@ -341,6 +341,10 @@ const PREAMBLE =
 
 type Waiter = { done: (a: AgentRecord) => boolean; resolve: (r: AgentRecord) => void };
 const waiters = new Map<string, Waiter[]>(); // agent id -> callers blocked on it
+// Blocking agents whose call was cut by a stop of the parent's turn: the call
+// held the result, so the stopped parent is owed no report, whoever stopped
+// the agent and whenever it ends. Until the agent is given new work.
+const cutCalls = new Set<string>();
 const slotWaiters = new Map<string, Set<() => void>>(); // parent id -> blocking spawns
 const reservations = new Map<string, number>(); // placements not yet recorded as live
 
@@ -605,7 +609,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const ev = engine.send(child.id, task, { meta: { kind: "task", agent_id: id, task_at: task.length - input.prompt.length, ...tp } }).event!;
   const rec = update(id, { first_seq: ev.seq - 1 })!;
   if (input.background === false) {
-    const onAbort = () => stop(id, "parent_turn");
+    const onAbort = () => { cutCalls.add(id); stop(id, "parent_turn"); };
     signal?.addEventListener("abort", onAbort, { once: true });
     const r = await waitFor(id, { parked: true, signal });
     signal?.removeEventListener("abort", onAbort);
@@ -839,8 +843,8 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   else if (a.worktree) result += await worktreeNote(a);
   const silent = !!defOf(a.id)?.silent;
   // A blocking agent's result is held by the call that started it: while that
-  // call waits, and when it stopped the agent with its parent's turn.
-  const blocked = silent || (!a.background && (waitersOn(a.id) > 0 || how.stopped_by === "parent_turn"));
+  // call waits, and after a stop of the parent's turn cut it (cutCalls).
+  const blocked = silent || (!a.background && (waitersOn(a.id) > 0 || cutCalls.has(a.id)));
   const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason })!;
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
@@ -906,6 +910,7 @@ export async function send(id: string, message: string, interrupt = false): Prom
     return update(id, { status: "running" })!;
   }
   needSlot(a.parent_id);
+  cutCalls.delete(id); // new work, in the background: nothing holds its report
   const last = store.events(a.session_id).at(-1)?.seq ?? 0;
   update(id, { status: "running", ended: null, first_seq: last, handback: false, background: true, stopped_by: null, end_reason: null });
   deliver(a.session_id, text, { kind: "steer", agent_id: id });

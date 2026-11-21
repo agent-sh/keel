@@ -522,3 +522,23 @@ test("a blocking spawn leaves no listener on its caller's signal, and a parent t
   expect(agents.get(b.id)).toMatchObject({ status: "stopped", stopped_by: "parent_turn", handback: false });
   expect(store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE agent_id = ?").get(b.id)!.n).toBe(0);
 });
+
+test("a blocking agent another actor stopped first owes its stopped parent no report either", async () => {
+  const ctl = new AbortController();
+  const call = agents.spawn(parent.id, { prompt: "do it", isolation: "none", background: false }, ctl.signal);
+  await settled();
+  const b = agents.list(parent.id).at(-1)!;
+  busy.add(b.session_id);
+  const interrupt = engine.interrupt;
+  engine.interrupt = async (id, by) => { await Bun.sleep(1); await interrupt(id, by); };
+  try {
+    agents.stop(b.id, "owner"); // the owner stops the agent: its turn is still ending
+    ctl.abort(); // and then the parent's turn
+    await call;
+    await settled();
+  } finally {
+    engine.interrupt = interrupt;
+  }
+  expect(agents.get(b.id)).toMatchObject({ status: "stopped", stopped_by: "owner", handback: false });
+  expect(store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE agent_id = ?").get(b.id)!.n).toBe(0);
+});
