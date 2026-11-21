@@ -145,6 +145,8 @@ scripts/smoke.sh [SPEC...]       # browser specs with no credentials and no netw
 bun test ./test/cli              # the command line e2e (builds the binary, scripted model)
 bun test ./scripts               # the dev launcher's decisions (scripts/dev-watch.ts)
 bun scripts/build.ts            # dist/keel, one binary (and dist/keel-ui.tar.gz, its page as a bundle)
+bun scripts/release.ts && scripts/release-check.sh   # a release packaged in dist/release (revision, target, checksums),
+                               # then verified outside the source tree with no Bun on PATH; nothing is published
 bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.tar.gz --url URL
                                # a UI-only change on a running daemon: no restart, turns go on, pages reload;
                                # refused when src/ differs from the daemon's build (that needs a restart)

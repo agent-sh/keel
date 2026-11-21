@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Deps } from "../server/app.ts";
 import { flushAll } from "../automation/core.ts";
+import { buildInfo } from "../core/build.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { addAdmission } from "../server/admission.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
@@ -238,6 +239,7 @@ export class Daemon {
       uptime_ms: Date.now() - this.started,
       state_dir: this.deps.store.stateDir,
       bun: Bun.version,
+      build: buildInfo(),
       argv: relaunchArgv(),
       systemd: process.env.KEEL_SUPERVISED === "systemd",
       running: this.runningSessions(),

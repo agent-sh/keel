@@ -4,6 +4,7 @@
 #   scripts/smoke.sh                      the smoke case: test/e2e/chat.spec.ts
 #   scripts/smoke.sh SPEC... [OPTIONS]    other specs, or any `playwright test` arguments
 #   scripts/smoke.sh --keep ...           keep the run's folder (always kept when the run fails)
+#   scripts/smoke.sh --bin dist/keel ...  run a built binary instead of the sources
 #   scripts/smoke.sh --allow-network ...  where the kernel has no user namespaces (see below)
 #
 # One command starts a daemon of its own on the scripted provider
@@ -24,14 +25,16 @@ TOP=$(cd "$(dirname "$0")/.." && pwd)
 
 if [ -z "${KEEL_SMOKE_ROOT:-}" ]; then
   # Stage one, in the caller's world: the folder, the clean environment, the namespace.
-  net=1; keep=0; args=()
-  for a in "$@"; do
-    case "$a" in
+  net=1; keep=0; bin=""; args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
       --allow-network) net=0 ;;
       --keep) keep=1 ;;
-      -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-      *) args+=("$a") ;;
+      --bin) bin=$(realpath "${2:?--bin takes the path of a built keel}"); shift ;;
+      -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      *) args+=("$1") ;;
     esac
+    shift
   done
   for tool in bun curl; do command -v "$tool" > /dev/null || { echo "smoke: $tool is not on PATH" >&2; exit 2; }; done
   if [ "$net" = 1 ] && ! unshare --user --map-root-user --net true 2> /dev/null; then
@@ -45,7 +48,7 @@ if [ -z "${KEEL_SMOKE_ROOT:-}" ]; then
   mkdir -p "$root/home" "$root/tmp"
   clean=(env -i
     PATH="$PATH" HOME="$root/home" TMPDIR="$root/tmp" LANG="${LANG:-C.UTF-8}" TERM="${TERM:-dumb}"
-    KEEL_SMOKE_ROOT="$root"
+    KEEL_SMOKE_ROOT="$root" KEEL_BIN="$bin"
     # Read-only stores of the caller: the browsers Playwright installed and Bun's package cache.
     PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
     BUN_INSTALL_CACHE_DIR="${BUN_INSTALL_CACHE_DIR:-$HOME/.bun/install/cache}"

@@ -59,6 +59,7 @@ export function topHelp(): string {
     "",
     "usage: keel <command> [options]       keel <command> --help for its options",
     "       keel -p PROMPT                 the same as keel run -p PROMPT",
+    "       keel --version                 the revision and target this binary was built from",
     "",
     ...GROUPS.flatMap(([g, cmds]) => [`${g}:`, ...cmds.map(([n, d]) => `  ${n.padEnd(w)}  ${d}`), ""]),
     "Client commands find the daemon from --url, KEEL_URL, or the state folder (--state-dir,",

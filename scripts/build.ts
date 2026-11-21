@@ -20,6 +20,13 @@ process.chdir(root);
 const t0 = performance.now();
 const built = Date.now();
 const api = sourceApi(root);
+// The revision a binary says it is (`keel --version`): the commit, marked when the tree differs from it.
+const git = (...args: string[]) => {
+  const r = Bun.spawnSync(["git", "-C", root, ...args], { stdout: "pipe", stderr: "ignore" });
+  return r.exitCode === 0 ? r.stdout.toString().trim() : null;
+};
+const head = git("rev-parse", "HEAD");
+const revision = head ? head + (git("status", "--porcelain") ? "-dirty" : "") : "unknown";
 const define = { "process.env.NODE_ENV": '"production"' };
 const fail = (res: Bun.BuildOutput) => {
   for (const l of res.logs) console.error(l);
@@ -121,7 +128,11 @@ try {
     splitting: true,
     sourcemap: "none",
     plugins: [embeddedPage],
-    define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs), __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs), __KEEL_BACKUP_WORKER_JS__: JSON.stringify(workerJs), __KEEL_STALLWATCH_JS__: JSON.stringify(stallWatchJs) },
+    define: {
+      ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs),
+      __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs), __KEEL_BACKUP_WORKER_JS__: JSON.stringify(workerJs), __KEEL_STALLWATCH_JS__: JSON.stringify(stallWatchJs),
+      __KEEL_REVISION__: JSON.stringify(revision), __KEEL_TARGET__: JSON.stringify((target ?? `bun-${process.platform}-${process.arch}`).replace(/^bun-/, "")),
+    },
   });
   if (res.success) console.log(`binary: compiled in ${((performance.now() - t) / 1000).toFixed(2)}s`);
 } finally {
@@ -129,4 +140,4 @@ try {
 }
 if (!res.success) fail(res);
 await pack(`${out}-ui.tar.gz`, files);
-console.log(`built ${out} and ${out}-ui.tar.gz (api ${api}) in ${((performance.now() - t0) / 1000).toFixed(2)}s`);
+console.log(`built ${out} and ${out}-ui.tar.gz (revision ${revision}, api ${api}, UI ${built}) in ${((performance.now() - t0) / 1000).toFixed(2)}s`);

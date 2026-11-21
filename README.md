@@ -453,6 +453,31 @@ Keel never restarts the daemon for a UI install. Idle pages reload, and a page
 with a draft offers a reload and keeps the draft. `keel ui rollback` switches
 back to the previous bundle, or to the embedded page.
 
+## Package and check a release
+
+```bash
+bun scripts/release.ts                 # dist/release: keel-<target>.tar.gz, SHA256SUMS, release.json
+scripts/release-check.sh               # verify it as a machine that installs it would see it
+```
+
+`scripts/release.ts` builds the binary for this machine's target (or
+`--target bun-darwin-arm64` and the like) and packs it with its UI bundle and
+the license. `release.json` names the git revision (marked `-dirty` when the
+tree had changes), the target, the API fingerprint and the checksum of each
+file; `SHA256SUMS` holds the archive's. Nothing is published.
+
+`scripts/release-check.sh` verifies the checksums, unpacks the archive into a
+throwaway folder outside the source tree and runs the binary with a clean
+environment and no Bun on `PATH`: `keel --help`, `keel --version` against the
+release's revision, the daemon on the loopback, its embedded page and every
+file of it, and the release's UI bundle installed over the running daemon and
+rolled back. No model is called. A release for another platform is packaged
+the same way and has to be checked on that platform. To drive the page of a
+built binary in a browser: `scripts/smoke.sh --bin PATH/keel`.
+
+To install by hand, verify and unpack the archive, put `keel` on your `PATH`,
+and run `keel serve` (or `keel service install` for a systemd user unit).
+
 ## Browser check without credentials
 
 ```bash

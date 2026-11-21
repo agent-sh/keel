@@ -3,6 +3,8 @@ import { parseArgs } from "node:util";
 import { commands } from "./cli/index.ts";
 import { topHelp, unknownCommand } from "./cli/help.ts";
 import { parseBind } from "./core/bind.ts";
+import { versionLine } from "./core/build.ts";
+import { daemonApi } from "./server/ui-bundle.ts";
 import { startDaemon } from "./server/start.ts";
 
 const SERVE_USAGE = "keel serve [--bind HOST:PORT] [--state-dir DIR] [--workspace DIR] [--dev]\n  Runs the daemon: the agent loop, the HTTP API and the workbench (default bind 127.0.0.1:47960).";
@@ -16,6 +18,8 @@ if (sub === undefined || sub === "-h" || sub === "--help" || sub === "help") {
   if (of === "serve") process.exit((console.log(SERVE_USAGE), 0));
   process.exit((console.log(topHelp()), 0));
 }
+// What this binary was built from: the revision a release names.
+if (sub === "--version" || sub === "-V") process.exit((console.log(versionLine(daemonApi())), 0));
 // Client commands (keel run, keel send, keel pair, ...) parse their own options.
 if (sub && commands[sub]) process.exit(await commands[sub](Bun.argv.slice(3)));
 

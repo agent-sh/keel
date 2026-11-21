@@ -47,3 +47,24 @@ export const URGENT: { tools: Record<string, string>; blocks: Record<string, str
   tools: { ...testBuild?.urgent?.tools },
   blocks: { ...testBuild?.urgent?.blocks },
 };
+
+// What this process was built from. scripts/build.ts stamps a binary with its
+// git revision (with `-dirty` when the tree had changes), its target and the
+// time of the build; run from the sources there is nothing to stamp.
+declare const __KEEL_REVISION__: string | undefined;
+declare const __KEEL_TARGET__: string | undefined;
+declare const __KEEL_UI_BUILT__: number | undefined;
+
+export function buildInfo(): { revision: string; target: string; built_ms: number | null } {
+  return {
+    revision: typeof __KEEL_REVISION__ === "string" ? __KEEL_REVISION__ : "source",
+    target: typeof __KEEL_TARGET__ === "string" ? __KEEL_TARGET__ : `${process.platform}-${process.arch}`,
+    built_ms: typeof __KEEL_UI_BUILT__ === "number" ? __KEEL_UI_BUILT__ : null,
+  };
+}
+
+// One line for `keel --version`.
+export function versionLine(api: string): string {
+  const b = buildInfo();
+  return `keel ${b.revision} (${b.target}, api ${api}${b.built_ms ? `, built ${new Date(b.built_ms).toISOString()}` : ""})`;
+}
