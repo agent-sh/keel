@@ -19,6 +19,9 @@
 // narrow rows per quarter hour instead of every request ever made. Only the
 // part of a time window that is not whole quarter hours (at most the quarter
 // hour at each end) is read from the ledger, by its time index.
+// The daemon makes the rollup at its start and holds it against the ledger
+// there (checkRollup); GET /api/usage/rollup gives that check
+// ({ ok, rollup_calls, ledger_calls }) and POST makes the rollup again.
 import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
 
@@ -116,14 +119,42 @@ const ledger = (r = "") => [
 // another table).
 const TRIGGER = "usage_rollup_v1";
 
+const has = (db: Database, type: "table" | "trigger", name: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+
 // The rollup and the triggers that keep it, made once from the ledger as it
 // stands (in the write that adds the triggers, so no request falls between).
 // The triggers are part of the database: a request written by any build, or
 // by hand, is counted; a row taken out or changed is taken out of its sums.
-// False while the ledger's table is not there yet.
+// False while the ledger's table is not there yet. The daemon makes it at its
+// start (checkRollup below), not in a view's request.
 export function ensureRollup(db: Database): boolean {
-  if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(`${TRIGGER}_add`)) return true;
-  if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_calls'").get()) return false;
+  if (has(db, "trigger", `${TRIGGER}_add`)) return true;
+  if (!has(db, "table", "telemetry_calls")) return false;
+  rebuildRollup(db);
+  return true;
+}
+
+export type RollupCheck = { ok: boolean; rollup_calls: number; ledger_calls: number; rebuilt?: boolean };
+// The rollup against the ledger: the requests it counts and the requests the
+// ledger holds that count. They differ only when a write went past the
+// triggers (a row replaced whole, a ledger changed with the triggers off).
+// `repair`: a rollup that is not there yet, or differs, is made again from the
+// ledger. Run once at the daemon's start, and by the rollup route.
+export function checkRollup(db: Database, repair = true): RollupCheck {
+  if (!has(db, "table", "telemetry_calls")) return { ok: true, rollup_calls: 0, ledger_calls: 0 };
+  const count = (): RollupCheck => {
+    const ledger_calls = db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM telemetry_calls WHERE ${counted()}`).get()!.n;
+    const rollup_calls = has(db, "table", "usage_rollup") ? db.query<{ n: number }, []>("SELECT COALESCE(SUM(calls), 0) AS n FROM usage_rollup").get()!.n : 0;
+    return { ok: has(db, "trigger", `${TRIGGER}_add`) && rollup_calls === ledger_calls, rollup_calls, ledger_calls };
+  };
+  const c = count();
+  if (c.ok || !repair) return c;
+  rebuildRollup(db);
+  return { ...count(), rebuilt: true };
+}
+
+// The rollup made again from the ledger, and its triggers with it, in one write.
+export function rebuildRollup(db: Database) {
   const key = (r: string) => `bucket = ${bucketOf(`${r}ts`)} AND session_id = ${r}session_id AND model = ${r}model AND purpose = COALESCE(${r}purpose, 'turn')`;
   const add = `INSERT INTO usage_rollup (bucket, session_id, model, ${COLS.join(", ")}) SELECT ${bucketOf("NEW.ts")}, NEW.session_id, NEW.model, ${ledger("NEW.").join(", ")} WHERE ${counted("NEW.")}
     ON CONFLICT (bucket, session_id, model, purpose) DO UPDATE SET first = MIN(first, excluded.first), ${SUMS.map((c) => `${c} = ${c} + excluded.${c}`).join(", ")};`;
@@ -149,10 +180,35 @@ export function ensureRollup(db: Database): boolean {
     db.run(`CREATE TRIGGER ${TRIGGER}_del AFTER DELETE ON telemetry_calls BEGIN ${sub} END`);
     db.run(`CREATE TRIGGER ${TRIGGER}_upd AFTER UPDATE OF session_id, ts, model, input, output, cache_read, cache_write, cost, unpriced, outcome, purpose ON telemetry_calls BEGIN ${sub} ${add} END`);
   })();
-  return true;
 }
 
-export const usageRoutes: RouteModule = ({ store }) => ({
+export const usageRoutes: RouteModule = ({ store, errors }) => {
+  // At the daemon's start, once every route module has made its tables and
+  // off any request: the rollup is made if this is the first build with it,
+  // and held against the ledger. One that differs is made again and said so.
+  // A view's request never builds it (it would hold the first view for as
+  // long as the whole ledger takes to read).
+  const atStart = setTimeout(() => {
+    try {
+      const had = has(store.db, "trigger", `${TRIGGER}_add`);
+      const c = checkRollup(store.db);
+      if (c.rebuilt && had) errors?.capture("server", new Error(`The usage rollup did not match the ledger and was made again from it (${c.ledger_calls} requests).`), { at: "usage rollup" });
+    } catch (e) {
+      errors?.capture("server", e, { at: "usage rollup" });
+    }
+  }, 0);
+  atStart.unref?.();
+  return {
+  // GET: the rollup against the ledger (the counts, and whether they agree).
+  // POST: the rollup made again from the ledger, then the same answer.
+  "/api/usage/rollup": {
+    GET: () => Response.json(checkRollup(store.db, false)),
+    POST: () => {
+      if (!has(store.db, "table", "telemetry_calls")) return Response.json(checkRollup(store.db, false));
+      rebuildRollup(store.db);
+      return Response.json({ ...checkRollup(store.db, false), rebuilt: true });
+    },
+  },
   "/api/usage": {
     GET: (req: Request) => {
       const q = new URL(req.url).searchParams;
@@ -187,7 +243,8 @@ export const usageRoutes: RouteModule = ({ store }) => ({
           all.push(...args, ...(from !== undefined ? [from] : []), ...(to !== undefined ? [to] : []));
         };
         const lo = since === undefined ? undefined : Math.ceil(since / BUCKET) * BUCKET, hi = until === undefined ? undefined : Math.floor(until / BUCKET) * BUCKET;
-        if (!whole || !ensureRollup(store.db) || (lo !== undefined && hi !== undefined && lo > hi)) part("telemetry_calls", since, until);
+        // (A rollup not made yet, in the moment before the start's own step: the ledger answers.)
+        if (!whole || !has(store.db, "trigger", `${TRIGGER}_add`) || (lo !== undefined && hi !== undefined && lo > hi)) part("telemetry_calls", since, until);
         else {
           part("usage_rollup", lo, hi);
           if (since !== lo) part("telemetry_calls", since, lo);
@@ -249,4 +306,5 @@ export const usageRoutes: RouteModule = ({ store }) => ({
       });
     },
   },
-});
+};
+};

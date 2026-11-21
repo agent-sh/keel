@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { allHooks } from "../../engine/hooks.ts";
-import { BUCKET, ensureRollup, usageRoutes } from "./usage.ts";
+import { BUCKET, checkRollup, ensureRollup, usageRoutes } from "./usage.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "usage-routes-"));
 const store = new Store(dir);
@@ -45,7 +45,11 @@ const counted = (make: (sql: string) => any, keep: boolean) => (sql: string) => 
 };
 (store.db as any).query = counted(query, true);
 (store.db as any).prepare = counted(store.db.prepare.bind(store.db), false);
-const route = (usageRoutes({ store } as any) as any)["/api/usage"].GET as (req: Request) => Response;
+const captured: string[] = [];
+const routes = usageRoutes({ store, errors: { capture: (_s: string, e: Error) => void captured.push(e.message) } } as any) as any;
+const route = routes["/api/usage"].GET as (req: Request) => Response;
+// The daemon's own step at its start: the rollup is made off any request.
+expect(checkRollup(store.db)).toEqual({ ok: true, rollup_calls: 0, ledger_calls: 0, rebuilt: true });
 const ask = async (params: Record<string, string | number>) => {
   const before = handed;
   const r = route(new Request(`http://x/api/usage?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))}`));
@@ -244,4 +248,46 @@ test("requests taken out, changed or moved leave every sum what a walk gives", a
   const made = query<any, []>("SELECT * FROM usage_rollup ORDER BY bucket, session_id, model, purpose").all();
   expect(made.length).toBe(kept.length);
   for (let i = 0; i < made.length; i++) same(kept[i], made[i], `rollup row ${i}`);
+});
+
+// A write that goes past the triggers (a row replaced whole: SQLite runs no
+// delete trigger for the row it replaces) leaves the rollup counting a request
+// the ledger no longer holds. The check at the daemon's start finds it by the
+// two counts and makes the rollup again; the route gives the same check and
+// the rebuild by hand. No view builds the rollup in its own request.
+test("a rollup that drifted from the ledger is found by its count and made again", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5)); // the start's own step runs
+  expect(checkRollup(store.db, false)).toMatchObject({ ok: true });
+  const { id } = query<{ id: number }, []>("SELECT id FROM telemetry_calls ORDER BY id LIMIT 1").get()!;
+  store.db.run("INSERT OR REPLACE INTO telemetry_calls (id, session_id, ts, model, input, output, cache_read, cache_write, cost, unpriced, outcome, purpose) VALUES (?, 's-parent', ?, 'alpha:big', 1, 1, 0, 0, 0.5, 0, 'ok', NULL)", [id, Date.UTC(2026, 5, 11)]);
+  const drift = checkRollup(store.db, false);
+  expect(drift).toEqual({ ok: false, rollup_calls: drift.ledger_calls + 1, ledger_calls: drift.ledger_calls });
+  expect(await (routes["/api/usage/rollup"].GET() as Response).json()).toEqual(drift);
+  // The start's check repairs it, and the answers are the walk's again.
+  const whole = { ok: true, rollup_calls: drift.ledger_calls, ledger_calls: drift.ledger_calls };
+  expect(checkRollup(store.db)).toEqual({ ...whole, rebuilt: true });
+  for (const c of CASES) same(named((await ask(c)).body), named(walked(c)), JSON.stringify(c));
+  // By hand, through the route.
+  store.db.run("UPDATE usage_rollup SET calls = calls + 3 WHERE bucket = (SELECT MIN(bucket) FROM usage_rollup)");
+  expect(checkRollup(store.db, false).ok).toBe(false);
+  expect(await (routes["/api/usage/rollup"].POST() as Response).json()).toEqual({ ...whole, rebuilt: true });
+
+  // A daemon that starts on a ledger with no rollup makes it at its start, off any request; a view asked
+  // before that reads the ledger and builds nothing.
+  for (const t of ["add", "del", "upd"]) store.db.run(`DROP TRIGGER usage_rollup_v1_${t}`);
+  store.db.run("DELETE FROM usage_rollup");
+  const errors = { capture: (_s: string, e: Error) => void captured.push(e.message) };
+  const fresh = usageRoutes({ store, errors } as any) as any;
+  const early = await (fresh["/api/usage"].GET(new Request("http://x/api/usage?group=model")) as Response).json();
+  expect(query<{ n: number }, []>("SELECT COUNT(*) AS n FROM usage_rollup").get()!.n).toBe(0);
+  same(named(early), named(walked({ group: "model" })), "a view before the start's step");
+  await tick();
+  expect(checkRollup(store.db, false)).toEqual(whole);
+  expect(captured).toEqual([]);
+  // A start that finds the rollup wrong makes it again and says so, once.
+  store.db.run("UPDATE usage_rollup SET calls = calls + 1 WHERE bucket = (SELECT MIN(bucket) FROM usage_rollup)");
+  usageRoutes({ store, errors } as any);
+  await tick();
+  expect(checkRollup(store.db, false).ok).toBe(true);
+  expect(captured).toEqual([`The usage rollup did not match the ledger and was made again from it (${drift.ledger_calls} requests).`]);
 });
