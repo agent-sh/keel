@@ -265,3 +265,49 @@ test("an endpoint with no listing offers its catalog section's models, tested or
     fake.server.close();
   }
 });
+
+// Find running servers: a server found at the address of an endpoint that is
+// already set up opens that endpoint's own settings, whatever its id is; one
+// that is not set up opens a new form filled in from its template. The scan's
+// answer is given here (what answers at the default local ports is the
+// machine's own business); the endpoint it names is a real one.
+test("a found server that is set up opens its own settings, another a new form", async ({ page, request }) => {
+  const fake = await startFake();
+  const id = "lab-found-custom";
+  try {
+    await request.delete(`/api/providers/endpoints/${id}?forget_key=1`);
+    await request.put(`/api/providers/endpoints/${id}`, { data: { config: { label: "Lab found", base_url: `${fake.url}/v1` }, key: FAKE_KEY } });
+    await page.route("**/api/providers/scan", (route) => route.fulfill({ json: { found: [
+      { template: "vllm", label: "vLLM", base_url: `${fake.url}/v1`, models: [FAKE_MODEL, FAKE_TEXT_MODEL], configured: id },
+      { template: "ollama", label: "Ollama", base_url: "http://127.0.0.1:11434/v1", models: ["one"] },
+    ] } }));
+    await page.goto("/settings/providers");
+    await page.getByTestId("providers-add").click();
+    const dlg = page.getByTestId("add-provider");
+    await dlg.getByTestId("provider-scan").click();
+    const setUp = dlg.getByTestId("provider-start").filter({ hasText: `set up as ${id}` });
+    const fresh = dlg.getByTestId("provider-start").filter({ hasText: "1 model running" });
+    await expect(setUp).toHaveCount(1);
+    await expect(fresh).toHaveCount(1);
+    await shoot(page, "add-provider-11-found");
+
+    // Not set up: a new form from the template, at the address found.
+    await fresh.click();
+    await expect(dlg.getByTestId("provider-base-url")).toHaveValue("http://127.0.0.1:11434/v1");
+    await expect(dlg.getByTestId("provider-id")).toBeEnabled();
+    await expect(dlg.getByTestId("provider-id")).toHaveValue(/^ollama/);
+    await expect(dlg.getByTestId("provider-label")).toHaveValue("Ollama");
+
+    // Set up under an id of its own: that endpoint's settings, not a new vLLM form.
+    await setUp.click();
+    await expect(dlg).toContainText(`Edit ${id}`);
+    await expect(dlg.getByTestId("provider-id")).toHaveValue(id);
+    await expect(dlg.getByTestId("provider-id")).toBeDisabled();
+    await expect(dlg.getByTestId("provider-label")).toHaveValue("Lab found");
+    await expect(dlg.getByTestId("provider-base-url")).toHaveValue(`${fake.url}/v1`);
+    await shoot(page, "add-provider-12-found-opens-its-settings");
+  } finally {
+    await request.delete(`/api/providers/endpoints/${id}?forget_key=1`);
+    fake.server.close();
+  }
+});

@@ -110,20 +110,22 @@ function Starts({ setup, pick, chosen }: { setup: Setup | null; pick: (t: Templa
     const all = setup?.hosted ?? [];
     return (t ? all.filter((x) => `${x.id} ${x.label}`.toLowerCase().includes(t)) : all).slice(0, t ? 60 : 24);
   }, [setup, q]);
-  // A hosted provider already set up (a preset, or one added before) opens its own settings.
-  const row = (t: Template, extra?: string) => {
-    const had = t.group === "hosted" && setup?.taken.includes(t.id);
+  // A hosted provider already set up (a preset, or one added before) opens its own
+  // settings. So does a server the scan found at the address of an endpoint that
+  // is set up, under whatever id that endpoint has (`found.configured`).
+  const row = (t: Template, extra?: string, found?: { configured?: string }) => {
+    const had = found ? found.configured : t.group === "hosted" && setup?.taken.includes(t.id) ? t.id : undefined;
     return (
     <button
-      key={`${t.group}-${t.id}-${t.base_url}`}
+      key={`${found ? "found" : t.group}-${t.id}-${t.base_url}`}
       type="button"
       data-testid="provider-start"
       data-start={t.id}
-      onClick={() => (had ? openAddProvider(t.id) : pick(t))}
+      onClick={() => (had ? openAddProvider(had) : pick(t))}
       className={cn("flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left hover:bg-hover", chosen === t.id && "bg-hover")}
     >
       <span className="truncate text-ui text-fg">{t.label}</span>
-      <span className="ml-auto shrink-0 truncate text-micro text-faint">{had ? "set up: edit" : extra ?? (t.base_url ? t.base_url.replace(/^https?:\/\//, "") : "address in its docs")}</span>
+      <span className="ml-auto shrink-0 truncate text-micro text-faint">{had ? (found ? `set up as ${had}: edit` : "set up: edit") : extra ?? (t.base_url ? t.base_url.replace(/^https?:\/\//, "") : "address in its docs")}</span>
     </button>
     );
   };
@@ -146,7 +148,7 @@ function Starts({ setup, pick, chosen }: { setup: Setup | null; pick: (t: Templa
       {scan.found && !scan.found.length && <div className="px-2.5 py-1 text-caption text-faint">Nothing answers at the usual ports.</div>}
       {scan.found?.map((f) => {
         const t = setup?.local.find((x) => x.id === f.template);
-        return t ? row({ ...t, base_url: f.base_url }, f.configured ? `set up as ${f.configured}` : `${f.models.length} model${f.models.length === 1 ? "" : "s"} running`) : null;
+        return t ? row({ ...t, base_url: f.base_url }, `${f.models.length} model${f.models.length === 1 ? "" : "s"} running`, { configured: f.configured }) : null;
       })}
       {setup?.local.map((t) => row(t))}
       {setup?.plans.length ? head("Plan sign-in") : null}
