@@ -128,7 +128,7 @@ export function verifierSession(s: { id: string; archived?: boolean }, deleted: 
 // Why a verification ended with no turn end of its verifier to read.
 const WHY: Record<string, string> = {
   timeout: `the verifier ran past ${Math.round(WAIT_MS / 60_000)} minutes`,
-  held: "the verifier's turn was cut by daemon restarts and was not continued",
+  held: "the verifier's turn was cut by daemon restarts and was not resumed",
   archived: "the verifier's session was archived",
   deleted: "the verifier's session was deleted",
 };

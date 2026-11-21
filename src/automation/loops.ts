@@ -384,7 +384,7 @@ function lastTurn(sessionId: string): string | undefined {
 const CUT_DECIDED_MS = 5 * 60_000;
 let bootMs = Date.now();
 const deciding = () => Date.now() - bootMs < CUT_DECIDED_MS;
-const UNCONTINUED = "the daemon restarted during the run and its turn was not continued";
+const UNCONTINUED = "the daemon restarted during the run and its turn was not resumed";
 const releasing = new Set<string>();
 
 // The engine's time to decide has passed: a turn still parked is not waited
@@ -503,7 +503,7 @@ function closeRuns(sessionId: string, outcome: NonNullable<RunRecord["outcome"]>
   const now = Date.now();
   for (const r of open) {
     const notes = [
-      continued ? "Continued after a daemon restart." : "",
+      continued ? "Resumed after a daemon restart." : "",
       open.length > 1 ? `One turn ran ${open.length} loops' prompts; its usage is shared, not each one's.` : "",
     ].filter(Boolean);
     patchRun(r.id, { ended_ms: now, ok: outcome === "ok", outcome, detail, last_seq: evs.at(-1)?.seq ?? r.first_seq, usage, note: notes.length ? [r.note, ...notes].filter(Boolean).join(" ") : undefined });

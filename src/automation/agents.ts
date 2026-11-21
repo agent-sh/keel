@@ -1223,8 +1223,8 @@ export function onTurnStart(sessionId: string) {
 export function onCutTurn(sessionId: string, cut: { stalled: number }): "continue" | { hold: string } | undefined {
   const a = byChild(sessionId);
   if (!a) return undefined;
-  if (isEnded(a)) return { hold: "The daemon restarted during this turn. Its agent had already ended, so the turn was not continued. Continue when you want it to go on." };
-  if (cut.stalled >= STALLED_MAX) return { hold: `This agent was continued after a daemon restart ${cut.stalled} times in a row, and each time the daemon went down again before it finished a step, so it was not continued again. Send it a message to continue it.` };
+  if (isEnded(a)) return { hold: "The daemon restarted during this turn. Its agent had already ended, so the turn was not resumed. Resume when you want it to go on." };
+  if (cut.stalled >= STALLED_MAX) return { hold: `This agent was resumed after a daemon restart ${cut.stalled} times in a row, and each time the daemon went down again before it finished a step, so it was not resumed again. Send it a message to resume it.` };
   return "continue";
 }
 

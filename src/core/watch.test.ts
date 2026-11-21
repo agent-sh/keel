@@ -100,7 +100,7 @@ test("a turn the model declined, cut at the output limit or stopped at its step 
 test("a turn a restart cut that was not continued needs the owner; a stopped session says what its queue holds", () => {
   const cut = s({ settings: { last_end: "restart" } });
   expect(stateOf(cut, undefined).watch).toBe("resume");
-  expect(stateOf(cut, undefined, { held: { text: "continued three times in a row", since: 70 } })).toEqual({ watch: "need", agents: 0, why: "resume", text: "Continue the turn a restart cut", asks: 1, since: 70 });
+  expect(stateOf(cut, undefined, { held: { text: "continued three times in a row", since: 70 } })).toEqual({ watch: "need", agents: 0, why: "resume", text: "Resume the turn a restart cut", asks: 1, since: 70 });
   const stopped = s({ settings: { last_end: "interrupted" } });
   expect(stateOf(stopped, undefined, { queue: { held: true, queued: 2 } })).toEqual({ watch: "stop", agents: 0, why: "held", text: "2 queued prompts wait until you resume" });
   expect(stateOf(stopped, undefined, { queue: { held: true, queued: 0 }, pending: [{ kind: "timer", until: 5 }] })).toEqual({ watch: "stop", agents: 0 });

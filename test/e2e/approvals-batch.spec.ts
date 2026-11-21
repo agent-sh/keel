@@ -442,9 +442,17 @@ test("a command cut by its box is answered on its own, and opens in place", asyn
     await expect.poll(() => ["aa.txt", "bb.txt"].every((f) => existsSync(join(ws, f)))).toBe(true);
     expect(now.filter((c) => c.state === "pending").map((c) => c.summary.slice(-10)).sort()).toEqual(["> long.txt", "script.txt"]);
     expect(["long.txt", "script.txt"].some((f) => existsSync(join(ws, f)))).toBe(false);
-    // Two cut ones are left: no action for them, each has its own Allow.
+    // Two cut ones are left: no action for them. Cut, a card takes no answer: its Allow refuses and
+    // says to open the whole command first; opened, it answers.
     await expect(all).toHaveCount(0);
-    await row("script.txt").getByTestId("allow-once").click();
+    const cut = row("script.txt");
+    await expect(cut.getByTestId("allow-once")).toBeDisabled();
+    await cut.getByTestId("allow-once").click({ force: true });
+    await expect(cut.getByTestId("approval-open-first")).toHaveText("Open the whole command first.");
+    expect(existsSync(join(ws, "script.txt"))).toBe(false);
+    await cut.getByTestId("approval-expand").click();
+    await cut.getByTestId("allow-once").scrollIntoViewIfNeeded();
+    await cut.getByTestId("allow-once").click();
     await expect.poll(() => existsSync(join(ws, "script.txt"))).toBe(true);
   } finally { await request.delete(`/api/sessions/${id}`); }
 });

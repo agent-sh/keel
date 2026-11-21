@@ -74,7 +74,7 @@ export function GlobalSnoozeButton() {
         <Menu.Positioner sideOffset={6} align="end" className="z-[60] outline-none">
           <Menu.Popup className={cn(popupClass, "min-w-60")}>
             {g ? (
-              <Menu.Item className={itemClass} data-testid="snooze-all-end" onClick={() => act(auto.unsnoozeAll())}><Sun /> Resume alerts now</Menu.Item>
+              <Menu.Item className={itemClass} data-testid="snooze-all-end" onClick={() => act(auto.unsnoozeAll())}><Sun /> End the snooze now</Menu.Item>
             ) : (
               <>
                 <div className={label}>Hold every alert</div>

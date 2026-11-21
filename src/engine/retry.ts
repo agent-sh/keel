@@ -17,7 +17,7 @@ export class RetryTooLong extends Error {
 
   constructor(cause: unknown, retryAt: number) {
     const time = new Date(retryAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-    super(`${errorText(cause)} (the provider asked to wait until ${time}, longer than a turn waits; Continue after that)`, { cause });
+    super(`${errorText(cause)} (the provider asked to wait until ${time}, longer than a turn waits; resume after that)`, { cause });
     this.name = "RetryTooLong";
     this.retryAt = retryAt;
     const span = (cause as { span_id?: unknown } | null)?.span_id;

@@ -173,7 +173,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     // The command says it, with a line a turn.
     const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
     expect(said.status, said.stderr).toBe(0);
-    expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down ([89]|1\d) s\); 4 turns were cut: 4 continued\./);
+    expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down ([89]|1\d) s\); 4 turns were cut: 4 resumed\./);
     expect(said.stdout).toContain(`"Cut during a command" cut at step 1, during Bash, after`);
     expect(said.stdout).toContain(`"Cut while the model answered" cut at step 1, waiting for the model, after`);
     expect(said.stdout).toContain(`"Cut at an approval" cut at step 1, waiting for the owner's answer, after`);
@@ -195,7 +195,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     await page.goto(`${d.url}/settings/daemon`);
     const panel = page.getByTestId("daemon-panel");
     await expect(panel.getByTestId("daemon-last-how")).toHaveText("Went down");
-    await expect(panel.getByTestId("daemon-last-start")).toContainText("4 turns were cut: 4 continued");
+    await expect(panel.getByTestId("daemon-last-start")).toContainText("4 turns were cut: 4 resumed");
     await expect(panel.getByTestId("daemon-cut-turn")).toHaveCount(4);
     await expect(panel.getByTestId("daemon-cut-turn").filter({ hasText: "Cut at an approval" })).toContainText("waiting for the owner's answer");
     await shoot(page, "restart-07-daemon-last-start");
@@ -231,7 +231,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     expect((await call("/api/activity?kind=daemon", undefined, "GET")).items).toHaveLength(1);
     const logged = ((await call("/api/logs?limit=2000", undefined, "GET")).lines as { text: string }[]).filter((l) => l.text.startsWith("[daemon] The daemon "));
     expect(logged.map((l) => l.text.replace(/\d\d:\d\d:\d\d/g, "T").replace(/\(down [^)]*\)/, "(down N)"))).toEqual([
-      "[daemon] The daemon went down without stopping (killed, or the machine went down) at about T and came back at T (down N); 4 turns were cut: 4 continued.",
+      "[daemon] The daemon went down without stopping (killed, or the machine went down) at about T and came back at T (down N); 4 turns were cut: 4 resumed.",
       "[daemon] The daemon was stopped at T and came back at T (down N); no turn was cut.",
     ]);
     // Neither start filed itself as a stall: the daemon is watched from the moment it answers.
@@ -388,7 +388,7 @@ test("an owner session continues through restarts until its turn stops moving", 
     expect((await record()).turns).toEqual([expect.objectContaining({ session_id: session.id, state: "held", crashed: true, tools: ["Bash"], why: expect.stringContaining("3 times in a row") })]);
     await page.goto(`${d.url}/s/${session.id}`);
     await page.getByTestId("note").last().scrollIntoViewIfNeeded();
-    await expect(page.getByTestId("note").last()).toContainText("was not continued again");
+    await expect(page.getByTestId("note").last()).toContainText("was not resumed again");
     await expect(page.getByTestId("resume")).toBeVisible();
     await shoot(page, "restart-05-owner-held");
     await page.getByTestId("resume").click();
@@ -494,7 +494,7 @@ test("a background agent is continued across restarts and its record matches wha
     }
     await expect.poll(state_, { timeout: 60_000 }).toEqual(["failed", false]);
     await expect.poll(async () => (await reports()).length, { timeout: 30_000 }).toBe(3);
-    expect((await reports())[2].data.text).toContain("was not continued again");
+    expect((await reports())[2].data.text).toContain("was not resumed again");
     const after = await turns(child);
     await restart();
     await page.waitForTimeout(2_000);
@@ -640,7 +640,7 @@ test("a verifier stopped or gone while its cut turn waited for a slot is not con
     // The stopped verifiers are told in their own session why their turn did not go on; none is continued.
     for (const g of [cleared, edited, replaced]) {
       await expect.poll(async () => (await eventsOf(g.child)).filter((e) => e.kind === "note" && e.data.kind === "restart").map((e) => e.data.text), { timeout: 20_000 })
-        .toEqual([expect.stringContaining("Its agent had already ended, so the turn was not continued")]);
+        .toEqual([expect.stringContaining("Its agent had already ended, so the turn was not resumed")]);
     }
     await page.waitForTimeout(2_000); // time for a turn that should not start to start
     for (const g of [cleared, edited, replaced, archived]) {
@@ -1345,7 +1345,7 @@ test("a loop run cut by a restart finishes as the same run", async () => {
       d = await daemon(state);
       await expect.poll(async () => (await history()).runs.map((r) => r.outcome), { timeout: 60_000 }).toEqual(Array(n).fill("ok"));
       const h = await history();
-      expect(h.runs[0].note).toContain("Continued after a daemon restart.");
+      expect(h.runs[0].note).toContain("Resumed after a daemon restart.");
       expect(h.loop).toMatchObject({ runs: n, fails: 0, last_status: "ok", enabled: true });
     }
     const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];

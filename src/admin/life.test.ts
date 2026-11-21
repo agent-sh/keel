@@ -79,13 +79,13 @@ test("a start records each cut turn once, what became of it, and is whole once",
     expect(JSON.parse(f.store.db.query<{ data: string }, []>("SELECT data FROM daemon_starts").get()!.data)).toEqual(r);
 
     // The turns this stop cut are counted; the one an earlier stop cut is said apart.
-    expect(restartSummary(r)).toBe(`The daemon went down without stopping (killed, or the machine went down) at about ${localTime(at(10, 2, 11))} and came back at ${localTime(at(10, 2, 26))} (down 15 s); 4 turns were cut: 1 continued, 1 held for the owner, 1 went on by other means, 1 left as cut. 1 turn an earlier stop cut was still waiting: 1 continued.`);
+    expect(restartSummary(r)).toBe(`The daemon went down without stopping (killed, or the machine went down) at about ${localTime(at(10, 2, 11))} and came back at ${localTime(at(10, 2, 26))} (down 15 s); 4 turns were cut: 1 resumed, 1 held for the owner, 1 went on by other means, 1 left as cut. 1 turn an earlier stop cut was still waiting: 1 resumed.`);
     expect(r.turns.map(restartTurnLine)).toEqual([
-      '"Parser refactor" cut at step 3, during Bash, after 42 s: continued',
+      '"Parser refactor" cut at step 3, during Bash, after 42 s: resumed',
       '"Flaky fetch" cut at step 2, waiting for the model, after 42 s: held for the owner',
       `"Docs" cut at step 1, waiting for the owner's answer, after 42 s: went on by other means`,
       "an untitled session cut before its turn began: left as cut",
-      '"Cut the time before" cut by an earlier stop at step 3, during Bash, after 42 s: continued',
+      '"Cut the time before" cut by an earlier stop at step 3, during Bash, after 42 s: resumed',
     ]);
     // A stop the daemon made itself has an exact time; a day apart, the date is said; a failure says its code.
     const eve = new Date(2026, 10, 20, 23, 59, 50).getTime();

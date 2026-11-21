@@ -102,7 +102,7 @@ test("export, summarize and confirm dialogs fit a short window", async ({ page, 
     await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(n);
   }
   await page.goto(`/s/${session.id}`);
-  const exportButton = page.getByRole("button", { name: "Export or continue elsewhere" });
+  const exportButton = page.getByRole("button", { name: "Export or take it elsewhere" });
   const summarizeButton = page.getByRole("button", { name: "Summarize from here" }).last();
   const exported = page.getByTestId("export-dialog");
   const summarize = page.getByTestId("summarize-dialog");

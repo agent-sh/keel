@@ -187,7 +187,7 @@ export class AcpRunner {
           live.acpSession = link.acp_session;
         } catch (e) {
           live.acpSession = "";
-          io.append("note", { kind: "acp", text: `${agent.name} could not continue its earlier conversation (${(e as Error).message}): it starts a new one and does not know what was said before.` });
+          io.append("note", { kind: "acp", text: `${agent.name} could not resume its earlier conversation (${(e as Error).message}): it starts a new one and does not know what was said before.` });
         }
       }
       if (!live.acpSession) {

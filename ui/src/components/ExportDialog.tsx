@@ -156,7 +156,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
               </div>
             )}
             <Option href={`${base}/export?format=md&include=tools`} icon={<FileDown />} title="Markdown" hint="To read or share: the current branch with its tool calls and results; images and files named, not included; secrets taken out." testid="export-md" />
-            <Option href={`${base}/export?format=jsonl${withFiles ? "&attachments=1" : ""}${tree ? "&scope=tree" : ""}`} icon={<FileJson />} title="Keel file" hint={`To continue in another Keel: ${tree ? "every branch" : "the current branch"} whole, thinking and tool data included; secrets taken out, ids of calls kept, so it is not anonymous.`} testid="export-jsonl" />
+            <Option href={`${base}/export?format=jsonl${withFiles ? "&attachments=1" : ""}${tree ? "&scope=tree" : ""}`} icon={<FileJson />} title="Keel file" hint={`To go on in another Keel: ${tree ? "every branch" : "the current branch"} whole, thinking and tool data included; secrets taken out, ids of calls kept, so it is not anonymous.`} testid="export-jsonl" />
             {branches > 0 && (
               <Carry on={tree} onChange={setTree} testid="export-tree">
                 Put every branch inside the Keel file: the {branches === 1 ? "other branch comes" : `${branches} other branches come`} too, with the one shown now still the one shown.
@@ -172,7 +172,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
               </Carry>
             ))}
             {stays && <p className="px-1 text-caption text-faint" data-testid="export-stays">{stays} stay{(tree ? 0 : branches) + pending === 1 ? "s" : ""} in this session.</p>}
-            <div className="pt-2 k-label">Continue in another harness</div>
+            <div className="pt-2 k-label">Take it to another harness</div>
             <div className="grid grid-cols-2 gap-2">
               <Option icon={<Terminal />} title="Claude Code" hint="A new transcript in its store" onClick={() => to("claude_code")} testid="export-claude" busy={busy} />
               <Option icon={<Terminal />} title="Codex" hint="A new rollout in its store" onClick={() => to("codex")} testid="export-codex" busy={busy} />

@@ -270,7 +270,7 @@ const SUMMARY_ROOM_BYTES = (st: Step) => Math.floor(Math.min(st.info.output, st.
 // the compaction fails and nothing is checkpointed: the branch stays as it was.
 const SUMMARY_RETRIES = 2;
 // What the owner can do when a summary cannot be written whole.
-const SUMMARY_REMEDIES = "compact with a focus that asks for less, continue on a model that writes longer replies, or clear the context";
+const SUMMARY_REMEDIES = "compact with a focus that asks for less, switch to a model that writes longer replies, or clear the context";
 // The failures of a summary that end the same way on the same context: remembered (Engine.gaveUp).
 const SUMMARY_GAVE_UP = new Set(["summary_truncated", "summary_too_long", "summary_no_room"]);
 // A turn that ended with one of these before any request did so because its
@@ -309,7 +309,7 @@ const toolsBytes = (tools: Pick<Tool, "name" | "description" | "input_schema" | 
 // A request counted over the model's window is not sent. `unsent` tells it
 // from a provider's refusal: nothing was learned about the model's count.
 const overWindow = (info: ModelInfo, tokens: number) => Object.assign(
-  new Error(`The request is larger than ${info.name}'s window (about ${tokens} of ${info.context} tokens), so it was not sent: compact the conversation, shorten what was added, or continue on a model with a larger window.`),
+  new Error(`The request is larger than ${info.name}'s window (about ${tokens} of ${info.context} tokens), so it was not sent: compact the conversation, shorten what was added, or switch to a model with a larger window.`),
   { status: 409, code: "context_over_window", kind: "context", unsent: true },
 );
 
@@ -844,7 +844,7 @@ export class Engine {
         const round = waits ? this.continuedInARow(id) : 0;
         const ev = this.append(id, "error", {
           // (The box says what happens next: it continues by itself, or offers to try again.)
-          message: e instanceof RetryTooLong ? errorText(e).replace("; Continue after that)", ")") : errorText(e), error_id: rec?.id,
+          message: e instanceof RetryTooLong ? errorText(e).replace("; resume after that)", ")") : errorText(e), error_id: rec?.id,
           ...(typeof kind === "string" ? { kind } : {}), ...(typeof cause?.status === "number" ? { status: cause.status } : {}),
           ...(e instanceof RetryTooLong ? { retry_at: e.retryAt } : {}),
           ...(waits && round >= CONTINUE_MAX ? { continued: round } : {}),
@@ -1410,7 +1410,7 @@ export class Engine {
         // The owner's step budget for one turn (none by default).
         const budget = session.settings.max_steps ?? 0;
         if (budget > 0 && steps >= budget) {
-          this.append(id, "note", { kind: "max_steps", text: `Stopped after ${steps} model steps: the step budget of this session. Continue to go on.` });
+          this.append(id, "note", { kind: "max_steps", text: `Stopped after ${steps} model steps: the step budget of this session. Resume to go on.` });
           reason = "max_steps";
           break;
         }
@@ -1443,7 +1443,7 @@ export class Engine {
           // A request counted over the window is never sent.
           // (What is left cannot be made smaller: held to the fewest tokens it can be.)
           const now = this.whole(events, st);
-          if (this.least(events, st) >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): continue on a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
+          if (this.least(events, st) >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): switch to a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
         } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events)) {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
@@ -2054,7 +2054,7 @@ export class Engine {
     }
     // No part of it fits with the room a summary needs, at any size tried: said
     // with what can be done, and remembered like a summary that is cut each time.
-    throw Object.assign(new Error(`the history could not be summarized within ${st.info.name}'s window, in one request or in parts (${errorText(over).slice(0, 160)}): continue on a model with a larger window, or clear the context`), { status: 409, code: "summary_no_room", cause: over });
+    throw Object.assign(new Error(`the history could not be summarized within ${st.info.name}'s window, in one request or in parts (${errorText(over).slice(0, 160)}): switch to a model with a larger window, or clear the context`), { status: 409, code: "summary_no_room", cause: over });
   }
 
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a
@@ -2072,7 +2072,7 @@ export class Engine {
       const opening = events.slice(upto.length);
       const tokens = contextTokens(opening, st.info.id).used;
       // Not compacted with the rest and with no count of its own: over the window only if it is at any bytes a token.
-      if (Math.ceil(contextBytes(opening, st.info.id) / RATIO_MAX) >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or continue on a model with a larger window.`), { status: 409, code: "context_over_window" });
+      if (Math.ceil(contextBytes(opening, st.info.id) / RATIO_MAX) >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or switch to a model with a larger window.`), { status: 409, code: "context_over_window" });
     }
     const before = this.used(events, st);
     // Not asked again by itself for a context whose summary could not be written whole; the owner's own request is.
@@ -2283,12 +2283,12 @@ export class Engine {
       const owed = owedCalls(s.id, line).length;
       const stalled = owed ? 0 : stalledContinuations(line);
       const verdict = allHooks().map((h) => h.cutTurn?.(s, { stalled })).find(Boolean);
-      if (verdict !== "continue" && (verdict || stalled >= STALLED_MAX)) return held(verdict ? verdict.hold : `This turn was continued after a daemon restart ${stalled} times in a row, and each time the daemon went down again before a tool call finished, so it was not continued again. Continue when you want it to go on.`);
+      if (verdict !== "continue" && (verdict || stalled >= STALLED_MAX)) return held(verdict ? verdict.hold : `This turn was resumed after a daemon restart ${stalled} times in a row, and each time the daemon went down again before a tool call finished, so it was not resumed again. Resume when you want it to go on.`);
       try {
         await waitModel(s.model);
       } catch (e) {
         const rec = this.errors.capture("provider", e, { session: s.id, at: "resume after restart" });
-        return held(`The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.`);
+        return held(`The turn was cut by a daemon restart and could not resume: ${rec.message}. Resume when the model is back.`);
       }
       // A turn that goes back to a question or a plan sends no request until
       // the owner answers: it takes no slot, so the card is back at once and

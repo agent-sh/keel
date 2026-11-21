@@ -125,7 +125,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
       "Owner prompt, 1 step",
       "Owner prompt, stopped by the owner after 1 step",
       "Owner prompt, cut when the daemon went down after 1 step",
-      "Continued after a daemon restart, 1 step",
+      "Resumed after a daemon restart, 1 step",
     ]);
     // One call ran and failed; the other named no tool and never ran, so it is a result and not a failed tool.
     expect(turns[1]).toMatchObject({ bad: "1 failed tool", tone: "plain", turn: { origin: "queued", outcome: "ok", steps: 2, tools: 2, failed_tools: 1 } });
@@ -230,7 +230,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     // While the command the cut turn started still runs, the session waits on it; after it, nothing is going on.
     await expect(panel.getByTestId("timeline-state")).toHaveText(/^(Waiting|Idle)$/);
     await expect(panel.getByTestId("timeline-now-line").first()).toHaveText(/Waits on a background command|Nothing is running or waited on\. The last turn finished\./);
-    await expect(rows.first()).toContainText("Continued after a daemon restart, 1 step");
+    await expect(rows.first()).toContainText("Resumed after a daemon restart, 1 step");
     await expect(panel.getByTestId("timeline-bad")).toHaveText("1 failed tool");
     // The minute is said once; rows in the same minute show their time to the second, whole: every row has a full time.
     await expect(panel.locator("time").first()).toHaveText(/^\d\d:\d\d$/);

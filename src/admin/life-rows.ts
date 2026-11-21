@@ -35,11 +35,11 @@ function span(ms: number): string {
 const HOW: Record<Before["how"], string> = { killed: "went down without stopping (killed, or the machine went down)", crash: "ended on a failure", restart: "stopped for a restart", stop: "was stopped" };
 const title = (t: string) => { const s = t.replace(/\s+/g, " ").trim(); return s ? `"${s.length > 48 ? `${s.slice(0, 47)}…` : s}"` : "an untitled session"; };
 
-// "3 continued, 1 held", in a fixed order.
+// "3 resumed, 1 held", in a fixed order.
 export function tally(turns: RestartTurn[]): string {
   const n = (st: RestartTurn["state"]) => turns.filter((t) => t.state === st).length;
   return [
-    n("continued") ? `${n("continued")} continued` : "", n("held") ? `${n("held")} held for the owner` : "",
+    n("continued") ? `${n("continued")} resumed` : "", n("held") ? `${n("held")} held for the owner` : "",
     n("moved") ? `${n("moved")} went on by other means` : "", n("left") ? `${n("left")} left as cut` : "", n("pending") ? `${n("pending")} not decided yet` : "",
   ].filter(Boolean).join(", ");
 }
@@ -68,6 +68,6 @@ export const cutWhere = (t: CutTurn): string => t.unstarted ? "before its turn b
 
 // One line a cut turn: where it was cut and what became of it.
 export function restartTurnLine(t: RestartTurn): string {
-  const became = { continued: "continued", held: "held for the owner", moved: "went on by other means", left: "left as cut", pending: "not decided yet" }[t.state];
+  const became = { continued: "resumed", held: "held for the owner", moved: "went on by other means", left: "left as cut", pending: "not decided yet" }[t.state];
   return `${title(t.title)}${t.parent_id ? " (an agent)" : ""} cut ${t.earlier ? "by an earlier stop " : ""}${cutWhere(t)}: ${became}`;
 }

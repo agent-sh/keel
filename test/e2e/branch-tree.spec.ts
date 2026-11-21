@@ -82,7 +82,7 @@ test("branch tree and labels", async ({ page, request }) => {
   expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.head).toBe(before);
   await composer.fill("a reply while reading");
   await composer.press("Enter");
-  await expect(page.getByText("You are reading another branch. Choose Continue")).toBeVisible();
+  await expect(page.getByText("You are reading another branch. Choose Reply from this branch")).toBeVisible();
   await shoot(page, "tree-02-search-preview");
   await page.getByTestId("preview-continue").click();
   await expect(page.getByTestId("branch-preview")).toHaveCount(0);

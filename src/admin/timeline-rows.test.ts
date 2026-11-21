@@ -27,7 +27,7 @@ test("a turn's sentence leads with who started it, then how it ended and what it
   // A restart: planned or not, and the turn that went on after it. One row each.
   expect(row({}, { reason: "restart" }, 3).text).toBe("Owner prompt, cut by a daemon restart after 3 steps");
   expect(row({}, { reason: "restart", crashed: true }, 1).text).toBe("Owner prompt, cut when the daemon went down after 1 step");
-  expect(row({ origin: "restart" }, { reason: "end_turn" }, 1).text).toBe("Continued after a daemon restart, 1 step");
+  expect(row({ origin: "restart" }, { reason: "end_turn" }, 1).text).toBe("Resumed after a daemon restart, 1 step");
   // A prompt the daemon went down on before its turn began: no turn ran, and nothing took "0 ms".
   const never = row({}, { reason: "restart", crashed: true, unstarted: true, ms: 0 }, 0);
   expect(never).toMatchObject({ sub: "unstarted", tone: "plain", text: "A prompt was accepted; the daemon went down before its turn started" });
@@ -65,7 +65,7 @@ test("who started a turn: what the prompt says it is, then how it arrived", () =
   expect(originOf({ kind: "loop", origin: "queued" })).toMatchObject({ key: "loop", queued: true, lead: "Loop run" });
   expect(originOf({ kind: "something-new" })).toMatchObject({ words: "something else", lead: "Other input" });
   // The owner's Continue is stored as a harness prompt; a note the harness writes names its kind.
-  expect(originOf({ origin: "harness" })).toMatchObject({ key: "continue", lead: "Owner's Continue", words: "the owner's Continue" });
+  expect(originOf({ origin: "harness" })).toMatchObject({ key: "continue", lead: "Owner's Resume", words: "the owner's Resume" });
   expect(originOf({ origin: "harness", kind: "harness" })).toMatchObject({ key: "harness", lead: "Harness note" });
   expect(originOf({ kind: "failures" }).lead).toBe("Failure notice");
 });

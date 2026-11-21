@@ -29,7 +29,7 @@ const need = <T,>(s: T | undefined): T => {
 };
 
 slash.add(
-  { id: "pin", label: "Pin this session: its station stays on the bridge", run: (_a, { session }) => pin(need(session).id, true) },
+  { id: "pin", label: "Pin this session: its pane stays on the bridge", run: (_a, { session }) => pin(need(session).id, true) },
   { id: "unpin", label: "Unpin this session", run: (_a, { session }) => pin(need(session).id, false) },
   {
     id: "tag",

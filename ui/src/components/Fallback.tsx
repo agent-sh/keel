@@ -26,7 +26,7 @@ export function FallbackChip({ session }: { session: Session }) {
   const open = ch?.sid === session.id;
   if (!fb && !open) return null;
   return (
-    <span className="inline-flex h-8 items-center rounded-md text-caption text-faint" data-testid="fallback-chip" title="If the model declines a request, the turn continues once on this model, which then stays">
+    <span className="inline-flex h-8 items-center rounded-md text-caption text-faint" data-testid="fallback-chip" title="If the model declines a request, the turn goes on once on this model, which then stays">
       <CornerDownRight className="ml-1 size-3.5" />
       <span className="pl-1 max-md:hidden">If declined</span>
       <ModelPicker compact value={fb ?? ""} openSignal={open ? ch!.n : undefined} onChange={(m) => setFallback(session.id, m).catch(reportError)} />

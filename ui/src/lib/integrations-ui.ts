@@ -66,5 +66,5 @@ const openExport = (s: any) => sheets().then((m) => m.openExport(s)).catch(repor
 
 registerCommand({ id: "import-sessions", label: "Import sessions", group: "General", words: "claude code codex rust keel history import resume", run: openImport });
 slash.add({ id: "import", label: "Import sessions from Claude Code, Codex or the Rust Keel", run: () => void openImport() });
-slash.add({ id: "export", label: "Export this session or continue it in another tool", when: ({ session }) => !!session, run: (_a, { session }) => void openExport(session) });
-headerActions.add({ id: "export", label: "Export or continue elsewhere", icon: createElement(Share, { className: "size-4" }), run: (s) => void openExport(s) });
+slash.add({ id: "export", label: "Export this session or take it to another tool", when: ({ session }) => !!session, run: (_a, { session }) => void openExport(session) });
+headerActions.add({ id: "export", label: "Export or take it elsewhere", icon: createElement(Share, { className: "size-4" }), run: (s) => void openExport(s) });

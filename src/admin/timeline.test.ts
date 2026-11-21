@@ -51,7 +51,7 @@ test("a turn is read whole however many notes lie inside it and around it", () =
     ]);
     // The note between the turns belongs to no turn; the held note is what "now" says, not a row too.
     expect(page.rows[1]!.turn_event).toBeUndefined();
-    expect(page.now).toMatchObject({ state: "owner", lines: [{ kind: "restart", text: "Waits on the owner: a turn cut by a daemon restart was not continued" }] });
+    expect(page.now).toMatchObject({ state: "owner", lines: [{ kind: "restart", text: "Waits on the owner: a turn cut by a daemon restart was not resumed" }] });
     expect(page.next).toBeNull();
   } finally {
     f.close();

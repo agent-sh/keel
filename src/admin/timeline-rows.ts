@@ -76,7 +76,7 @@ export function dur(ms: number): string {
 // arrived (`origin`), else the owner typing. The owner's Continue is stored as
 // a harness prompt with no kind of its own; a note the harness writes has one.
 const WHO: Record<string, string> = {
-  owner: "the owner", queued: "a queued prompt", steer: "a steer", continue: "the owner's Continue", harness: "a harness note", restart: "a daemon restart",
+  owner: "the owner", queued: "a queued prompt", steer: "a steer", continue: "the owner's Resume", harness: "a harness note", restart: "a daemon restart",
   voice: "the owner by voice", hook: "a stop hook", momentum: "a momentum message", wait: "a wait wake", wake: "several wakes",
   subagent: "an agent report", loop: "a loop run", goal: "a goal check", task: "its parent's task", parent: "its parent",
   peer: "another session", task_start: "a task from another session", verify_goal: "a goal verification", review: "a review request",
@@ -84,7 +84,7 @@ const WHO: Record<string, string> = {
 };
 // The same, as the words a turn's row starts with: the column scans by them.
 const LEAD: Record<string, string> = {
-  owner: "Owner prompt", queued: "Queued prompt", steer: "Steer", continue: "Owner's Continue", harness: "Harness note", restart: "Continued after a daemon restart",
+  owner: "Owner prompt", queued: "Queued prompt", steer: "Steer", continue: "Owner's Resume", harness: "Harness note", restart: "Resumed after a daemon restart",
   voice: "Owner by voice", hook: "Stop hook", momentum: "Momentum message", wait: "Wait wake", wake: "Several wakes",
   subagent: "Agent report", loop: "Loop run", goal: "Goal check", task: "Parent's task", parent: "Parent's message",
   peer: "Message from another session", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
@@ -197,7 +197,7 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
   switch (d.kind) {
     case "model_told": return row("model", "switch", `Model changed from ${short(d.from)} to ${short(d.to)}`);
     case "fallback": return row("model", "fallback", "The model declined: the turn went on with the fallback model");
-    case "restart": return row("restart", "held", "Not continued after the daemon restart: it waits for the owner", "owner");
+    case "restart": return row("restart", "held", "Not resumed after the daemon restart: it waits for the owner", "owner");
     case "compaction_failed": return row("compaction", "failed", "The context could not be compacted", "failed");
     // Written when files are put back from a checkpoint: the conversation is as it was.
     case "rewind": return row("files", "restored", "Files were restored to an earlier state");
@@ -391,10 +391,10 @@ export function nowLines(n: NowInput): TimelineNow {
   for (const c of n.secrets ?? []) add(`secret:${c.id}`, "question", "owner", `Waits on the owner: a secret to give${inChild(c)}`, { ...(c.created ? { ts: c.created } : {}), open: true }, { call_id: c.id, child_session: c.child_session });
   if (n.resumes) add("resumes", "limit", "plain", "Resumes by itself when the wait the provider asked for is over", { ...(n.resumes.since ? { ts: n.resumes.since } : {}), until: n.resumes.at, open: true });
   for (const p of n.plans ?? []) add(`plan:${p.id}`, "question", "owner", `Waits on the owner: a plan to approve${inChild(p)}`, { ...(p.created ? { ts: p.created } : {}), open: true }, { child_session: p.child_session });
-  if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not continued", { ts: n.held.since }, { note_id: n.held.note_id });
+  if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not resumed", { ts: n.held.since }, { note_id: n.held.note_id });
   if (n.turn) {
     const who = originOf(n.turn.opener);
-    const head = who.key === "restart" ? "Running a turn continued after a daemon restart" : `Running a turn started by ${who.words}`;
+    const head = who.key === "restart" ? "Running a turn resumed after a daemon restart" : `Running a turn started by ${who.words}`;
     // A call of this session's own turn whose card is open has not started: the turn waits on the answer.
     const asking = n.turn.status.kind === "tool" && n.approvals.some((a) => !a.child_session);
     add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${asking ? "waiting for approval" : DOING(n.turn.status, n.ts, n.turn.output)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });

@@ -146,7 +146,7 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
       </div>
       <div className="flex items-center gap-2 border-t border-line px-5 py-3">
         <span className="min-w-0 flex-1 text-caption text-faint" data-testid="import-foot">
-          {stopped ? "The original was stopped. Finish the copy above: a plain import would leave out what it was in the middle of." : done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : row.original ? "Import makes a copy and leaves the original running; resuming ends it." : "A copy: the original stays as it is."}
+          {stopped ? "The original was stopped. Finish the copy above: a plain import would leave out what it was in the middle of." : done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : row.original ? "Import makes a copy and leaves the original running; taking it over ends it." : "A copy: the original stays as it is."}
         </span>
         {done ? (
           <>

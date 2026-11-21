@@ -143,7 +143,7 @@ test("a summary cut each time is asked for once per context, not on every step",
   // Said once a turn, the second time from memory.
   const said = events.filter((e) => e.kind === "note" && e.data.kind === "compaction_failed");
   expect(said).toHaveLength(2);
-  expect(said[1]!.data.text).toContain("compact with a focus that asks for less, continue on a model that writes longer replies, or clear the context");
+  expect(said[1]!.data.text).toContain("compact with a focus that asks for less, switch to a model that writes longer replies, or clear the context");
   expect(events.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["end_turn", "end_turn"]);
   // The owner's own request is still tried; its checkpoint lets summaries be prepared again.
   cut = false;

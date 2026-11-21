@@ -136,7 +136,7 @@ export function askText(a: Ask): string {
     : a.kind === "question" ? (t ? `Question: ${t}` : "A question waits")
     : a.kind === "plan" ? (t ? `Plan to approve: ${t}` : "Plan to approve")
     : a.kind === "secret" ? (t ? `Secret to give: ${t}` : "A secret is asked for")
-    : a.kind === "resume" ? "Continue the turn a restart cut"
+    : a.kind === "resume" ? "Resume the turn a restart cut"
     : t || "A message was not sent";
   return a.child ? `Agent ${oneLine(a.agent, 40) || "of this session"}: ${said}` : said;
 }

@@ -37,7 +37,9 @@ slash.add(
       return actions.patch(session!.id, { settings: { effort: arg } }).then(() => {});
     },
   },
-  { id: "continue", label: "Continue the stopped turn", when: ({ session }) => !!session && session.phase !== "working", run: (_a, { session }) => actions.resume(session!.id).then(() => {}) },
+  { id: "resume", label: "Resume the stopped turn", when: ({ session }) => !!session && session.phase !== "working", run: (_a, { session }) => actions.resume(session!.id).then(() => {}) },
+  // The name it had before the act was called Resume: typed from habit, it does the same.
+  { id: "continue", label: "Resume the stopped turn (the same as /resume)", when: ({ session }) => !!session && session.phase !== "working", run: (_a, { session }) => actions.resume(session!.id).then(() => {}) },
   {
     id: "fallback",
     label: "The model a declined request goes on with",
@@ -58,7 +60,7 @@ registerCommand(
   { id: "clear-context", label: "Clear the context, keep the session", group: "Session", words: "fresh reset", when: () => !!current(), run: () => actions.clear(current()!.id).catch(reportError) },
   { id: "fork", label: "Fork this session", group: "Session", words: "branch copy", when: () => !!current()?.head, run: () => fork(current()!.id, current()!.head!).catch(reportError) },
   { id: "fallback", label: "Set a fallback model for declined requests", group: "Session", words: "refusal declined backup model", when: () => !!current(), run: () => chooseFallback(current()!.id) },
-  { id: "continue", label: "Continue the stopped turn", group: "Session", words: "resume", when: () => !!current() && current()!.phase !== "working", run: () => actions.resume(current()!.id).catch(reportError) },
+  { id: "continue", label: "Resume the stopped turn", group: "Session", words: "continue go on", when: () => !!current() && current()!.phase !== "working", run: () => actions.resume(current()!.id).catch(reportError) },
 );
 
 rowActions.add(

@@ -15,7 +15,7 @@ import { useSettings } from "./StoragePanel.tsx";
 
 type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null };
 const ENDED: Record<NonNullable<Restart["before"]>["how"] | "unknown", string> = { killed: "Went down", crash: "Failed", restart: "Restarted", stop: "Stopped", unknown: "Not known" };
-const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Continued", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
+const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Resumed", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
 
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
@@ -110,7 +110,7 @@ export function DaemonPanel() {
     const n = st?.running.length ?? 0;
     const ok = await confirmAction({
       title: "Restart Keel?",
-      body: n ? `${n} turn${n > 1 ? "s are" : " is"} running. New work waits; running turns get two minutes to finish, and any still running then continue after the restart.` : "No turn is running. The page reconnects by itself.",
+      body: n ? `${n} turn${n > 1 ? "s are" : " is"} running. New work waits; running turns get two minutes to finish, and any still running then resume after the restart.` : "No turn is running. The page reconnects by itself.",
       action: "Restart",
     });
     if (ok) await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true }) });

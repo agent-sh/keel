@@ -37,7 +37,7 @@ export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: b
       {notes.map((e) => {
         if (e.kind === "user") {
           return (
-            <span key={e.id} className="k-note-chip" data-testid="restart-note" title={`Continued by itself after a daemon restart${working ? ". Stop ends it." : ""}`}>
+            <span key={e.id} className="k-note-chip" data-testid="restart-note" title={`Resumed by itself after a daemon restart${working ? ". Stop ends it." : ""}`}>
               <RotateCw className="size-3" /> restarted
             </span>
           );

@@ -225,7 +225,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-4" data-testid="session-panel">
       <Section title="Marks" testid="marks">
-        <Line label="Pinned" hint="Keeps its station on the bridge and the top of the list, on every device.">
+        <Line label="Pinned" hint="Keeps its pane on the bridge and the top of the list, on every device.">
           <Toggle on={!!s.settings.pinned_ms} label="Pinned" testid="pin-toggle" onChange={(v) => pin(s.id, v).catch(reportError)} />
         </Line>
         <Line label="Done" hint="The work is finished. Your next message reopens it.">

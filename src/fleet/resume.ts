@@ -344,7 +344,7 @@ export class Resumes {
     const label = HARNESSES.find((h) => h.harness === harness)?.label ?? harness;
     this.write(sessionId, liveText({
       label, id, where: m.name, state: a.state === "active" ? `working (${a.why})` : "idle", step: null, jobs: [],
-      finish: " The owner resumes it here from this session's page, which ends the original there.",
+      finish: " The owner takes it over here from this session's page, which ends the original there.",
     }));
   }
 

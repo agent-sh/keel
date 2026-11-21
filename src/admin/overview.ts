@@ -84,7 +84,7 @@ function nowWords(l: TimelineRow, agents: number): string {
   switch (l.kind) {
     case "approval": return `an approval waits${inAgent}`;
     case "question": return `a question waits${inAgent}`;
-    case "restart": return "a turn cut by a restart was not continued";
+    case "restart": return "a turn cut by a restart was not resumed";
     // "Running a turn started by the owner: step 2, running Bash" is told as its step.
     case "turn": { const at = l.text.indexOf(": "); return at < 0 ? lower(l.text) : l.text.slice(at + 2); }
     case "agent": { const n = Math.max(agents, 1); return `${n} agent${n === 1 ? "" : "s"} at work`; }

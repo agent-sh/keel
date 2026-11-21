@@ -104,7 +104,7 @@ export function OriginalStrip({ target, tool, onPick, onOpen }: { target: Target
       ) : w?.state === "resumed" && w.session_id ? (
         <>
           <StateDot state="idle" />
-          <span className="min-w-0 flex-1 truncate">Resumed here once it was idle</span>
+          <span className="min-w-0 flex-1 truncate">Taken over here once it was idle</span>
           <button type="button" data-testid="strip-open" onClick={() => onOpen(w.session_id!)} className={pick}>Open</button>
         </>
       ) : k.original ? (
@@ -117,10 +117,10 @@ export function OriginalStrip({ target, tool, onPick, onOpen }: { target: Target
           {k.original.state === "active" ? (
             <>
               {k.original.in_flight > (k.original.jobs ?? 0) && <button type="button" data-testid="strip-wait" onClick={() => onPick("wait")} className={pick}>Wait until idle</button>}
-              <button type="button" data-testid="strip-now" onClick={() => onPick("now")} className={pick}>Resume now</button>
+              <button type="button" data-testid="strip-now" onClick={() => onPick("now")} className={pick}>Take over now</button>
             </>
           ) : (
-            <button type="button" data-testid="strip-resume" onClick={() => onPick(null)} className={pick}>Resume here</button>
+            <button type="button" data-testid="strip-resume" onClick={() => onPick(null)} className={pick}>Take over here</button>
           )}
         </>
       ) : null}
@@ -231,7 +231,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
             {finishing ? `${tool} is being ended on ${machineName}` : active ? `${tool} is still working on this on ${machineName}` : `${tool} has this open on ${machineName}, idle`}
           </p>
           <p className="mt-0.5 text-caption text-muted">
-            {finishing ? FINISHING : active ? (waitable ? `${seen.why}. Resuming ends it there: wait until it is idle, or resume now and the copy redoes what was in flight.` : `${seen.why}. Its turn is over. Resuming ends it there, and you choose what becomes of ${jobList.length === 1 ? "the job" : "the jobs"}.`) : "Resuming ends it there the way a closed terminal does, and goes on here from what it wrote last."}
+            {finishing ? FINISHING : active ? (waitable ? `${seen.why}. Taking it over ends it there: wait until it is idle, or take over now and the copy redoes what was in flight.` : `${seen.why}. Its turn is over. Taking it over ends it there, and you choose what becomes of ${jobList.length === 1 ? "the job" : "the jobs"}.`) : "Taking it over ends it there the way a closed terminal does, and it goes on here from what it wrote last."}
           </p>
         </div>
       </div>
@@ -282,14 +282,14 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
             <Hourglass className="size-4 shrink-0 text-st-work" />
             <div className="min-w-0 flex-1">
               <p className="text-ui">Waiting until it is idle</p>
-              <p className="text-caption text-muted" data-testid="resume-deadline">Gives up at {clock(wait!.deadline_ms)}, in {fmtWait(wait!.deadline_ms - now)}. Then it is left running and you choose again.{jobList.length > 0 && (wait!.jobs === "end" ? " Its background jobs end only if Keel resumes the session." : " Its background jobs are left running.")}</p>
+              <p className="text-caption text-muted" data-testid="resume-deadline">Gives up at {clock(wait!.deadline_ms)}, in {fmtWait(wait!.deadline_ms - now)}. Then it is left running and you choose again.{jobList.length > 0 && (wait!.jobs === "end" ? " Its background jobs end only if Keel takes the session over." : " Its background jobs are left running.")}</p>
             </div>
             <button type="button" data-testid="resume-cancel" onClick={() => void cancelWait(target)} className={quiet}>Cancel</button>
-            <button type="button" data-testid="resume-now-instead" onClick={() => onIntent("now")} className={plain}>Resume now</button>
+            <button type="button" data-testid="resume-now-instead" onClick={() => onIntent("now")} className={plain}>Take over now</button>
           </div>
         ) : !active ? (
           <div className="flex items-center justify-end gap-2">
-            <button type="button" data-testid="resume-here" disabled={busy} onClick={() => void go("now")} className={primary}><Play className="size-3.5" /> Resume here</button>
+            <button type="button" data-testid="resume-here" disabled={busy} onClick={() => void go("now")} className={primary}><Play className="size-3.5" /> Take over here</button>
           </div>
         ) : intent === "now" ? null : intent === "wait" ? (
           <div className="flex flex-wrap items-center gap-2" data-testid="resume-wait-form">
@@ -299,13 +299,13 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
             </Select>
             <span className="min-w-0 flex-1 text-caption text-muted" data-testid="resume-until">until {clock(now + waitMs)}</span>
             <button type="button" onClick={() => onIntent(null)} className={quiet}>Back</button>
-            <button type="button" data-testid="resume-wait-go" disabled={busy} onClick={() => void go("idle")} className={primary}><Hourglass className="size-3.5" /> Wait, then resume</button>
+            <button type="button" data-testid="resume-wait-go" disabled={busy} onClick={() => void go("idle")} className={primary}><Hourglass className="size-3.5" /> Wait, then take over</button>
           </div>
         ) : (
           <div className="flex items-center justify-end gap-2" data-testid="resume-choices">
             {wait?.state === "expired" && <span className="min-w-0 flex-1 text-caption text-warn" data-testid="resume-expired">The wait gave up at {clock(wait.deadline_ms)}: Keel could not confirm it was idle.</span>}
             {waitable && <button type="button" data-testid="resume-wait" onClick={() => onIntent("wait")} className={plain}><Hourglass className="size-3.5" /> Wait until idle</button>}
-            <button type="button" data-testid="resume-now" onClick={() => onIntent("now")} className={plain}><CircleStop className="size-3.5" /> Resume now</button>
+            <button type="button" data-testid="resume-now" onClick={() => onIntent("now")} className={plain}><CircleStop className="size-3.5" /> Take over now</button>
           </div>
         )}
         {intent === "now" && !finishing && (active || waiting) && (
@@ -315,7 +315,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
                 {seen.in_flight.some((i) => i.kind !== "job") ? "The calls above are interrupted. The copy gets this list in a note, so it can redo them." : "The copy gets this list in a note."}
               </span>
               <button type="button" onClick={() => onIntent(null)} className={quiet}>Back</button>
-              <button type="button" data-testid="resume-now-go" disabled={busy} onClick={() => void go("now")} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40"><CircleStop className="size-3.5" /> End it and resume here</button>
+              <button type="button" data-testid="resume-now-go" disabled={busy} onClick={() => void go("now")} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40"><CircleStop className="size-3.5" /> End it and take over here</button>
             </div>
           </div>
         )}

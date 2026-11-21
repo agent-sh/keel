@@ -67,7 +67,7 @@ export const takeoverRoutes: RouteModule = (deps: Deps) => {
         t.sourceOf(f);
         judged.set(i, f);
         const shown = i.take_over
-          ? `take over the ${f.row.kind} session "${f.row.name}" (${f.row.state}): end it where it runs and continue it in Keel`
+          ? `take over the ${f.row.kind} session "${f.row.name}" (${f.row.state}): end it where it runs and go on with it in Keel`
           : `copy the ${f.row.kind} session "${f.row.name}" into Keel${i.mode ? ` (mode ${i.mode})` : ""}`;
         return { kind: "drive", target: f.row.id, resource: `keel__session_import:${f.row.id}`, shown, owner: i.take_over ? "a take-over ends a session the owner runs elsewhere" : undefined };
       } catch (e) {

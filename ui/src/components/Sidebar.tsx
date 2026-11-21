@@ -539,7 +539,7 @@ export function Sidebar({ open }: { open: boolean }) {
       aria-expanded={open}
       aria-controls="k-sessions"
       aria-label={open ? "Fold the session list" : "Show the session list"}
-      title={open ? "Fold the session list (Ctrl B)" : rail.tight ? "Show the session list over the stations (Ctrl B)" : "Show the session list (Ctrl B)"}
+      title={open ? "Fold the session list (Ctrl B)" : rail.tight ? "Show the session list over the panes (Ctrl B)" : "Show the session list (Ctrl B)"}
       onClick={() => toggleList()}
     >
       <Toggle />

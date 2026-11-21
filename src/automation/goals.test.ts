@@ -337,7 +337,7 @@ test("a cut turn the engine holds leaves the goal pursuing: the next turn in the
   await goals.afterTurn(s.id, "restart");
   restart(s.id);
   // The engine holds the turn (continued three times with no step done): a note, no turn.
-  store.append(s.id, "note", { kind: "restart", text: "This turn was not continued again." });
+  store.append(s.id, "note", { kind: "restart", text: "This turn was not resumed again." });
   await quiet();
   expect(asks(s.id)).toBe(0);
   expect(goals.get(s.id)).toMatchObject({ status: "pursuing" });
@@ -459,12 +459,12 @@ test("a verifier the engine does not continue pauses the goal and tells the owne
   cutVerifier(g.child);
   restart(g.id);
   // The engine holds the cut turn (continued three times with no step done): its note, then the hook.
-  store.append(g.child, "note", { kind: "restart", text: "This turn was not continued again." });
-  for (const h of allHooks()) h.cutTurnHeld?.(store.session(g.child)!, "This turn was not continued again.");
+  store.append(g.child, "note", { kind: "restart", text: "This turn was not resumed again." });
+  for (const h of allHooks()) h.cutTurnHeld?.(store.session(g.child)!, "This turn was not resumed again.");
   await until(() => goals.get(g.id)?.status === "paused");
   alertHook.raise = undefined;
-  expect(goals.get(g.id)).toMatchObject({ verifying: false, status_reason: expect.stringContaining("was not continued") });
-  expect(alerts).toEqual([["failed", g.id, expect.stringContaining("Goal paused"), expect.stringContaining("was not continued")]]);
+  expect(goals.get(g.id)).toMatchObject({ verifying: false, status_reason: expect.stringContaining("was not resumed") });
+  expect(alerts).toEqual([["failed", g.id, expect.stringContaining("Goal paused"), expect.stringContaining("was not resumed")]]);
   expect(asks(g.id)).toBe(1);
   // A start after that finds a paused goal and nothing to wait for.
   restart(g.id);

@@ -36,7 +36,7 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
 
   // Pause.
   await item.hover();
-  await item.getByTitle("Pause").click();
+  await item.getByTitle("Turn off").click();
   await expect(item).toContainText("paused");
   await shoot(page, "loops-04-paused");
 

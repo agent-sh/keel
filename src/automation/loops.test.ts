@@ -81,7 +81,7 @@ for (const how of ["a graceful stop", "a crash"] as const) {
     expect(skipped(loop.id)).toEqual(["the previous run was still going"]);
 
     continued(s.id, how === "a crash");
-    expect(started(loop.id)).toMatchObject([{ outcome: "ok", ok: true, detail: "end_turn", usage: { calls: 2, input: 12 }, note: expect.stringContaining("Continued after a daemon restart.") }]);
+    expect(started(loop.id)).toMatchObject([{ outcome: "ok", ok: true, detail: "end_turn", usage: { calls: 2, input: 12 }, note: expect.stringContaining("Resumed after a daemon restart.") }]);
     expect(loops.get(loop.id)).toMatchObject({ fails: 0, runs: 1, last_status: "ok", enabled: true });
   });
 }
@@ -145,7 +145,7 @@ test("a parked turn the engine neither continues nor holds is not waited for pas
   // Past that time nothing was decided: the cut run closes as not finished and the prompt that waited goes.
   at(boot + 5 * 60_000 + 1000);
   loops.tick();
-  expect(started(loop.id).at(-1)).toMatchObject({ outcome: "incomplete", detail: expect.stringContaining("not continued") });
+  expect(started(loop.id).at(-1)).toMatchObject({ outcome: "incomplete", detail: expect.stringContaining("not resumed") });
   expect(sent.map((x) => x.text)).toEqual(["tick", "tock"]);
   expect(started(other.id)).toMatchObject([{ ended_ms: null }]);
 });

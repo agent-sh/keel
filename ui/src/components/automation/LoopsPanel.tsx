@@ -234,7 +234,7 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
                     </div>
                     <span className="hidden items-center group-hover:flex">
                       <IconButton title="Run now" onClick={() => act(auto.runLoop(l.id))}><Play className="size-3.5" /></IconButton>
-                      <IconButton title={l.enabled ? "Pause" : "Resume"} onClick={() => act(auto.patchLoop(l.id, { enabled: !l.enabled }))}>
+                      <IconButton title={l.enabled ? "Turn off" : "Turn on"} onClick={() => act(auto.patchLoop(l.id, { enabled: !l.enabled }))}>
                         {l.enabled ? <Pause className="size-3.5" /> : <Repeat className="size-3.5" />}
                       </IconButton>
                       <IconButton title="Delete" danger onClick={() => act(auto.deleteLoop(l.id))}><Trash2 className="size-3.5" /></IconButton>

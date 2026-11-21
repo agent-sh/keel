@@ -32,7 +32,7 @@ was necessarily skipped.
 
 `GET /api/sessions/<id>/timeline` is a session's story from one place: its
 turns (who started each: the owner, a queued prompt, a steer, the owner's
-Continue, a loop run, a wait wake, an agent report, another session, a harness
+Resume, a loop run, a wait wake, an agent report, another session, a harness
 note, a daemon restart; how it ended; how long it took; its steps, tool calls
 and failed tool calls; tokens and cost), the agents it started and how each
 ended, waits set and fired, loop runs, compactions, model switches, restored
@@ -57,7 +57,7 @@ What the rows mean:
   next turn, is told in that turn's row ("Wait wake (a timer, after 3 s)",
   "Agent report from ...") and has no row of its own.
 - A turn a daemon restart cut says so in its own row, and the turn that went
-  on after it starts with "Continued after a daemon restart". A prompt the
+  on after it starts with "Resumed after a daemon restart". A prompt the
   daemon went down on before its turn began is one row that says that.
 - A turn that is not on the branch the session shows is marked
   (`turn.branch: "other"`) and says "on a branch not shown".
