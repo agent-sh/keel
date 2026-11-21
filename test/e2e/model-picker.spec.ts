@@ -263,9 +263,22 @@ test.describe("on a small phone", () => {
         await expect(search).toBeInViewport({ ratio: 1 });
         await expect(page.getByTestId("model-count")).toBeInViewport({ ratio: 1 });
       };
+      // Every frame of the chooser while it opens: it grows inside the window, never past an edge.
+      await page.evaluate(() => {
+        const w = window as unknown as { chooserOut: number };
+        w.chooserOut = 0;
+        const frame = () => {
+          const r = document.querySelector('[data-testid="model-popup"]')?.getBoundingClientRect();
+          if (r) w.chooserOut = Math.max(w.chooserOut, -r.left, -r.top, r.right - innerWidth, r.bottom - innerHeight);
+          requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+      });
       await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
       await expect(popup).toBeVisible();
       await fits();
+      await expect.poll(() => popup.evaluate((el) => getComputedStyle(el).scale)).toBe("none");
+      expect(await page.evaluate(() => (window as unknown as { chooserOut: number }).chooserOut)).toBeLessThanOrEqual(0);
       // A full list takes the sheet down to the window's bottom edge.
       await expect.poll(async () => { const b = (await popup.boundingBox())!; return b.y + b.height; }).toBeGreaterThanOrEqual(479);
       await shoot(page, "picker-05-phone");

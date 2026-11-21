@@ -296,9 +296,12 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
 // it): the search field stays at the top, clear of an on-screen keyboard, and
 // the results get the rest of the window, down to its bottom edge. On a wider
 // phone it stands in the middle. A tap beside the sheet still closes it.
+// It opens from its own top edge, where it hangs: the origin a popup grows
+// from is a point beside its trigger, and for a sheet that reaches the
+// window's bottom that point is below it, so it opened past the edge.
 const SHEET = {
   place: "max-md:fixed! max-md:inset-3! max-md:bottom-0! max-md:flex max-md:transform-none! max-md:flex-col max-md:items-center max-md:pointer-events-none",
-  popup: "max-md:pointer-events-auto max-md:max-h-full",
+  popup: "max-md:pointer-events-auto max-md:max-h-full max-md:origin-top",
 };
 
 // The popup narrower than 24rem (a phone, a large text size; the variant is in
