@@ -40,7 +40,7 @@ export function ConfirmHost() {
           style={{ "--k-dialog-w": "26rem" } as React.CSSProperties}
           className="k-dialog rounded-xl border border-line bg-raised shadow-3 transition-[opacity,scale] duration-150 data-starting-style:scale-[0.97] data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
-          <AlertDialog.Title className="px-[var(--k-dialog-pad)] pt-[var(--k-dialog-pad)] text-[1.0938rem] font-semibold">{ask?.title}</AlertDialog.Title>
+          <AlertDialog.Title className="k-dialog-title px-[var(--k-dialog-pad)] pt-[var(--k-dialog-pad)] text-[1.0938rem] font-semibold">{ask?.title}</AlertDialog.Title>
           {ask?.body && <AlertDialog.Description className="k-dialog-body mt-1.5 whitespace-pre-line px-[var(--k-dialog-pad)] text-ui text-muted">{ask.body}</AlertDialog.Description>}
           <div className="k-dialog-foot p-[var(--k-dialog-pad)]">
             <AlertDialog.Close className="h-8 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover">Cancel</AlertDialog.Close>

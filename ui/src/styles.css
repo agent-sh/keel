@@ -256,19 +256,31 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
   display: flex; flex-direction: column;
   width: min(var(--k-dialog-w, 30rem), calc(100vw - 2rem));
   max-height: calc(100dvh - 1.5rem);
-  overflow: hidden;
+  overflow: hidden; overflow-wrap: anywhere;
   timeline-scope: --k-dialog-scroll;
 }
 /* Hung from the top: a result that arrives below does not move what was read. */
 .k-dialog[data-anchor="top"] { top: var(--k-dialog-top); translate: -50% 0; max-height: calc(100dvh - var(--k-dialog-top) - 0.75rem); }
 .k-dialog > * { flex-shrink: 0; }
-.k-dialog > .k-dialog-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; scroll-timeline: --k-dialog-scroll block; }
+/* The details give way first; a title too long for the window scrolls after them, so the actions keep their place. */
+.k-dialog > .k-dialog-body { flex: 0 1000 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scroll-timeline: --k-dialog-scroll block; }
+.k-dialog > .k-dialog-title { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
 .k-dialog-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; border-top: 1px solid transparent; }
-/* A hairline over the actions while details are still below them. */
+/* A line over the actions while details are still below them. */
 @supports (animation-timeline: scroll()) {
   .k-dialog-foot { animation: k-dialog-more linear both; animation-timeline: --k-dialog-scroll; }
 }
-@keyframes k-dialog-more { from, 98% { border-top-color: var(--line); } to { border-top-color: transparent; } }
+@keyframes k-dialog-more { from, 98% { border-top-color: var(--line-strong); } to { border-top-color: transparent; } }
+/* Without scroll timelines the details say it themselves: a shade at their
+   foot while more is below, covered by the dialog's own color where they end
+   (the shade stands a hairline up, so a part of a pixel of scroll does not show it). */
+@supports not (animation-timeline: scroll()) {
+  .k-dialog-body {
+    background:
+      linear-gradient(transparent, var(--k-dialog-bg, var(--raised)) 50%) bottom / 100% 2rem no-repeat local,
+      linear-gradient(transparent, color-mix(in oklch, var(--line-strong) 75%, transparent)) left 0 bottom 1px / 100% 0.625rem no-repeat scroll;
+  }
+}
 
 /* Rendered markdown in assistant replies. */
 .prose-keel { font-size: var(--text-read); line-height: 1.7; overflow-wrap: anywhere; }

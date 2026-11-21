@@ -194,10 +194,52 @@ test("export, summarize and confirm dialogs fit a short window", async ({ page, 
   await expect.poll(() => body.evaluate((el) => Math.ceil(el.scrollTop + el.clientHeight) >= el.scrollHeight)).toBe(true);
   await fits(confirm, confirm.getByRole("button", { name: "Cancel" }), confirm.getByRole("button", { name: "Delete", exact: true }));
   expect(await page.evaluate(() => document.scrollingElement!.scrollTop)).toBe(0);
+  // The line over the actions says there is more below, in the stronger line color of each theme.
+  await body.evaluate((el) => (el.scrollTop = 0));
+  for (const dark of [false, true]) {
+    await page.evaluate((d) => document.documentElement.classList.toggle("dark", d), dark);
+    const cue = await confirm.evaluate((el) => {
+      const probe = document.createElement("i");
+      probe.style.color = "var(--line-strong)";
+      el.append(probe);
+      const strong = getComputedStyle(probe).color;
+      probe.remove();
+      // Both as the pixel they paint: one is written in oklch, the other comes out of an animation.
+      const ctx = document.createElement("canvas").getContext("2d")!;
+      const pixel = (c: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = c; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].join(","); };
+      return { strong: pixel(strong), line: pixel(getComputedStyle(el.querySelector(".k-dialog-foot")!).borderTopColor) };
+    });
+    expect(cue.line).toBe(cue.strong);
+  }
   await page.keyboard.press("Escape");
   await expect(confirm).toBeHidden();
   await expect(page.getByTestId("session-menu")).toBeFocused();
   expect((await request.get(`/api/sessions/${session.id}`)).ok()).toBe(true);
 
+  // A confirmation whose title carries a long name with no place to break:
+  // the title wraps, whole, and the actions stay on the screen.
+  const name = `archive_${word}_` + "of_everything_kept_since_the_first_release_".repeat(3) + "end";
+  const { project } = await (await request.post("/api/projects", { data: { name } })).json();
+  await page.goto(`/p/${project.id}`);
+  await page.getByTestId("project-delete").click();
+  await expect(confirm).toBeVisible();
+  const heading = confirm.getByRole("heading");
+  await expect(heading).toContainText(name);
+  expect(await heading.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await fits(confirm, confirm.getByRole("button", { name: "Cancel" }), confirm.getByRole("button", { name: "Delete project" }));
+  await shoot(page, "dialogs-07-confirm-long-title-short");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+  await page.reload();
+  await page.getByTestId("project-delete").click();
+  await expect(confirm).toBeVisible();
+  expect(await heading.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await fits(confirm, confirm.getByRole("button", { name: "Cancel" }), confirm.getByRole("button", { name: "Delete project" }));
+  await shoot(page, "dialogs-08-confirm-long-title");
+  await page.keyboard.press("Escape");
+
+  await request.delete(`/api/projects/${project.id}`);
   await request.delete(`/api/sessions/${session.id}`);
 });
