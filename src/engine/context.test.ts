@@ -244,3 +244,55 @@ test("a long summary of the earlier parts and the next part fit the request budg
   expect(r3.store.events(c).filter((e) => e.kind === "compaction")).toEqual([]);
   expect(r3.store.session(c)!.head).toBe(head);
 });
+
+// Cache warmth, on a fake clock: what counts as a request that kept this
+// context's cache alive on the model's route decides when the idle summary is
+// prepared and whether a turn that comes back finds the cache cold.
+test("cache warmth follows the route and prefix a request used", async () => {
+  const { setSystemTime } = await import("bun:test");
+  const MIN = 60_000;
+  const T0 = Date.UTC(2026, 0, 1);
+  const r = rig();
+  const usage = (u: Record<string, number>) => ({ input: 10, output: 2_000, cache_read: 0, cache_write: 0, ...u });
+  // A long context whose first reply wrote the cache for an hour at T0, then what `later` adds at minute 50.
+  const at = async (later?: (id: string, covered: string) => void) => {
+    setSystemTime(new Date(T0));
+    const id = r.session(BIG.id);
+    r.store.updateSession(id, { settings: { compact_at: 2_000 } });
+    r.store.append(id, "user", { text: "read the big file" });
+    const reply = r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(8_000) }], model: BIG.id, stop: "end_turn", usage: usage({ cache_write: 9_000, cache_write_1h: 9_000 }) });
+    setSystemTime(new Date(T0 + 50 * MIN));
+    later?.(id, reply.id);
+    setSystemTime(new Date(T0 + 70 * MIN));
+    const st = await (r.engine as any).step(r.store.session(id), BIG.id);
+    // The delay the idle timer is set with (the timer itself is not left running).
+    let delay: number | undefined;
+    const real = globalThis.setTimeout;
+    (globalThis as any).setTimeout = (_f: unknown, ms: number) => { delay = ms; return real(() => {}, 0); };
+    try { (r.engine as any).scheduleIdle(id, st); } finally { globalThis.setTimeout = real; }
+    return { cold: (r.engine as any).cacheCold(id, r.line(id), st) as boolean, idleIn: delay === undefined ? undefined : Math.round(delay / MIN) };
+  };
+  const prepared = (data: Record<string, unknown>) => (id: string, covered: string) =>
+    r.store.db.run("INSERT INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered, JSON.stringify({ mode: "summary", summary: "s", model: BIG.id, prepared_ms: Date.now(), ...data }), Date.now()]);
+  const reply = (model: string, u: Record<string, number>) => (id: string) => {
+    r.store.append(id, "user", { text: "more" });
+    r.store.append(id, "assistant", { blocks: [{ type: "text", text: "ok" }], model, stop: "end_turn", usage: usage(u) });
+  };
+  try {
+    // Nothing since minute 0: at minute 70 the hour has passed, and the idle summary is overdue.
+    expect(await at()).toEqual({ cold: true, idleIn: 0 });
+    // A summary prepared from a transcript sent another prefix: the cache it read is not this context's.
+    expect((await at(prepared({ parts: 3, usage: usage({ cache_read: 500, cache_write: 100 }) }))).cold).toBe(true);
+    // One on the session's own request that reported no cache activity read nothing either.
+    expect((await at(prepared({ usage: usage({}) }))).cold).toBe(true);
+    // One on the session's own request that read the cache kept it alive.
+    expect((await at(prepared({ usage: usage({ cache_read: 9_000, cache_write: 200 }) }))).cold).toBe(false);
+    // A reply with no reported cache activity, and another model's reply, do not move the clock.
+    expect(await at(reply(BIG.id, {}))).toEqual({ cold: true, idleIn: 0 });
+    expect(await at(reply(SMALL.id, { cache_read: 9_000 }))).toEqual({ cold: true, idleIn: 0 });
+    // A cache hit on the same prefix does: warm until minute 110, the idle summary due 6 minutes before.
+    expect(await at(reply(BIG.id, { cache_read: 9_000 }))).toEqual({ cold: false, idleIn: 34 });
+  } finally {
+    setSystemTime();
+  }
+});

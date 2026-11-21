@@ -34,3 +34,29 @@ test("the cost of losing a prefix past a context tier is priced at that tier", (
   expect([big.cost_usd, big.cached_cost_usd]).toEqual([(200_000 * 0.625) / 1e6, (200_000 * 0.05) / 1e6]);
   expect(small.cost_usd).toBe((50_000 * 0.125) / 1e6);
 });
+
+// The warning follows the prefix of the model the last request ran on, as the
+// newest reply with cache activity left it.
+test("only a reply that used the cache keeps the prefix warm", () => {
+  const usage = (u: Record<string, number>) => ({ input: 10, output: 1, cache_read: 0, cache_write: 0, ...u });
+  const line = (...later: [number, string, Record<string, number>][]): StoredEvent[] => [
+    { kind: "user", ts: 0, data: {} } as any,
+    { kind: "assistant", ts: 1000, data: { model: "a:m", usage: usage({ cache_write: 4096, cache_write_1h: 4096 }) } } as any,
+    ...later.flatMap(([min, model, u]) => [{ kind: "user", ts: min * MIN, data: {} }, { kind: "assistant", ts: min * MIN + 1000, data: { model, usage: usage(u) } }] as any[]),
+  ];
+  const warn = (lineage: StoredEvent[], min: number) => switchWarning({ lineage, now: min * MIN, to, toWire: "openai_responses", fromWire: "anthropic_messages" });
+  // A reply at minute 50 that reported no cache activity: the prefix is the
+  // one written at minute 0, warm until minute 60 and not a minute longer.
+  const silent = line([50, "a:m", {}]);
+  expect(warn(silent, 55)).toMatchObject({ warm_until: 60 * MIN, warning: { cause: "model", uncached_tokens: 4096 } });
+  expect(warn(silent, 65).warning).toBeNull();
+  // A cache hit on the same prefix at minute 50 keeps it for another hour.
+  const hit = line([50, "a:m", { cache_read: 4096 }]);
+  expect(warn(hit, 65)).toMatchObject({ warm_until: 110 * MIN, warning: { certain: true, uncached_tokens: 4096 } });
+  // The last request ran on another model that reported no cache: nothing of
+  // its prefix is there to lose, whatever the first model's cache still holds.
+  expect(warn(line([50, "c:x", {}]), 55).warning).toBeNull();
+  // A 1-hour write before a checkpoint says nothing about the prefix written after it.
+  const after = [...line(), { kind: "compaction", ts: 2 * MIN, data: { mode: "summary", summary: "s" } }, { kind: "user", ts: 3 * MIN, data: {} }, { kind: "assistant", ts: 3 * MIN + 1000, data: { model: "a:m", usage: usage({ cache_write: 900 }) } }] as any[];
+  expect(warn(after, 20).warning).toMatchObject({ certain: false, uncached_tokens: 900 });
+});

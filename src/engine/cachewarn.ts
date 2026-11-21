@@ -7,6 +7,7 @@
 // context is empty (fresh or just cleared), or the switch goes back to what
 // the last request already used.
 import type { StoredEvent } from "../core/types.ts";
+import { checkpointAt, warmReplyAt } from "./compact.ts";
 import { priceOf } from "../providers/pricing.ts";
 import type { ModelInfo, Wire } from "../providers/types.ts";
 
@@ -26,10 +27,19 @@ export const PAUSE_MARGIN_MS = MIN;
 //   prompt_cache_options, whose default is a 30-minute minimum; older models
 //   keep a prefix typically 5 to 10 minutes, up to an hour.
 // - Other wires do not document it: maybe, for five minutes.
+// The evidence is the write that made the prefix there now: the newest reply
+// of this model after the last checkpoint that wrote to the cache (a later
+// read keeps that entry alive at its own lifetime). A write before the
+// checkpoint, or on another model, says nothing about this prefix.
 export function retention(wire: Wire | undefined, prior: StoredEvent[], model: string): { sure: number; max: number } {
-  const own = prior.filter((e) => e.kind === "assistant" && e.data.model === model && e.data.usage);
-  if (wire === "anthropic_messages") return own.some((e) => e.data.usage.cache_write_1h) ? { sure: 60 * MIN, max: 60 * MIN } : { sure: 5 * MIN, max: 60 * MIN };
-  if (wire === "openai_responses") return own.some((e) => e.data.usage.cache_write > 0) ? { sure: 30 * MIN, max: 30 * MIN } : { sure: 0, max: 60 * MIN };
+  const cp = checkpointAt(prior).at;
+  let wrote: { cache_write: number; cache_write_1h?: number } | undefined;
+  for (let i = prior.length - 1; i > cp && !wrote; i--) {
+    const e = prior[i]!;
+    if (e.kind === "assistant" && e.data.model === model && e.data.usage?.cache_write > 0) wrote = e.data.usage;
+  }
+  if (wire === "anthropic_messages") return wrote?.cache_write_1h ? { sure: 60 * MIN, max: 60 * MIN } : { sure: 5 * MIN, max: 60 * MIN };
+  if (wire === "openai_responses") return wrote ? { sure: 30 * MIN, max: 30 * MIN } : { sure: 0, max: 60 * MIN };
   return { sure: 0, max: 5 * MIN };
 }
 
@@ -68,23 +78,27 @@ export function switchWarning(o: {
     if (e.kind === "assistant" && e.data.usage && e.data.stop !== "refusal") { li = i; break; }
   }
   if (li < 0) return { cached_tokens: 0, warning: null };
-  const last = events[li]!;
+  const ranOn: string = events[li]!.data.model;
+  // The prefix a switch would lose is the one of the model the last request
+  // ran on, as its newest reply with cache activity left it. Only what the
+  // provider reported reading from or writing to its cache: a prompt below its
+  // caching minimum, or a route that reports nothing, has no prefix to lose,
+  // and a later reply that reported none did not keep the prefix alive.
+  const wi = warmReplyAt(events, ranOn);
+  if (wi < 0) return { cached_tokens: 0, warning: null };
+  const last = events[wi]!;
   // The request started when the event before its reply was stored.
-  const started = events[li - 1]?.ts ?? last.ts;
-  const keep = retention(o.fromWire, events.slice(0, li + 1), last.data.model);
+  const started = events[wi - 1]?.ts ?? last.ts;
+  const keep = retention(o.fromWire, events.slice(0, wi + 1), ranOn);
   const warmUntil = started + keep.max;
   // Past the documented lifetime the prefix may be gone: the warning says "may".
   const sure = o.now < started + keep.sure;
   const u = last.data.usage;
-  // Only what the provider reported reading from or writing to its cache: a
-  // prompt below its caching minimum, or a route that reports nothing, has no
-  // prefix to lose.
   const cached = u.cache_read + u.cache_write;
-  if (o.now >= warmUntil || !cached) return { cached_tokens: 0, warning: null };
+  if (o.now >= warmUntil) return { cached_tokens: 0, warning: null };
   let effort: string | undefined;
   for (let i = li; i >= 0; i--) if (events[i]!.kind === "turn_start") { effort = events[i]!.data.effort; break; }
 
-  const ranOn: string = last.data.model;
   let cause: SwitchWarning["cause"] | null = null;
   let certain = true;
   if (ranOn !== o.to.id) cause = "model";

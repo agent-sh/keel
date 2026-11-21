@@ -58,11 +58,38 @@ export const IDLE_MARGIN_MS = 6 * 60_000;
 export const IDLE_MIN_TOKENS = 200_000;
 export const idleMinTokens = (limit: number) => Math.min(IDLE_MIN_TOKENS, Math.floor(limit * (PREPARE_SHARE / COMPACT_SHARE)));
 
-// When a request last read or wrote this context's cache: the newest reply,
-// or a summary prepared after it (that call read the same prefix).
-export function lastWarm(lineage: StoredEvent[], preparedMs = 0): number {
-  const last = lineage.findLast((e) => e.kind === "assistant");
-  return Math.max(last?.ts ?? 0, preparedMs);
+// The newest reply that shows this context's cache was read or written on
+// `model`'s route: a reply of that model after the last checkpoint whose usage
+// reported cache activity. Another model's reply used another route's cache, a
+// reply that reported none touched no cache, and a reply before the checkpoint
+// was on the history the checkpoint replaced. -1 when there is none.
+export function warmReplyAt(lineage: StoredEvent[], model: string): number {
+  const cp = checkpointAt(lineage).at;
+  for (let i = lineage.length - 1; i > cp; i--) {
+    const e = lineage[i]!;
+    if (e.kind !== "assistant" || e.data.model !== model) continue;
+    const u = e.data.usage;
+    if (u && (u.cache_read ?? 0) + (u.cache_write ?? 0) > 0) return i;
+  }
+  return -1;
+}
+
+// When a request last read or wrote this context's cache on `model`'s route:
+// that reply, or a summary prepared after it on the same prefix (preparedWarm).
+// 0 when nothing shows the cache was used.
+export function lastWarm(lineage: StoredEvent[], model: string, preparedMs = 0): number {
+  const at = warmReplyAt(lineage, model);
+  return Math.max(at < 0 ? 0 : lineage[at]!.ts, preparedMs);
+}
+
+// When a prepared summary's request read this context's cache, 0 when it did
+// not: only a summary written on the session's own request by the same model,
+// with cache activity reported, used that prefix. One written from a
+// transcript (`parts`) sent another request with another prefix.
+export function preparedWarm(data: { prepared_ms?: number; parts?: number; model?: string; usage?: Usage }, model: string): number {
+  if (data.parts || data.model !== model) return 0;
+  const u = data.usage;
+  return u && (u.cache_read ?? 0) + (u.cache_write ?? 0) > 0 ? Number(data.prepared_ms ?? 0) : 0;
 }
 
 // A prepared summary that covers up to `covered` still serves: it covers part

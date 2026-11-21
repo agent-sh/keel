@@ -24,7 +24,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -954,7 +954,8 @@ export class Engine {
     this.sent.set(id, now);
     if (!lives) return undefined;
     if (this.store.session(id)?.settings.cache_long) return "long";
-    const before = prev ?? lastWarm(this.lineage(id));
+    // After a restart: the reply before this request, whatever its cache did.
+    const before = prev ?? this.lineage(id).findLast((e) => e.kind === "assistant")?.ts;
     if (!before || now - before <= lives.short - PAUSE_MARGIN_MS) return "short";
     this.store.mergeSettings(id, { cache_long: true });
     return "long";
@@ -1322,16 +1323,17 @@ export class Engine {
   private preparing = new Map<string, { abort: AbortController; covered: string }>();
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // The prepared summary's time, when there is one.
-  private preparedMs(id: string): number {
-    const row = this.store.db.query<{ data: string }, [string]>("SELECT data FROM prepared_summaries WHERE session_id = ?").get(id);
-    return row ? Number(JSON.parse(row.data).prepared_ms ?? 0) : 0;
+  // When the prepared summary's request read this context's cache on the
+  // model's route: one written for this branch on the same prefix (preparedWarm).
+  private preparedMs(id: string, events: StoredEvent[], st: Step): number {
+    const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
+    return row && events.some((e) => e.id === row.covered) ? preparedWarm(JSON.parse(row.data), st.info.id) : 0;
   }
 
-  // The cache of this context has surely expired: no request read it within
-  // the longest lifetime the route may keep it.
+  // The cache of this context has surely expired: no request of this model
+  // read or wrote it within the longest lifetime the route may keep it.
   private cacheCold(id: string, events: StoredEvent[], st: Step): boolean {
-    const warm = lastWarm(events, this.preparedMs(id));
+    const warm = lastWarm(events, st.info.id, this.preparedMs(id, events, st));
     return warm > 0 && Date.now() - warm > retention(st.provider.wire, events, st.info.id).max;
   }
 
@@ -1359,7 +1361,10 @@ export class Engine {
     if (this.used(events, st) < idleMinTokens(limit)) return;
     const life = retention(st.provider.wire, events, st.info.id).sure;
     if (life < 2 * IDLE_MARGIN_MS) return; // a five-minute cache leaves no idle time to use
-    const due = lastWarm(events) + life - IDLE_MARGIN_MS - Date.now();
+    // Nothing shows this model's cache holds the context: there is no warm prefix to read it from.
+    const warm = lastWarm(events, st.info.id);
+    if (!warm) return;
+    const due = warm + life - IDLE_MARGIN_MS - Date.now();
     const t = setTimeout(() => {
       this.idleTimers.delete(id);
       const now = this.store.session(id);
