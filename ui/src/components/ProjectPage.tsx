@@ -23,9 +23,9 @@ const field = "h-8 min-w-0 rounded-md border border-line bg-sunken px-2.5 text-u
 const button = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
 const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
 
-function Block({ title, hint, children, testid, aside }: { title: string; hint?: ReactNode; children: ReactNode; testid?: string; aside?: ReactNode }) {
+function Block({ title, hint, children, testid, aside, className }: { title: string; hint?: ReactNode; children: ReactNode; testid?: string; aside?: ReactNode; className?: string }) {
   return (
-    <section className="rounded-lg border border-line bg-raised px-5 py-4 shadow-1" data-testid={testid}>
+    <section className={cn("min-w-0 rounded-lg border border-line bg-raised px-5 py-4 shadow-1", className)} data-testid={testid}>
       <div className="mb-3">
         <div className={cn("flex items-center gap-3", aside && "min-h-8")}>
           <h2 className="min-w-0 flex-1 text-base font-semibold">{title}</h2>
@@ -86,7 +86,7 @@ function Body({ p }: { p: Project }) {
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto grid max-w-[72rem] gap-5 px-4 py-6 @2xl/page:px-10 @2xl/page:py-8 @4xl/page:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="mx-auto grid max-w-[72rem] grid-cols-1 gap-5 px-4 py-6 @2xl/page:px-10 @2xl/page:py-8 @4xl/page:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="flex min-w-0 flex-col gap-5">
             <input
               value={name}
@@ -166,11 +166,12 @@ function Body({ p }: { p: Project }) {
             </Block>
           </div>
           <ProjectArtifacts p={p} members={members} />
-          <aside className="flex min-w-0 flex-col gap-5 @4xl/page:col-start-2 @4xl/page:row-start-1 @4xl/page:row-end-3">
+          <aside className="flex min-w-0 flex-col gap-5 @4xl/page:col-start-2 @4xl/page:row-start-1">
             <Block title="Sessions" hint={list.length ? `${list.length} in the project` : "None yet"} testid="project-sessions">
-              <div className="flex flex-col">
+              {/* Beside the forms a long list scrolls in its block, so it leaves no blank under them before Artifacts. */}
+              <div className="flex flex-col @4xl/page:max-h-[36rem] @4xl/page:overflow-y-auto">
                 {machineRuns(list).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
-                  <button key={s.id} type="button" data-testid="project-session" data-session={s.id} onClick={() => navigate({ name: "session", id: s.id })} className={cn("flex h-9 items-center gap-2.5 border-b border-line text-left text-ui last:border-0 hover:text-fg", s.archived ? "text-faint" : "text-muted")}>
+                  <button key={s.id} type="button" data-testid="project-session" data-session={s.id} onClick={() => navigate({ name: "session", id: s.id })} className={cn("flex h-9 shrink-0 items-center gap-2.5 border-b border-line text-left text-ui last:border-0 hover:text-fg", s.archived ? "text-faint" : "text-muted")}>
                     <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
                     <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{s.archived ? "archived" : ago(s.updated)}</span>
@@ -189,7 +190,7 @@ function Body({ p }: { p: Project }) {
 function ProjectArtifacts({ p, members }: { p: Project; members: Record<string, string> }) {
   const list = useArtifacts(`/api/projects/${p.id}/artifacts`, (id) => !!id && members[id] === p.id);
   return (
-    <Block title="Artifacts" hint="What the project's sessions made: files they created or changed, and what they put in their artifacts folders." testid="project-artifacts">
+    <Block title="Artifacts" hint="What the project's sessions made: files they created or changed, and what they put in their artifacts folders." testid="project-artifacts" className="@4xl/page:col-span-2">
       <div className="-mx-5 -mb-4 h-[34rem] border-t border-line"><ArtifactBrowser list={list} testid="project-artifacts-list" withSession /></div>
     </Block>
   );

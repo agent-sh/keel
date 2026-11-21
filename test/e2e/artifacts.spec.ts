@@ -100,3 +100,100 @@ fetch("/api/sessions").then(() => document.body.append(" reached the daemon"), (
   await request.delete(`/api/projects/${p.id}`);
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// The browser lays out by the room it has. On a small screen the list and the
+// preview take turns: a picked artifact gets the whole panel, its actions are
+// all in reach, and going back finds the list where it was left, on the row
+// that was open. With width to spare the list stands beside the preview.
+test("artifacts on a small screen and beside the preview", async ({ page, request }) => {
+  const word = `as${Date.now().toString(36)}`;
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", word);
+  mkdirSync(ws, { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: ws });
+  const s = (await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: `Small screen ${word}` } })).json()).session;
+  await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "full-auto" } });
+  const page_ = `<!doctype html><h1 id="h">Waiting</h1><script>document.getElementById("h").textContent = "Script ran";
+fetch("/api/sessions").then(() => document.body.append(" reached the daemon"), () => document.body.append(" network blocked"));</script>`;
+  // The page first, so it is the oldest: the last row of a list longer than the screen.
+  const names = ["status-page.html", "release-notes.md", "migration-plan.md", "load-test-results.md", "rollback-steps.md", "api-changes.md", "open-questions.md", "cost-estimate.md", "handover.md", "risk-register.md", "timeline.md", "owners.md"];
+  const calls = names.map((n) => ({ name: "Write", input: { file_path: join(ws, n), content: n.endsWith(".html") ? page_ : `# ${n}\n\nNotes ${word}.\n` } }));
+  await request.post(`/api/sessions/${s.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}/artifacts`)).json()).artifacts.length, { timeout: 60_000 }).toBe(names.length);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).running).toBe(false);
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`/s/${s.id}`);
+  await openPanel(page, "artifacts");
+  const panel = page.getByTestId("artifacts-panel");
+  const list = panel.getByTestId("artifact-list");
+  const rows = panel.getByTestId("artifact-row");
+  const preview = panel.getByTestId("artifact-preview");
+  await expect(rows).toHaveCount(names.length);
+  // The list has the panel to itself: no preview yet, and nothing marked as open.
+  await expect(preview).toHaveCount(0);
+  await expect(panel).toHaveAttribute("data-layout", "one");
+  await expect(panel.locator('[data-testid="artifact-row"][aria-current]')).toHaveCount(0);
+  const room = async () => (await list.boundingBox())!.height / (await panel.boundingBox())!.height;
+  expect(await room()).toBeGreaterThan(0.75);
+  await shoot(page, "artifacts-05-small-list");
+
+  // The last row, reached by scrolling: its preview takes the list's place.
+  const target = rows.filter({ hasText: "status-page.html" });
+  await target.scrollIntoViewIfNeeded();
+  const at = await list.evaluate((el) => el.scrollTop);
+  expect(at).toBeGreaterThan(0);
+  await target.click();
+  await expect(preview).toBeVisible();
+  await expect(list).toBeHidden();
+  await expect(panel.getByTestId("artifact-name")).toHaveText("status-page.html");
+  expect((await preview.boundingBox())!.height / (await panel.boundingBox())!.height).toBeGreaterThan(0.7);
+  // Three views, and Open, Copy path and Download all whole inside the panel, with nothing to pan.
+  await expect(preview.getByRole("tab")).toHaveText(["Preview", "Source", "Diff"]);
+  const bar = panel.getByTestId("artifact-toolbar");
+  expect(await bar.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const edge = (await panel.boundingBox())!;
+  for (const id of ["artifact-view-show", "artifact-view-source", "artifact-view-diff", "artifact-open", "artifact-copy-path", "artifact-download"]) {
+    const b = (await panel.getByTestId(id).boundingBox())!;
+    expect(b.x, id).toBeGreaterThanOrEqual(edge.x);
+    expect(b.x + b.width, id).toBeLessThanOrEqual(edge.x + edge.width);
+  }
+  // The page still runs in the sandbox that reaches nothing.
+  await expect(panel.getByTestId("artifact-frame")).toHaveAttribute("sandbox", "allow-scripts");
+  const frame = page.frameLocator('[data-testid="artifact-frame"]');
+  await expect(frame.locator("#h")).toHaveText("Script ran");
+  await expect(frame.locator("body")).toContainText("network blocked");
+  await shoot(page, "artifacts-06-small-preview");
+  await panel.getByTestId("artifact-view-source").click();
+  await expect(panel.getByTestId("artifact-code")).toContainText("Script ran");
+
+  // Back: the list where it was left, on the row that was open.
+  await panel.getByTestId("artifacts-back").click();
+  await expect(list).toBeVisible();
+  await expect(preview).toHaveCount(0);
+  await expect(target).toHaveAttribute("aria-current", "true");
+  await expect(target).toBeFocused();
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBe(at);
+  await shoot(page, "artifacts-07-small-back");
+
+  // The project page at full width: the list beside the preview, each with the block's height.
+  const p = (await (await request.post("/api/projects", { data: { name: `Docs ${word}`, folders: [ws] } })).json()).project;
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/p/${p.id}`);
+  const all = page.getByTestId("project-artifacts-list");
+  await expect(all).toHaveAttribute("data-layout", "beside");
+  await all.getByTestId("artifact-row").filter({ hasText: "status-page.html" }).click();
+  const lb = (await all.getByTestId("artifact-list").boundingBox())!, pb = (await all.getByTestId("artifact-preview").boundingBox())!;
+  expect(pb.x).toBeGreaterThanOrEqual(lb.x + lb.width - 1);
+  expect(Math.abs(pb.y - lb.y)).toBeLessThan(2);
+  await expect(all.getByTestId("artifact-frame")).toHaveAttribute("sandbox", "allow-scripts");
+  await page.getByTestId("project-artifacts").scrollIntoViewIfNeeded();
+  await shoot(page, "artifacts-08-project-beside");
+  // The same page on the small screen: one at a time inside its block.
+  await page.setViewportSize({ width: 320, height: 568 });
+  await expect(all).toHaveAttribute("data-layout", "one");
+  await page.getByTestId("project-artifacts").scrollIntoViewIfNeeded();
+  await shoot(page, "artifacts-09-project-small");
+
+  await request.delete(`/api/projects/${p.id}`);
+  await request.delete(`/api/sessions/${s.id}`);
+});

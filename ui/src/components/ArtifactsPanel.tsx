@@ -4,8 +4,13 @@
 // rendered markdown, a page in a sandbox that reaches nothing, highlighted
 // code, and the diff of a changed file. Open in the editor, copy the path,
 // download. The list follows the session while it works.
-import { Code2, Download, ExternalLink, FileText, Globe, Image as ImageIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+//
+// The browser lays out by the room it is given, not the window: wide, the list
+// stands beside the preview; narrow and tall, above it; with room for only
+// one, the list and the preview take turns, and going back to the list finds
+// it where it was, on the row that was picked.
+import { ArrowLeft, Code2, Download, ExternalLink, FileText, Globe, Image as ImageIcon } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Artifact } from "../../../src/server/routes/artifacts.ts";
 import { copyText } from "../lib/copy.ts";
@@ -13,6 +18,7 @@ import { api, onFeature, reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { DiffView, type FileChange } from "./DiffView.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { PathText } from "./PathText.tsx";
 
 export type Listed = Artifact & { session_title?: string };
 const ICON = { image: ImageIcon, html: Globe, markdown: FileText, code: Code2 } as const;
@@ -47,15 +53,57 @@ export function ArtifactsPanel({ session }: { session: Session }) {
   return <ArtifactBrowser list={list} testid="artifacts-panel" />;
 }
 
+// The layout the browser's own box holds, in rem so the text size counts:
+// beside from 46rem of width (a session's side panel stops at 40rem, so it
+// never flips to two cramped columns), else stacked from 36rem of height,
+// else one at a time.
+type Layout = "beside" | "stack" | "one";
+function useLayout() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState<Layout>("stack");
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const w = el.clientWidth / rem, h = el.clientHeight / rem;
+      if (w && h) setLayout(w >= 46 ? "beside" : h >= 36 ? "stack" : "one");
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, layout] as const;
+}
+
 export function ArtifactBrowser({ list, testid, withSession }: { list: Listed[] | null; testid: string; withSession?: boolean }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [picked, setPicked] = useState<string | null>(null);
+  const [root, layout] = useLayout();
+  // With room for one: which of the two is on screen, and where the list was left.
+  const [reading, setReading] = useState(false);
+  const rows = useRef<HTMLUListElement>(null);
+  const left = useRef(0);
   const shown = (list ?? []).filter((a) => pass(filter, a));
   const key = (a: Listed) => `${a.session_id}\u0000${a.path}`;
-  const cur = shown.find((a) => key(a) === picked) ?? shown[0];
+  const cur = shown.find((a) => key(a) === picked) ?? (layout === "one" && !reading ? undefined : shown[0]);
+  const one = layout === "one";
+  const preview = !!cur && (!one || reading);
+  const back = () => {
+    setReading(false);
+    // After the list is drawn again: its place, and the keyboard on the row that was open.
+    requestAnimationFrame(() => {
+      const ul = rows.current;
+      if (!ul) return;
+      ul.scrollTop = left.current;
+      ul.querySelector<HTMLElement>("[aria-current]")?.focus({ preventScroll: true });
+    });
+  };
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid={testid}>
-      <div className="flex flex-wrap gap-1 border-b border-line px-3 py-2" role="group" aria-label="Show">
+    <div ref={root} className="flex h-full min-h-0 flex-col" data-testid={testid} data-layout={layout}>
+      {/* The filters belong to the list: with room for one, they leave with it. */}
+      <div className={cn("flex flex-wrap gap-1 border-b border-line px-3 py-2", one && reading && "hidden")} role="group" aria-label="Show">
         {FILTERS.map(([f, label]) => {
           const n = (list ?? []).filter((a) => pass(f, a)).length;
           return (
@@ -67,25 +115,50 @@ export function ArtifactBrowser({ list, testid, withSession }: { list: Listed[] 
         })}
       </div>
       {list && !list.length && <p className="px-4 py-10 text-center text-ui text-faint" data-testid="artifacts-empty">Nothing made yet. Files this session writes, and what it puts in its artifacts folder, show up here as it works.</p>}
-      {shown.length > 0 && (
-        <ul className="max-h-[40%] shrink-0 overflow-y-auto border-b border-line py-1" aria-label="Artifacts">
-          {shown.map((a) => {
-            const Icon = ICON[a.kind];
-            return (
-              <li key={key(a)}>
-                <button type="button" data-testid="artifact-row" data-path={a.path} data-kind={a.kind} aria-current={cur === a || undefined} onClick={() => setPicked(key(a))}
-                  className={cn("flex h-9 w-full items-center gap-2.5 px-3 text-left text-ui hover:bg-hover", cur === a ? "bg-hover text-fg" : "text-muted", !a.exists && "line-through opacity-60")}>
-                  <Icon className="size-4 shrink-0 text-faint" />
-                  <span className="min-w-0 flex-1 truncate"><span className="text-fg">{a.name}</span> <span className="text-caption text-faint">{[withSession && a.session_title, where(a)].filter(Boolean).join(" · ")}</span></span>
-                  <span className={cn("rounded-xs px-1.5 text-micro", a.created ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted")}>{a.created ? "new" : "changed"}</span>
-                  <span className="w-8 text-right text-caption tabular-nums text-faint" title={when(a.last_ts)}>{ago(a.last_ts)}</span>
+      {list && list.length > 0 && !shown.length && <p className="px-4 py-10 text-center text-ui text-faint">None of this kind yet.</p>}
+      <div className={cn("flex min-h-0 flex-1", layout === "beside" ? "flex-row" : "flex-col")}>
+        {shown.length > 0 && (
+          <ul
+            ref={rows}
+            aria-label="Artifacts"
+            data-testid="artifact-list"
+            className={cn(
+              "overflow-y-auto border-line py-1",
+              layout === "beside" ? "w-[19rem] shrink-0 border-r" : layout === "stack" ? "max-h-[40%] shrink-0 border-b" : "min-h-0 flex-1",
+              one && reading && "hidden",
+            )}
+          >
+            {shown.map((a) => {
+              const Icon = ICON[a.kind];
+              return (
+                <li key={key(a)}>
+                  <button type="button" data-testid="artifact-row" data-path={a.path} data-kind={a.kind} aria-current={cur === a || undefined}
+                    onClick={() => { setPicked(key(a)); if (one) { left.current = rows.current?.scrollTop ?? 0; setReading(true); } }}
+                    className={cn("flex w-full items-center focus-visible:-outline-offset-2 gap-2.5 px-3 text-left text-ui hover:bg-hover", one ? "h-11" : "h-9", cur === a ? "bg-hover text-fg" : "text-muted", !a.exists && "line-through opacity-60")}>
+                    <Icon className="size-4 shrink-0 text-faint" />
+                    <span className="min-w-0 flex-1 truncate"><span className="text-fg">{a.name}</span> <span className="text-caption text-faint">{[withSession && a.session_title, where(a)].filter(Boolean).join(" · ")}</span></span>
+                    <span className={cn("rounded-xs px-1.5 text-micro", a.created ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted")}>{a.created ? "new" : "changed"}</span>
+                    <span className="w-8 text-right text-caption tabular-nums text-faint" title={when(a.last_ts)}>{ago(a.last_ts)}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {preview && (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {one && (
+              <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line bg-sunken pl-1.5 pr-3">
+                <button type="button" data-testid="artifacts-back" onClick={back} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui font-medium text-muted hover:bg-hover hover:text-fg">
+                  <ArrowLeft className="size-4" />Artifacts <span className="font-normal tabular-nums text-faint">{shown.length}</span>
                 </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {cur && <Preview key={`${key(cur)}\u0000${cur.last_ts}`} a={cur} />}
+                <span className="min-w-0 flex-1 truncate text-right text-ui font-medium" data-testid="artifact-name">{cur.name}</span>
+              </div>
+            )}
+            <Preview key={`${key(cur)}\u0000${cur.last_ts}`} a={cur} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -117,22 +190,24 @@ function Preview({ a }: { a: Listed }) {
   const views: ["show" | "source" | "diff", string][] = [["show", a.kind === "code" ? "Code" : "Preview"], ...(a.kind === "html" || a.kind === "markdown" ? [["source", "Source"]] as ["source", string][] : []), ...(inFolder ? [["diff", "Diff"]] as ["diff", string][] : [])];
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="artifact-preview" data-kind={a.kind}>
-      <div className="flex items-center gap-1.5 px-3 py-2">
-        <div className="mr-auto flex gap-0.5 rounded-md border border-line bg-sunken p-0.5" role="tablist" aria-label="View">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2" data-testid="artifact-toolbar">
+        <div className="flex gap-0.5 rounded-md border border-line bg-sunken p-0.5" role="tablist" aria-label="View">
           {views.map(([v, label]) => (
             <button key={v} type="button" role="tab" aria-selected={view === v} data-testid={`artifact-view-${v}`} onClick={() => setView(v)} className={cn("h-6 rounded-sm px-2 text-caption", view === v ? "bg-raised text-fg shadow-1" : "text-muted hover:text-fg")}>{label}</button>
           ))}
         </div>
+        <div className="ml-auto flex items-center gap-1.5">
         <button type="button" className={button} data-testid="artifact-open" title={said || "Open in your editor on this machine"} onClick={() => api(`/api/sessions/${a.session_id}/artifacts/open`, { method: "POST", body: JSON.stringify({ path: a.path }) }).then(() => setSaid("Opened"), (e) => setSaid((e as Error).message))}><ExternalLink className="size-3.5" />{said === "Opened" ? "Opened" : "Open"}</button>
         <button type="button" className={button} data-testid="artifact-copy-path" onClick={() => copyText(a.path).then(() => setSaid("Path copied"), reportError)}>{said === "Path copied" ? "Copied" : "Copy path"}</button>
         <a className={button} href={raw(a, true)} download={a.name} data-testid="artifact-download" aria-label="Download"><Download className="size-3.5" /></a>
+        </div>
       </div>
-      <p className="truncate px-3 pb-2 font-mono text-micro text-faint" title={a.path}>{a.path}</p>
+      <p className="flex px-3 pb-2"><PathText path={a.path} className="font-mono text-micro text-faint" /></p>
       <div className="min-h-0 flex-1 overflow-auto border-t border-line" data-testid="artifact-body">
         {!a.exists ? <p className="p-4 text-ui text-faint">The file is gone from disk.</p>
           : view === "diff" ? <div className="p-3">{diff ? <DiffView files={diff.files} patch={diff.diff} truncated={diff.truncated} empty="No change of this file is in the session's checkpoints." /> : <p className="text-caption text-faint">Loading…</p>}</div>
           : view === "show" && a.kind === "image" ? <div className="grid place-items-center p-4"><img src={raw(a)} alt={a.name} className="max-h-full max-w-full rounded-md border border-line bg-[repeating-conic-gradient(var(--color-sunken)_0_25%,transparent_0_50%)] bg-[length:1rem_1rem]" data-testid="artifact-image" /></div>
-          : view === "show" && a.kind === "html" ? <iframe title={a.name} src={raw(a)} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-[24rem] w-full bg-white" data-testid="artifact-frame" />
+          : view === "show" && a.kind === "html" ? <iframe title={a.name} src={raw(a)} sandbox="allow-scripts" referrerPolicy="no-referrer" className="block h-full min-h-[12rem] w-full bg-white" data-testid="artifact-frame" />
           : view === "show" && a.kind === "markdown" ? <div className="px-5 py-4">{text === null ? null : <Markdown text={text} />}</div>
           : text === null ? <p className="p-4 text-caption text-faint">Loading…</p>
           : <pre className="p-3 font-mono text-caption leading-relaxed" data-testid="artifact-code">{html ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{text}</code>}</pre>}
