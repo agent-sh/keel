@@ -136,6 +136,11 @@ export function eventsBudget(): number {
 // the next read brings them back, once.
 export const IDLE_KEPT_MS = 120_000;
 
+// Dropping at least this much (as charged) is worth asking the collector for.
+const GIVE_BACK_BYTES = 8e6;
+// Asks the runtime's collector: for a whole collection now, or for one when it sees fit.
+const collect = (whole: boolean) => (globalThis as { Bun?: { gc(whole: boolean): void } }).Bun?.gc(whole);
+
 const pause = () => new Promise<void>((r) => setImmediate(r));
 
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
@@ -205,6 +210,8 @@ export class Store {
   private sweeper: ReturnType<typeof setInterval> | undefined;
   // Counts body reads: a run's `used` is the count when it was last read.
   private tick = 0;
+  // What dropped sessions were charged since the last whole collection.
+  private owed = 0;
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
@@ -421,6 +428,7 @@ export class Store {
     const k = this.kept.get(session_id);
     if (!k) return;
     this.keptBytes -= k.bytes;
+    this.owed += k.bytes;
     k.gone = true;
     k.runs = [];
     this.kept.delete(session_id);
@@ -541,11 +549,24 @@ export class Store {
       return;
     }
     for (const [id, k] of stale) if (!working.has(id) || now - k.at >= 15 * IDLE_KEPT_MS) this.forget(id);
+    // Sessions still at work: the collector is only asked to collect when it
+    // sees fit. The whole collection comes when the last one goes (rest).
+    if (this.kept.size && this.owed >= GIVE_BACK_BYTES) collect(false);
   }
 
+  // Nothing is kept any more. What was given back since the last whole
+  // collection is mostly old to the collector, which looks at old objects only
+  // when the heap grows, and a daemon at rest does not grow: seen after ten
+  // minutes of twelve sessions, 80 to 100 MB stayed for as long as the daemon
+  // was watched. So it is asked to look. No session has been read for two
+  // minutes by then (or the last one kept was deleted): a whole collection
+  // holds the loop some tens of milliseconds while nobody waits on it.
   private rest() {
     clearInterval(this.sweeper);
     this.sweeper = undefined;
+    if (this.owed < GIVE_BACK_BYTES) return;
+    this.owed = 0;
+    collect(true);
   }
 
   // How many sessions are kept and what they are charged, in bytes of memory,
