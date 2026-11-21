@@ -50,6 +50,24 @@ test("two agents' questions are two decisions; a redelivery replaces its own row
   expect(left.map((x) => x.data.child_title)).toEqual(["Docs"]);
 });
 
+// A question put back after a restart is not raised again; the same call id in another session is another question.
+test("an alert raised for a call is known by its session", () => {
+  const { session } = scratch();
+  const a = session("One"), b = session("Two"), p = session("Parent"), child = session("Agent", p);
+  alerts.raise("question", a, "Question: One", "Which?", { call_id: "call-1-0", open_session: a });
+  alerts.raise("question", child, "Question: Agent", "Which?", { call_id: "call-9", open_session: child });
+  expect(alerts.raisedFor("call_id", "call-1-0", a)).toBe(true);
+  expect(alerts.raisedFor("call_id", "call-1-0", b)).toBe(false);
+  expect(alerts.raisedFor("call_id", "call-9", child)).toBe(true);
+  expect(alerts.raisedFor("call_id", "call-9", p)).toBe(false);
+  // The same id asked in the other session: its own row, and the first one's stays.
+  alerts.raise("question", b, "Question: Two", "Which?", { call_id: "call-1-0", open_session: b });
+  expect(alerts.list({ unread: true }).filter((x) => x.data.call_id === "call-1-0").map((x) => x.session_id).sort()).toEqual([a, b].sort());
+  // Answered in one session: only that one's row is read.
+  alerts.readWhere("call_id", "call-1-0", b);
+  expect(alerts.list({ unread: true }).filter((x) => x.data.call_id === "call-1-0").map((x) => x.session_id)).toEqual([a]);
+});
+
 test("a read names what it saw: a replay never reads a newer or re-marked alert", () => {
   const { session } = scratch();
   const s = session("S");

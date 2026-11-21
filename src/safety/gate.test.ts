@@ -189,6 +189,41 @@ test("Auto does not reuse a parked approval or let it create a standing grant", 
   expect("deny" in resumed ? resumed.deny : "").toContain("Check the prior outcome");
 });
 
+// A card whose turn was just parked for a stop is the next daemon's to
+// answer: taken by the daemon on its way out, the answer would be lost (the
+// card would read allowed and the call would never run). A card of a call a
+// program made closes at the park instead: the program is gone with the daemon.
+test("a parked card takes no answer until the next daemon; a program's card closes at the park", async () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-gate-")));
+  const g = new Gate(store, new Bus());
+  const session = store.createSession({ workspace: store.stateDir, model: "fixture:m" });
+  g.setPerm(session.id, { mode: "ask", sandbox: "off" });
+  const stop = new AbortController();
+  const ctx = { sessionId: session.id, cwd: session.workspace, signal: stop.signal, spillDir: session.workspace, seen: new Map() };
+  const own = g.check(session, { id: "own", tool: bash, input: { command: "printf a > a.txt" }, ctx });
+  const inner = g.check(session, { id: "inner", tool: bash, input: { command: "printf b > b.txt" }, ctx: { ...ctx, nestedIn: "program" } });
+  await Bun.sleep(5);
+  const cards = g.approvals({ pending: true });
+  const card = cards.find((a) => a.call_id === "own")!, nested = cards.find((a) => a.call_id === "inner")!;
+  expect(g.awaitsOwner(session.id, "own")).toBe(true);
+  g.park(session.id);
+  stop.abort();
+  await Promise.all([own, inner]);
+  // On its way out: neither an allow nor a denial is taken, and the card stays open.
+  expect(g.resolve(card.id, session.id, { choice: "once" })).toHaveProperty("status", 503);
+  expect(g.resolve(card.id, session.id, { choice: "deny", reason: "not this one" })).toHaveProperty("status", 503);
+  expect(g.approval(card.id)!.state).toBe("pending");
+  expect(g.callOutcome(session.id, "own")).toBe("waiting");
+  // The program's card is closed, and says why.
+  expect(g.approval(nested.id)!.state).toBe("cancelled");
+  expect(g.resolve(nested.id, session.id, { choice: "once" })).toHaveProperty("status", 409);
+  expect(g.callOutcome(session.id, "inner")).toBe("not_run");
+  // The next daemon takes the answer.
+  const next = new Gate(store, new Bus());
+  expect(next.resolve(card.id, session.id, { choice: "deny", reason: "not this one" })).toEqual({ ok: true });
+  expect(next.approval(card.id)).toMatchObject({ state: "denied", reason: "not this one" });
+});
+
 test("full auto: a refused call is refused again without review, and a run of refusals stops the judging", async () => {
   const { g, session, call } = scratchGate();
   g.setPerm("s1", { mode: "full-auto", sandbox: "off" });

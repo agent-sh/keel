@@ -276,6 +276,8 @@ export function retry(id: string): Alert | undefined {
 }
 
 const DECISION: Partial<Record<AlertKind, string>> = { approval: "approval_id", question: "call_id" };
+// The session a question's alert was asked in (an agent's own, under its parent's inbox row).
+const ASKED_IN = "COALESCE(json_extract(data, '$.open_session'), session_id)";
 
 // The channels that interrupt the owner (a desktop banner, the phone). They
 // carry what needs them or what they would want to know now: a question or an
@@ -313,7 +315,9 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     if (key && decision) {
       // An approval or a question is its own decision: the same one raised again
       // replaces its row; a different one (a sibling agent's) stands beside it.
-      store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?`).run(kind, String(decision));
+      // (A call id is its session's: another session's question under the same id is another decision.)
+      store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}`)
+        .run(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? sessionId)] : [])]);
     } else if (sid) {
       // A newer notice of the same kind from the same source replaces the unread
       // one: one live row per session and kind (the activity list keeps each).
@@ -414,14 +418,17 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
 
 // Whether an alert whose data names this value was raised, read or not: a
 // question put back on its card after a restart is the one the owner was told of.
-export const raisedFor = (key: string, value: string) =>
-  !!D().store.db.query("SELECT 1 FROM alerts WHERE json_extract(data, ?) = ? LIMIT 1").get(`$.${key}`, value);
+// (Of that session: another session's call may carry the same id.)
+export const raisedFor = (key: string, value: string, sessionId: string) =>
+  !!D().store.db.query(`SELECT 1 FROM alerts WHERE json_extract(data, ?) = ? AND ${ASKED_IN} = ? LIMIT 1`).get(`$.${key}`, value, sessionId);
 
 // Reads the unread alerts whose data names this value (an answered approval).
-export function readWhere(key: string, value: string) {
+// `askedIn`: only the alerts of the session that asked (a question's call id is its session's).
+export function readWhere(key: string, value: string, askedIn?: string) {
   const sessions = D().store.db.query<{ session_id: string | null }, [string, string]>("SELECT DISTINCT session_id FROM alerts WHERE json_extract(data, ?) = ?").all(`$.${key}`, value);
   for (const r of sessions) if (r.session_id && key === "approval_id") snooze.resume(r.session_id);
-  const ids = D().store.db.query<{ id: string }, [string, string]>("SELECT id FROM alerts WHERE read = 0 AND json_extract(data, ?) = ?").all(`$.${key}`, value).map((r) => r.id);
+  const ids = D().store.db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND json_extract(data, ?) = ?${askedIn ? ` AND ${ASKED_IN} = ?` : ""}`)
+    .all(...[`$.${key}`, value, ...(askedIn ? [askedIn] : [])]).map((r) => r.id);
   if (ids.length) markRead({ ids });
 }
 

@@ -29,6 +29,8 @@ export type ToolContext = {
   confined?: { sandbox: "workspace-write" | "read-only"; network: boolean };
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
+  // Set on a call a program made (run_code): the id of the turn's call that runs the program.
+  nestedIn?: string;
   // Set by a beforeTool hook: runs the call somewhere else (the session's
   // machine) instead of tool.run here.
   dispatch?: (tool: Tool, input: any, ctx: ToolContext) => Promise<ToolOutput>;

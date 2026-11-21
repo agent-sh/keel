@@ -1129,6 +1129,12 @@ export async function waitAll(parentId: string, ids: string[] | undefined, timeo
   return targets.map((a) => get(a.id)!);
 }
 
+// Whether the parent's agents still at work all wait on the owner (and there is one).
+export function allWaitOnOwner(parentId: string): boolean {
+  const live = list(parentId).filter((a) => a.status === "running" || a.status === "waiting");
+  return live.length > 0 && live.every((a) => D().engine.waitsOnOwner(a.session_id));
+}
+
 // The parent has these agents' results in a stored tool result: their
 // reports are no longer owed.
 export function ackWaited(parentId: string, reports: { id: string; report: string }[]) {

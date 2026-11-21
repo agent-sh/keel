@@ -613,6 +613,8 @@ export class Engine {
       // this row is the next prompt, at the head of the queue, and starts no
       // second turn beside that one.
       if (this.running.has(id)) return void this.nextUp(q, here);
+      // Sent before a cut turn was continued: the model is told of the cut first.
+      this.acceptRestart(id);
       if (!this.deliver(qid, "queued", { release: true, turn: true })) throw gone();
       this.start(id);
     } finally {
@@ -660,7 +662,8 @@ export class Engine {
     // A turn that sent nothing has nothing to continue from: its prompt is asked again as it stands.
     // Otherwise said as what happened: a turn that failed was not stopped.
     const failed = this.lineage(id).findLast((e) => e.kind === "turn_end")?.data.reason === "error";
-    if (!this.unanswered(id)) this.accept(id, { text: failed ? "[harness] The previous turn failed before it finished. Try again, and continue where it left off." : "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
+    // Pressed before a cut turn was continued: the restart message is what continues it.
+    if (!this.acceptRestart(id) && !this.unanswered(id)) this.accept(id, { text: failed ? "[harness] The previous turn failed before it finished. Try again, and continue where it left off." : "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
     this.start(id);
     this.emitQueue(id);
   }
@@ -747,11 +750,17 @@ export class Engine {
   // turn that just ended was started with, or 0 when it was the owner's turn
   // or the model answered in it.
   private continuedInARow(id: string): number {
+    // Back from the end: a reply of the model, or a prompt that is neither the
+    // continue's own nor a restart's (which only goes on with the same turn), ends the row.
     const line = this.lineage(id);
-    const start = line.findLastIndex((e) => e.kind === "turn_start");
-    if (start < 1 || line.slice(start).some((e) => e.kind === "assistant")) return 0;
-    const prompt = line.findLast((e, i) => i < start && (e.kind === "user" || e.kind === "turn_end"));
-    return prompt?.kind === "user" && typeof prompt.data.continued === "number" ? prompt.data.continued : 0;
+    for (let i = line.length - 1; i >= 0; i--) {
+      const e = line[i]!;
+      if (e.kind === "assistant") return 0;
+      if (e.kind !== "user") continue;
+      if (typeof e.data.continued === "number") return e.data.continued;
+      if (e.data.origin !== "restart") return 0;
+    }
+    return 0;
   }
   // The owner called it off (or a turn started): nothing continues by itself.
   cancelContinue(id: string): boolean {
@@ -1426,10 +1435,18 @@ export class Engine {
   // Whether a running turn does nothing but wait on the owner: every call it
   // has out is a question, a plan put up for approval, or one whose approval
   // card is open. Such a turn does not end by itself, however long it is given.
+  // A program's call (run_code) waits on the owner when every call it has out does.
   waitsOnOwner(id: string): boolean {
     const calls = this.inflight.get(id);
-    return !!calls?.size && [...calls.values()].every((u) => asksOwner(u.name) || allHooks().some((h) => h.awaitsOwner?.(id, u.id)));
+    const awaits = (callId: string) => allHooks().some((h) => h.awaitsOwner?.(id, callId));
+    return !!calls?.size && [...calls.values()].every((u) => {
+      if (asksOwner(u.name) || awaits(u.id)) return true;
+      const inner = this.nested.get(`${id}:${u.id}`);
+      return !!inner?.size && [...inner].every(awaits);
+    });
   }
+  // The calls a program has out, by session and the turn's call that runs the program.
+  private nested = new Map<string, Set<string>>();
 
   private async runTool(session: Session, tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
     // Built when the stop comes: a stop for a daemon restart says so.
@@ -1447,7 +1464,13 @@ export class Engine {
         type: "tool_result", tool_use_id: id, is_error: true,
         content: `${name} cannot wait for the owner inside run_code. Call it directly outside the program.`,
       });
-      return this.runTool(session, tools, { type: "tool_use", id, name, input }, ctx);
+      // Tracked under the call of the turn whose program made it (a drain asks what it waits on).
+      const top = ctx.nestedIn ?? u.id;
+      const key = `${ctx.sessionId}:${top}`;
+      const mine = this.nested.get(key) ?? new Set<string>();
+      this.nested.set(key, mine.add(id));
+      return this.runTool(session, tools, { type: "tool_use", id, name, input }, { ...ctx, nestedIn: top })
+        .finally(() => { mine.delete(id); if (!mine.size && this.nested.get(key) === mine) this.nested.delete(key); });
     };
     const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id, callTool } };
     // An interrupt answers at once, whether or not a gate or the tool honors the signal.
@@ -2051,10 +2074,14 @@ export class Engine {
         const rec = this.errors.capture("provider", e, { session: s.id, at: "resume after restart" });
         return held(`The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.`);
       }
-      // A turn that goes back to its open card sends no request until the owner
-      // answers: it takes no slot, so the card is back at once and the turns
-      // that do send are not held behind it.
-      if (!owed) await slots.take();
+      // A turn that goes back to a question or a plan sends no request until
+      // the owner answers: it takes no slot, so the card is back at once and
+      // the turns that do send are not held behind it. One that goes back to
+      // an approval card may send at once (the mode it is in now may settle
+      // the card by itself): it takes a slot and gives it back as soon as it
+      // is seen waiting on the owner.
+      const cards = owed > 0 && owedCalls(s.id, line).every((u) => asksOwner(u.name));
+      if (!cards) await slots.take();
       try {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
         const now = this.store.session(s.id);
@@ -2064,11 +2091,16 @@ export class Engine {
         this.emitQueue(s.id);
         // Held until the turn ends or its first steps had time to run: a turn that
         // then waits on the owner (an approval) does not hold back the others.
-        if (!owed) await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS)]);
+        if (!cards) await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS), ...(owed ? [this.untilOnOwner(s.id, RESUME_HOLD_MS)] : [])]);
       } finally {
-        if (!owed) slots.give();
+        if (!cards) slots.give();
       }
     }));
+  }
+
+  // Resolves once the session's turn only waits on the owner (or ended, or `ms` passed).
+  private async untilOnOwner(id: string, ms: number) {
+    for (const end = Date.now() + ms; this.running.has(id) && !this.waitsOnOwner(id) && Date.now() < end; ) await Bun.sleep(50);
   }
 
   // The message that continues a turn a restart cut, stored when the branch
@@ -2077,15 +2109,17 @@ export class Engine {
   // told of the cut either way. A branch whose card still waits and whose last
   // such message the model never read gets no second one: restarts while a
   // card waits do not grow the context.
-  private acceptRestart(id: string) {
+  // True when the branch ends in a cut turn and now has its restart message.
+  private acceptRestart(id: string): boolean {
     const line = this.lineage(id);
     const end = line.at(-1);
-    if (end?.kind !== "turn_end" || end.data.reason !== "restart") return;
+    if (end?.kind !== "turn_end" || end.data.reason !== "restart") return false;
     const owed = owedCalls(id, line).length;
     const told = line.findLastIndex((e) => e.kind === "user" && e.data.origin === "restart");
-    if (owed && told >= 0 && !line.slice(told).some((e) => e.kind === "assistant")) return;
+    if (owed && told >= 0 && !line.slice(told).some((e) => e.kind === "assistant")) return true;
     const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => stopKind(r.content) === "cut") : [])).length;
     this.accept(id, { origin: "restart", text: restartText(cutTools, owed, !!end.data.unstarted) });
+    return true;
   }
 
   // One answer outside the history (a side question): the session's own model,

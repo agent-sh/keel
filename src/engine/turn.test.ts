@@ -319,6 +319,25 @@ test("a prompt after a cut turn follows the restart message; a waiting card gets
   store.append(c, "turn_end", { reason: "restart" });
   await engine.recover([], async () => {});
   expect(users(c).map((u) => u[0])).toEqual(["owner", "restart", "restart"]);
+  // Continue pressed before the continuation: the restart message, not "the previous turn was stopped".
+  const d = cut([{ type: "tool_use", id: "w1", name: "Bash", input: {} }], [{ type: "tool_result", tool_use_id: "w1", is_error: true, content: RESTART_CUT }]);
+  engine.resume(d);
+  expect(users(d).map((u) => u[0])).toEqual(["owner", "restart"]);
+  await engine.interrupt(d);
+  // The count of continues after a provider's wait is read through a restart that cut the continued turn.
+  const e = store.createSession({ model: "x:y", workspace: dir }).id;
+  store.append(e, "user", { text: "go" });
+  store.append(e, "turn_start", {});
+  store.append(e, "turn_end", { reason: "error" });
+  store.append(e, "error", { message: "429" });
+  store.append(e, "user", { text: "[harness] The wait the provider asked for is over.", origin: "harness", continued: 2 });
+  store.append(e, "turn_start", {});
+  store.append(e, "turn_end", { reason: "restart" });
+  store.append(e, "user", { text: "[harness] The daemon restarted during your previous turn.", origin: "restart" });
+  store.append(e, "turn_start", {});
+  expect((engine as any).continuedInARow(e)).toBe(2);
+  store.append(e, "assistant", { blocks: [{ type: "text", text: "a step" }] });
+  expect((engine as any).continuedInARow(e)).toBe(0);
 });
 
 // Idle compaction: a context past its idle minimum whose cache is about to

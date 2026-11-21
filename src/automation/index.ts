@@ -84,7 +84,7 @@ function init(deps: Deps) {
       if (why) return { deny: why };
       // A question the model asks the owner is an alert until it is answered.
       // (Asked again after a daemon restart, it is the same question: no second alert.)
-      if (QUESTION_TOOLS.has(call.tool.name) && !alerts.raisedFor("call_id", call.id)) {
+      if (QUESTION_TOOLS.has(call.tool.name) && !alerts.raisedFor("call_id", call.id, s.id)) {
         const q = (call.input?.questions ?? [])[0];
         const text = String(q?.question ?? call.input?.question ?? call.input?.prompt ?? "The agent asks a question.");
         alerts.raise("question", s.id, `Question: ${deps.store.session(s.id)?.title || "a session"}`, text, { call_id: call.id, open_session: s.id });
@@ -95,7 +95,7 @@ function init(deps: Deps) {
       // A plan the tool refused is not the plan: the saved list stays as it was.
       if (goals.isPlanTool(call.tool.name) && !result.is_error) taskRenames.fromPlan(s.id, call.tool.name, call.input);
       if (QUESTION_TOOLS.has(call.tool.name)) {
-        alerts.readWhere("call_id", call.id);
+        alerts.readWhere("call_id", call.id, s.id);
         // The answer to a question is the owner's word: it ends a snooze.
         snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");
       }

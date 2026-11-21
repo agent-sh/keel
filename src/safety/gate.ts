@@ -606,9 +606,12 @@ export class Gate {
       this.waiting.set(a.id, { resolve, call, cls, session, name, once: a.once, bind: a.bind });
       onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
-        // Parked for a stop: the card stays open for the next daemon.
-        if (this.parking.has(session.id)) this.parked.set(callKey(session.id, call.id), a.id);
-        else this.save({ ...a, state: "cancelled", reason: "the turn was stopped", resolved: Date.now() });
+        // Parked for a stop: the card stays open for the next daemon, which
+        // runs the call again. A call a program made is not run again (the
+        // program is gone with the daemon), so its card closes: left open, it
+        // would take an answer and run nothing.
+        if (this.parking.has(session.id) && !call.ctx.nestedIn) this.parked.set(callKey(session.id, call.id), a.id);
+        else this.save({ ...a, state: "cancelled", reason: this.parking.has(session.id) ? "the daemon restarted before it was answered, and the program that asked no longer runs" : "the turn was stopped", resolved: Date.now() });
         resolve({ deny: "The turn was stopped before the owner answered." });
       };
       if (signal.aborted) onAbort();
@@ -635,6 +638,11 @@ export class Gate {
       return { error: interruptedApproval, status: 409, approval: a };
     if ((c.choice === "session" || c.choice === "always") && a.risk === "high")
       return { error: `this card covers its one call only (${a.why}): answer once or deny`, status: 400 };
+    // Its turn was just parked and this daemon is on its way out: an answer
+    // taken now would be lost with it (the card would read answered, the call
+    // would never run, a denial would lose its reason). The card stays open
+    // for the next daemon.
+    if (parked && this.parking.has(a.session_id)) return { error: "Keel is restarting: answer again in a moment, when it is back", status: 503 };
     if (c.choice === "deny") {
       this.finish(a, { state: "denied", choice: "deny", reason: c.reason?.trim() || undefined });
       w?.resolve({ deny: ownerDenial(c.reason?.trim()) });

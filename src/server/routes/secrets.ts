@@ -36,6 +36,8 @@ const RequestSecret: Tool = {
     required: ["name"],
   },
   readOnly: true, // the card is the owner's decision; nothing changes until they answer
+  // It only waits on the owner: a restart leaves it open, and the same card (the call's id) waits afterwards.
+  asksOwner: true,
   async run(input: any, ctx: ToolContext) {
     const name = String(input?.name ?? "").trim();
     const err = nameError(name);

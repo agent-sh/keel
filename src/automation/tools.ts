@@ -87,7 +87,8 @@ const Agent: Tool = {
   target: (input) => onMachine(input, input.prompt),
   run: (input, ctx) => guard(async () => {
     const fork = String(input.subagent_type ?? "").toLowerCase() === "fork";
-    const a = await agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
+    const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
+    const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.`);
     if (a.status === "waiting") return ok(`Agent ${a.id} parked on ${waits.describeActive(a.session_id) || "a scheduled wait"} and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
     return a.status === "completed" ? ok(agents.reportBlock(a)) : fail(agents.reportBlock(a));
@@ -195,7 +196,7 @@ const wait_agent: Tool = {
   },
   run: (input, ctx) => guard(async () => {
     const t = Math.min(Math.max(Number(input.timeout_ms ?? 300_000), 1000), 3_600_000);
-    const res = await agents.waitAll(ctx.sessionId, input.targets, t, ctx.signal);
+    const res = await blocks(ctx, () => agents.waitAll(ctx.sessionId, input.targets, t, ctx.signal));
     const status: Record<string, unknown> = {};
     // Only a finished answer is completed: a stopped agent is interrupted (with
     // who stopped it), one that ran out of steps or output, or declined, is incomplete.
@@ -236,7 +237,18 @@ export function ackStoredWaits(sessionId: string, results: { tool_use_id: string
 // same commit: a crash later in the step does not deliver them again.
 export const waitAckHooks: TurnHooks = {
   resultStored: (s, results) => ackStoredWaits(s.id, results),
+  // A call that blocks on agents waits on the owner when every agent still at
+  // work does (a question, a card): a drain does not wait for such a call.
+  awaitsOwner: (sessionId, callId) => blocking.has(waitKey(sessionId, callId)) && agents.allWaitOnOwner(sessionId),
 };
+
+// The calls that block until agents end (wait_agent, an Agent call that is not in the background), while they wait.
+const blocking = new Set<string>();
+async function blocks<T>(ctx: ToolContext, run: () => Promise<T>): Promise<T> {
+  const key = waitKey(ctx.sessionId, ctx.callId ?? "");
+  blocking.add(key);
+  try { return await run(); } finally { blocking.delete(key); }
+}
 
 const close_agent: Tool = {
   name: "close_agent",
