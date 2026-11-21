@@ -122,10 +122,17 @@ test("every kind of backup restores by itself", async () => {
     say("five"); // in no backup
 
     expect([full.kind, delta.kind, delta.base, copied.kind]).toEqual(["full", "delta", full.name, "full"]);
+    // A full backup is read back whole before it has its name; a delta is checked for its pages, and whole a little later.
+    expect([full.checked, delta.checked, copied.checked]).toEqual(["whole", "pages", "whole"]);
+    expect(manifestOf(delta.path).database.checked).toBe("pages");
+    expect(await storage.checkBackups()).toEqual({ checked: 1, failed: [], store_ok: true });
+    expect(storage.backups().find((b) => b.name === delta.name)).toMatchObject({ checked: "whole" });
+    expect(JSON.parse(readFileSync(join(delta.path, "checked.json"), "utf8"))).toMatchObject({ ok: true });
+    expect(await storage.checkBackups()).toEqual({ checked: 0, failed: [], store_ok: null });
     expect([manifestOf(full.path).database.source, manifestOf(delta.path).database.source, manifestOf(copied.path).database.source]).toEqual(["file", "file", "vacuum"]);
     // The delta holds the pages that changed, not the database: a few of its hundreds.
     expect(manifestOf(delta.path).database.changed).toBeLessThan(manifestOf(delta.path).database.pages / 10);
-    expect(readdirSync(delta.path).sort()).toEqual(["catalog.json", "keel.db.delta.zst", "manifest.json", "settings.json"]);
+    expect(readdirSync(delta.path).sort()).toEqual(["catalog.json", "checked.json", "keel.db.delta.zst", "manifest.json", "settings.json"]);
     expect(statSync(join(delta.path, "keel.db.delta.zst")).size).toBeLessThan(statSync(join(full.path, "keel.db.zst")).size / 2);
     for (const [name, path] of [["full", full.path], ["delta", delta.path], ["copied", copied.path], ["older", older]] as const) {
       expect(verify(path)).toMatchObject({ ok: true, sessions: 1, events: want[name]!.length });
@@ -174,6 +181,16 @@ test("a delta without its full backup is refused, and the next backup is whole a
     writeFileSync(join(full.path, "keel.db.zst"), damaged);
     const last = deltas.at(-1)!;
     expect(verify(last.path).ok).toBe(false);
+    // The check that follows a backup finds it: the deltas kept are said not to read back, and their full backup with them.
+    const captured: string[] = [];
+    (storage as any).errors = { capture: (_s: string, e: Error) => void captured.push(e.message) };
+    const found = await storage.checkBackups();
+    expect(found).toMatchObject({ checked: 5, store_ok: true });
+    expect(found.failed.sort()).toEqual(deltas.slice(1).map((d) => d.name).sort());
+    expect(storage.backups().map((b) => [b.reason, !!b.failed])).toEqual([["delta 5", true], ["delta 4", true], ["delta 3", true], ["delta 2", true], ["delta 1", true], ["full", true]]);
+    expect(captured[0]).toContain("does not read back");
+    expect(captured[0]).toContain("The next backup is a full one.");
+    for (const b of storage.backups()) rmSync(join(b.path, "checked.json"), { force: true });
     const refused = await restoredBy(last.path, dst);
     expect(refused.code).not.toBe(0);
     expect(refused.said).toContain("the backup cannot be restored");

@@ -7,15 +7,20 @@
 // snapshot that is not the database file alone is asked for once more, then
 // the backup is made from a copy instead. It answers once and the daemon
 // ends it.
-import { makeBackup, Snapshot, type BackupJob } from "./backup.ts";
+import { checkBackups, makeBackup, Snapshot, type BackupJob, type CheckJob } from "./backup.ts";
 
 declare const self: Worker;
 
 const TRIES = 2;
 const DAEMON_MS = 10_000; // for the daemon to answer: it may be in a long step of its own
 
-self.onmessage = (e: MessageEvent<{ job: BackupJob; gate: Int32Array }>) => {
-  const { job, gate } = e.data;
+self.onmessage = (e: MessageEvent<{ job: BackupJob | CheckJob; gate: Int32Array }>) => {
+  const { gate } = e.data;
+  // The check that follows a backup: nothing of the daemon is asked for.
+  if ("check" in e.data.job) {
+    try { return self.postMessage({ t: "done", done: checkBackups(e.data.job) }); } catch (err) { return self.postMessage({ t: "failed", error: (err as Error).message }); }
+  }
+  const job = e.data.job;
   let snap: Snapshot | undefined;
   try {
     snap = new Snapshot(job.stateDir);

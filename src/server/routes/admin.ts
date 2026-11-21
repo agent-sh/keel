@@ -86,6 +86,12 @@ export const adminRoutes: RouteModule = (deps) => {
     if (!settings().backup.before_restart) return;
     try { await storage.backup("before a restart"); } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
   });
+  // The check that follows a backup (a delta made before a restart is read
+  // back whole by the daemon that starts after it): a while after the start,
+  // when the turns it continued have their first requests out.
+  const checkLater = (ms: number) => { const t = setTimeout(() => storage.checkBackups().catch((e) => errors.capture("server", e, { at: "backup check" })), ms); (t as any).unref?.(); return t; };
+  clearTimeout(prev?.checking);
+  const checking = prev || runMode.client ? undefined : checkLater(120_000);
   onSettings(() => awake.update());
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));
   const daily = setInterval(policy, 86_400_000);
@@ -96,7 +102,7 @@ export const adminRoutes: RouteModule = (deps) => {
   const keep = () => retention.tick().then((r) => { if (r) storage.stale(); }, (e) => errors.capture("server", e, { at: "retention" }));
   const hourly = setInterval(keep, 3_600_000);
   (hourly as any).unref?.();
-  G.__keelAdmin = { awake, daily, hourly, daemon, retention };
+  G.__keelAdmin = { awake, daily, hourly, daemon, retention, checking };
   // The record of this start (src/admin/life.ts): the page follows it as the
   // cut turns are decided, and when it is whole it is the log's account of the
   // restart, and one Activity row when the owner has something to look at (the
@@ -219,7 +225,12 @@ export const adminRoutes: RouteModule = (deps) => {
 
     "/api/backups": {
       GET: () => json({ backups: storage.backups(), settings: settings().backup }),
-      POST: async () => json({ backup: await storage.backup("asked for") }, 201),
+      POST: async () => {
+        const backup = await storage.backup("asked for");
+        // Read back whole after the answer (a delta is checked for its pages before it has its name).
+        checkLater(0);
+        return json({ backup }, 201);
+      },
     },
 
     "/api/daemon": { GET: () => json(daemon.status()) },

@@ -13,7 +13,7 @@ import { confirmAction } from "./Confirm.tsx";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
-type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null };
+type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null };
 const ENDED: Record<NonNullable<Restart["before"]>["how"] | "unknown", string> = { killed: "Went down", crash: "Failed", restart: "Restarted", stop: "Stopped", unknown: "Not known" };
 const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Resumed", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
@@ -132,7 +132,7 @@ export function DaemonPanel() {
         </SettingRow>
         <SettingRow
           label="Restart"
-          hint={draining ? `Waiting for running turns since ${when(draining.since_ms)}; new work is held until the daemon is back.` : (
+          hint={draining ? `${draining.backup_since_ms ? `Making the backup since ${when(draining.backup_since_ms)}` : `Waiting for running turns since ${when(draining.since_ms)}`}; new work is held until the daemon is back.` : (
             <>
               New work waits, running turns finish, and the daemon starts again{st.systemd ? " under systemd" : " from its own binary"}. A backup is made first{settings?.backup.before_restart === false ? " when that is on in Storage" : ""}.
               {st.restart_failed && (

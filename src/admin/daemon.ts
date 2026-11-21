@@ -149,7 +149,9 @@ const DRAIN_PASSES = new RegExp(
 );
 
 export class Daemon {
-  draining: { since_ms: number; restart: boolean; deadline_ms: number } | null = null;
+  // `backup_since_ms`: the running turns had their time and the backup the
+  // restart waits on is being made.
+  draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null = null;
   // The process's start (a hot reload makes a new Daemon in the same process).
   readonly started: number = ((globalThis as any).__keelStarted ??= Date.now());
   // The last restart that was called off (what had to hold before it did not),
@@ -247,6 +249,7 @@ export class Daemon {
       await this.deps.engine.settle(opts.timeoutMs);
       if (this.draining!.restart) {
         try {
+          if (this.beforeRestart.length) { this.draining!.backup_since_ms = Date.now(); this.emit(); }
           for (const f of this.beforeRestart) await f();
         } catch (e) {
           // Called off before a turn was cut: this daemon goes on as it was.

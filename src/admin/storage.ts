@@ -4,10 +4,10 @@
 // leftovers of deleted sessions, the owner's archive policy, and backups of
 // the durable state that are checked when written and can be restored.
 import { createHash } from "node:crypto";
-import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { checkDatabase, configFiles, DB_FILES, listBackups, materialize, verify, verifyFiles, type Backup, type BackupDone, type BackupJob } from "./backup.ts";
+import { CHECKED, checkDatabase, checkedOf, configFiles, DB_FILES, listBackups, materialize, syncPath, verify, verifyFiles, type Backup, type BackupDone, type BackupJob, type CheckDone, type CheckJob, type Checked } from "./backup.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
@@ -84,7 +84,12 @@ export class Storage {
   private measuring?: Promise<StorageReport>;
 
   // `config`: the owner's config folder, which a backup carries with the state. Named by the daemon; none, none carried.
-  constructor(private store: Store, private engine: Engine, private bus: Bus, private errors: ErrorTracker, private config?: string) {}
+  constructor(private store: Store, private engine: Engine, private bus: Bus, private errors: ErrorTracker, private config?: string) {
+    // The write-ahead log grows while a backup holds its snapshot (the
+    // daemon's writes wait in it); once it is emptied again the file goes
+    // back to this size instead of staying as large as it ever was.
+    try { store.db.run(`PRAGMA journal_size_limit = ${16 << 20}`); } catch {}
+  }
 
   get dir() { return this.store.stateDir; }
 
@@ -347,9 +352,10 @@ export class Storage {
       // The worker reads the database file itself once the write-ahead log is
       // emptied into it: asked for here, between two writes of the daemon.
       const checkpoint = () => { try { this.store.db.run("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} }; // not emptied: the worker sees that
-      const done = await inWorker({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(this.config ? { config: resolve(this.config) } : {}) }, checkpoint);
+      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(this.config ? { config: resolve(this.config) } : {}) }, checkpoint);
       if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
       renameSync(tmp, final);
+      syncPath(this.backupRoot); // the name itself is on disk
     } catch (e) {
       rmSync(tmp, { recursive: true, force: true });
       throw e;
@@ -357,6 +363,42 @@ export class Storage {
     this.prune();
     this.last = undefined;
     return this.backups().find((b) => b.name === basename(final))!;
+  }
+
+  // The check that follows a backup (src/admin/backup.ts says which backup
+  // was checked for what): each kept backup that was not read back whole yet
+  // is, in the worker, and the store passes SQLite's integrity check as it
+  // is now. The result is written beside each manifest; a backup that does
+  // not read back is captured, shown in the list, and never built on, so the
+  // next backup is a full one. Run by the daemon a while after its start
+  // and after a backup that was asked for: never while a restart waits.
+  checkBackups(): Promise<{ checked: number; failed: string[]; store_ok: boolean | null }> {
+    const run = this.backing.then(async () => {
+      const due = this.backups().filter((b) => !b.unreadable && b.kind && b.checked === "pages" && !b.failed && !b.base_missing);
+      if (!due.length) return { checked: 0, failed: [], store_ok: null };
+      const done = await inWorker<CheckDone>({ check: due.map((b) => b.path), stateDir: this.dir });
+      const failed: string[] = [];
+      const write = (dir: string, c: Checked) => { writeFileSync(join(dir, CHECKED), JSON.stringify(c), { mode: 0o600 }); syncPath(join(dir, CHECKED)); };
+      for (const r of done.backups) {
+        if (!existsSync(join(r.dir, "manifest.json"))) continue; // pruned meanwhile
+        write(r.dir, { checked_ms: Date.now(), ok: r.ok, ...(r.why ? { why: r.why } : {}) });
+        if (r.ok) continue;
+        failed.push(basename(r.dir));
+        // The full backup it is read over, when that is what is damaged: marked, so nothing more is built on it.
+        const base = due.find((b) => b.path === r.dir)?.base;
+        const baseDir = base ? join(this.backupRoot, base) : undefined;
+        if (baseDir && existsSync(join(baseDir, "manifest.json")) && !checkedOf(baseDir)) {
+          const v = verify(baseDir);
+          if (!v.ok) write(baseDir, { checked_ms: Date.now(), ok: false, why: v.why });
+        }
+        this.errors.capture?.("server", new Error(`the backup ${basename(r.dir)} does not read back: ${r.why}. The next backup is a full one.`), { at: "backup check" });
+      }
+      if (done.store && !done.store.ok) this.errors.capture?.("server", new Error(`the database did not pass SQLite's integrity check: ${done.store.why}. Backups made since the last full one may hold the damage.`), { at: "backup check" });
+      this.last = undefined;
+      return { checked: done.backups.length, failed, store_ok: done.store?.ok ?? null };
+    });
+    this.backing = run.catch(() => {});
+    return run;
   }
 
   private prune() {
@@ -376,27 +418,33 @@ export class Storage {
 // file to start a worker from; run from source, the worker is its file.
 declare const __KEEL_BACKUP_WORKER_JS__: string | undefined;
 
-// Runs one backup job in a worker of its own and ends the worker. A worker
-// that dies without an answer fails the backup.
+// Runs one job in a worker of its own and ends the worker. A worker that
+// dies without an answer, or gives none within WORKER_MS, fails the job: a
+// restart that waits on its backup is then called off, not left waiting.
+// (The slowest backup measured on a 1.7 GB store under load took two and a
+// half minutes; the limit is ten times that.)
 const HOLD_MS = 25;
-function inWorker(job: BackupJob, checkpoint: () => void): Promise<BackupDone> {
+const WORKER_MS = 30 * 60_000;
+function inWorker<T>(job: BackupJob | CheckJob, checkpoint?: () => void): Promise<T> {
   return new Promise((ok, fail) => {
     const built = typeof __KEEL_BACKUP_WORKER_JS__ === "string" ? URL.createObjectURL(new Blob([__KEEL_BACKUP_WORKER_JS__], { type: "text/javascript" })) : undefined;
     const w = new Worker(built ?? new URL("./backup-worker.ts", import.meta.url).href);
     const end = (f: () => void) => {
+      clearTimeout(limit);
       w.terminate();
       if (built) URL.revokeObjectURL(built);
       f();
     };
+    const limit = setTimeout(() => end(() => fail(new Error(`the backup worker gave no answer in ${WORKER_MS / 60_000} minutes`))), WORKER_MS);
     // The worker takes its snapshot between two writes of the daemon: the
     // log is emptied here, and the daemon holds still until the worker has
-    // its read transaction (well under a millisecond; never longer than
-    // HOLD_MS, after which the worker finds out by itself and asks again).
+    // its read transaction (never longer than HOLD_MS, after which the
+    // worker finds out by itself and asks again).
     const gate = new Int32Array(new SharedArrayBuffer(4));
-    w.onmessage = (e: MessageEvent<{ t: "checkpoint" } | { t: "done"; done: BackupDone } | { t: "failed"; error: string }>) => {
+    w.onmessage = (e: MessageEvent<{ t: "checkpoint" } | { t: "done"; done: T } | { t: "failed"; error: string }>) => {
       const m = e.data;
       if (m.t === "checkpoint") {
-        checkpoint();
+        checkpoint?.();
         Atomics.store(gate, 0, 1);
         Atomics.notify(gate, 0);
         Atomics.wait(gate, 0, 1, HOLD_MS);
@@ -454,7 +502,7 @@ export function restore(stateDir: string, backupDir: string, config?: string) {
   const inBackup = held ? [...copied, "keel.db"] : copied;
   try {
     mkdirSync(at(stage), { recursive: true });
-    for (const f of copied) copyFileSync(join(backupDir, f), at(stage, f));
+    for (const f of copied) { copyFileSync(join(backupDir, f), at(stage, f)); syncPath(at(stage, f)); }
     if (held) {
       try { materialize(backupDir, held, at(stage, "keel.db")); } catch (e) { throw new NotRestorable((e as Error).message); }
       check = checkDatabase(at(stage, "keel.db"));
@@ -485,8 +533,12 @@ export function restore(stateDir: string, backupDir: string, config?: string) {
   try { writeSync(tmp, JSON.stringify(pending)); fsyncSync(tmp); } finally { closeSync(tmp); }
   renameSync(at(`${PENDING}.tmp`), at(PENDING));
   try {
+    syncPath(at(stage));
     mkdirSync(at(aside), { recursive: true });
     for (const [from, to] of pending.moves) renameSync(at(from), at(to));
+    // The renames themselves on disk before the note of the swap goes.
+    syncPath(at(aside));
+    syncPath(stateDir);
   } catch (e) {
     let undone = true;
     try { undoCutRestore(stateDir); } catch { undone = false; }

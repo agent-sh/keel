@@ -305,7 +305,25 @@ both. A delta is taken while the changed pages are at most one in `keep`
 (the number of backups kept, 5 by default), so the deltas beside a full
 backup never outweigh a second one. A full backup stays for as long as a
 kept backup is read over it. Each backup records the SHA-256 of the
-database it restores to and is read back against it when written.
+database it restores to, and a restore checks it.
+
+What a backup was checked for before it got its name:
+
+- A full backup: SQLite's integrity check passed on the snapshot that was
+  read, and the file was read back whole to the recorded SHA-256.
+- A delta: every page that differs from its full backup is in it, read from
+  one snapshot; the delta was read back and each page matches; its full
+  backup's file has the SHA-256 it was written with. It is not read back
+  whole and SQLite's check is not run then: both take time in proportion to
+  the store, and a restart waits on its backup.
+- The daemon does both after: two minutes after it starts, and right after
+  a backup that was asked for. It reads each such delta back whole and runs
+  the integrity check on the store. The list says "pages checked" until
+  then. A backup that does not read back is shown as such and reported in
+  Errors, and the next backup is a full one.
+
+Every file a backup writes is synced to disk, then its folder, before the
+folder gets its name; a restore syncs what it writes and its renames.
 
 Config files are copied at their own mode into folders only the owner can
 open. A file that did not change since the last backup is shared with that

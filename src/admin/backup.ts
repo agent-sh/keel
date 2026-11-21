@@ -13,18 +13,49 @@
 //           backup and puts these pages over it.
 //   (none)  keel.db, a plain copy: what a keel before this one wrote.
 // Whatever the kind, the manifest holds the SHA-256 of the whole database
-// file a restore must end up with, and a backup counts only once reading it
-// back from what was written gives exactly that.
+// file a restore must end up with, and a restore checks it.
+//
+// What a backup was checked for before it got its name (database.checked):
+//   whole   a full backup: SQLite's integrity check passed on the snapshot
+//           that was read, and the file was read back whole to that SHA-256.
+//   pages   a delta: every page that differs from its full backup is in it,
+//           read from one snapshot; the delta was read back and each page in
+//           it is the snapshot's; its full backup is the one it names (by
+//           the database's SHA-256) and its file has the SHA-256 it was
+//           written with.
+//           It was not read back whole over its full backup and SQLite's
+//           check was not run: both take time in proportion to the store,
+//           and a restart waits on its backup. They are done after it, by
+//           the daemon (Storage.checkBackups), and written beside the
+//           manifest (checked.json): until then the list says "pages".
+// Every file a backup writes is synced to disk, then its folder, before the
+// folder gets its name.
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { GRANT_FILES, writeAll } from "../core/ownfile.ts";
 
 // `config`: the config folder the backup carries files of, when it carries any.
 // `kind`: how it holds the database; `base`: the full backup a delta is read
 // over, and `base_missing` when that one is gone (it cannot be restored).
-export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string; kind?: "full" | "delta"; base?: string; base_missing?: true };
+// `checked`: what it was checked for (see the top of this file), "whole" also
+// once the later check read it back; `failed`: that check found it does not
+// read back, and why.
+export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string };
+
+// The later check of a backup, written beside its manifest.
+export const CHECKED = "checked.json";
+export type Checked = { checked_ms: number; ok: boolean; why?: string };
+export function checkedOf(dir: string): Checked | undefined {
+  try { return JSON.parse(readFileSync(join(dir, CHECKED), "utf8")) as Checked; } catch { return undefined; }
+}
+
+// A file's bytes, or a folder's entries, on disk: a backup that has its name is whole after a power cut too.
+export function syncPath(path: string) {
+  const fd = openSync(path, "r");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 
 export type ManifestFile = { name: string; bytes: number; sha256: string; mtime_ms?: number; mode?: number; older_keel?: true };
 // The database a backup holds: the size of the file a restore writes
@@ -33,7 +64,7 @@ export type ManifestFile = { name: string; bytes: number; sha256: string; mtime_
 // is read over (by name and by that database's SHA-256) and how many pages
 // it carries. `source`: read from the database file under a read snapshot,
 // or from a VACUUM INTO copy when no such snapshot could be had.
-export type DbInfo = { kind: "full" | "delta"; page_size: number; pages: number; sha256: string; frames: number[]; base?: string; base_sha256?: string; changed?: number; source: "file" | "vacuum" };
+export type DbInfo = { kind: "full" | "delta"; page_size: number; pages: number; sha256: string; frames: number[]; base?: string; base_sha256?: string; changed?: number; source: "file" | "vacuum"; checked?: "whole" | "pages" };
 export type Manifest = { created_ms: number; reason: string; sessions: number; events: number; files: ManifestFile[]; database?: DbInfo; config?: { dir: string; skipped: { name: string; why: string }[] } };
 
 const FULL = "keel.db.zst", PAGES = "keel.db.pages", DELTA = "keel.db.delta.zst";
@@ -71,10 +102,12 @@ export function listBackups(root: string): Backup[] {
         const m = JSON.parse(readFileSync(join(path, "manifest.json"), "utf8"));
         if (typeof m.created_ms !== "number" || !Array.isArray(m.files)) throw new Error("it lacks created_ms or files");
         const d = m.database as DbInfo | undefined;
+        const later = d ? checkedOf(path) : undefined;
         return {
           name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0),
           ...(typeof m.config?.dir === "string" ? { config: m.config.dir } : {}),
-          ...(d ? { kind: d.kind } : {}),
+          ...(d ? { kind: d.kind, checked: later?.ok ? "whole" as const : d.checked ?? "whole" as const } : {}),
+          ...(later && !later.ok ? { failed: later.why ?? "it does not read back" } : {}),
           ...(d?.kind === "delta" && d.base ? { base: d.base, ...(existsSync(join(root, d.base, "manifest.json")) ? {} : { base_missing: true as const }) } : {}),
         };
       } catch (e) {
@@ -170,6 +203,7 @@ export function verifyFiles(dir: string): { ok: true; manifest?: Manifest } | { 
   if (!m.database && !existsSync(join(dir, "keel.db"))) return { ok: false, why: "no keel.db in it" };
   for (const f of m.files) {
     if (f.older_keel) continue; // a sentence for a keel that cannot restore this backup, not a file
+    if (f.name === PAGES) continue; // what the next backup compares with: a restore never reads it, and a damaged one makes that backup a full one
     if (!existsSync(join(dir, f.name))) return { ok: false, why: `${f.name} is missing` };
     const sha = hashFile(join(dir, f.name));
     if (sha !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
@@ -216,8 +250,10 @@ export type BackupDone = { sessions: number; events: number; skipped: { name: st
 // The database as it is at one moment, for the length of a backup.
 //
 // The daemon is the only writer. It empties the write-ahead log into the
-// database file (a TRUNCATE checkpoint) and tells the worker, which begins a
-// read transaction and looks at the log: still empty means the transaction
+// database file (a TRUNCATE checkpoint: quick when the worker's flush left
+// it little, as long as the pages it must still write when the daemon is
+// writing hard) and holds still for the worker, at most 25 ms. The worker
+// begins a read transaction and looks at the log: still empty means the transaction
 // reads the database file and nothing else, and for as long as it is open
 // SQLite writes nothing into that file (a checkpoint may not overwrite a
 // page a reader can still see; what the daemon commits meanwhile waits in
@@ -284,9 +320,13 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
       if (!(e instanceof ShortFile)) throw e;
     }
     if (made) {
-      // The same snapshot the pages were read under: the check is of the bytes that were backed up.
-      const why = integrity(snap.db);
-      if (why) throw new Error(`the database did not check out: ${why}`);
+      // A full backup: SQLite's check, on the same snapshot the pages were
+      // read under, so it is of the bytes that were backed up. A delta's
+      // check comes after it has its name (see the top of this file).
+      if (made.info.kind === "full") {
+        const why = integrity(snap.db);
+        if (why) throw new Error(`the database did not check out: ${why}`);
+      }
     } else for (const f of DB_FILES) rmSync(join(tmp, f), { force: true });
   }
   if (!made) {
@@ -366,7 +406,48 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
     ...(carried ? { config: { dir: carried.dir, skipped: carried.skipped } } : {}),
   };
   writeFileSync(join(tmp, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+  // On disk before the folder gets its name: every file this backup wrote
+  // (one shared with an earlier backup or the store is already there), then
+  // every folder in it.
+  const folders = new Set<string>([tmp]);
+  for (const f of manifest.files) {
+    if (f.older_keel) continue;
+    const path = join(tmp, f.name);
+    for (let d = dirname(path); d.length > tmp.length; d = dirname(d)) folders.add(d);
+    if (statSync(path).nlink === 1) syncPath(path);
+  }
+  syncPath(join(tmp, "manifest.json"));
+  for (const d of [...folders].sort((a, b) => b.length - a.length)) syncPath(d);
   return { sessions: made.sessions, events: made.events, skipped: carried?.skipped ?? [], ...(carried ? { config: carried.dir } : {}) };
+}
+
+// The check that follows a backup: each of `dirs` read back whole (a delta
+// over its full backup) against the SHA-256 its manifest names, and, with
+// `stateDir`, SQLite's integrity check of the store as it is now. Run in the
+// worker; the daemon writes each result beside the manifest it is of.
+export type CheckJob = { check: string[]; stateDir?: string };
+export type CheckDone = { backups: { dir: string; ok: boolean; why?: string }[]; store?: { ok: boolean; why?: string } };
+export function checkBackups(job: CheckJob): CheckDone {
+  const backups = job.check.map((dir) => {
+    let r: ReturnType<typeof verify>;
+    try { r = verify(dir); } catch (e) { r = { ok: false, why: (e as Error).message }; }
+    return r.ok ? { dir, ok: true } : { dir, ok: false, why: r.why };
+  });
+  let store: CheckDone["store"];
+  if (job.stateDir) {
+    let db: Database | undefined;
+    try {
+      db = new Database(join(job.stateDir, "keel.db"), { readonly: true });
+      db.run("PRAGMA cache_size = -32768");
+      const why = integrity(db);
+      store = why ? { ok: false, why } : { ok: true };
+    } catch (e) {
+      store = { ok: false, why: (e as Error).message };
+    } finally {
+      db?.close();
+    }
+  }
+  return { backups, ...(store ? { store } : {}) };
 }
 
 // ---- the database of a backup ----
@@ -400,11 +481,12 @@ function frame(fd: number, data: Uint8Array, frames: number[]) {
 // and are the ones its manifest names, and its pages are this size.
 function findBase(root: string, size: number): { name: string; info: DbInfo; hashes: Buffer } | undefined {
   const b = listBackups(root).find((b) => !b.unreadable && b.kind === "full");
-  if (!b) return;
+  if (!b || b.failed) return;
   try {
     const m = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8")) as Manifest;
     const info = m.database!, idx = m.files.find((f) => f.name === PAGES), db = m.files.find((f) => f.name === FULL);
-    if (info.page_size !== size || !idx || !db || statSync(join(b.path, FULL)).size !== db.bytes) return;
+    // The chain's checksum: the full backup's file is the bytes its manifest names (a pass over the compressed file).
+    if (info.page_size !== size || !idx || !db || statSync(join(b.path, FULL)).size !== db.bytes || hashFile(join(b.path, FULL)) !== db.sha256) return;
     const hashes = readFileSync(join(b.path, PAGES));
     if (hashes.length !== info.pages * PAGE_HASH || createHash("sha256").update(hashes).digest("hex") !== idx.sha256) return;
     return { name: b.name, info, hashes };
@@ -462,8 +544,20 @@ function writeDatabase(path: string, size: number, pages: number, source: DbInfo
         } finally {
           closeSync(out);
         }
-        const info: DbInfo = { kind: "delta", page_size: size, pages, sha256, frames, base: base.name, base_sha256: base.info.sha256, changed: changed.length, source };
-        if (reads(info)) return { info, files: [DELTA] };
+        const info: DbInfo = { kind: "delta", page_size: size, pages, sha256, frames, base: base.name, base_sha256: base.info.sha256, changed: changed.length, source, checked: "pages" };
+        // Read back from what was written: every page it holds is the
+        // snapshot's page, and it holds every changed one. The whole
+        // database over the full backup is read back later (checked.json).
+        let held = 0, same = true;
+        try {
+          for (const b of framesOf(join(job.tmp, DELTA), frames)) {
+            for (let o = 0; o + 4 + size <= b.length && same; o += 4 + size, held++) {
+              const p = b.readUInt32BE(o);
+              same = p === changed[held] && createHash("sha256").update(b.subarray(o + 4, o + 4 + size)).digest().compare(hashes, p * PAGE_HASH, (p + 1) * PAGE_HASH, 0, PAGE_HASH) === 0;
+            }
+          }
+        } catch { same = false; }
+        if (same && held === changed.length) return { info, files: [DELTA] };
         rmSync(join(job.tmp, DELTA), { force: true });
       }
     }
@@ -476,7 +570,7 @@ function writeDatabase(path: string, size: number, pages: number, source: DbInfo
       closeSync(out);
     }
     writeFileSync(join(job.tmp, PAGES), hashes, { mode: 0o600 });
-    const info: DbInfo = { kind: "full", page_size: size, pages, sha256, frames, source };
+    const info: DbInfo = { kind: "full", page_size: size, pages, sha256, frames, source, checked: "whole" };
     if (!reads(info)) throw new Error("the backup did not check out: the database does not read back as it was written");
     return { info, files: [FULL, PAGES] };
   } finally {
@@ -497,7 +591,9 @@ function* framesOf(path: string, lengths: number[]): Generator<Buffer> {
         got += n;
       }
       at += len;
-      yield Buffer.from(Bun.zstdDecompressSync(z));
+      let out: Uint8Array;
+      try { out = Bun.zstdDecompressSync(z); } catch { throw new Error(`${basename(dirname(path))}/${basename(path)} is damaged: the frame at byte ${at - len} does not decompress`); }
+      yield Buffer.from(out);
     }
   } finally {
     closeSync(fd);
@@ -561,6 +657,7 @@ export function materialize(dir: string, info: DbInfo, dest: string) {
   try {
     try {
       streamImage(dir, info, (b) => { hash.update(b); writeAll(fd, b); });
+      fsyncSync(fd);
     } finally {
       closeSync(fd);
     }

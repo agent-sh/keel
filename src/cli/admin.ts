@@ -92,7 +92,7 @@ const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, away: { type:
   out({ ...d, awake: a }, !!v.json, () => [
     `daemon   pid ${d.pid}, up ${dur(d.uptime_ms)}, bun ${d.bun}${d.systemd ? ", under systemd" : ""}`,
     `state    ${d.state_dir}`,
-    `turns    ${d.running.length} running${d.draining ? `; draining${d.draining.restart ? " for a restart" : ""} since ${time(d.draining.since_ms)}` : ""}`,
+    `turns    ${d.running.length} running${d.draining ? `; draining${d.draining.restart ? " for a restart" : ""} since ${time(d.draining.since_ms)}${d.draining.backup_since_ms ? `, making the backup since ${time(d.draining.backup_since_ms)}` : ""}` : ""}`,
     d.restart_failed ? `restart  called off at ${time(d.restart_failed.ts_ms)}. ${d.restart_failed.error}` : "",
     // The last start: when the daemon before it went down, how, and each turn that cut.
     ...(d.last_start && (d.last_start.before || d.last_start.turns.length) ? [`start    ${restartSummary(d.last_start)}`, ...d.last_start.turns.map((t: RestartTurn) => `           ${restartTurnLine(t)}${t.state === "held" && t.why ? `\n             ${t.why}` : ""}`)] : []),
@@ -104,12 +104,20 @@ const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, away: { type:
 // Waits for the daemon to go away (and, for a restart, to answer again). A
 // restart the daemon called off (its backup failed) ends the wait with its reason.
 async function follow(url: string, oldPid: number, back: boolean, limitMs: number) {
-  const until = Date.now() + limitMs;
-  let gone = false;
+  let until = Date.now() + limitMs;
+  // A daemon that says it is still draining is alive and at work (the backup
+  // a restart waits on can take minutes on a large store): it is followed
+  // for as long as it says so, up to the backup's own limit.
+  const hard = Date.now() + limitMs + 30 * 60_000;
+  let gone = false, said = false;
   while (Date.now() < until) {
     await Bun.sleep(500);
     const d = await call(url, "/api/daemon").catch(() => null);
     if (d && d.pid === oldPid && !d.draining && d.restart_failed) throw new Error(`the restart was called off, and the daemon (pid ${oldPid}) takes work again. ${d.restart_failed.error}`);
+    if (d && d.pid === oldPid && d.draining) {
+      until = Math.min(hard, Math.max(until, Date.now() + 90_000));
+      if (d.draining.backup_since_ms && !said) { said = true; console.log("making the backup the restart waits on"); }
+    }
     if (!d || d.pid !== oldPid) gone = true;
     if (gone && !back) return true;
     if (gone && d && d.pid !== oldPid) return d;
@@ -192,7 +200,7 @@ const backup = wrap("keel backup [--url URL]  A checked copy of the database, th
 
 const backups = wrap("keel backups [--url URL] [--json]", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups");
-  out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})${b.base ? `  the changes since ${b.base}${b.base_missing ? ", which is gone: this one cannot be restored" : ""}` : ""}`).join("\n") || "no backups");
+  out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})${b.base ? `  the changes since ${b.base}${b.base_missing ? ", which is gone: this one cannot be restored" : ""}` : ""}${b.failed ? `  DOES NOT READ BACK: ${b.failed}` : b.checked === "pages" ? "  its pages checked; not yet read back whole" : ""}`).join("\n") || "no backups");
   return 0;
 });
 
