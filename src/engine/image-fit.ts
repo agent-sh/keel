@@ -40,32 +40,58 @@ function why(e: unknown): string {
   }
 }
 
+// At most four images are decoded at once in the whole process, whoever asks
+// (a dozen sessions building their first request after a restart, tool
+// results, prompts): a decode holds the image's pixels, up to 256 MB each
+// (DECODE_PIXELS), so four bound the work at about 1 GB instead of one share
+// per image asked for. The rest wait their turn; nothing is skipped.
+const DECODES = 4;
+let decodes = 0;
+const queue: (() => void)[] = [];
+async function decoding<T>(work: () => Promise<T>): Promise<T> {
+  if (decodes >= DECODES) await new Promise<void>((go) => queue.push(go)); // the slot is handed over
+  else decodes++;
+  try {
+    return await work();
+  } finally {
+    const next = queue.shift();
+    if (next) next();
+    else decodes--;
+  }
+}
+
 // The block as `l` allows it: itself when it passes, else scaled to fit with
 // its aspect ratio kept. A PNG stays PNG (text in a screenshot stays sharp), a
 // JPEG stays JPEG, any other format becomes PNG; a copy still over the byte
 // limit is encoded as JPEG, then made smaller until it passes.
 export async function fitImage(b: ImageBlock, l: ImageLimits): Promise<Fitted> {
-  const bytes = Buffer.from(b.data, "base64");
-  const open = () => new Bun.Image(bytes, { maxPixels: DECODE_PIXELS });
-  let meta: Bun.Image.Metadata;
-  try { meta = await open().metadata(); } catch (e) { return { refused: why(e) }; }
-  const type = `image/${meta.format}`;
-  let { w, h } = fitSize(meta.width, meta.height, l);
   const heavy = (data: string) => !!l.base64 && data.length > l.base64;
-  if (w === meta.width && h === meta.height && l.formats.includes(type) && !heavy(b.data)) return { block: b.media_type === type ? b : { type: "image", media_type: type, data: b.data } };
-  let jpeg = meta.format === "jpeg";
-  try {
-    for (let i = 0; i < 12; i++) {
-      const img = w === meta.width && h === meta.height ? open() : open().resize(w, h);
-      const data = Buffer.from(await (jpeg ? img.jpeg({ quality: 85 }) : img.png()).bytes()).toString("base64");
-      if (!heavy(data)) return { block: { type: "image", media_type: jpeg ? "image/jpeg" : "image/png", data }, from: { w: meta.width, h: meta.height, type }, to: { w: img.width, h: img.height } };
-      if (!jpeg) jpeg = true;
-      else { w = Math.max(1, Math.round(w * 0.75)); h = Math.max(1, Math.round(h * 0.75)); }
+  // Within the limits by its header: the block itself, and nothing is decoded
+  // (not even its base64), so an ordinary image costs no memory here.
+  const size = imageSize(b.data), sniffed = sniff(b.data);
+  if (size && sniffed && within(size.w, size.h, l) && l.formats.includes(sniffed) && !heavy(b.data)) return { block: b.media_type === sniffed ? b : { type: "image", media_type: sniffed, data: b.data } };
+  return decoding(async () => {
+    const bytes = Buffer.from(b.data, "base64");
+    const open = () => new Bun.Image(bytes, { maxPixels: DECODE_PIXELS });
+    let meta: Bun.Image.Metadata;
+    try { meta = await open().metadata(); } catch (e) { return { refused: why(e) }; }
+    const type = `image/${meta.format}`;
+    let { w, h } = fitSize(meta.width, meta.height, l);
+    if (w === meta.width && h === meta.height && l.formats.includes(type) && !heavy(b.data)) return { block: b.media_type === type ? b : { type: "image", media_type: type, data: b.data } };
+    let jpeg = meta.format === "jpeg";
+    try {
+      for (let i = 0; i < 12; i++) {
+        const img = w === meta.width && h === meta.height ? open() : open().resize(w, h);
+        const data = Buffer.from(await (jpeg ? img.jpeg({ quality: 85 }) : img.png()).bytes()).toString("base64");
+        if (!heavy(data)) return { block: { type: "image", media_type: jpeg ? "image/jpeg" : "image/png", data }, from: { w: meta.width, h: meta.height, type }, to: { w: img.width, h: img.height } };
+        if (!jpeg) jpeg = true;
+        else { w = Math.max(1, Math.round(w * 0.75)); h = Math.max(1, Math.round(h * 0.75)); }
+      }
+    } catch (e) {
+      return { refused: why(e) };
     }
-  } catch (e) {
-    return { refused: why(e) };
-  }
-  return { refused: `it is over ${MB(l.base64!)} of base64 even scaled down` };
+    return { refused: `it is over ${MB(l.base64!)} of base64 even scaled down` };
+  });
 }
 
 const changed = (f: Extract<Fitted, { block: ImageBlock }>) =>
@@ -199,13 +225,11 @@ export async function fitForWire(messages: Message[], l: ImageLimits, out?: Read
     if (size && type && within(size.w, size.h, l) && l.formats.includes(type) && !(l.base64 && b.data.length > l.base64)) continue;
     slow.push(b);
   }
-  // Four at a time: a decode holds the whole image in memory.
-  for (let i = 0; i < slow.length; i += 4) {
-    await Promise.all(slow.slice(i, i + 4).map(async (b) => {
-      const r = await wireCopy(b, l, sig);
-      if (r !== b) swap.set(b, r);
-    }));
-  }
+  // All asked at once: fitImage decodes four at a time across the process.
+  await Promise.all(slow.map(async (b) => {
+    const r = await wireCopy(b, l, sig);
+    if (r !== b) swap.set(b, r);
+  }));
   if (!swap.size) return messages;
   const put = <B extends { type: string }>(b: B) => (b.type === "image" ? swap.get(b as unknown as ImageBlock) ?? b : b);
   return messages.map((m) => {
