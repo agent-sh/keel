@@ -19,6 +19,10 @@ function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
     env: {
       ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300", KEEL_RESUME_GAP_MS: "0",
       KEEL_CONFIG_DIR: join(state, "config"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
+      // Nothing of the machine's own is reached: no other harness's sessions, no registry, no phone.
+      KEEL_IMPORT_CLAUDE_DIR: join(state, "import/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "import/codex"), KEEL_IMPORT_AGY_DIR: join(state, "import/agy"),
+      KEEL_IMPORT_KEEL_DB: join(state, "import/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "import/hermes"), KEEL_MCP_CONFIG: join(state, "mcp.json"),
+      KEEL_MCP_REGISTRY: `file://${join(state, "registry.json")}`, KEEL_PHONE_SOCKET: join(state, "phone.sock"), KEEL_MAIL_STANDIN: join(state, "mail"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -110,19 +114,21 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const all = await timeline("?limit=200");
     const turns = all.rows.filter((r) => r.kind === "turn").reverse();
     // Each sentence leads with who started the turn.
+    // A wake or a report that started a turn is told in that turn's row.
     expect(turns.map(text)).toEqual([
       "Owner prompt, 1 step",
-      "Queued prompt, 2 steps, 2 failed tools",
+      "Queued prompt, 2 steps, 1 failed tool",
       "Owner prompt, 2 steps",
-      "Agent report, 1 step",
+      'Agent report from "Check the parser", 1 step',
       "Owner prompt, 2 steps",
-      "Wait wake, 1 step",
+      expect.stringMatching(/^Wait wake \(a timer, after \d s\), 1 step$/),
       "Owner prompt, 1 step",
       "Owner prompt, stopped by the owner after 1 step",
       "Owner prompt, cut when the daemon went down after 1 step",
       "Continued after a daemon restart, 1 step",
     ]);
-    expect(turns[1]).toMatchObject({ bad: "2 failed tools", tone: "plain", turn: { origin: "queued", outcome: "ok", steps: 2, tools: 2, failed_tools: 2 } });
+    // One call ran and failed; the other named no tool and never ran, so it is a result and not a failed tool.
+    expect(turns[1]).toMatchObject({ bad: "1 failed tool", tone: "plain", turn: { origin: "queued", outcome: "ok", steps: 2, tools: 2, failed_tools: 1 } });
     expect(turns[1]!.ms).toBeGreaterThan(0);
     expect(turns[1]!.turn!.cost).toBeGreaterThan(0);
     // The stopped call is a result, not a failure: the row has nothing wrong in it and is no failure.
@@ -137,13 +143,17 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(failed.map(text)).toEqual(["Model request failed (overloaded), 2 times"]);
     // Agents, the wait and its wake, each with the ids that open it and the turn it happened in.
     const spawning = await turnAfter("spawn_agent");
+    // The report and the wake have no row of their own here: their turns say them, and lead to the agent.
     const agents = all.rows.filter((r) => r.kind === "agent").reverse();
-    expect(agents.map(text)).toEqual(['Agent "Check the parser" started (general-purpose)', expect.stringMatching(/^Agent "Check the parser" reported after \d+ m?s$/)]);
+    expect(agents.map(text)).toEqual(['Agent "Check the parser" started (general-purpose)']);
     expect(agents[0]).toMatchObject({ turn_event: spawning.id, refs: { child_session: expect.any(String), agent_id: expect.any(String) } });
+    expect(turns[3]!.refs).toMatchObject({ agent_id: agents[0]!.refs!.agent_id, child_session: agents[0]!.refs!.child_session });
     const waits = all.rows.filter((r) => r.kind === "wait").reverse();
-    expect(waits.map(text)).toEqual(["Wait set on a timer", expect.stringMatching(/^Wait on a timer fired after \d s$/)]);
+    expect(waits.map(text)).toEqual(["Wait set on a timer"]);
     expect(waits[0]!.turn_event).toBe((await turnAfter("wait_for")).id);
     expect(turns.find((r) => r.turn?.origin === "wait")!.refs!.wait_id).toBe(waits[0]!.refs!.wait_id);
+    // Under Agents the report is a row: no turn is listed there to say it.
+    expect((await timeline("?only=agents")).rows.map(text)).toEqual([expect.stringMatching(/^Agent "Check the parser" reported after \d+ m?s$/), 'Agent "Check the parser" started (general-purpose)']);
     // The agent's own session has its side of the story: its task's turn, and what its parent's list holds about it.
     const child = await timeline("", agents[0]!.refs!.child_session!);
     expect(child.rows.map(text)).toEqual(expect.arrayContaining(["Parent's task, 1 step", 'Agent "Check the parser" started (general-purpose)']));
@@ -160,8 +170,10 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(paged).toEqual(all.rows.map((r) => r.id));
     expect((await timeline("?only=turns")).rows.map((r) => r.id)).toEqual(turns.map((r) => r.id).reverse());
     const failures = await timeline("?only=failures");
-    expect(failures.rows.map(text)).toEqual(["Model request failed (overloaded), 2 times", "Queued prompt, 2 steps, 2 failed tools"]);
-    expect(failures.scanned).toBe(all.rows.length);
+    expect(failures.rows.map(text)).toEqual(["Model request failed (overloaded), 2 times", "Queued prompt, 2 steps, 1 failed tool"]);
+    // It read the whole (short) session to find them, and says how much it read.
+    expect(failures.scanned).toBeGreaterThanOrEqual(all.rows.length);
+    expect(failures.next).toBeNull();
     // A refresh asks only for what is newer than what it holds: nothing older is read or returned.
     expect((await timeline(`?since=${all.as_of + 1000}`)).rows).toEqual([]);
     expect((await timeline(`?since=${turns[9]!.ts}`)).rows.map((r) => r.id)).toEqual([turns[9]!.id]);
@@ -174,7 +186,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const plain = await (await fetch(`${d.url}${base}/timeline?format=text`)).text();
     expect(plain).toContain('Timeline of session "Parser cleanup"');
     expect(plain).toContain("Now: idle.");
-    expect(plain).toMatch(/\n\d\d-\d\d \d\d:\d\d:\d\d {3}Wait wake, 1 step, \d+ m?s, \$[\d.]+ {2}\[turn=[0-9a-f-]{36}\]\n/);
+    expect(plain).toMatch(/\n\d\d-\d\d \d\d:\d\d:\d\d {3}Wait wake \(a timer, after \d s\), 1 step, \d+ m?s, \$[\d.]+ {2}\[turn=[0-9a-f-]{36}\]\n/);
     for (const word of PRIVATE) expect(plain).not.toContain(word);
     expect(await (await fetch(`${d.url}${base}/timeline?format=text&ids=0`)).text()).not.toMatch(/\[turn=/);
 
@@ -216,7 +228,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await expect(panel.getByTestId("timeline-state")).toHaveText("Idle");
     await expect(panel.getByTestId("timeline-now-line")).toHaveText(/Nothing is running or waited on\. The last turn finished\./);
     await expect(rows.first()).toContainText("Continued after a daemon restart, 1 step");
-    await expect(panel.getByTestId("timeline-bad")).toHaveText("2 failed tools");
+    await expect(panel.getByTestId("timeline-bad")).toHaveText("1 failed tool");
     // The minute is said once; rows in the same minute carry their seconds, so a burst keeps its order.
     await expect(panel.locator("time").first()).toHaveText(/^\d\d:\d\d$/);
     await expect(panel.locator("time").filter({ hasText: /^:\d\d$/ }).first()).toBeVisible();
@@ -237,8 +249,8 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const receipt = failedTurn.getByTestId("timeline-receipt");
     await expect(receipt.getByTestId("receipt-inputs")).toContainText("a queued prompt");
     await expect(receipt.getByTestId("receipt-requests")).toContainText("2 model requests");
-    // One call ran and failed (it opens in the trace); the other named no tool and never ran. The row said 2 failed.
-    await expect(receipt.getByTestId("receipt-tools")).toContainText("2 tool calls, 2 failed: call 1 (1 more never ran");
+    // One call ran and failed (it opens in the trace); the other named no tool and never ran. The row said 1 failed.
+    await expect(receipt.getByTestId("receipt-tools")).toHaveText("2 tool calls, 1 failed: call 1 (1 more never ran: denied, or no such tool)");
     await expect(receipt.getByTestId("receipt-end")).toContainText("Finished after");
     await shots("timeline-02-receipt");
     // Escape from inside the open row closes it and puts the keys back on its line.
@@ -284,7 +296,8 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await expect(panel.getByTestId("timeline-state")).toHaveText("Needs you", { timeout: 30_000 });
     const needs = panel.locator('[data-testid="timeline-now-line"][data-tone="owner"]');
     await expect(needs).toHaveText(/Waits on the owner: approval for Bash/);
-    await expect(panel.locator('[data-testid="timeline-now-line"][data-kind="turn"]')).toContainText("Running a turn started by the owner: step 1");
+    // The call's card is open: the turn waits on the answer, it is not "running Bash".
+    await expect(panel.locator('[data-testid="timeline-now-line"][data-kind="turn"]')).toContainText("Running a turn started by the owner: step 1, waiting for approval");
     // What "now" says is not said again as rows: the list still starts at the last turn that ended.
     await expect(panel.locator('[data-testid="timeline-row"][data-sub="running"]')).toHaveCount(0);
     await expect(panel.locator('[data-testid="timeline-row"][data-tone="owner"]')).toHaveCount(0);
@@ -304,9 +317,16 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await expect(panel.getByTestId("timeline-state")).toHaveText("Idle", { timeout: 30_000 });
     await expect(rows.first()).toContainText(/Approval for Bash denied after/);
     await expect(rows.nth(1)).toContainText("Approval asked for Bash");
-    await expect(rows.nth(2)).toContainText("Owner prompt, 2 steps, 1 failed tool");
+    // The owner's denial is a decision, said as one: not a failed tool, not red, not under Failures.
+    await expect(rows.nth(2)).toHaveText(/Owner prompt, 2 steps, 1 denied call/);
+    await expect(rows.nth(2).getByTestId("timeline-bad")).toHaveCount(0);
     await expect(rows).toHaveCount(all.rows.length + 3);
-    expect(JSON.stringify(await timeline())).not.toContain("timeline-tool-marker");
+    const after = await timeline();
+    expect(after.rows[2]).toMatchObject({ tone: "plain", turn: { tools: 1, failed_tools: 0, denied_tools: 1 } });
+    expect((await timeline("?only=failures")).rows.map(text)).toEqual(["Model request failed (overloaded), 2 times", "Queued prompt, 2 steps, 1 failed tool"]);
+    await rows.nth(2).locator("button[data-row]").click();
+    await expect(rows.nth(2).getByTestId("receipt-tools")).toHaveText("1 tool call, 1 denied");
+    expect(JSON.stringify(after)).not.toContain("timeline-tool-marker");
 
     // An Activity row opens the turn it happened in: its own row, open and shown.
     await page.getByTestId("inbox-button").click();

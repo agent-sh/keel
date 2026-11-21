@@ -89,8 +89,8 @@ export class Timeline {
     const now = opts.now === false ? undefined : this.now(sessionId);
     // What "now" already says is not said again as a row: the running turn
     // and a card still open are there, with how long they have been.
-    const told = new Set((now?.lines ?? []).flatMap((l) => [l.kind === "turn" ? l.turn_event : undefined, l.kind === "approval" ? l.refs?.approval_id : undefined]).filter(Boolean));
-    const shown = (r: TimelineRow) => !(r.open && ((r.kind === "turn" && told.has(r.id)) || (r.kind === "approval" && told.has(r.refs?.approval_id))));
+    const told = new Set((now?.lines ?? []).flatMap((l) => [l.kind === "turn" ? l.turn_event : undefined, l.kind === "approval" ? l.refs?.approval_id : undefined, l.refs?.note_id]).filter(Boolean) as string[]);
+    const shown = (r: TimelineRow) => !((r.open && ((r.kind === "turn" && told.has(r.id)) || (r.kind === "approval" && told.has(r.refs?.approval_id ?? "")))) || (r.kind === "restart" && told.has(r.id)));
     let at = parseCursor(opts.before) ?? TOP;
     const rows: TimelineRow[] = [];
     let next: string | null = null;
@@ -98,7 +98,7 @@ export class Timeline {
     // A filter may drop most of what is read: read on, up to a bound, and say
     // where the next page starts whether or not this one is full.
     for (;;) {
-      const got = this.merged(sessionId, at, limit + 1, opts.only ?? null, since);
+      const got = this.merged(sessionId, at, limit + 1, opts.only ?? null, since, told);
       const part = got.slice(0, limit);
       let taken = 0;
       for (const r of part) {
@@ -115,10 +115,13 @@ export class Timeline {
   }
 
   // The sources, each already newest first, as one list.
-  private merged(sessionId: string, at: Cursor, n: number, only: Only | null, since: number): TimelineRow[] {
+  // `told`: what "now" says. Its rows are not built at all (the running turn's would be counted and thrown away).
+  private merged(sessionId: string, at: Cursor, n: number, only: Only | null, since: number, told: Set<string>): TimelineRow[] {
+    const look = this.lookups();
     const all = [
-      ...(only === "agents" ? [] : this.marks(sessionId, at, n, only === "turns", since)),
-      ...(only === "turns" ? [] : this.activity(sessionId, at, n, only === "agents", since)),
+      ...(only === "agents" ? [] : this.marks(sessionId, at, n, only === "turns", since, told, look)),
+      // A wake or a report that started a turn is told in that turn's row, where the turns are listed with it.
+      ...(only === "turns" ? [] : this.activity(sessionId, at, n, only === "agents", since, look, only === null)),
       ...(only === "turns" || only === "agents" ? [] : this.errors(sessionId, at, n, since)),
     ];
     all.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
@@ -126,7 +129,7 @@ export class Timeline {
   }
 
   // --- turns and the other marks of the event tree
-  private marks(sessionId: string, at: Cursor, n: number, turnsOnly: boolean, since: number): TimelineRow[] {
+  private marks(sessionId: string, at: Cursor, n: number, turnsOnly: boolean, since: number, told: Set<string>, look: Lookups): TimelineRow[] {
     const q = this.store.db.query<MarkRow, [string, number, number, string, number]>(
       `SELECT id, ts, seq, kind, parent, ${PICK} AS data FROM events
        WHERE session_id = ? AND kind IN ${MARKS} AND kind IN (${turnsOnly ? "'turn_start'" : "'turn_start', 'compaction', 'note'"}) AND ts >= ? AND (ts, id) < (?, ?)
@@ -137,7 +140,8 @@ export class Timeline {
     for (let cur = at; out.length < n;) {
       const got = q.all(sessionId, since, cur.ts, cur.id, n + 8);
       for (const m of got) {
-        const row = m.kind === "turn_start" ? this.turn(sessionId, m, byTurn, head) : markRow({ id: m.id, ts: m.ts, kind: m.kind, data: m.data ? JSON.parse(m.data) : null }, this.turnAround(sessionId, m));
+        if (told.has(m.id)) continue;
+        const row = m.kind === "turn_start" ? this.turn(sessionId, m, byTurn, head, look) : markRow({ id: m.id, ts: m.ts, kind: m.kind, data: m.data ? JSON.parse(m.data) : null }, this.turnAround(sessionId, m));
         if (row) out.push(row);
         if (out.length === n) break;
       }
@@ -175,7 +179,8 @@ export class Timeline {
   private opener(sessionId: string, parent: string | null): Opener {
     const q = this.store.db.query<{ kind: string; parent: string | null; session_id: string; o: string | null }, [string]>(
       `SELECT kind, parent, session_id, CASE WHEN kind = 'user' THEN json_object('origin', data ->> '$.origin', 'kind', data ->> '$.kind', 'queue_id', data ->> '$.queue_id',
-         'wait_id', data ->> '$.wait_id', 'agent_id', data ->> '$.agent_id', 'loop_id', data ->> '$.loop_id', 'run_id', data ->> '$.run_id', 'from', data ->> '$.from') END AS o
+                  'wait_id', data ->> '$.wait_id', 'agent_id', data ->> '$.agent_id', 'loop_id', data ->> '$.loop_id', 'run_id', data ->> '$.run_id', 'from', data ->> '$.from',
+         'outcome', data ->> '$.outcome', 'status', data ->> '$.status') END AS o
        FROM events WHERE id = ?`);
     for (let id = parent, hops = 0; id && hops < 32; hops++) {
       const e = q.get(id);
@@ -187,21 +192,23 @@ export class Timeline {
     return null;
   }
 
-  // What a turn took: the replies the model gave and its tool results. Its
-  // end says so (the engine counts as it goes); a turn from before that, or
-  // one cut without an end of its own, is counted from its events and its
-  // telemetry row; a running turn from what ran so far.
+  // What a turn took: the replies the model gave, its tool results, the calls
+  // that ran and failed and the ones a gate denied. Its end says so (the
+  // engine counts as it goes); a turn from before that, or one cut without an
+  // end of its own, is counted from its events and its telemetry row; a
+  // running turn from what ran so far, by the turn's id.
+  private steps(sessionId: string, start: MarkRow, end?: MarkRow, nextSeq?: number): number {
+    const to = end?.seq ?? nextSeq ?? Number.MAX_SAFE_INTEGER;
+    return this.store.db.query<{ n: number }, [string, number, number]>("SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND seq > ? AND seq < ? AND kind = 'assistant'").get(sessionId, start.seq, to)!.n;
+  }
   private counts(sessionId: string, start: MarkRow, end: MarkRow | undefined, said: Record<string, any> | null, nextSeq: number | undefined) {
     const num = (v: unknown) => (typeof v === "number" && v >= 0 ? v : undefined);
-    if (said && num(said.steps) !== undefined && num(said.tools) !== undefined) return { steps: said.steps as number, tools: said.tools as number, failed_tools: num(said.tool_errors) ?? 0 };
-    const db = this.store.db;
-    const to = end?.seq ?? nextSeq ?? Number.MAX_SAFE_INTEGER;
-    const steps = db.query<{ n: number }, [string, number, number]>("SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND seq > ? AND seq < ? AND kind = 'assistant'").get(sessionId, start.seq, to)!.n;
+    if (said && num(said.steps) !== undefined && num(said.tools) !== undefined) return { steps: said.steps as number, tools: said.tools as number, failed_tools: num(said.tool_errors) ?? 0, denied_tools: num(said.tool_denied) };
+    const steps = this.steps(sessionId, start, end, nextSeq);
     const told = end ? this.rollup(start.id) : undefined;
     if (told) return { steps, tools: told.tool_calls, failed_tools: told.tool_errors };
     if (!this.table("telemetry_tools")) return { steps, tools: 0, failed_tools: 0 };
-    const t = db.query<{ n: number; bad: number | null }, [number, number, string]>("SELECT COUNT(*) AS n, SUM(is_error) AS bad FROM telemetry_tools WHERE ts >= ? AND ts <= ? AND session_id = ?")
-      .get(start.ts, end?.ts ?? Number.MAX_SAFE_INTEGER, sessionId)!;
+    const t = this.store.db.query<{ n: number; bad: number | null }, [string]>("SELECT COUNT(*) AS n, SUM(is_error) AS bad FROM telemetry_tools WHERE turn_event = ?").get(start.id)!;
     return { steps, tools: t.n, failed_tools: t.bad ?? 0 };
   }
 
@@ -213,8 +220,12 @@ export class Timeline {
       "SELECT tool_calls, tool_errors, requests, input, output, cache_read, cost FROM telemetry_turns WHERE turn_event = ?").get(turnEvent) ?? undefined;
   }
 
-  private turn(sessionId: string, m: MarkRow, byTurn: Map<string, string>, head: string | null): TimelineRow {
+  private turn(sessionId: string, m: MarkRow, byTurn: Map<string, string>, head: string | null, look: Lookups): TimelineRow {
     const f = this.after(sessionId, m);
+    const opener = this.opener(sessionId, m.parent);
+    // What woke it is said here, and has no row of its own (see folded).
+    const w = opener?.kind === "wait" && opener.outcome === "fired" && typeof opener.wait_id === "string" ? look.wait?.(opener.wait_id) : undefined;
+    const g = opener?.kind === "subagent" && opener.status === "completed" && typeof opener.agent_id === "string" ? look.agent?.(opener.agent_id) : undefined;
     const end = f.end ? JSON.parse(f.end.data ?? "{}") : null;
     // What it spent, over every request made while it ran; a turn with no
     // such row (it is from before the table, or no request was recorded)
@@ -222,7 +233,9 @@ export class Timeline {
     const roll = f.end ? this.rollup(m.id) : undefined;
     return turnRow({
       start: { id: m.id, ts: m.ts, model: JSON.parse(m.data ?? "{}").model },
-      opener: this.opener(sessionId, m.parent),
+      opener,
+      wake: w && { kind: w.kind, ms: w.ended && w.created !== undefined ? w.ended - w.created : undefined },
+      agent: g && { title: g.title, session_id: g.session_id },
       end: end && { reason: String(end.reason ?? "error"), ms: typeof end.ms === "number" ? end.ms : undefined, ts: f.end!.ts, stopped_by: end.stopped_by, crashed: !!end.crashed, unstarted: !!end.unstarted },
       usage: roll && roll.requests > 0 ? roll : end?.usage,
       running: !f.end && this.live.turnOf?.(sessionId) === m.id,
@@ -315,7 +328,7 @@ export class Timeline {
 
   // An agent's happenings are stored under its parent, with the agent named:
   // the agent's own timeline reads them from there, within the agent's lifetime.
-  private activity(sessionId: string, at: Cursor, n: number, agentsOnly: boolean, since: number): TimelineRow[] {
+  private activity(sessionId: string, at: Cursor, n: number, agentsOnly: boolean, since: number, look: Lookups, fold: boolean): TimelineRow[] {
     if (!this.table("activity")) return [];
     const kinds = agentsOnly ? "kind = 'agent'"
       : "(kind IN ('agent', 'wait', 'loop', 'approval') OR (kind = 'turn' AND sub = 'goal') OR (kind = 'alert' AND sub IN ('approval', 'question', 'limit')))";
@@ -326,12 +339,13 @@ export class Timeline {
       `SELECT id, ts, kind, sub, text, data, turn_event FROM activity WHERE session_id = ? AND ts >= ? AND (ts, id) < (?, ?) AND ${kinds}
          AND (?5 IS NULL OR data ->> '$.child_session' = ?5) ORDER BY ts DESC, id DESC LIMIT ?6`);
     if (own) since = Math.max(since, self!.created);
-    const look = this.lookups();
     const out: TimelineRow[] = [];
     for (let cur = at; out.length < n;) {
       const got = q.all(under, since, cur.ts, cur.id, own ? sessionId : null, n + 8);
       for (const a of got) {
-        const row = activityRow({ ...a, data: a.data ? JSON.parse(a.data) : null }, look, own);
+        const data = a.data ? JSON.parse(a.data) : null;
+        if (fold && !own && this.folded(sessionId, a, data)) continue;
+        const row = activityRow({ ...a, data }, look, own);
         if (row) out.push(row);
         if (out.length === n) break;
       }
@@ -340,6 +354,21 @@ export class Timeline {
       cur = { ts: last.ts, id: last.id };
     }
     return out;
+  }
+
+  // A wait that fired or an agent that reported, when that wake is the prompt
+  // of the turn that started next: the turn's row says it ("Wait wake (a
+  // timer, after 3 s)", "Agent report from ..."), so it is one row, not two.
+  // The same answer on every page: it is read off the turn, not off what else is on the page.
+  private folded(sessionId: string, a: { ts: number; kind: string; sub: string }, data: Record<string, any> | null): boolean {
+    const wait = a.kind === "wait" && a.sub === "fired" ? data?.wait_id : undefined;
+    const agent = a.kind === "agent" && a.sub === "completed" ? data?.agent_id : undefined;
+    if (!wait && !agent) return false;
+    const next = this.store.db.query<{ parent: string | null }, [string, number]>(
+      `SELECT parent FROM events WHERE session_id = ? AND kind IN ${MARKS} AND kind = 'turn_start' AND ts >= ? ORDER BY ts, id LIMIT 1`).get(sessionId, a.ts);
+    if (!next) return false;
+    const o = this.opener(sessionId, next.parent);
+    return wait ? o?.kind === "wait" && o.outcome === "fired" && o.wait_id === wait : o?.kind === "subagent" && o.status === "completed" && o.agent_id === agent;
   }
 
   // --- what failed. A failed model request is told from the session's own
@@ -387,16 +416,16 @@ export class Timeline {
     if (lastStart) {
       const f = this.after(sessionId, lastStart);
       if (!f.end && running === lastStart.id) {
-        turn = { id: lastStart.id, ts: lastStart.ts, opener: this.opener(sessionId, lastStart.parent), steps: this.counts(sessionId, lastStart, undefined, null, undefined).steps, status: live.statusOf?.(sessionId) ?? { kind: "idle" } };
+        turn = { id: lastStart.id, ts: lastStart.ts, opener: this.opener(sessionId, lastStart.parent), steps: this.steps(sessionId, lastStart), status: live.statusOf?.(sessionId) ?? { kind: "idle" } };
       } else if (f.end) {
         const end = JSON.parse(f.end.data ?? "{}");
         const reason = String(end.reason ?? "error");
         last = { ts: f.end.ts, outcome: outcomeOf(reason, end.stopped_by) };
         // Cut and not continued: the session says why in a note, and waits.
         if (reason === "restart" && !live.isRunning?.(sessionId)) {
-          const note = db.query<{ ts: number }, [string, number, string]>(
-            `SELECT ts FROM events WHERE session_id = ? AND kind IN ${MARKS} AND kind = 'note' AND (ts, id) > (?, ?) AND data ->> '$.kind' = 'restart' ORDER BY ts, id LIMIT 1`).get(sessionId, f.end.ts, f.end.id);
-          if (note) held = { since: note.ts };
+          const note = db.query<{ id: string; ts: number }, [string, number, string]>(
+            `SELECT id, ts FROM events WHERE session_id = ? AND kind IN ${MARKS} AND kind = 'note' AND (ts, id) > (?, ?) AND data ->> '$.kind' = 'restart' ORDER BY ts, id LIMIT 1`).get(sessionId, f.end.ts, f.end.id);
+          if (note) held = { since: note.ts, note_id: note.id };
         }
       }
     }

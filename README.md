@@ -48,9 +48,14 @@ what waits on the owner, the waits and agents still out, what is queued. What
 What the rows mean:
 
 - A turn is one row, at its start. Its steps are the replies the model gave.
-  A call the turn's stop or a restart reached is a tool call, not a failed
-  one. Its tokens and cost are the turn's rollup over every request made while
-  it ran (its own, a reader's, a summary's), else what its end summed.
+  Its failed tools are the calls that ran and failed. A call the owner, a
+  rule or the judge denied is a denied call, and a call the turn's stop or a
+  restart reached is only a tool call: neither is a failure. Its tokens and
+  cost are the turn's rollup over every request made while it ran (its own, a
+  reader's, a summary's), else what its end summed.
+- A wait that fired or an agent that reported, when that is what started the
+  next turn, is told in that turn's row ("Wait wake (a timer, after 3 s)",
+  "Agent report from ...") and has no row of its own.
 - A turn a daemon restart cut says so in its own row, and the turn that went
   on after it starts with "Continued after a daemon restart". A prompt the
   daemon went down on before its turn began is one row that says that.
@@ -60,8 +65,9 @@ What the rows mean:
   record, with this session's count and its agents'. A row from the errors
   table marks only where a kind of failure last happened; its count is over
   every session and says so.
-- A filtered page reads at most 500 rows (`scanned`) and gives `next` when it
-  stopped there, with however many rows it found.
+- `only=failures` reads at most 500 rows for a page (`scanned`) and gives
+  `next` when it stopped there, with however many rows it found. `turns` and
+  `agents` read only their own source and need no bound.
 
 Each row carries the IDs that open its detail: `turn_event` (the turn's
 receipt and trace), `refs.child_session` (an agent's session), `refs.error_id`.

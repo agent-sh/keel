@@ -268,6 +268,10 @@ export class Engine {
   private stoppedEarly = new Set<string>();
   // What a finished call left for the transcript (ToolOutput.shown), until its step is stored.
   private shown = new Map<string, unknown>();
+  // How a call's error result came about, for the turn's own count: the tool
+  // ran and failed, or a gate refused the call before it ran. Anything else
+  // (no such tool, a call cut at the output limit, a stop) is neither.
+  private verdicts = new WeakMap<ToolResultBlock, "failed" | "denied">();
   // Turns being parked for a daemon stop: their end reason is "restart".
   private parking = new Set<string>();
   private draining = false;
@@ -945,11 +949,13 @@ export class Engine {
     let summaryFailed = false;
     let steps = 0;
     // What the turn's end says it took: the replies the model gave, its tool
-    // results, and those that were errors. A call the turn's stop or a restart
-    // cut did not fail: it is a result, not an error.
+    // results, those of calls that ran and failed (what telemetry and the
+    // trace count too), and those of calls a gate denied. A call the turn's
+    // stop or a restart cut did not fail: it is a result, not an error.
     let replies = 0;
     let toolResults = 0;
     let toolErrors = 0;
+    let toolDenied = 0;
     const partial = new Map<number, { kind: string; text: string }>();
     // Each result is stored as it settles, not when the whole batch has:
     // a crash while one call still runs keeps what the others returned
@@ -959,7 +965,9 @@ export class Engine {
     const settle = (u: ToolUseBlock) => (r: ToolResultBlock) => {
       if (this.parking.has(id) && outcomeOf(id, u.id) === "waiting") return;
       toolResults++;
-      if (r.is_error && !signal.aborted && !isStopResult(r.content)) toolErrors++;
+      const how = this.verdicts.get(r);
+      if (how === "denied") toolDenied++;
+      else if (how === "failed" && !signal.aborted) toolErrors++;
       const shown = this.shown.get(r.tool_use_id);
       this.shown.delete(r.tool_use_id);
       this.store.db.transaction(() => {
@@ -1109,7 +1117,7 @@ export class Engine {
     } finally {
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
-      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps: replies, tools: toolResults, tool_errors: toolErrors, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
+      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps: replies, tools: toolResults, tool_errors: toolErrors, tool_denied: toolDenied, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
       // Between turns, a context past the preparing share gets its summary ready.
       if (!signal.aborted) {
         const events = this.lineage(id);
@@ -1151,6 +1159,13 @@ export class Engine {
     const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted", error?: Error) => {
       const ms = Date.now() - t0!;
       this.measure(session.id, (h) => h.toolRan?.(session, call, r, { ms, outcome, error }));
+      if (outcome === "error") this.verdicts.set(r, "failed");
+      return r;
+    };
+    // Refused before it ran (the owner's answer, a rule, the judge): the model is told why.
+    const denied = (why: string): ToolResultBlock => {
+      const r: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: why, is_error: true };
+      this.verdicts.set(r, "denied");
       return r;
     };
     try {
@@ -1162,7 +1177,7 @@ export class Engine {
         const g = await Promise.race([gate, stopped]);
         if (ctx.signal.aborted) return interrupted();
         if (!g) continue;
-        if ("deny" in g) return { type: "tool_result", tool_use_id: u.id, content: g.deny, is_error: true };
+        if ("deny" in g) return denied(g.deny);
         if (g.input !== undefined) call.input = g.input;
         if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
         if (g.authorization) authorizations.push(g.authorization);
@@ -1178,7 +1193,7 @@ export class Engine {
       for (const h of allHooks()) { const x = h.execInput?.(session, call); if (x !== undefined) input = x; }
       const authorizationError = authorizations.length ? () => authorizations.find((a) => !a.valid(call, input))?.deny : undefined;
       const deny = authorizationError?.();
-      if (deny) return { type: "tool_result", tool_use_id: u.id, content: deny, is_error: true };
+      if (deny) return denied(deny);
       const runCtx = authorizationError ? { ...call.ctx, authorizationError } : call.ctx;
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       t0 = Date.now();

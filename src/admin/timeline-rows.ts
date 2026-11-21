@@ -15,11 +15,13 @@ export type Tone = "plain" | "failed" | "owner" | "live";
 export type Refs = {
   trace_id?: string; span_id?: string; error_id?: string; agent_id?: string; child_session?: string; child_turn?: string;
   wait_id?: string; loop_id?: string; run_id?: string; approval_id?: string; call_id?: string; queue_id?: string; from_session?: string;
+  note_id?: string; // the note a "now" line stands for, so its row is not shown too
 };
 export type TurnFacts = {
   origin: string; queued?: true; outcome: string; reason?: string; model?: string;
-  // `steps`: the replies the model gave. `branch`: "other" when the turn is not on the branch shown.
-  steps: number; tools: number; failed_tools: number; compactions?: number; branch?: "other";
+  // `steps`: the replies the model gave. `failed_tools`: calls that ran and failed. `denied_tools`: calls a gate
+  // refused before they ran (not failures). `branch`: "other" when the turn is not on the branch shown.
+  steps: number; tools: number; failed_tools: number; denied_tools?: number; compactions?: number; branch?: "other";
   input?: number; output?: number; cache_read?: number; cost?: number;
 };
 export type TimelineRow = {
@@ -82,7 +84,7 @@ const LEAD: Record<string, string> = {
   peer: "Message from another session", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
   review_fix: "Review findings", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
 };
-export type Opener = { origin?: unknown; kind?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown } | null | undefined;
+export type Opener = { origin?: unknown; kind?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown } | null | undefined;
 export const whoWords = (key: string) => WHO[key] ?? "something else";
 export function originOf(o: Opener): { key: string; words: string; lead: string; queued: boolean } {
   const origin = str(o?.origin), kind = str(o?.kind);
@@ -113,15 +115,22 @@ export type TurnInput = {
   steps: number;
   tools: number;
   failed_tools: number;
+  denied_tools?: number;
   compactions?: number;
   error_id?: string;
   other_branch?: boolean;
+  // What woke it, told in its own row instead of a row of its own: the wait
+  // that fired, or the agent whose report it is.
+  wake?: { kind?: string; ms?: number } | null;
+  agent?: { title?: string; session_id?: string } | null;
 };
 
 export function turnRow(t: TurnInput): TimelineRow {
   const who = originOf(t.opener);
   const outcome = t.end?.unstarted ? "unstarted" : t.end ? outcomeOf(t.end.reason, t.end.stopped_by) : t.running ? "running" : "open";
-  const head = `${who.lead}${who.queued ? " (queued)" : ""}`;
+  const told = who.key === "wait" && t.wake ? ` (${waitWords(t.wake.kind)}${t.wake.ms !== undefined && t.wake.ms >= 0 ? `, after ${dur(t.wake.ms)}` : ""})`
+    : who.key === "subagent" && t.agent ? ` from ${title(t.agent.title, "an agent")}` : "";
+  const head = `${who.lead}${told}${who.queued ? " (queued)" : ""}`;
   const n = plural(t.steps, "step");
   const after = t.steps ? ` after ${n}` : " before its first step";
   const bad = t.failed_tools ? plural(t.failed_tools, "failed tool") : undefined;
@@ -141,6 +150,8 @@ export function turnRow(t: TurnInput): TimelineRow {
     default: text = `${head}: no end was recorded, ${n}`;
   }
   if (bad) text += `, ${bad}`;
+  // A call the owner, a rule or the judge refused is a decision, not a failure.
+  if (t.denied_tools) text += `, ${plural(t.denied_tools, "denied call")}`;
   if (t.other_branch) text += ", on a branch not shown";
   const u = t.usage;
   const took = t.end && outcome !== "unstarted" ? t.end.ms ?? (t.end.ts !== undefined ? t.end.ts - t.start.ts : undefined) : undefined;
@@ -150,10 +161,10 @@ export function turnRow(t: TurnInput): TimelineRow {
     ms: took ? took : undefined,
     open: outcome === "running" ? (true as const) : undefined,
     turn_event: t.start.id,
-    ...refs({ error_id: t.error_id, queue_id: str(t.opener?.queue_id), wait_id: str(t.opener?.wait_id), agent_id: str(t.opener?.agent_id), loop_id: str(t.opener?.loop_id), run_id: str(t.opener?.run_id), from_session: str(t.opener?.from) }),
+    ...refs({ error_id: t.error_id, queue_id: str(t.opener?.queue_id), wait_id: str(t.opener?.wait_id), agent_id: str(t.opener?.agent_id), loop_id: str(t.opener?.loop_id), run_id: str(t.opener?.run_id), from_session: str(t.opener?.from), child_session: who.key === "subagent" ? t.agent?.session_id : undefined }),
     turn: clean({
       origin: who.key, queued: who.queued || who.key === "queued" ? (true as const) : undefined, outcome, reason: t.end?.reason, model: t.start.model,
-      steps: t.steps, tools: t.tools, failed_tools: t.failed_tools, compactions: t.compactions || undefined, branch: t.other_branch ? ("other" as const) : undefined,
+      steps: t.steps, tools: t.tools, failed_tools: t.failed_tools, denied_tools: t.denied_tools || undefined, compactions: t.compactions || undefined, branch: t.other_branch ? ("other" as const) : undefined,
       input: u?.input, output: u?.output, cache_read: u?.cache_read, cost: u?.cost ?? undefined,
     }),
   });
@@ -196,7 +207,7 @@ const WAIT_ON: Record<string, string> = {
   timer: "a timer", file: "a file", log: "a log line", http: "an HTTP check", process: "a process", monitor: "a monitor",
   websocket: "a WebSocket", pr_checks: "a pull request's checks", session: "another session",
 };
-export const waitWords = (kind: unknown) => WAIT_ON[String(kind)] ?? "a condition";
+export function waitWords(kind: unknown) { return WAIT_ON[String(kind)] ?? "a condition"; }
 const STOPPED: Record<string, string> = {
   owner: "the owner stopped it", parent: "its parent stopped it", parent_turn: "it stopped with its parent's turn",
   time_limit: "its time limit passed", parent_archived: "its parent session was archived",
@@ -329,7 +340,7 @@ export type NowInput = {
   starting?: boolean; // a turn is being set up: nothing of it is stored yet
   approvals: { id: string; call_id?: string; tool?: string; risk?: string; created?: number; child_session?: string; child_title?: string }[];
   questions: { call_id: string; child_session?: string; child_title?: string }[];
-  held?: { since?: number } | null; // a cut turn that was not continued
+  held?: { since?: number; note_id?: string } | null; // a cut turn that was not continued
   waits: { id: string; kind: string; created: number; deadline: number }[];
   agents: { id: string; session_id: string; title: string; status: string; created: number }[];
   queue: { queued: number; steers: number; held: boolean; owed: boolean };
@@ -359,11 +370,13 @@ export function nowLines(n: NowInput): TimelineNow {
     add(`approval:${a.id}`, "approval", "owner", `Waits on the owner: approval for ${a.tool ?? "a tool"}${a.risk === "high" ? " (high risk)" : ""}${inChild(a)}`, { ts: a.created, open: true }, { approval_id: a.id, call_id: a.call_id, child_session: a.child_session });
   }
   for (const q of n.questions) add(`question:${q.call_id}`, "question", "owner", `Waits on the owner: a question${inChild(q)}`, { open: true }, { call_id: q.call_id, child_session: q.child_session });
-  if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not continued", { ts: n.held.since });
+  if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not continued", { ts: n.held.since }, { note_id: n.held.note_id });
   if (n.turn) {
     const who = originOf(n.turn.opener);
     const head = who.key === "restart" ? "Running a turn continued after a daemon restart" : `Running a turn started by ${who.words}`;
-    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${DOING(n.turn.status)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });
+    // A call of this session's own turn whose card is open has not started: the turn waits on the answer.
+    const asking = n.turn.status.kind === "tool" && n.approvals.some((a) => !a.child_session);
+    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${asking ? "waiting for approval" : DOING(n.turn.status)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });
   } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
     add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${a.status === "waiting" ? "is waiting on a wake of its own" : "is running"}`, { ts: a.created, open: true }, { agent_id: a.id, child_session: a.session_id });

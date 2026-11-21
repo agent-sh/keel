@@ -13,13 +13,22 @@ export function refreshFrom(asOf: number, now: TimelinePage["now"]): number {
   return Math.min(asOf - 1000, ...(now?.lines ?? []).filter((l) => l.open).map((l) => l.ts));
 }
 
-// What a refresh read (every row from `since` on) over what the panel holds:
-// the rows it read replace their old selves and anything else that recent, and
-// the older rows stay as they are. Null when more arrived than one page
-// holds: the list is then read again from the top, so no gap is shown as whole.
-export function mergeSince(cur: Held, fresh: TimelinePage, since: number): Held | null {
-  if (fresh.next) return null;
+// What a refresh read (rows from `since` on, newest first) over what the
+// panel holds, read last at `asOf`.
+// - The reply is whole (no `next`): its rows replace their old selves and
+//   anything else that recent; the older rows stay as they are.
+// - The reply stopped at its limit, or at a filter's bound (something has
+//   been open for more than a page of rows): `next` is where it stopped, and
+//   the held rows older than that stay, with the pages loaded below them.
+// - Where it stopped is newer than the last read: more arrived than one
+//   reply holds, so what is held no longer joins it. The reply is then the
+//   list, with its own cursor: nothing is read twice and no gap is shown as whole.
+export function mergeSince(cur: Held, fresh: TimelinePage, since: number, asOf: number): Held {
   const have = new Set(fresh.rows.map((r) => r.id));
-  return { ...cur, rows: [...fresh.rows, ...cur.rows.filter((r) => r.ts < since && !have.has(r.id))] };
+  if (!fresh.next) return { ...cur, rows: [...fresh.rows, ...cur.rows.filter((r) => r.ts < since && !have.has(r.id))] };
+  const cut = fresh.next.indexOf(":");
+  const at = { ts: Number(fresh.next.slice(0, cut)), id: fresh.next.slice(cut + 1) };
+  if (!(at.ts <= asOf - 1000)) return { rows: fresh.rows, next: fresh.next, scanned: fresh.scanned };
+  const older = (r: TimelineRow) => r.ts < at.ts || (r.ts === at.ts && r.id < at.id);
+  return { ...cur, rows: [...fresh.rows, ...cur.rows.filter((r) => older(r) && !have.has(r.id))] };
 }
-

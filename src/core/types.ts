@@ -87,7 +87,7 @@ export type EventKind =
   | "assistant"     // one model response: { blocks, model, usage, stop, stop_details? }
   | "tool_result"   // results of one round of tool calls: { results: ToolResultBlock[] }
   | "turn_start"    // { model }
-  | "turn_end"      // { reason, usage, ms, steps? (replies the model gave), tools?, tool_errors?, stopped_by? }
+  | "turn_end"      // { reason, usage, ms, steps? (replies the model gave), tools?, tool_errors? (ran and failed), tool_denied?, stopped_by? }
   | "error"         // { message, where }
   | "note"          // system note shown in the transcript: { text, kind? }
   | "compaction";   // context checkpoint: { mode: "summary" | "clear", summary?, owner_messages?, focus?, auto?, tokens_before? }

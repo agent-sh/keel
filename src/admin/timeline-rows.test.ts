@@ -34,6 +34,17 @@ test("a turn's sentence leads with who started it, then how it ended and what it
   // Stopped while it was set up: a turn of no length says no duration.
   expect(row({}, { reason: "interrupted", ms: 0 }, 0)).toMatchObject({ text: "Owner prompt, stopped by the owner before its first step" });
   expect(row({}, { reason: "interrupted", ms: 0 }, 0).ms).toBeUndefined();
+  // A call the owner, a rule or the judge denied is a decision: it is said, and it is not a failure.
+  const refused = row({}, { reason: "end_turn" }, 2, { tools: 1, denied_tools: 1 });
+  expect(refused).toMatchObject({ tone: "plain", text: "Owner prompt, 2 steps, 1 denied call", turn: { denied_tools: 1, failed_tools: 0 } });
+  expect(refused.bad).toBeUndefined();
+  expect(isFailure(refused)).toBe(false);
+  expect(row({}, { reason: "end_turn" }, 3, { failed_tools: 1, denied_tools: 2 }).text).toBe("Owner prompt, 3 steps, 1 failed tool, 2 denied calls");
+  // What woke a turn is told in its row: the wait that fired, the agent whose report it is.
+  expect(row({ kind: "wait", wait_id: "w1", outcome: "fired" }, { reason: "end_turn" }, 1, { wake: { kind: "timer", ms: 3_000 } }).text).toBe("Wait wake (a timer, after 3 s), 1 step");
+  expect(row({ kind: "wait", wait_id: "w1" }, { reason: "end_turn" }, 1, { wake: { kind: "file" } }).text).toBe("Wait wake (a file), 1 step");
+  expect(row({ kind: "subagent", agent_id: "g1", status: "completed" }, { reason: "end_turn" }, 1, { agent: { title: "Check the parser", session_id: "c1" } }))
+    .toMatchObject({ text: 'Agent report from "Check the parser", 1 step', refs: { agent_id: "g1", child_session: "c1" } });
   // A turn on a branch the session does not show says so.
   expect(row({}, { reason: "end_turn" }, 2, { other_branch: true })).toMatchObject({ text: "Owner prompt, 2 steps, on a branch not shown", turn: { branch: "other" } });
 });
@@ -83,6 +94,7 @@ test("an activity row says what its records say and never passes text through", 
   expect(own).toMatchObject({ text: "Approval for Bash denied after 1 min", turn_event: "t9" });
   expect(own.refs?.child_session).toBeUndefined();
   expect(act("turn", "goal", {}, "Goal check: not met. The file is missing SECRET-TEXT").text).toBe("Goal check: not met");
+  expect(act("turn", "goal", {}, "Goal paused: the judge said met; SECRET-TEXT. Resume to try again.").text).toBe("Goal paused");
   for (const [k, s] of [["agent", "started"], ["agent", "completed"], ["wait", "fired"], ["loop", "run"], ["approval", "allowed"], ["alert", "question"]] as const) {
     expect(JSON.stringify(act(k, s, { agent_id: "g1", wait_id: "w1", loop_id: "l1", approval_id: "p1" }))).not.toContain("SECRET-TEXT");
   }
@@ -132,7 +144,7 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   expect(busy.state).toBe("owner");
   expect(busy.lines.map((l) => [l.kind, l.tone, l.text])).toEqual([
     ["approval", "owner", "Waits on the owner: approval for Bash (high risk)"],
-    ["turn", "live", "Running a turn started by a wait wake: step 3, running Bash"],
+    ["turn", "live", "Running a turn started by a wait wake: step 3, waiting for approval"],
     ["agent", "live", 'Agent "Check the parser" is running'],
     ["wait", "plain", "Waits on a timer"],
     ["queue", "plain", "2 queued prompts and 1 steer wait for the turn"],
@@ -141,6 +153,13 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   expect(busy.lines[0]).toMatchObject({ refs: { approval_id: "p1", call_id: "c1" } });
   expect(busy.lines[1]).toMatchObject({ turn_event: "t1", ts: 40_000 });
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 3, status: { kind: "model", since: 1, model: "m" } } }).lines[0]!.text).toBe("Running a turn started by the owner: step 4, waiting for the model");
+  // A call of the turn whose card is open has not started: the turn waits on the answer, it does not run the tool.
+  const asking = nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["Bash"] } }, approvals: [{ id: "p1", tool: "Bash" }] });
+  expect(asking.lines.map((l) => l.text)).toEqual(["Waits on the owner: approval for Bash", "Running a turn started by the owner: step 1, waiting for approval"]);
+  // An agent's open card does not mean this session's own call waits.
+  expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["Agent"] } }, approvals: [{ id: "p1", tool: "Bash", child_session: "c1" }] }).lines[1]!.text).toBe("Running a turn started by the owner: step 1, running Agent");
+  // A cut turn that was not continued is said here, and names the note so its row is not shown too.
+  expect(nowLines({ ...quiet, held: { since: 5, note_id: "n1" } }).lines[0]).toMatchObject({ kind: "restart", tone: "owner", refs: { note_id: "n1" } });
   // Taken up by the engine and not opened yet: it is starting, not idle.
   expect(nowLines({ ...quiet, starting: true, last: { ts: 90_000, outcome: "ok" } })).toMatchObject({ state: "working", lines: [{ kind: "turn", tone: "live", text: "Starting a turn" }] });
   const idle = nowLines({ ...quiet, last: { ts: 90_000, outcome: "error" } });

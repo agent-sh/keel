@@ -150,13 +150,9 @@ function Panel({ session }: { session: Session }) {
     return fetchTimeline(id, { only, since }).then((p) => {
       if (g !== gen.current || n < applied.current) return;
       applied.current = n;
-      let next: Held;
-      if (since !== undefined && held.current.list) {
-        const joined = mergeSince(held.current.list, p, since);
-        // More arrived than a page holds: from the top.
-        if (!joined) return load(true);
-        next = joined;
-      } else next = { rows: p.rows, next: p.next, scanned: p.scanned };
+      const next: Held = since !== undefined && held.current.list
+        ? mergeSince(held.current.list, p, since, held.current.asOf)
+        : { rows: p.rows, next: p.next, scanned: p.scanned };
       held.current = { list: next, asOf: p.as_of, now: p.now ?? null };
       setList(next);
       setNow(p.now ?? null);
@@ -215,8 +211,8 @@ function Panel({ session }: { session: Session }) {
   }, [focus]);
 
   // What "now" says is not a row too (the daemon leaves it out of the first page; an older page may hold it).
-  const said = new Set((now?.lines ?? []).flatMap((l) => [l.kind === "turn" ? l.turn_event : undefined, l.kind === "approval" ? l.refs?.approval_id : undefined]).filter(Boolean));
-  const rows = (list?.rows ?? []).filter((r) => !(r.open && ((r.kind === "turn" && said.has(r.id)) || (r.kind === "approval" && said.has(r.refs?.approval_id)))));
+  const said = new Set((now?.lines ?? []).flatMap((l) => [l.kind === "turn" ? l.turn_event : undefined, l.kind === "approval" ? l.refs?.approval_id : undefined, l.refs?.note_id]).filter(Boolean));
+  const rows = (list?.rows ?? []).filter((r) => !((r.open && ((r.kind === "turn" && said.has(r.id)) || (r.kind === "approval" && said.has(r.refs?.approval_id)))) || (r.kind === "restart" && said.has(r.id))));
 
   // The asked turn's own row opens and is shown; a turn the list does not hold keeps its receipt above it.
   useEffect(() => {
@@ -247,11 +243,12 @@ function Panel({ session }: { session: Session }) {
 
   const older = () => {
     if (!list?.next || more) return;
-    const g = gen.current;
+    const g = gen.current, from = list.next;
     setMore(true);
-    fetchTimeline(id, { only, before: list.next, now: false })
+    fetchTimeline(id, { only, before: from, now: false })
       .then((p) => {
-        if (g !== gen.current || !held.current.list) return;
+        // The list moved on while this was read (a refresh replaced it): the page no longer joins its end.
+        if (g !== gen.current || held.current.list?.next !== from) return;
         const cur = held.current.list;
         const have = new Set(cur.rows.map((r) => r.id));
         const next = { rows: [...cur.rows, ...p.rows.filter((r) => !have.has(r.id))], next: p.next, scanned: (cur.scanned ?? 0) + (p.scanned ?? 0) || undefined };
@@ -506,6 +503,7 @@ const ENDED: Record<string, string> = {
   refusal: "The model declined", stop_sequence: "Finished", tool_use: "Ended at a tool call", pause_turn: "Paused", model_context_window_exceeded: "The context was too long", other: "Ended",
 };
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const RECEIPT_MS = 2000;
 const commas = (xs: ReactNode[]) => xs.reduce<ReactNode[]>((a, x, n) => (n ? [...a, ", ", x] : [x]), []);
 
 // A turn's receipt as a short chain of cause: what started it, what it asked
@@ -515,19 +513,26 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
   const [r, setR] = useState<Receipt | null>(null);
   const [gone, setGone] = useState(false);
   const [copied, setCopied] = useState(false);
-  // A running turn's receipt grows: read again as its events arrive.
+  const read = useCallback(() => fetchReceipt(turn).then((x) => { setR(x); onRead?.(x); }).catch((e) => (e?.status === 404 ? setGone(true) : reportError(e, { at: "turn receipt" }))), [turn]);
+  useEffect(() => void read(), [read]);
+  // A running turn's receipt grows: it is read again as the turn's events
+  // arrive, at most once in RECEIPT_MS (a busy turn stores many a second and
+  // each read walks the whole turn), and once more when the turn has ended.
   const events = useStore((s) => s.events[sessionId]?.length ?? 0);
+  const running = !!r && !r.end;
+  const due = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    let live = true;
-    fetchReceipt(turn).then((x) => { if (live) { setR(x); onRead?.(x); } }).catch((e) => (e?.status === 404 ? live && setGone(true) : reportError(e, { at: "turn receipt" })));
-    return () => { live = false; };
-  }, [turn, r && !r.end ? events : 0]);
+    if (!running || document.hidden) return;
+    due.current ??= setTimeout(() => { due.current = null; void read(); }, RECEIPT_MS);
+  }, [events, running, read]);
+  useEffect(() => () => { if (due.current) clearTimeout(due.current); }, []);
   if (gone) return <p className="text-caption text-muted" data-testid="timeline-receipt-gone">This turn is no longer in the session.</p>;
   if (!r) return <p className="text-caption text-muted">Reading the receipt.</p>;
   const failedRequests = r.requests.filter((q) => q.status === "error");
-  const failedTools = r.tools.filter((x) => x.status === "error");
-  // A failed call that ran has a span to open; one that was refused before it ran has none.
-  const ran = failedTools.filter((x) => x.span_id);
+  // A call that ran and failed has a span to open. An error with no span never ran: a gate denied it, or it named no tool.
+  const failedTools = r.tools.filter((x) => x.status === "error" && x.span_id);
+  const neverRan = r.tools.filter((x) => x.status === "error" && !x.span_id).length;
+  const denied = facts?.denied_tools ?? 0;
   // Calls the turn's stop or a restart reached: stopped, not failed.
   const stopped = r.tools.filter((x) => x.status === "interrupted").length;
   const errorId = failedRequests.find((q) => q.error_id)?.error_id;
@@ -562,8 +567,14 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
           {r.tools.length ? (
             <>
               {count(r.tools.length, "tool call")}
-              {failedTools.length > 0 && <>, {failedTools.length} failed{ran.length ? ": " : ""}{commas(ran.map((x, n) => span(x.span_id, `call ${n + 1}`, "receipt-failed-tool")))}</>}
-              {failedTools.length > ran.length && <span className="text-muted" data-testid="receipt-not-run"> ({ran.length ? `${failedTools.length - ran.length} more` : failedTools.length === 1 ? "it" : "they"} never ran: refused, or no such tool)</span>}
+              {failedTools.length > 0 && <>, {failedTools.length} failed: {commas(failedTools.map((x, n) => span(x.span_id, `call ${n + 1}`, "receipt-failed-tool")))}</>}
+              {neverRan > 0 && (
+                <span className="text-muted" data-testid="receipt-not-run">
+                  {failedTools.length
+                    ? ` (${neverRan} more ${neverRan === denied ? "denied" : denied ? `never ran, ${denied} of them denied` : "never ran: denied, or no such tool"})`
+                    : `, ${neverRan === denied ? `${neverRan} denied` : denied ? `${neverRan} never ran, ${denied} of them denied` : `${neverRan} never ran (denied, or no such tool)`}`}
+                </span>
+              )}
               {stopped > 0 && <span className="text-muted" data-testid="receipt-stopped">, {stopped} stopped with the turn</span>}
             </>
           ) : <span className="text-muted">No tool call</span>}
