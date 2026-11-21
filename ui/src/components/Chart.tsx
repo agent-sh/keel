@@ -1,9 +1,12 @@
 // A small time chart in plain SVG: lines (2px, gaps where no bucket had data)
 // or stacked bars (2px surface gap, 4px rounded top). One y-axis, recessive
 // grid, a legend for two or more series, and a crosshair readout of every
-// series at the bucket under the pointer or the focused bucket.
-import { useEffect, useRef, useState } from "react";
-import { cn } from "../lib/utils.ts";
+// series at the bucket under the pointer or the focused bucket. The readout
+// never leaves the chart's width: it stands beside the crosshair when there
+// is room on that side, and over the plot's top edge, as wide as it needs and
+// no wider than the chart, when there is not (a phone, a long series name):
+// there a finger on the plot does not cover it, and the plot stays readable.
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export type Series = { label: string; color: string };
 export type Point = { t: number; values: (number | null)[] };
@@ -40,7 +43,7 @@ export function TimeChart({
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const ro = new ResizeObserver(([e]) => setW(Math.max(240, Math.floor(e!.contentRect.width))));
+    const ro = new ResizeObserver(([e]) => setW(Math.max(160, Math.floor(e!.contentRect.width))));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -78,6 +81,18 @@ export function TimeChart({
   };
 
   const hp = hover === null ? null : data[hover];
+  // Where the readout goes, from its measured width.
+  const tip = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<{ left: number; above: boolean } | null>(null);
+  useLayoutEffect(() => {
+    const el = tip.current;
+    if (!el || !hp) return setPlace(null);
+    const tw = el.offsetWidth, c = center(hp), gap = 12;
+    const beside = c > w / 2 ? c - gap - tw : c + gap;
+    const above = beside < 0 || beside + tw > w;
+    const left = above ? Math.max(0, Math.min(w - tw, c - tw / 2)) : beside;
+    setPlace((p) => (p && p.left === left && p.above === above ? p : { left, above }));
+  });
   const move = (clientX: number) => {
     const r = box.current!.getBoundingClientRect();
     const px = clientX - r.left;
@@ -156,16 +171,18 @@ export function TimeChart({
         </svg>
         {hp && (
           <div
-            className={cn("pointer-events-none absolute top-1 z-10 min-w-36 rounded-md border border-line bg-raised px-2.5 py-2 text-caption shadow-2")}
-            style={center(hp) > w / 2 ? { right: w - center(hp) + 12 } : { left: center(hp) + 12 }}
+            ref={tip}
+            className="pointer-events-none absolute z-10 w-max min-w-[min(9rem,100%)] max-w-full rounded-md border border-line bg-raised px-2.5 py-2 text-caption shadow-2"
+            style={{ left: place?.left ?? 0, ...(place?.above ? { bottom: height + 4 } : { top: 4 }), visibility: place ? undefined : "hidden" }}
             data-testid="chart-tooltip"
+            data-above={place?.above || undefined}
           >
             <div className="mb-1 text-micro text-faint">{fullTime(hp.t)}</div>
             {series.map((s, si) => (
-              <div key={s.label} className="flex items-center gap-2">
-                <span className="h-0.5 w-2.5 rounded-full" style={{ background: s.color }} />
-                <span className="font-medium tabular-nums text-fg">{hp.values[si] == null ? "none" : format(hp.values[si]!)}</span>
-                <span className="text-muted">{s.label}</span>
+              <div key={s.label} className="flex items-baseline gap-2">
+                <span className="h-0.5 w-2.5 shrink-0 -translate-y-1 rounded-full" style={{ background: s.color }} />
+                <span className="shrink-0 font-medium tabular-nums text-fg">{hp.values[si] == null ? "none" : format(hp.values[si]!)}</span>
+                <span className="min-w-0 text-muted">{s.label}</span>
               </div>
             ))}
           </div>

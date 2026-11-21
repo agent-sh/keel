@@ -70,3 +70,65 @@ test("usage dashboard", async ({ page, request }) => {
   // The refusal is an error kind of its own: resolve it so later counts start clean.
   for (const e of (await (await request.get("/api/errors?resolved=0")).json()).errors) if (e.message.includes("spend limit")) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } });
 });
+
+// A chart readout stays inside its chart. A bucket near the middle (the
+// measurement is moved there) with long series names: beside the crosshair
+// with room, and on a small phone at the largest text size over the plot's
+// top edge, no wider than the chart, every name whole.
+test("chart readouts stay inside the chart", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+  const s = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Readout check", text: "One line." } })).json()).session;
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 60_000 }).toBe(true);
+  await request.post(`/api/sessions/${s.id}/messages`, { data: { text: "Another line." } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(2);
+  await page.route("**/api/telemetry/tokens*", async (route) => {
+    const body = await (await route.fetch()).json();
+    const mid = Math.floor((body.since_ms + body.until_ms) / 2 / body.bucket_ms) * body.bucket_ms;
+    body.series = body.series.slice(-1).map((p: any) => ({ ...p, t_ms: mid }));
+    await route.fulfill({ json: body });
+  });
+  const panel = page.getByTestId("usage-panel");
+  const chart = panel.getByRole("figure", { name: "Share of each bucket's prompt read from the cache" });
+  const tip = chart.getByTestId("chart-tooltip");
+  const open = async () => {
+    await page.goto("/settings/usage");
+    await panel.getByRole("radio", { name: "Token zones" }).click();
+    // The plot at the foot of what the pane shows, its legend above it.
+    await chart.locator("svg").evaluate((el) => el.scrollIntoView({ block: "end" }));
+    const box = (await chart.locator("svg").boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2 + 10, box.y + box.height / 2);
+    await expect(tip).toContainText("Frozen history read from cache");
+    await expect(tip).toContainText("Volatile tail read from cache");
+  };
+  // The readout against the box the chart is drawn in, and whether a name is cut.
+  const measure = () => tip.evaluate((el) => {
+    const t = el.getBoundingClientRect(), c = el.parentElement!.getBoundingClientRect();
+    const cut = [...el.querySelectorAll("span")].some((n) => n.scrollWidth > n.clientWidth + 1);
+    return { left: t.left - c.left, right: c.right - t.right, top: t.top - c.top, bottom: t.bottom - c.top, plot: c.height, cut, view: innerWidth - t.right };
+  });
+
+  await open();
+  const wide = await measure();
+  expect(wide.left).toBeGreaterThanOrEqual(0);
+  expect(wide.right).toBeGreaterThanOrEqual(0);
+  expect(wide.top).toBeGreaterThanOrEqual(0);
+  expect(wide.bottom).toBeLessThanOrEqual(wide.plot);
+  expect(wide.cut).toBe(false);
+  await shoot(page, "usage-05-readout-middle");
+
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.setViewportSize({ width: 320, height: 800 });
+  await open();
+  const narrow = await measure();
+  expect(narrow.left).toBeGreaterThanOrEqual(0);
+  expect(narrow.right).toBeGreaterThanOrEqual(0);
+  expect(narrow.view).toBeGreaterThanOrEqual(0);
+  expect(narrow.cut).toBe(false);
+  // It leaves the plot to the lines: it ends where the plot begins, and is on the screen.
+  expect(narrow.bottom).toBeLessThanOrEqual(0);
+  await expect(tip).toBeInViewport({ ratio: 1 });
+  await shoot(page, "usage-06-readout-phone");
+
+  await request.delete(`/api/sessions/${s.id}`);
+});
