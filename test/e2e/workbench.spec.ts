@@ -455,7 +455,9 @@ test("the shortcut sheet follows the Send with setting", async ({ page, request 
   await page.goto("/settings/general");
   const sendWith = page.getByRole("radiogroup", { name: "Send with" });
   const sheet = page.getByTestId("shortcuts");
-  const keys = (label: string) => sheet.locator("div.h-8", { hasText: new RegExp(`^${label}`) }).locator("kbd");
+  // A row by its own handle, not by a class of its styling.
+  const ROW = '[data-testid="shortcut-row"]';
+  const keys = (label: string) => sheet.locator(ROW, { hasText: new RegExp(`^${label}`) }).locator("kbd");
   const open = async () => { await page.keyboard.press("Control+/"); await expect(sheet).toBeVisible(); };
   const close = async () => { await page.keyboard.press("Escape"); await expect(sheet).toBeHidden(); };
 
@@ -472,7 +474,7 @@ test("the shortcut sheet follows the Send with setting", async ({ page, request 
   await close();
   // The setting's own page lists the same keys.
   await page.goto("/settings/keyboard");
-  await expect(page.locator("div.h-8", { hasText: /^Send/ }).locator("kbd")).toHaveText(["Ctrl", "Enter"]);
+  await expect(page.locator(ROW, { hasText: /^Send/ }).locator("kbd")).toHaveText(["Ctrl", "Enter"]);
   await page.goto("/settings/general");
   await sendWith.getByRole("radio", { name: "Enter", exact: true }).click();
   await open();
@@ -488,9 +490,9 @@ test("the shortcut sheet follows the Send with setting", async ({ page, request 
     await page.goto(`/s/${session.id}`);
     await expect(page.getByTestId("composer")).toBeVisible();
     await open();
-    await expect(sheet.locator("div.h-8", { hasText: "Go to the end and follow" })).toHaveCount(1);
+    await expect(sheet.locator(ROW, { hasText: "Go to the end and follow" })).toHaveCount(1);
     const conversation = sheet.locator("section", { has: page.getByRole("heading", { name: "Conversation" }) });
-    await expect(conversation.locator("div.h-8 > span:first-child")).toHaveText(["Go to the end and follow", "Previous prompt", "Next prompt", "Focus the message box"]);
+    await expect(conversation.locator(`${ROW} > span:first-child`)).toHaveText(["Go to the end and follow", "Previous prompt", "Next prompt", "Focus the message box"]);
     await conversation.scrollIntoViewIfNeeded();
     await shoot(page, "wb-17b-shortcuts-conversation");
     await close();

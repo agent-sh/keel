@@ -29,7 +29,7 @@ export function ShortcutList() {
         <section key={g}>
           <h3 className="mb-1.5 text-caption font-medium text-faint">{g}</h3>
           {rows.filter((r) => r[0] === g).map(([, label, keys]) => (
-            <div key={label} className="flex min-h-8 items-center justify-between gap-4 border-b border-line/70 py-1 text-ui last:border-0">
+            <div key={label} data-testid="shortcut-row" className="flex min-h-8 items-center justify-between gap-4 border-b border-line/70 py-1 text-ui last:border-0">
               <span className="min-w-0">{label}</span>
               <Kbd keys={keys} className="shrink-0" />
             </div>
