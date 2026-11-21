@@ -243,10 +243,22 @@ export function stateWord(st: State): string {
 }
 
 // `counts`: agentCounts() when many sessions are told at once; `lens`: lens() the same way.
+// A caller that tells many sessions at once passes one `counts` map for all of them: what waits
+// on the owner and what is waited on is then read once for that map, not once a session.
+const lenses = new WeakMap<Map<string, number>, Lens>();
+function sharedLens(d: From, counts?: Map<string, number>): Lens {
+  if (!counts) return lens(d);
+  const hit = lenses.get(counts);
+  if (hit && hit.d.store === d.store) return hit;
+  const made = lens(d, counts);
+  lenses.set(counts, made);
+  return made;
+}
+
 // `events`: the end of the session's shown branch, for a caller that reads how the last turn ended
 // from the events themselves (the phone's list) instead of the marks kept on the session.
 export function sessionState(s: Session, o: { counts?: Map<string, number>; from?: From; lens?: Lens; after?: After; events?: StoredEvent[] } = {}): SessionState {
-  const l = o.lens ?? lens(o.from ?? from(), o.counts);
+  const l = o.lens ?? sharedLens(o.from ?? from(), o.counts);
   const running = l.d.engine.isRunning(s.id);
   const row = running && s.phase !== "working" ? { ...s, phase: "working" as const } : s;
   const facts = factsOf(s, l);
