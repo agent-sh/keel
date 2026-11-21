@@ -6,7 +6,13 @@
 // and puts it in a worktree there with the rest uncommitted again. What was
 // staged travels apart from the files, as git stash keeps it: the snapshot's
 // second parent is a commit of the index, and the index there is set from it,
-// so staged, unstaged and untracked changes arrive as they were. Coming
+// so staged, unstaged and untracked changes arrive as they were. What a tree
+// cannot hold does not travel, and the receipt says so when it applies: files
+// git ignores, the contents of submodules and nested repositories, a rebase
+// in progress, and a sparse checkout's cone (the copy holds every file). A
+// merge in progress is not carried either (its unmerged entries and its
+// second parent are outside any tree): the move is refused before anything
+// changes, and the owner finishes or aborts the merge first. Coming
 // back, the snapshot lands in the directory the session first left, only when
 // that directory is as the session left it; its own state is saved to a ref
 // first, always.
@@ -59,7 +65,13 @@ const BEFORE_KEPT = 3; // a folder's own states saved before a landing, newest f
 const GIT = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c user.name=Keel -c user.email=keel@localhost";
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 const key = (machine: string, dir: string) => `${machine}:${dir}`;
-type Snap = { top: string; head: string; tree: string; itree: string; snap: string; roots: string[] };
+// `prefix`: the session's folder inside the repository ("" at its top). `ita`: the paths only marked to be added,
+// one a line in base64. `merging`: a merge is in progress there. `lost`: the kinds of thing that do not travel.
+type Snap = { top: string; head: string; tree: string; itree: string; snap: string; roots: string[]; prefix: string; ita: string; merging: boolean; lost: string[] };
+const LOST: Record<string, string> = {
+  ignored: "files git ignores", nested: "the contents of submodules and nested repositories (their folders arrive empty)",
+  op: "the rebase, cherry-pick or revert in progress (it stays in the folder it was started in)", sparse: "the sparse checkout (the copy holds every file)",
+};
 // What a folder holds: its files and what is staged.
 const stateOf = (s: { tree: string; itree: string }) => `${s.tree}:${s.itree}`;
 
@@ -203,9 +215,15 @@ export class Handoffs {
   // The commits carry HEAD's date, not the time: an unchanged folder gives the
   // same commit again, so a move made again finds what it already sent.
   // `prune`: the refs under this prefix beyond the newest few are removed.
-  private async snapshot(machine: MachineRow | null, dir: string, ref: string, prune?: string): Promise<Snap> {
+  // `leaving`: the folder the session leaves. A merge in progress there stops
+  // the move here, before a ref is written, and what will not travel is looked for.
+  private async snapshot(machine: MachineRow | null, dir: string, ref: string, o: { prune?: string; leaving?: boolean } = {}): Promise<Snap> {
     const out = await this.must(machine, dir, `
-top=$(git rev-parse --show-toplevel)
+top=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "refuse=This folder is not a git repository, so there is no git state to carry. Move the session as place only."; exit 0; }
+git rev-parse -q --verify HEAD >/dev/null || { echo "refuse=The repository in $top has no commit yet, so there is nothing to carry the changes on. Commit once, or move the session as place only."; exit 0; }
+merging=0
+if [ -e "$(git rev-parse --git-path MERGE_HEAD)" ] || [ -n "$(git ls-files -u | head -n 1)" ]; then merging=1; fi
+${o.leaving ? `if [ "$merging" = 1 ]; then echo "refuse=A merge is in progress in $top. Finish or abort it there, then move the session: the state of a merge does not travel, and moving now would lose it."; exit 0; fi` : ""}
 head=$(git rev-parse HEAD)
 when=$(git show -s --format=%cI HEAD)
 export GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when"
@@ -216,7 +234,9 @@ real=$(git rev-parse --git-path index)
 if [ -f "$real" ]; then cp "$real" "$idx"; else GIT_INDEX_FILE="$idx" ${GIT} read-tree HEAD; fi
 # An index with unmerged paths has no tree: HEAD's stands in for what is staged.
 itree=$(GIT_INDEX_FILE="$idx" ${GIT} write-tree 2>/dev/null) || itree=$htree
-GIT_INDEX_FILE="$idx" ${GIT} add -A
+# Paths only marked to be added (git add -N) are in no tree: their names travel beside it.
+ita=$(GIT_INDEX_FILE="$idx" git diff-files --name-only --diff-filter=A 2>/dev/null | base64 | tr -d '\\n')
+GIT_INDEX_FILE="$idx" ${GIT} add -A 2>/dev/null
 tree=$(GIT_INDEX_FILE="$idx" ${GIT} write-tree)
 if [ "$tree" = "$htree" ] && [ "$itree" = "$htree" ]; then snap=$head; else
   staged=""
@@ -224,24 +244,43 @@ if [ "$tree" = "$htree" ] && [ "$itree" = "$htree" ]; then snap=$head; else
   snap=$(${GIT} commit-tree "$tree" -p "$head" $staged -m "keel: handoff snapshot")
 fi
 ${GIT} update-ref ${q(ref)} "$snap"
-${prune ? `git for-each-ref --sort=-refname --format='%(refname)' ${q(prune)} | tail -n +${BEFORE_KEPT + 1} | xargs -r -n 1 ${GIT} update-ref -d` : ""}
-echo "top=$top"; echo "head=$head"; echo "tree=$tree"; echo "itree=$itree"; echo "snap=$snap"
+${o.prune ? `git for-each-ref --sort=-refname --format='%(refname)' ${q(o.prune)} | tail -n +${BEFORE_KEPT + 1} | xargs -r -n 1 ${GIT} update-ref -d` : ""}
+lost=""
+${o.leaving ? `if [ -n "$(git -C "$top" ls-files --others --ignored --exclude-standard --directory | head -n 1)" ]; then lost="$lost ignored"; fi
+if [ -n "$(GIT_INDEX_FILE="$idx" git -C "$top" ls-files -s | grep -m 1 '^160000')" ]; then lost="$lost nested"; fi
+for f in rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD; do if [ -e "$(git rev-parse --git-path $f)" ]; then lost="$lost op"; break; fi; done
+if [ "$(git config --bool core.sparseCheckout)" = true ]; then lost="$lost sparse"; fi` : ""}
+echo "top=$top"; echo "head=$head"; echo "tree=$tree"; echo "itree=$itree"; echo "snap=$snap"; echo "merging=$merging"; echo "ita=$ita"; echo "lost=$lost"
+echo "prefix=$(git rev-parse --show-prefix)"
 roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`, "snapshot");
     const v = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() ?? "";
-    return { top: v("top"), head: v("head"), tree: v("tree"), itree: v("itree"), snap: v("snap"), roots: v("roots").split(" ").filter(Boolean) };
+    // Said in the owner's words, with nothing changed: not a failed script.
+    if (v("refuse")) throw new Error(v("refuse"));
+    return { top: v("top"), head: v("head"), tree: v("tree"), itree: v("itree"), snap: v("snap"), roots: v("roots").split(" ").filter(Boolean), prefix: v("prefix").replace(/\/$/, ""), ita: v("ita"), merging: v("merging") === "1", lost: v("lost").split(" ").filter(Boolean) };
+  }
+
+  // The index of a folder set to what was staged, after its files are in
+  // place: the paths only marked to be added are marked again.
+  private staged(snap: Snap): string {
+    return `${GIT} read-tree ${snap.itree}${snap.ita ? `\necho ${snap.ita} | base64 -d | while IFS= read -r f; do ${GIT} add -N -- "$f" 2>/dev/null || true; done` : ""}`;
   }
 
   // Put a snapshot into an existing directory: its own state saved to a ref of
   // its own first; replaced only when it is as the session left it (its files
   // and its index both) and its HEAD is an ancestor of the snapshot. Otherwise
-  // its files and its index stay. Replacing goes from the tree the directory is
-  // (untracked files too) to the snapshot's, so a file removed over there is
-  // removed here, then the index is set to what was staged. Git refuses the
-  // step whole when a file changed under it: the index is put back as it was.
+  // its files and its index stay, as they do when a merge is in progress there.
+  // Replacing goes from the tree the directory is (untracked files too) to the
+  // snapshot's, so a file removed over there is removed here, then the index
+  // is set to what was staged. Git refuses the step whole when a file changed
+  // under it. The index as it was is kept until the last line and put back on
+  // any failure. What only this folder knows is put back after: a sparse
+  // checkout is applied again, and the skip-worktree and assume-unchanged bits
+  // set by hand return to their paths. HEAD moves only when it differs.
   // `mine`: the states that count as the session's own (as it left the folder,
   // or as a cut move put it there). `applying` runs right before the folder changes.
   private async land(machine: MachineRow | null, dir: string, beforeRef: string, snap: Snap, mine: (string | undefined)[], applying: () => void) {
-    const now = await this.snapshot(machine, dir, beforeRef, beforeRef.slice(0, beforeRef.lastIndexOf("/") + 1));
+    const now = await this.snapshot(machine, dir, beforeRef, { prune: beforeRef.slice(0, beforeRef.lastIndexOf("/") + 1) });
+    if (now.merging) return { replaced: false, why: "a merge is in progress there" };
     // A move cut after this step put it here already: nothing to do.
     if (now.head === snap.head && stateOf(now) === stateOf(snap)) return { replaced: true };
     // A place an older build left has only its files' tree on record.
@@ -250,15 +289,22 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
     if (!asLeft || !anc) return { replaced: false, why: !asLeft ? "it changed since the session left it" : "its commit is not an ancestor of the carried state" };
     applying();
     await this.must(machine, dir, `real=$(git rev-parse --git-path index)
-bak=$(mktemp)
+bak=$(mktemp); skip=$(mktemp); assume=$(mktemp)
 cp "$real" "$bak"
+ok=0
+trap 'if [ "$ok" != 1 ]; then cp "$bak" "$real"; fi; rm -f "$bak" "$skip" "$assume"' EXIT
+git ls-files -v | sed -n 's/^[Ss] //p' > "$skip"
+git ls-files -v | sed -n 's/^[a-z] //p' > "$assume"
 ${GIT} read-tree ${now.tree}
 ${GIT} update-index -q --refresh >/dev/null || true
-if ! ${GIT} read-tree -u -m ${now.tree} ${snap.tree}; then cp "$bak" "$real"; rm -f "$bak"; exit 1; fi
-rm -f "$bak"
-${GIT} read-tree ${snap.itree}
-${GIT} reset -q --soft ${snap.head}
-${GIT} update-index -q --refresh >/dev/null || true`, "apply");
+${GIT} read-tree -u -m ${now.tree} ${snap.tree}
+${this.staged(snap)}
+${now.head !== snap.head ? `${GIT} update-ref -m "keel: handoff" HEAD ${snap.head}` : ""}
+ok=1
+if [ "$(git config --bool core.sparseCheckout)" = true ]; then ${GIT} sparse-checkout reapply >/dev/null 2>&1 || true
+else while IFS= read -r f; do ${GIT} update-index --skip-worktree -- "$f" 2>/dev/null || true; done < "$skip"; fi
+while IFS= read -r f; do ${GIT} update-index --assume-unchanged -- "$f" 2>/dev/null || true; done < "$assume"
+${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take the carried state (it is as it was)");
     return { replaced: true };
   }
 
@@ -349,6 +395,7 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
     const sid = s.id;
     const ref = `refs/keel/handoff/${sid}`;
     let switched = false;
+    let lost: string[] = [];
     try {
       await step("interrupt", async () => (this.engine.isRunning(sid) ? void (await this.engine.interrupt(sid)) : "skip"));
       let target = "";
@@ -356,8 +403,9 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
         for (const n of ["snapshot", "transfer"] as StepName[]) await step(n, async () => "skip");
         target = await step("worktree", async () => (dest ? workspace ?? dest.workspace_root! : workspace ?? moves.home ?? s.workspace)) ?? "";
       } else {
-        const snap = await step("snapshot", () => this.snapshot(src, s.workspace, ref));
+        const snap = await step("snapshot", () => this.snapshot(src, s.workspace, ref, { leaving: true }));
         if (!snap) throw new Error("no snapshot");
+        lost = snap.lost;
         moves.left[key(h.from.machine_id, snap.top)] = stateOf(snap);
         if (h.from.machine_id === "local" && !moves.home) moves.home = snap.top;
         this.saveMoves(sid, { ...moves, last: h });
@@ -409,7 +457,7 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
             const made = cut ?? { dir: join(root, ".keel", "worktrees", `handoff-${sid.slice(-12)}-${stamp}`), branch: `keel/handoff-${sid.slice(-12)}-${stamp}` };
             moves.making = { ...moves.making, [dest.id]: made };
             this.saveMoves(sid, { ...moves, last: h });
-            await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}\n${snap.snap !== snap.head ? `cd ${q(made.dir)}\n${GIT} read-tree ${snap.itree}\n${GIT} reset -q --soft ${snap.head}\n${GIT} update-index -q --refresh >/dev/null || true` : "true"}`, "worktree there");
+            await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}\n${snap.snap !== snap.head ? `cd ${q(made.dir)}\n${this.staged(snap)}\n${GIT} reset -q --soft ${snap.head}\n${GIT} update-index -q --refresh >/dev/null || true` : "true"}`, "worktree there");
             moves.away[dest.id] = made.dir;
             moves.left[key(dest.id, made.dir)] = stateOf(snap);
             delete moves.making[dest.id];
@@ -443,6 +491,11 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
             return home;
           })) ?? "";
         }
+        // A session that worked in a folder inside the repository goes on in the same folder of it.
+        if (snap.prefix && !workspace) {
+          const folder = join(target, snap.prefix);
+          if ((await this.sh(dest, target, `test -d ${q(folder)}`)).code === 0) target = folder;
+        }
       }
       // The switch: the machine, the folder, the note and the finished receipt
       // are one write. A daemon killed before it finds the session where it
@@ -451,7 +504,7 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
       sw.state = "running";
       this.record(h);
       const carried = h.carry === "git" ? "with its git state" : "without its files";
-      const summary = h.summary ?? `Moved from ${h.from.machine} to ${h.to.machine} ${carried}: now in ${target}.`;
+      const summary = (h.summary ?? `Moved from ${h.from.machine} to ${h.to.machine} ${carried}: now in ${target}.`) + (lost.length ? ` Not carried: ${lost.map((k) => LOST[k]).filter(Boolean).join("; ")}.` : "");
       const note = this.store.atomic(sid, () => {
         if (!this.store.session(sid)) throw new Error("the session was deleted while it moved");
         this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(dest ? dest.id : null, sid);

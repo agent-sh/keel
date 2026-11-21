@@ -551,6 +551,15 @@ test("keel__run_on asks the far daemon to confine its command as the session's o
   else expect(c.error).toContain("cannot sandbox");
 });
 
+// A repository for a move: one commit holding a.txt, then what a case adds to
+// it, as the owner would type it. `empty0`: one with no commit yet.
+const repo0 = (cwd: string, script: string) => {
+  const p = Bun.spawnSync(["bash", "-c", `set -e\n${script}`], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  if (p.exitCode !== 0) throw new Error(`${script}\n${p.stdout}${p.stderr}`);
+};
+const rig0 = (home: string, more: string) => repo0(home, `git init -q -b main; echo one > a.txt; git add a.txt; git commit -qm init; ${more}`);
+const empty0 = (home: string) => repo0(home, "git init -q -b main; echo a > a.txt; git add a.txt");
+
 // A move's own pieces: one machine that is a folder on this disk (the scripts a
 // move sends it run there), a session in a repository (by default one file
 // with an uncommitted change), an engine that holds the queue when a turn is
@@ -846,56 +855,139 @@ test("a move cut at the switch: the machine and the folder are both old or both 
   }
 });
 
-test("a move carries the index apart from the files: staged, unstaged and untracked arrive as they were", async () => {
-  const rig = await moveRig();
+// What the e2e of the round trip does not reach: the staging changed over
+// there, and a folder here whose index alone changed while the session was away.
+test("a move back brings the staging made there, and keeps a folder whose index alone changed", async () => {
+  const rig = await moveRig((h) => void rig0(h, "echo zero > a.txt; git add a.txt; echo last >> a.txt; echo n > new.txt; git add new.txt; echo u > note.txt; echo s > scrap.txt"));
   try {
-    // One file with a staged edit and another edit on top of it, a staged new file, two untracked ones.
-    writeFileSync(join(rig.home, "a.txt"), "zero\none\n");
-    rig.git(rig.home, "add", "a.txt");
-    writeFileSync(join(rig.home, "a.txt"), "zero\none\nlast\n");
-    writeFileSync(join(rig.home, "new.txt"), "staged new\n");
-    rig.git(rig.home, "add", "new.txt");
-    writeFileSync(join(rig.home, "note.txt"), "untracked\n");
-    writeFileSync(join(rig.home, "scrap.txt"), "untracked too\n");
-    const look = (dir: string) => ({ staged: rig.git(dir, "diff", "--cached"), unstaged: rig.git(dir, "diff"), status: rig.git(dir, "status", "--porcelain") });
-    const start = look(rig.home);
-    expect(start.status.split("\n").filter(Boolean)).toEqual(["MM a.txt", "A  new.txt", "?? note.txt", "?? scrap.txt"]);
-
-    expect(await rig.moved("m1")).toMatchObject({ state: "done" });
-    const wt = rig.session().workspace;
-    expect(look(wt)).toEqual(start);
-    expect(await Bun.file(join(wt, "note.txt")).text()).toBe("untracked\n");
-    expect(look(rig.home)).toEqual(start); // the folder it left is as it was
-
-    // Back with nothing changed over there: the folder here is as it was at the start.
-    expect(await rig.moved("local")).toMatchObject({ state: "done", replaced: true });
-    expect(look(rig.home)).toEqual(start);
-
-    // Over there the staging changes and an untracked file goes; back here the same.
     await rig.moved("m1");
-    rig.git(wt, "add", "a.txt");
-    rig.git(wt, "reset", "-q", "new.txt");
-    (await import("node:fs")).unlinkSync(join(wt, "scrap.txt"));
-    const there = look(wt);
-    expect(there.status.split("\n").filter(Boolean)).toEqual(["M  a.txt", "?? new.txt", "?? note.txt"]);
+    const wt = rig.session().workspace;
+    // Over there the staging changes and an untracked file goes; back here the same.
+    rig.sh(wt, "git add a.txt; git reset -q new.txt; rm scrap.txt");
+    const there = rig.look(wt);
     expect(await rig.moved("local")).toMatchObject({ state: "done", replaced: true });
-    expect(look(rig.home)).toEqual(there);
+    expect(rig.look(rig.home)).toEqual(there);
 
     // Away again; this time only the index here changes while the session is gone.
     await rig.moved("m1");
-    writeFileSync(join(wt, "a.txt"), "worked on over there\n");
-    rig.git(rig.home, "reset", "-q", "a.txt");
-    const kept = look(rig.home);
+    rig.sh(wt, "echo worked on over there > a.txt");
+    rig.sh(rig.home, "git reset -q a.txt");
+    const kept = rig.look(rig.home);
     const back = await rig.moved("local");
     expect(back).toMatchObject({ state: "done", replaced: false });
-    expect(look(rig.home)).toEqual(kept); // its index and its files stay
+    expect(rig.look(rig.home)).toEqual(kept); // its index and its files stay
     // The carried state is in the ref, the files and the index apart.
     const ref = `refs/keel/handoff/${rig.session().id}`;
     expect(back.summary).toContain(ref);
     expect(rig.git(rig.home, "show", `${ref}:a.txt`)).toBe("worked on over there\n");
-    expect(rig.git(rig.home, "show", `${ref}^2:a.txt`)).toBe("zero\none\nlast\n");
+    expect(rig.git(rig.home, "show", `${ref}^2:a.txt`)).toBe("zero\nlast\n");
   } finally {
     rig.close();
+  }
+});
+
+// What only the folder here knows comes back as it left: the files a sparse
+// checkout leaves out are not shown as deleted, and the bits set by hand
+// (skip-worktree, assume-unchanged) are on their paths again.
+test("a move back keeps a sparse checkout and the bits set by hand", async () => {
+  const sparse = await moveRig((h) => void rig0(h, "mkdir -p other sub; echo o > other/o.txt; echo s > sub/s.txt; git add -A; git commit -qm more; git sparse-checkout set --cone sub; echo x >> sub/s.txt; git add sub/s.txt; echo u > sub/u.txt"));
+  try {
+    const before = sparse.look(sparse.home);
+    expect(before.bits).toBe("S other/o.txt");
+    await sparse.moved("m1");
+    sparse.sh(sparse.session().workspace, "echo made there > made.txt; echo edited there >> a.txt");
+    expect(await sparse.moved("local")).toMatchObject({ state: "done", replaced: true });
+    const after = sparse.look(sparse.home);
+    expect(after.bits).toBe("S other/o.txt");
+    expect(after.status).not.toContain("other/o.txt"); // not a deletion waiting to be committed
+    expect(after.status).toContain("? made.txt");
+    expect(sparse.sh(sparse.home, "cat a.txt")).toContain("edited there");
+    expect(sparse.sh(sparse.home, "ls other 2>/dev/null | wc -l").trim()).toBe("0");
+  } finally {
+    sparse.close();
+  }
+  const bits = await moveRig((h) => void rig0(h, "echo b > b.txt; echo c > c.txt; git add -A; git commit -qm more; git update-index --skip-worktree b.txt; git update-index --assume-unchanged c.txt; echo local >> b.txt"));
+  try {
+    await bits.moved("m1");
+    bits.sh(bits.session().workspace, "echo edited there >> a.txt");
+    expect(await bits.moved("local")).toMatchObject({ state: "done", replaced: true });
+    expect(bits.look(bits.home).bits.split("\n")).toEqual(["S b.txt", "h c.txt"]);
+    expect(bits.sh(bits.home, "cat b.txt")).toBe("b\nlocal\n"); // the hidden local edit is still there, still hidden
+    expect(bits.look(bits.home).status).not.toContain("b.txt");
+  } finally {
+    bits.close();
+  }
+});
+
+// A merge in progress is outside what a move carries (its unmerged entries and
+// its second parent are in no tree). The move is refused before it changes
+// anything, in words the owner can act on, with conflicts open or resolved.
+test("a move out of a folder with a merge in progress is refused before anything changes", async () => {
+  for (const state of ["git merge other >/dev/null 2>&1 || true; echo extra >> c.txt; git add c.txt", "git merge other >/dev/null 2>&1 || true; echo resolved > b.txt; git add b.txt"]) {
+    const rig = await moveRig((h) => void rig0(h, `echo b > b.txt; echo c > c.txt; git add -A; git commit -qm base; git checkout -qb other; echo other > b.txt; git commit -qam other; git checkout -q main; echo mine > b.txt; git commit -qam mine; ${state}`));
+    try {
+      const before = rig.look(rig.home);
+      expect(before.merging).toBe("yes");
+      const out = await rig.moved("m1");
+      expect(out).toMatchObject({ state: "failed" });
+      expect(out.error).toBe(`A merge is in progress in ${rig.home}. Finish or abort it there, then move the session: the state of a merge does not travel, and moving now would lose it.`);
+      expect(rig.look(rig.home)).toEqual(before);
+      expect(rig.refs(rig.home, "refs/keel")).toEqual([]);
+      expect(rig.worktrees()).toEqual([]);
+      expect(rig.session().workspace).toBe(rig.home);
+    } finally {
+      rig.close();
+    }
+  }
+});
+
+// A merge begun in the folder here while the session was away: the move back
+// leaves the folder alone (its merge state stays) and points at the ref.
+test("a move back into a folder where a merge began leaves the merge alone", async () => {
+  const rig = await moveRig((h) => void rig0(h, "echo b > b.txt; git add -A; git commit -qm base; git checkout -qb other; echo other > b.txt; git commit -qam other; git checkout -q main; echo mine > b.txt; git commit -qam mine; git checkout -q -- a.txt"));
+  try {
+    await rig.moved("m1");
+    rig.sh(rig.session().workspace, "echo there >> a.txt");
+    rig.sh(rig.home, "git merge other >/dev/null 2>&1 || true");
+    const merging = rig.look(rig.home);
+    expect(merging.merging).toBe("yes");
+    const back = await rig.moved("local");
+    expect(back).toMatchObject({ state: "done", replaced: false });
+    expect(back.summary).toContain("a merge is in progress there");
+    expect(rig.look(rig.home)).toEqual(merging);
+  } finally {
+    rig.close();
+  }
+});
+
+// What a tree cannot hold is said once on the receipt when it applies; a path
+// only marked to be added arrives marked; a repository with no commit is
+// refused in plain words; a session inside a folder of the repository stays in it.
+test("a move says what does not travel, carries what is only marked to be added, and refuses an empty repository", async () => {
+  const rig = await moveRig((h) => (rig0(h, "mkdir sub; echo s > sub/s.txt; printf 'ignored.log\\n' > .gitignore; git add -A; git commit -qm more; echo secret > ignored.log; echo ita > ita.txt; git add -N ita.txt; mkdir nested; cd nested; git init -q -b main; echo n > n.txt; git add n.txt; git commit -qm n"), join(h, "sub")));
+  try {
+    const top = join(rig.home, "..");
+    const before = rig.look(top);
+    expect(before.status).toContain(".A N... 000000 000000 100644");
+    const out = await rig.moved("m1");
+    expect(out.summary).toEndWith("Not carried: files git ignores; the contents of submodules and nested repositories (their folders arrive empty).");
+    const wt = rig.session().workspace;
+    expect(wt).toEndWith("/sub"); // the same folder of the repository
+    expect(rig.git(wt, "status", "--porcelain=v2", "--untracked-files=all")).toContain(".A N... 000000 000000 100644");
+    expect(rig.sh(join(wt, ".."), "ls ignored.log 2>/dev/null | wc -l").trim()).toBe("0");
+    await rig.moved("local");
+    expect(rig.session().workspace).toBe(rig.home);
+    expect(rig.look(top)).toEqual(before);
+  } finally {
+    rig.close();
+  }
+  const empty = await moveRig((h) => void empty0(h));
+  try {
+    const out = await empty.moved("m1");
+    expect(out).toMatchObject({ state: "failed" });
+    expect(out.error).toBe(`The repository in ${empty.home} has no commit yet, so there is nothing to carry the changes on. Commit once, or move the session as place only.`);
+  } finally {
+    empty.close();
   }
 });
 
