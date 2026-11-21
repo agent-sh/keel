@@ -152,7 +152,8 @@ export type SessionSettings = {
   helper?: boolean; // the owner's always-on helper conversation (src/helper/)
   // The last turn failed because the provider asked for a wait longer than a turn waits: the session
   // continues by itself at `at`, while the failure `after` is still the last thing in it (src/engine/turn.ts).
-  continue_at?: { at: number; after: string };
+  // `round`: how many times in a row it already did, each wait twice the one before.
+  continue_at?: { at: number; after: string; round?: number };
 };
 
 // `anchor`: the session's head when it was queued (the branch it was written on).

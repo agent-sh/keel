@@ -231,6 +231,9 @@ export class ScriptedProvider implements Provider {
         if (round < Number(n)) return reply(`Check ${round + 1} of ${n}.`, "tool_use", [{ type: "tool_use", id: `hold-${msgs.length}`, name: "Bash", input: { command: `cat ${pipe}; echo released` } }]);
         return reply(JSON.stringify({ verdict: "met", reason: "Every check ran.", evidence: [`${n} reads of the pipe were started`] }));
       }
+      case "rate-limit-always":
+        // A provider that asks for the long wait however often it is asked.
+        throw longRateLimit();
       case "rate-limit-long":
         // Refused until the engine comes back by itself when the wait is over.
         if (lastText.includes("[harness] The wait the provider asked for is over")) return reply("Answered after the wait the provider asked for.");

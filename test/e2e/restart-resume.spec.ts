@@ -574,6 +574,10 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     await expect(item.getByTestId("inbox-state")).toContainText("Question");
     await shoot(page, "restart-07-question-in-inbox");
     await page.keyboard.press("Escape");
+    // Read once: a restart that puts the question back does not raise it again.
+    await call("/api/alerts/read", { session_id: asker });
+    const alertsOf = async (id: string) => ((await call("/api/alerts?with_unread", undefined, "GET")).alerts as any[]).filter((a) => a.session_id === id).map((a) => [a.kind, a.read]);
+    expect(await alertsOf(asker)).toEqual([["question", true]]);
 
     // A stop parks the turns: the cards are open across it too.
     d.proc.kill("SIGTERM");
@@ -582,7 +586,13 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     await expect.poll(waits, { timeout: 60_000 }).toEqual([[askId], [childId], [planId]]);
     await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
     await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
-    expect(await filed(asker)).toEqual(["question"]);
+    expect(await alertsOf(asker)).toEqual([["question", true]]);
+    // The two restarts under the waiting card read as one line, with their count.
+    await expect(page.getByTestId("turn-reason")).toHaveText("Cut by a daemon restart, 2 times");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1);
+    // The parked turns are not filed as finished beside their open cards (nobody was watching these two).
+    expect(await filed(planner)).toEqual([]);
+    expect(await filed(parent)).not.toContain("finished");
 
     // Answerable: the owner's answer is the question's one result.
     await card.getByRole("radio", { name: "Amber" }).click();
@@ -593,7 +603,10 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "restart", "end_turn"]);
     const results = ev.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
     expect(results.map((r: any) => [r.tool_use_id, !!r.is_error])).toEqual([[askId, false]]);
-    for (const u of ev.filter((e) => e.kind === "user" && e.data.origin === "restart")) expect(u.data.text).toContain("1 call that waited for the owner was asked again");
+    // Two restarts while the card waited: the model is told once, not once per restart.
+    const told = ev.filter((e) => e.kind === "user" && e.data.origin === "restart");
+    expect(told).toHaveLength(1);
+    expect(told[0].data.text).toContain("1 call that waited for the owner was asked again");
 
     // The plan card is on its session's page, and approving it moves the work on.
     await page.goto(`${d.url}/s/${planner}`);
@@ -628,13 +641,18 @@ test("a message sent while the daemon is down or draining goes out once when it 
   expect(built.status, built.stderr).toBe(0);
   const port = await new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
   const at = { bin, bind: `127.0.0.1:${port}` };
-  const env = { KEEL_DRAIN_MS: "6000" };
+  const env = { KEEL_DRAIN_MS: "15000" };
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGM4YaOh0XOHAUIBACUCBXmhkn0oAAAAAElFTkSuQmCC";
   let d = await daemon(state, env, at);
   try {
     const call = (path: string, body?: unknown, method = "POST") =>
       fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
     const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Sends across restarts" });
+    const other = await call("/api/sessions", { model: "scripted:stand-in", title: "Another session" });
     const sid = session.id as string;
+    // Every post of a message of the session, across page loads.
+    let posts = 0;
+    page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith(`/api/sessions/${sid}/messages`)) posts++; });
     await call(`/api/sessions/${sid}/permissions`, { mode: "full-auto" }, "PUT");
     const view = () => call(`/api/sessions/${sid}`, undefined, "GET");
     const sent = async () => ((await view()).events as any[]).filter((e) => e.kind === "user" && e.data.origin !== "restart").map((e) => e.data.text);
@@ -674,25 +692,41 @@ test("a message sent while the daemon is down or draining goes out once when it 
     await expect.poll(async () => (await view()).running, { timeout: 15_000 }).toBe(false);
     expect(await sent()).toEqual(["sent while Keel was down", "named once"]);
 
-    // Stopping while a turn runs: the daemon takes no new work, and the message waits the same way.
-    const gate = join(state, "gate");
-    await composer.fill(`script:hold ${gate}`);
+    // Stopping while a turn runs: the daemon takes no new work, and the message
+    // (here with a picture) waits the same way. It is not posted again while the
+    // daemon drains, its session's row says it waits, and it goes out after a
+    // reload on another session's page, without its own box being opened.
+    await composer.fill("script:long-tool");
     await composer.press("Enter");
-    await expect.poll(async () => (await view()).running, { timeout: 15_000 }).toBe(true);
+    await expect(page.getByTestId("working")).toContainText("Running Bash", { timeout: 15_000 });
+    expect((await call(`/api/sessions/${sid}/draft`, { images: [{ name: "shot.png", mime: "image/png", data: PNG }], origin: "capture" })).status).toBe(200);
+    await expect(page.getByTestId("attachments").getByRole("img", { name: "shot.png" })).toBeVisible();
     d.proc.kill("SIGTERM");
     await expect(page.getByTestId("admin-band")).toBeVisible({ timeout: 5_000 });
     await composer.fill("sent while Keel was stopping");
     await composer.press("Enter");
     await expect(saved).toHaveAttribute("data-state", "waiting");
     await expect(saved).toContainText("sent while Keel was stopping");
+    await expect(page.locator(`[data-testid="session-row"][data-session="${sid}"]`).getByTestId("waiting-send-mark")).toHaveText("waits to send");
     await shoot(page, "restart-10-send-waits-for-drain");
+    const posted = posts;
+    await page.goto(`${d.url}/s/${other.session.id}`);
+    await expect(page.locator(`[data-testid="session-row"][data-session="${sid}"]`).getByTestId("waiting-send-mark")).toBeVisible();
+    await page.waitForTimeout(4_500); // two of the old two-second rounds
+    expect(posts).toBe(posted);
     await exited(d.proc);
     d = await daemon(state, env, at);
-    await expect(saved).toHaveCount(0, { timeout: 30_000 });
-    writeFileSync(gate, "");
+    await expect.poll(sent, { timeout: 30_000 }).toContain("sent while Keel was stopping");
+    await expect(page.locator(`[data-testid="session-row"][data-session="${sid}"]`).getByTestId("waiting-send-mark")).toHaveCount(0);
     await expect.poll(async () => (await view()).running, { timeout: 60_000 }).toBe(false);
-    expect(await sent()).toEqual(["sent while Keel was down", "named once", `script:hold ${gate}`, "sent while Keel was stopping"]);
+    expect(await sent()).toEqual(["sent while Keel was down", "named once", "script:long-tool", "sent while Keel was stopping"]);
+    const last = ((await view()).events as any[]).find((e) => e.kind === "user" && e.data.text === "sent while Keel was stopping");
+    expect(last.data.images).toHaveLength(1);
+    // The message did not take the place of the cut turn's continuation: the model was told of the restart, once.
+    expect(((await view()).events as any[]).filter((e) => e.kind === "user" && e.data.origin === "restart")).toHaveLength(1);
+    await page.goto(`${d.url}/s/${sid}`);
     await expect(page.getByTestId("user-message").filter({ hasText: "sent while Keel was stopping" })).toHaveCount(1);
+    await expect(saved).toHaveCount(0);
   } finally {
     d.proc.kill("SIGKILL");
   }
@@ -761,7 +795,7 @@ test("a rate-limited turn continues by itself at the time the provider named", a
   const state = join(ROOT, `restart-ratelimit-${Date.now()}`);
   made.push(state);
   mkdirSync(state, { recursive: true });
-  const env = { KEEL_RETRY_WAIT_MAX_MS: "1000", KEEL_SCRIPTED_RATE_WAIT_MS: "6000" };
+  const env = { KEEL_RETRY_WAIT_MAX_MS: "1000", KEEL_SCRIPTED_RATE_WAIT_MS: "2000" };
   let d = await daemon(state, env);
   try {
     const call = (path: string, body?: unknown, method = "POST") =>
@@ -806,7 +840,7 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await expect(due).toHaveCount(1, { timeout: 15_000 });
     await due.getByTestId("continue-cancel").click();
     await expect(due).toHaveCount(0);
-    await page.waitForTimeout(7_000);
+    await page.waitForTimeout(4_000);
     expect(await ends()).toEqual(["error", "end_turn", "error", "end_turn", "error"]);
     expect((await call(`/api/sessions/${sid}/resume`, undefined, "DELETE")).cancelled).toBe(false);
 
@@ -816,6 +850,92 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await expect(due).toHaveCount(1, { timeout: 15_000 });
     await due.getByTestId("continue-now").click();
     await expect.poll(async () => (await ends()).length, { timeout: 15_000 }).toBeGreaterThanOrEqual(7);
+
+    // A provider that asks for the wait every time: three rounds, each twice as long, then it stops and says so.
+    const stuck = (await call("/api/sessions", { model: "scripted:stand-in", title: "Limited every time" })).session.id as string;
+    const errorsOf = async () => ((await call(`/api/sessions/${stuck}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "error").map((e) => e.data);
+    await page.goto(`${d.url}/s/${stuck}`);
+    await composer.fill("script:rate-limit-always");
+    await composer.press("Enter");
+    await expect(due).toHaveCount(1, { timeout: 15_000 });
+    await expect(box.first()).not.toContainText("Continue after that");
+    await expect(due.getByTestId("continue-round")).toHaveText("after 1 try, waiting longer each time", { timeout: 15_000 });
+    const stopped = page.getByTestId("continue-stopped");
+    await expect(stopped).toHaveText("It continued by itself 3 times and the provider asked for the wait each time, so it is not continued again.", { timeout: 40_000 });
+    await expect(due).toHaveCount(0);
+    await expect(box.last().getByTestId("try-again")).toBeVisible();
+    await shoot(page, "restart-15-continue-stopped");
+    const errs = await errorsOf();
+    expect(errs.map((e) => e.continued)).toEqual([undefined, undefined, undefined, 3]);
+    expect((await call(`/api/sessions/${stuck}`, undefined, "GET")).session.settings.continue_at).toBeUndefined();
+    await page.waitForTimeout(3_000);
+    expect(await errorsOf()).toHaveLength(4);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
+// Feature: a turn that only waits on the owner does not hold the daemon. A
+// stop does not wait its drain time for a question, a plan or an approval
+// card (they would still be waiting at the end of it, with new work refused
+// meanwhile): it parks them at once and the next daemon puts all three back.
+// After a restart such a turn takes no resume slot either, so a session at
+// work is continued at once however many cards are open.
+test("cards that wait on the owner hold neither a drain nor the turns continued after it", async () => {
+  const state = join(ROOT, `restart-cards-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const env = { KEEL_DRAIN_MS: "20000", KEEL_RESUME_AT_ONCE: "1" };
+  let d = await daemon(state, env);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
+    const question = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
+    const make = async (title: string, mode: string, text: string) => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode }, "PUT");
+      await call(`/api/sessions/${session.id}/messages`, { text });
+      return session.id as string;
+    };
+    const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
+    const asker = await make("A question", "full-auto", calls([question]));
+    const planner = await make("A plan", "plan", calls([{ name: "present_plan", input: { plan: "1. Read.\n2. Change." } }]));
+    const gated = await make("An approval", "ask", calls([{ name: "Bash", input: { command: `echo ran >> ${join(state, "ran.txt")}` } }]));
+    const open = async (extra: string[] = []) => [
+      (await call(`/api/sessions/${asker}/questions`, undefined, "GET")).pending as string[],
+      ((await call(`/api/sessions/${planner}/plan`, undefined, "GET")).open as { id: string }[]).map((c) => c.id),
+      ((await call(`/api/sessions/${gated}/approvals`, undefined, "GET")).approvals as { id: string }[]).map((a) => a.id),
+      ...(await Promise.all(extra.map(async (id) => (await call(`/api/sessions/${id}/questions`, undefined, "GET")).pending as string[]))),
+    ];
+    await expect.poll(async () => (await open()).map((l) => l.length), { timeout: 30_000 }).toEqual([1, 1, 1]);
+    const cards = await open();
+
+    // A stop with twenty seconds for running turns: over in well under that, since nothing is at work.
+    const t0 = Date.now();
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    const took = Date.now() - t0;
+    console.log(`drain with three waiting cards: ${took} ms`);
+    expect(took).toBeLessThan(3_000);
+    d = await daemon(state, env);
+    await expect.poll(() => open(), { timeout: 30_000 }).toEqual(cards);
+    expect(existsSync(join(state, "ran.txt"))).toBe(false);
+
+    // A session at work, then one more question (the newest session, first in line after a restart).
+    const worker = await make("At work", "full-auto", "script:long-tool");
+    const view = async () => (await call(`/api/sessions/${worker}`, undefined, "GET")).events as any[];
+    await expect.poll(async () => (await view()).some((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")), { timeout: 15_000 }).toBe(true);
+    const late = await make("A later question", "full-auto", calls([question]));
+    await expect.poll(async () => (await open([late])).map((l) => l.length), { timeout: 30_000 }).toEqual([1, 1, 1, 1]);
+    const four = await open([late]);
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state, env);
+    const up = Date.now();
+    // With one resume slot, the four cards are back and the working session goes on at once.
+    await expect.poll(async () => (await view()).some((e) => e.kind === "user" && e.data.origin === "restart"), { timeout: 15_000 }).toBe(true);
+    console.log(`working session continued ${Date.now() - up} ms after the daemon was up`);
+    await expect.poll(() => open([late]), { timeout: 15_000 }).toEqual(four);
   } finally {
     d.proc.kill("SIGKILL");
   }

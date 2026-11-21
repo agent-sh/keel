@@ -717,8 +717,8 @@ export class Engine {
   // sent since) and the owner did not call it off. Kept with the session, so a
   // restart meanwhile loses nothing (rearmContinues).
   private continues = new Map<string, ReturnType<typeof setTimeout>>();
-  private continueAt(id: string, at: number, after: string) {
-    this.store.mergeSettings(id, { continue_at: { at, after } });
+  private continueAt(id: string, at: number, after: string, round: number) {
+    this.store.mergeSettings(id, { continue_at: { at, after, round } });
     this.emitSession(id);
     this.armContinue(id, at);
   }
@@ -738,9 +738,20 @@ export class Engine {
     this.store.mergeSettings(id, { continue_at: null });
     this.emitSession(id);
     if (s.archived || this.running.has(id) || this.held.has(id) || this.lineage(id).at(-1)?.id !== c.after) return;
-    this.accept(id, { text: "[harness] The wait the provider asked for is over. Continue where the previous turn left off.", origin: "harness" });
+    this.accept(id, { text: "[harness] The wait the provider asked for is over. Continue where the previous turn left off.", origin: "harness", continued: (c.round ?? 0) + 1 });
     this.start(id);
     this.emitQueue(id);
+  }
+  // How many times in a row the session continued by itself after a provider's
+  // wait and the turn failed again before the model gave a step: the count the
+  // turn that just ended was started with, or 0 when it was the owner's turn
+  // or the model answered in it.
+  private continuedInARow(id: string): number {
+    const line = this.lineage(id);
+    const start = line.findLastIndex((e) => e.kind === "turn_start");
+    if (start < 1 || line.slice(start).some((e) => e.kind === "assistant")) return 0;
+    const prompt = line.findLast((e, i) => i < start && (e.kind === "user" || e.kind === "turn_end"));
+    return prompt?.kind === "user" && typeof prompt.data.continued === "number" ? prompt.data.continued : 0;
   }
   // The owner called it off (or a turn started): nothing continues by itself.
   cancelContinue(id: string): boolean {
@@ -789,13 +800,19 @@ export class Engine {
         // `kind` and `status`: what failed, for the page's words and actions (a ProviderError's own, or its cause's).
         const cause = e instanceof RetryTooLong ? (e.cause as any) : (e as any);
         const kind = cause?.kind;
+        // The provider named when it takes requests again: the owner's session goes on by itself then,
+        // unless it already did CONTINUE_MAX times in a row and the provider asked for the wait each time.
+        const waits = e instanceof RetryTooLong && !this.store.session(id)?.parent_id;
+        const round = waits ? this.continuedInARow(id) : 0;
         const ev = this.append(id, "error", {
-          message: errorText(e), error_id: rec?.id,
+          // (The box says what happens next: it continues by itself, or offers to try again.)
+          message: e instanceof RetryTooLong ? errorText(e).replace("; Continue after that)", ")") : errorText(e), error_id: rec?.id,
           ...(typeof kind === "string" ? { kind } : {}), ...(typeof cause?.status === "number" ? { status: cause.status } : {}),
           ...(e instanceof RetryTooLong ? { retry_at: e.retryAt } : {}),
+          ...(waits && round >= CONTINUE_MAX ? { continued: round } : {}),
         });
-        // The provider named when it takes requests again: the owner's session goes on by itself then.
-        if (e instanceof RetryTooLong && !this.store.session(id)?.parent_id) this.continueAt(id, e.retryAt, ev.id);
+        // Each round without a model step waits twice as long as the one before.
+        if (waits && round < CONTINUE_MAX) this.continueAt(id, Date.now() + Math.max(0, (e as RetryTooLong).retryAt - Date.now()) * 2 ** round, ev.id, round);
       })
       .finally(() => {
         // The turn is over: what it left running no longer fails in it.
@@ -2164,6 +2181,12 @@ function owedTurn(tail: readonly StoredEvent[]): boolean {
 // ordinary (installs), so the count is not lower; restarts are otherwise never
 // counted: a turn that gets a step done between them goes on.
 export const STALLED_MAX = 3;
+// A turn continued by itself this many times in a row after a provider's long
+// wait, the provider asking for the wait again each time before the model
+// gave a step, is not continued again: each round is a request and four more
+// events with no one watching. The same count as STALLED_MAX, for the same
+// reason; the owner's Try again starts the count over.
+const CONTINUE_MAX = 3;
 
 // How many turns at the end of a branch, in a row, were continuations after a
 // restart that a restart cut again before they finished a step (a tool call

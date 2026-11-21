@@ -73,10 +73,15 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
   const [picking, setPicking] = useState(false);
   const [pick, setPick] = useState("");
   const again = () => actions.resume(s.id).catch(reportError);
-  // The fix is somewhere else: that page is the first button, and trying again comes after it.
+  // The fix is somewhere else (the account's billing, the provider's settings):
+  // that page is the first button, and trying again comes after it. Any other
+  // address the provider gave is a plain button after Try again.
   const fix = kind === "quota" && url ? { label: "Open billing", href: url }
-    : kind === "auth" ? { label: "Open provider settings", run: () => navigate({ name: "settings", section: "providers" }) }
-    : url ? { label: "Open the page", href: url } : undefined;
+    : kind === "auth" ? { label: "Open provider settings", run: () => navigate({ name: "settings", section: "providers" }) } : undefined;
+  const page = !fix && url ? url : undefined;
+  // It continued by itself this many times and the provider asked for the wait again each time.
+  const gaveUp = typeof e.data.continued === "number" ? e.data.continued : 0;
+  const round = s.settings.continue_at?.round ?? 0;
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-ui" data-testid="turn-error" data-event-id={e.id} data-kind={kind}>
       <div className="flex items-start gap-2.5">
@@ -97,6 +102,7 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
             <Clock className="size-3.5 shrink-0 text-muted" />
             <span>Continues by itself at <span className="font-medium tabular-nums">{clock(due)}</span></span>
             <span className="tabular-nums text-muted" data-testid="continue-in">{due > now ? `in ${fmtWait(due - now)}` : "now"}</span>
+            {round > 0 && <span className="text-muted" data-testid="continue-round">after {round} {round === 1 ? "try" : "tries"}, waiting longer each time</span>}
           </span>
           <span className="flex items-center gap-1">
             <button type="button" data-testid="continue-now" className={cn(button, primary)} onClick={again}>
@@ -108,6 +114,11 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
           </span>
         </div>
       )}
+      {gaveUp > 0 && (
+        <p className="pl-[1.625rem] text-fg" data-testid="continue-stopped">
+          It continued by itself {gaveUp} times and the provider asked for the wait each time, so it is not continued again.
+        </p>
+      )}
       {live && due === undefined && (
         <div className="flex flex-wrap items-center gap-1.5 pl-[1.625rem]" data-testid="failure-actions">
           {fix && ("href" in fix
@@ -116,6 +127,7 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
           <button type="button" data-testid="try-again" className={cn(button, fix ? plain : primary)} onClick={again}>
             <RotateCw className="size-3" /> Try again
           </button>
+          {page && <a href={page} target="_blank" rel="noreferrer noopener" data-testid="failure-page" className={cn(button, plain)}><ExternalLink className="size-3" /> Open the page</a>}
           {kind && !picking && <button type="button" data-testid="failure-switch" className={cn(button, plain)} onClick={() => setPicking(true)}>Switch model</button>}
           {picking && (
             <span className="flex items-center gap-1.5" data-testid="failure-models">
