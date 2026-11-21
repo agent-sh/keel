@@ -78,29 +78,6 @@ export function folderNames(paths: Iterable<string>): Map<string, string> {
 // animations and transitions, not scrolls asked for from script).
 export const scrollMotion = (): ScrollBehavior => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth");
 
-// The message box of a session's pane takes the keyboard.
-export const focusBox = (id: string) => (document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer"]`) ?? document.querySelector<HTMLElement>('[data-testid="composer"]'))?.focus();
-// What waits for an answer above a pane's message box and takes the keyboard there: the first of an approval's Allow once, a question, a plan's Approve.
-const askIn = (id: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer-asks"] [data-ask]:not(:disabled)`);
-// The keyboard goes into a session's pane: to the first answer that waits above its box
-// (so Enter answers it), else to the message box. Says whether an answer took it.
-export const focusPane = (id: string): boolean => {
-  const ask = askIn(id);
-  if (ask) ask.focus({ preventScroll: true });
-  else focusBox(id);
-  return !!ask;
-};
-// The same for a session that is being opened: its pane may still be drawing what it
-// asks. The keyboard goes there when that shows (a few seconds at most), unless the
-// owner's hand went elsewhere meanwhile: a key or a press ends the wait.
-export function focusAsk(id: string) {
-  const stop = () => { mo.disconnect(); clearTimeout(t); removeEventListener("keydown", stop, true); removeEventListener("pointerdown", stop, true); };
-  const mo = new MutationObserver(() => { if (askIn(id)) { stop(); focusPane(id); } });
-  const t = setTimeout(stop, 4000);
-  requestAnimationFrame(() => {
-    if (focusPane(id)) return stop();
-    mo.observe(document.body, { childList: true, subtree: true });
-    addEventListener("keydown", stop, true);
-    addEventListener("pointerdown", stop, true);
-  });
-}
+// The message box of a session's pane takes the keyboard. (No other pane's box stands in
+// for one that is not drawn yet: what is typed would go to another session.)
+export const focusBox = (id: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer"]`)?.focus();

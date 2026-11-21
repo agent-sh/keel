@@ -633,6 +633,9 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Rows brought into view stop under their list's bar, not behind it (its height is set by the list). */
 .k-ask-list > .k-approval, .k-ask-list > .k-approval * { scroll-margin-top: var(--k-ask-bar, 0px); }
 .k-question { border-radius: 0.3125rem; box-shadow: none; }
+/* A waiting question keeps its Answer row at the tray's lower edge while it scrolls: that edge is not faded. */
+.k-tray:has(.k-question[data-state="open"])[data-more="down"] { mask-image: none; }
+.k-tray:has(.k-question[data-state="open"])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
 .k-turn-error { border-radius: 0.25rem; border-left: 0.1875rem solid var(--st-fail); }
 /* Popups and dialogs: an ink band on top, like a station. */
 [role="dialog"], [role="menu"], [role="listbox"] { box-shadow: var(--shadow-3); }

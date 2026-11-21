@@ -916,9 +916,12 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
     // A list of requests may keep its bar at the region's top while it is scrolled: its rows show under the bar.
     const bar = t.closest(".k-ask-list[data-bar-stays]")?.querySelector<HTMLElement>(":scope > .k-ask-bar");
     const top = box.top + (bar && !bar.contains(t) ? bar.offsetHeight : 0);
-    if (r.top >= top && r.bottom <= box.bottom) return;
+    // A waiting question keeps its Answer row at the region's lower edge while it is scrolled: its parts show over that row.
+    const foot = t.closest('[data-testid="question"]')?.querySelector<HTMLElement>(':scope [data-testid="question-foot"]');
+    const bottom = box.bottom - (foot && !foot.contains(t) && t !== foot.parentElement?.parentElement ? foot.offsetHeight : 0);
+    if (r.top >= top && r.bottom <= bottom) return;
     // A whole pixel past the edge: a part of one would leave its last line cut.
-    el.scrollTop += r.height > box.bottom - top || r.top < top ? Math.floor(r.top - top - pad()) : Math.ceil(r.bottom - box.bottom) + 1;
+    el.scrollTop += r.height > bottom - top || r.top < top ? Math.floor(r.top - top - pad()) : Math.ceil(r.bottom - bottom) + 1;
   };
   // What holds the focus here stays in view: its card, and the control itself first.
   const keepFocus = () => {

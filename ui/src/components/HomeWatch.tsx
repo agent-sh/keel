@@ -34,6 +34,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { READ_MS, SETTLE_MS, settled, stand, type Stand } from "../lib/approvals.ts";
+import { focusAsk } from "../lib/asks.ts";
 import { focusApproval } from "../lib/automation.ts";
 import { pickRows, rowKind, rowLine, say, sayMore, unseenFailures, watchSummary, wholeCommand } from "../lib/home.ts";
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
@@ -50,12 +51,16 @@ const MOST = { attention: 6, working: 4 };
 // session its first request waits in (`child`). With an approval waiting
 // there, the card is asked for its list of requests, never for an answer:
 // whatever the owner pressed here showed the request in short, or not at all.
+// With anything else waiting there (a question, a plan, a secret request) the
+// keyboard goes to that card, as the owner's own doing (lib/asks.ts): never to
+// an answer, and a secret's field takes it, since they came to give it.
 // Every way from this screen to a session goes through here.
 export function openWaiting(id: string, child?: string) {
   const to = child ?? id;
   const first = getSafety().approvals[to]?.[0];
   navigate({ name: "session", id: to });
   if (first) focusApproval(first.id, "card");
+  else focusAsk(to);
 }
 
 export function useHome() {

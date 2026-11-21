@@ -278,12 +278,13 @@ test("a key and the palette reach what waits on the owner, the inbox and the err
   // The key, from a session where nothing waits: the one that has waited longest, its approval under the keys.
   await page.keyboard.press("Alt+a");
   await expect(page).toHaveURL(new RegExp(`/s/${asks}$`));
+  // (The keyboard comes to the card, and to its Allow once it has been there for the settle time.)
   await expect(page.getByTestId("allow-once")).toBeFocused();
   await shoot(page, "keyboard-paths-02-next-waiting");
-  // Again: the next one, and around.
+  // Again, from the card: the next one, and around.
   await page.keyboard.press("Alt+a");
   await expect(page).toHaveURL(new RegExp(`/s/${picks}$`));
-  await expect(page.getByTestId("question")).toHaveAttribute("data-state", "open");
+  await expect(page.getByTestId("composer-asks").getByTestId("question")).toBeFocused();
   await page.keyboard.press("Alt+a");
   await expect(page).toHaveURL(new RegExp(`/s/${asks}$`));
 

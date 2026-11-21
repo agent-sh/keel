@@ -2,13 +2,13 @@ import { BellRing, Bot, ListChecks } from "lucide-react";
 import { lazy } from "react";
 import { auto, setAdvisorSession } from "../../lib/automation.ts";
 import { panels, settingsSections, slash } from "../../lib/extend.ts";
-import { registerCommand } from "../../lib/keys.ts";
+import { isMac, registerCommand } from "../../lib/keys.ts";
 import { actions, getState, ensureModels } from "../../lib/store.ts";
 import { getUI, navigate, savePref } from "../../lib/ui.ts";
 
 // The inbox opens from the keys and the palette too (the list's footer holds it: SidebarExtras.tsx).
 registerCommand({
-  id: "inbox", label: "Open the inbox", group: "General", keys: "alt+b", inInput: true,
+  id: "inbox", label: "Open the inbox", group: "General", keys: "alt+b", inInput: () => !isMac, over: () => !!document.querySelector('[data-testid="inbox-list"]'),
   words: "alerts notifications unread bell finished failed", run: () => void dispatchEvent(new Event("keel:inbox")),
 });
 

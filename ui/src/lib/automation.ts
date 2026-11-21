@@ -279,9 +279,11 @@ export const alertTarget = (id: string) => api<Target>(`/api/alerts/${id}/target
 export const activityTarget = (id: string) => api<Target>(`/api/activity/${id}/target`);
 
 // Where the keyboard is to land on an approval card the owner is on the way to:
-// - "allow": on its Allow once, so Enter answers that card and no other (a
-//   link that names one request). A card whose text is not all shown never
-//   takes the keyboard on an answer: there it lands on the list of requests.
+// - "allow": on that card, and on its Allow once after the settle time, so
+//   Enter then answers that card and no other (a link that names one
+//   request). Code never puts the keyboard straight on an answer (lib/asks.ts),
+//   and a card whose text is not all shown never has it on one: there it
+//   stays on the list of requests.
 // - "card": on the list of requests, not on an answer. For an arrival from a
 //   row that showed the request in short (the home screen, the Inbox): it is
 //   read here first, and a key pressed on the way in answers nothing.

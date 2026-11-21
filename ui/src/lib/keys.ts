@@ -1,6 +1,7 @@
 // Commands: one registry feeds the palette, the keymap and the shortcut sheet.
 // A feature lane adds its own with registerCommand; nothing else needs editing.
 import type { ReactNode } from "react";
+import { modalOpen } from "./overlay.ts";
 
 export type Command = {
   id: string;
@@ -15,6 +16,10 @@ export type Command = {
   // anyway; a function that says no keeps even that one out of a field (a key
   // the platform's text editing owns).
   inInput?: boolean | (() => boolean);
+  // Its own dialog is open now. While a dialog or a menu is open no command
+  // key acts on the page under it; only the key of that dialog's own command
+  // does (the same key closes it).
+  over?: () => boolean;
 };
 
 const commands = new Map<string, Command>();
@@ -73,8 +78,9 @@ export function installKeymap() {
     if (e.defaultPrevented || composing(e)) return;
     const t = e.target as HTMLElement | null;
     const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+    const covered = modalOpen();
     for (const c of allCommands()) {
-      if (!c.keys) continue;
+      if (!c.keys || (covered && !c.over?.())) continue;
       const inInput = typeof c.inInput === "function" ? c.inInput() : c.inInput;
       if (typing && typeof c.inInput === "function" && !inInput) continue;
       // Each of a command's keys is judged alone: of "end mod+end" only the second fires

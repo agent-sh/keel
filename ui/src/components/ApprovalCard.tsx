@@ -5,7 +5,7 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, settled, SETTLE_MS, spentAction, stand, type Action, type Batch, type Hold, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { hasHidden, hasRtl } from "../lib/hidden-chars.ts";
-import { mayTakeFocus } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
@@ -67,8 +67,8 @@ function frameOf(list: HTMLElement) {
   };
 }
 // Where an element is, and whether all of it shows: inside the clip and, for text that is
-// to be read (`open`), with nothing lying over its middle. (A control something lies over
-// cannot be pressed by a pointer at all, so it is not asked.)
+// to be read or pressed (`open`), with nothing lying over its middle. (A pointer cannot
+// press a control something lies over, but a key can: such a control does not act.)
 function seenAt(el: HTMLElement, c: Clip, open = false) {
   const r = el.getBoundingClientRect();
   let whole = r.width > 0 && r.height > 0 && r.top >= c.top - 0.5 && r.bottom <= c.bottom + 0.5 && r.left >= c.left - 0.5 && r.right <= c.right + 0.5;
@@ -122,7 +122,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
         const sum = part("approval-summary");
         const control = (c: HTMLElement | null, prev?: Hold) => {
           if (!c) return undefined;
-          const at = seenAt(c, f.shown);
+          const at = seenAt(c, f.shown, true);
           return hold(prev, at.at, f.inList(at.r), s.input, listChanged, now);
         };
         seen.set(id, {
@@ -229,6 +229,8 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
   const list = useRef<HTMLDivElement>(null);
   const { view, tick, waiting, setHot, spend } = useReadings(list, cards);
+  // How the list holds the keyboard (lib/asks.ts): said on it for the page and its tests.
+  const hold = useHold(list);
   const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => hasHidden(c.summary, "\n\t")).map((c) => c.id)]));
   const [hot, setHotTools] = useState<string[]>([]); // the tools whose action the pointer or the keyboard is on
   const [at, setAt] = useState<{ on: "once" | "all" | "row"; id?: string } | null>(null); // where the keyboard is in the list
@@ -273,6 +275,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   }, [many]);
 
   const allowAll = async (tool: string, ids: string[]) => {
+    noteAnswer(...ids);
     setSending(ids);
     setNote("");
     let allowed: string[] = [];
@@ -303,16 +306,16 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     // Not from a field, and not from a popup a card opened (its events come here through React, not the page).
     if (!e.currentTarget.contains(t) || t.tagName === "INPUT" || e.altKey || e.ctrlKey || e.metaKey || composing(e)) return;
     // Words typed while a card has the keyboard are for the message box: they go there, and so does the Enter after them.
-    if (e.key.length === 1 && e.key !== " ") {
-      e.currentTarget.closest(".k-session")?.querySelector<HTMLElement>('[data-testid="composer"]')?.focus({ preventScroll: true });
-      return;
-    }
+    if (typeToBox(e)) return;
     // Up and Down move between the list's stops: the "allow all" action, then each card's first answer.
     if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.shiftKey) return;
     const stops = [...e.currentTarget.querySelectorAll<HTMLElement>("[data-stop]:not(:disabled)")];
-    const i = stops.findIndex((s) => s === t || (s.dataset.stop === "card" && !!s.closest('[data-testid="approval"]')?.contains(t)));
     const down = e.key === "ArrowDown";
-    const to = i >= 0 ? stops[i + (down ? 1 : -1)]
+    const own = stops.find((s) => s.dataset.stop === "card" && s.closest('[data-testid="approval"]') === t);
+    const i = stops.findIndex((s) => s === t || (s.dataset.stop === "card" && !!s.closest('[data-testid="approval"]')?.contains(t)));
+    // From a card itself (the keyboard was brought to it, not to an answer): Down is its own first answer.
+    const to = own ? (down ? own : stops[i - 1])
+      : i >= 0 ? stops[i + (down ? 1 : -1)]
       : down ? stops.find((s) => s.dataset.stop === "card")
       : stops.findLast((s) => s.dataset.stop === "all");
     if (!to) return;
@@ -336,13 +339,16 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
         <div
           ref={list}
           tabIndex={-1}
+          data-ask-card=""
+          data-ask=""
+          data-keys={hold.keys || undefined}
           role="region"
           aria-label={`${asker ? `${asker}: ` : ""}${cards.length === 1 ? "1 request waits" : `${cards.length} requests wait`} for your answer`}
           className={cn("k-ask-list mb-2 flex flex-col outline-none", many ? "gap-1.5" : "gap-2")}
           data-testid="approvals"
           onKeyDown={onKeyDown}
           // A key held down answers once: its repeats press nothing here (a button, the reason field's Enter).
-          onKeyDownCapture={(e) => { if (e.key === "Enter" && e.repeat) e.preventDefault(); }}
+          onKeyDownCapture={dropRepeats}
           onFocus={onFocus}
           onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setAt(null); }}
         >
@@ -515,8 +521,10 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
       onClick={(e) => {
         const now = pressed.said(e);
         if (busy) return;
-        if (now && now.length > 1) onAllow(now);
-        else nudge.refuse("Not yet: it covers requests once they have stood still for a second");
+        const why = e.detail === 0 ? keyRefused(e.currentTarget) : "";
+        if (!now || now.length < 2) nudge.refuse("Not yet: it covers requests once they have stood still for a second");
+        else if (why) nudge.refuse(why);
+        else onAllow(now);
       }}
       className="k-allow-all inline-flex h-ctl-lg items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-raised"
     >
@@ -571,20 +579,35 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const toList = () => list.current?.focus({ preventScroll: true });
   // Whether the card is in the window: a page of a phone's track that is not the one shown takes no keyboard.
   const inView = () => { const r = root.current?.getBoundingClientRect(); return !!r && r.width > 0 && r.right > 0 && r.left < innerWidth; };
-  // Take focus so Enter answers, unless the owner is busy elsewhere: once, and
-  // not while the card is new. A card that has just been drawn takes nothing:
-  // an Enter on its way to the message box never lands on it. (Where the Allow
-  // was out of view, the region brings it in, and it acts a moment after that.)
-  // An arrival that asked for the list, or for the denial, is honoured instead,
-  // however late the card is drawn (lib/automation.ts).
+  // The two questions every way to an answer of this card asks, each answered in one place.
+  // The card's own rule is the stricter one and comes first in both.
+  // - May an answer of the card have the keyboard: only when its text is all on it and read,
+  //   and the card is in the window.
+  // - Why a press on an answer does nothing, or "" when it answers: the card's rule (a text
+  //   not all read takes no answer), then the control's (it stands, and has stood for the
+  //   settle time: `stood`), then the keyboard's for a press made by a key (lib/asks.ts: not
+  //   within the settle time of the keyboard arriving by code, not under a dialog).
+  const mayHold = () => !unread.current && inView();
+  const refusalOf = (stood: boolean, key: Element | null): string => {
+    if (unread.current) { setTold(true); return openFirst; }
+    if (!stood) return notYet;
+    return key ? keyRefused(key) : "";
+  };
+  // Where the keyboard goes (lib/asks.ts): code brings it to the list of requests or to the
+  // card, never to an answer, and the card's Allow once takes it after the settle time,
+  // counted from when the keyboard came, if the card may have it there.
+  // An arrival says where it lands, however late the card is drawn (lib/automation.ts):
+  // "card" stays on the list (the request is read here first), "allow" is this card and
+  // then its Allow, "deny" opens the denial with the keyboard in the reason field.
+  const hold = useHold(list);
   const asked = useRef(false);
   const arrive = () => {
     const arrival = arrivalOf(a.id);
     if (!arrival) return false;
     asked.current = true;
     if (arrival.to === "deny") { setReason((r) => r + arrival.typed); setDenying(true); }
-    else if (arrival.to === "card" || unread.current) toList();
-    else once.current?.focus({ preventScroll: true });
+    else if (arrival.to === "card") takeKeys(list.current, true, false);
+    else takeKeys(root.current, true);
     return true;
   };
   useEffect(() => {
@@ -594,13 +617,31 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     el?.addEventListener("keel:arrive", on);
     return () => el?.removeEventListener("keel:arrive", on);
   }, []);
+  // With no arrival named, the first card brings the keyboard to its list as it appears,
+  // unless the owner is busy elsewhere (mayTake) or the card is not in the window: once. A
+  // key on its way to the message box lands on nothing that answers, and typed words go
+  // back to the box. (Only the card that is first as it is drawn: one that becomes first
+  // because the one before it was answered takes nothing, and the keyboard stays where
+  // that answer left it.)
   useEffect(() => {
-    if (!first || !ripe || asked.current || arriving(a.id)) return;
+    if (!first || asked.current || arriving(a.id)) return;
     asked.current = true;
-    if (!mayTakeFocus() || !inView()) return;
-    if (unread.current) toList();
-    else once.current?.focus({ preventScroll: true });
-  }, [first, ripe]);
+    if (mayTake(list.current) && inView()) takeKeys(list.current, false);
+  }, []);
+  // Once the keyboard has been on the list (for the first card) or on this card for the
+  // settle time and nothing else was done with it, the card's Allow once takes it, if it
+  // may and can be pressed: Enter then answers what was read. Once for each time the
+  // keyboard is brought: an answer that hands the focus back to the list leaves it there,
+  // and a card that may not have it leaves it on the list.
+  const moved = useRef(0);
+  useEffect(() => {
+    if (hold.keys !== "ready" || !hold.take || moved.current === hold.at) return;
+    const at = document.activeElement;
+    if (!(at === root.current || (first && at === list.current)) || !mayHold()) { moved.current = hold.at; return; }
+    if (!live) return;
+    moved.current = hold.at;
+    once.current?.focus({ preventScroll: true });
+  }, [hold.keys, hold.take, hold.at, live, mustOpen]);
   // The keyboard never rests on an answer of a card that is not all read (its text was found cut after the keyboard came).
   useEffect(() => {
     const at = document.activeElement as HTMLElement | null;
@@ -615,8 +656,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   useEffect(() => {
     if (denying || !back.current) return;
     back.current = false;
-    if (unread.current) toList();
-    else once.current?.focus({ preventScroll: true });
+    if (mayHold()) once.current?.focus({ preventScroll: true });
+    else toList();
   }, [denying]);
   const pressed = usePress(() => !unread.current && armed("live"), (ok) => ok);
   const nudge = useNudge();
@@ -624,6 +665,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const notYet = ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
+    noteAnswer(a.id);
     held.current = !!root.current?.contains(document.activeElement);
     setAnswering(true);
     setErr("");
@@ -723,6 +765,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   return (
     <div
       ref={root}
+      // The keyboard can be brought to the card itself (a link that names it): it answers nothing there.
+      tabIndex={-1}
       role="group"
       aria-labelledby={`${ids}-title`}
       aria-describedby={`${ids}-summary`}
@@ -736,14 +780,15 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       data-live={live || undefined}
       data-must-open={mustOpen || undefined}
       className={cn(
-        "k-approval group/card animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
+        "k-approval group/card animate-in overflow-hidden rounded-2xl border bg-raised shadow-2 outline-none",
         a.risk === "high" ? "border-danger/50" : "border-accent/40",
         // A row: the request, then its answers beside it, or under it where the room ends.
         dense && "flex flex-wrap items-start",
       )}
       onKeyDown={(e) => {
         if (denying || closed || (e.target as HTMLElement).tagName === "INPUT") return;
-        if (e.key === "Escape") { e.preventDefault(); setDenying(true); }
+        // (Not an Escape pressed as the keyboard arrived: it was meant for where the keyboard was.)
+        if (e.key === "Escape" && keysSettled(e.currentTarget)) { e.preventDefault(); setDenying(true); }
       }}
     >
       {dense ? (
@@ -813,16 +858,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             data-nudge={nudge.mark}
             data-testid="allow-once"
             data-stop="card"
-            data-ask=""
             onPointerDown={pressed.onPointerDown}
             onMouseDown={pressed.onMouseDown}
-            onClick={(e) => { if (pressed.said(e)) answer({ choice: "once" }); else if (mustOpen) { setTold(true); nudge.refuse(openFirst); } else nudge.refuse(notYet); }}
+            onClick={(e) => {
+              const why = refusalOf(pressed.said(e), e.detail === 0 ? e.currentTarget : null);
+              if (why) nudge.refuse(why);
+              else answer({ choice: "once" });
+            }}
             className="k-allow h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised aria-disabled:cursor-default aria-disabled:opacity-50"
           >
             Allow once
           </button>
           {nudge.line}
-          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} notYet={mustOpen ? openFirst : notYet} onRefused={() => { if (unread.current) setTold(true); }} onGrant={(rules, session) => answer({ choice: session ? "session" : "always", rules })} />}
+          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} onGrant={(rules, session) => answer({ choice: session ? "session" : "always", rules })} />}
           <button
             disabled={busy}
             data-testid="deny"
@@ -832,8 +880,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             Deny
           </button>
           {err ? <span className={cn("ml-auto min-w-0 basis-full text-micro text-danger", !dense && "sm:basis-auto sm:truncate")} role="alert" title={err} data-testid="approval-error">{err}</span>
-            // Said only while the card has the keyboard and its Allow acts: else Enter is not its, or does nothing yet.
-            : !dense && <span className={cn("invisible ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden", live && "group-focus-within/card:visible")} data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>}
+            // Said only while its Allow has the keyboard and acts: else Enter is not its, or does nothing yet.
+            : !dense && <span className={cn("invisible ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden", live && "group-has-[.k-allow:focus]/card:visible")} data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>}
         </div>
       )}
     </div>
@@ -843,13 +891,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
 const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as const;
 
 // `live` and `armed`: as the card's Allow once, the grant does not open within the settle time.
-function AlwaysButton({ a, busy, live, armed, notYet, onRefused, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; notYet: string; onRefused?: () => void; onGrant: (rules: Suggest[], session: boolean) => void }) {
+function AlwaysButton({ a, busy, live, armed, refusal, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; refusal: (stood: boolean, key: Element | null) => string; onGrant: (rules: Suggest[], session: boolean) => void }) {
   const [rules, setRules] = useState<Suggest[]>(a.suggest);
   const [open, setOpen] = useState(false);
   const pressed = usePress(armed, (ok) => ok);
   const nudge = useNudge();
   return (
-    <Popover.Root open={open} onOpenChange={(o, d) => { if (!o || pressed.said({ detail: (d.event as { detail?: number }).detail ?? 0 })) setOpen(o); else { nudge.refuse(notYet); onRefused?.(); } }}>
+    <Popover.Root open={open} onOpenChange={(o, d) => {
+      if (!o) return setOpen(o);
+      const detail = (d.event as { detail?: number }).detail ?? 0;
+      const why = refusal(pressed.said({ detail }), detail === 0 ? document.activeElement : null);
+      if (why) nudge.refuse(why);
+      else setOpen(o);
+    }}>
       <Popover.Trigger
         disabled={busy}
         data-nudge={nudge.mark}

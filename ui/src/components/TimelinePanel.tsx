@@ -12,6 +12,7 @@ import {
 import { Fragment, type KeyboardEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { dur, whoWords } from "../../../src/admin/timeline-rows.ts";
 import type { Session } from "../../../src/core/types.ts";
+import { takeKeys } from "../lib/asks.ts";
 import { openSession, useAuto } from "../lib/automation.ts";
 import { useToldState } from "../lib/watch.ts";
 import { copyBundle, openTrace, traceOfTurn } from "../lib/observe.ts";
@@ -104,14 +105,16 @@ function Mark({ row }: { row: TimelineRow }) {
 function toCard(l: TimelineRow, session: string) {
   const find = () =>
     (l.refs?.approval_id ? document.querySelector<HTMLElement>(`[data-testid="approval"][data-approval-id="${CSS.escape(l.refs.approval_id)}"]`) : null)
-    ?? (l.refs?.call_id ? document.querySelector<HTMLElement>(`[data-call="${CSS.escape(l.refs.call_id)}"]`) : null)
+    ?? (l.refs?.call_id ? document.querySelector<HTMLElement>(`[data-testid="composer-asks"] [data-call="${CSS.escape(l.refs.call_id)}"]`) ?? document.querySelector<HTMLElement>(`[data-call="${CSS.escape(l.refs.call_id)}"]`) : null)
     ?? (l.kind === "question" && !l.refs?.child_session ? document.querySelector<HTMLElement>('[data-testid="question"][data-state="open"]') : null);
   const show = () => {
     const el = find();
     if (!el) return false;
     el.scrollIntoView({ block: "center" });
     flashOn(el);
-    (el.querySelector<HTMLElement>("button:not([disabled]), [tabindex]") ?? el).focus({ preventScroll: true });
+    // A card that waits for an answer takes the keyboard on itself, never on its answer (lib/asks.ts).
+    if (el.closest("[data-ask-card]")) takeKeys(el, true);
+    else (el.querySelector<HTMLElement>("button:not([disabled]), [tabindex]") ?? el).focus({ preventScroll: true });
     return true;
   };
   if (overConversation()) savePref("panel", null);

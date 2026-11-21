@@ -571,9 +571,10 @@ test("a request that arrives while the action has the keyboard does not join it"
   } finally { await request.delete(`/api/sessions/${id}`); }
 });
 
-// A card that has just been drawn takes no keyboard and its Allow does not act: an Enter
-// typed into the message box as the card appears allows nothing. Words typed after the
-// card took the keyboard go to the message box, and so does their Enter.
+// A card that has just been drawn brings the keyboard to its list, never to its Allow, and
+// its Allow does not act: an Enter on its way to the message box as the card appears allows
+// nothing. Words typed after the card took the keyboard go to the message box, and so does
+// their Enter.
 test("Enter as a request appears allows nothing", async ({ page, request }) => {
   const { id, ws, cards, send } = await start(request, "Enter as it appears", [bash("solo")], { later: true });
   try {
@@ -587,19 +588,25 @@ test("Enter as a request appears allows nothing", async ({ page, request }) => {
     const card = pane.getByTestId("approval");
     const once = card.getByTestId("allow-once");
     // A click that lands on the Allow as it is drawn, and an Enter right behind it.
-    const pressed = page.evaluate(() => new Promise<string>((done) => {
-      const mo = new MutationObserver(() => {
-        const b = document.querySelector<HTMLElement>('[data-testid="allow-once"]');
-        if (!b) return;
-        mo.disconnect();
-        b.click();
-        done(`${b.getAttribute("aria-disabled")} ${(document.activeElement as HTMLElement).dataset.testid}`);
+    // (The watch is in place before the request is let through: set up and released in one
+    // breath, the request could be drawn first and the watch would miss it.)
+    await page.evaluate(() => {
+      (window as unknown as { pressed: Promise<string> }).pressed = new Promise<string>((done) => {
+        const mo = new MutationObserver(() => {
+          const b = document.querySelector<HTMLElement>('[data-testid="allow-once"]');
+          if (!b) return;
+          mo.disconnect();
+          b.click();
+          done(`${b.getAttribute("aria-disabled")} ${(document.activeElement as HTMLElement).dataset.testid}`);
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
       });
-      mo.observe(document.body, { childList: true, subtree: true });
-    }));
+    });
     held["solo.txt"]!();
-    // It was marked disabled when it was pressed, and the keyboard was still in the message box.
-    expect(await pressed).toBe("true composer");
+    const pressed = page.evaluate(() => (window as unknown as { pressed: Promise<string> }).pressed);
+    // It was marked disabled when it was pressed, and the keyboard was not on it: in the message
+    // box still, or on the list the card is in (which answers nothing).
+    expect(["true composer", "true approvals"]).toContain(await pressed);
     // The press is not dropped with no sign: the control is marked, and the reason is said once.
     await expect(once).toHaveAttribute("data-nudge", "true");
     await expect(card.getByTestId("approval-refused").filter({ hasText: "Not yet: it has only just arrived" })).toHaveCount(1);
@@ -622,8 +629,12 @@ test("Enter as a request appears allows nothing", async ({ page, request }) => {
     expect((await cards()).map((c) => c.state)).toEqual(["pending"]);
     expect(existsSync(join(ws, "solo.txt"))).toBe(false);
     await box.fill("");
-    // Enter on the Allow that has stood: allowed.
+    // Enter on the Allow that has stood, once the keyboard has been on the card for the settle time: allowed.
     await once.focus();
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("approval-refused").filter({ hasText: "Not yet: the keyboard has only just arrived" })).toHaveCount(1);
+    expect((await cards()).map((c) => c.state)).toEqual(["pending"]);
+    await expect(pane.getByTestId("approvals")).toHaveAttribute("data-keys", "ready");
     await page.keyboard.press("Enter");
     await expect(card).toHaveCount(0);
     await expect.poll(() => existsSync(join(ws, "solo.txt"))).toBe(true);

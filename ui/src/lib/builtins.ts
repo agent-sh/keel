@@ -105,14 +105,15 @@ const togglePanel = (id: string) => savePref("panel", getUI().panel === id ? nul
 registerCommand(
   { id: "panel-files", label: "Files panel", group: "View", keys: "mod+shift+e", inInput: true, words: "browse tree read", when: () => !!current(), run: () => togglePanel("files") },
   { id: "panel-close", label: "Close the side panel", group: "View", keys: "mod+\\", inInput: true, when: () => !!getUI().panel, run: () => savePref("panel", null) },
-  { id: "palette", label: "Search sessions and commands", group: "General", keys: "mod+k", inInput: true, run: () => setUI({ palette: !getUI().palette }) },
-  { id: "shortcuts", label: "Keyboard shortcuts", group: "General", keys: "mod+/", inInput: true, run: () => setUI({ shortcuts: !getUI().shortcuts }) },
+  { id: "palette", label: "Search sessions and commands", group: "General", keys: "mod+k", inInput: true, over: () => getUI().palette, run: () => setUI({ palette: !getUI().palette }) },
+  { id: "shortcuts", label: "Keyboard shortcuts", group: "General", keys: "mod+/", inInput: true, over: () => getUI().shortcuts, run: () => setUI({ shortcuts: !getUI().shortcuts }) },
   { id: "new-session", label: "New session", group: "Sessions", keys: "mod+shift+o", inInput: true, words: "start create", run: newSession },
   { id: "new-here", label: "New session in this folder", group: "Sessions", words: "clear fresh", when: () => !!current(), run: () => newIn(current()!.workspace) },
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
   { id: "prev-session", label: "Previous session", group: "Sessions", keys: "mod+shift+[", inInput: true, run: () => step(-1) },
+  // (On a Mac, Option with a letter types a character: in a field the Alt letter keys stay the field's.)
   // From anywhere to the list in one key: the row of the session on screen, else the first. Up and Down move, Enter opens.
-  { id: "focus-list", label: "Focus the session list", group: "Sessions", keys: "alt+l", inInput: true, words: "sidebar rows keyboard jump", run: () => (document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"][aria-current="page"]') ?? document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"]'))?.focus() },
+  { id: "focus-list", label: "Focus the session list", group: "Sessions", keys: "alt+l", inInput: () => !isMac, words: "sidebar rows keyboard jump", run: () => (document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"][aria-current="page"]') ?? document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"]'))?.focus() },
   { id: "sidebar", label: "Show or fold the session list", group: "View", keys: "mod+b", inInput: true, words: "sidebar rail toggle", run: () => toggleList() },
   { id: "text-bigger", label: "Bigger text", group: "View", keys: "mod+= mod+shift+=", inInput: true, words: "zoom font size larger letters", run: () => stepScale(1) },
   { id: "text-smaller", label: "Smaller text", group: "View", keys: "mod+-", inInput: true, words: "zoom font size letters", run: () => stepScale(-1) },
@@ -137,7 +138,7 @@ registerCommand(
   // Back to typing from anywhere in the pane worked in (Escape does it from a prompt reached by the two above).
   { id: "focus-box", label: "Focus the message box", group: "Conversation", keys: "shift+escape", inInput: true, words: "composer input type reply write", when: () => !!current(), run: () => focusBox(current()!.id) },
   { id: "settings", label: "Settings", group: "General", keys: "mod+,", inInput: true, words: "preferences options", run: () => navigate({ name: "settings", section: "general" }) },
-  { id: "errors", label: "Show recorded errors", group: "General", keys: "alt+r", inInput: true, words: "failures bugs log", run: () => setUI({ errors: !getUI().errors }) },
+  { id: "errors", label: "Show recorded errors", group: "General", keys: "alt+r", inInput: () => !isMac, over: () => getUI().errors, words: "failures bugs log", run: () => setUI({ errors: !getUI().errors }) },
   { id: "theme-light", label: "Theme: light", group: "View", words: "appearance", run: () => setTheme("light") },
   { id: "theme-dark", label: "Theme: dark", group: "View", words: "appearance", run: () => setTheme("dark") },
   { id: "theme-system", label: "Theme: follow the system", group: "View", words: "appearance auto", run: () => setTheme("system") },

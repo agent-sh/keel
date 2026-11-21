@@ -1,8 +1,9 @@
 import { KeyRound, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { dropRepeats, keyRefused, noteAnswer, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
+import { composing } from "../lib/keys.ts";
 import { secrets, useSecrets, type SecretMeta, type SecretRequest } from "../lib/secrets.ts";
 import { reportError, failed } from "../lib/store.ts";
-import { useUI } from "../lib/ui.ts";
 
 const NONE: never[] = [];
 
@@ -19,7 +20,7 @@ export function SecretCards({ sessionId }: { sessionId: string }) {
   if (!requests.length && !found.length) return null;
   return (
     <div className="mb-2 flex flex-col gap-2">
-      {requests.map((r) => <RequestCard key={r.id} r={r} />)}
+      {requests.map((r, i) => <RequestCard key={r.id} r={r} first={i === 0} />)}
       {found.map((m) => <FoundCard key={m.id} m={m} sessionId={sessionId} />)}
     </div>
   );
@@ -40,31 +41,60 @@ function Head({ title, sub }: { title: string; sub?: string }) {
   );
 }
 
-function RequestCard({ r }: { r: SecretRequest }) {
-  // The field takes the keyboard only in the session the owner has open (the helm): a request of a
-  // session that is merely on the page (a pane beside it, a phone's page behind the home screen)
-  // never pulls the keyboard, or the screen, to itself.
-  const helm = useUI((x) => x.route.name === "session" && x.route.id === r.session_id);
+// The card is held to the one rule of lib/asks.ts. A card that takes the
+// keyboard by itself takes it on the card, never in its field: what the owner
+// was typing as it appeared goes on to the message box, not into the secret,
+// and the field is one Tab away. When the owner brought the keyboard here
+// themselves (a row of the home screen, the key that goes to what waits), the
+// field has it: there they mean it. Enter gives the value as a key on any
+// answer does, not within the settle time of the keyboard arriving. And only
+// in the session the owner has open: a request of a session that is merely on
+// the page (a pane beside it, a phone's page behind the home screen) never
+// pulls the keyboard, or the screen, to itself.
+function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
+  const root = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  useAskKeys(root, first);
+  const hold = useHold(root);
+  useEffect(() => {
+    if (hold.own && hold.take && document.activeElement === root.current) field.current?.focus({ preventScroll: true });
+  }, [hold.own, hold.take, hold.at]);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const act = async (f: () => Promise<unknown>) => {
     setBusy(true);
     setErr("");
+    noteAnswer(r.id);
     try { await f(); } catch (e) { setErr((e as Error).message); reportError(e, { at: "secret request" }); } finally { setBusy(false); }
   };
   return (
-    <div className={`k-secret-request ${shell}`} data-testid="secret-request">
+    <div
+      ref={root}
+      tabIndex={-1}
+      className={`k-secret-request outline-none ${shell}`}
+      data-testid="secret-request"
+      data-ask-card=""
+      data-ask=""
+      data-keys={hold.keys || undefined}
+      onKeyDownCapture={dropRepeats}
+      onKeyDown={(e) => { if (!composing(e)) typeToBox(e); }}
+    >
       <Head title={`The model asks for ${r.name}`} />
       {r.purpose && <p className="px-4 pt-1.5 text-caption text-muted">{r.purpose}</p>}
       <form className="flex items-center gap-1.5 px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (value) act(() => secrets.give(r.session_id, r.id, value)); }}>
         <input
-          autoFocus={helm}
+          ref={field}
           type="password"
           autoComplete="off"
           data-testid="secret-value"
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          // Enter gives the value as a key on any answer does: not as the keyboard arrives by code, not under a dialog.
+          onKeyDown={(e) => {
+            const no = e.key === "Enter" && !composing(e) ? keyRefused(e.currentTarget, e.repeat) : "";
+            if (no) { e.preventDefault(); setErr(no); }
+          }}
           placeholder="Paste the value: it goes to commands only, never to the model"
           className={input}
         />
