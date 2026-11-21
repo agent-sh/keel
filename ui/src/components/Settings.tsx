@@ -1,11 +1,11 @@
 import { Radio } from "@base-ui/react/radio";
-import { RadioGroup } from "@base-ui/react/radio-group";
 import { ArrowLeft, Bot, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
+import { Choices } from "./Choices.tsx";
 import { ShortcutList } from "./ShortcutSheet.tsx";
 import { SmallModels } from "./SmallModels.tsx";
 
@@ -26,7 +26,7 @@ export function SettingRow({ label, hint, children }: { label: string; hint?: Re
 // the arrows move to the next option and choose it.
 export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
   return (
-    <RadioGroup aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="inline-flex rounded-md border border-line bg-sunken p-0.5">
+    <Choices aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="inline-flex rounded-md border border-line bg-sunken p-0.5">
       {options.map((o) => (
         <Radio.Root
           key={o.value}
@@ -38,7 +38,7 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
           {o.label}
         </Radio.Root>
       ))}
-    </RadioGroup>
+    </Choices>
   );
 }
 
@@ -51,7 +51,7 @@ export function Card({ children }: { children: ReactNode }) {
 function TextSize() {
   const scale = useUI((s) => s.scale);
   return (
-    <RadioGroup aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="inline-flex items-stretch rounded-md border border-line bg-sunken p-0.5">
+    <Choices aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="inline-flex items-stretch rounded-md border border-line bg-sunken p-0.5">
       {SCALES.map((v, i) => (
         <Radio.Root
           key={v}
@@ -67,7 +67,7 @@ function TextSize() {
           A
         </Radio.Root>
       ))}
-    </RadioGroup>
+    </Choices>
   );
 }
 

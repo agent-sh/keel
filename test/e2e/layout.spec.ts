@@ -209,6 +209,7 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
 // radio groups: one Tab stop on the option chosen, the arrows move to the
 // next option and choose it, the next Tab leaves the group.
 test("pane count and settings choices by keyboard", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
   const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title: `Choices by keyboard ${Date.now().toString(36)}` } })).json()).session;
   const stored = (k: string) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null"), k);
   const at = (group: ReturnType<typeof page.getByTestId>) => group.locator(":focus");
@@ -231,6 +232,25 @@ test("pane count and settings choices by keyboard", async ({ page, request }) =>
   expect((await stored("keel.panes")).count).toBe(1);
   await page.keyboard.press("Tab");
   await expect(at(count)).toHaveCount(0);
+  // A pane command sets the number from outside the group: Tab still lands on the number shown.
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("3 panes");
+  await page.getByRole("option", { name: /3 panes/ }).first().click();
+  await expect(panes).toHaveCount(3);
+  await tabInto(page, count);
+  await expect(at(count)).toHaveAttribute("data-testid", "panes-3");
+  // The ring of the option under the keyboard stays inside the group's track.
+  const inside = (group: ReturnType<typeof page.getByTestId>) => group.evaluate((g) => {
+    const el = g.querySelector<HTMLElement>(":focus")!;
+    const c = getComputedStyle(el);
+    const reach = parseFloat(c.outlineWidth) + parseFloat(c.outlineOffset);
+    const a = el.getBoundingClientRect(), b = g.getBoundingClientRect();
+    return c.outlineStyle !== "none" && a.left - reach >= b.left && a.right + reach <= b.right && a.top - reach >= b.top && a.bottom + reach <= b.bottom;
+  });
+  expect(await inside(count)).toBe(true);
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(panes).toHaveCount(1);
 
   await page.goto("/settings/general");
   const theme = page.getByRole("radiogroup", { name: "Theme" });
@@ -272,8 +292,20 @@ test("pane count and settings choices by keyboard", async ({ page, request }) =>
   await expect(at(send)).toHaveCount(0);
   await page.keyboard.press("Shift+Tab");
   await expect(at(send)).toHaveText("Ctrl Enter");
+  expect(await inside(send)).toBe(true);
+  // A size set from outside the group (Ctrl +) moves its Tab stop with it.
+  await page.keyboard.press("Control+=");
+  expect(await stored("keel.textScale")).toBe(1.1);
   await page.keyboard.press("Shift+Tab");
+  await expect(at(sizes)).toHaveAttribute("data-testid", "text-size-110");
+  // Set while the keyboard is in the group (Ctrl 0), the focus goes to the size now in use.
+  await page.keyboard.press("Control+0");
   await expect(at(sizes)).toHaveAttribute("data-testid", "text-size-100");
+  // The rail's theme button changes the theme: Tab into the group lands on the new one.
+  await page.getByTestId("theme-toggle").click();
+  await expect.poll(dark).toBe(true);
+  await tabInto(page, theme);
+  await expect(at(theme)).toHaveText("Dark");
 
   // The send key is the one chosen: Enter now makes a new line.
   await page.goto(`/s/${s.id}`);

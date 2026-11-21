@@ -225,6 +225,8 @@ body {
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 input:focus-visible, textarea:focus-visible { outline: none; }
+/* A choice of a few on one track (components/Choices.tsx): the ring hugs the option and stays inside the track. */
+.k-choices [role="radio"]:focus-visible { outline-offset: 0; }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
 [data-line]:focus-visible { outline: none; }
