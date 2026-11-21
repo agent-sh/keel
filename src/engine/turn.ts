@@ -2169,7 +2169,9 @@ export class Engine {
     // so a restart with many open sessions does not send every replayed context
     // to the providers in the same second.
     const slots = new Slots(RESUME_AT_ONCE, RESUME_GAP_MS);
-    const sessions = this.store.sessions().sort((a, b) => b.updated - a.updated);
+    // Only the sessions whose branch ends in a turn a restart cut are read:
+    // the store finds them from each session's last event.
+    const sessions = this.store.cutSessions();
     await Promise.all(sessions.map(async (s) => {
       const line = this.lineage(s.id);
       const end = line.at(-1);

@@ -146,6 +146,41 @@ test("kept events are bounded by their bytes, and idle sessions go first", () =>
   expect(store.lineage(c).length).toBe(300);
 });
 
+test("the sessions a restart cut are found from their last event, with no session read", () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const make = (reason: string | null) => {
+    const { id } = long(seed, 40);
+    if (reason) seed.append(id, "turn_end", { reason });
+    return id;
+  };
+  const cut = make("restart");
+  make("end_turn");
+  make(null);
+  const archived = make("restart");
+  seed.updateSession(archived, { archived: true });
+  // Its cut turn is on a branch the session no longer shows.
+  const moved = make("restart");
+  seed.updateSession(moved, { head: seed.events(moved).at(-2)!.id });
+  const newer = make("restart");
+  seed.db.query("UPDATE sessions SET updated = updated + 1000 WHERE id = ?").run(newer);
+
+  const store = new Store(dir);
+  const seen: string[] = [];
+  const db = store.db as any;
+  const real = db.query.bind(db);
+  db.query = (sql: string) => { seen.push(sql); return real(sql); };
+  const found = store.cutSessions().map((s) => s.id);
+  db.query = real;
+  expect(found).toEqual([newer, cut]);
+  expect(seen.length).toBe(1);
+  expect(store.db.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${seen[0]}`).all().map((r) => r.detail)).toEqual([
+    "SEARCH s USING INDEX sessions_list (archived=?)",
+    "SEARCH e USING INDEX sqlite_autoindex_events_1 (id=?)",
+  ]);
+  expect(store.keptEvents().sessions).toBe(0);
+});
+
 test("the session list reads its partition in order from an index, with the same sessions in the same order", () => {
   const store = new Store(scratch());
   // 400 sessions, three in four archived, activity times in no order of creation.

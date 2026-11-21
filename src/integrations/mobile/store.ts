@@ -67,8 +67,16 @@ export class MobileStore implements ReplayStore {
     // device's token is marked once it authenticated a request.
     if (!store.db.query("SELECT 1 FROM pragma_table_info('mobile_pair_codes') WHERE name = 'device_id'").get()) store.migrate("ALTER TABLE mobile_pair_codes ADD COLUMN device_id TEXT");
     if (!store.db.query("SELECT 1 FROM pragma_table_info('mobile_devices') WHERE name = 'token_used'").get()) store.migrate("ALTER TABLE mobile_devices ADD COLUMN token_used INTEGER NOT NULL DEFAULT 0");
-    // Events stored before this table existed get their places in order, once.
-    store.db.run("INSERT OR IGNORE INTO event_gseq (event_id) SELECT id FROM events WHERE id NOT IN (SELECT event_id FROM event_gseq) ORDER BY ts, rowid");
+    // Events stored before this table existed get their places in order, once:
+    // the fill reads the whole events table (gigabytes in a large store), and
+    // the trigger numbers every event stored after it, so a store that
+    // recorded the fill is not read again at each start.
+    if (this.setting("gseq_filled") !== "1") {
+      store.db.transaction(() => {
+        store.db.run("INSERT OR IGNORE INTO event_gseq (event_id) SELECT id FROM events WHERE id NOT IN (SELECT event_id FROM event_gseq) ORDER BY ts, rowid");
+        this.setSetting("gseq_filled", "1");
+      })();
+    }
   }
   private get db() { return this.store.db; }
 

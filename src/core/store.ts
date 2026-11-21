@@ -257,6 +257,18 @@ export class Store {
       .map(rowToSession);
   }
 
+  // The unarchived sessions whose shown branch ends in a turn a daemon
+  // restart cut, newest activity first. Each session's last event is looked up
+  // by its id (the head), so a start reads one small row a session and
+  // parses no session to find the few it has to continue.
+  cutSessions(): Session[] {
+    return this.db
+      .query<SessionRow, []>(`SELECT s.* FROM sessions s JOIN events e ON e.id = s.head
+        WHERE s.archived = 0 AND e.kind = 'turn_end' AND json_extract(e.data, '$.reason') = 'restart' ORDER BY s.updated DESC`)
+      .all()
+      .map(rowToSession);
+  }
+
   // `updated` is the session's last activity (lists sort by it, "the last
   // session" is the newest by it): a rename or a settings change is not work,
   // so it moves `rev` only.
