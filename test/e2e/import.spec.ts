@@ -379,7 +379,11 @@ test("a Keel file carries its attached files to an empty Keel", async ({ page, r
       expect(Buffer.from(await dl.arrayBuffer()).equals(bytes)).toBe(true);
       expect(dl.headers.get("content-disposition")).toContain(`filename*=UTF-8''${encodeURIComponent(r.name)}`);
     }
-    expect(readdirSync(join(other.state, "attachments"))).toEqual([budget.id]);
+    // The same bytes under two names are one stored file. Beside it is only the
+    // folder a file is written in before it is put in place, with nothing left in it.
+    const stored = readdirSync(join(other.state, "attachments"));
+    expect(stored.filter((d) => d !== ".tmp")).toEqual([budget.id]);
+    expect(stored.includes(".tmp") ? readdirSync(join(other.state, "attachments", ".tmp")) : []).toEqual([]);
     expect(readdirSync(join(other.state, "attachments", budget.id))).toHaveLength(1);
     // And from the sheet again: with nothing to say, the session opens at once, its files on its prompts.
     await openSheet();
