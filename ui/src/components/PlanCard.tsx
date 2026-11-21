@@ -1,7 +1,7 @@
 import { ClipboardList, Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
-import { api, onFeature, reportError, failed } from "../lib/store.ts";
+import { api, onFeature, reportUnlessGone, failed } from "../lib/store.ts";
 import { Markdown } from "./Markdown.tsx";
 import { Select } from "./Select.tsx";
 
@@ -22,9 +22,10 @@ export function PlanCards({ sessionId }: { sessionId: string }) {
     const step = (l: Card[], f: F) => (f.state === "open" ? [...l.filter((c) => c.id !== f.card.id), f.card] : l.filter((c) => c.id !== f.card.id));
     // Frames that came while a load was on its way are newer than its answer: applied on top of it.
     let since: F[] | null = null;
+    // A session deleted while the page was cut off answers 404: a state its station shows, no failure.
     const load = () => {
       const mine: F[] = (since = []);
-      api<{ open: Card[] }>(`/api/sessions/${sessionId}/plan`).then((r) => setCards(mine.reduce(step, r.open))).catch(reportError).finally(() => { if (since === mine) since = null; });
+      api<{ open: Card[] }>(`/api/sessions/${sessionId}/plan`).then((r) => setCards(mine.reduce(step, r.open))).catch(reportUnlessGone).finally(() => { if (since === mine) since = null; });
     };
     load();
     return onFeature({

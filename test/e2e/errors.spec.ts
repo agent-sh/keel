@@ -138,9 +138,15 @@ test("a reconnect after a deletion or a failed first load records no error", asy
   blocked = false;
   await live.ws!.close({ code: 4000, reason: "cut by the test" });
   await expect(page.getByTestId("station-head").first()).toContainText("Opened while away", { timeout: 15_000 });
+
+  // A side panel reads its session again on a reconnect too, and finds it deleted.
+  await openPanel(page, "changes");
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "changes");
+  await live.ws!.close({ code: 4000, reason: "cut by the test" });
+  await request.delete(`/api/sessions/${s2.id}`);
+  await expect(page.getByTestId("session-missing")).toBeVisible({ timeout: 15_000 });
   await page.waitForTimeout(3_500); // a network failure is posted 3 s after it happened
   expect(posted).toEqual([]);
-  await request.delete(`/api/sessions/${s2.id}`);
 });
 
 // A session whose folder was deleted reads as before and says the folder is

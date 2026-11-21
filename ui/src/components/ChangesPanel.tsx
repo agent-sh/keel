@@ -3,7 +3,7 @@ import { Tabs } from "@base-ui/react/tabs";
 import { FileDiff, FolderX, History, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, onFeature, reportError, failed } from "../lib/store.ts";
+import { api, onFeature, reportError, reportUnlessGone, failed } from "../lib/store.ts";
 import { stoppingShells } from "../lib/shells.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
@@ -49,7 +49,8 @@ export function ChangesPanel({ session }: { session: Session }) {
       setAll(first === undefined ? { files: [], diff: "", truncated: false, scope: "tree" } : await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?from=${first}`));
     } catch (e) {
       setErr((e as Error).message);
-      reportError(e, { at: "changes load" });
+      // Read again on a reconnect: a session deleted while the page was cut off is a state, no failure.
+      reportUnlessGone(e, { at: "changes load" });
     }
   }, [sessionId]);
 

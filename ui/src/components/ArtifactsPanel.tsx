@@ -14,7 +14,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { Session } from "../../../src/core/types.ts";
 import type { Artifact } from "../../../src/server/routes/artifacts.ts";
 import { copyOrSay } from "../lib/copy.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, reportError, reportUnlessGone } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { DiffView, type FileChange } from "./DiffView.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -34,12 +34,14 @@ const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) :
 const where = (a: Listed) => (a.place === "artifacts" ? ["artifacts", dirOf(a.rel)].filter(Boolean).join("/") : a.place === "folder" ? dirOf(a.rel) : dirOf(a.path).replace(/^\/(home|Users)\/[^/]+/, "~"));
 const button = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg";
 
-// The artifacts of a session or a project, kept current by "artifacts" frames.
+// The artifacts of a session or a project, kept current by "artifacts" frames
+// and read again on a reconnect: one deleted while the page was cut off is a
+// state, no failure.
 export function useArtifacts(url: string, sessions: (id: string | undefined) => boolean) {
   const [list, setList] = useState<Listed[] | null>(null);
   const mine = useRef(sessions);
   mine.current = sessions;
-  const load = useCallback(() => api<{ artifacts: Listed[] }>(url).then((r) => setList(r.artifacts), reportError), [url]);
+  const load = useCallback(() => api<{ artifacts: Listed[] }>(url).then((r) => setList(r.artifacts), reportUnlessGone), [url]);
   useEffect(() => {
     load();
     return onFeature({ frame: (f) => { if (f.name === "artifacts" && mine.current(f.session_id)) load(); }, reconnect: load });
