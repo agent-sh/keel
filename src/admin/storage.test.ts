@@ -13,7 +13,7 @@ import { Store } from "../core/store.ts";
 import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/attachments.ts";
 import { adminCommands } from "../cli/admin.ts";
 import { mobileCommands } from "../cli/mobile.ts";
-import { HASH_CHUNK, hashFile, restore, Storage, undoCutRestore, verify } from "./storage.ts";
+import { HASH_CHUNK, hashFile, REPORT_MAX_AGE_MS, restore, Storage, undoCutRestore, verify } from "./storage.ts";
 
 test("a backup restores into an empty state folder", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
@@ -496,6 +496,47 @@ test("an unreadable manifest is listed beside the others, not instead of them", 
     expect(list.map((b) => b.name)).toEqual([...names].reverse());
     expect(list[1]!.unreadable).toContain("manifest.json");
     expect(list[0]!.unreadable).toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The report's total is what du says of the state folder, whatever is in
+// it: a session's memory transcript, an upload, a folder no kind names. A
+// report a minute old is measured again when asked for.
+test("the storage report adds up to du of the state folder and is measured again after a minute", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-storage-"));
+  try {
+    const src = new Store(join(root, "s"));
+    src.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    src.append(s.id, "user", { text: "x".repeat(20_000) });
+    const put = (rel: string, bytes: number) => { mkdirSync(join(src.stateDir, rel, ".."), { recursive: true }); writeFileSync(join(src.stateDir, rel), "y".repeat(bytes)); };
+    put(`transcripts/${s.id}.jsonl`, 300_000);
+    put(`spill/${s.id}/out.txt`, 50_000);
+    put("attachments/" + "a".repeat(64) + "/shot.png", 70_000);
+    put("artifacts/report.md", 9_000);
+    put("some-new-folder/data.bin", 40_000);
+    put("listing.json", 11_000);
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    const du = () => Number(Bun.spawnSync(["du", "-sb", src.stateDir]).stdout.toString().split("\t")[0]);
+    const r = await storage.report();
+    expect(Math.abs(r.total_bytes - du()) / du()).toBeLessThan(0.01);
+    // Each kind is its files (and, with an older du, a few kilobytes for its folders).
+    const near = (n: number, want: number) => n >= want && n <= want + 3 * 4096;
+    expect([near(r.memory_transcripts_bytes, 300_000), near(r.uploads_bytes, 70_000), near(r.artifacts_bytes, 9_000), near(r.spilled_output_bytes, 50_000)]).toEqual([true, true, true, true]);
+    expect(r.other_bytes).toBeGreaterThanOrEqual(51_000);
+    // Every byte is in one row: the kinds, the database and the rest.
+    const kinds = r.spilled_output_bytes + r.checkpoints_bytes + r.worktrees_bytes + r.reports_bytes + r.backups_bytes + r.plugins_bytes + r.memory_transcripts_bytes + r.uploads_bytes + r.artifacts_bytes + r.logs_bytes;
+    expect(r.database_bytes + kinds + r.other_bytes).toBe(r.total_bytes);
+
+    // Asked again at once: the same report. A minute later: what is there now.
+    put(`transcripts/${s.id}-2.jsonl`, 100_000);
+    expect((await storage.report()).total_bytes).toBe(r.total_bytes);
+    (storage as any).last.measured_ms -= REPORT_MAX_AGE_MS;
+    const later = await storage.report();
+    expect(near(later.memory_transcripts_bytes, 400_000)).toBe(true);
+    expect(Math.abs(later.total_bytes - du()) / du()).toBeLessThan(0.01);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

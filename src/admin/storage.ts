@@ -35,7 +35,32 @@ registerSettings(
 
 // Folders under the state folder by what they hold. Durable state is the
 // database and the small JSON files; the rest can be rebuilt or is disposable.
-const DIRS = { spilled_output_bytes: "spill", checkpoints_bytes: "checkpoints", worktrees_bytes: "worktrees", reports_bytes: "reports", backups_bytes: "backups", plugins_bytes: "plugins" } as const;
+const DIRS = {
+  spilled_output_bytes: "spill", checkpoints_bytes: "checkpoints", worktrees_bytes: "worktrees", reports_bytes: "reports", backups_bytes: "backups", plugins_bytes: "plugins",
+  memory_transcripts_bytes: "transcripts", uploads_bytes: "attachments", artifacts_bytes: "artifacts", logs_bytes: "logs",
+} as const;
+
+// A report older than this is measured again when asked for: what it says is
+// what is on disk now, and calls close together share one measurement.
+export const REPORT_MAX_AGE_MS = 60_000;
+
+// The state folder whole and each folder directly in it, in one du run, so
+// the parts add up to the total: a file with two names (an upload and its
+// copy in a backup) is counted once, where du met it first.
+async function duTop(dir: string): Promise<{ total: number; dirs: Map<string, number> }> {
+  const p = Bun.spawn(["du", "-b", "-d1", "--", dir], { stdout: "pipe", stderr: "ignore" });
+  const text = await readText(p.stdout);
+  await p.exited;
+  const dirs = new Map<string, number>();
+  let total = 0;
+  for (const line of text.split("\n")) {
+    const m = /^(\d+)\t(.+)$/.exec(line);
+    if (!m) continue;
+    if (m[2] === dir) total = Number(m[1]);
+    else dirs.set(basename(m[2]!), Number(m[1]));
+  }
+  return { total, dirs };
+}
 
 async function du(paths: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
@@ -64,7 +89,7 @@ export class Storage {
   get dir() { return this.store.stateDir; }
 
   report(refresh = false): Promise<StorageReport> {
-    if (this.last && !refresh) return Promise.resolve(this.last);
+    if (this.last && !refresh && Date.now() - this.last.measured_ms < REPORT_MAX_AGE_MS) return Promise.resolve(this.last);
     return (this.measuring ??= this.measure().then((r) => (this.last = r)).finally(() => (this.measuring = undefined)));
   }
 
@@ -80,8 +105,8 @@ export class Storage {
     const shadowDirs = [...new Set(cps.map((c) => c.shadow))];
     // Two du runs: du counts a file once per run, so a folder measured after
     // its parent in the same run would read as empty.
-    const [top, inner] = await Promise.all([du(Object.values(DIRS).map((d) => join(this.dir, d))), du([...spillDirs, ...shadowDirs])]);
-    const sizes = new Map([...top, ...inner]);
+    const [top, inner] = await Promise.all([duTop(this.dir), du([...spillDirs, ...shadowDirs])]);
+    const sizes = new Map([...[...top.dirs].map(([name, n]) => [join(this.dir, name), n] as const), ...inner]);
     // A folder's checkpoints live in one shadow repository; a session's part is
     // its share of that folder's checkpoints (an estimate: they share objects).
     const perShadow = new Map<string, number>();
@@ -114,7 +139,10 @@ export class Storage {
       measured_ms: Date.now(),
       state_dir: this.dir,
       database_bytes: dbBytes,
-      total_bytes: dbBytes + Object.values(dirs).reduce((n, b) => n + b, 0),
+      // What du says of the whole folder. `other_bytes`: what no kind above
+      // names (the settings and listing files, the page, a folder a feature added).
+      total_bytes: top.total,
+      other_bytes: Math.max(0, top.total - dbBytes - Object.values(dirs).reduce((n, b) => n + b, 0)),
       sessions: group((r) => !r.archived && !r.parent_id),
       archived_sessions: group((r) => !!r.archived && !r.parent_id),
       subagent_sessions: group((r) => !!r.parent_id),

@@ -119,7 +119,7 @@ test("the storage head and sizes fit a phone", async ({ page }) => {
   // Each size is whole inside the list of kinds, with its bar under the name.
   const kinds = await box(panel.getByTestId("storage-kinds"));
   const sizes = await panel.getByTestId("storage-kinds").locator(":scope > div > span:last-child").all();
-  expect(sizes.length).toBe(6);
+  expect(sizes.length).toBe(8);
   for (const s of sizes) { const b = (await s.boundingBox())!; expect(b.x + b.width).toBeLessThanOrEqual(kinds.x + kinds.width + 0.5); expect(b.x).toBeGreaterThanOrEqual(kinds.x); }
   const bar = (await panel.getByTestId("storage-kinds").locator(":scope > div > div").first().boundingBox())!;
   expect(bar.width).toBeGreaterThan(kinds.width * 0.9);

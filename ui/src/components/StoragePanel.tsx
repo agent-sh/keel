@@ -14,6 +14,7 @@ type Report = {
   measured_ms: number; state_dir: string; total_bytes: number; database_bytes: number; attachments_bytes: number;
   sessions: { count: number; transcript_bytes: number }; archived_sessions: { count: number; transcript_bytes: number }; subagent_sessions: { count: number; transcript_bytes: number };
   spilled_output_bytes: number; checkpoints_bytes: number; worktrees_bytes: number; reports_bytes: number; backups_bytes: number; plugins_bytes: number;
+  memory_transcripts_bytes: number; uploads_bytes: number; artifacts_bytes: number; logs_bytes: number; other_bytes: number;
   leftovers: { count: number; bytes: number };
   by_session: { id: string; title: string; archived: boolean; subagent: boolean; transcript_bytes: number; spill_bytes: number; checkpoints: number; checkpoint_bytes: number; bytes: number; updated_ms: number }[];
   checkpoint_folders: { workspace: string; bytes: number; checkpoints: number; sessions: number; session_list: CheckpointSession[] }[];
@@ -149,7 +150,8 @@ export function StoragePanel() {
   };
 
   if (!r) return <div className="text-ui text-faint">Measuring.</div>;
-  const other = r.plugins_bytes + r.reports_bytes;
+  // The rows add up to the total, which is what du says of the folder.
+  const other = r.plugins_bytes + r.reports_bytes + r.logs_bytes + r.other_bytes;
   return (
     <div className="flex flex-col gap-4" data-testid="storage-panel">
       {unreadable !== undefined && <UnreadableSettings why={unreadable} onReset={resetSettings} />}
@@ -168,8 +170,10 @@ export function StoragePanel() {
           { label: "Checkpoints", bytes: r.checkpoints_bytes, hint: "file snapshots per turn, for rewind" },
           { label: "Worktrees", bytes: r.worktrees_bytes },
           { label: "Spilled output", bytes: r.spilled_output_bytes, hint: "long tool output and command logs" },
+          { label: "Memory transcripts", bytes: r.memory_transcripts_bytes, hint: "each session as the memory tool reads it" },
+          { label: "Uploads and artifacts", bytes: r.uploads_bytes + r.artifacts_bytes, hint: "files attached to messages and files sessions made for you" },
           { label: "Backups", bytes: r.backups_bytes },
-          { label: "Other", bytes: other, hint: "plugin data and reports" },
+          { label: "Other", bytes: other, hint: "plugin data, reports, logs, settings and listing files" },
         ]} />
       </Card>
 

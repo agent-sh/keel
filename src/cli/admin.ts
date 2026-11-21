@@ -142,8 +142,11 @@ const storage = wrap("keel storage [--refresh] [--url URL] [--json]", { refresh:
     `  checkpoints   ${mb(s.checkpoints_bytes)}`,
     `  worktrees     ${mb(s.worktrees_bytes)}`,
     `  spilled       ${mb(s.spilled_output_bytes)}${s.leftovers.count ? `  (${mb(s.leftovers.bytes)} left by ${s.leftovers.count} deleted sessions)` : ""}`,
+    `  transcripts   ${mb(s.memory_transcripts_bytes)}  (what the memory tool reads of each session)`,
     `  backups       ${mb(s.backups_bytes)}`,
-    `  reports       ${mb(s.reports_bytes)}`,
+    `  uploads       ${mb(s.uploads_bytes)}`,
+    `  artifacts     ${mb(s.artifacts_bytes)}`,
+    `  other         ${mb(s.other_bytes + s.reports_bytes + s.plugins_bytes + s.logs_bytes)}  (reports, plugin data, logs, settings and listing files)`,
   ].join("\n"));
   return 0;
 });
