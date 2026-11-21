@@ -500,4 +500,3 @@ function excerpt(content: unknown): string {
   return line.length > 140 ? line.slice(0, 139) + "..." : line;
 }
 type ToolRow = { ts: number; tool: string; ms: number | null; is_error: number };
-
