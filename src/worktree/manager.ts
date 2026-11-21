@@ -48,6 +48,8 @@ export function git(cwd: string, args: string[], opts: { env?: Record<string, st
   return run;
 }
 
+const KEEL_IDENT = { GIT_AUTHOR_NAME: "Keel", GIT_AUTHOR_EMAIL: "keel@localhost", GIT_COMMITTER_NAME: "Keel", GIT_COMMITTER_EMAIL: "keel@localhost" };
+
 async function gitNow(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean }): Promise<string> {
   const p = Bun.spawn(["git", ...args], {
     cwd, env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0", ...opts.env },
@@ -186,7 +188,8 @@ export class Worktrees {
       await git(dir, ["read-tree", "HEAD"], { env });
       await git(dir, ["add", "-A"], { env });
       const tree = (await git(dir, ["write-tree"], { env })).trim();
-      const commit = (await git(dir, ["commit-tree", tree, "-p", "HEAD", "-m", message])).trim();
+      // Keel's own commit under its own ref: made the same on a machine with no git identity set.
+      const commit = (await git(dir, ["commit-tree", tree, "-p", "HEAD", "-m", message], { env: KEEL_IDENT })).trim();
       await git(dir, ["update-ref", ref, commit]);
       return ref;
     } finally {

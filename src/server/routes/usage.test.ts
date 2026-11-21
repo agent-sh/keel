@@ -5,12 +5,17 @@
 // sums a rollup that triggers keep as requests are written, taken out or
 // changed: the walk reads the ledger itself, so the two agree only while the
 // rollup is right.
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { allHooks } from "../../engine/hooks.ts";
 import { BUCKET, checkRollup, ensureRollup, usageRoutes } from "./usage.ts";
+
+// These tests write a database of their own to disk; under a disk stall of a
+// shared machine a write waits seconds, and the 5 s default was passed in
+// whole-suite runs by tests that take milliseconds alone.
+setDefaultTimeout(20_000);
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "usage-routes-"));
 const store = new Store(dir);

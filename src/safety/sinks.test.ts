@@ -3,7 +3,7 @@
 // MCP call keep the placeholder, so the value reaches no stored row and no
 // provider request; and a request that somehow holds a known value is masked
 // before it is sent.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,11 @@ import { setDeps } from "../automation/core.ts";
 import * as loops from "../automation/loops.ts";
 import { automationTools } from "../automation/tools.ts";
 import { vault } from "./secrets.ts";
+import { allHooks } from "../engine/hooks.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 const files = (d: string): string[] => readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? files(p) : [p]; });
 

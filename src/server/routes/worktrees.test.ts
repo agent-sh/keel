@@ -1,6 +1,6 @@
 // A worktree's folder is not parked away under a background command that
 // still runs in it: the route names the command, and stops it only when asked.
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
@@ -8,6 +8,10 @@ import { ErrorTracker } from "../../core/errors.ts";
 import { Store } from "../../core/store.ts";
 import { running, startJob, stopJob } from "../../tools/jobs.ts";
 import { worktreeRoutes } from "./worktrees.ts";
+
+// Each test here runs git a dozen times or more, and on a busy disk one git
+// command takes half a second: the 5 s default was passed in whole-suite runs.
+setDefaultTimeout(20_000);
 
 const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `wt-route-${process.pid}`);
 afterAll(() => rmSync(root, { recursive: true, force: true }));

@@ -2,7 +2,7 @@
 // daemon before, what a cut turn becomes when the recovery settles it or
 // leaves it, that the record is whole once, and the sentences every place
 // tells it in.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { localDay, localTime } from "../core/clock.ts";
@@ -10,6 +10,10 @@ import { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { allHooks, type CutTurn } from "../engine/hooks.ts";
 import { type Life, readBefore, type Restart, restartNeedsEye, Restarts, restartSummary, restartTurnLine } from "./life.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 const at = (h: number, m: number, s: number) => new Date(2026, 10, 21, h, m, s).getTime();
 const cut = (n: number, more: Partial<CutTurn> = {}): CutTurn => ({

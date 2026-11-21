@@ -1,17 +1,25 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { lineage } from "../core/tree.ts";
-import { registerHooks } from "../engine/hooks.ts";
+import { allHooks, registerHooks } from "../engine/hooks.ts";
 import { Engine, toMessages } from "../engine/turn.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import { dropPending, flush, isPending, setDeps } from "./core.ts";
 import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
+
+// Agents get git worktrees here, several git commands each, and on a busy disk one git
+// command takes half a second: the 5 s default was passed in whole-suite runs.
+setDefaultTimeout(20_000);
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 test("an agent in a mode that writes nothing gets no worktree", () => {
   expect(agents.wantsWorktree({}, {}, "ask")).toBe(true);

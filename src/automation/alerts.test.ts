@@ -252,10 +252,14 @@ test("a notification's title and body reach gdbus as quoted GVariant strings", (
   const json = String.raw`send: {"text":"line\n\nHis words: \"yes\""}`;
   expect(alerts.gvariantString(json)).toBe(String.raw`'send: {"text":"line\\n\\nHis words: \\"yes\\""}'`);
   expect(alerts.gvariantString("it's\ntwo lines\0")).toBe(String.raw`'it\'s\ntwo lines'`);
-  if (!Bun.which("gdbus") || !process.env.DBUS_SESSION_BUS_ADDRESS) return;
-  // The real parser, on a method that takes one string and shows nothing.
+  // The real parser needs the two programs; without them only the quoting above is checked.
+  if (!Bun.which("gdbus") || !Bun.which("dbus-run-session")) return;
+  // On a method that takes one string and shows nothing, over a bus of the
+  // test's own: the caller may have no session bus, or one that is not reachable.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"]) delete env[key];
   const parses = (arg: string) =>
-    Bun.spawnSync(["gdbus", "call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.NameHasOwner", arg], { timeout: 5000 }).exitCode === 0;
+    Bun.spawnSync(["dbus-run-session", "--", "gdbus", "call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.NameHasOwner", arg], { env, timeout: 5000 }).exitCode === 0;
   expect(parses(json)).toBe(false);
   for (const s of [json, "--help", "C:\\", "it's", "'quoted'", "true", "a\nb\tc", "@s x", "<b>&"]) expect(parses(alerts.gvariantString(s))).toBe(true);
 });

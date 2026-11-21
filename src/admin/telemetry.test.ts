@@ -1,6 +1,6 @@
 // The ledger's attribution over the event tree, which a live e2e cannot set
 // up: history from before telemetry (a fork copied with it), and branches.
-import { expect, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,15 @@ import { allHooks } from "../engine/hooks.ts";
 import { changedBlocks } from "../engine/prompt-store.ts";
 import { PromptStore } from "../engine/prompt-store.ts";
 import { breakCause, prefixDiff, prefixOf, Telemetry } from "./telemetry.ts";
+
+// These tests write a database of their own to disk (tens of thousands of
+// rows); under a disk stall of a shared machine a write waits seconds, and the
+// 5 s default was passed in whole-suite runs by tests that take under a second alone.
+setDefaultTimeout(20_000);
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 const withStore = async (f: (store: Store) => void | Promise<void>) => {
   const root = mkdtempSync(join(tmpdir(), "keel-telemetry-"));

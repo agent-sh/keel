@@ -2,7 +2,7 @@
 // events and an attachment, restore it into an empty state folder, and read
 // the same thing back from a fresh Store. A changed file fails the check.
 import { Database } from "bun:sqlite";
-import { expect, mock, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -14,6 +14,11 @@ import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/at
 import { adminCommands } from "../cli/admin.ts";
 import { mobileCommands } from "../cli/mobile.ts";
 import { HASH_CHUNK, hashFile, REPORT_MAX_AGE_MS, restore, Storage, undoCutRestore, verify } from "./storage.ts";
+
+// These tests write a database of their own to disk; under a disk stall of a
+// shared machine a write waits seconds, and the 5 s default was passed in
+// whole-suite runs by tests that take milliseconds alone.
+setDefaultTimeout(20_000);
 
 test("a backup restores into an empty state folder", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));

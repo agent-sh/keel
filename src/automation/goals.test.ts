@@ -1,7 +1,7 @@
 // The goal's accounting and the shared task list, driven the way the turn
 // hooks drive them, with a stand-in engine: what the model's plan tool and the
 // judge do in a real turn cannot be made to happen on cue from the page.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,10 @@ import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
 import { parseVerdict, verifierSession, WAIT_MS } from "./verify.ts";
 import * as waits from "./waits.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 let store!: Store;
 let running = false;
@@ -496,9 +500,10 @@ test("a verification's limit is counted from its start in the goal's row, not fr
     draining = true;
     cutVerifier(over.child);
     cutVerifier(near.child);
-    // The limit passed while the daemon was down; for the other it has 150 ms left.
+    // The limit passed while the daemon was down; for the other it has 800 ms left
+    // (the first is paused well inside that, on a loaded machine too: 150 ms was not enough).
     row(over.id, { verify_started_ms: Date.now() - WAIT_MS - 1 });
-    row(near.id, { verify_started_ms: Date.now() - WAIT_MS + 150 });
+    row(near.id, { verify_started_ms: Date.now() - WAIT_MS + 800 });
     restart(over.id, near.id);
     await until(() => goals.get(over.id)?.status === "paused");
     expect(goals.get(near.id)).toMatchObject({ status: "pursuing", verifying: true });

@@ -1,6 +1,6 @@
 // What the permission gate is told about MCP tools: a server's own word does
 // not make a tool a read, and a name not known yet is not a read either.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,11 @@ import { toolsFor } from "../tools/registry.ts";
 import { validate } from "./config.ts";
 import { McpManager } from "./manager.ts";
 import { installMcpTools } from "./tools.ts";
+import { allHooks } from "../engine/hooks.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 test("a server's readOnlyHint is not a read unless the owner marked the tool", () => {
   const m = new McpManager({ capture() {} } as any, mkdtempSync(join(tmpdir(), "keel-mcp-")), "/");

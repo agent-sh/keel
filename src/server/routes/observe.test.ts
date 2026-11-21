@@ -5,8 +5,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
 import { Store } from "../../core/store.ts";
+import { allHooks } from "../../engine/hooks.ts";
 import { observeRoutes } from "./observe.ts";
 
+const hooksAtStart = allHooks().length; // the routes register turn hooks on this store: taken off before it closes
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "observe-routes-"));
 const store = new Store(dir);
 const routes = observeRoutes({ store, bus: new Bus(), engine: { isRunning: () => false, statusOf: () => undefined }, providers: {}, errors: { capture: () => {} }, workspace: dir } as any) as any;
@@ -15,6 +17,7 @@ afterAll(() => {
   clearInterval(G.__keelSpanPrune);
   G.__keelOtlp?.stop();
   G.__keelOtlpOff?.();
+  allHooks().length = hooksAtStart;
   store.db.close();
   rmSync(dir, { recursive: true, force: true });
 });

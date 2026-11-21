@@ -1,9 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { summarizeChecks, Worktrees } from "./manager.ts";
+
+// Each test here runs git a dozen times or more, and on a busy disk one git
+// command takes half a second: the 5 s default was passed in whole-suite runs.
+setDefaultTimeout(20_000);
 
 test("pull request checks in a few words", () => {
   expect(summarizeChecks([]).summary).toBe("none");

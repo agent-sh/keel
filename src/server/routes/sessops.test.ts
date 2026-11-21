@@ -1,9 +1,14 @@
 // Pure logic of the session-operations routes the e2e cannot reach: what the
 // editor command becomes, image kinds by bytes, a recap reply's shape, tags.
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { parseDigest } from "./convo.ts";
 import { cleanTags, failSeen, failSeenBefore } from "./marks.ts";
 import { imageKind, openPlan } from "./places.ts";
+import { allHooks } from "../../engine/hooks.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 describe("openPlan", () => {
   test("a configured template is filled, the request only names the file", () => {

@@ -1,7 +1,7 @@
 // MCP client and manager logic no e2e can time: cursors, the halves of a
 // resource listing, and what discovery does when the server or the config
 // changes under it.
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,11 @@ import { McpClient, RpcError } from "./client.ts";
 import { McpManager } from "./manager.ts";
 import { installMcpTools } from "./tools.ts";
 import { catalogTools } from "../tools/catalog.ts";
+import { allHooks } from "../engine/hooks.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 // A client whose requests go to `answer` (no process, no socket).
 function fake(answer: (method: string, params: any) => Promise<any> | any, caps: Record<string, any> = { tools: {} }) {

@@ -7,6 +7,11 @@ import { tmpdir } from "node:os";
 import { Providers } from "./registry.ts";
 import { providersRoutes } from "../server/routes/providers.ts";
 import type { Provider } from "./types.ts";
+import { allHooks } from "../engine/hooks.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 const dir = mkdtempSync(join(tmpdir(), "keel-choices-"));
 const env = { ...process.env };

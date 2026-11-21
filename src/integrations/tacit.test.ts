@@ -1,6 +1,6 @@
 // What the e2e cannot see: the messages of a summary request that is the
 // first request of a turn, with the hooks that answer a new prompt installed.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,10 @@ import { allHooks } from "../engine/hooks.ts";
 import { Engine } from "../engine/turn.ts";
 import { hookRoutes } from "../server/routes/hooks.ts";
 import { MEMORY_CAP, START_WAIT_MS, Tacit } from "./tacit.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 test("Tacit reuses only the retained transcript of the same version", () => {
   const dir = mkdtempSync(join(tmpdir(), "tacit-transcript-"));

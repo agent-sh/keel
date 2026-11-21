@@ -1,11 +1,16 @@
 // What the store reads for a question, which no page can see: how many event
 // bodies a cursor read parses, and how it finds its place in a session in memory.
 import { Database } from "bun:sqlite";
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IDLE_KEPT_MS, Store } from "./store.ts";
+
+// These tests write a database of their own to disk; under a disk stall of a
+// shared machine a write waits seconds, and the 5 s default was passed in
+// whole-suite runs by tests that take milliseconds alone.
+setDefaultTimeout(20_000);
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });

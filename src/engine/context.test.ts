@@ -11,7 +11,7 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { Message } from "../core/types.ts";
 import { ProviderError } from "../providers/http.ts";
-import { bytesPerToken, setRatio } from "./compact.ts";
+import { bytesPerToken, partPrompt, setRatio } from "./compact.ts";
 import { allHooks, registerHooks } from "./hooks.ts";
 import { Engine, instructionFilter, toMessages } from "./turn.ts";
 import { lineage } from "../core/tree.ts";
@@ -23,7 +23,7 @@ const MODELS = [BIG, SMALL, MID];
 const count = (req: { system: string; messages: Message[] }) =>
   Math.ceil((Buffer.byteLength(req.system) + req.messages.reduce((n, m) => n + (m.content as any[]).reduce((k, b) => k + Buffer.byteLength(b.text ?? b.thinking ?? JSON.stringify(b)), 0), 0)) / 2.5);
 
-type Sent = { purpose: string; model: string; tokens: number; refused: boolean; messages: Message[] };
+type Sent = { purpose: string; model: string; tokens: number; refused: boolean; messages: Message[]; system: number };
 const dirs: string[] = [];
 const hooksBefore = allHooks().length;
 afterEach(() => {
@@ -48,7 +48,7 @@ function rig(reply?: (req: any, sent: Sent[]) => any) {
       const info = MODELS.find((m) => m.model === req.model)!;
       const tokens = count(req);
       const refused = tokens > info.context;
-      sent.push({ purpose: req.purpose, model: info.id, tokens, refused, messages: req.messages });
+      sent.push({ purpose: req.purpose, model: info.id, tokens, refused, messages: req.messages, system: Buffer.byteLength(req.system) });
       if (refused) throw new ProviderError("context", `prompt is too long: ${tokens} tokens > ${info.context} maximum`, 400);
       const last = count({ system: "", messages: req.messages.slice(-1) });
       const out = reply?.(req, sent) ?? { blocks: [{ type: "text", text: req.purpose === "summary" ? "SUMMARY" : "ok" }], stop: "end_turn" };
@@ -296,8 +296,15 @@ test("a long summary of the earlier parts and the next part fit the request budg
     return id;
   };
   const partOf = (req: any) => Number(lastText(req).match(/this is part (\d+)/)?.[1] ?? 0);
-  // 30 KB for the first part's summary, where 2.5 KB was planned: the rest is cut again to fit beside it.
-  const r = rig((req) => (partOf(req) === 1 ? text(long(30_000)) : undefined));
+  // What a request holds besides the system prompt and the part prompt's own
+  // words. The system prompt's size is the machine's (the skills in the home
+  // folder are listed in it), so the long summaries are sized from the room
+  // it leaves, not in fixed bytes.
+  const probe = rig();
+  await probe.engine.compactNow(imported(probe));
+  const room = Math.floor(budget * 2.5) - probe.sent[0]!.system - Buffer.byteLength(partPrompt("", 0, 2, " ", 1));
+  // A summary that leaves 8 KB for the next part, where 2.5 KB was planned for it: the rest is cut again to fit beside it.
+  const r = rig((req) => (partOf(req) === 1 ? text(long(room - 8_000)) : undefined));
   const a = imported(r);
   const cp = await r.engine.compactNow(a);
   expect(r.sent.filter((s) => s.refused)).toEqual([]);
@@ -307,7 +314,9 @@ test("a long summary of the earlier parts and the next part fit the request budg
   expect(lastText({ messages: r.sent[1]!.messages })).toContain("carried carried");
 
   // A summary that leaves no room for a part is asked for again, shorter.
-  const r2 = rig((req) => (partOf(req) === 1 ? text(long(37_000)) : undefined));
+  // Under the smallest part (2 KB) is left.
+  const tooLong = long(room - 1_000);
+  const r2 = rig((req) => (partOf(req) === 1 ? text(tooLong) : undefined));
   const b = imported(r2);
   expect((await r2.engine.compactNow(b)).data.summary).toBe("SUMMARY");
   expect(lastText({ messages: r2.sent[1]!.messages })).toContain("too long to go with the next part");
@@ -328,7 +337,7 @@ test("a long summary of the earlier parts and the next part fit the request budg
   expect(r4.sent).toHaveLength(whole.data.parts + 3);
 
   // One that stays too long: a bounded number of requests, then the branch is left as it was.
-  const r3 = rig((req) => (req.purpose === "summary" ? text(long(37_000)) : undefined));
+  const r3 = rig((req) => (req.purpose === "summary" ? text(tooLong) : undefined));
   const c = imported(r3);
   const head = r3.store.session(c)!.head;
   await expect(r3.engine.compactNow(c)).rejects.toMatchObject({ code: "summary_too_long", status: 409 });

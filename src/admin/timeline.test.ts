@@ -1,12 +1,17 @@
 // Timeline cases the e2e cannot make: a turn with more notes inside it than
 // any real turn writes, notes of a kind that has no row among the ones that
 // do, and a branch too long to walk in one read. The store is real.
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { Timeline } from "./timeline.ts";
 import { markRow, NOTE_MARKS, timelineText } from "./timeline-rows.ts";
+
+// These tests write a database of their own to disk (tens of thousands of
+// rows); under a disk stall of a shared machine a write waits seconds, and the
+// 5 s default was passed in whole-suite runs by tests that take under a second alone.
+setDefaultTimeout(20_000);
 
 const setup = () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "timeline-"));
@@ -80,7 +85,8 @@ test("a turn the branch walk has not reached says so, never that it is on the br
     // Read on: the turn left behind is never shown as on the branch, on any read.
     let reads = 1;
     for (let r = read(); r.p.partial && reads < 500; r = read(), reads++) {
-      expect(r.left.turn!.branch).toBe("unknown");
+      // A read's walk is bounded in time: it may stop after it passed the one and before it placed the other.
+      expect(["unknown", "other"]).toContain(r.left.turn!.branch!);
       expect(["unknown", undefined]).toContain(r.kept.turn!.branch);
     }
     const last = read();

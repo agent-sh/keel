@@ -1,9 +1,14 @@
 // Pure logic the e2e cannot see: the wire bytes of a branch, and the tree.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { Message, StoredEvent } from "../core/types.ts";
 import { RESTART_CUT, stalledContinuations, toMessages, withPending } from "./turn.ts";
 import { keptMessages } from "./compact.ts";
+import { allHooks } from "./hooks.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 let seq = 0;
 const ev = (id: string, parent: string | null, kind: StoredEvent["kind"], data: any): StoredEvent => ({ id, session_id: "s", seq: ++seq, parent, kind, data, ts: 0 });

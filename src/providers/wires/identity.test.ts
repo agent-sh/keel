@@ -38,10 +38,6 @@ Object.assign(process.env, {
 const { Bus } = await import("../../core/bus.ts");
 const { Store } = await import("../../core/store.ts");
 const { Engine, toMessages } = await import("../../engine/turn.ts");
-// Hooks are process-wide: ones an earlier test file left behind (on a store it
-// closed since) would run in this session's turns.
-const { allHooks } = await import("../../engine/hooks.ts");
-allHooks().length = 0;
 const { resolveAttachments, setAttachmentsRoot } = await import("../../engine/attachments.ts");
 const { ctxFor, runEvents } = await import("../drive.ts");
 const { anthropicWire } = await import("./anthropic.ts");

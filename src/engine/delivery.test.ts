@@ -2,13 +2,17 @@
 // store that a page cannot time (which branch a steer joins, a daemon killed
 // between two writes), so it is driven here on the real engine and database
 // with the scripted stand-in as the model.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { promptsOf, QUEUED, rig, SENT, untilStopped } from "./delivery.fixture.ts";
-import { registerHooks } from "./hooks.ts";
+import { allHooks, registerHooks } from "./hooks.ts";
 import { STALLED_MAX } from "./turn.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 const scratch = (name: string) => mkdtempSync(join(process.env.TMPDIR ?? ".", `${name}-`));
 const image = { type: "image" as const, media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" };

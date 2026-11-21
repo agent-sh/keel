@@ -1,6 +1,6 @@
 // Experiment evidence over a real store, on cases the page cannot script:
 // subagent families, a daemon restart, turns that end after a stop.
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,11 @@ import { offlineReport, receiptOf, runMetrics, runnable, Uploads } from "./offli
 import type { Outcomes } from "./outcomes.ts";
 import { assignArm, rng } from "./stats.ts";
 import { Telemetry } from "./telemetry.ts";
+
+// The simulations here are seconds of computing alone (the stop rule over
+// thousands of drawn experiments) and several times that on a loaded machine;
+// the tests after them wait on the same disk. The 5 s default was passed.
+setDefaultTimeout(30_000);
 
 // A daemon's experiment wiring over a state folder, routes included; `open`
 // again is a restart. `call` is a request to its API.

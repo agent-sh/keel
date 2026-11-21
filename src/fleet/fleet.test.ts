@@ -1,9 +1,13 @@
 // Pure pieces of the fleet an e2e cannot reach: the ssh configuration's hosts,
 // the fence on what a peer's tool call names, and the link proof.
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Each test here runs git a dozen times or more, and on a busy disk one git
+// command takes half a second: the 5 s default was passed in whole-suite runs.
+setDefaultTimeout(20_000);
 
 // Its own config folder, before any Keel source is loaded: nothing here reads or writes the owner's.
 process.env.KEEL_CONFIG_DIR ??= join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-fleet-test-")), "config");
