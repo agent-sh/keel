@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "../../../../src/core/types.ts";
 import { auto, openSession, useAuto, type Goal, type Task } from "../../lib/automation.ts";
 import { remoteId, splitId } from "../../lib/fleet-ids.ts";
+import { composing } from "../../lib/keys.ts";
 import { reportError, failed, useStore } from "../../lib/store.ts";
 import { cn, fmtTokens } from "../../lib/utils.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
@@ -180,7 +181,7 @@ function TaskRow({ t, sid }: { t: Task; sid: string }) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onBlur={leave}
-            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { setText(base); setEditing(false); } }}
+            onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { setText(base); setEditing(false); } }}
             className="min-w-0 flex-1 rounded border border-line bg-bg px-1.5 text-ui outline-none"
           />
         ) : (

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { archive, cloneSession, marks, moveSession, pin, setDone, setMaxSteps, setSkillMode, setTags, writeRecap, type Marks } from "../lib/sessops.ts";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { composing } from "../lib/keys.ts";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { navigate, seedComposer } from "../lib/ui.ts";
 import { ago, cn, fmtCost } from "../lib/utils.ts";
@@ -72,7 +73,7 @@ function Tags({ s }: { s: Session }) {
         ))}
       </div>
       <div className="flex gap-2">
-        <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Add a tag" aria-label="Add a tag" data-testid="tag-input" className={cn(field, "flex-1")} />
+        <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !composing(e) && add()} placeholder="Add a tag" aria-label="Add a tag" data-testid="tag-input" className={cn(field, "flex-1")} />
         <button type="button" className={button} onClick={add} disabled={!text.trim()}>Add</button>
       </div>
     </div>
@@ -96,7 +97,7 @@ function Steps({ s }: { s: Session }) {
       data-testid="max-steps"
       onChange={(e) => setV(e.target.value.replace(/[^0-9]/g, ""))}
       onBlur={save}
-      onKeyDown={(e) => e.key === "Enter" && save()}
+      onKeyDown={(e) => e.key === "Enter" && !composing(e) && save()}
       className={cn(field, "w-20 text-right tabular-nums")}
     />
   );
@@ -120,7 +121,7 @@ function Messages({ s }: { s: Session }) {
       </Line>
       <Line label="Turns they may start" hint="Before you speak here again; past it a message waits for you.">
         <input value={turns} inputMode="numeric" aria-label="Turns other sessions may start" data-testid="peer-turns" disabled={!m.accept_messages}
-          onChange={(e) => setTurns(e.target.value.replace(/[^0-9]/g, ""))} onBlur={saveTurns} onKeyDown={(e) => e.key === "Enter" && saveTurns()}
+          onChange={(e) => setTurns(e.target.value.replace(/[^0-9]/g, ""))} onBlur={saveTurns} onKeyDown={(e) => e.key === "Enter" && !composing(e) && saveTurns()}
           className={cn(field, "w-20 text-right tabular-nums")} />
       </Line>
     </>

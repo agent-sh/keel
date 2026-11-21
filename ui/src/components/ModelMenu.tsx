@@ -2,6 +2,7 @@ import { Combobox } from "@base-ui/react/combobox";
 import { Check, Eye, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-react";
 import { TriggerLabel, triggerClass } from "./ModelPicker.tsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { composing } from "../lib/keys.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { buildGroups, buildItems, countLabel, hiddenReason, providerOrder, type Group, type Item } from "../lib/picker.ts";
@@ -136,6 +137,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                 placeholder="Search models"
                 className="h-10 min-w-0 flex-1 bg-transparent px-3 text-ui outline-none placeholder:text-faint"
                 onKeyDown={(e) => {
+                  if (composing(e)) return;
                   if (held && e.key === "Enter") {
                     e.preventDefault();
                     (e as any).preventBaseUIHandler?.();

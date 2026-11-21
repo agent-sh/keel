@@ -6,6 +6,7 @@
 import { Bookmark, Layers, Pencil, X } from "lucide-react";
 import { Fragment, memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
+import { composing } from "../lib/keys.ts";
 import { reportError, useStore } from "../lib/store.ts";
 import { tree, type TreeNode, type TreeState } from "../lib/tree.ts";
 import { ago, cn, when } from "../lib/utils.ts";
@@ -28,6 +29,7 @@ function LabelInput({ sid, eventId, value, onKeys, onAway }: { sid: string; even
       onChange={(e) => setText(e.target.value)}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
+        if (composing(e)) return; // an input method's Enter confirms its word, its Escape drops it
         if (e.key === "Enter") { onKeys?.(); save(); }
         if (e.key === "Escape") { onKeys?.(); tree.edit(null); }
       }}

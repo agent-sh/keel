@@ -7,6 +7,7 @@ import { ChevronRight, Folder, FolderPlus, Plus, Trash2 } from "lucide-react";
 import { useState, type DragEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { folders, tree, useFolders, type SessionFolder } from "../lib/folders.ts";
+import { composing } from "../lib/keys.ts";
 import { reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
@@ -62,7 +63,7 @@ function Head({ f, n, nested, canNest }: { f: SessionFolder; n: number; nested: 
           value={name}
           onChange={(e) => setName(e.target.value)}
           onBlur={done}
-          onKeyDown={(e) => { if (e.key === "Enter") done(); if (e.key === "Escape") { setName(f.name); setEditing(false); } }}
+          onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") done(); if (e.key === "Escape") { setName(f.name); setEditing(false); } }}
           aria-label="Folder name"
           data-testid="folder-rename"
           className="h-6 min-w-0 flex-1 rounded-sm bg-sunken px-1 text-fg outline-none focus:ring-2 focus:ring-ring"

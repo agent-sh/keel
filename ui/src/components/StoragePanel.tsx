@@ -2,6 +2,7 @@
 // (a list first, then the delete), leftovers of deleted sessions, the archive
 // policy and the backups.
 import { useCallback, useEffect, useState } from "react";
+import { composing } from "../lib/keys.ts";
 import { api, reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
@@ -71,7 +72,7 @@ function DaysField({ value, onSave, label, testid }: { value: number | null; onS
         placeholder="Never"
         onChange={(e) => setText(e.target.value)}
         onBlur={save}
-        onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
+        onKeyDown={(e) => e.key === "Enter" && !composing(e) && (e.currentTarget as HTMLInputElement).blur()}
         className="w-14 bg-transparent text-right tabular-nums outline-none placeholder:text-faint"
       />
       <span className="text-muted">days</span>
@@ -179,7 +180,7 @@ export function StoragePanel() {
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <label className="flex h-8 items-center gap-2 rounded-md border border-line-strong bg-raised px-2.5 text-ui">
               <span className="text-muted">Archived</span>
-              <input aria-label="Days archived" data-testid="cleanup-days" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} onKeyDown={(e) => e.key === "Enter" && find().catch(reportError)} className="w-12 bg-transparent text-right tabular-nums outline-none" />
+              <input aria-label="Days archived" data-testid="cleanup-days" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !composing(e) && find().catch(reportError)} className="w-12 bg-transparent text-right tabular-nums outline-none" />
               <span className="text-muted">days ago or more</span>
             </label>
             <button type="button" className={btn} onClick={() => find().catch(reportError)} data-testid="cleanup-find">Find</button>

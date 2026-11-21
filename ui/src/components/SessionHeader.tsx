@@ -5,6 +5,7 @@ import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlu
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
+import { composing } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
@@ -219,7 +220,7 @@ export function SessionHeader({ session }: { session: Session }) {
             aria-label="Session title"
             onChange={(e) => setTitle(e.target.value)}
             onBlur={save}
-            onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { setTitle(session.title); setEditing(false); } }}
+            onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") save(); if (e.key === "Escape") { setTitle(session.title); setEditing(false); } }}
             className="h-8 min-w-0 flex-1 rounded-sm bg-sunken px-2 text-base font-medium outline-none ring-2 ring-ring"
           />
         ) : (

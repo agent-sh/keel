@@ -88,14 +88,14 @@ function AddItem() {
     <div className="mt-2 flex flex-col gap-1.5 rounded-md border border-line p-2">
       <div className="flex gap-1.5">
         <input className={cn(field, "h-7 flex-1 font-mono text-micro")} placeholder="key, such as person.dana (optional)" value={key} data-testid="memory-new-key" aria-label="Key"
-          onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+          onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) add(); }} />
         <Select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind" className="h-7 w-28">
           {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
         </Select>
       </div>
       <div className="flex gap-1.5">
         <input className={cn(field, "h-8 flex-1")} placeholder="Remember something" value={value} data-testid="memory-new" aria-label="Something to remember"
-          onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+          onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) add(); }} />
         <button type="button" className={cn(iconButton, "size-8")} aria-label="Add" title="Add" data-testid="memory-add" onClick={add}><Plus className="size-4" /></button>
       </div>
       {err && <p className="text-micro text-danger" role="alert">{err}</p>}

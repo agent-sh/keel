@@ -3,6 +3,7 @@
 // the listings; an unknown price stays unknown), timings, cache and error
 // rates from the local telemetry.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { composing } from "../lib/keys.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
@@ -88,7 +89,7 @@ function MoneyField({ value, onSave, label, testid }: { value: number | null; on
     <label className={cn("flex h-8 items-center gap-1 rounded-md border bg-raised px-2.5 text-ui", bad ? "border-danger" : "border-line-strong")}>
       <span className="text-muted">$</span>
       <input aria-label={label} data-testid={testid} inputMode="decimal" value={text} placeholder="None" onChange={(e) => setText(e.target.value)} onBlur={save}
-        onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()} className="w-16 bg-transparent text-right tabular-nums outline-none placeholder:text-faint" />
+        onKeyDown={(e) => e.key === "Enter" && !composing(e) && (e.currentTarget as HTMLInputElement).blur()} className="w-16 bg-transparent text-right tabular-nums outline-none placeholder:text-faint" />
     </label>
   );
 }

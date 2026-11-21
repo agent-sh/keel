@@ -182,3 +182,91 @@ test("the Enter that confirms a composed word is not the field's Enter", async (
     expect(sent).toHaveLength(1);
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });
+
+// The same in the fields where a name, a tag or a label is typed, in any
+// script: the Enter that confirms a composed word saves nothing and leaves
+// the field open with its words. An Enter after it saves.
+test("an input method's Enter does not save a title, a folder name, a tag, a label or a memory key", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const word = `ime${Date.now().toString(36)}`;
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Before ${word}`, text: "first" } })).json();
+  const { folder } = await (await request.post("/api/session-folders", { data: { name: `Before ${word}` } })).json();
+  const key = `pref.${word}`;
+  const now = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session;
+  const memory = async () => ((await (await request.get("/api/helper/memory")).json()).items as { key: string }[]).filter((m) => m.key === key).length;
+  try {
+    await expect.poll(async () => (await now()).phase, { timeout: 20_000 }).toBe("idle");
+    await page.goto(`/s/${session.id}`);
+    // The two ways browsers mark the key: the event says it is composing, or carries the input method's key code.
+    const composed = async (field: import("@playwright/test").Locator) => {
+      for (const init of [{ isComposing: true }, { keyCode: 229 }]) await field.evaluate((el, init) => { el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, ...init })); }, init, { timeout: 5000 }); // a field that saved and closed fails here
+      await page.waitForTimeout(200);
+    };
+
+    // The session's title.
+    await page.getByTestId("session-menu").click();
+    await page.getByTestId("menu-rename").click();
+    const title = page.getByLabel("Session title");
+    await title.fill(`会議の記録 ${word}`);
+    await composed(title);
+    await expect(title).toHaveValue(`会議の記録 ${word}`);
+    expect((await now()).title).toBe(`Before ${word}`);
+    await title.press("Enter");
+    await expect(page.getByTestId("session-title")).toHaveText(`会議の記録 ${word}`);
+
+    // A tag.
+    await openPanel(page, "session");
+    const tag = page.getByTestId("tag-input");
+    await tag.fill("確認");
+    await composed(tag);
+    await expect(tag).toHaveValue("確認");
+    await expect(page.getByTestId("session-tag")).toHaveCount(0);
+    await tag.press("Enter");
+    await expect(page.getByTestId("session-tag")).toHaveCount(1);
+    expect((await now()).settings.tags).toEqual(["確認"]);
+
+    // A label on a message.
+    await page.getByTestId("assistant-text").first().hover();
+    await page.getByRole("button", { name: "Label this message" }).first().click();
+    const label = page.getByTestId("label-input");
+    await label.fill("最初の答え");
+    await composed(label);
+    await expect(label).toHaveValue("最初の答え");
+    await expect(page.getByTestId("label-row")).toHaveCount(0);
+    await shoot(page, "side-04-composing-label");
+    await label.press("Enter");
+    await expect(page.getByTestId("labels")).toContainText("最初の答え");
+
+    // A folder's name.
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-group-mine").click();
+    await page.keyboard.press("Escape");
+    const head = page.getByTestId("session-list").locator(`[data-testid="folder-head"][data-folder="${folder.id}"]`);
+    await head.locator('span[title="Double-click to rename"]').dblclick();
+    const name = page.getByTestId("folder-rename");
+    await name.fill(`仕事 ${word}`);
+    await composed(name);
+    await expect(name).toHaveValue(`仕事 ${word}`);
+    expect(((await (await request.get("/api/session-folders")).json()).folders as any[]).find((f) => f.id === folder.id).name).toBe(`Before ${word}`);
+    await name.press("Enter");
+    await expect(head).toContainText(`仕事 ${word}`);
+
+    // The key of something the helper remembers.
+    await page.getByTestId("open-helper").click();
+    await openPanel(page, "helper");
+    await expect(page.getByTestId("helper-panel")).toBeVisible();
+    await page.getByTestId("memory-new").fill("通知は必要なときだけ");
+    const newKey = page.getByTestId("memory-new-key");
+    await newKey.fill(key);
+    await composed(newKey);
+    await expect(newKey).toHaveValue(key);
+    expect(await memory()).toBe(0);
+    await newKey.press("Enter");
+    await expect.poll(memory).toBe(1);
+  } finally {
+    await request.delete(`/api/helper/memory/${encodeURIComponent(key)}`);
+    await request.delete(`/api/session-folders/${folder.id}`);
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});

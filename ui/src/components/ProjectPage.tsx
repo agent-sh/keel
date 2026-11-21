@@ -6,6 +6,7 @@ import { ArrowLeft, FileText, Folder, Plus, Star, Trash2, X } from "lucide-react
 import { useEffect, useState, type ReactNode, Fragment } from "react";
 import { newInProject, projects, useProjects, type Project } from "../lib/projects.ts";
 import { safety, useSafety } from "../lib/safety.ts";
+import { composing } from "../lib/keys.ts";
 import { failed, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
@@ -92,7 +93,7 @@ function Body({ p }: { p: Project }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               onBlur={() => name.trim() && name !== p.name && save({ name })}
-              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              onKeyDown={(e) => e.key === "Enter" && !composing(e) && (e.target as HTMLInputElement).blur()}
               aria-label="Project name"
               data-testid="project-name"
               className="w-full rounded-md bg-transparent px-1 text-display font-semibold tracking-[-0.025em] outline-none focus:bg-sunken"
