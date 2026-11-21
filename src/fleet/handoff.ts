@@ -344,7 +344,9 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
               }
               if (!repo) { repo = join(root, name); await this.must(dest, root, `mkdir -p ${q(repo)}\ngit -C ${q(repo)} init -q`, "a new repository there"); }
             }
-            const has = await this.sh(dest, root, `git -C ${q(repo)} cat-file -e ${snap.snap}^{commit}`);
+            // Nothing to send when the commit is there already (an earlier move, a fetch of its
+            // own). The ref still moves to it: the receipt names the ref as where the carried state is.
+            const has = await this.sh(dest, root, `git -C ${q(repo)} cat-file -e ${snap.snap}^{commit} && ${GIT} -C ${q(repo)} update-ref ${q(ref)} ${snap.snap}`);
             if (has.code === 0) return "skip";
             const theirs = (await this.sh(dest, root, `git -C ${q(repo)} for-each-ref --format='%(objectname)' --count=50 refs/heads refs/keel/handoff 2>/dev/null; true`)).out.split("\n").map((x) => x.trim()).filter((x) => /^[0-9a-f]{40}$/.test(x));
             const known = theirs.length ? (await this.sh(src, s.workspace, theirs.map((c) => `git cat-file -e ${c}^{commit} 2>/dev/null && echo ${c}`).join("\n") + "\ntrue")).out.split("\n").filter((x) => /^[0-9a-f]{40}$/.test(x.trim())) : [];
@@ -383,7 +385,7 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
           // Back here, into the directory the session first left (or the one named).
           const home = workspace ?? moves.home ?? s.workspace;
           await step("transfer", async () => {
-            const has = await this.sh(null, home, `git cat-file -e ${snap.snap}^{commit}`);
+            const has = await this.sh(null, home, `git cat-file -e ${snap.snap}^{commit} && ${GIT} update-ref ${q(ref)} ${snap.snap}`);
             if (has.code === 0) return "skip";
             const root = src!.workspace_root!;
             const remoteFile = join(root, ".keel", "handoff", `${sid}.bundle`);

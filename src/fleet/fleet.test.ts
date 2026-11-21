@@ -765,3 +765,44 @@ test("a move carries the index apart from the files: staged, unstaged and untrac
     rig.close();
   }
 });
+
+test("a move whose commit is already at the destination still moves the carry ref to it", async () => {
+  const rig = await moveRig();
+  const { basename } = await import("node:path");
+  try {
+    const ref = `refs/keel/handoff/${rig.session().id}`;
+    const repo = join(rig.root, basename(rig.home));
+    // There and back once: both sides hold the ref of that move.
+    await rig.moved("m1");
+    const wt = rig.session().workspace;
+    await rig.moved("local");
+    const old = rig.git(repo, "rev-parse", ref).trim();
+
+    // A new commit here that the machine already has under another name, and a
+    // worktree there that changed since the session left it: nothing is sent,
+    // the worktree is kept, and the receipt points at the ref.
+    rig.git(rig.home, "commit", "-qam", "second");
+    const second = rig.git(rig.home, "rev-parse", "HEAD").trim();
+    rig.git(repo, "fetch", "-q", rig.home, "+HEAD:refs/preload/second");
+    writeFileSync(join(wt, "stray.txt"), "written there meanwhile\n");
+    const out = await rig.moved("m1");
+    expect(out).toMatchObject({ state: "done", replaced: false });
+    expect(out.steps.find((s) => s.name === "transfer")!.state).toBe("skipped");
+    expect(out.summary).toContain(ref);
+    expect(rig.git(repo, "rev-parse", ref).trim()).toBe(second);
+    expect(second).not.toBe(old);
+
+    // The same on the way back.
+    rig.git(wt, "add", "-A");
+    rig.git(wt, "commit", "-qm", "third");
+    const third = rig.git(wt, "rev-parse", "HEAD").trim();
+    rig.git(rig.home, "fetch", "-q", wt, "+HEAD:refs/preload/third");
+    writeFileSync(join(rig.home, "here.txt"), "written here meanwhile\n");
+    const back = await rig.moved("local");
+    expect(back).toMatchObject({ state: "done", replaced: false });
+    expect(back.steps.find((s) => s.name === "transfer")!.state).toBe("skipped");
+    expect(rig.git(rig.home, "rev-parse", ref).trim()).toBe(third);
+  } finally {
+    rig.close();
+  }
+});

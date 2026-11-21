@@ -265,6 +265,68 @@ test("fleet move: staged, unstaged and untracked changes arrive as they were", a
   }
 });
 
+// The carry ref is where the receipt says the carried state is, also when
+// nothing had to be sent: the machine already holds the commit under another
+// name, and its worktree changed since the session left, so it is kept and
+// the owner is pointed at the ref. The ref is that commit, not an older move's.
+test("fleet move: the carry ref is the carried commit also when the machine already had it", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; context: number; id: string }[])
+    .filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0]?.id;
+  test.skip(!model, "the daemon runs without the scripted provider");
+  mkdirSync(ROOT, { recursive: true });
+  const { machines } = await (await request.get("/api/fleet/machines")).json();
+  let first = machines.find((m: any) => m.daemon_url === PEER);
+  if (!first) {
+    const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
+    first = r.machines.find((m: any) => m.id === r.id);
+  }
+  const home = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/move-ref-${Date.now().toString(36)}`;
+  const repo = `${ROOT}/${basename(home)}`;
+  mkdirSync(home, { recursive: true });
+  const git = (dir: string, ...a: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" }).trim();
+  git(home, "init", "-q");
+  writeFileSync(`${home}/a.txt`, "one\n");
+  git(home, "add", "a.txt");
+  git(home, "commit", "-qm", "init");
+  const s = (await (await request.post("/api/sessions", { data: { workspace: home, title: "Ref on a cache hit", model } })).json()).session;
+  const ref = `refs/keel/handoff/${s.id}`;
+  const progress = page.getByTestId("move-progress");
+  const to = (machine: string) => page.locator(`[data-testid="move-to"][data-machine="${machine}"]`);
+  try {
+    // There and back once: the machine holds the ref of that move.
+    await page.goto(`/s/${s.id}`);
+    await page.getByTestId("machine-chip").click();
+    await to(first.id).click();
+    await expect(progress).toHaveAttribute("data-state", "done", { timeout: 60_000 });
+    const there = (await (await request.get(`/api/sessions/${s.id}`)).json()).session.workspace as string;
+    await to("local").click();
+    await expect(progress).toContainText(`${first.name} to`, { timeout: 60_000 });
+    await expect(progress).toHaveAttribute("data-state", "done");
+    const old = git(repo, "rev-parse", ref);
+
+    // A new commit here that the machine has under another name; its worktree changed meanwhile.
+    writeFileSync(`${home}/a.txt`, "one\ntwo\n");
+    git(home, "commit", "-qam", "second");
+    const second = git(home, "rev-parse", "HEAD");
+    git(repo, "fetch", "-q", home, "+HEAD:refs/preload/second");
+    writeFileSync(`${there}/stray.txt`, "written there meanwhile\n");
+    await to(first.id).click();
+    await expect(progress).toContainText("to devbox", { timeout: 60_000 });
+    await expect(progress).toHaveAttribute("data-state", "done");
+    await expect(progress).toContainText(`was kept as it was (it changed since the session left it); the carried state is in ${ref}`);
+    expect(readFileSync(`${there}/a.txt`, "utf8")).toBe("one\n"); // kept
+    expect(git(repo, "rev-parse", ref)).toBe(second);
+    expect(second).not.toBe(old);
+  } finally {
+    await page.goto("about:blank");
+    await request.delete(`/api/sessions/${s.id}`);
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 // A daemon that goes down in the middle of a move. Its own daemon here (the
 // spec kills it), reaching the peer through a way that keeps back the answer
 // to one call: the worktree is made over there and this daemon never hears
