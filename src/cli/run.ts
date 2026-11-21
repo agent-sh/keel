@@ -10,7 +10,8 @@ import { lockedDaemon } from "../admin/daemon.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { startDaemon, type Started } from "../server/start.ts";
 import { ApiError, clean, Client, command, EXIT, type Found, out, pipedStdin, promptFiles, usageError } from "./client.ts";
-import { assistantText, Follower, streamLine } from "./events.ts";
+import { assistantText, Follower, STREAM_SCHEMA, streamLine } from "./events.ts";
+import { runStream } from "./stream.ts";
 
 export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is keel run -p)
   Sends a prompt to a new session in this directory, or to an existing one.
@@ -21,6 +22,10 @@ export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is ke
       --output-format F       text, json or stream-json (implies -p)
       --stream-json           same as --output-format stream-json
       --include-partial-messages  with stream-json: text as it streams
+      --input-format F        text (the default) or stream-json: the session stays open and
+                              takes JSON lines on standard input (a prompt, an interrupt, an
+                              answer to a permission request) until it closes; implies
+                              --output-format stream-json. See docs/headless.md
       --json                  one JSON object (alone: the session id; with -p or --wait: the result)
       --json-schema SCHEMA    the answer is one JSON value that matches this JSON schema (the
                               schema itself, or a file that holds it; implies -p). Printed alone,
@@ -42,6 +47,8 @@ export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is ke
       --timeout S             seconds to stay (exit 124; the session keeps running)
       --on-ask exit|deny|wait what an approval card or a question does (default exit;
                               deny when this command started the daemon itself)
+      --on-ask stdin          with --input-format stream-json: the script is asked on the
+                              stream and answers on standard input (default there: deny)
       --no-wait-background    with -p: leave when the turn ends, not when its background work does
       --archived              archive the session when the run has ended
       --url URL, --state-dir DIR   which daemon (default: the one the state folder records)
@@ -56,6 +63,7 @@ export const RUN_OPTIONS = {
   "include-partial-messages": { type: "boolean" },
   "json-schema": { type: "string" },
   "output-schema": { type: "string" },
+  "input-format": { type: "string" },
   wait: { type: "boolean" },
   session: { type: "string", short: "r" },
   resume: { type: "string" },
@@ -332,6 +340,8 @@ export async function daemonFor(c: Client, found: Found, workspace: string): Pro
 
 export async function runPrompt(v: any, pos: string[], c0: Client, found: Found, name = "run"): Promise<number> {
   const t0 = Date.now();
+  if (v["input-format"] !== undefined && !["text", "stream-json"].includes(v["input-format"])) return usageError(name, `--input-format is text or stream-json, not ${v["input-format"]}`, RUN_USAGE);
+  if (v["input-format"] === "stream-json") return runStream(v, pos, c0, found, name);
   const schemaFlag = v["json-schema"] ?? v["output-schema"];
   const parsed = schemaFlag === undefined ? undefined : schemaArg(schemaFlag);
   if (parsed && "error" in parsed) return usageError(name, parsed.error, RUN_USAGE);
@@ -340,7 +350,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
   if (format && !["text", "json", "stream-json"].includes(format)) return usageError(name, `--output-format is text, json or stream-json, not ${format}`, RUN_USAGE);
   const print = !!format;
   const onAskFlag = v["on-ask"];
-  if (onAskFlag && !["exit", "deny", "wait"].includes(onAskFlag)) return usageError(name, "--on-ask is exit, deny or wait", RUN_USAGE);
+  if (onAskFlag && !["exit", "deny", "wait"].includes(onAskFlag)) return usageError(name, onAskFlag === "stdin" ? "--on-ask stdin needs --input-format stream-json" : "--on-ask is exit, deny or wait", RUN_USAGE);
   const timeoutS = v.timeout === undefined ? undefined : Number(v.timeout);
   if (timeoutS !== undefined && !(timeoutS > 0)) return usageError(name, "--timeout is a number of seconds above 0", RUN_USAGE);
   const sessionArg = v.session ?? v.resume;
@@ -413,7 +423,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
       const st = await c.get<any>(`/api/cli/state/${sessionId}`);
       const perm = await c.get<any>(`/api/sessions/${sessionId}/permissions`).catch(() => null);
       const s = st.session;
-      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, cwd: s.workspace, model: s.model, provider: String(s.model).split(":")[0], permission_mode: perm?.perm?.mode ?? null, keel_version: "bun", url }));
+      console.log(JSON.stringify({ type: "system", subtype: "init", schema_version: STREAM_SCHEMA, session_id: sessionId, cwd: s.workspace, model: s.model, provider: String(s.model).split(":")[0], permission_mode: perm?.perm?.mode ?? null, keel_version: "bun", url }));
     }
     const partial = stream && v["include-partial-messages"];
     const follow = (at: { after_seq: number; event_id: string | null; queue_id?: string | null }, text: string) => watch({

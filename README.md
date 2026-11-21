@@ -745,6 +745,15 @@ repeats, facts the store gave that never reached a request (this must be 0),
 the cache prefix, time before the first request, a store that is slow or
 failing, and whether the helper recalls the record a prompt is about.
 
+## Scripts: a session held open
+
+`keel run -p PROMPT` prints one answer. `keel run --input-format stream-json` keeps one session
+open for a script: prompts, an interrupt and answers to permission requests go in as JSON lines
+on standard input, and the session's events and one result per turn come out as JSON lines. A
+request the permission mode asks about is refused unless the script answers it (`--on-ask stdin`).
+[docs/headless.md](docs/headless.md) has the lines and the exit codes;
+[docs/http-api.md](docs/http-api.md) lists the HTTP routes the command uses, which are stable.
+
 ## License
 
 MIT

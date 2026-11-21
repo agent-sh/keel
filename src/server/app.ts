@@ -21,6 +21,7 @@ import { fitted } from "../engine/image-fit.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 import { inFlight, timed } from "../admin/stall.ts";
+import { routeTable } from "./stable-api.ts";
 
 // The seqs of the prompts of a branch, kept while the branch is the same array
 // (the store gives a new one when the branch grows or the head moves).
@@ -474,6 +475,9 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       },
 
       "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
+
+      // What this daemon serves, with the methods a script may rely on (stable-api.ts).
+      "/api/routes": { GET: wrap(() => json(routeTable(routes))) },
     }, modules, deps, wrap, !!opts.development);
 
   const options = {

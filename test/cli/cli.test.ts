@@ -332,6 +332,166 @@ describe("keel run with no daemon", () => {
   }, 120_000);
 });
 
+// A command whose standard input stays open: a line is written to it, and its
+// output lines are read as they come.
+function held(args: string[], state: string) {
+  const p = Bun.spawn([BIN, ...args], { cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const got: any[] = [];
+  const read = (async () => {
+    const dec = new TextDecoder();
+    let buf = "";
+    for await (const c of p.stdout) {
+      buf += dec.decode(c, { stream: true });
+      for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) { got.push(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); }
+    }
+  })();
+  const err = new Response(p.stderr).text();
+  return {
+    got,
+    write: (m: unknown) => { p.stdin.write(JSON.stringify(m) + "\n"); p.stdin.flush(); },
+    // The place of the first line from `from` on that fits.
+    until: async (fits: (l: any) => boolean, from = 0, ms = 30_000) => {
+      for (const t0 = Date.now(); ; await Bun.sleep(25)) {
+        const i = got.findIndex((l, n) => n >= from && fits(l));
+        if (i >= 0) return i;
+        if (Date.now() - t0 > ms) throw new Error(`no such line after ${from}:\n${got.slice(from).map((l) => JSON.stringify(l).slice(0, 300)).join("\n")}\n${await Promise.race([err, Bun.sleep(100).then(() => "")])}`);
+      }
+    },
+    end: async () => { p.stdin.end(); await read; return { code: await p.exited, err: await err }; },
+    kill: () => p.kill(),
+  };
+}
+const said = (text: string, uuid?: string) => ({ type: "user", message: { role: "user", content: text }, ...(uuid ? { uuid } : {}) });
+const isResult = (l: any) => l.type === "result";
+
+// docs/headless.md: keel run --input-format stream-json.
+describe("a session a script holds open", () => {
+  const state = join(SCRATCH, "state-stream");
+  let dm: Awaited<ReturnType<typeof daemonAt>>;
+  beforeAll(async () => { dm = await daemonAt(state); }, 30_000);
+  afterAll(() => dm?.d.kill("SIGTERM"));
+
+  test("three prompts in one session, and a permission refused because no one answers", async () => {
+    const s = held(["run", "--input-format", "stream-json", "--permission-mode", "ask"], state);
+    try {
+      s.write(said("one", "u1"));
+      let at = await s.until(isResult);
+      expect(s.got[0]).toMatchObject({ type: "system", subtype: "init", schema_version: 1, model: "scripted:stand-in", permission_mode: "ask", on_ask: "deny" });
+      const id = s.got[0].session_id;
+      expect(s.got[at]).toMatchObject({ subtype: "success", is_error: false, result: "Scripted reply.", session_id: id, num_turns: 1, user_message_uuids: ["u1"] });
+      expect(s.got[at].total_cost_usd).toBeGreaterThan(0);
+      for (const [n, text] of [[2, "two"], [3, "three"]] as const) {
+        s.write(said(text));
+        at = await s.until(isResult, at + 1);
+        expect(s.got[at]).toMatchObject({ subtype: "success", result: "Scripted reply.", session_id: id, num_turns: n });
+      }
+      // The three prompts are three turns of one session, in the order written.
+      expect(s.got.filter((l) => l.type === "user" && l.message.content[0].type === "text").map((l) => l.message.content[0].text)).toEqual(["one", "two", "three"]);
+
+      // The mode asks before this command and no one answers here: the call is
+      // refused, the stream says so, and the turn goes on without it.
+      s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-refused.txt"}}]'));
+      const denied = await s.until((l) => l.type === "system" && l.subtype === "permission_denied", at + 1);
+      expect(s.got[denied]).toMatchObject({ tool_name: "Bash", session_id: id });
+      at = await s.until(isResult, at + 1);
+      expect(s.got[at]).toMatchObject({ subtype: "success", refused_approvals: 1 });
+      expect(s.got.slice(denied, at).some((l) => l.type === "user" && l.message.content[0]?.type === "tool_result" && l.message.content[0].is_error)).toBe(true);
+      expect(existsSync(join(WS, "stream-refused.txt"))).toBe(false);
+
+      // What the session may do without asking is not widened over the stream, and a line that is no message is said back.
+      s.write({ type: "control_request", request_id: "r2", request: { subtype: "set_permission_mode", mode: "full-auto" } });
+      const no = await s.until((l) => l.type === "control_response" && l.response.request_id === "r2", at + 1);
+      expect(s.got[no].response).toMatchObject({ subtype: "error", error: expect.stringContaining("--permission-mode") });
+      expect((await dm.api(`/api/sessions/${id}/permissions`)).perm.mode).toBe("ask");
+      s.write("not a message");
+      await s.until((l) => l.type === "system" && l.subtype === "input_error", at + 1);
+
+      const end = await s.end();
+      expect([end.code, s.got.filter(isResult).length]).toEqual([0, 4]);
+    } finally {
+      s.kill();
+    }
+  }, 120_000);
+
+  test("the script answers and interrupts: a call allowed once, one refused with its words, a question, a turn stopped, a request refused when its input closes", async () => {
+    // Through an address that records every call and passes no socket: the events are read by seq alone.
+    const calls = new Set<string>();
+    const fr = front(dm.url, (method, path) => void calls.add(`${method} ${path}`));
+    const s = held(["run", "--input-format", "stream-json", "--permission-mode", "ask", "--on-ask", "stdin", "--archived", "--url", fr.url], state);
+    const asked = (l: any) => l.type === "control_request" && l.request.subtype === "can_use_tool";
+    const answer = (request_id: string, response: unknown) => s.write({ type: "control_response", response: { subtype: "success", request_id, response } });
+    try {
+      s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-allowed.txt"}},{"name":"Bash","input":{"command":"touch stream-denied.txt"}}]'));
+      let q = await s.until(asked);
+      expect(s.got[q].request).toMatchObject({ tool_name: "Bash", input: { command: "touch stream-allowed.txt" } });
+      answer(s.got[q].request_id, { behavior: "allow" });
+      q = await s.until(asked, q + 1);
+      answer(s.got[q].request_id, { behavior: "deny", message: "not this one" });
+      let at = await s.until(isResult);
+      expect(s.got[at]).toMatchObject({ subtype: "success", refused_approvals: 1 });
+      expect([existsSync(join(WS, "stream-allowed.txt")), existsSync(join(WS, "stream-denied.txt"))]).toEqual([true, false]);
+      expect(JSON.stringify(s.got.slice(q, at).filter((l) => l.type === "user"))).toContain("not this one");
+      // A question of the model is the script's to answer too.
+      s.write(said(`script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } }])}`));
+      q = await s.until((l) => l.type === "control_request" && l.request.subtype === "ask_question", at + 1);
+      expect(s.got[q].request.input.questions[0].question).toBe("Which color should I use?");
+      answer(s.got[q].request_id, { answers: { 0: { picked: ["Amber"] } } });
+      at = await s.until(isResult, at + 1);
+      expect(s.got[at].result).toContain("Amber");
+      // An interrupt ends the turn that runs (a command the script allowed), and the session stays open.
+      s.write(said("script:long-tool"));
+      q = await s.until(asked, at + 1);
+      answer(s.got[q].request_id, { behavior: "allow" });
+      await Bun.sleep(300);
+      s.write({ type: "control_request", request_id: "r1", request: { subtype: "interrupt" } });
+      await s.until((l) => l.type === "control_response" && l.response.request_id === "r1" && l.response.subtype === "success", at + 1);
+      at = await s.until(isResult, at + 1);
+      expect(s.got[at]).toMatchObject({ subtype: "cancelled", outcome: "cancelled", num_turns: 3 });
+      // One stopped while its request is open: the request is withdrawn on the stream.
+      s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-never.txt"}}]'));
+      q = await s.until(asked, at + 1);
+      s.write({ type: "control_request", request_id: "r2", request: { subtype: "interrupt" } });
+      await s.until((l) => l.type === "control_cancel_request" && l.request_id === s.got[q].request_id, q);
+      at = await s.until(isResult, at + 1);
+      expect(s.got[at]).toMatchObject({ subtype: "cancelled", num_turns: 4 });
+      // The allow was for that one call: the same command asks again.
+      s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-allowed.txt"}}]'));
+      q = await s.until(asked, at + 1);
+      // Its input closes with the request open: no one can answer, so it is refused and the turn ends.
+      const end = await s.end();
+      const closed = s.got.findIndex((l, n) => n > q && l.type === "system" && l.subtype === "permission_denied");
+      expect(s.got[closed]).toMatchObject({ request_id: s.got[q].request_id, reason: expect.stringContaining("closed") });
+      expect([end.code, s.got.at(-1)]).toEqual([0, expect.objectContaining({ type: "result", subtype: "success", num_turns: 5 })]);
+      expect((await dm.api(`/api/sessions/${s.got[0].session_id}?events=0`)).session.archived).toBe(true);
+
+      // Every route the command called is one docs/http-api.md lists as stable, and the daemon serves them all.
+      const table = await dm.api("/api/routes");
+      expect([table.api_version, table.missing]).toEqual([1, []]);
+      const stable = table.routes.flatMap((r: any) => r.stable.map((m: string) => ({ m, re: new RegExp(`^${r.path.replace(/:[a-z_]+/g, "[^/]+")}$`) })));
+      expect([...calls].filter((c) => !stable.some((x: any) => c.startsWith(`${x.m} `) && x.re.test(c.split(" ")[1]!)))).toEqual([]);
+      expect(calls.size).toBeGreaterThan(6);
+    } finally {
+      s.kill();
+      fr.stop();
+    }
+  }, 120_000);
+
+  test("prompts piped in one go run one after another, with no daemon running", async () => {
+    const alone = join(SCRATCH, "state-stream-alone");
+    const r = await keel(["run", "--input-format", "stream-json"], { state: alone, stdin: [said("first", "a"), said("second", "b")].map((m) => JSON.stringify(m)).join("\n") + "\n" });
+    const ls = lines(r.out);
+    const results = ls.filter(isResult);
+    expect([r.code, results.map((x) => [x.subtype, x.result, x.num_turns, x.user_message_uuids])]).toEqual([0, [["success", "Scripted reply.", 1, ["a"]], ["success", "Scripted reply.", 2, ["b"]]]]);
+    expect(new Set(ls.map((l) => l.session_id).filter(Boolean)).size).toBe(1);
+    // The second prompt went in after the first one's result.
+    expect(ls.findIndex((l) => l.type === "user" && l.message.content[0].text === "second")).toBeGreaterThan(ls.indexOf(results[0]));
+    // The flags that do not fit a held session are refused before anything is sent.
+    const bad = await keel(["run", "--input-format", "stream-json", "--output-format", "json"], { state: alone, stdin: "" });
+    expect([bad.code, bad.out]).toEqual([3, ""]);
+    expect((await keel(["run", "--on-ask", "stdin", "hi"], { state: alone })).err).toContain("--on-ask stdin needs --input-format stream-json");
+  }, 60_000);
+});
+
 describe("client commands against a running daemon", () => {
   const state = join(SCRATCH, "state-daemon");
   let daemon: Bun.Subprocess<"ignore", "pipe", "ignore">;
@@ -680,6 +840,9 @@ describe("a prompt next to other work in its session", () => {
       ran: [2, true, expect.objectContaining({ subtype: "needs_input", outcome: "action_required", is_error: false, queue_held: true, session_id: sid })],
       state: [false, true, 3],
     });
+    // A script that resumes the stopped session is not held by that queue: its prompt is a plain send, and gets its turn.
+    const piped = await k(["run", "--input-format", "stream-json", "-r", sid, "--timeout", "20"], { stdin: JSON.stringify(said("from a script", "h1")) + "\n" });
+    expect([piped.code, lines(piped.out).filter(isResult).map((l) => [l.subtype, l.user_message_uuids ?? null])[0]]).toEqual([0, ["success", ["h1"]]]);
   }, 60_000);
 
   test("send --wait refuses a bad --on-ask or --timeout before it does anything", async () => {

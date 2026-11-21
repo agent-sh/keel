@@ -63,6 +63,11 @@ export function textLines(e: StoredEvent, o: { thoughts?: boolean } = {}): strin
   }
 }
 
+// The version of the stream-json lines (docs/headless.md). It goes up when a
+// line a script reads changes its meaning or loses a field; a new field or a
+// new line type does not move it.
+export const STREAM_SCHEMA = 1;
+
 export function streamLine(e: StoredEvent): Record<string, unknown> {
   const meta = { session_id: e.session_id, seq: e.seq, id: e.id, ts_ms: e.ts, event: e };
   const d = e.data ?? {};
