@@ -76,12 +76,15 @@ function WebhookBox({ loop }: { loop: LoopRecord }) {
 
 function History({ loop }: { loop: LoopRecord }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
-  // The record changes with every run: read the history again then.
+  // The record changes with every run: read the history again then. An answer
+  // to an earlier read (a slow one a newer read overtook) is not shown.
   useEffect(() => {
-    auto.runs(loop.id).then((r) => setRuns(r.runs)).catch((e) => {
+    let stale = false;
+    auto.runs(loop.id).then((r) => { if (!stale) setRuns(r.runs); }).catch((e) => {
       // A loop deleted while its history loads is not a failure.
-      if (autoState().loops[loop.id]) reportError(e);
+      if (!stale && autoState().loops[loop.id]) reportError(e);
     });
+    return () => void (stale = true);
   }, [loop.id, loop.runs, loop.last_status, loop.next_ms]);
   const session = useStore((s) => s.sessions[loop.session_id]);
   return (
@@ -250,7 +253,8 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
               </div>
             </div>
             <div className="flex min-w-0 flex-1 flex-col">
-              {sel === "new" || !current ? <NewLoop onDone={setSel} /> : <History loop={current} />}
+              {/* Keyed by the loop: the history of the loop picked before is never shown under this one. */}
+              {sel === "new" || !current ? <NewLoop onDone={setSel} /> : <History key={current.id} loop={current} />}
             </div>
           </div>
         </Dialog.Popup>
