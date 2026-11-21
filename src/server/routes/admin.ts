@@ -88,11 +88,10 @@ export const adminRoutes: RouteModule = (deps) => {
   const starts = restarts();
   if (starts) {
     starts.changed = () => daemon.emit();
+    // The log has a line a turn already, under the turn's own name (observe.ts).
     starts.whole = (r) => {
-      const lines = r.turns.map(restartTurnLine);
       console.log(`[daemon] ${restartSummary(r)}`);
-      for (const l of lines) console.log(`[daemon]   ${l}`);
-      activity.record("daemon", r.before.how, null, [restartSummary(r), ...lines].join(" "), { restart: r });
+      activity.record("daemon", r.before.how, null, [restartSummary(r), ...r.turns.map(restartTurnLine)].join(" "), { restart: r });
     };
   }
 

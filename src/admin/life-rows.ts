@@ -50,10 +50,13 @@ export function restartSummary(r: Restart): string {
   return `The daemon ${HOW[b.how]} at ${b.how === "killed" ? "about " : ""}${clock(b.down_ms, r.up_ms)} and came back at ${clock(r.up_ms)} (down ${span(Math.max(0, r.up_ms - b.down_ms))}); ${cut}.`;
 }
 
+// Where a turn was cut: the step, what it was at, and how long it had run.
+export const cutWhere = (t: CutTurn): string => t.unstarted ? "before its turn began"
+  : `at step ${t.step}, ${t.tools.length ? `during ${t.tools.slice(0, 3).join(", ")}${t.tools.length > 3 ? ` and ${t.tools.length - 3} more` : ""}` : t.waiting ? "waiting for an approval" : "waiting for the model"}, after ${span(t.ran_ms)}`;
+
 // One line a cut turn: where it was cut and what became of it.
 export function restartTurnLine(t: RestartTurn): string {
-  const where = t.unstarted ? "before its turn began"
-    : `at step ${t.step}, ${t.tools.length ? `during ${t.tools.slice(0, 3).join(", ")}${t.tools.length > 3 ? ` and ${t.tools.length - 3} more` : ""}` : t.waiting ? "waiting for an approval" : "waiting for the model"}, after ${span(t.ran_ms)}`;
+  const where = cutWhere(t);
   const became = { continued: "continued", held: "held for the owner", moved: "went on by other means", left: "left as cut", pending: "not decided yet" }[t.state];
   return `${title(t.title)}${t.parent_id ? " (an agent)" : ""} cut ${where}: ${became}`;
 }

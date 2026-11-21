@@ -1,15 +1,26 @@
-// The daemon's own log: every console line, with its time and level, kept in
-// memory (the last LINES) for the live view and appended to one file per day
-// under the state folder (the last DAYS kept), where an agent can read it.
-// Keys and tokens are redacted before a line is kept anywhere.
-import { appendFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+// The daemon's own log: every console line, with its time, its level and the
+// session and turn of the code that wrote it, kept in memory (the last LINES)
+// for the live view and appended to one file per day under the state folder
+// (the last DAYS kept), where an agent can read it. Keys and tokens are
+// redacted before a line is kept anywhere.
+//
+// The files are the log; the memory is its newest end. A start reads that end
+// back from the files, and a question about a time the memory no longer holds
+// (the bundle of a failure from before a restart) is answered from the files,
+// reading only the part of a day's file around that time.
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { errorScope } from "../core/errors.ts";
 import { scrub } from "../providers/http.ts";
 
-export type LogLine = { ts: number; level: "debug" | "info" | "warn" | "error"; text: string };
+// `session`, `turn`: where the code that wrote the line ran (its turn_start event), when it ran in one.
+export type LogLine = { ts: number; level: "debug" | "info" | "warn" | "error"; text: string; session?: string; turn?: string };
 
 const LINES = 2000;
 const DAYS = 7;
+// What one question reads of the files at most, and the piece a seek reads.
+const READ_MAX = 2 * 1024 * 1024;
+const PIECE = 64 * 1024;
 const G = globalThis as any;
 
 type State = { lines: LogLine[]; dir: string; day: string; subs: Set<(l: LogLine) => void>; orig: Record<string, (...a: any[]) => void> };
@@ -20,6 +31,26 @@ function safeJson(x: unknown) {
 }
 
 const dayOf = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+const fileOf = (dir: string, day: string) => join(dir, `keel-${day}.log`);
+
+// A line as the file holds it: the time, the level, the session and turn in
+// braces when it has them, the text. A text of several lines goes on under it.
+export function formatLine(l: LogLine): string {
+  const place = l.session ? `{${l.session}${l.turn ? ` ${l.turn}` : ""}} ` : "";
+  return `${new Date(l.ts).toISOString()} ${l.level.toUpperCase().padEnd(5)} ${place}${l.text}`;
+}
+const HEAD = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) (DEBUG|INFO |WARN |ERROR) (?:\{([0-9a-f-]{36})(?: ([0-9a-f-]{36}))?\} )?/;
+// The lines of a piece of a log file. One that does not start with a time
+// belongs to the line above it (a stack); before any line, it is dropped.
+export function parseLines(text: string): LogLine[] {
+  const out: LogLine[] = [];
+  for (const raw of text.split("\n")) {
+    const m = HEAD.exec(raw);
+    if (m) out.push({ ts: Date.parse(m[1]!), level: m[2]!.trim().toLowerCase() as LogLine["level"], text: raw.slice(m[0].length), ...(m[3] ? { session: m[3] } : {}), ...(m[4] ? { turn: m[4] } : {}) });
+    else if (out.length && raw) out.at(-1)!.text += `\n${raw}`;
+  }
+  return out;
+}
 
 // Installed once per process (hot reload runs this module again): console.*
 // still print as before, and each line is also kept.
@@ -27,16 +58,26 @@ export function installLogs(stateDir: string) {
   const dir = join(stateDir, "logs");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (G.__keelLogs) { G.__keelLogs.dir = dir; return; }
-  const st: State = { lines: [], dir, day: "", subs: new Set(), orig: {} };
+  // What the daemon before this one wrote last is this one's memory to begin with.
+  const st: State = { lines: tail(dir, LINES), dir, day: "", subs: new Set(), orig: {} };
   G.__keelLogs = st;
   for (const [m, level] of [["log", "info"], ["info", "info"], ["debug", "debug"], ["warn", "warn"], ["error", "error"]] as const) {
     const orig = (console as any)[m].bind(console);
     st.orig[m] = orig;
     (console as any)[m] = (...a: unknown[]) => {
       orig(...a);
-      try { keep({ ts: Date.now(), level, text: scrub(fmt(a)).slice(0, 20_000) }); } catch {}
+      try {
+        const at = errorScope.getStore();
+        keep({ ts: Date.now(), level, text: scrub(fmt(a)).slice(0, 20_000), ...(at?.session ? { session: at.session, ...(at.turn ? { turn: at.turn } : {}) } : {}) });
+      } catch {}
     };
   }
+}
+
+// A line about a session's turn from code that does not run in it (the
+// daemon's account of a restart, a compaction seen on the bus).
+export function logAt(at: { session: string; turn?: string }, text: string, level: "info" | "warn" | "error" = "info") {
+  errorScope.run(at, () => (level === "info" ? console.log(text) : level === "warn" ? console.warn(text) : console.error(text)));
 }
 
 function keep(l: LogLine) {
@@ -49,24 +90,97 @@ function keep(l: LogLine) {
     st.day = day;
     prune(st.dir);
   }
-  appendFileSync(join(st.dir, `keel-${day}.log`), `${new Date(l.ts).toISOString()} ${l.level.toUpperCase().padEnd(5)} ${l.text}\n`, { mode: 0o600 });
+  appendFileSync(fileOf(st.dir, day), `${formatLine(l)}\n`, { mode: 0o600 });
   for (const f of st.subs) try { f(l); } catch {}
 }
 
+const days = (dir: string) => {
+  try { return readdirSync(dir).filter((f) => /^keel-\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort(); } catch { return []; }
+};
 function prune(dir: string) {
-  const files = readdirSync(dir).filter((f) => /^keel-\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort();
+  const files = days(dir);
   for (const f of files.slice(0, Math.max(0, files.length - DAYS))) rmSync(join(dir, f), { force: true });
+}
+
+// Bytes [from, to) of a file as text, cut to whole lines: the first line is
+// dropped unless the read starts at the file's start.
+function piece(fd: number, from: number, to: number): string {
+  const buf = Buffer.alloc(Math.max(0, to - from));
+  const n = readSync(fd, buf, 0, buf.length, from);
+  const text = buf.subarray(0, n).toString("utf8");
+  return from > 0 ? text.slice(text.indexOf("\n") + 1) : text;
+}
+
+// The last `n` lines the files hold, oldest first: the end of the newest files.
+export function tail(dir: string, n: number): LogLine[] {
+  let out: LogLine[] = [];
+  let left = READ_MAX;
+  for (const f of days(dir).reverse()) {
+    if (out.length >= n || left <= 0) break;
+    try {
+      const fd = openSync(join(dir, f), "r");
+      try {
+        const size = fstatSync(fd).size;
+        const from = Math.max(0, size - left);
+        out = [...parseLines(piece(fd, from, size)), ...out];
+        left -= size - from;
+      } finally { closeSync(fd); }
+    } catch {}
+  }
+  return out.slice(-n);
+}
+
+// Where the lines at or after `ts` start in a day's file: its lines are in
+// time order, so a few pieces find the place without reading the file.
+function seek(fd: number, size: number, ts: number): number {
+  let lo = 0, hi = size;
+  while (hi - lo > PIECE) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const first = parseLines(piece(fd, mid, Math.min(size, mid + PIECE)))[0];
+    // No line starts in the piece (one long entry): the place is not before it.
+    if (!first || first.ts < ts) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// The lines of [since, until] from the files, oldest first, at most READ_MAX bytes of them.
+export function fromFiles(dir: string, since: number, until: number): LogLine[] {
+  const out: LogLine[] = [];
+  let left = READ_MAX;
+  for (const f of days(dir)) {
+    const day = f.slice(5, 15);
+    if (day < dayOf(since) || day > dayOf(until) || left <= 0) continue;
+    try {
+      const fd = openSync(join(dir, f), "r");
+      try {
+        const size = fstatSync(fd).size;
+        const from = seek(fd, size, since);
+        const to = Math.min(size, from + left);
+        left -= to - from;
+        for (const l of parseLines(piece(fd, from, to))) {
+          if (l.ts > until) return out;
+          if (l.ts >= since) out.push(l);
+        }
+      } finally { closeSync(fd); }
+    } catch {}
+  }
+  return out;
 }
 
 export const logDir = (): string | undefined => G.__keelLogs?.dir;
 
-// The kept lines, oldest first: from `since` (ms), at `level` or above, holding `q`.
-export function logLines(o: { since?: number; until?: number; level?: string; q?: string; limit?: number } = {}): LogLine[] {
+// The kept lines, oldest first: from `since` (ms), at `level` or above, holding
+// `q`, of `session`. A window that starts before what the memory holds is read
+// from the files.
+export function logLines(o: { since?: number; until?: number; level?: string; q?: string; limit?: number; session?: string } = {}): LogLine[] {
   const st: State | undefined = G.__keelLogs;
   if (!st) return [];
   const min = LEVELS.indexOf((o.level ?? "debug") as any);
   const q = o.q?.toLowerCase();
-  const out = st.lines.filter((l) => (o.since === undefined || l.ts >= o.since) && (o.until === undefined || l.ts <= o.until) && LEVELS.indexOf(l.level) >= min && (!q || l.text.toLowerCase().includes(q)));
+  const oldest = st.lines[0]?.ts ?? Infinity;
+  const lines = o.since !== undefined && o.since < oldest ? fromFiles(st.dir, o.since, o.until ?? Date.now()) : st.lines;
+  const out = lines.filter((l) => (o.since === undefined || l.ts >= o.since) && (o.until === undefined || l.ts <= o.until) && LEVELS.indexOf(l.level) >= min && (!q || l.text.toLowerCase().includes(q)) && (!o.session || l.session === o.session));
   return o.limit ? out.slice(-o.limit) : out;
 }
 

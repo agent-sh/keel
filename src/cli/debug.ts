@@ -6,8 +6,9 @@
 //   keel debug trace TRACE_ID        one trace's spans as a waterfall
 //   keel debug timeline SESSION      what happened in a session and what it is doing now, a line a row
 //   SESSION is a session's id, a prefix of it, or an agent's id or a prefix of that.
-//   keel debug log [-f] [--level L] [--grep TEXT] [--lines N]   the daemon's log; -f follows it
+//   keel debug log [-f] [--level L] [--grep TEXT] [--lines N] [--session ID]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
+import { formatLine, type LogLine } from "../admin/logs.ts";
 import { chunks } from "../core/proc.ts";
 import { authHeaders, findDaemon, refusal } from "./client.ts";
 
@@ -18,7 +19,7 @@ keel debug trace TRACE_ID [--json]                    one trace's spans
 keel debug timeline SESSION [--since 1h] [--only failures|turns|agents] [--limit N] [--before CURSOR] [--no-ids] [--json]
                                                       what happened in a session, newest first, and what it does now
                                                       (--no-ids leaves the ids off the lines: fewer tokens for a model that only reads)
-keel debug log [-f] [--level debug|info|warn|error] [--grep TEXT] [--lines N]
+keel debug log [-f] [--level debug|info|warn|error] [--grep TEXT] [--lines N] [--session ID]
   SESSION and --session ID take a session's id, a prefix of it that names one session, or an
   agent's id or a prefix of that (the agent's session).
   Every form takes --url URL (else KEEL_URL, else the daemon of the state folder).`;
@@ -100,13 +101,16 @@ export async function debug(argv: string[]): Promise<number> {
   }
 }
 
-async function log(url: string, v: { follow?: boolean; level?: string; grep?: string; lines?: string; json?: boolean }) {
-  const print = (l: { ts: number; level: string; text: string }) => {
+async function log(url: string, v: { follow?: boolean; level?: string; grep?: string; lines?: string; json?: boolean; session?: string }) {
+  // --session takes what every form takes: an id, a prefix, or an agent's id.
+  const session: string | undefined = v.session ? (await getJson(url, `/api/cli/resolve?id=${encodeURIComponent(v.session)}`)).session.id : undefined;
+  const print = (l: LogLine) => {
     if (v.grep && !l.text.toLowerCase().includes(v.grep.toLowerCase())) return;
-    console.log(v.json ? JSON.stringify(l) : `${new Date(l.ts).toISOString()} ${l.level.toUpperCase().padEnd(5)} ${l.text}`);
+    if (session && l.session !== session) return;
+    console.log(v.json ? JSON.stringify(l) : formatLine(l));
   };
   const level = v.level ? `&level=${encodeURIComponent(v.level)}` : "";
-  const { lines, dir } = await getJson(url, `/api/logs?limit=${Number(v.lines) || 200}${level}${v.grep ? `&q=${encodeURIComponent(v.grep)}` : ""}`);
+  const { lines, dir } = await getJson(url, `/api/logs?limit=${Number(v.lines) || 200}${level}${v.grep ? `&q=${encodeURIComponent(v.grep)}` : ""}${session ? `&session=${encodeURIComponent(session)}` : ""}`);
   for (const l of lines) print(l);
   if (!v.follow) {
     if (!v.json) console.error(`(the daemon's log files: ${dir})`);

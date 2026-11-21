@@ -136,11 +136,15 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     out.push("");
   }
 
-  // The daemon's log is every session's: a session reading about itself gets the lines that name it.
-  const logs = logLines({ since: at - LOG_WINDOW_MS, until: at + 30_000 }).filter((l) => !o.own || (!!sid && l.text.includes(sid))).slice(-LOG_LINES);
+  // The daemon's log is every session's: a session reading about itself gets
+  // the lines written in its own turns, and the daemon's own lines that name
+  // it; never a line written in another session's turn.
+  const logs = logLines({ since: at - LOG_WINDOW_MS, until: at + 30_000 }).filter((l) => !o.own || (!!sid && (l.session ? l.session === sid : l.text.includes(sid)))).slice(-LOG_LINES);
   if (!o.own || logs.length) {
     out.push(`## Daemon log around it (${iso(at - LOG_WINDOW_MS)} to ${iso(at + 30_000)}, ${logs.length} lines)`, "");
-    out.push(logs.length ? fence(logs.map((l) => `${new Date(l.ts).toISOString().slice(11, 23)} ${l.level.toUpperCase().padEnd(5)} ${clip(l.text, 800)}`).join("\n")) : "No lines in that window (the memory log keeps the last 2000; older ones are in the files below).", "");
+    // Whose line it is: this turn's, this session's, another session's, or the daemon's own (nothing said).
+    const whose = (l: { session?: string; turn?: string }) => (!l.session ? "" : l.session !== sid ? `(session ${l.session}) ` : turnEvent && l.turn === turnEvent ? "(this turn) " : "(this session) ");
+    out.push(logs.length ? fence(logs.map((l) => `${new Date(l.ts).toISOString().slice(11, 23)} ${l.level.toUpperCase().padEnd(5)} ${whose(l)}${clip(l.text, 800)}`).join("\n")) : "No lines in that window.", "");
   }
 
   if (!o.own) {

@@ -21,7 +21,10 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildBundle } from "../../admin/bundle.ts";
 import { detached } from "../../core/errors.ts";
-import { installLogs, LEVELS, logDir, logLines, onLog } from "../../admin/logs.ts";
+import { cutWhere } from "../../admin/life-rows.ts";
+import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin/logs.ts";
+import { newestTurn } from "../../admin/marks.ts";
+import { registerHooks } from "../../engine/hooks.ts";
 import { turnReceipt } from "../../admin/receipt.ts";
 import { endpointOf, headerRefError, headerSourceOf, OtlpExporter } from "../../admin/otlp.ts";
 import { key } from "../../providers/creds.ts";
@@ -82,6 +85,25 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   });
   clearInterval(G.__keelSpanPrune);
   G.__keelSpanPrune = setInterval(() => t.prune(), 6 * 3600_000);
+
+  // The log's account of what a restart and the context did to a turn, each
+  // line under the session and turn it is about: cut (a stop parked it, or the
+  // daemon went down under it), what became of it, and compacted.
+  registerHooks({
+    turnCut: (s, cut) => logAt({ session: s.id, turn: cut.turn_event }, `[turn] cut ${cutWhere(cut)}: ${cut.crashed ? "the daemon went down" : "a daemon stop parked it"}`, cut.crashed ? "warn" : "info"),
+    turnCutSettled: (s, cut, state, why) => logAt({ session: s.id, turn: cut.turn_event },
+      state === "continued" ? "[turn] continued after the restart" : state === "held" ? `[turn] not continued after the restart: ${why ?? "held for the owner"}` : "[turn] went on by other means after the restart", state === "held" ? "warn" : "info"),
+  });
+  bus.on((f) => {
+    if (f.t !== "event") return;
+    const e = f.event;
+    const at = () => ({ session: e.session_id, turn: engine.turnOf(e.session_id) ?? newestTurn(store, e.session_id)?.id });
+    if (e.kind === "turn_end" && e.data?.reason === "restart" && !e.data.crashed) logAt(at(), "[turn] parked for a daemon stop");
+    else if (e.kind === "compaction") {
+      const n = e.data?.tokens_before;
+      logAt({ session: e.session_id, turn: engine.turnOf(e.session_id) }, `[turn] context ${e.data?.mode === "clear" ? "cleared" : e.data?.trigger === "model" ? "started fresh by the model" : e.data?.auto ? "compacted by itself" : "compacted by the owner"}${typeof n === "number" && n > 0 ? `, from ${n} tokens` : ""}`);
+    }
+  });
 
   const bundleFor = (q: { error_id?: string | null; session_id?: string | null; turn_event?: string | null; span_id?: string | null }) => {
     const error = q.error_id ? store.error(q.error_id) : undefined;
@@ -208,7 +230,8 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         const level = q.get("level") ?? undefined;
         if (level && !(LEVELS as readonly string[]).includes(level)) return json({ error: `level is one of ${LEVELS.join(", ")}` }, 400);
         const since = q.get("since_ms") ? Number(q.get("since_ms")) : undefined;
-        return json({ lines: logLines({ since, level, q: q.get("q") ?? undefined, limit: Math.min(2000, Number(q.get("limit")) || 500) }), dir: logDir() });
+        // `session`: only the lines written in that session's turns.
+        return json({ lines: logLines({ since, level, q: q.get("q") ?? undefined, session: q.get("session") ?? undefined, limit: Math.min(2000, Number(q.get("limit")) || 500) }), dir: logDir() });
       },
     },
     "/api/logs/stream": {

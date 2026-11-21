@@ -215,6 +215,77 @@ test("after a kill one place says when the daemon went down, which turns it cut 
   }
 });
 
+// Feature: the daemon's log outlives the daemon. Each line carries the session
+// and turn of the code that wrote it; the log records the turns a restart cut,
+// what became of them and each compaction; and after a restart `keel debug
+// log` and the bundle of an earlier failure still read the lines from before it.
+test("the log names each line's session and turn, and is read across a restart", async () => {
+  const state = join(ROOT, `restart-log-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const open = async (title: string) => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+      return session.id as string;
+    };
+    const events = async (id: string) => (await call(`/api/sessions/${id}`, undefined, "GET")).events as any[];
+    // A turn that fails (its error is a log line), a compaction, and a turn the kill cuts.
+    const failed = await open("Fails before the restart");
+    await call(`/api/sessions/${failed}/messages`, { text: "script:billing" });
+    await expect.poll(async () => (await events(failed)).filter((e) => e.kind === "turn_end").length, { timeout: 20_000 }).toBe(1);
+    const failedTurn = (await events(failed)).find((e) => e.kind === "turn_start").id;
+    const error = ((await call("/api/errors", undefined, "GET")).errors as any[]).find((e) => e.session_id === failed);
+    expect(error.message).toContain("credit balance");
+    const compacted = await open("Compacted before the restart");
+    await call(`/api/sessions/${compacted}/messages`, { text: "say something" });
+    await expect.poll(async () => (await events(compacted)).filter((e) => e.kind === "turn_end").length, { timeout: 20_000 }).toBe(1);
+    await call(`/api/sessions/${compacted}/compact`, {});
+    await expect.poll(async () => (await events(compacted)).filter((e) => e.kind === "compaction").length, { timeout: 20_000 }).toBe(1);
+    const running = await open("Cut by the kill");
+    await call(`/api/sessions/${running}/messages`, { text: "script:long-tool" });
+    await expect.poll(async () => (await call(`/api/sessions/${running}?events=0`, undefined, "GET")).status.kind, { timeout: 20_000 }).toBe("tool");
+    const cutTurn = (await events(running)).find((e) => e.kind === "turn_start").id;
+    const lines = async (q = "") => (await call(`/api/logs?limit=2000${q}`, undefined, "GET")).lines as { ts: number; level: string; text: string; session?: string; turn?: string }[];
+    const before = await lines();
+    expect(before.find((l) => l.text.includes("credit balance"))).toMatchObject({ level: "error", session: failed, turn: failedTurn });
+    expect(before.find((l) => l.text.startsWith("[turn] context compacted by the owner"))).toMatchObject({ level: "info", session: compacted });
+
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state);
+    await expect.poll(async () => (await call("/api/daemon", undefined, "GET")).last_start?.settled_ms ?? 0, { timeout: 60_000 }).toBeGreaterThan(0);
+
+    // The new daemon's log begins with what the last one wrote, and goes on with the restart's account.
+    const after = await lines();
+    expect(after.slice(0, before.length)).toEqual(before);
+    const mine = await lines(`&session=${running}`);
+    expect(mine.every((l) => l.session === running)).toBe(true);
+    expect(mine.map((l) => [l.level, l.turn, l.text])).toEqual(expect.arrayContaining([
+      ["warn", cutTurn, expect.stringMatching(/^\[turn\] cut at step 1, during Bash, after \d+ m?s: the daemon went down$/)],
+      ["info", cutTurn, "[turn] continued after the restart"],
+    ]));
+    expect(after.filter((l) => l.text.startsWith("[daemon] The daemon went down without stopping")).length).toBe(1);
+
+    // The bundle of the failure from before the restart has its log lines, each said to be this turn's.
+    const bundle = await (await fetch(`${d.url}/api/debug/bundle?error_id=${error.id}`)).text();
+    const log = bundle.slice(bundle.indexOf("## Daemon log around it"));
+    expect(log).toMatch(/^## Daemon log around it \([^)]*, [1-9]\d* lines\)/);
+    expect(log).toMatch(/ERROR \(this turn\) \[provider\] .*credit balance/);
+
+    // The command reads the same lines, with the session and turn on each.
+    const said = spawnSync("bun", ["src/main.ts", "debug", "log", "--session", failed, "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
+    expect(said.status, said.stderr).toBe(0);
+    expect(said.stdout).toMatch(new RegExp(`^\\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z ERROR \\{${failed} ${failedTurn}\\} \\[provider\\] .*credit balance`, "m"));
+    expect(said.stdout).not.toContain(running);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
 // Many cut sessions continue a few at a time: with one slot, the second starts
 // only after the first continued turn ended.
 test("continued turns after a restart take turns", async () => {
