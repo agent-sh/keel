@@ -113,9 +113,9 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
     const p = judgePrompt(a, askedFor(store, a.session.id), policy());
     if (a.mode === "auto") {
       // The action itself has already passed the exact-input check. Other
-      // context (recent messages, repository facts, policy) can hold secrets.
-      p.system = vault.redact(p.system, a.session.id, "output");
-      p.text = vault.redact(p.text, a.session.id, "output");
+      // context can hold secrets. Redacting it never grants the session access.
+      p.system = vault.redact(p.system, null, "output");
+      p.text = vault.redact(p.text, null, "output");
     }
     const tried: string[] = [];
     const t0 = Date.now();

@@ -91,6 +91,7 @@ export const STREAK = 3;
 type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string };
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
+type AutoShell = { path: string; identity: string; interpreter: string };
 type CheckResult = { deny: string } | { cls: CallClass; authorization?: ToolAuthorization };
 const interruptedApproval = "The earlier approval cannot be used under Auto. Check the prior outcome before proposing the action again.";
 const changedReview = { deny: "Refused: authorization or the action changed while permission was pending. Check the current permissions before proposing it again." };
@@ -397,12 +398,13 @@ export class Gate {
       return (await this.wait({ ...back, ...settled }, session, call, name, cls)) ?? { cls };
     }
     if ("deny" in d) return { deny: d.deny };
-    if (mode === "auto" && cls.kind !== "read" && hasSecret([call.input, target?.input, cls], vault.pairs().map(([value]) => value))) return secretReview;
+    if (mode === "auto" && cls.kind !== "read" && hasSecret([call.input, target?.input, cls, dir?.path], vault.pairs().map(([value]) => value))) return secretReview;
     const checkShell = mode === "auto" && (cls.kind === "shell" || !!call.tool.autoShell);
     const shell = checkShell ? call.tool.autoShell?.(call.input ?? {}) : undefined;
     if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))
       return { deny: 'Refused: Auto cannot verify this shell invocation. Use a supported local non-login Bash command (for exec_command, shell: "bash" and login: false), or use Ask.' };
-    if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false).authorization } : {}) };
+    const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
+    if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation).authorization } : {}) };
     if (cls.kind === "control") return { cls };
     const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify((target ? target.input : call.input) ?? {}).slice(0, 400);
     const key = keyOf(name, target, cls, call, summary);
@@ -410,7 +412,7 @@ export class Gate {
       const input = shell ? shell.options : target ? target.input : call.input;
       if ((!d.ask.ownerOnly || checkShell) && (summary.length > REVIEW_SUMMARY_LIMIT || JSON.stringify(input ?? {}).length > REVIEW_INPUT_LIMIT))
         return { deny: "Refused: the complete action does not fit in Auto review. Break it into smaller actions or use Ask for owner approval." };
-      return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, dir?.path, shell?.interpreter);
+      return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, invocation);
     }
     // Full auto: nothing waits on the owner. What would ask is high risk; it
     // goes to the rules, then the judge, and is run or refused at once.
@@ -431,17 +433,17 @@ export class Gate {
     return (await this.card(session, call, name, cls, summary, { ...d.ask, notice, bind: target?.source })) ?? { cls };
   }
 
-  private autoAuthorization(session: Session, call: ToolCall, target: Target, cls: CallClass, exactDispatch: boolean) {
+  private autoAuthorization(session: Session, call: ToolCall, target: Target, cls: CallClass, exactDispatch: boolean, invocation?: AutoShell) {
     const revision = this.reviewVersion;
     const originalInput = JSON.stringify(call.input);
     const { tool, ctx: { dispatch, signal, cwd, sessionId, spillDir } } = call;
-    const signature = (current: ToolCall, t: Target, c: CallClass) => {
+    const signature = (current: ToolCall, t: Target, c: CallClass, shell?: AutoShell) => {
       const p = this.perm(session.id);
       const stored = this.store.session(session.id);
       return JSON.stringify([p, this.sandboxed(session, p), stored?.archived, stored?.machine, stored?.workspace, realOf(session.workspace),
-        c, localShellDir(session, current, t, c), t?.name, t?.source, t?.shape, t?.input, current.input]);
+        c, shell, t?.name, t?.source, t?.shape, t?.input, current.input]);
     };
-    const before = signature(call, target, cls);
+    const before = signature(call, target, cls, invocation);
     let currentTarget = target;
     const active = () => revision === this.reviewVersion && !signal.aborted;
     const authorization: ToolAuthorization = {
@@ -449,28 +451,36 @@ export class Gate {
       refresh: tool.target ? async (now) => {
         if (active() && now.tool === tool && JSON.stringify(now.input) === originalInput) currentTarget = await tool.target!(now.input);
       } : undefined,
-      valid: (now, input) => active() && now.tool === tool && now.ctx.signal === signal && now.ctx.cwd === cwd &&
-        now.ctx.sessionId === sessionId && now.ctx.spillDir === spillDir &&
-        (!exactDispatch || now.ctx.dispatch === dispatch) && JSON.stringify(input) === originalInput &&
-        before === signature(now, currentTarget, callClass(now, currentTarget)),
+      valid: (now, input) => {
+        if (!active() || now.tool !== tool || now.ctx.signal !== signal || now.ctx.cwd !== cwd ||
+            now.ctx.sessionId !== sessionId || now.ctx.spillDir !== spillDir ||
+            ((exactDispatch || invocation) && now.ctx.dispatch !== dispatch) || JSON.stringify(input) !== originalInput) return false;
+        const c = callClass(now, currentTarget);
+        const dir = invocation ? localShellDir(session, now, currentTarget, c) : undefined;
+        const shell = invocation ? tool.autoShell?.(now.input ?? {}) : undefined;
+        return before === signature(now, currentTarget, c,
+          dir && shell && c.kind === "shell" && shell.command === c.command ? { ...dir, interpreter: shell.interpreter } : undefined);
+      },
     };
     return { authorization, before };
   }
 
-  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask, input: unknown, cwd?: string, interpreter?: string): Promise<CheckResult> {
-    const { authorization, before } = this.autoAuthorization(session, call, target, cls, !ask.ownerOnly);
+  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask, input: unknown, invocation?: AutoShell): Promise<CheckResult> {
+    const { authorization, before } = this.autoAuthorization(session, call, target, cls, !ask.ownerOnly, invocation);
     const valid = async () => {
       await authorization.refresh?.(call);
       return authorization.valid(call, call.input);
     };
     if (ask.ownerOnly) {
-      const deny = await this.card(session, call, name, cls, summary, { ...ask, bind: target?.source, autoOwner: true });
+      const shown = invocation ? `${summary}\n\nStarting directory: ${invocation.path}\nInterpreter: ${invocation.interpreter}` : summary;
+      const deny = await this.card(session, call, name, cls, shown, { ...ask, bind: target?.source, autoOwner: true });
       return deny ?? (await valid() ? { cls, authorization } : changedReview);
     }
     // Auto refusals and one-off retries are separate from Full auto's
     // existing decisions, and tied to the input, binding and resolved cwd.
     const key = new Bun.CryptoHasher("sha256").update(`auto\0${before}`).digest("hex").slice(0, 32);
-    const r = await this.alone(session, call, name, cls, summary, key, ask.why ?? "no safe default or standing grant covers it", { ask, cwd, interpreter, input, valid });
+    const r = await this.alone(session, call, name, cls, summary, key, ask.why ?? "no safe default or standing grant covers it",
+      { ask, cwd: invocation?.path, interpreter: invocation?.interpreter, input, valid });
     return "deny" in r ? r : { cls, authorization };
   }
 
