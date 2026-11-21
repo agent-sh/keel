@@ -15,17 +15,24 @@ test("an imported history over the window is compacted before its first request"
   const info = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === STRICT);
   test.skip(!info, "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
 
-  // 45 exchanges with a 4 KB tool output each: about 230 KB, over the window
-  // of 80,000 tokens as the provider counts it, and under the share that
-  // compacts when counted at 4 bytes a token.
+  // 45 exchanges with a 3 KB tool output and a 2 KB reply each: about 250 KB,
+  // over the window of 80,000 tokens as the provider counts it, and under the
+  // share that compacts when counted at 4 bytes a token.
   const lines: any[] = [];
   const add = (kind: string, data: any) => lines.push({ ref: `e${lines.length + 1}`, kind, data, ts: 1_700_000_000_000 + lines.length });
+  const reply = (n: number) => `Port ${7000 + n} answers. ${"All checks passed. ".repeat(105)}`;
   for (let n = 1; n <= 45; n++) {
     add("user", { text: `Step ${n}: check the service on port ${7000 + n}.` });
     add("assistant", { blocks: [{ type: "tool_use", id: `call-${n}`, name: "Bash", input: { command: `curl -s localhost:${7000 + n}/health` } }], stop: "tool_use", imported: true });
-    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${n}`, content: `BEGIN-${n} ${"status ok; ".repeat(360)} END-${n}` }] });
-    add("assistant", { blocks: [{ type: "text", text: `Port ${7000 + n} answers. ${"All checks passed. ".repeat(40)}` }], stop: "end_turn", imported: true });
+    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${n}`, content: `BEGIN-${n} ${"status ok; ".repeat(270)} END-${n}` }] });
+    add("assistant", { blocks: [{ type: "text", text: reply(n) }], stop: "end_turn", imported: true });
   }
+  // The history needs several parts by its own size, whatever the system prompt of this
+  // daemon holds: with every tool output shortened to the 2,000 bytes a transcript keeps
+  // of one, the outputs and the replies alone are more than one request can hold of a
+  // transcript (the compacting share of the window, in the model's bytes a token).
+  const shortened = 45 * 2_000 + Array.from({ length: 45 }, (_, i) => Buffer.byteLength(reply(i + 1))).reduce((a, b) => a + b, 0);
+  expect(shortened).toBeGreaterThan(info.context * 0.85 * 2.5);
   const file = [{ keel_export: 2, events: lines.length, scope: "current branch", title: "A long imported history", model: STRICT, workspace: "", created: 1_700_000_000_000 }, ...lines].map((l) => JSON.stringify(l)).join("\n") + "\n";
   expect(Buffer.byteLength(file) / 2.5).toBeGreaterThan(info.context);
   expect(Buffer.byteLength(file) / 4).toBeLessThan(info.context * 0.85);
