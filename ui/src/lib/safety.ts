@@ -1,7 +1,7 @@
 // Client state of the permission gate: open approval cards, each session's
 // mode and sandbox, and the standing grants. Fed by REST and feature frames.
 import { useSyncExternalStore } from "react";
-import type { Approval, SessionPerm } from "../../../src/safety/gate.ts";
+import type { Approval, BatchResult, SessionPerm } from "../../../src/safety/gate.ts";
 import type { Rule, Suggest } from "../../../src/safety/policy.ts";
 import { api, newer, onFeature, reportError } from "./store.ts";
 
@@ -113,6 +113,10 @@ export const safety = {
   },
   answer: (sessionId: string, approvalId: string, body: { choice: string; reason?: string; rules?: Suggest[] }) =>
     api(`/api/sessions/${sessionId}/approvals/${approvalId}`, { method: "POST", body: JSON.stringify(body) }),
+  // Several cards allowed once with one answer: the daemon refuses the whole
+  // list if it names one that is answered alone, and says how each went.
+  answerMany: (sessionId: string, ids: string[]) =>
+    api<{ results: BatchResult[] }>(`/api/sessions/${sessionId}/approvals`, { method: "POST", body: JSON.stringify({ choice: "once", ids }) }),
   restore: async (id: string) => {
     await api(`/api/permissions/grants/${id}/restore`, { method: "POST" });
     await safety.loadGrants();

@@ -121,6 +121,19 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         const all = new URL(req.url).searchParams.has("all");
         return json({ approvals: g.approvals({ session: s.id, pending: !all }) });
       },
+      // Several cards allowed once with one answer. The gate refuses the whole
+      // list when it names a card that is answered alone (high risk, or shown
+      // only in part): all of these are low risk and allowed once, which needs
+      // no passkey from a remote device, as one such card does not.
+      POST: async (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const b = await body(req);
+        if (b.choice !== "once") return bad("several requests are answered together only with choice once");
+        if (!Array.isArray(b.ids) || !b.ids.length || !b.ids.every((x: unknown) => typeof x === "string")) return bad("ids is a list of approval ids");
+        const r = g.resolveMany(s.id, b.ids);
+        return "error" in r ? json({ error: r.error, alone: r.alone }, r.status) : json(r);
+      },
     },
     "/api/sessions/:id/approvals/:aid": {
       POST: async (req: any) => {

@@ -1,35 +1,111 @@
 import { expect, test } from "bun:test";
 import type { Approval } from "../../../src/safety/gate.ts";
-import { batches, batchName, SETTLE_MS } from "./approvals.ts";
+import { batches, batchName, coverName, nextAction, settled, spentAction, stand, SETTLE_MS, type Action } from "./approvals.ts";
 
 const card = (id: string, over: Partial<Approval> = {}): Approval => ({
   id, session_id: "s", call_id: `c-${id}`, tool: "Bash", kind: "shell", summary: `echo ${id}`, input: {}, risk: "low", suggest: [], state: "pending", created: 1, ...over,
 });
-const at = (ids: string[], t: number) => new Map(ids.map((id) => [id, t]));
+const set = (...ids: string[]) => new Set(ids);
 
-test("one batch per tool with two or more open requests, oldest first", () => {
-  const cards = [card("a"), card("e", { tool: "Edit", kind: "edit" }), card("b"), card("c")];
-  expect(batches(cards, at(["a", "b", "c", "e"], 0), SETTLE_MS)).toEqual([{ tool: "Bash", kind: "shell", ids: ["a", "b", "c"], waiting: 3 }]);
+test("a thing counts once it has stood whole and unmoved for the settle time", () => {
+  const a = stand(undefined, { x: 10, y: 100, whole: true }, 0);
+  expect(settled(a, SETTLE_MS - 1)).toBe(false);
+  expect(settled(a, SETTLE_MS)).toBe(true);
+  // The same place keeps its time, a part of a pixel off included.
+  expect(stand(a, { x: 10.4, y: 100.4, whole: true }, 500)).toBe(a);
+  // It moved: the time starts again, and a slow drift is measured from where it stood.
+  const moved = stand(a, { x: 10, y: 140, whole: true }, 2000);
+  expect([moved.since, settled(moved, 2500), settled(moved, 3000)]).toEqual([2000, false, true]);
+  expect(stand(stand(a, { x: 10, y: 100.6, whole: true }, 10), { x: 10, y: 101.2, whole: true }, 20).since).toBe(20);
+  // Cut by an edge or covered: it does not count however long, and starts again when it is whole.
+  const cut = stand(a, { x: 10, y: 100, whole: false }, 3000);
+  expect(settled(cut, 99_999)).toBe(false);
+  expect(stand(cut, { x: 10, y: 100, whole: true }, 4000).since).toBe(4000);
+  expect(settled(undefined, 99_999)).toBe(false);
 });
 
-test("a request that just arrived is not covered until it has been shown a while", () => {
-  const cards = [card("a"), card("b"), card("late")];
-  const shown = new Map([["a", 0], ["b", 0], ["late", 5000]]);
-  // The late one is counted as waiting, and no click answers it yet.
-  expect(batches(cards, shown, 5000 + SETTLE_MS - 1)[0]).toMatchObject({ ids: ["a", "b"], waiting: 3 });
-  expect(batches(cards, shown, 5000 + SETTLE_MS)[0]).toMatchObject({ ids: ["a", "b", "late"], waiting: 3 });
-  // One that was never on screen (a hidden tab) is never covered.
-  expect(batches([...cards, card("unseen")], shown, 99_999)[0]).toMatchObject({ ids: ["a", "b", "late"], waiting: 4 });
+test("one batch per tool, of the requests that were read and are not cut", () => {
+  const cards = [card("a"), card("e", { tool: "Edit", kind: "edit" }), card("b"), card("c"), card("d")];
+  // d is out of view (not read), c is longer than its box.
+  expect(batches(cards, set("a", "b", "c", "e"), set("c"))).toEqual([{ tool: "Bash", kind: "shell", waiting: 4, ids: ["a", "b"] }]);
+  // Nothing read yet: the action is there with nothing to cover.
+  expect(batches(cards, set(), set())).toEqual([{ tool: "Bash", kind: "shell", waiting: 4, ids: [] }]);
+  // One request left that could ever be answered with others: no batch.
+  expect(batches(cards, set("a", "b", "c", "d"), set("b", "c", "d"))).toEqual([]);
 });
 
-test("high-risk, refused and answered requests are never in a batch", () => {
-  const cards = [card("a"), card("risky", { risk: "high" }), card("no", { kind: "refused" }), card("done", { state: "allowed" })];
-  expect(batches(cards, at(["a", "risky", "no", "done"], 0), SETTLE_MS)).toEqual([]);
-  expect(batches([...cards, card("b")], at(["a", "b", "risky", "no", "done"], 0), SETTLE_MS)[0]!.ids).toEqual(["a", "b"]);
+test("requests answered alone are never in a batch, and are counted as waiting", () => {
+  const cards = [card("a"), card("b"), card("risky", { risk: "high" }), card("no", { kind: "refused" }), card("hook", { once: true }), card("long", { cut: true }), card("done", { state: "allowed" })];
+  const all = set("a", "b", "risky", "no", "hook", "long", "done");
+  expect(batches(cards, all, set())).toEqual([{ tool: "Bash", kind: "shell", waiting: 6, ids: ["a", "b"] }]);
+  expect(batches(cards.filter((c) => c.id !== "b"), all, set())).toEqual([]);
 });
 
-test("a batch says what it holds", () => {
+test("the action covers what was ready when the hand came to it, and grows only behind a hold", () => {
+  let t = 5000;
+  let open = set("a", "b", "c", "d", "late");
+  const step = (prev: Action | undefined, ready: string[], hot = false) => nextAction(prev, ready, hot, t, open);
+  // From nothing to pressable at once, with what is ready.
+  let a = step(undefined, ["a", "b"]);
+  expect(a).toMatchObject({ covered: ["a", "b"], live: true, frozen: null });
+  // It grows while it could be pressed: the new count shows, and it does not act for the settle time.
+  a = step(a, ["a", "b", "c"]);
+  expect(a).toMatchObject({ covered: ["a", "b", "c"], live: false, hold: t + SETTLE_MS });
+  // Another one during that hold starts it again.
+  t += 900;
+  a = step(a, ["a", "b", "c", "d"]);
+  expect(a).toMatchObject({ live: false, hold: t + SETTLE_MS });
+  t += SETTLE_MS;
+  a = step(a, ["a", "b", "c", "d"]);
+  expect(a.live).toBe(true);
+  // Shrinking needs no hold.
+  a = step(a, ["a", "b"]);
+  expect(a).toMatchObject({ covered: ["a", "b"], live: true });
+
+  // The keyboard comes to it: from now it only shrinks.
+  a = step(a, ["a", "b"], true);
+  expect(a.frozen).toEqual(["a", "b"]);
+  a = step(a, ["a", "b", "late"], true);
+  expect(a).toMatchObject({ covered: ["a", "b"], live: true });
+  // The list moved under it (nothing is ready for a moment), then stood again: back to what it covered, no more.
+  a = step(a, [], true);
+  expect(a).toMatchObject({ covered: [], live: false, frozen: ["a", "b"] });
+  a = step(a, ["a", "b", "late"], true);
+  expect(a).toMatchObject({ covered: ["a", "b"], live: true });
+  a = step(a, ["b", "late"], true);
+  expect(a).toMatchObject({ covered: ["b"], live: false });
+  // The keyboard left: the late one joins, as any that is ready does.
+  a = step(a, ["b", "late"]);
+  expect(a).toMatchObject({ covered: ["b", "late"], live: true, frozen: null });
+
+  // A hand that rests on it before it can be pressed: it becomes pressable with what is ready then, and is frozen from there.
+  let b = step(undefined, ["a"], true);
+  expect(b).toMatchObject({ live: false, frozen: null });
+  b = step(b, ["a", "b", "c"], true);
+  expect(b).toMatchObject({ covered: ["a", "b", "c"], live: true, frozen: ["a", "b", "c"] });
+  b = step(b, ["a", "b", "c", "d"], true);
+  expect(b.covered).toEqual(["a", "b", "c"]);
+  // All it held is answered while the hand is still on it: it lets go, and covers what is ready after the settle time.
+  open = set("d", "late");
+  b = step(b, ["d", "late"], true);
+  expect(b).toMatchObject({ covered: ["d", "late"], live: false, frozen: null, hold: t + SETTLE_MS });
+  t += SETTLE_MS;
+  b = step(b, ["d", "late"], true);
+  expect(b).toMatchObject({ live: true, frozen: ["d", "late"] });
+
+  // After it answered it does not act for the settle time, even if rows are ready at once.
+  let c = step(spentAction(t), ["d", "late"]);
+  expect(c).toMatchObject({ covered: ["d", "late"], live: false });
+  t += SETTLE_MS;
+  c = step(c, ["d", "late"]);
+  expect(c.live).toBe(true);
+});
+
+test("the action says what it covers", () => {
   expect(batchName({ tool: "Bash", kind: "shell" }, 3)).toBe("3 Bash commands");
   expect(batchName({ tool: "Edit", kind: "edit" }, 2)).toBe("2 Edit changes");
   expect(batchName({ tool: "fetch", kind: "other" }, 1)).toBe("1 fetch call");
+  expect(coverName({ tool: "Bash", kind: "shell", waiting: 8 }, 8)).toBe("all 8 Bash commands");
+  expect(coverName({ tool: "Bash", kind: "shell", waiting: 8 }, 3)).toBe("3 of 8 Bash commands");
+  expect(coverName({ tool: "Bash", kind: "shell", waiting: 4 }, 0)).toBe("0 of 4 Bash commands");
 });

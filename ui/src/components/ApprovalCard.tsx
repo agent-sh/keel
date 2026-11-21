@@ -1,7 +1,7 @@
 import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, FilePen, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
-import { batches, batchName, SETTLE_MS, type Batch } from "../lib/approvals.ts";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { batches, batchName, coverName, nextAction, settled, SETTLE_MS, spentAction, stand, type Action, type Batch, type Stand } from "../lib/approvals.ts";
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
@@ -22,80 +22,196 @@ const TITLE: Record<Approval["kind"], string> = {
 const ICON = { shell: SquareTerminal, edit: FilePen, other: Wrench, read: Wrench, drive: MessageSquareShare, refused: X };
 const EMPTY: Approval[] = [];
 
+// What the list knows of its cards from where they stand on screen.
+// - `read`: the request's text has stood whole on screen for the settle time.
+// - `live`: its Allow once has, so it acts. `grant`: the same for its Always allow.
+// - `ripe`: the card has been on the page for the settle time (it may take the keyboard).
+// - `cut`: its text is longer than the box that shows it.
+// - `acts`: each "allow all" action, by tool: what it covers and whether it can be pressed.
+type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; acts: Map<string, Action>; key: string };
+const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), acts: new Map(), key: "" };
+type Reading = { born: number; sum?: Stand; once?: Stand; always?: Stand; cut: boolean };
+type Clip = { top: number; bottom: number; left: number; right: number };
+
+// The part of the window a card of this list shows in: the window as it is
+// now (less where an on-screen keyboard covers it), and inside the region
+// above the message box. `text` is where words can be read: less the edge
+// that fades where more is scrolled out of view.
+function clipOf(list: HTMLElement): { shown: Clip; text: Clip } {
+  const vv = window.visualViewport;
+  const shown = vv ? { top: vv.offsetTop, bottom: vv.offsetTop + vv.height, left: vv.offsetLeft, right: vv.offsetLeft + vv.width } : { top: 0, bottom: innerHeight, left: 0, right: innerWidth };
+  const tray = list.closest<HTMLElement>('[data-testid="composer-tray"]');
+  if (!tray) return { shown, text: shown };
+  const r = tray.getBoundingClientRect();
+  shown.top = Math.max(shown.top, r.top);
+  shown.bottom = Math.min(shown.bottom, r.bottom);
+  const fade = 1.25 * parseFloat(getComputedStyle(document.documentElement).fontSize); // the tray's fade (styles.css)
+  const text = { ...shown };
+  if (tray.scrollTop > 1) text.top = Math.max(text.top, r.top + fade);
+  if (tray.scrollHeight - tray.scrollTop - tray.clientHeight > 1) text.bottom = Math.min(text.bottom, r.bottom - fade);
+  return { shown, text };
+}
+// Where an element is, and whether all of it shows: inside the clip, and nothing lies over its middle.
+function place(el: HTMLElement, c: Clip) {
+  const r = el.getBoundingClientRect();
+  let whole = r.width > 0 && r.height > 0 && r.top >= c.top - 0.5 && r.bottom <= c.bottom + 0.5 && r.left >= c.left - 0.5 && r.right <= c.right + 0.5;
+  if (whole) {
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    whole = !!top && el.contains(top);
+  }
+  return { x: r.left, y: r.top, whole };
+}
+
+// Reads the list's cards on every frame while any is open (the page already
+// draws on every frame then: the waiting mark moves). Only a reading that
+// changes what is shown draws again. `tick` reads now: every answer asks it
+// when it is pressed, so a control that moved since the last frame does not act.
+function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) {
+  const [view, setView] = useState(NO_VIEW);
+  const st = useRef({ cards, seen: new Map<string, Reading>(), acts: new Map<string, Action>(), hot: new Set<string>(), spent: new Set<string>(), view: NO_VIEW });
+  // A request the action answered may still be listed for a moment (its frame is on its way): it no longer waits.
+  for (const id of st.current.spent) if (!cards.some((a) => a.id === id)) st.current.spent.delete(id);
+  const waiting = cards.filter((a) => !st.current.spent.has(a.id));
+  st.current.cards = waiting;
+  const tick = useCallback((): View => {
+    const s = st.current, root = list.current, now = performance.now();
+    const seen: typeof s.seen = new Map();
+    // A hidden page, or a pane something covers, shows nothing: every time starts again.
+    if (root && document.visibilityState === "visible" && !root.closest("[inert]")) {
+      const clip = clipOf(root);
+      for (const el of root.querySelectorAll<HTMLElement>(':scope > [data-testid="approval"]')) {
+        const id = el.dataset.approvalId!, was = s.seen.get(id);
+        const part = (testid: string) => el.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
+        const sum = part("approval-summary"), once = part("allow-once"), always = part("allow-always");
+        seen.set(id, {
+          born: was?.born ?? now,
+          sum: sum ? stand(was?.sum, place(sum, clip.text), now) : undefined,
+          once: once ? stand(was?.once, place(once, clip.shown), now) : undefined,
+          always: always ? stand(was?.always, place(always, clip.shown), now) : undefined,
+          cut: !!sum && sum.scrollHeight > sum.clientHeight + 1,
+        });
+      }
+    }
+    s.seen = seen;
+    const read = new Set<string>(), live = new Set<string>(), grant = new Set<string>(), ripe = new Set<string>(), cut = new Set<string>();
+    for (const [id, r] of seen) {
+      if (settled(r.sum, now)) read.add(id);
+      if (settled(r.once, now)) live.add(id);
+      if (settled(r.always, now)) grant.add(id);
+      if (now - r.born >= SETTLE_MS) ripe.add(id);
+      if (r.cut) cut.add(id);
+    }
+    const acts = new Map<string, Action>();
+    const open = new Set(s.cards.filter((a) => a.state === "pending").map((a) => a.id));
+    for (const g of batches(s.cards, read, cut)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
+    s.acts = acts;
+    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
+    if (key !== s.view.key) setView((s.view = { read, live, grant, ripe, cut, acts, key }));
+    return s.view;
+  }, [list]);
+  const any = cards.length > 0;
+  useEffect(() => {
+    if (!any) return;
+    let raf = requestAnimationFrame(function frame() { tick(); raf = requestAnimationFrame(frame); });
+    // No frame runs on a hidden page: read once as it hides, so the time away counts for nothing.
+    const hidden = () => { if (document.visibilityState !== "visible") tick(); };
+    document.addEventListener("visibilitychange", hidden);
+    return () => { cancelAnimationFrame(raf); document.removeEventListener("visibilitychange", hidden); };
+  }, [any, tick]);
+  // Before the first paint of a changed list: which texts are cut is known at once.
+  useLayoutEffect(() => { tick(); }, [cards, tick]);
+  return {
+    view,
+    tick,
+    waiting,
+    setHot: (tool: string, on: boolean) => { if (on) st.current.hot.add(tool); else st.current.hot.delete(tool); tick(); },
+    // The action answered these: they wait no more, and it starts again from what is ready, after a beat.
+    spend: (tool: string, ids: string[]) => {
+      for (const id of ids) st.current.spent.add(id);
+      st.current.acts.set(tool, spentAction(performance.now()));
+      tick();
+    },
+  };
+}
+
 // The open approval cards of a session, docked above the composer. The turn
 // waits until each is answered. `asker` names whose cards these are when a
 // parent page shows its agents' cards.
 //
 // Several at once are a list: each a row with its own answers, and over them
 // what waits and one action per tool that allows that tool's requests
-// together. The action covers this session's rows only (an agent's requests
-// have a list and an action of their own under its name), only low-risk ones,
-// and only the ones that have been on screen long enough to be read: it names
-// their number, and pointing at it marks exactly those rows.
+// together. What the action may cover is decided in lib/approvals.ts from
+// where the rows stand: only requests of this list (an agent's have a list
+// and an action of their own under its name), low risk, whose text is whole
+// on screen and has stood still for a second. It names how many those are,
+// and pointing at it frames exactly those rows. A row's own Allow acts under
+// the same rule: not within a second of arriving or of moving under the hand.
 export function Approvals({ sessionId, asker }: { sessionId: string; asker?: string }) {
   const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
   const list = useRef<HTMLDivElement>(null);
-  // When each card was first on screen here (a hidden page shows nothing).
-  const shown = useRef(new Map<string, number>());
-  const [, again] = useState(0);
-  const now = Date.now();
-  const visible = document.visibilityState === "visible";
-  for (const a of cards) if (visible && !shown.current.has(a.id)) shown.current.set(a.id, now);
-  for (const id of [...shown.current.keys()]) if (!cards.some((a) => a.id === id)) shown.current.delete(id);
-  const groups = batches(cards, shown.current, now);
-  useEffect(() => {
-    const render = () => again((n) => n + 1);
-    // Drawn again when the newest card has been shown long enough, and when the page comes back into view.
-    const due = Math.max(0, ...cards.map((a) => (shown.current.get(a.id) ?? 0) + SETTLE_MS - Date.now()));
-    const timer = due > 0 ? window.setTimeout(render, due + 10) : 0;
-    document.addEventListener("visibilitychange", render);
-    return () => { window.clearTimeout(timer); document.removeEventListener("visibilitychange", render); };
-  }, [cards]);
-
-  const [hot, setHot] = useState<string | null>(null); // the tool whose "allow all" is pointed at
-  const [sending, setSending] = useState<string[]>([]); // the ids a batch is answering
+  const { view, tick, waiting, setHot, spend } = useReadings(list, cards);
+  const groups = batches(waiting, view.read, view.cut);
+  const [hot, setHotTools] = useState<string[]>([]); // the tools whose action the pointer or the keyboard is on
+  const [at, setAt] = useState<"once" | "all" | "row" | null>(null); // where the keyboard is in the list
+  const [sending, setSending] = useState<string[]>([]); // the ids an action is answering
   const [note, setNote] = useState("");
   const many = cards.length > 1;
   const uniform = many && cards.every((a) => a.tool === cards[0]!.tool);
-  const marked = groups.find((g) => g.tool === hot)?.ids;
+  const open = (ids: string[]) => ids.filter((id) => waiting.some((a) => a.id === id));
+  const covered = (tool: string) => open(view.acts.get(tool)?.covered ?? []);
+  const marked = new Set(hot.flatMap(covered));
+  const dull = groups.find((g) => hot.includes(g.tool) && !view.acts.get(g.tool)?.live);
 
-  // The ids are the ones the button named when it was pressed; a card that
-  // arrives while they are sent is not among them.
-  const allowAll = async (ids: string[]) => {
+  // One request to the daemon with the ids the action named when it was
+  // pressed: a card that arrives meanwhile is not among them, and the daemon
+  // refuses the list whole if it names a card that is answered alone.
+  const allowAll = async (tool: string, ids: string[]) => {
     setSending(ids);
     setNote("");
-    let done = 0, gone = 0, why = "";
-    for (const id of ids) {
-      try {
-        await safety.answer(sessionId, id, { choice: "once" });
-        done++;
-      } catch (e) {
-        if ((e as { status?: number }).status === 409) { gone++; continue; } // settled meanwhile (a grant, another device, a stop)
-        why = failed(e, { at: "approval answer" });
-        break; // the rest stay open, each with its own answers
-      }
+    let allowed: string[] = [];
+    try {
+      const { results } = await safety.answerMany(sessionId, ids);
+      allowed = results.filter((r) => "ok" in r).map((r) => r.id);
+      const done = allowed.length;
+      // Not answered, and not because it was settled elsewhere meanwhile (a grant, another device, a stop).
+      const left = results.filter((r): r is Exclude<typeof r, { ok: true }> => !("ok" in r) && !(r.status === 409 && !!r.state && r.state !== "pending"));
+      if (done < results.length) await safety.loadSession(sessionId).catch(reportError);
+      if (left.length) setNote(`${done} of ${ids.length} allowed. ${left.length === 1 ? "One still waits" : `${left.length} still wait`}: ${left[0]!.error}`);
+    } catch (e) {
+      setNote(`None allowed: ${failed(e, { at: "approval answer" })}`);
+      // The answer may have landed before the reply was lost: what is still open shows as it is.
+      await safety.loadSession(sessionId).catch(reportError);
+    } finally {
+      setSending([]);
+      spend(tool, allowed);
     }
-    // The cards are read again when one did not take the answer: what is still open shows as it is.
-    if (gone || why) await safety.loadSession(sessionId).catch(reportError);
-    setSending([]);
-    if (why) setNote(`${done} of ${ids.length} allowed, the rest still wait: ${why}`);
   };
 
-  // Up and Down move between the list's stops: the "allow all" action, then each card's first answer.
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
     const t = e.target as HTMLElement;
     // Not from a field, and not from a popup a card opened (its events come here through React, not the page).
-    if (!e.currentTarget.contains(t) || t.tagName === "INPUT") return;
+    if (!e.currentTarget.contains(t) || t.tagName === "INPUT" || e.altKey || e.ctrlKey || e.metaKey || composing(e)) return;
+    // Words typed while a card has the keyboard are for the message box: they go there, and so does the Enter after them.
+    if (e.key.length === 1 && e.key !== " ") {
+      e.currentTarget.closest(".k-session")?.querySelector<HTMLElement>('[data-testid="composer"]')?.focus({ preventScroll: true });
+      return;
+    }
+    // Up and Down move between the list's stops: the "allow all" action, then each card's first answer.
+    if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.shiftKey) return;
     const stops = [...e.currentTarget.querySelectorAll<HTMLElement>("[data-stop]:not(:disabled)")];
-    const at = stops.findIndex((s) => s === t || (s.dataset.stop === "card" && !!s.closest('[data-testid="approval"]')?.contains(t)));
+    const i = stops.findIndex((s) => s === t || (s.dataset.stop === "card" && !!s.closest('[data-testid="approval"]')?.contains(t)));
     const down = e.key === "ArrowDown";
-    const to = at >= 0 ? stops[at + (down ? 1 : -1)]
+    const to = i >= 0 ? stops[i + (down ? 1 : -1)]
       : down ? stops.find((s) => s.dataset.stop === "card")
       : stops.findLast((s) => s.dataset.stop === "all");
     if (!to) return;
     e.preventDefault();
     to.focus();
+  };
+  const onFocus = (e: ReactFocusEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement;
+    // (In a field the arrows are the field's: nothing is said.)
+    setAt(!e.currentTarget.contains(t) || t.tagName === "INPUT" ? null : t.dataset.testid === "allow-once" ? "once" : t.dataset.testid === "allow-all" ? "all" : t.closest('[data-testid="approval"]') ? "row" : null);
   };
 
   return (
@@ -110,33 +226,49 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
           tabIndex={-1}
           role="region"
           aria-label={`${asker ? `${asker}: ` : ""}${cards.length === 1 ? "1 request waits" : `${cards.length} requests wait`} for your answer`}
-          className={cn("group/asks mb-2 flex flex-col outline-none", many ? "gap-1.5" : "gap-2")}
+          className={cn("mb-2 flex flex-col outline-none", many ? "gap-1.5" : "gap-2")}
           data-testid="approvals"
           onKeyDown={onKeyDown}
+          // A key held down answers once: its repeats press nothing here (a button, the reason field's Enter).
+          onKeyDownCapture={(e) => { if (e.key === "Enter" && e.repeat) e.preventDefault(); }}
+          onFocus={onFocus}
+          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setAt(null); }}
         >
           {many && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0.5" data-testid="approvals-bar">
+            <div className="flex min-h-ctl-lg flex-wrap items-center gap-x-3 gap-y-1.5 pl-0.5" data-testid="approvals-bar">
               <span className="k-face-state k-ask-count" data-testid="approvals-count">
                 {uniform ? batchName(cards[0]!, cards.length) : `${cards.length} requests`} wait
               </span>
-              {/* Said where the keyboard is: its room is kept, so nothing moves when the focus comes or goes. */}
-              <span className="invisible min-w-0 flex-1 basis-0 truncate text-micro text-faint group-focus-within/asks:visible max-sm:hidden pointer-coarse:hidden">Up and Down choose, Enter answers the framed one</span>
+              {/* What the keyboard does where it is, or why the pointed action waits. Its room is kept, so nothing moves when it changes. */}
+              <span className="min-w-0 flex-1 basis-0 truncate text-micro text-faint max-sm:hidden pointer-coarse:hidden" data-testid="approvals-hint">
+                {dull ? "It covers requests that are whole on screen and have stood still for a second"
+                  : at === "all" ? "Enter allows the framed ones once"
+                  : hot.length ? "A click allows the framed ones once"
+                  : at === "once" ? "Up and Down choose, Enter allows the framed one once"
+                  : at === "row" ? "Up and Down choose a request"
+                  : ""}
+              </span>
               <span className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
                 {groups.map((g) => (
                   <AllowAll
                     key={g.tool}
                     g={g}
+                    ids={covered(g.tool)}
+                    on={!!view.acts.get(g.tool)?.live}
                     cards={cards}
                     busy={sending.length > 0}
                     list={list}
-                    onHot={(on) => setHot((h) => (on ? g.tool : h === g.tool ? null : h))}
-                    onAllow={() => allowAll(g.ids)}
+                    onHot={(on) => { setHot(g.tool, on); setHotTools((h) => (on ? [...h.filter((x) => x !== g.tool), g.tool] : h.filter((x) => x !== g.tool))); }}
+                    // Read again as it is pressed: only what is whole and still at this instant is answered.
+                    press={() => { const a = tick().acts.get(g.tool); return a?.live ? open(a.covered) : null; }}
+                    onAllow={(ids) => allowAll(g.tool, ids)}
                   />
                 ))}
               </span>
-              {note && <span className="basis-full text-micro text-danger" role="alert" data-testid="approvals-error">{note}</span>}
             </div>
           )}
+          {/* Said for as long as a request is left, also when that is one card with no bar over it. */}
+          {note && <p className="pl-0.5 text-micro text-danger" role="alert" data-testid="approvals-error">{note}</p>}
           {cards.map((a, i) => (
             <Card
               key={a.id}
@@ -146,14 +278,35 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               list={list}
               many={many}
               plain={uniform}
-              hot={!!marked?.includes(a.id)}
-              locked={sending.includes(a.id)}
+              hot={marked.has(a.id)}
+              locked={sending.includes(a.id) || !waiting.includes(a)}
+              ripe={view.ripe.has(a.id)}
+              live={view.live.has(a.id)}
+              grant={view.grant.has(a.id)}
+              armed={(which) => tick()[which].has(a.id)}
+              cut={view.cut.has(a.id)}
             />
           ))}
         </div>
       )}
     </>
   );
+}
+
+// When a press is judged. A pointer's press is judged as it goes down: the
+// press itself can move the control before the button comes up (taking the
+// focus brings its card into view), and that move is the press's own. A press
+// with no pointer (the keyboard, a program) is judged as it is made.
+function usePress<T>(judge: () => T) {
+  const down = useRef<{ said: T } | null>(null);
+  return {
+    onPointerDown: () => { down.current = { said: judge() }; },
+    said: (e: { detail: number }): T => {
+      const was = e.detail > 0 ? down.current : null;
+      down.current = null;
+      return was ? was.said : judge();
+    },
+  };
 }
 
 // A control that held the focus and goes away hands it to its list's label,
@@ -176,23 +329,28 @@ function useHandBack(root: RefObject<HTMLElement | null>, list: RefObject<HTMLDi
   return held;
 }
 
-// One action for a tool's open requests: it says how many it answers, and
-// while the pointer or the keyboard is on it those rows are the marked ones.
-function AllowAll({ g, cards, busy, list, onHot, onAllow }: { g: Batch; cards: Approval[]; busy: boolean; list: RefObject<HTMLDivElement | null>; onHot: (on: boolean) => void; onAllow: () => void }) {
+// One action for a tool's open requests. It says how many of them it answers
+// (`ids`), and while the pointer or the keyboard is on it those rows are the
+// framed ones. It is never disabled the browser's way, which would drop the
+// keyboard from it each time the list moves: while it waits it is marked
+// disabled and a press does nothing.
+function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
+  g: Batch; ids: string[]; on: boolean; cards: Approval[]; busy: boolean; list: RefObject<HTMLDivElement | null>;
+  onHot: (on: boolean) => void; press: () => string[] | null; onAllow: (ids: string[]) => void;
+}) {
   const root = useRef<HTMLButtonElement>(null);
-  const held = useHandBack(root, list);
+  useHandBack(root, list);
+  const over = useRef({ pointer: false, keys: false });
+  const hot = (patch: Partial<typeof over.current>) => {
+    const was = over.current.pointer || over.current.keys;
+    Object.assign(over.current, patch);
+    const now = over.current.pointer || over.current.keys;
+    if (now !== was) onHot(now);
+  };
   useEffect(() => () => onHot(false), []);
-  // Disabled while it answers, the button loses the keyboard: when requests are left for it, it takes it back.
-  useEffect(() => {
-    if (busy || !held.current) return;
-    held.current = false;
-    if (document.activeElement === document.body) root.current?.focus({ preventScroll: true });
-  }, [busy]);
-  const n = g.ids.length;
-  const ready = n > 1;
-  const covered = cards.filter((a) => g.ids.includes(a.id));
-  const what = ready ? `${n < g.waiting ? "" : "all "}${batchName(g, n)}` : `all ${batchName(g, g.waiting)}`;
-  const said = `Allows once, in this order: ${covered.map((a) => a.summary).join("; ")}`;
+  const pressed = usePress(press);
+  const able = on && !busy;
+  const names = cards.filter((a) => ids.includes(a.id)).map((a) => a.summary);
   return (
     <button
       ref={root}
@@ -200,18 +358,26 @@ function AllowAll({ g, cards, busy, list, onHot, onAllow }: { g: Batch; cards: A
       data-testid="allow-all"
       data-tool={g.tool}
       data-stop="all"
-      disabled={busy || !ready}
-      title={ready ? undefined : "The requests have only just arrived: read them first"}
-      aria-label={`Allow ${what} once`}
-      aria-description={ready ? said : undefined}
-      onPointerEnter={() => onHot(true)}
-      onPointerLeave={() => onHot(false)}
-      onFocus={() => onHot(true)}
-      onBlur={() => onHot(false)}
-      onClick={() => { held.current = document.activeElement === root.current; onAllow(); }}
-      className="k-allow-all inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      aria-disabled={!able || undefined}
+      aria-label={`Allow ${coverName(g, ids.length)} once`}
+      aria-description={able ? `Allows once, in this order: ${names.join("; ")}` : "It covers requests that are whole on screen and have stood still for a second. High-risk and cut ones are answered on their own."}
+      onPointerEnter={() => hot({ pointer: true })}
+      onPointerLeave={() => hot({ pointer: false })}
+      onPointerDown={pressed.onPointerDown}
+      onFocus={() => hot({ keys: true })}
+      onBlur={() => hot({ keys: false })}
+      onClick={(e) => {
+        const now = pressed.said(e);
+        if (!busy && now && now.length > 1) onAllow(now);
+      }}
+      className="k-allow-all inline-flex h-ctl-lg items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-raised"
     >
-      <CheckCheck className="size-3.5 text-st-need" aria-hidden="true" /> Allow {what}
+      <CheckCheck className="size-3.5 text-st-need" aria-hidden="true" />
+      {/* The widest label it can have holds its room, so the bar does not wrap anew when the count changes. */}
+      <span className="grid text-left tabular-nums">
+        <span className="invisible col-start-1 row-start-1" aria-hidden="true">Allow {g.waiting} of {batchName(g, g.waiting)}</span>
+        <span className="col-start-1 row-start-1" data-testid="allow-all-label">Allow {coverName(g, ids.length)}</span>
+      </span>
     </button>
   );
 }
@@ -227,10 +393,17 @@ function mayTakeFocus(): boolean {
 }
 
 // `many`: one of several, drawn as a row (the request beside its answers, no
-// hint: the list says it once), framed only while it has the keyboard. `plain`: every row is the same tool and the
-// list's heading names it, so the row's title is for screen readers only.
-// `hot`: the pointed "allow all" covers it. `locked`: that action is answering it.
-function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean; hot: boolean; locked: boolean }) {
+// hint: the list says it once), framed only while it has the keyboard.
+// `plain`: every row is the same tool and the list's heading names it, so the
+// row's title is for screen readers only. `hot`: the pointed "allow all"
+// covers it. `locked`: that action is answering it. `live`: its Allow once
+// has stood whole and still for the settle time, so it acts; `grant`: the same
+// for its Always allow; `armed` asks either at the instant of a press. `ripe`:
+// it has been on the page that long. `cut`: its text is longer than its box.
+function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, cut }: {
+  a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
+  hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; cut: boolean;
+}) {
   const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
   const Icon = a.risk === "high" ? ShieldAlert : ICON[a.kind];
   const [denying, setDenying] = useState(false);
@@ -238,15 +411,23 @@ function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval
   const [answering, setAnswering] = useState(false);
   const [err, setErr] = useState("");
   const [closed, setClosed] = useState(false); // the daemon says it can no longer be answered
+  const [whole, setWhole] = useState(false); // opened to its full text
   const root = useRef<HTMLDivElement>(null);
   const once = useRef<HTMLButtonElement>(null);
   const ids = `approval-${a.id}`;
   const busy = answering || locked;
-  // Take focus so Enter answers, unless the owner is busy elsewhere.
+  // Take focus so Enter answers, unless the owner is busy elsewhere: once, and
+  // not while the card is new. A card that has just been drawn takes nothing:
+  // an Enter on its way to the message box never lands on it. (Where the Allow
+  // was out of view, the region brings it in, and it acts a moment after that.)
+  const asked = useRef(false);
   useEffect(() => {
-    if (first && mayTakeFocus()) once.current?.focus({ preventScroll: true });
-  }, [first]);
+    if (!first || !ripe || asked.current) return;
+    asked.current = true;
+    if (mayTakeFocus()) once.current?.focus({ preventScroll: true });
+  }, [first, ripe]);
   const held = useHandBack(root, list);
+  const pressed = usePress(() => armed("live"));
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     held.current = !!root.current?.contains(document.activeElement);
@@ -284,18 +465,50 @@ function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval
     </span>
   );
   const notice = a.notice && <p className={cn("text-caption text-warn", dense ? "mb-1" : "mx-4 mt-2")} data-testid="approval-notice">{a.notice}</p>;
+  // The whole of what the daemon kept of the input, when the card shows only its start.
+  const kept = a.cut ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
+  const short = !whole && (cut || !!a.cut);
   const summary = (
-    <pre
-      id={`${ids}-summary`}
-      className={cn(
-        "overflow-auto bg-code font-mono text-caption leading-relaxed whitespace-pre-wrap break-all",
-        dense ? "max-h-32 rounded-md px-2.5 py-1.5" : "mx-4 mt-2.5 max-h-48 rounded-lg px-3 py-2",
+    <>
+      <pre
+        id={`${ids}-summary`}
+        className={cn(
+          "overflow-auto bg-code font-mono text-caption leading-relaxed whitespace-pre-wrap break-all",
+          dense ? "rounded-md px-2.5 py-1.5" : "mx-4 mt-2.5 rounded-lg px-3 py-2",
+          !whole && (dense ? "max-h-32" : "max-h-48"),
+        )}
+        data-testid="approval-summary"
+        data-cut={short || undefined}
+      >
+        {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
+        {whole && a.cut ? kept : a.summary}
+      </pre>
+      {/* Text that does not fit its box says so, and opens in place. Cut, it is read and answered on its own. */}
+      {(short || whole) && (
+        <div className={cn("mt-1 flex flex-wrap items-center gap-x-2 text-micro", !dense && "mx-4")}>
+          {short && (
+            <span className="text-warn" data-testid="approval-cut">
+              {a.cut ? "Only the start is shown" : "Cut here"}{many && a.risk === "low" ? ", so it is answered on its own" : ""}
+            </span>
+          )}
+          {whole && a.cut && (
+            <span className="text-muted">
+              {typeof a.input?._clipped === "string" ? "The start of the input: the rest was not kept. It is answered on its own" : "The whole input. It is answered on its own"}
+            </span>
+          )}
+          <button
+            type="button"
+            data-testid="approval-expand"
+            aria-expanded={whole}
+            aria-controls={`${ids}-summary`}
+            onClick={() => setWhole(!whole)}
+            className="rounded-sm text-accent-ink underline underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {whole ? "Fold" : a.kind === "shell" ? "Show the whole command" : "Show all of it"}
+          </button>
+        </div>
       )}
-      data-testid="approval-summary"
-    >
-      {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
-      {a.summary}
-    </pre>
+    </>
   );
 
   return (
@@ -311,8 +524,9 @@ function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval
       data-many={many || undefined}
       data-dense={dense || undefined}
       data-hot={hot || undefined}
+      data-live={live || undefined}
       className={cn(
-        "k-approval animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
+        "k-approval group/card animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
         a.risk === "high" ? "border-danger/50" : "border-accent/40",
         // A row: the request, then its answers beside it, or under it where the room ends.
         dense && "flex flex-wrap items-start",
@@ -381,17 +595,20 @@ function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval
       ) : (
         // The three answers keep their order and wrap when the card is narrow: none is cut, Deny least of all.
         <div className={cn("flex flex-wrap items-center gap-1.5", dense ? "px-3 py-2" : "px-4 py-3")} data-testid="approval-actions">
+          {/* Marked disabled, not disabled, while it waits: it keeps the keyboard when the list moves, and a press does nothing. */}
           <button
             ref={once}
             disabled={busy}
+            aria-disabled={!live || undefined}
             data-testid="allow-once"
             data-stop="card"
-            onClick={() => answer({ choice: "once" })}
-            className="k-allow h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised"
+            onPointerDown={pressed.onPointerDown}
+            onClick={(e) => { if (pressed.said(e)) answer({ choice: "once" }); }}
+            className="k-allow h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised aria-disabled:cursor-default aria-disabled:opacity-50"
           >
             Allow once
           </button>
-          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} onGrant={(rules, session) => answer({ choice: session ? "session" : "always", rules })} />}
+          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant} armed={() => armed("grant")} onGrant={(rules, session) => answer({ choice: session ? "session" : "always", rules })} />}
           <button
             disabled={busy}
             data-testid="deny"
@@ -401,7 +618,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval
             Deny
           </button>
           {err ? <span className={cn("ml-auto min-w-0 basis-full text-micro text-danger", !dense && "sm:basis-auto sm:truncate")} role="alert" title={err} data-testid="approval-error">{err}</span>
-            : !dense && <span className="ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden">Enter allows once, Esc to deny with a reason</span>}
+            // Said only while the card has the keyboard: elsewhere Enter is not its.
+            : !dense && <span className="invisible ml-auto text-micro text-faint group-focus-within/card:visible max-sm:hidden pointer-coarse:hidden" data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>}
         </div>
       )}
     </div>
@@ -410,15 +628,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval
 
 const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as const;
 
-function AlwaysButton({ a, busy, onGrant }: { a: Approval; busy: boolean; onGrant: (rules: Suggest[], session: boolean) => void }) {
+// `live` and `armed`: as the card's Allow once, the grant does not open within the settle time.
+function AlwaysButton({ a, busy, live, armed, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; onGrant: (rules: Suggest[], session: boolean) => void }) {
   const [rules, setRules] = useState<Suggest[]>(a.suggest);
   const [open, setOpen] = useState(false);
+  const pressed = usePress(armed);
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={(o, d) => { if (!o || pressed.said({ detail: (d.event as { detail?: number }).detail ?? 0 })) setOpen(o); }}>
       <Popover.Trigger
         disabled={busy}
+        onPointerDown={pressed.onPointerDown}
+        aria-disabled={!live || undefined}
         data-testid="allow-always"
-        className="inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-line px-3 text-ui hover:bg-hover data-popup-open:bg-hover disabled:opacity-50"
+        className="inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-line px-3 text-ui hover:bg-hover data-popup-open:bg-hover disabled:opacity-50 aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
       >
         Always allow <ChevronDown className="size-3.5 text-faint" />
       </Popover.Trigger>

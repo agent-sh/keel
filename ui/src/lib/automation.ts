@@ -284,7 +284,7 @@ export function focusApproval(id: string) {
   const find = () => document.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(id)}"]`);
   const go = (el: HTMLElement) => {
     el.scrollIntoView({ block: "center" });
-    (el.querySelector<HTMLElement>("button:not([disabled])") ?? el).focus({ preventScroll: true });
+    (el.querySelector<HTMLElement>('[data-testid="allow-once"]:not([disabled])') ?? el.querySelector<HTMLElement>("button:not([disabled])") ?? el).focus({ preventScroll: true });
   };
   const now = find();
   if (now) return go(now);

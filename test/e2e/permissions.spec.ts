@@ -196,10 +196,19 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   await page.keyboard.press("Escape");
   await expect(once).toBeVisible();
   // Always allow still offers the suggested rule, and Allow once still runs the command.
-  await always.click();
+  // (An answer acts once it has stood in view for a moment. The card is taller than the
+  // region that shows it here: the keyboard brings each answer into view, the page gets
+  // two frames to mark it as waiting, and Enter presses it when it no longer waits.)
+  const press = async (l: typeof once) => {
+    await l.focus();
+    await l.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(null)))));
+    await expect(l).toBeEnabled();
+    await page.keyboard.press("Enter");
+  };
+  await press(always);
   await expect(page.getByTestId("grant-pattern")).toHaveValue("touch *");
   await page.keyboard.press("Escape");
-  await once.click();
+  await press(once);
   await expect(card).toHaveCount(0);
   await expect.poll(() => existsSync(join(ws, "alpha.txt")), { timeout: 30_000 }).toBe(true);
   await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));

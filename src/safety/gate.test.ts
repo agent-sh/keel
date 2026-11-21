@@ -8,7 +8,7 @@ import { Store } from "../core/store.ts";
 import { emptyUsage, type Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import type { Tool } from "../tools/types.ts";
-import { Gate, landing, type ReviewAsk } from "./gate.ts";
+import { Gate, landing, type Approval, type ReviewAsk } from "./gate.ts";
 import { gptTools } from "../tools/gpt.ts";
 import { makeJudge } from "./judge.ts";
 import { classify, decide, type Mode } from "./policy.ts";
@@ -300,4 +300,45 @@ test("an answered card takes its abort listener off the turn's shared signal", a
     await asked;
     expect(live).toBe(0);
   }
+});
+
+test("one answer for several cards covers none that must be read alone", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm("s1", { mode: "ask", sandbox: "off" });
+  const save: Tool = { ...bash, name: "notes__save", kind: undefined };
+  const asked = [
+    g.beforeTool(session, call(bash, { command: "npm install left-pad" })),
+    g.beforeTool(session, call(bash, { command: "npm install right-pad" })),
+    g.beforeTool(session, call(bash, { command: "sudo npm install -g left-pad" })),
+    g.beforeTool(session, call(save, { text: "x".repeat(500) })),
+    g.beforeTool(session, call(save, { text: "short" })),
+  ];
+  await Bun.sleep(5);
+  const open = () => g.approvals({ session: "s1", pending: true });
+  const find = (words: string) => open().find((a) => (a.kind === "shell" ? a.summary : JSON.stringify(a.input)).startsWith(words))!;
+  const [left, right, root, long, short] = ["npm install left", "npm install right", "sudo", '{"text":"xxx', '{"text":"short'].map(find) as [Approval, Approval, Approval, Approval, Approval];
+  expect([left.risk, right.risk, root.risk, long.risk, short.risk]).toEqual(["low", "low", "high", "low", "low"]);
+  // A summary that is the start of a longer input says so; a whole one does not.
+  expect([long.summary.length, long.cut, short.cut, left.cut]).toEqual([400, true, undefined, undefined]);
+
+  // A list that names a high-risk card, or one shown in part, is refused whole: nothing is allowed.
+  expect(g.resolveMany("s1", [left.id, root.id])).toMatchObject({ status: 400, alone: [root.id] });
+  expect(g.resolveMany("s1", [left.id, long.id, right.id])).toMatchObject({ status: 400, alone: [long.id] });
+  expect(open().length).toBe(5);
+  // Each of those is still answered on its own.
+  expect(g.resolve(root.id, "s1", { choice: "once" })).toEqual({ ok: true });
+  expect(g.resolve(long.id, "s1", { choice: "deny" })).toEqual({ ok: true });
+
+  // The rest together, in the order given; one that is no longer open, or of another session, is passed over and said.
+  const r = g.resolveMany("s1", [right.id, root.id, "no-such-card", left.id, right.id]);
+  expect(r).toEqual({ results: [
+    { id: right.id, ok: true },
+    { id: root.id, error: expect.any(String), status: 409, state: "allowed" },
+    { id: "no-such-card", error: "no such approval", status: 404, state: undefined },
+    { id: left.id, ok: true },
+  ] });
+  expect(open().map((a) => a.id)).toEqual([short.id]);
+  expect(g.approval(right.id)).toMatchObject({ state: "allowed", choice: "once" });
+  g.resolve(short.id, "s1", { choice: "deny" });
+  await Promise.all(asked);
 });

@@ -39,6 +39,7 @@ export type Approval = {
   tool: string;
   kind: Exclude<CallClass["kind"], "control">;
   summary: string;      // the command, or the paths, or the tool's input in short
+  cut?: true;           // the summary is only the start of the input: the card says so, and it is answered alone
   input: any;
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
@@ -54,6 +55,7 @@ export type Approval = {
   resolved?: number;
 };
 
+export type BatchResult = { id: string; ok: true } | { id: string; error: string; status: number; state?: Approval["state"] };
 export type Choice = { choice: "once" | "session" | "always" | "deny"; reason?: string; rules?: Suggest[] };
 
 const SCHEMA = `
@@ -412,7 +414,7 @@ export class Gate {
     const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation).authorization } : {}) };
     if (cls.kind === "control") return { cls };
-    const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify((target ? target.input : call.input) ?? {}).slice(0, 400);
+    const { summary, cut } = inShort(cls, target ? target.input : call.input);
     const key = keyOf(name, target, cls, call, summary);
     if (mode === "auto") {
       const input = shell ? shell.options : target ? target.input : call.input;
@@ -436,7 +438,7 @@ export class Gate {
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
-    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice, bind: target?.source })) ?? { cls };
+    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice, bind: target?.source, cut })) ?? { cls };
   }
 
   private autoAuthorization(session: Session, call: ToolCall, target: Target, cls: CallClass, exactDispatch: boolean, invocation?: AutoShell) {
@@ -562,8 +564,8 @@ export class Gate {
   async askOnce(session: Session, call: ToolCall, name: string, why: string, shown?: string): Promise<{ deny: string } | void> {
     const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
-    const summary = shown ?? (cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(call.input ?? {}).slice(0, 400));
-    return this.card(session, call, name, cls, summary, { risk: "high", why, suggest: [] }, true);
+    const short = inShort(cls, call.input);
+    return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined }, true);
   }
 
   // Calls the owner allowed on a card (the protected-path sweep leaves their work alone).
@@ -572,10 +574,10 @@ export class Gate {
   }
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
-    ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true }, once = false): Promise<{ deny: string } | void> {
+    ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true }, once = false): Promise<{ deny: string } | void> {
     const a: Approval = this.unpark(session.id, call.id, once) ?? {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
-      summary, notice: ask.notice,
+      summary, cut: ask.cut, notice: ask.notice,
       input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: Date.now(),
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,
     };
@@ -661,6 +663,28 @@ export class Gate {
     return { ok: true };
   }
 
+  // One answer for several cards: each is allowed once, in the order given.
+  // The owner answers these together only after reading each, so a card that
+  // must be read on its own is never among them: one that is high risk, one
+  // whose summary is only the start of its input, a refused call. A list that
+  // names such a card is refused whole and nothing is allowed (the page left
+  // it in by mistake). A card that is no longer open is passed over and the
+  // rest are answered; the reply says how each one went.
+  resolveMany(sessionId: string, ids: string[]): { results: BatchResult[] } | { error: string; status: number; alone: string[] } {
+    const list = [...new Set(ids)];
+    const alone = list.filter((id) => {
+      const a = this.approval(id);
+      return !!a && a.session_id === sessionId && a.state === "pending" && (a.risk === "high" || !!a.cut || !!a.once || a.kind === "refused");
+    });
+    if (alone.length) return { error: "these are answered one at a time: a high-risk request, or one shown only in part", status: 400, alone };
+    return {
+      results: list.map((id) => {
+        const r = this.resolve(id, sessionId, { choice: "once" });
+        return "error" in r ? { id, error: r.error, status: r.status, state: r.approval?.state } : { id, ok: true as const };
+      }),
+    };
+  }
+
   private finish(a: Approval, patch: Partial<Approval>) {
     this.waiting.delete(a.id);
     this.save({ ...a, ...patch, resolved: Date.now() });
@@ -716,6 +740,17 @@ export function closedWhy(a: Approval): string {
   if (a.state === "cancelled") return `cancelled${why}`;
   return "nothing waits on this card any more: it can no longer be answered";
 }
+
+// What a card shows of a call: the command, the paths, or the start of the
+// input. `cut` says the input goes on past what is shown.
+function inShort(cls: CallClass, input: unknown): { summary: string; cut?: true } {
+  if (cls.kind === "shell") return { summary: cls.command };
+  if (cls.kind === "edit") return { summary: cls.paths.join("\n") };
+  if (cls.kind === "drive") return { summary: cls.shown };
+  const whole = JSON.stringify(input ?? {});
+  return whole.length > SUMMARY_LIMIT ? { summary: whole.slice(0, SUMMARY_LIMIT), cut: true } : { summary: whole };
+}
+const SUMMARY_LIMIT = 400;
 
 function clip(v: any): any {
   const s = JSON.stringify(v ?? {});
