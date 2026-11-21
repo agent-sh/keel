@@ -6,6 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
+import { allHooks } from "../../engine/hooks.ts";
 import { usageRoutes } from "./usage.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "usage-routes-"));
@@ -16,7 +17,9 @@ store.migrate(`CREATE TABLE telemetry_calls (id INTEGER PRIMARY KEY, session_id 
   CREATE INDEX telemetry_calls_ts ON telemetry_calls(ts);
   CREATE INDEX telemetry_calls_session ON telemetry_calls(session_id, ts);
   ALTER TABLE sessions ADD COLUMN parent_id TEXT`);
+const hooksBefore = allHooks().length; // the hooks are process-wide: other test files run without this file's
 afterAll(() => {
+  allHooks().length = hooksBefore;
   store.db.close();
   rmSync(dir, { recursive: true, force: true });
 });

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
+import { allHooks } from "../engine/hooks.ts";
 import { claudeTools } from "../tools/claude.ts";
 import { running, startJob, stopJob, type Job } from "../tools/jobs.ts";
 import { checkpointRoutes, checkpoints } from "./routes/checkpoints.ts";
@@ -21,6 +22,7 @@ async function attempt(kind: Case) {
   const file = join(workspace, "note.txt");
   writeFileSync(file, "alpha\n");
   const store = new Store(join(base, "state")), bus = new Bus(), errors = new ErrorTracker(store, bus);
+  const hooksBefore = allHooks().length; // the hooks are process-wide: other test files run without this store's
   const routes = checkpointRoutes({ store, bus, errors, engine: { isRunning: () => kind === "turn" } } as any) as any;
   const c = checkpoints!;
   const s = store.createSession({ workspace, model: "fixture", title: "rewind" });
@@ -77,6 +79,7 @@ async function attempt(kind: Case) {
     return { status: rewind.status, error: String(rewind.body.error ?? ""), kept, stopped: stopped?.status, after: readFileSync(file, "utf8"), jobRuns: job ? running(job) : false, released };
   } finally {
     if (job) await stopJob(job);
+    allHooks().length = hooksBefore;
     store.db.close();
   }
 }
