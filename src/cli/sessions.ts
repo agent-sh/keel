@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
 import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
-import { exitOf, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watch, worktreeArg } from "./run.ts";
+import { exitOf, heldNote, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watch, worktreeArg } from "./run.ts";
 
 const home = homedir();
 const tilde = (p: string) => (p.startsWith(home) ? "~" + p.slice(home.length) : p);
@@ -253,6 +253,7 @@ const send = command("send", SEND_USAGE, {
   if (v.json) console.log(JSON.stringify(resultObject(w, { sessionId: s.id, url: c.url(s.id), ms: Date.now() - t0, onAsk })));
   for (const e of w.errors) console.error(`keel send: ${clean(e)}`);
   if (w.pending) console.error(`keel send: the session waits for the owner; answer with keel approve ${s.id}`);
+  if (w.held) console.error(`keel send: ${heldNote(s.id)}`);
   return exitOf(w);
 });
 

@@ -103,11 +103,13 @@ export type Watched = {
   usage: { input: number; output: number; cache_read: number; cache_write: number; cost: number; unpriced: number };
   pending: number;
   refused: number;
+  // The prompt is still queued and the queue is held: no turn starts by itself.
+  held: boolean;
 };
 
 // Follows a session from a prompt until the work it asked for has ended.
 export async function watch(w: Watch): Promise<Watched> {
-  const r: Watched = { subtype: "success", outcome: null, answer: "", errors: [], turns: 0, usage: { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0 }, pending: 0, refused: 0 };
+  const r: Watched = { subtype: "success", outcome: null, answer: "", errors: [], turns: 0, usage: { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0 }, pending: 0, refused: 0, held: false };
   let ours = false;
   let ended = false;
   let lastAnswer = "";
@@ -178,6 +180,14 @@ export async function watch(w: Watch): Promise<Watched> {
         r.outcome = null;
         break;
       }
+      // The owner stopped the session: its queue is held, and the prompt in
+      // it starts no turn until they resume the queue.
+      if (!ours && !st.running && st.held && st.queue > 0) {
+        r.subtype = "needs_input";
+        r.outcome = "action_required";
+        r.held = true;
+        break;
+      }
       const cards = [...st.approvals.map((a: any) => ({ ...a, card: "approval" })), ...st.questions.map((q: any) => ({ ...q, id: q.call_id, card: "question" }))];
       if (cards.length && w.onAsk === "exit") {
         r.subtype = "needs_input";
@@ -239,8 +249,13 @@ export function resultObject(w: Watched, x: { sessionId: string; url: string; ms
     ...(w.subtype === "timeout" ? { timed_out: true } : {}),
     ...(w.pending ? { pending_approvals: w.pending } : {}),
     ...(w.refused ? { refused_approvals: w.refused } : {}),
+    ...(w.held ? { queue_held: true } : {}),
   };
 }
+
+// What a command that stayed for a held queue tells its caller.
+export const heldNote = (sessionId: string) =>
+  `the queue of ${sessionId} is held (the session was stopped): the prompt stays queued until the queue is resumed in the workbench or a prompt is sent without --queue`;
 
 // The daemon for a command that can run without one: the one that answers,
 // else one inside this process.
@@ -353,6 +368,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
 
     if (w.refused) console.error(`keel ${name}: refused ${w.refused} approval card${w.refused === 1 ? "" : "s"} or question${w.refused === 1 ? "" : "s"} (--on-ask deny)`);
     if (w.pending) console.error(`keel ${name}: the session waits for the owner (${w.pending} open); answer with keel approve ${sessionId}`);
+    if (w.held) console.error(`keel ${name}: ${heldNote(sessionId)}`);
     if (w.subtype === "timeout") console.error(`keel ${name}: --timeout ran out${own ? "; the turn was stopped" : "; the session keeps running"}`);
     for (const e of w.errors) if (format === "text" || !print) console.error(`keel ${name}: ${clean(e)}`);
 

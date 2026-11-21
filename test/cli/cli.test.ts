@@ -513,6 +513,26 @@ describe("a prompt next to other work in its session", () => {
     });
   }, 90_000);
 
+  test("a prompt queued behind a held queue is not waited for", async () => {
+    const { api } = dm;
+    const dir = join(SCRATCH, "held");
+    mkdirSync(dir, { recursive: true });
+    const sid = (await api("/api/sessions", { model: "scripted:stand-in", workspace: dir })).session.id as string;
+    await api(`/api/sessions/${sid}/messages`, { text: "script:slow" });
+    await api(`/api/sessions/${sid}/messages`, { text: "queued before the stop", mode: "queue" });
+    // The owner's Stop: the turn is cut and the queue held, one prompt in it.
+    await k(["stop", sid]);
+    const sent = await k(["send", sid, "after the stop", "--queue", "--wait", "--timeout", "8"]);
+    const ran = await k(["run", "-c", "-C", dir, "--queue", "--wait", "--json", "--timeout", "8", "and another"]);
+    const st = await api(`/api/cli/state/${sid}`);
+    const note = `the queue of ${sid} is held`;
+    expect({ sent: [sent.code, sent.out, sent.err.includes(`keel send: ${note}`)], ran: [ran.code, ran.err.includes(`keel run: ${note}`), json(ran.out)], state: [st.running, st.held, st.queue] }).toEqual({
+      sent: [2, "", true],
+      ran: [2, true, expect.objectContaining({ subtype: "needs_input", outcome: "action_required", is_error: false, queue_held: true, session_id: sid })],
+      state: [false, true, 3],
+    });
+  }, 60_000);
+
   test("send --wait refuses a bad --on-ask or --timeout before it does anything", async () => {
     const { api } = dm;
     const sid = (await api("/api/sessions", { model: "scripted:stand-in", workspace: WS })).session.id as string;
