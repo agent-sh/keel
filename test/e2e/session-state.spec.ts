@@ -214,3 +214,58 @@ test("is anything stuck: a held stream, a hung tool and a stalled agent are list
     await drop(request, made);
   }
 });
+
+test("keel sessions, the page and keel__sessions_list report the same state", async ({ page, request, baseURL }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const gate = `${WS}/same-${Date.now().toString(36)}.go`;
+  try {
+    const asks = await start(request, "Clean the build output before the release", "ask");
+    const parent = await start(request, "Tighten the error handling with a helper");
+    const asker = await start(request, "Asks for the sessions");
+    made.push(asks, parent, asker);
+    await send(request, asks, script([{ name: "Bash", input: { command: "rm -rf dist build", description: "Remove the build output" } }]));
+    await send(request, parent, script([{ name: "spawn_agent", input: { message: `Slow helper\n${script([{ name: "Bash", input: { command: `until [ -f ${gate} ]; do sleep 0.2; done; echo released` } }])}`, isolation: "none" } }]));
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${asks}/approvals`)).json()).approvals.filter((a: { state: string }) => a.state === "pending").length, { timeout: 30_000 }).toBe(1);
+    await expect.poll(async () => {
+      const d = await (await request.get(`/api/sessions/${parent}`)).json();
+      const agents = (await (await request.get(`/api/sessions/${parent}/agents`)).json()).agents as { status: string }[];
+      return !d.running && d.events.at(-1)?.kind === "turn_end" && agents[0]?.status === "running";
+    }, { timeout: 30_000 }).toBe(true);
+
+    // The page.
+    await page.goto(`/s/${asker}`);
+    await expect(row(page, asks)).toHaveAttribute("data-watch", "need");
+    await expect(row(page, asks).getByTestId("row-state")).toHaveText("Needs you");
+    await expect(row(page, parent)).toHaveAttribute("data-watch", "work");
+    await expect(row(page, parent).getByTestId("row-state")).toHaveText("Working · 1 agent");
+
+    // The command line: the same words, and why.
+    const cli = execFileSync("bun", ["src/main.ts", "sessions", "--url", baseURL!], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: process.env.KEEL_CONFIG_DIR ?? `${WS}/config` } }).split("\n");
+    const at = (id: string) => cli.findIndex((l) => l.startsWith(id));
+    expect(cli[at(asks)]).toMatch(/\s+needs you\s+/);
+    expect(cli[at(asks) + 1]).toMatch(/^\s+needs you: Approve Bash: rm -rf dist build, for \d+[sm]$/);
+    expect(cli[at(parent)]).toMatch(/\s+working\s+/);
+    expect(cli[at(parent)]).not.toMatch(/\sidle\s/);
+    expect(cli[at(parent) + 1]).toMatch(/^\s+working · 1 agent$/);
+    const json = JSON.parse(execFileSync("bun", ["src/main.ts", "sessions", "--json", "--url", baseURL!], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: process.env.KEEL_CONFIG_DIR ?? `${WS}/config` } })) as { id: string; state?: { watch: string } }[];
+    expect(json.find((s) => s.id === asks)?.state?.watch).toBe("need");
+    expect(json.find((s) => s.id === parent)?.state?.watch).toBe("work");
+
+    // The session tool.
+    await send(request, asker, script([{ name: "keel__sessions_list", input: {} }]));
+    const listed = async (id: string) => {
+      const d = await (await request.get(`/api/sessions/${asker}`)).json();
+      const res = (d.events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
+      const text = res.map((x: any) => (typeof x.content === "string" ? x.content : x.content.map((b: any) => b.text ?? "").join(""))).join("\n");
+      return text.split("\n").find((l: string) => l.startsWith(`${id}\t`)) ?? "";
+    };
+    await expect.poll(() => listed(asks), { timeout: 30_000 }).toMatch(/\tneeds you$/);
+    expect(await listed(parent)).toMatch(/\tworking, 1 agent is still at work$/);
+  } finally {
+    mkdirSync(WS, { recursive: true });
+    writeFileSync(gate, "");
+    await drop(request, made);
+  }
+});

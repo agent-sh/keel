@@ -138,6 +138,14 @@ export function whyText(st: SessionState, now = Date.now()): string {
   return st.text ?? "";
 }
 
+// The state as one line of text, for a terminal: the word, why, and since
+// when or until when. "needs you: Approve Bash: rm -rf dist, for 4m".
+export function stateLine(st: SessionState, now = Date.now()): string {
+  const why = whyText(st, now);
+  const time = st.until ? (st.until > now ? `due in ${span(st.until - now)}` : "due now") : st.since && st.why !== "stalled" ? `for ${span(now - st.since)}` : "";
+  return [`${watchLabel(st.watch, why ? 0 : st.agents).toLowerCase()}${why ? `: ${why}` : ""}`, time].filter(Boolean).join(", ");
+}
+
 // The session's own state, from its events when they are loaded, else from
 // the marks the daemon keeps on it (failed_ms, last_end).
 function own(s: Session, events: StoredEvent[] | undefined): Watch {

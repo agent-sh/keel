@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
 import { stuckText, type After, type StuckItem } from "../core/stuck.ts";
+import { stateLine, WATCH_LABEL, type SessionState } from "../core/watch.ts";
 import { questions as askedOf, type UiQuestion } from "../../ui/src/lib/tools.ts";
 import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
@@ -62,11 +63,17 @@ const sessions = command("sessions", SESSIONS_USAGE, {
   const all = v.all ? live.concat((await c.get<{ sessions: any[] }>("/api/sessions?archived=1")).sessions) : live;
   const list = all.filter((s) => (v.subagents || !s.parent_id) && (!cwd || s.workspace === cwd)).sort((a, b) => b.updated - a.updated).slice(0, limit);
   if (v.ids) return (list.forEach((s) => console.log(s.id)), EXIT.ok);
-  if (v.json) return (printJson(list), EXIT.ok);
+  // The state is the daemon's one answer for each session, the same the pages and the session tools read.
+  const { states } = await c.get<{ states: Record<string, SessionState> }>("/api/state");
+  if (v.json) return (printJson(list.map((s) => (states[s.id] ? { ...s, state: states[s.id] } : s))), EXIT.ok);
   if (!list.length) return (console.error("no sessions"), EXIT.ok);
+  const now = Date.now();
   for (const s of list) {
-    const state = s.archived ? "archived" : s.phase === "idle" && s.settings.failed_ms ? "failed" : s.phase;
-    console.log(`${s.id}  ${ago(s.updated).padStart(4)}  ${state.padEnd(8)}  ${modelName(s.model).slice(0, 28).padEnd(28)}  ${(line(s.title) || "(untitled)").slice(0, 60)}  ${tilde(s.workspace)}`);
+    const st = s.archived ? undefined : states[s.id];
+    const state = s.archived ? "archived" : st ? WATCH_LABEL[st.watch].toLowerCase() : s.phase;
+    console.log(`${s.id}  ${ago(s.updated).padStart(4)}  ${state.padEnd(9)}  ${modelName(s.model).slice(0, 28).padEnd(28)}  ${(line(s.title) || "(untitled)").slice(0, 60)}  ${tilde(s.workspace)}`);
+    // Why, when the word alone does not say it: what waits on the owner, the step, what is waited on.
+    if (st && (st.text || st.agents > 0) && st.watch !== "done") console.log(`${" ".repeat(s.id.length + 8)}${line(stateLine(st, now))}`);
   }
   return EXIT.ok;
 });
@@ -98,11 +105,12 @@ const logsOf = (name: "show" | "logs", usage: string) =>
     if (name === "show") {
       if (v.json) {
         const st = await c.get<any>(`/api/cli/state/${s.id}`);
-        printJson({ session: s, running: st.running, queue: st.queue, approvals: st.approvals, url: c.url(s.id), events: shown });
+        printJson({ session: s, state: st.state, running: st.running, queue: st.queue, approvals: st.approvals, url: c.url(s.id), events: shown });
         return EXIT.ok;
       }
       const u = s.usage ?? {};
-      console.log(`${line(s.title) || "(untitled)"}\n  id       ${s.id}\n  model    ${s.model}\n  folder   ${tilde(s.workspace)}\n  state    ${s.archived ? "archived" : s.phase}, updated ${ago(s.updated)} ago\n  tokens   ${(u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0)} in, ${u.output ?? 0} out${u.cost !== undefined ? `, $${u.cost.toFixed(4)}` : ""}\n  open     ${c.url(s.id)}\n`);
+      const st = await c.get<{ state?: SessionState }>(`/api/cli/state/${s.id}`).catch(() => undefined);
+      console.log(`${line(s.title) || "(untitled)"}\n  id       ${s.id}\n  model    ${s.model}\n  folder   ${tilde(s.workspace)}\n  state    ${s.archived ? "archived" : st?.state ? line(stateLine(st.state)) : s.phase}, updated ${ago(s.updated)} ago\n  tokens   ${(u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0)} in, ${u.output ?? 0} out${u.cost !== undefined ? `, $${u.cost.toFixed(4)}` : ""}\n  open     ${c.url(s.id)}\n`);
     }
     printEvents(shown, v);
     if (!v.follow) return EXIT.ok;

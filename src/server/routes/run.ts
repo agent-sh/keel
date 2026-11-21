@@ -5,7 +5,7 @@
 //                            -> { session_id, replayed, after_seq, event_id?, queued? }
 //   One prompt to a new or existing session, settings first. With a key, a
 //   retry gets the first answer back and starts neither a session nor a turn.
-// GET  /api/cli/state/:id               -> running, queue, open cards and questions, background work
+// GET  /api/cli/state/:id               -> the session's state, running, queue, open cards and questions, background work
 // GET  /api/cli/resolve?id=PREFIX       -> { session } (a unique prefix of an id, or an agent's id or a prefix of it)
 // GET  /api/cli/model?model=&provider=  -> { model } (an id, a bare model name or a listed name)
 import { existsSync, statSync } from "node:fs";
@@ -18,6 +18,7 @@ import { carrySettings, commitSwitch } from "../switch.ts";
 import * as agents from "../../automation/agents.ts";
 import { owedWake } from "../../automation/failures.ts";
 import * as waits from "../../automation/waits.ts";
+import { sessionState } from "../../automation/state.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
 import { fitted } from "../../engine/image-fit.ts";
@@ -92,8 +93,10 @@ export const runRoutes: RouteModule = (deps) => {
         const agentsLive = agents.list(s.id).filter((a) => a.status === "running" || a.status === "waiting" || a.handback).length + (owedWake(s.id) ? 1 : 0);
         const waitsLive = waits.list(s.id, 0).filter((w) => w.status === "active").length;
         const jobsLive = jobsOf(s.id).filter((j) => j.background && running(j)).length;
+        const { label: _l, word: _w, ...state } = sessionState(s, { from: { store, engine } });
         return json({
           session: s,
+          state, // the session's one state: the word, why, since when (src/core/watch.ts)
           last_seq: lastSeq(deps, s.id),
           running: engine.isRunning(s.id),
           queue: store.queue(s.id).length,

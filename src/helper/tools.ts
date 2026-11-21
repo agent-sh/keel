@@ -64,7 +64,7 @@ const sessions: Tool = {
     return list.slice(0, 80).map((s) => {
       const st = engine.statusOf(s.id);
       const now = sessionState(s, { counts });
-      const state = s.archived ? "archived" : watchWord(now.watch, now.agents, engine.isRunning(s.id) && now.watch === "work" ? `working (${st.kind})` : undefined);
+      const state = s.archived ? "archived" : engine.isRunning(s.id) && now.watch === "work" ? watchWord("work", now.agents, `working (${st.kind})`) : now.word;
       const ids = [s.id, ...store.descendants(s.id)];
       const ap = approvals.filter((a) => ids.includes(a.session_id)).length;
       const qs = ids.reduce((n, id) => n + pendingQuestions(id).length, 0);

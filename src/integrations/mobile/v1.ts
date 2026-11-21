@@ -303,8 +303,10 @@ export function mobileApi(ctx: MobileCtx) {
   function status(s: Session): { status: ChatStatus; failure?: string; agents?: number } {
     const st = sessionState(s, { from: { store, engine } });
     const agents = st.agents ? { agents: st.agents } : {};
-    if (pendingApprovals(s.id).length) return { status: "needs_you", ...agents };
-    if (st.watch === "work" || engine.isRunning(s.id)) return { status: "working", ...agents };
+    // The phone's words for the one state: what waits on the owner (a card, a question, a plan),
+    // then what moves by itself (a running turn, agents, a wait that will wake it).
+    if (st.watch === "need") return { status: "needs_you", ...agents };
+    if (st.watch === "work" || st.watch === "wait" || engine.isRunning(s.id)) return { status: "working", ...agents };
     let id = s.head;
     for (let i = 0; id && i < 200; i++) {
       const e = store.event(id);
