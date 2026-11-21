@@ -2174,6 +2174,11 @@ export class Engine {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
         const now = this.store.session(s.id);
         if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
+        // And its owner is asked again: an agent stopped while its turn waited
+        // for its model or a slot (its goal cleared or replaced, its parent's
+        // turn stopped) is not continued, as if the stop had come first.
+        const again = allHooks().map((h) => h.cutTurn?.(now, { stalled })).find(Boolean);
+        if (again && again !== "continue") return held(again.hold);
         this.acceptRestart(s.id);
         this.start(s.id);
         this.emitQueue(s.id);

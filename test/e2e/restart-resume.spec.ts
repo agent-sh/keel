@@ -351,6 +351,106 @@ test("a goal's verifier is continued across restarts and gives one verdict", asy
   }
 });
 
+// Feature: a verification always ends, and a verifier nothing waits for is not
+// continued. Six goals are verifying when the daemon crashes; the next daemon
+// continues one cut turn at a time, so five verifiers wait behind the first.
+// In that window one goal is cleared, one edited, one replaced, and the
+// verifiers of two more are archived and deleted. When the slot frees, none of
+// the five is continued: the stopped ones are told why in their own session,
+// the two whose verifier is gone pause with the reason and an alert, and the
+// replaced goal has one verifier, its new one.
+test("a verifier stopped or gone while its cut turn waited for a slot is not continued", async ({ page }) => {
+  const state = join(ROOT, `restart-verifier-gone-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  const pipes: string[] = [];
+  // A write ends the read that waits on the pipe, and any read a crash cut that still waits there.
+  const release = (pipe: string, n = 1) => { for (let i = 0; i < n; i++) spawn("timeout", ["8", "sh", "-c", `echo go > ${pipe}`], { stdio: "ignore", detached: true }).unref(); };
+  try {
+    const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const view = (id: string) => call(`/api/sessions/${id}`);
+    const goalOf = async (id: string) => (await call(`/api/sessions/${id}/goal`)).goal;
+    const eventsOf = async (id: string) => ((await view(id)).events ?? []) as any[];
+    const holds = async (child: string) => (await eventsOf(child)).filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")).length;
+    const continuedIn = async (child: string) => (await eventsOf(child)).filter((e) => e.kind === "user" && e.data.origin === "restart").length;
+    const verifiers = async (id: string) => ((await call(`/api/sessions/${id}/agents`)).agents as any[]).filter((a) => a.type === "verifier");
+
+    const goals: { id: string; child: string; pipe: string }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const pipe = join(state, `hold-${i}`);
+      spawnSync("mkfifo", [pipe]);
+      pipes.push(pipe);
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: `Goal ${i}` });
+      await call(`/api/sessions/${session.id}/goal`, { objective: `script:verify-holds ${pipe} 2` }, "PUT");
+      await expect.poll(async () => (await goalOf(session.id))?.verifier_session, { timeout: 30_000 }).toBeTruthy();
+      goals.push({ id: session.id, child: (await goalOf(session.id)).verifier_session, pipe });
+    }
+    for (const g of goals) await expect.poll(() => holds(g.child), { timeout: 30_000 }).toBe(1);
+    await page.waitForTimeout(500); // the reads run
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state, { KEEL_RESUME_AT_ONCE: "1", KEEL_RESUME_GAP_MS: "0" });
+
+    // One verifier's turn is continued and holds the slot on its read; the other five wait for it.
+    let first: (typeof goals)[number] | undefined;
+    await expect.poll(async () => { for (const g of goals) if (await continuedIn(g.child)) first = g; return !!first; }, { timeout: 30_000 }).toBe(true);
+    await expect.poll(() => holds(first!.child), { timeout: 30_000 }).toBe(2);
+    const [cleared, edited, replaced, archived, deleted] = goals.filter((g) => g !== first) as [typeof first & {}, typeof first & {}, typeof first & {}, typeof first & {}, typeof first & {}];
+    for (const g of [cleared, edited, replaced, archived, deleted]) {
+      expect(await continuedIn(g.child)).toBe(0);
+      expect(await goalOf(g.id)).toMatchObject({ status: "pursuing", verifying: true, verifier_session: g.child });
+    }
+    await call(`/api/sessions/${cleared.id}/goal`, undefined, "DELETE");
+    await call(`/api/sessions/${edited.id}/goal`, { objective: `script:verify-holds ${edited.pipe} 2 and nothing else` }, "PATCH");
+    await call(`/api/sessions/${replaced.id}/goal`, { objective: `script:verify-holds ${replaced.pipe} 1`, replace: true }, "PUT");
+    await call(`/api/sessions/${archived.child}`, { archived: true, stop_shells: true }, "PATCH");
+    await call(`/api/sessions/${deleted.child}`, undefined, "DELETE");
+
+    // A verifier whose session is archived or deleted ends its verification at once, before any slot is free.
+    for (const [g, why] of [[archived, "the verifier's session was archived"], [deleted, "the verifier's session was deleted"]] as const) {
+      await expect.poll(async () => (await goalOf(g.id)).status, { timeout: 15_000 }).toBe("paused");
+      expect(await goalOf(g.id)).toMatchObject({ verifying: false, status_reason: `the judge said met; ${why}. Resume to try again.` });
+    }
+    const alerts = (await call("/api/alerts")).alerts as { kind: string; session_id: string; title: string; body: string }[];
+    for (const g of [archived, deleted]) expect(alerts.filter((a) => a.session_id === g.id && a.kind === "failed" && a.title.startsWith("Goal paused")).map((a) => a.body)).toEqual([expect.stringContaining("the verifier's session was")]);
+    expect((await verifiers(archived.id)).map((a) => a.status)).toEqual(["stopped"]);
+
+    // The slot frees: the first verifier's read ends, it gives its verdict, and the others get their turn at the slot.
+    release(first!.pipe);
+    await expect.poll(async () => (await goalOf(first!.id)).status, { timeout: 30_000 }).toBe("achieved");
+    // The stopped verifiers are told in their own session why their turn did not go on; none is continued.
+    for (const g of [cleared, edited, replaced]) {
+      await expect.poll(async () => (await eventsOf(g.child)).filter((e) => e.kind === "note" && e.data.kind === "restart").map((e) => e.data.text), { timeout: 20_000 })
+        .toEqual([expect.stringContaining("Its agent had already ended, so the turn was not continued")]);
+    }
+    await page.waitForTimeout(2_000); // time for a turn that should not start to start
+    for (const g of [cleared, edited, replaced, archived]) {
+      expect([g.id, await continuedIn(g.child), (await view(g.child)).running]).toEqual([g.id, 0, false]);
+      expect((await eventsOf(g.child)).filter((e) => e.kind === "turn_start")).toHaveLength(1);
+    }
+    expect((await verifiers(cleared.id)).map((a) => a.status)).toEqual(["stopped"]);
+    expect((await verifiers(edited.id)).map((a) => a.status)).toEqual(["stopped"]);
+    expect(await goalOf(cleared.id)).toBeFalsy();
+    expect(await goalOf(edited.id)).toMatchObject({ status: "pursuing", verifying: false });
+    // The replaced goal: its own verifier works, alone; the old goal's did not come back beside it.
+    await expect.poll(async () => { const g = await goalOf(replaced.id); return g?.verifying && g.verifier_session !== replaced.child; }, { timeout: 30_000 }).toBe(true);
+    expect((await verifiers(replaced.id)).map((a) => [a.session_id === replaced.child ? "old" : "new", a.status]).sort()).toEqual([["new", "running"], ["old", "stopped"]]);
+    const errs = (await call("/api/errors?resolved=0")).errors as any[];
+    expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+
+    await page.goto(`${d.url}/s/${archived.id}`);
+    await page.getByTestId("composer").fill("/goal"); // opens the goal's panel
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("goal-card")).toContainText("the verifier's session was archived", { timeout: 30_000 });
+    await shoot(page, "restart-07-verifier-archived-goal-paused");
+  } finally {
+    d.proc.kill("SIGKILL");
+    for (const p of pipes) release(p, 3);
+  }
+});
+
 // A queue held by a stop stays held across a restart: the pause and its Resume
 // are still shown, nothing runs by itself, and Resume sends the edited prompts in order.
 test("a held queue survives a restart", async ({ page }) => {
