@@ -108,7 +108,7 @@ export function ElsewherePanel() {
           if (!rows.length) return null;
           return (
             <section key={g.id} className="mb-3" data-testid={`elsewhere-group-${g.id}`}>
-              <h3 className="px-2 pb-1 pt-2 text-micro font-medium uppercase tracking-[0.06em] text-faint">{g.label} <span className="tabular-nums">{rows.length}</span></h3>
+              <h3 className="k-label px-2 pb-1 pt-2">{g.label} <span className="tabular-nums">{rows.length}</span></h3>
               {rows.map((s) => <RowItem key={s.id} s={s} onOpen={() => setOpen(s.id)} />)}
             </section>
           );

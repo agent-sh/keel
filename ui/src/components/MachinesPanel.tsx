@@ -346,9 +346,9 @@ export function MachinesSettings() {
           )}
         </div>
       </Card>
-      {heading("Placement", <span className="normal-case tracking-normal">· where new work goes when you pick Auto; the first rule that holds wins</span>)}
+      {heading("Placement", <span className="font-normal">· where new work goes when you pick Auto; the first rule that holds wins</span>)}
       <Placement machines={machines} />
-      {offered.length > 0 && heading("ssh machines, not enabled", <span className="normal-case tracking-normal">· from your ssh configuration, aliases of one machine as its routes; enabling one grants its home folder (Edit narrows it)</span>)}
+      {offered.length > 0 && heading("Machines over ssh, not enabled", <span className="font-normal">· from your ssh configuration, aliases of one machine as its routes; enabling one grants its home folder (Edit narrows it)</span>)}
       {offered.length > 0 && (
         <Card>
           <div className="py-1">

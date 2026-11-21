@@ -75,7 +75,7 @@ export function Empty({ children }: { children: ReactNode }) {
 export function SectionTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
   return (
     <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
-      <span className="text-micro font-semibold uppercase tracking-[0.06em] text-faint">{children}</span>
+      <span className="k-label">{children}</span>
       <span className="ml-auto">{right}</span>
     </div>
   );

@@ -305,11 +305,11 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         </span>
       </div>
       <Collapsible.Panel className={cn("overflow-hidden border-t border-line")}>
-        <div className="px-3 pt-2.5 text-micro font-medium uppercase tracking-[0.06em] text-faint">Task</div>
+        <div className="k-label px-3 pt-2.5">Task</div>
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
         {(report || out) && (
           <>
-            <div className="px-3 pt-3 text-micro font-medium uppercase tracking-[0.06em] text-faint">Report</div>
+            <div className="k-label px-3 pt-3">Report</div>
             <div className="px-3 pt-1 pb-3 text-ui">
               {agent?.structured && report && agent.status === "completed"
                 ? <pre data-testid="agent-call-json" className="overflow-x-auto rounded-md bg-code px-3 py-2 font-mono text-caption">{report.split("\n\n")[0]}</pre>

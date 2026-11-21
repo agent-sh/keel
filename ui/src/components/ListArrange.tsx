@@ -46,7 +46,7 @@ const SORTS: { v: Arrange["sort"]; label: string }[] = [
   { v: "state", label: "State (needs you first)" },
   { v: "name", label: "Name" },
 ];
-const label = "px-2.5 pt-1.5 pb-1 text-micro font-medium uppercase tracking-wide text-faint";
+const label = "k-label px-2.5 pt-1.5 pb-1";
 
 export function ListFind({ q, setQ }: { q: string; setQ: (q: string) => void }) {
   const a = useArrange();

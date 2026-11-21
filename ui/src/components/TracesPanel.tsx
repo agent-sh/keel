@@ -14,8 +14,6 @@ import { type Gap, turnAccount, turnGaps, waitLabel } from "../../../src/admin/t
 
 const tone = (s: Span["status"]) => ({ ok: "bg-ok", error: "bg-danger", running: "bg-accent", interrupted: "bg-line-strong" })[s];
 const btn = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
-// The picked row of a list: set into the panel (the panel itself is the raised surface), with an ink bar at its edge. Read at a glance in both themes.
-const picked = "k-picked";
 const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Subagent turn" : "Turn"} on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.kind === "wait" ? waitLabel(s) : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
 
 export function TracesPanel({ session }: { session: Session }) {
@@ -64,7 +62,7 @@ export function TracesPanel({ session }: { session: Session }) {
             data-testid="trace-row"
             data-status={t.status}
             aria-current={open === t.trace_id}
-            className={cn("flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui hover:bg-hover", open === t.trace_id && picked)}
+            className={cn("flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui hover:bg-hover", open === t.trace_id && "k-picked")}
           >
             <span className={cn("size-2 shrink-0 rounded-full", tone(t.status))} />
             <span className="w-16 shrink-0 text-caption tabular-nums text-faint" title={when(t.start_ms)}>{ago(t.start_ms)}</span>
@@ -187,7 +185,7 @@ function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: strin
             data-status={s.status}
             data-kind={s.kind}
             data-depth={depth}
-            className={cn("grid grid-cols-[minmax(0,11rem)_1fr_4.5rem] items-center gap-2 rounded-sm px-2 py-1 text-left text-caption hover:bg-hover", sel === s.span_id && picked)}
+            className={cn("grid grid-cols-[minmax(0,11rem)_1fr_4.5rem] items-center gap-2 rounded-sm px-2 py-1 text-left text-caption hover:bg-hover", sel === s.span_id && "k-picked")}
           >
             <span className={cn("flex min-w-0 items-baseline gap-1.5", depth ? "text-muted" : "font-medium", s.kind === "turn" && depth > 0 && "text-fg", s.status === "error" && "text-danger")} style={{ paddingLeft: `${depth * 0.75}rem` }}>
               <span className="truncate">{label(s)}</span>

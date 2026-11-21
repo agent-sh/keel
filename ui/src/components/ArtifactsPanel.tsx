@@ -106,16 +106,8 @@ export function ArtifactBrowser({ list, testid, withSession }: { list: Listed[] 
   return (
     <div ref={root} className="flex h-full min-h-0 flex-col" data-testid={testid} data-layout={layout}>
       {/* The filters belong to the list: with room for one, they leave with it. */}
-      <div className={cn("flex flex-wrap gap-1 border-b border-line px-3 py-2", one && reading && "hidden")} role="group" aria-label="Show">
-        {FILTERS.map(([f, label]) => {
-          const n = (list ?? []).filter((a) => pass(f, a)).length;
-          return (
-            <button key={f} type="button" aria-pressed={filter === f} data-testid={`artifacts-filter-${f}`} onClick={() => setFilter(f)}
-              className={cn("h-6 rounded-xs px-2 text-caption", filter === f ? "bg-accent-soft text-accent-ink" : "text-muted hover:bg-hover hover:text-fg")}>
-              {label} <span className="tabular-nums text-faint">{n}</span>
-            </button>
-          );
-        })}
+      <div className={cn("flex border-b border-line px-3 py-2", one && reading && "hidden")}>
+        <Seg wrap label="Show" value={filter} onChange={setFilter} options={FILTERS.map(([f, label]) => ({ value: f, testid: `artifacts-filter-${f}`, label: <>{label} <span className="tabular-nums text-faint">{(list ?? []).filter((a) => pass(f, a)).length}</span></> }))} />
       </div>
       {list && !list.length && <p className="k-empty px-4 py-4" data-testid="artifacts-empty">Nothing made yet. Files this session writes, and what it puts in its artifacts folder, show up here as it works.</p>}
       {list && list.length > 0 && !shown.length && <p className="k-empty px-4 py-4">None of this kind yet.</p>}

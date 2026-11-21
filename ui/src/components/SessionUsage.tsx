@@ -63,7 +63,7 @@ function Bar({ u, max }: { u: Usage; max: number }) {
 function Tile({ label, value, sub, testid }: { label: string; value: string; sub?: string; testid?: string }) {
   return (
     <div className="rounded-lg border border-line bg-raised px-3 py-2" data-testid={testid}>
-      <div className="text-micro uppercase tracking-wide text-faint">{label}</div>
+      <div className="k-label">{label}</div>
       <div className="mt-0.5 font-mono text-read tabular-nums text-fg">{value}</div>
       {sub && <div className="text-caption text-muted">{sub}</div>}
     </div>

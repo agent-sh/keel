@@ -20,7 +20,7 @@ const timeChoices = (): Choice[] => [
   { label: "Until tomorrow 09:00", until_ms: tomorrowAt(9) },
 ];
 
-const label = "flex h-7 items-center px-2.5 text-micro font-semibold uppercase tracking-[0.06em] text-faint";
+const label = "k-label flex h-7 items-center px-2.5";
 
 // In the session header: put the session aside. It keeps working; its routine
 // alerts go to the inbox read, and only what it needs you for comes through.
