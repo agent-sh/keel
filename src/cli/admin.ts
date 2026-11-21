@@ -170,13 +170,13 @@ const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--ur
 
 const backup = wrap("keel backup [--url URL]  A checked copy of the database, the settings and the config folder's files, kept under <state>/backups.", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups", { method: "POST" });
-  console.log(`${r.backup.path}  ${mb(r.backup.bytes)}, ${r.backup.sessions} sessions, ${r.backup.events} events, checked`);
+  console.log(`${r.backup.path}  ${mb(r.backup.bytes)}, ${r.backup.sessions} sessions, ${r.backup.events} events, checked${r.backup.base ? ` (the changes since ${r.backup.base})` : ""}`);
   return 0;
 });
 
 const backups = wrap("keel backups [--url URL] [--json]", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups");
-  out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})`).join("\n") || "no backups");
+  out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})${b.base ? `  the changes since ${b.base}${b.base_missing ? ", which is gone: this one cannot be restored" : ""}` : ""}`).join("\n") || "no backups");
   return 0;
 });
 

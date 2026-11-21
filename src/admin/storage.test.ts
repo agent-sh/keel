@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 import { expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -36,7 +36,7 @@ test("a backup restores into an empty state folder", async () => {
     expect(back.events(s.id).map((e) => [e.id, e.seq, e.kind])).toEqual(src.events(s.id).map((e) => [e.id, e.seq, e.kind]));
     expect(back.events(s.id)[0]!.data.images[0].data).toBe(image.data);
 
-    appendFileSync(join(b.path, "keel.db"), "x");
+    appendFileSync(join(b.path, "keel.db.zst"), "x");
     const bad = verify(b.path);
     expect(bad.ok).toBe(false);
   } finally {
@@ -62,6 +62,165 @@ test("the loop turns while a backup is made", async () => {
     expect(a.name).not.toBe(b.name);
     expect(storage.backups().map((x) => x.reason)).toEqual(["two", "one"]);
     expect(readdirSync(join(src.stateDir, "backups")).filter((d) => d.endsWith(".partial"))).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The ways a backup holds the database, each restored by `keel restore` into
+// a folder of its own: compressed whole, as the pages that changed since the
+// full backup before it, compressed from a copy (the daemon could not empty
+// its log: another reader held it), and the plain copy an older keel wrote.
+// Each restore reads as the store did when that backup was made.
+const manifestOf = (dir: string) => JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+const restoredBy = async (backup: string, into: string) => {
+  const said: string[] = [];
+  const log = console.log, err = console.error;
+  console.log = console.error = (...a: unknown[]) => void said.push(a.join(" "));
+  try { return { code: await adminCommands.restore([backup, "--state-dir", into]), said: said.join("\n") }; } finally { console.log = log; console.error = err; }
+};
+const textsOf = (state: string) => {
+  const d = new Database(join(state, "keel.db"), { readonly: true });
+  try { return d.query<{ t: string }, []>("SELECT json_extract(data, '$.text') AS t FROM events ORDER BY seq").all().map((r) => r.t.slice(0, 12)); } finally { d.close(); }
+};
+
+test("every kind of backup restores by itself", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (t: string) => src.append(s.id, "user", { text: t.padEnd(12) + "x".repeat(3000) });
+    for (let i = 0; i < 300; i++) say(`one ${i}`);
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    const want: Record<string, string[]> = {};
+    const made = async (name: string) => { const b = await storage.backup(name); want[name] = textsOf(src.stateDir); return b; };
+
+    writeFileSync(join(src.stateDir, "catalog.json"), JSON.stringify({ models: "m".repeat(5000) }));
+    writeFileSync(join(src.stateDir, "settings.json"), JSON.stringify({ backup: { keep: 5 } }));
+    const full = await made("full");
+    say("two");
+    writeFileSync(join(src.stateDir, "settings.json"), JSON.stringify({ backup: { keep: 6 } }));
+    const delta = await made("delta");
+    // A state file that did not change is the first backup's copy under a second name; a changed one is copied.
+    const inode = (b: { path: string }, f: string) => statSync(join(b.path, f)).ino;
+    expect([inode(delta, "catalog.json") === inode(full, "catalog.json"), inode(delta, "settings.json") === inode(full, "settings.json")]).toEqual([true, false]);
+    expect(readFileSync(join(delta.path, "settings.json"), "utf8")).toContain('"keep":6');
+    // A reader of another program holds the log: the daemon cannot empty it.
+    const reader = new Database(join(src.stateDir, "keel.db"), { readonly: true });
+    reader.run("BEGIN");
+    reader.query("SELECT COUNT(*) FROM events").get();
+    say("three");
+    const copied = await made("copied");
+    reader.close();
+    say("four");
+    // What a keel before this one wrote: a plain copy and a manifest that names it.
+    const older = join(src.stateDir, "backups", "keel-2020-01-01T00-00-00-000Z");
+    mkdirSync(older);
+    src.db.run(`VACUUM INTO '${join(older, "keel.db")}'`);
+    writeFileSync(join(older, "manifest.json"), JSON.stringify({ created_ms: 1, reason: "older", sessions: 1, events: 303, files: [{ name: "keel.db", bytes: statSync(join(older, "keel.db")).size, sha256: hashFile(join(older, "keel.db")) }] }));
+    want.older = textsOf(src.stateDir);
+    say("five"); // in no backup
+
+    expect([full.kind, delta.kind, delta.base, copied.kind]).toEqual(["full", "delta", full.name, "full"]);
+    expect([manifestOf(full.path).database.source, manifestOf(delta.path).database.source, manifestOf(copied.path).database.source]).toEqual(["file", "file", "vacuum"]);
+    // The delta holds the pages that changed, not the database: a few of its hundreds.
+    expect(manifestOf(delta.path).database.changed).toBeLessThan(manifestOf(delta.path).database.pages / 10);
+    expect(readdirSync(delta.path).sort()).toEqual(["catalog.json", "keel.db.delta.zst", "manifest.json", "settings.json"]);
+    expect(statSync(join(delta.path, "keel.db.delta.zst")).size).toBeLessThan(statSync(join(full.path, "keel.db.zst")).size / 2);
+    for (const [name, path] of [["full", full.path], ["delta", delta.path], ["copied", copied.path], ["older", older]] as const) {
+      expect(verify(path)).toMatchObject({ ok: true, sessions: 1, events: want[name]!.length });
+      const dst = join(root, `restored-${name}`);
+      expect(await restoredBy(path, dst)).toMatchObject({ code: 0 });
+      expect(textsOf(dst)).toEqual(want[name]!);
+      // Nothing of the backup's own files lands in the state, and it opens as a store.
+      expect(readdirSync(dst).filter((f) => f.startsWith("keel.db")).sort()).toEqual(["keel.db"]);
+      const back = new Store(dst);
+      expect(back.session(s.id)?.title).toBe("kept");
+      back.db.close();
+    }
+    expect(want.full!.length).toBe(300);
+    expect(want.delta!.at(-1)).toBe("two".padEnd(12));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A delta is read over its full backup: with that one damaged or gone the
+// restore refuses and leaves the state alone, the list says which backup
+// cannot be restored, and the next backup is a full one again. A full backup
+// stays while a kept backup needs it, past the number that is kept.
+test("a delta without its full backup is refused, and the next backup is whole again", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (t: string) => src.append(s.id, "user", { text: t.padEnd(12) + "x".repeat(3000) });
+    for (let i = 0; i < 300; i++) say(`one ${i}`);
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    const full = await storage.backup("full");
+    const deltas = [];
+    for (let i = 0; i < 6; i++) { say(`more ${i}`); deltas.push(await storage.backup(`delta ${i}`)); }
+    expect(deltas.map((d) => [d.kind, d.base])).toEqual(deltas.map(() => ["delta", full.name]));
+    // Five are kept, and the full backup they are read over with them.
+    expect(storage.backups().map((b) => b.reason)).toEqual(["delta 5", "delta 4", "delta 3", "delta 2", "delta 1", "full"]);
+
+    const dst = join(root, "dst");
+    const live = new Store(dst);
+    live.createSession({ model: "p:m", workspace: root, title: "in use" });
+    live.db.close();
+    const bytes = readFileSync(join(full.path, "keel.db.zst"));
+    const damaged = Buffer.from(bytes);
+    damaged[damaged.length >> 1]! ^= 1;
+    writeFileSync(join(full.path, "keel.db.zst"), damaged);
+    const last = deltas.at(-1)!;
+    expect(verify(last.path).ok).toBe(false);
+    const refused = await restoredBy(last.path, dst);
+    expect(refused.code).not.toBe(0);
+    expect(refused.said).toContain("the backup cannot be restored");
+    expect(titles(join(dst, "keel.db"))).toEqual(["in use"]);
+    expect(readdirSync(dst).filter((f) => f.startsWith(".restore-") || f.startsWith("before-restore-"))).toEqual([]);
+
+    // The next backup finds its delta does not read back over that full backup: it is a full one.
+    say("after the damage");
+    const whole = await storage.backup("whole again");
+    expect([whole.kind, verify(whole.path).ok]).toEqual(["full", true]);
+    writeFileSync(join(full.path, "keel.db.zst"), bytes);
+    expect(verify(last.path).ok).toBe(true);
+
+    // Gone altogether: the list marks what was read over it.
+    rmSync(full.path, { recursive: true });
+    expect(storage.backups().filter((b) => b.base_missing).map((b) => b.reason)).toEqual(["delta 5", "delta 4", "delta 3", "delta 2"]);
+    expect((await restoredBy(last.path, dst)).said).toContain(`the pages that changed since the backup ${full.name}, and that one is gone`);
+    expect(titles(join(dst, "keel.db"))).toEqual(["in use"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The daemon writes while a backup is made: the backup holds the store as it
+// was at one moment, every event up to one and none after it.
+test("a backup made while the store is written holds one moment of it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "busy" });
+    const say = (i: number) => src.append(s.id, "user", { text: String(i).padEnd(12) + "x".repeat(2000) });
+    let n = 0;
+    for (; n < 2000; n++) say(n);
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    await storage.backup("first");
+    let done = false;
+    const second = storage.backup("second").finally(() => (done = true));
+    while (!done) { for (let k = 0; k < 20; k++) say(n++); await new Promise((r) => setImmediate(r)); }
+    const b = await second;
+    expect(b.kind).toBe("delta");
+    const dst = join(root, "dst");
+    restore(dst, b.path);
+    const got = textsOf(dst).map((t) => Number(t));
+    expect(got.length).toBe(b.events!);
+    expect(got.length).toBeGreaterThanOrEqual(2000);
+    expect(got.length).toBeLessThan(n);
+    expect(got).toEqual(got.map((_, i) => i));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -304,7 +463,7 @@ test("a large file is hashed a chunk at a time, and a change at its end is caugh
     const b = await new Storage(src, {} as any, new Bus(), {} as any).backup("test");
     const m = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8")) as { files: { name: string; sha256: string; bytes: number }[] };
     expect(m.files.find((f) => f.name === `attachments/${whole}/big.bin`)).toEqual({ name: `attachments/${whole}/big.bin`, bytes: bytes.length, sha256: whole });
-    expect(m.files.find((f) => f.name === "keel.db")!.sha256).toBe(createHash("sha256").update(readFileSync(join(b.path, "keel.db"))).digest("hex"));
+    expect(m.files.find((f) => f.name === "keel.db.zst")!.sha256).toBe(createHash("sha256").update(readFileSync(join(b.path, "keel.db.zst"))).digest("hex"));
     expect(verify(b.path).ok).toBe(true);
     src.db.close();
     const dst = join(root, "dst");

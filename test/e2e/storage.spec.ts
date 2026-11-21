@@ -50,13 +50,18 @@ test("storage, cleanup and backups", async ({ page, request }) => {
 
   const before = (await (await request.get("/api/backups")).json()).backups.length;
   await panel.getByTestId("backup-now").click();
-  await expect(panel.getByTestId("backup-row")).toHaveCount(Math.min(before + 1, 5));
+  // Five are kept, and with them the full backup a kept one is read over.
+  await expect(panel.getByTestId("backup-row")).toHaveCount(Math.min(before + 1, 6));
   await panel.getByTestId("backup-now").scrollIntoViewIfNeeded();
   await shoot(page, "storage-03-policy-backups");
 
   // A damaged manifest marks that one backup; the others stay listed.
   await panel.getByTestId("backup-now").click();
   await expect.poll(async () => (await (await request.get("/api/backups")).json()).backups.length).toBeGreaterThan(1);
+  // The second holds only the pages that changed since the first, and its row says so.
+  await expect(panel.getByTestId("backup-delta").first()).toHaveText("changes only");
+  await panel.getByTestId("backup-delta").first().scrollIntoViewIfNeeded();
+  await shoot(page, "storage-03a-backup-delta");
   const damaged = (await (await request.get("/api/backups")).json()).backups[0];
   writeFileSync(join(damaged.path, "manifest.json"), '{"created_ms": 1,');
   await page.reload();

@@ -297,6 +297,16 @@ settings files, the uploaded files, and the files of the config folder (MCP
 servers, hooks, skills, plugins, agents, instructions). The daemon makes one
 before a restart. `keel backups` lists them.
 
+A backup is made in a worker, so the daemon keeps answering meanwhile. The
+database is kept compressed (`keel.db.zst`, which `zstd -d` reads too). When
+few pages changed since the newest full backup, a backup holds only those
+pages (`keel.db.delta.zst`) and names that full backup; `keel restore` reads
+both. A delta is taken while the changed pages are at most one in `keep`
+(the number of backups kept, 5 by default), so the deltas beside a full
+backup never outweigh a second one. A full backup stays for as long as a
+kept backup is read over it. Each backup records the SHA-256 of the
+database it restores to and is read back against it when written.
+
 Config files are copied at their own mode into folders only the owner can
 open. A file that did not change since the last backup is shared with that
 backup, not copied again. Left out: links, `.prev` and temp files, folders

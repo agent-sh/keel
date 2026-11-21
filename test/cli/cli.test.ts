@@ -728,23 +728,32 @@ describe("a backup made and restored by the binary", () => {
     return d;
   };
   const k = (args: string[]) => keel(args, { state, cwd: "/" });
-  test("keel backup, then keel restore of it once the daemon has stopped", async () => {
+  test("keel backup, then keel restore of each kind once the daemon has stopped", async () => {
     let d = await serve();
+    const ids = async () => (await k(["ls", "--ids"])).out.trim().split("\n");
     try {
-      const kept = json((await k(["run", "--json", "kept by the backup"])).out).session_id;
+      const first = json((await k(["run", "--json", "kept by the first backup"])).out).session_id;
       const made = await k(["backup"]);
       expect([made.code, made.err]).toEqual([0, ""]);
       expect(made.out).toContain("checked");
-      const later = json((await k(["run", "--json", "written after the backup"])).out).session_id;
-      const [b] = json((await k(["backups", "--json"])).out).backups;
-      expect(b.reason).toBe("asked for");
-      d.kill("SIGTERM");
-      await d.exited;
-      const back = await k(["restore", b.name, "--state-dir", state]);
-      expect([back.code, back.err]).toEqual([0, ""]);
-      d = await serve();
-      const ids = (await k(["ls", "--ids"])).out.trim().split("\n");
-      expect([ids.includes(kept), ids.includes(later)]).toEqual([true, false]);
+      const second = json((await k(["run", "--json", "kept by the second backup"])).out).session_id;
+      // The second holds only what changed since the first, and says so.
+      const delta = await k(["backup"]);
+      expect([delta.code, delta.err]).toEqual([0, ""]);
+      const later = json((await k(["run", "--json", "written after both"])).out).session_id;
+      const [b2, b1] = json((await k(["backups", "--json"])).out).backups;
+      expect([b1.kind, b2.kind, b2.base]).toEqual(["full", "delta", b1.name]);
+      expect(delta.out).toContain(`the changes since ${b1.name}`);
+      expect((await k(["backups"])).out).toContain(`the changes since ${b1.name}`);
+      for (const [b, want] of [[b2, [true, true, false]], [b1, [true, false, false]]] as const) {
+        d.kill("SIGTERM");
+        await d.exited;
+        const back = await k(["restore", b.name, "--state-dir", state]);
+        expect([back.code, back.err]).toEqual([0, ""]);
+        d = await serve();
+        const now = await ids();
+        expect([now.includes(first), now.includes(second), now.includes(later)]).toEqual([...want]);
+      }
     } finally { d.kill("SIGTERM"); await d.exited; }
-  }, 60_000);
+  }, 90_000);
 });

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { configFiles, listBackups, verify, type Backup, type BackupDone, type BackupJob } from "./backup.ts";
+import { checkDatabase, configFiles, DB_FILES, listBackups, materialize, verify, verifyFiles, type Backup, type BackupDone, type BackupJob } from "./backup.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
@@ -313,7 +313,10 @@ export class Storage {
     const final = join(this.backupRoot, `keel-${stamp}`);
     try {
       mkdirSync(tmp, { recursive: true });
-      const done = await inWorker({ stateDir: this.dir, root: this.backupRoot, tmp, reason, ...(this.config ? { config: resolve(this.config) } : {}) });
+      // The worker reads the database file itself once the write-ahead log is
+      // emptied into it: asked for here, between two writes of the daemon.
+      const checkpoint = () => { try { this.store.db.run("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} }; // not emptied: the worker sees that
+      const done = await inWorker({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(this.config ? { config: resolve(this.config) } : {}) }, checkpoint);
       if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
       renameSync(tmp, final);
     } catch (e) {
@@ -327,7 +330,10 @@ export class Storage {
 
   private prune() {
     const keep = settings().backup.keep as number;
-    for (const b of this.backups().filter((b) => !b.unreadable).slice(keep)) rmSync(join(this.backupRoot, b.name), { recursive: true, force: true });
+    const list = this.backups().filter((b) => !b.unreadable);
+    // A full backup stays for as long as a kept backup is read over it.
+    const bases = new Set(list.slice(0, keep).map((b) => b.base));
+    for (const b of list.slice(keep)) if (!bases.has(b.name)) rmSync(join(this.backupRoot, b.name), { recursive: true, force: true });
     // A partial copy left by a crash during a backup.
     if (existsSync(this.backupRoot)) for (const d of readdirSync(this.backupRoot)) if (d.endsWith(".partial")) rmSync(join(this.backupRoot, d), { recursive: true, force: true });
   }
@@ -341,7 +347,8 @@ declare const __KEEL_BACKUP_WORKER_JS__: string | undefined;
 
 // Runs one backup job in a worker of its own and ends the worker. A worker
 // that dies without an answer fails the backup.
-function inWorker(job: BackupJob): Promise<BackupDone> {
+const HOLD_MS = 25;
+function inWorker(job: BackupJob, checkpoint: () => void): Promise<BackupDone> {
   return new Promise((ok, fail) => {
     const built = typeof __KEEL_BACKUP_WORKER_JS__ === "string" ? URL.createObjectURL(new Blob([__KEEL_BACKUP_WORKER_JS__], { type: "text/javascript" })) : undefined;
     const w = new Worker(built ?? new URL("./backup-worker.ts", import.meta.url).href);
@@ -350,9 +357,22 @@ function inWorker(job: BackupJob): Promise<BackupDone> {
       if (built) URL.revokeObjectURL(built);
       f();
     };
-    w.onmessage = (e: MessageEvent<{ ok: true; done: BackupDone } | { ok: false; error: string }>) => end(() => (e.data.ok ? ok(e.data.done) : fail(new Error(e.data.error))));
+    // The worker takes its snapshot between two writes of the daemon: the
+    // log is emptied here, and the daemon holds still until the worker has
+    // its read transaction (well under a millisecond; never longer than
+    // HOLD_MS, after which the worker finds out by itself and asks again).
+    const gate = new Int32Array(new SharedArrayBuffer(4));
+    w.onmessage = (e: MessageEvent<{ t: "checkpoint" } | { t: "done"; done: BackupDone } | { t: "failed"; error: string }>) => {
+      const m = e.data;
+      if (m.t === "checkpoint") {
+        checkpoint();
+        Atomics.store(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        Atomics.wait(gate, 0, 1, HOLD_MS);
+      } else end(() => (m.t === "done" ? ok(m.done) : fail(new Error(m.error))));
+    };
     w.onerror = (e) => end(() => fail(new Error(`the backup worker failed: ${e.message}`)));
-    w.postMessage(job);
+    w.postMessage({ job, gate });
   });
 }
 
@@ -366,6 +386,7 @@ export const shadowDir = (stateDir: string, workspace: string) =>
 const PENDING = "restore.pending";
 type Pending = { aside: string; stage: string; moves: [from: string, to: string][] };
 const STAGE = /^\.restore-[\w-]+\.partial$/;
+class NotRestorable extends Error {}
 const ASIDE = /^before-restore-[\w-]+$/;
 
 // Puts a backup in place of the state (the daemon must be stopped; the caller
@@ -387,15 +408,28 @@ export function restore(stateDir: string, backupDir: string, config?: string) {
   if (undoCutRestore(stateDir) === "unreadable") {
     throw new Error(`${PENDING} in ${stateDir} could not be read, so nothing was changed: the state is as it was found. The file is now ${PENDING}.unreadable, and what a restore moved aside is in the before-restore folders. Run keel restore again to put the backup in.`);
   }
-  const check = verify(backupDir);
-  if (!check.ok) throw new Error(`the backup cannot be restored: ${check.why}`);
+  // A backup that holds the database compressed, or as the pages that changed
+  // since a full backup, has it written out whole into the stage folder, where
+  // it must be the database that was backed up and pass SQLite's check again.
+  const files = verifyFiles(backupDir);
+  if (!files.ok) throw new Error(`the backup cannot be restored: ${files.why}`);
+  const held = files.manifest?.database;
+  let check = held ? undefined : verify(backupDir);
+  if (check && !check.ok) throw new Error(`the backup cannot be restored: ${check.why}`);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const aside = `before-restore-${stamp}`, stage = `.restore-${stamp}.partial`;
   const at = (...p: string[]) => join(stateDir, ...p);
-  const inBackup = readdirSync(backupDir).filter((f) => f !== "manifest.json" && f !== "attachments" && f !== "config");
+  const copied = readdirSync(backupDir).filter((f) => f !== "manifest.json" && f !== "attachments" && f !== "config" && !DB_FILES.has(f));
+  const inBackup = held ? [...copied, "keel.db"] : copied;
   try {
     mkdirSync(at(stage), { recursive: true });
-    for (const f of inBackup) copyFileSync(join(backupDir, f), at(stage, f));
+    for (const f of copied) copyFileSync(join(backupDir, f), at(stage, f));
+    if (held) {
+      try { materialize(backupDir, held, at(stage, "keel.db")); } catch (e) { throw new NotRestorable((e as Error).message); }
+      check = checkDatabase(at(stage, "keel.db"));
+      if (check.ok && (check.sessions !== files.manifest!.sessions || check.events !== files.manifest!.events)) check = { ok: false, why: `it holds ${check.sessions} sessions and ${check.events} events, its manifest says ${files.manifest!.sessions} and ${files.manifest!.events}` };
+      if (!check.ok) throw new NotRestorable(check.why);
+    }
     // Attachments are stored by content: one already present is the same
     // bytes, and one more changes nothing the state reads.
     const att = join(backupDir, "attachments");
@@ -406,8 +440,10 @@ export function restore(stateDir: string, backupDir: string, config?: string) {
     }
   } catch (e) {
     rmSync(at(stage), { recursive: true, force: true });
+    if (e instanceof NotRestorable) throw new Error(`the backup cannot be restored: ${e.message}`);
     throw new Error(`the restore failed and the state is as it was: ${(e as Error).message}`, { cause: e });
   }
+  if (!check?.ok) throw new Error("the backup cannot be restored"); // not reached: every path above checked it
   // The state's JSON files are what a backup holds of them: one the backup
   // does not have (a settings file written after it) moves aside too, so the
   // restored state reads as it did then, defaults included.

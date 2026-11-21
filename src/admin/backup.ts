@@ -1,19 +1,46 @@
-// What a backup is on disk, and making one: a folder with a consistent copy
-// of the database, the state's JSON files, the uploaded files and the config
+// What a backup is on disk, and making one: a folder with the database as it
+// was at one moment, the state's JSON files, the uploaded files and the config
 // folder's files, each named in manifest.json with its size and SHA-256.
 // Nothing here knows the store or the engine: makeBackup runs in a worker
 // (backup-worker.ts), off the daemon's event loop, on a connection of its own.
+//
+// The database is kept in one of three ways (manifest.database.kind):
+//   full    keel.db.zst: the database file's pages, compressed (zstd frames of
+//           4 MiB of pages each; `zstd -d` reads the file too), and
+//           keel.db.pages, a hash per page that the next backups compare with.
+//   delta   keel.db.delta.zst: only the pages that differ from the newest
+//           full backup, which the manifest names. Restoring reads that full
+//           backup and puts these pages over it.
+//   (none)  keel.db, a plain copy: what a keel before this one wrote.
+// Whatever the kind, the manifest holds the SHA-256 of the whole database
+// file a restore must end up with, and a backup counts only once reading it
+// back from what was written gives exactly that.
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { GRANT_FILES } from "../core/ownfile.ts";
+import { GRANT_FILES, writeAll } from "../core/ownfile.ts";
 
 // `config`: the config folder the backup carries files of, when it carries any.
-export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string };
+// `kind`: how it holds the database; `base`: the full backup a delta is read
+// over, and `base_missing` when that one is gone (it cannot be restored).
+export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string; kind?: "full" | "delta"; base?: string; base_missing?: true };
 
 export type ManifestFile = { name: string; bytes: number; sha256: string; mtime_ms?: number; mode?: number; older_keel?: true };
-export type Manifest = { created_ms: number; reason: string; sessions: number; events: number; files: ManifestFile[]; config?: { dir: string; skipped: { name: string; why: string }[] } };
+// The database a backup holds: the size of the file a restore writes
+// (`pages` of `page_size` bytes) and its SHA-256, the compressed length of
+// each frame of the file that holds it, and for a delta the full backup it
+// is read over (by name and by that database's SHA-256) and how many pages
+// it carries. `source`: read from the database file under a read snapshot,
+// or from a VACUUM INTO copy when no such snapshot could be had.
+export type DbInfo = { kind: "full" | "delta"; page_size: number; pages: number; sha256: string; frames: number[]; base?: string; base_sha256?: string; changed?: number; source: "file" | "vacuum" };
+export type Manifest = { created_ms: number; reason: string; sessions: number; events: number; files: ManifestFile[]; database?: DbInfo; config?: { dir: string; skipped: { name: string; why: string }[] } };
+
+const FULL = "keel.db.zst", PAGES = "keel.db.pages", DELTA = "keel.db.delta.zst";
+// What holds the database in a backup folder: never copied into a state folder as it is.
+export const DB_FILES: ReadonlySet<string> = new Set([FULL, PAGES, DELTA]);
+const FRAME_BYTES = 4 << 20; // of pages per zstd frame: what a reader holds at a time
+const PAGE_HASH = 16; // bytes of a page's SHA-256 kept to tell a changed page
 
 // A backup that carries config files cannot be restored by a keel from
 // before it did (it would take config/ for a state file and stop on it).
@@ -43,7 +70,13 @@ export function listBackups(root: string): Backup[] {
       try {
         const m = JSON.parse(readFileSync(join(path, "manifest.json"), "utf8"));
         if (typeof m.created_ms !== "number" || !Array.isArray(m.files)) throw new Error("it lacks created_ms or files");
-        return { name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0), ...(typeof m.config?.dir === "string" ? { config: m.config.dir } : {}) };
+        const d = m.database as DbInfo | undefined;
+        return {
+          name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0),
+          ...(typeof m.config?.dir === "string" ? { config: m.config.dir } : {}),
+          ...(d ? { kind: d.kind } : {}),
+          ...(d?.kind === "delta" && d.base ? { base: d.base, ...(existsSync(join(root, d.base, "manifest.json")) ? {} : { base_missing: true as const }) } : {}),
+        };
       } catch (e) {
         return { name, path, created_ms: stampMs(name), reason: "", sessions: null, events: null, bytes: null, unreadable: `manifest.json cannot be read: ${(e as Error).message}` };
       }
@@ -107,29 +140,54 @@ export function hashFile(path: string, read: typeof readSync = readSync): string
   return hash.digest("hex");
 }
 
-// Opens a backup's database read-only and checks it: SQLite's integrity check,
-// the files against the manifest, and what it holds.
+// Checks a backup: every file against the manifest, and the database. One
+// that holds the database compressed is read back whole (a delta over its
+// full backup) and must give the SHA-256 the manifest names: the bytes that
+// passed SQLite's integrity check when the backup was made. A plain copy
+// (and a folder with no manifest) is opened and checked itself.
 export function verify(dir: string): { ok: true; sessions: number; events: number } | { ok: false; why: string } {
-  const path = join(dir, "keel.db");
-  if (!existsSync(path)) return { ok: false, why: "no keel.db in it" };
-  const mf = join(dir, "manifest.json");
-  if (existsSync(mf)) {
-    const m = JSON.parse(readFileSync(mf, "utf8"));
-    for (const f of m.files as ManifestFile[]) {
-      if (f.older_keel) continue; // a sentence for a keel that cannot restore this backup, not a file
-      if (!existsSync(join(dir, f.name))) return { ok: false, why: `${f.name} is missing` };
-      const sha = hashFile(join(dir, f.name));
-      if (sha !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
-      // An attachment's folder is named by its content's hash.
-      const a = /^attachments\/([0-9a-f]{64})\//.exec(f.name);
-      if (a && a[1] !== sha) return { ok: false, why: `${f.name} does not match its hash` };
+  const files = verifyFiles(dir);
+  if (!files.ok) return files;
+  const m = files.manifest;
+  if (m?.database) {
+    try {
+      const hash = createHash("sha256");
+      streamImage(dir, m.database, (b) => void hash.update(b));
+      if (hash.digest("hex") !== m.database.sha256) return { ok: false, why: "the database it holds does not read back as the one that was backed up" };
+      return { ok: true, sessions: m.sessions, events: m.events };
+    } catch (e) {
+      return { ok: false, why: (e as Error).message };
     }
   }
+  return checkDatabase(join(dir, "keel.db"));
+}
+
+// The files of a backup against its manifest (none: a bare folder with a keel.db).
+export function verifyFiles(dir: string): { ok: true; manifest?: Manifest } | { ok: false; why: string } {
+  const mf = join(dir, "manifest.json");
+  if (!existsSync(mf)) return existsSync(join(dir, "keel.db")) ? { ok: true } : { ok: false, why: "no keel.db in it" };
+  const m = JSON.parse(readFileSync(mf, "utf8")) as Manifest;
+  if (!m.database && !existsSync(join(dir, "keel.db"))) return { ok: false, why: "no keel.db in it" };
+  for (const f of m.files) {
+    if (f.older_keel) continue; // a sentence for a keel that cannot restore this backup, not a file
+    if (!existsSync(join(dir, f.name))) return { ok: false, why: `${f.name} is missing` };
+    const sha = hashFile(join(dir, f.name));
+    if (sha !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
+    // An attachment's folder is named by its content's hash.
+    const a = /^attachments\/([0-9a-f]{64})\//.exec(f.name);
+    if (a && a[1] !== sha) return { ok: false, why: `${f.name} does not match its hash` };
+  }
+  return { ok: true, manifest: m };
+}
+
+// Opens a database file read-only: SQLite's integrity check, and what it holds.
+export function checkDatabase(path: string): { ok: true; sessions: number; events: number } | { ok: false; why: string } {
+  if (!existsSync(path)) return { ok: false, why: "no keel.db in it" };
   let db: Database | undefined;
   try {
     db = new Database(path, { readonly: true });
-    const r = db.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get();
-    if (r?.integrity_check !== "ok") return { ok: false, why: `integrity check: ${r?.integrity_check}` };
+    const why = integrity(db);
+    if (why) return { ok: false, why };
     return { ok: true, ...counts(db) };
   } catch (e) {
     return { ok: false, why: (e as Error).message };
@@ -137,6 +195,11 @@ export function verify(dir: string): { ok: true; sessions: number; events: numbe
     db?.close();
   }
 }
+
+const integrity = (db: Database) => {
+  const r = db.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get();
+  return r?.integrity_check === "ok" ? undefined : `integrity check: ${r?.integrity_check}`;
+};
 
 const counts = (db: Database) => ({
   sessions: db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM sessions").get()!.n,
@@ -146,29 +209,132 @@ const counts = (db: Database) => ({
 // What a worker is asked for: a backup of `stateDir` written into `tmp` (a
 // folder under the backups folder `root`, renamed by the daemon once it is
 // whole). `config`: the owner's config folder, carried with the state.
-export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string };
+// `keep`: how many backups the owner keeps, which sets how large a delta may be.
+export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number };
 export type BackupDone = { sessions: number; events: number; skipped: { name: string; why: string }[]; config?: string };
 
-// A consistent copy of the database (VACUUM INTO on a connection of its own:
-// one read snapshot, safe while the daemon writes) and the JSON settings
-// files, checked by opening the copy before it counts: integrity, and what
-// the store held around the copy.
-export function makeBackup(job: BackupJob): BackupDone {
+// The database as it is at one moment, for the length of a backup.
+//
+// The daemon is the only writer. It empties the write-ahead log into the
+// database file (a TRUNCATE checkpoint) and tells the worker, which begins a
+// read transaction and looks at the log: still empty means the transaction
+// reads the database file and nothing else, and for as long as it is open
+// SQLite writes nothing into that file (a checkpoint may not overwrite a
+// page a reader can still see; what the daemon commits meanwhile waits in
+// the log). The file is then the snapshot, with every page where the last
+// backup saw it, which is what lets the next backup hold only the pages that
+// changed. A log that is not empty (the daemon wrote in between) is tried
+// again; `begin` says which.
+export class Snapshot {
+  readonly path: string;
+  readonly db: Database;
+  constructor(stateDir: string) {
+    this.path = join(stateDir, "keel.db");
+    this.db = new Database(this.path, { readonly: true });
+    this.db.run("PRAGMA cache_size = -32768"); // 32 MiB: the check walks every table and index
+  }
+  // The slow part of emptying the log, done here where it holds nobody up:
+  // the log's pages are written into the database file and the file is
+  // synced (a PASSIVE checkpoint: it never makes the daemon's writes or
+  // reads wait). What the daemon then empties is the little it wrote since,
+  // most often nothing, and then it syncs nothing.
+  flush() {
+    try {
+      const w = new Database(this.path, { readwrite: true });
+      try { w.run("PRAGMA wal_checkpoint(PASSIVE)"); } finally { w.close(); }
+    } catch {} // the daemon's own checkpoint does it all
+  }
+  begin(): boolean {
+    this.db.run("BEGIN");
+    this.db.query("SELECT COUNT(*) FROM sqlite_schema").get(); // the read snapshot starts with the first read
+    let wal = 0;
+    try { wal = statSync(`${this.path}-wal`).size; } catch {} // no log at all
+    if (wal === 0) return true;
+    this.db.run("ROLLBACK");
+    return false;
+  }
+  close() {
+    try { this.db.close(); } catch {}
+  }
+}
+
+const stamp = (path: string) => { const st = statSync(path); return `${st.size}:${st.mtimeMs}`; };
+
+// The backup of `job.stateDir` in `job.tmp`. `snap` holds the read snapshot
+// (begun: the database file is read as it is); without one, or when the file
+// turns out to have moved under it, the database is copied out first
+// (VACUUM INTO: one read snapshot too, in another page layout, so always a
+// full backup).
+export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
   const { stateDir, tmp } = job;
   mkdirSync(tmp, { recursive: true });
-  const src = new Database(join(stateDir, "keel.db"), { readonly: true });
-  let before, after;
-  try {
-    before = counts(src);
-    src.run(`VACUUM INTO '${join(tmp, "keel.db").replace(/'/g, "''")}'`);
-    after = counts(src);
-  } finally {
-    src.close();
+  let made: { info: DbInfo; files: string[]; sessions: number; events: number } | undefined;
+  if (snap) {
+    const before = stamp(snap.path);
+    const held = counts(snap.db);
+    const pages = snap.db.query<{ page_count: number }, []>("PRAGMA page_count").get()!.page_count;
+    const size = snap.db.query<{ page_size: number }, []>("PRAGMA page_size").get()!.page_size;
+    try {
+      // The file is read through in order first; SQLite's check, which walks
+      // it table by table, then finds it in the system's file cache.
+      const out = writeDatabase(snap.path, size, pages, "file", job);
+      // The file's size and time as they were: nothing wrote into it meanwhile.
+      if (stamp(snap.path) === before) made = { ...out, ...held };
+    } catch (e) {
+      if (!(e instanceof ShortFile)) throw e;
+    }
+    if (made) {
+      // The same snapshot the pages were read under: the check is of the bytes that were backed up.
+      const why = integrity(snap.db);
+      if (why) throw new Error(`the database did not check out: ${why}`);
+    } else for (const f of DB_FILES) rmSync(join(tmp, f), { force: true });
   }
-  const files: string[] = ["keel.db"];
+  if (!made) {
+    const raw = join(tmp, "keel.db.raw");
+    const src = snap?.db ?? new Database(join(stateDir, "keel.db"), { readonly: true });
+    try {
+      if (snap) try { src.run("ROLLBACK"); } catch {} // VACUUM runs outside a transaction
+      src.run(`VACUUM INTO '${raw.replace(/'/g, "''")}'`);
+      const copy = new Database(raw, { readonly: true });
+      try {
+        const why = integrity(copy);
+        if (why) throw new Error(`the backup did not check out: ${why}`);
+        const pages = copy.query<{ page_count: number }, []>("PRAGMA page_count").get()!.page_count;
+        const size = copy.query<{ page_size: number }, []>("PRAGMA page_size").get()!.page_size;
+        made = { ...writeDatabase(raw, size, pages, "vacuum", job), ...counts(copy) };
+      } finally {
+        copy.close();
+      }
+    } finally {
+      if (!snap) src.close();
+      for (const f of [raw, `${raw}-wal`, `${raw}-shm`]) rmSync(f, { force: true });
+    }
+  }
+  snap?.close(); // the database is in: the daemon's log can be emptied again
+  const files: string[] = [...made.files];
+  // The state's JSON files. One that is as the newest backup has it (a
+  // catalog, a listing: megabytes that rarely change) is a second name for
+  // that backup's copy, as an unchanged config file is: a backup's files are
+  // never written again, and the copy is read to see it is still whole.
+  const prev = listBackups(job.root).find((b) => !b.unreadable);
+  const was = new Map<string, ManifestFile>();
+  if (prev) try {
+    for (const f of (JSON.parse(readFileSync(join(prev.path, "manifest.json"), "utf8")) as Manifest).files) was.set(f.name, f);
+  } catch {} // nothing to share with
   for (const f of readdirSync(stateDir)) {
     if (!f.endsWith(".json") || f.endsWith(".tmp")) continue;
-    try { copyFileSync(join(stateDir, f), join(tmp, f)); } catch (e) {
+    const from = join(stateDir, f), to = join(tmp, f);
+    try {
+      const old = was.get(f);
+      if (old && old.bytes === statSync(from).size && hashFile(from) === old.sha256) {
+        try {
+          linkSync(join(prev!.path, f), to);
+          if (hashFile(to) === old.sha256) { files.push(f); continue; }
+          rmSync(to, { force: true });
+        } catch {} // another filesystem, or that copy is gone: a real copy
+      }
+      copyFileSync(from, to);
+    } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; // replaced meanwhile: the daemon writes these by rename
       throw e;
     }
@@ -188,26 +354,221 @@ export function makeBackup(job: BackupJob): BackupDone {
     }
   }
   const carried = job.config ? carryConfig(job.config, tmp, job.root) : null;
-  const check = verify(tmp);
-  if (!check.ok) throw new Error(`the backup did not check out: ${check.why}`);
-  // The daemon goes on writing while the copy is made: the copy holds what
-  // the store held at some moment between the two counts.
-  const within = (n: number, a: number, b: number) => n >= Math.min(a, b) && n <= Math.max(a, b);
-  if (!within(check.sessions, before.sessions, after.sessions) || !within(check.events, before.events, after.events)) {
-    throw new Error(`the backup holds ${check.sessions} sessions and ${check.events} events, the store ${before.sessions} and ${before.events} before the copy, ${after.sessions} and ${after.events} after`);
-  }
   const manifest: Manifest = {
-    created_ms: Date.now(), reason: job.reason, sessions: check.sessions, events: check.events,
+    created_ms: Date.now(), reason: job.reason, sessions: made.sessions, events: made.events,
     files: [
       // First, so a keel from before config was carried stops at once (see OLDER_KEEL).
       ...(carried?.files.length ? [{ name: OLDER_KEEL, bytes: 0, sha256: "", older_keel: true as const }] : []),
       ...files.map((f) => ({ name: f, bytes: statSync(join(tmp, f)).size, sha256: hashFile(join(tmp, f)) })),
       ...(carried?.files ?? []),
     ],
+    database: made.info,
     ...(carried ? { config: { dir: carried.dir, skipped: carried.skipped } } : {}),
   };
   writeFileSync(join(tmp, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-  return { sessions: check.sessions, events: check.events, skipped: carried?.skipped ?? [], ...(carried ? { config: carried.dir } : {}) };
+  return { sessions: made.sessions, events: made.events, skipped: carried?.skipped ?? [], ...(carried ? { config: carried.dir } : {}) };
+}
+
+// ---- the database of a backup ----
+
+class ShortFile extends Error {}
+
+// Reads `count` pages from page `first` (0-based) of a database file into
+// `buf`, whole. The first page says the file is in rollback-journal mode
+// (bytes 18 and 19, the only place the journal mode is written): the file a
+// restore writes has no write-ahead log beside it, and one that says WAL
+// would make every reader create one.
+function readPages(fd: number, size: number, first: number, count: number, buf: Buffer) {
+  const want = count * size;
+  for (let got = 0; got < want; ) {
+    const n = readSync(fd, buf, got, want - got, first * size + got);
+    if (n <= 0) throw new ShortFile(`the database file ends before page ${first + count}`);
+    got += n;
+  }
+  if (first === 0) buf[18] = buf[19] = 1;
+  return buf.subarray(0, want);
+}
+
+// Writes one zstd frame and notes its length.
+function frame(fd: number, data: Uint8Array, frames: number[]) {
+  const z = Bun.zstdCompressSync(data, { level: 3 });
+  writeAll(fd, z);
+  frames.push(z.length);
+}
+
+// The newest full backup a delta can be read over: its page hashes are there
+// and are the ones its manifest names, and its pages are this size.
+function findBase(root: string, size: number): { name: string; info: DbInfo; hashes: Buffer } | undefined {
+  const b = listBackups(root).find((b) => !b.unreadable && b.kind === "full");
+  if (!b) return;
+  try {
+    const m = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8")) as Manifest;
+    const info = m.database!, idx = m.files.find((f) => f.name === PAGES), db = m.files.find((f) => f.name === FULL);
+    if (info.page_size !== size || !idx || !db || statSync(join(b.path, FULL)).size !== db.bytes) return;
+    const hashes = readFileSync(join(b.path, PAGES));
+    if (hashes.length !== info.pages * PAGE_HASH || createHash("sha256").update(hashes).digest("hex") !== idx.sha256) return;
+    return { name: b.name, info, hashes };
+  } catch {} // not one to build on
+}
+
+// Puts the database file at `path` (`pages` pages of `size` bytes, not
+// changing while this runs) into the backup folder `job.tmp`: as the pages
+// that differ from the newest full backup when those are few, else whole.
+// Few is no more than one page in `keep`: the deltas kept beside a full
+// backup then never outweigh a second full one. What was written is read
+// back and must give the file's own SHA-256; a delta that does not (its
+// full backup was damaged since) is dropped for a full backup.
+function writeDatabase(path: string, size: number, pages: number, source: DbInfo["source"], job: BackupJob): { info: DbInfo; files: string[] } {
+  const per = Math.max(1, Math.floor(FRAME_BYTES / size));
+  const buf = Buffer.allocUnsafe(per * size);
+  const hashes = Buffer.allocUnsafe(pages * PAGE_HASH);
+  const whole = createHash("sha256");
+  const fd = openSync(path, "r");
+  try {
+    for (let p = 0; p < pages; p += per) {
+      const block = readPages(fd, size, p, Math.min(per, pages - p), buf);
+      whole.update(block);
+      for (let i = 0; i * size < block.length; i++) createHash("sha256").update(block.subarray(i * size, (i + 1) * size)).digest().copy(hashes, (p + i) * PAGE_HASH, 0, PAGE_HASH);
+    }
+    const sha256 = whole.digest("hex");
+    const reads = (info: DbInfo) => {
+      const h = createHash("sha256");
+      try { streamImage(job.tmp, info, (b) => void h.update(b)); } catch { return false; }
+      return h.digest("hex") === sha256;
+    };
+
+    const keep = job.keep ?? 1;
+    const base = source === "file" && keep > 1 ? findBase(job.root, size) : undefined;
+    if (base) {
+      const changed: number[] = [];
+      for (let p = 0; p < pages; p++) {
+        if (p >= base.info.pages || hashes.compare(base.hashes, p * PAGE_HASH, (p + 1) * PAGE_HASH, p * PAGE_HASH, (p + 1) * PAGE_HASH) !== 0) changed.push(p);
+      }
+      if (changed.length * keep <= pages) {
+        const frames: number[] = [];
+        const out = openSync(join(job.tmp, DELTA), "w", 0o600);
+        try {
+          // Records of a page number (4 bytes, big-endian, from 0) and the page, in page order.
+          const rec = Buffer.allocUnsafe(per * (4 + size));
+          const one = Buffer.allocUnsafe(size);
+          for (let i = 0; i < changed.length; i += per) {
+            const part = changed.slice(i, i + per);
+            part.forEach((p, k) => {
+              rec.writeUInt32BE(p, k * (4 + size));
+              readPages(fd, size, p, 1, one).copy(rec, k * (4 + size) + 4);
+            });
+            frame(out, rec.subarray(0, part.length * (4 + size)), frames);
+          }
+        } finally {
+          closeSync(out);
+        }
+        const info: DbInfo = { kind: "delta", page_size: size, pages, sha256, frames, base: base.name, base_sha256: base.info.sha256, changed: changed.length, source };
+        if (reads(info)) return { info, files: [DELTA] };
+        rmSync(join(job.tmp, DELTA), { force: true });
+      }
+    }
+
+    const frames: number[] = [];
+    const out = openSync(join(job.tmp, FULL), "w", 0o600);
+    try {
+      for (let p = 0; p < pages; p += per) frame(out, readPages(fd, size, p, Math.min(per, pages - p), buf), frames);
+    } finally {
+      closeSync(out);
+    }
+    writeFileSync(join(job.tmp, PAGES), hashes, { mode: 0o600 });
+    const info: DbInfo = { kind: "full", page_size: size, pages, sha256, frames, source };
+    if (!reads(info)) throw new Error("the backup did not check out: the database does not read back as it was written");
+    return { info, files: [FULL, PAGES] };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// The frames of a compressed file, each decompressed in turn.
+function* framesOf(path: string, lengths: number[]): Generator<Buffer> {
+  const fd = openSync(path, "r");
+  try {
+    let at = 0;
+    for (const len of lengths) {
+      const z = Buffer.allocUnsafe(len);
+      for (let got = 0; got < len; ) {
+        const n = readSync(fd, z, got, len - got, at + got);
+        if (n <= 0) throw new Error(`${path} ends before its frames do`);
+        got += n;
+      }
+      at += len;
+      yield Buffer.from(Bun.zstdDecompressSync(z));
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Gives `sink` the database file a backup holds, in order, a few megabytes
+// at a time: a full backup's own pages, or for a delta the pages of the full
+// backup it names (found beside it) with the delta's pages over them, cut or
+// grown to the delta's page count. The caller hashes what it is given: the
+// manifest's SHA-256 is the proof, not this function.
+export function streamImage(dir: string, info: DbInfo, sink: (b: Buffer) => void) {
+  const size = info.page_size;
+  if (info.kind === "full") {
+    let total = 0;
+    for (const b of framesOf(join(dir, FULL), info.frames)) { total += b.length; sink(b); }
+    if (total !== info.pages * size) throw new Error(`${FULL} holds ${total} bytes, not ${info.pages} pages of ${size}`);
+    return;
+  }
+  const baseDir = join(dirname(dir), info.base ?? "");
+  let base: DbInfo | undefined;
+  try { base = (JSON.parse(readFileSync(join(baseDir, "manifest.json"), "utf8")) as Manifest).database; } catch {}
+  if (!info.base || !base) throw new Error(`it holds the pages that changed since the backup ${info.base}, and that one is gone or cannot be read`);
+  if (base.kind !== "full" || base.sha256 !== info.base_sha256 || base.page_size !== size) throw new Error(`it holds the pages that changed since the backup ${info.base}, and that one is not the backup it was made from`);
+
+  // The delta's records, one at a time, in page order.
+  const records = (function* () {
+    for (const b of framesOf(join(dir, DELTA), info.frames)) {
+      if (b.length % (4 + size)) throw new Error(`${DELTA} holds a frame that is not whole pages`);
+      for (let o = 0; o < b.length; o += 4 + size) yield { page: b.readUInt32BE(o), data: b.subarray(o + 4, o + 4 + size) };
+    }
+  })();
+  let next = records.next(), used = 0, at = 0; // `at`: the page the next bytes given are
+  const over = (block: Buffer) => {
+    for (; !next.done && next.value.page < at + block.length / size; next = records.next(), used++) {
+      if (next.value.page < at) throw new Error(`${DELTA} holds its pages out of order`);
+      next.value.data.copy(block, (next.value.page - at) * size);
+    }
+  };
+  for (const b of framesOf(join(baseDir, FULL), base.frames)) {
+    if (at >= info.pages) break;
+    const block = b.subarray(0, Math.min(b.length, (info.pages - at) * size));
+    over(block);
+    sink(block);
+    at += block.length / size;
+  }
+  // Pages past the end of the full backup: all of them are in the delta.
+  for (; at < info.pages; at++, next = records.next(), used++) {
+    if (next.done || next.value.page !== at) throw new Error(`${DELTA} lacks page ${at}`);
+    sink(Buffer.from(next.value.data));
+  }
+  if (!next.done) throw new Error(`${DELTA} holds pages past the end of the database`);
+  if (used !== info.changed) throw new Error(`${DELTA} holds ${used} pages, the manifest says ${info.changed}`);
+}
+
+// Writes the database a backup holds to `dest` and checks it is the one that
+// was backed up; a file that is not is removed.
+export function materialize(dir: string, info: DbInfo, dest: string) {
+  const hash = createHash("sha256");
+  const fd = openSync(dest, "w", 0o644);
+  try {
+    try {
+      streamImage(dir, info, (b) => { hash.update(b); writeAll(fd, b); });
+    } finally {
+      closeSync(fd);
+    }
+    if (hash.digest("hex") !== info.sha256) throw new Error("the database it holds does not read back as the one that was backed up");
+  } catch (e) {
+    rmSync(dest, { force: true });
+    throw e;
+  }
 }
 
 // The owner's config folder (MCP servers, hooks, skills, plugins, agents,

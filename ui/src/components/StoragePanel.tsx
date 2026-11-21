@@ -20,7 +20,7 @@ type Report = {
   orphan_checkpoints: number;
 };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
-type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string };
+type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; kind?: "full" | "delta"; base?: string; base_missing?: true };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number; family_updated_ms: number; subagents: { id: string; title: string }[] };
 
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
@@ -229,7 +229,7 @@ export function StoragePanel() {
         <div className="flex items-center gap-3 border-b border-line py-4">
           <div className="min-w-0 flex-1">
             <div className="text-base font-medium">Backups</div>
-            <div className="mt-0.5 text-ui text-muted">A checked copy of the conversations, their attached files and the settings{settings?.backup.before_restart ? ", made before every restart" : ""}. The last {settings?.backup.keep ?? 5} are kept. Restore with <span className="font-mono text-caption">keel restore NAME</span> while the daemon is stopped.</div>
+            <div className="mt-0.5 text-ui text-muted">A checked copy of the conversations, their attached files and the settings{settings?.backup.before_restart ? ", made before every restart" : ""}. The last {settings?.backup.keep ?? 5} are kept; one that holds only what changed keeps the full backup it is read over. Restore with <span className="font-mono text-caption">keel restore NAME</span> while the daemon is stopped.</div>
           </div>
           <button type="button" className={btn} data-testid="backup-now" onClick={() => api("/api/backups", { method: "POST" }).then(() => load(true)).catch(reportError)}>Back up now</button>
         </div>
@@ -243,6 +243,8 @@ export function StoragePanel() {
             ) : (
               <>
                 <span className="text-caption text-faint">{b.reason}</span>
+                {b.base_missing ? <span className="min-w-0 truncate text-caption text-danger" title={`It holds the changes since ${b.base}, which is gone.`} data-testid="backup-base-missing">its full backup is gone; cannot be restored</span>
+                  : b.base && <span className="min-w-0 truncate text-caption text-faint" title={`The changes since ${b.base}`} data-testid="backup-delta">changes only</span>}
                 <span className="ml-auto text-caption tabular-nums text-muted">{b.sessions} sessions</span>
                 <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(b.bytes ?? 0)}</span>
               </>
