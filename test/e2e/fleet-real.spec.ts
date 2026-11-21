@@ -127,7 +127,7 @@ test("fleet on real machines: linked, a tool there, a move there and back, a ses
       const evsHere = (await (await request.get(`/api/sessions/${sender.id}/events`)).json()).events;
       expect(JSON.stringify(evsHere.filter((e: any) => e.kind === "user").map((e: any) => e.data.text))).toContain("handled your message and is idle");
 
-      const port = 40000 + Math.floor(Math.random() * 20000);
+      const port = 20000 + Math.floor(Math.random() * 12000); // below the range the kernel hands to outgoing connections
       await page.getByTestId("composer").fill(`Use the Bash tool once with run_in_background true to run: ${BUN_THERE} serve.ts ${port}. Then reply "started".`);
       await page.keyboard.press("Enter");
       await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 120_000 });

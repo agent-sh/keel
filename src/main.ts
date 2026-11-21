@@ -55,11 +55,24 @@ if ("error" in bind) {
   process.exit(3);
 }
 
-const d = await startDaemon({ stateDir: values["state-dir"], bind: values.bind!, workspace: values.workspace, dev: values.dev });
+const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void> };
+// A daemon that could not start ends here, with what went wrong. Left alone it
+// serves nothing and stays: it holds the state folder, the modules it loaded
+// keep it alive and take its signals, and under --hot the process waits for an
+// edit. The usual cause is the port: free when it was checked, taken before
+// the bind. A hot reload that fails is not a start: the process and the page
+// it serves stay for the next edit.
+const d = await startDaemon({ stateDir: values["state-dir"], bind: values.bind!, workspace: values.workspace, dev: values.dev }).catch((e) => {
+  if (g.__keelSignals) throw e;
+  const taken = (e as { code?: string })?.code === "EADDRINUSE" || /in use/i.test(String((e as Error)?.message));
+  console.error(taken
+    ? `keel serve: ${values.bind} could not be bound: port ${bind.port} is in use (it was taken after it was checked). Stop what holds it, or pick another --bind.`
+    : `keel serve: the daemon could not start: ${(e as Error)?.message ?? e}`);
+  process.exit(1);
+});
 // Running turns get this long to end by themselves when the daemon stops; the
 // rest are parked and the next daemon continues them.
 const DRAIN_MS = Number(process.env.KEEL_DRAIN_MS ?? 10_000);
-const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void> };
 g.__keelStop = d.stop;
 if (!g.__keelSignals) {
   g.__keelSignals = true;

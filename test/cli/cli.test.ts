@@ -216,6 +216,38 @@ describe("keel service install", () => {
   }, 60_000);
 });
 
+describe("keel serve on a port taken after its check", () => {
+  // The port is bound by a program that does not listen: a connection to it is refused, as
+  // on a free port, so the daemon's own check passes and its bind fails.
+  test.skipIf(!Bun.which("python3"))("exits with the reason, and leaves the state folder free", async () => {
+    const state = join(SCRATCH, "state-taken");
+    const holder = Bun.spawn(["python3", "-c", 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1], flush=True); time.sleep(60)'], { stdout: "pipe", stderr: "ignore" });
+    try {
+      const reader = holder.stdout.getReader();
+      const port = Number(new TextDecoder().decode((await reader.read()).value).trim());
+      expect(port).toBeGreaterThan(0);
+      const p = Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", WS], { cwd: WS, env: ENV, stdout: "pipe", stderr: "pipe" });
+      // A daemon that stayed would outlive this wait: it ended by itself.
+      const code = await Promise.race([p.exited, Bun.sleep(15_000).then(() => "still running")]);
+      if (code === "still running") p.kill("SIGKILL");
+      const err = await new Response(p.stderr).text();
+      expect([code, err.trim()]).toEqual([1, `keel serve: 127.0.0.1:${port} could not be bound: port ${port} is in use (it was taken after it was checked). Stop what holds it, or pick another --bind.`]);
+      expect(await new Response(p.stdout).text()).not.toContain("keel listening");
+      expect(existsSync(join(state, "daemon.lock"))).toBe(false);
+      // The folder is free: a daemon starts on it at once.
+      const d = Bun.spawn([BIN, "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", WS], { cwd: WS, env: { ...ENV, KEEL_DRAIN_MS: "300" }, stdout: "pipe", stderr: "ignore" });
+      let out = "";
+      const dec = new TextDecoder();
+      for await (const chunk of d.stdout) { out += dec.decode(chunk); if (out.includes("keel listening")) break; }
+      expect(out).toContain(`(state ${state})`);
+      d.kill();
+      await d.exited;
+    } finally {
+      holder.kill();
+    }
+  }, 60_000);
+});
+
 describe("keel help serve", () => {
   const state = join(SCRATCH, "state-help-serve");
   test("prints the serve usage, as serve --help does, and starts no daemon", async () => {

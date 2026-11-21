@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
+import { freePort } from "./ports.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 
 // Feature: one daemon per state folder. Of two daemons started on one folder
@@ -9,8 +9,6 @@ import { join } from "node:path";
 // start after the owner was killed takes the folder over. Runs its own
 // daemons on scratch state folders.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
-
-const freePort = () => new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
 
 const made: string[] = [];
 type Started = { proc: ChildProcess; exited: Promise<number | null>; out: () => string; port: number };

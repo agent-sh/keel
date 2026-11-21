@@ -68,8 +68,10 @@ case "$version" in *"$revision"*"$target"*"$api"*) ;; *) die "keel --version say
 say "ok  $version"
 
 free() { ! (exec 3<> "/dev/tcp/127.0.0.1/$1") 2> /dev/null; }
+# Below the range the kernel gives to outgoing connections (32768 and up), where a
+# port that was free can be taken before the daemon binds it.
 port=0
-for _ in 1 2 3 4 5 6 7 8; do port=$((20000 + RANDOM % 40000)); free "$port" && break; done
+for _ in 1 2 3 4 5 6 7 8; do port=$((20000 + RANDOM % 12000)); free "$port" && break; done
 url=http://127.0.0.1:$port
 mkdir -p "$root/ws"
 ./keel serve --bind "127.0.0.1:$port" --state-dir "$root/state" --workspace "$root/ws" > "$root/daemon.log" 2>&1 &

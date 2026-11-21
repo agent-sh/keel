@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
+import { freePort } from "./ports.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { shoot } from "./shots.ts";
 
@@ -13,8 +13,6 @@ import { shoot } from "./shots.ts";
 // folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 const FAILED = "The backup before the restart failed";
-
-const freePort = () => new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
 
 function daemon(state: string, port: number): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {

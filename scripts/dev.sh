@@ -3,6 +3,9 @@
 # (KEEL_BIN=dist/keel runs the built binary instead of the hot-reloading source).
 # The port is always given and the state is the port's own unless KEEL_DEV_DIR
 # names one: two daemons never share a state folder by default.
+# Pick a port below 32768. The kernel hands the ports above it to outgoing
+# connections, so one that was free can be taken before the daemon binds it
+# (the daemon then exits and says so).
 set -euo pipefail
 PORT="${1:?usage: scripts/dev.sh <port>}"
 DEV="${KEEL_DEV_DIR:-$HOME/.cache/keel-work/bun/dev-$PORT}"

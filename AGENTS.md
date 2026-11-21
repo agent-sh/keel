@@ -136,6 +136,8 @@ under `~/.cache/keel-work/bun/research/`.
 ```bash
 bun install
 scripts/dev.sh <port>          # dev daemon with hot reload on Bedrock, scratch state of its own
+                               # (a port below 32768: above it the kernel hands ports to outgoing connections, and
+                               #  one that was free can be taken before the bind; the daemon then exits and says so)
                                # (scripts/dev-watch.ts is its launcher: it reloads imported stylesheets and files a rebase
                                #  brought back, follows a daemon that restarted itself, and stopping it stops the daemon)
 bunx tsc --noEmit -p .          # typecheck
