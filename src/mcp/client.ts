@@ -268,7 +268,11 @@ export class McpClient {
       headers,
       body: JSON.stringify(msg),
       signal,
-    });
+      // A request's own timer aborts it (rpc), so that timer is its one limit:
+      // Bun would end a response that stays silent for five minutes, well
+      // inside a long tool call's time.
+      ...(signal ? { timeout: false } : {}),
+    } as RequestInit);
     if (res.status === 401) throw new AuthRequired(res.headers.get("www-authenticate"));
     // Legacy sessions (2025-11-25 transports, Session Management 3 and 4): a
     // server that ended the session answers 404 to every request naming it,
@@ -396,35 +400,45 @@ export class McpClient {
     const deny = opt.authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
     if (this.closed) throw new Error("the connection is closed");
+    if (opt.signal?.aborted) throw new Error("cancelled");
     const id = this.nextId++;
     const p = opt.modern || this.era === "modern" ? { ...params, _meta: { ...params._meta, ...this.meta() } } : params;
     const msg = { jsonrpc: "2.0", id, method, params: p };
     const timeoutMs = opt.timeoutMs ?? this.timeoutMs;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`));
-        this.settled();
-      }, timeoutMs);
       const ac = new AbortController();
-      const forward = () => ac.abort();
-      const done = (f: (v: any) => void) => (v: any) => { clearTimeout(timer); opt.signal?.removeEventListener("abort", onAbort); opt.signal?.removeEventListener("abort", forward); f(v); this.settled(); };
-      const onAbort = () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      // The one way out, for an answer, a failure, a timeout and a cancel: the
+      // entry, the timer and the caller's listener go, and a POST still open
+      // is aborted (after an answer that only ends a stream left open).
+      const done = (f: (v: any) => void) => (v: any) => {
+        clearTimeout(timer);
+        opt.signal?.removeEventListener("abort", onAbort);
         this.pending.delete(id);
-        if (this.era === "legacy") this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "cancelled" } });
-        done(reject)(new Error("cancelled"));
+        ac.abort();
+        f(v);
+        this.settled();
       };
+      const fail = done(reject);
+      // Stop waiting. A legacy server is told (lifecycle: Timeouts, and
+      // Cancellation; initialize is never cancelled, and the probe runs
+      // before a session exists). For a modern one the closed response is
+      // the cancellation.
+      const giveUp = (why: string, reason: string) => {
+        if (!this.pending.has(id)) return;
+        fail(new Error(why));
+        if (this.era === "legacy" && !opt.modern && method !== "initialize" && !this.closed) this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason } });
+      };
+      const onAbort = () => giveUp("cancelled", "cancelled");
+      this.pending.set(id, { resolve: done(resolve), reject: fail });
+      timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), timeoutMs);
       opt.signal?.addEventListener("abort", onAbort, { once: true });
-      this.pending.set(id, { resolve: done(resolve), reject: done(reject) });
       if (this.t.kind === "stdio") this.write(msg);
       else {
-        opt.signal?.addEventListener("abort", forward, { once: true });
         this.post(msg, ac.signal, opt.authorize).then(
-          () => {
-            // A stream that ended without our answer loses the request.
-            if (this.pending.has(id)) { this.pending.delete(id); done(reject)(new Error(`${method}: the server closed the response without an answer`)); }
-          },
-          (e) => { if (this.pending.has(id)) { this.pending.delete(id); done(reject)(e); } },
+          // A stream that ended without our answer loses the request.
+          () => { if (this.pending.has(id)) fail(new Error(`${method}: the server closed the response without an answer`)); },
+          (e) => { if (this.pending.has(id)) fail(e); },
         );
       }
     });

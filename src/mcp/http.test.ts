@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startLegacyMcp } from "../../test/e2e/fixtures/legacy-http-mcp.ts";
+import { McpClient } from "./client.ts";
 import { McpManager } from "./manager.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "keel-mcp-http-"));
@@ -111,5 +112,35 @@ test("updates arrive on the GET stream, a server that declines it still answers,
     await until(async () => (await s.stats()).streams_open === 0, "the stream closed with the manager");
     s.stop();
     plain.stop();
+  }
+});
+
+test("a request that times out aborts its POST and leaves nothing waiting", async () => {
+  const s = startLegacyMcp({ declineGet: true });
+  const c = await McpClient.connect({ kind: "http", url: s.url, headers: {} }, 5000, "legacy");
+  try {
+    // Count what the request leaves on the caller's signal.
+    const caller = new AbortController();
+    let listeners = 0;
+    const add = caller.signal.addEventListener.bind(caller.signal), remove = caller.signal.removeEventListener.bind(caller.signal);
+    caller.signal.addEventListener = ((...a: Parameters<typeof add>) => { listeners++; add(...a); }) as typeof add;
+    caller.signal.removeEventListener = ((...a: Parameters<typeof remove>) => { listeners--; remove(...a); }) as typeof remove;
+    let settled = 0;
+    const call = c.callTool("hang", {}, caller.signal, 150);
+    call.then(() => settled++, () => settled++);
+    await expect(call).rejects.toThrow("tools/call timed out");
+    expect(c.inflight).toBe(0);
+    expect(listeners).toBe(0);
+    // The server sees the response it held open go away, and is told the request was given up.
+    await until(async () => (await s.stats()).aborted === 1, "the server to see the POST aborted");
+    await until(async () => (await s.stats()).cancelled.length === 1, "the cancellation notice");
+    // A caller that gives up later finds nothing left to cancel.
+    caller.abort();
+    await Bun.sleep(50);
+    expect(settled).toBe(1);
+    expect((await s.stats()).cancelled.length).toBe(1);
+  } finally {
+    c.close();
+    s.stop();
   }
 });
