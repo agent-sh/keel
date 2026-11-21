@@ -463,6 +463,18 @@ test("an offline run's metrics share one scope, and the runner's report is the d
     expect(theirs.arms[0].metrics.requests).toMatchObject({ n: 3, estimate: 3 });
     expect(theirs.arms[1].metrics.cost_usd).toBeUndefined();
     expect(theirs.effects.some((f: any) => f.metric === "cost_usd")).toBe(false);
+
+    // A winner is not named on a primary metric that part of an arm's runs lack: one priced run of nine
+    // that happens to be cheap is not the arm.
+    const few = [1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((rep) => [
+      { arm: "readers on", cluster: `on-${rep}`, stratum: "readlog", m: { cost_usd: 0.01 + rep * 0.0001, ok: 1 } },
+      { arm: "readers off", cluster: `off-${rep}`, stratum: "readlog", m: { ...(rep === 1 ? { cost_usd: 0.001 } : {}), ok: 1 } },
+    ]);
+    const partial = report(e, few).decision;
+    expect(partial).toMatchObject({ verdict: "inconclusive", winner: null });
+    expect(partial.text).toBe("No winner is named: cost per turn is known for 1 of 9 runs of readers off only, and an arm is not judged on a part of it.");
+    // With every run priced the same numbers do name one.
+    expect(report(e, few.map((r) => ({ ...r, m: { cost_usd: 0.001, ...r.m } }))).decision).toMatchObject({ verdict: "won", winner: "readers off" });
   } finally { d.close(); }
 });
 

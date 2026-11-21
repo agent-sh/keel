@@ -22,7 +22,8 @@ export const RUN_SCOPE = "every model request of the run's turn: the working mod
 //   answered (a failed attempt reports none).
 // - cache_read_share: cache reads over prompt_tokens, of the same requests.
 // - cost_usd: the cost of the same requests; left out when one of them has
-//   no price, never counted as free.
+//   no price, never counted as free. An experiment judged by cost names no
+//   winner while a run of a compared arm lacks it.
 // - ok: the task's check passed; ms: the run's wall time; error: the turn
 //   ended in an error; tool_errors: failed tool calls of the turn.
 // A run whose turn left no rollup reports only what the runner saw itself.

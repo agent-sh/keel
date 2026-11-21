@@ -443,6 +443,21 @@ export function decide(e: Experiment, effects: Effect[], guards: Report["guards"
         : `No winner is named: this experiment set no sample size in advance (stop.sessions_per_arm), and an interval read at a moment picked from the data has no stated error rate. The intervals describe the data so far (session families: ${have}).`,
       remove: "Nothing proven: the variant does not ship, and the current path stays." };
   }
+  // The arms the control is compared with.
+  const compared = e.arms.slice(1).filter((a) => e.mode === "offline" || (a.weight ?? 1) > 0);
+  // A winner is named only on a primary metric every unit of the arms has. A
+  // unit without it (a cost with no price) is left out of the mean, and the
+  // units that do have it are not a fair sample of their arm: which ones
+  // could be priced can depend on what the arm did.
+  const lacking = [control, ...compared].flatMap((a) => {
+    const r = arms.find((x) => x.arm === a.name), n = r?.metrics[e.primary]?.n ?? 0;
+    return r && n < r.units ? [`${n} of ${r.units} ${e.mode === "live" ? "turns" : "runs"} of ${a.name}`] : [];
+  });
+  if (lacking.length) {
+    return { winner: null, verdict: "inconclusive", ts,
+      text: `No winner is named: ${METRICS[e.primary].label} is known for ${lacking.join(" and ")} only, and an arm is not judged on a part of it.`,
+      remove: "Nothing proven: the variant does not ship, and the current path stays." };
+  }
   const primary = effects.filter((f) => f.metric === e.primary && f.better === true && !guards.some((g) => g.arm === f.arm && g.worse));
   const best = primary.sort((x, y) => Math.abs(y.diff.estimate) - Math.abs(x.diff.estimate))[0];
   if (best) {
@@ -453,7 +468,6 @@ export function decide(e: Experiment, effects: Effect[], guards: Report["guards"
   }
   // The control wins only against every arm it was compared with: one
   // variant that lost says nothing about one not measured yet or not told apart.
-  const compared = e.arms.slice(1).filter((a) => e.mode === "offline" || (a.weight ?? 1) > 0);
   const lost = effects.filter((f) => f.metric === e.primary && f.better === false && compared.some((a) => a.name === f.arm));
   const by = (f: Effect) => `${f.arm} is worse by ${fmtValue(e.primary, Math.abs(f.diff.estimate))} (95% interval of the change ${fmtValue(e.primary, f.diff.lo)} to ${fmtValue(e.primary, f.diff.hi)})`;
   const drop = (fs: Effect[]) => fs.map((f) => `${f.arm} (${describe(e.arms.find((x) => x.name === f.arm)!)})`).join(", ");
