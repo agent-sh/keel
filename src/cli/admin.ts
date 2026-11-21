@@ -64,18 +64,21 @@ const status = wrap("keel status [--url URL] [--json]", {}, async (v) => {
     `daemon   pid ${d.pid}, up ${dur(d.uptime_ms)}, bun ${d.bun}${d.systemd ? ", under systemd" : ""}`,
     `state    ${d.state_dir}`,
     `turns    ${d.running.length} running${d.draining ? `; draining${d.draining.restart ? " for a restart" : ""} since ${time(d.draining.since_ms)}` : ""}`,
+    d.restart_failed ? `restart  called off at ${time(d.restart_failed.ts_ms)}. ${d.restart_failed.error}` : "",
     a ? `awake    ${a.held ? `held (${a.reason})` : a.available ? "not held" : `not available${a.refused ? `: ${a.refused}` : ""}`}, mode ${a.mode}${a.on_battery ? ", on battery" : ""}` : "",
   ].filter(Boolean).join("\n"));
   return 0;
 });
 
-// Waits for the daemon to go away (and, for a restart, to answer again).
+// Waits for the daemon to go away (and, for a restart, to answer again). A
+// restart the daemon called off (its backup failed) ends the wait with its reason.
 async function follow(url: string, oldPid: number, back: boolean, limitMs: number) {
   const until = Date.now() + limitMs;
   let gone = false;
   while (Date.now() < until) {
     await Bun.sleep(500);
     const d = await call(url, "/api/daemon").catch(() => null);
+    if (d && d.pid === oldPid && !d.draining && d.restart_failed) throw new Error(`the restart was called off, and the daemon (pid ${oldPid}) takes work again. ${d.restart_failed.error}`);
     if (!d || d.pid !== oldPid) gone = true;
     if (gone && !back) return true;
     if (gone && d && d.pid !== oldPid) return d;

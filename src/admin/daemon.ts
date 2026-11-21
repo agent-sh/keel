@@ -167,7 +167,11 @@ export class Daemon {
   draining: { since_ms: number; restart: boolean; deadline_ms: number } | null = null;
   // The process's start (a hot reload makes a new Daemon in the same process).
   readonly started: number = ((globalThis as any).__keelStarted ??= Date.now());
+  // The last restart that was called off (what had to hold before it did not),
+  // until the next drain: the page and `keel restart` say so.
+  restartFailed: { ts_ms: number; error: string } | null = null;
   private beforeExit: (() => void | Promise<void>)[] = [];
+  private beforeRestart: (() => void | Promise<void>)[] = [];
 
   constructor(private deps: Deps) {
     // While draining, nothing that would start work is taken.
@@ -179,6 +183,10 @@ export class Daemon {
   }
 
   onExit(f: () => void | Promise<void>) { this.beforeExit.push(f); }
+  // What must hold before a restart (the backup). It runs once the running
+  // turns had their time and before any is parked; one that fails calls the
+  // restart off, and the daemon takes work again.
+  onRestart(f: () => void | Promise<void>) { this.beforeRestart.push(f); }
 
   runningSessions(): string[] {
     return this.deps.store.db.query<{ id: string }, []>("SELECT id FROM sessions").all().map((r) => r.id).filter((id) => this.deps.engine.isRunning(id));
@@ -195,6 +203,7 @@ export class Daemon {
       systemd: process.env.KEEL_SUPERVISED === "systemd",
       running: this.runningSessions(),
       draining: this.draining,
+      restart_failed: this.restartFailed,
     };
   }
 
@@ -219,10 +228,25 @@ export class Daemon {
       return this.finished;
     }
     this.draining = { since_ms: Date.now(), restart: opts.restart, deadline_ms: Date.now() + opts.timeoutMs };
+    this.restartFailed = null;
     this.emit();
     this.finished = (async () => {
-      await this.deps.engine.drain(opts.timeoutMs);
-      for (const f of this.beforeExit) await Promise.resolve(f()).catch((e) => this.deps.errors.capture("server", e, { at: "shutdown" }));
+      await this.deps.engine.settle(opts.timeoutMs);
+      if (this.draining!.restart) {
+        try {
+          for (const f of this.beforeRestart) await f();
+        } catch (e) {
+          // Called off before a turn was cut: this daemon goes on as it was.
+          const rec = this.deps.errors.capture("server", e, { at: "before a restart" });
+          this.restartFailed = { ts_ms: Date.now(), error: rec.message };
+          this.draining = null;
+          this.deps.engine.undrain();
+          this.emit();
+          return;
+        }
+      }
+      await this.deps.engine.park();
+      for (const f of this.beforeExit) await (async () => f())().catch((e) => this.deps.errors.capture("server", e, { at: "shutdown" }));
       this.deps.providers.shutdown();
       if (this.draining!.restart) this.relaunch();
       // Let the last frames and the HTTP answer go out. Under systemd a

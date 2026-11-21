@@ -115,9 +115,10 @@ export function relayDiagnostics(
       else schedule();
     }
     if (f.t === "queue" && f.session_id === sessionId) schedule();
-    if (f.t === "feature" && f.name === "daemon" && f.data?.draining) {
-      stopping = true;
-      clear();
+    // A drain that was called off (a restart whose backup failed) is over.
+    if (f.t === "feature" && f.name === "daemon") {
+      stopping = !!f.data?.draining;
+      if (stopping) clear();
     }
   });
   return () => { offCapture(); offBus(); clear(); };

@@ -10,7 +10,7 @@
 // POST  /api/storage/cleanup               { older_than_days, sessions? } | { leftovers: true }
 // GET   /api/backups                       { backups }
 // POST  /api/backups                       a backup now -> { backup }
-// GET   /api/daemon                        status: pid, uptime, running turns, draining
+// GET   /api/daemon                        status: pid, uptime, running turns, draining, restart_failed
 // POST  /api/drain                         { timeout_seconds?, restart? } -> { ok, running, restart }
 // GET   /api/awake | POST { until_ms }     keep-awake state, a timed hold
 // POST  /api/report                        { session_id?, note?, dry_run? } -> { includes, path?, summary }
@@ -65,8 +65,9 @@ export const adminRoutes: RouteModule = (deps) => {
   const storage = new Storage(store, deps.engine, bus, errors);
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   daemon.onExit(() => awake.stopAll());
-  daemon.onExit(() => {
-    if (daemon.draining?.restart && settings().backup.before_restart) storage.backup("before a restart");
+  daemon.onRestart(() => {
+    if (!settings().backup.before_restart) return;
+    try { storage.backup("before a restart"); } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
   });
   onSettings(() => awake.update());
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));

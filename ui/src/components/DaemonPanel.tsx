@@ -1,6 +1,7 @@
 // Settings > Daemon: the process serving this page, keeping the machine awake
 // while turns run, a restart that lets running turns finish, and the problem
 // report.
+import { CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, onFeature, reportError, useStore } from "../lib/store.ts";
 import { cn, when } from "../lib/utils.ts";
@@ -8,7 +9,7 @@ import { confirmAction } from "./Confirm.tsx";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
-type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number } | null };
+type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number } | null; restart_failed?: { ts_ms: number; error: string } | null };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
 
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
@@ -66,7 +67,17 @@ export function DaemonPanel() {
         </SettingRow>
         <SettingRow
           label="Restart"
-          hint={draining ? `Waiting for running turns since ${when(draining.since_ms)}; new work is held until the daemon is back.` : `New work waits, running turns finish, and the daemon starts again${st.systemd ? " under systemd" : " from its own binary"}. A backup is made first${settings?.backup.before_restart === false ? " when that is on in Storage" : ""}.`}
+          hint={draining ? `Waiting for running turns since ${when(draining.since_ms)}; new work is held until the daemon is back.` : (
+            <>
+              New work waits, running turns finish, and the daemon starts again{st.systemd ? " under systemd" : " from its own binary"}. A backup is made first{settings?.backup.before_restart === false ? " when that is on in Storage" : ""}.
+              {st.restart_failed && (
+                <span role="alert" data-testid="daemon-restart-failed" className="mt-2 flex items-start gap-2 text-danger">
+                  <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                  <span className="min-w-0 break-words">The restart of {when(st.restart_failed.ts_ms)} was called off, and Keel takes work as before. {st.restart_failed.error}</span>
+                </span>
+              )}
+            </>
+          )}
         >
           <button type="button" className={btn} disabled={!!draining || !connected} onClick={() => restart().catch(reportError)} data-testid="daemon-restart">
             {draining ? "Restarting" : "Restart"}

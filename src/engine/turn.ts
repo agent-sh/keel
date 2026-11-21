@@ -1368,15 +1368,33 @@ export class Engine {
   // by themselves, then are parked (cut, with "restart" as their end reason) so
   // the next daemon resumes them.
   async drain(ms: number) {
+    await this.settle(ms);
+    await this.park();
+  }
+
+  // The first half of a drain: no new turn starts, and running turns get `ms`
+  // to end by themselves. Nothing is cut yet, so the drain can still be called off.
+  async settle(ms: number) {
     this.draining = true;
     const all = [...this.running.values()].map((r) => r.done);
     if (all.length) await Promise.race([Promise.all(all), Bun.sleep(ms)]);
+  }
+
+  // The second half: the turns still running are parked.
+  async park() {
     await Promise.all([...this.running.entries()].map(async ([id, r]) => {
       this.parking.add(id);
       for (const h of allHooks()) try { h.turnParking?.(id); } catch (e) { this.errors.capture("server", e, { hook: "turnParking", session: id }); }
       r.abort.abort();
       await r.done;
     }));
+  }
+
+  // A drain called off before any turn was parked: turns start again, first
+  // the prompts that waited in a queue meanwhile.
+  undrain() {
+    this.draining = false;
+    for (const { session_id } of this.store.db.query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM queue").all()) this.next(session_id);
   }
 
   // At startup: a turn the last daemon left open (a crash, a kill) is closed
