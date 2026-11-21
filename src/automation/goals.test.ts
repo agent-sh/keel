@@ -324,6 +324,7 @@ const restart = (...sessions: string[]) => {
   const dir = store.stateDir;
   store.db.close();
   boot(dir);
+  agents.recover();
   goals.recover();
 };
 const quiet = () => Bun.sleep(30);
@@ -351,25 +352,125 @@ test("a cut turn the engine holds leaves the goal pursuing: the next turn in the
   expect(said(s.id, "continue")).toHaveLength(1);
 });
 
-test("a drain that parks the verifier's turn leaves the goal verifying, and the next start checks it again", async () => {
-  const g = await judgedMet("ship it");
-  // The daemon drains: the verifier's turn is parked and its end hook runs with "restart".
-  draining = true;
-  store.append(g.child, "turn_end", { reason: "restart", usage: usage(0) });
-  live.delete(g.child);
-  for (const h of allHooks()) h.turnEnd?.(store.session(g.child)!, "restart");
-  await quiet();
-  expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: true });
+// The verifier's turn as a daemon stop leaves it (parked, or closed as cut by the next start).
+const cutVerifier = (child: string) => {
+  store.append(child, "turn_end", { reason: "restart", usage: usage(0) });
+  live.delete(child);
+  for (const h of allHooks()) h.turnEnd?.(store.session(child)!, "restart");
+};
+// The engine continues the cut turn in the same session.
+const continued = (child: string) => {
+  store.append(child, "user", { text: "[harness] The daemon restarted during your previous turn.", origin: "restart" });
+  store.append(child, "turn_start", {});
+  live.add(child);
+};
+const verifiersOf = (id: string) => store.sessions().filter((x) => x.parent_id === id).map((x) => x.id);
+const MET = '{"verdict": "met", "reason": "the suite passes", "evidence": ["bun test: 4 pass, 0 fail"]}';
 
-  restart(g.id);
-  await until(() => asks(g.id) === 2);
-  expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: false, turns: 1 });
-  asked[askedFor.lastIndexOf(g.id)]!('{"verdict": "met", "reason": "it looks done"}');
-  const child = await until(() => { const c = goals.get(g.id)?.verifier_session; return c && c !== g.child ? c : undefined; });
-  await until(() => live.has(child));
-  verifierSays(child, '{"verdict": "met", "reason": "the suite passes", "evidence": ["bun test: 4 pass, 0 fail"]}');
+test("a verification longer than the gap between restarts ends with one verifier, one judge call and one verdict", async () => {
+  const g = await judgedMet("ship it");
+  for (let n = 0; n < 3; n++) {
+    draining = true;
+    cutVerifier(g.child);
+    await quiet();
+    expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: true, verifier_session: g.child });
+    restart(g.id);
+    await quiet();
+    // The same verifier is still the goal's, live for its parent, with no prompt of its own from the start.
+    expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: true, verifier_session: g.child });
+    expect(agents.byChild(g.child)!.status).toBe("running");
+    expect(store.events(g.child).filter((e) => e.kind === "user" && e.data.origin !== "restart")).toHaveLength(1);
+    continued(g.child);
+  }
+  expect(asks(g.id)).toBe(1);
+  // A turn of the working session that ends meanwhile is counted, not judged a second time.
+  turn(g.id, 5);
+  await goals.afterTurn(g.id, "end_turn");
+  expect(asks(g.id)).toBe(1);
+  verifierSays(g.child, MET);
   await until(() => goals.get(g.id)?.status === "achieved");
-  expect(goals.get(g.id)).toMatchObject({ verified: true, turns: 1 });
+  expect(goals.get(g.id)).toMatchObject({ verified: true, verifying: false, turns: 2, verifier_session: g.child, evidence: ["bun test: 4 pass, 0 fail"] });
+  expect(verifiersOf(g.id)).toEqual([g.child]);
+  expect(asks(g.id)).toBe(1);
+  const rows = store.db.query<{ text: string }, [string]>("SELECT text FROM activity WHERE session_id = ? AND text LIKE 'Goal verification%'").all(g.id);
+  expect(rows).toHaveLength(1);
+});
+
+test("a verifier that answered as the daemon went down is read at the next start, and a bare met is asked once more there", async () => {
+  // Its turn ended (the end is stored) and the daemon went down before the goal read it.
+  const done = await judgedMet("ship it");
+  store.append(done.child, "assistant", { blocks: [{ type: "text", text: '{"verdict": "not_met", "reason": "one test fails", "evidence": ["bun test: 1 fail"]}' }], usage: usage(3) });
+  store.append(done.child, "turn_end", { reason: "end_turn", usage: usage(3) });
+  const bare = await judgedMet("ship it");
+  store.append(bare.child, "assistant", { blocks: [{ type: "text", text: '{"verdict": "met", "reason": "all good"}' }], usage: usage(3) });
+  store.append(bare.child, "turn_end", { reason: "end_turn", usage: usage(3) });
+  restart(done.id, bare.id);
+  await until(() => said(done.id, "continue").length);
+  expect(goals.get(done.id)).toMatchObject({ status: "pursuing", verifying: false, last_verdict: "not_met", verifier_session: done.child });
+  expect(said(done.id, "continue")[0]!.data.text).toContain("bun test: 1 fail");
+  await until(() => live.has(bare.child));
+  expect(store.events(bare.child).filter((e) => e.kind === "user").map((e) => e.data.kind)).toEqual(["verify_goal", "verify_goal"]);
+  verifierSays(bare.child, MET);
+  await until(() => goals.get(bare.id)?.status === "achieved");
+  for (const x of [done, bare]) {
+    expect(asks(x.id)).toBe(1);
+    expect(verifiersOf(x.id)).toEqual([x.child]);
+  }
+});
+
+test("a goal whose verifier had no session or no task yet when the daemon went down gets them at the next start, the judge not asked again", async () => {
+  // Down while the verifier's model resolved: the judge's met is saved, no session yet.
+  const none = session();
+  await goals.set(none.id, { objective: "ship it" });
+  turn(none.id, 5);
+  modelGate = new Promise(() => {}); // never answers: that daemon goes down first
+  void goals.afterTurn(none.id, "end_turn");
+  verdict('{"verdict": "met", "reason": "it looks done"}');
+  await until(() => goals.get(none.id)?.verifying);
+  // Down between the verifier's session and its task.
+  const bare = session();
+  await goals.set(bare.id, { objective: "ship it" });
+  turn(bare.id, 5);
+  const child = store.createSession({ model: "m", workspace: "/", title: "Verify goal" }).id;
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(bare.id, child);
+  agents.adopt(bare.id, child, { title: "Verify goal", type: "verifier", model: "m" });
+  store.db.query("UPDATE goals SET data = json_set(data, '$.verifying', json('true'), '$.verifier_session', ?, '$.last_verdict', 'met', '$.last_reason', 'it looks done') WHERE session_id = ?").run(child, bare.id);
+  const before = asked.length;
+  modelGate = undefined;
+  restart(none.id, bare.id);
+  const made = await until(() => goals.get(none.id)?.verifier_session);
+  await until(() => live.has(made) && live.has(child));
+  for (const c of [made, child]) {
+    const prompts = store.events(c).filter((e) => e.kind === "user");
+    expect(prompts.map((e) => e.data.kind)).toEqual(["verify_goal"]);
+    expect(prompts[0]!.data.text).toContain("Why the judge said met:\nit looks done");
+    verifierSays(c, MET);
+  }
+  await until(() => goals.get(none.id)?.status === "achieved" && goals.get(bare.id)?.status === "achieved");
+  expect(asked.length).toBe(before);
+  expect(verifiersOf(bare.id)).toEqual([child]);
+});
+
+test("a verifier the engine does not continue pauses the goal and tells the owner", async () => {
+  const alerts: string[][] = [];
+  alertHook.raise = (kind, id, title, body) => void alerts.push([kind, id ?? "", title, body]);
+  const g = await judgedMet("ship it");
+  draining = true;
+  cutVerifier(g.child);
+  restart(g.id);
+  // The engine holds the cut turn (continued three times with no step done): its note, then the hook.
+  store.append(g.child, "note", { kind: "restart", text: "This turn was not continued again." });
+  for (const h of allHooks()) h.cutTurnHeld?.(store.session(g.child)!, "This turn was not continued again.");
+  await until(() => goals.get(g.id)?.status === "paused");
+  alertHook.raise = undefined;
+  expect(goals.get(g.id)).toMatchObject({ verifying: false, status_reason: expect.stringContaining("was not continued") });
+  expect(alerts).toEqual([["failed", g.id, expect.stringContaining("Goal paused"), expect.stringContaining("was not continued")]]);
+  expect(asks(g.id)).toBe(1);
+  // A start after that finds a paused goal and nothing to wait for.
+  restart(g.id);
+  await quiet();
+  expect(goals.get(g.id)).toMatchObject({ status: "paused", verifying: false });
+  expect(verifiersOf(g.id)).toEqual([g.child]);
 });
 
 test("a draining daemon asks no judge and starts no verifier: the check is the next start's", async () => {

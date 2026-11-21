@@ -3,7 +3,7 @@ import * as activity from "./activity.ts";
 import { D, alertHook, capture, deliver, emit, hasPending } from "./core.ts";
 import { check, extractJson } from "./schema.ts";
 import { liveAgents } from "./state.ts";
-import { verify } from "./verify.ts";
+import { reattach, verify, type Outcome } from "./verify.ts";
 import * as agents from "./agents.ts";
 import * as waits from "./waits.ts";
 
@@ -219,33 +219,94 @@ function turnFacts(sessionId: string): { id?: string; tokens: number; tools: boo
 const judging = new Set<string>();
 
 // After a restart, what an active goal is owed. A verification the daemon was
-// waiting on has no waiter any more: its verifier stops and the turn is checked
-// again. A turn that ended with its check not done (the judge was out when the
-// daemon went down, the daemon was draining, or the turn-end hook never ran)
-// is checked now, and counted only if it was not. A turn the restart cut is
-// the engine's to continue, or to hold: its end, or the end of whatever turn
-// comes next in the session (a loop's, a wake's), is checked like any other.
-// A goal saved before turn ends were marked carries no record of a check it
-// is owed: it is left as it is and goes on at its session's next turn end.
+// waiting on goes on with the verifier it had: its cut turn is the engine's to
+// continue, and the goal waits for that same session again (reverify), so a
+// check that needs longer than the gap between restarts still ends, with one
+// verifier and one verdict. A turn that ended with its check not done (the
+// judge was out when the daemon went down, the daemon was draining, or the
+// turn-end hook never ran) is checked now, and counted only if it was not. A
+// turn the restart cut is the engine's to continue, or to hold: its end, or
+// the end of whatever turn comes next in the session (a loop's, a wake's), is
+// checked like any other. A goal saved before turn ends were marked carries no
+// record of a check it is owed: it is left as it is and goes on at its
+// session's next turn end.
 export function recover() {
   judging.clear(); // a new daemon: no check is under way
   for (const r of db().query<{ data: string }, []>("SELECT data FROM goals").all()) {
     let g = JSON.parse(r.data) as Goal;
-    const verifying = !!g.verifying;
-    if (verifying) {
+    const s = D().store.session(g.session_id);
+    if (g.verifying) {
+      if (active(g) && s && !s.archived) { reverify(g); continue; }
+      // Paused or archived meanwhile: its answer has no one to go to.
       const old = g.verifier_session ? agents.byChild(g.verifier_session) : undefined;
-      if (old && !agents.isEnded(old)) agents.stop(old.id, "parent"); // its answer has no one to go to
+      if (old && !agents.isEnded(old)) agents.stop(old.id, "parent");
       g = save({ ...g, verifying: false });
     }
-    const s = D().store.session(g.session_id);
     if (!active(g) || !s || s.archived) continue;
-    if (!verifying && g.counted === undefined && g.checked === undefined) continue;
+    if (g.counted === undefined && g.checked === undefined) continue;
     // The judge's model may still be starting (a plugin): waited for, as the
     // engine waits for a cut turn's. A model that does not come is not asked:
     // the goal stays as it is, for its next turn end or the next start.
     const id = g.session_id;
     ready(g.judge_model ?? s.model).then(() => owed(id)).catch((e) => capture(e, { at: "goal recheck", session: id }));
   }
+}
+
+// The verification a restart interrupted, taken up where it was: the judge is
+// not asked again and no second verifier starts. Only a goal whose verifier
+// had no session yet (the daemon went down as it was being made) gets one now.
+function reverify(g: Goal) {
+  const id = g.session_id;
+  const mine = instance(g);
+  const ours = (x?: Goal) => !!x && instance(x) === mine;
+  const key = `${id} ${mine}`;
+  // The check's outcome is saved with the turn end counted last.
+  const done = (x: Goal) => save({ ...x, checked: x.counted ?? null });
+  const judged = g.last_reason ?? "";
+  judging.add(key);
+  (async () => {
+    const child = g.verifier_session && D().store.session(g.verifier_session) ? g.verifier_session : null;
+    if (!child) await ready(g.verifier_model ?? g.judge_model ?? D().store.session(id)!.model);
+    const out = child ? await reattach(id, g, judged, child) : await verify(id, g, judged, (c) => { const now = get(id); if (ours(now)) save({ ...now!, verifier_session: c }); }, () => ours(get(id)));
+    const got = verified(id, ours, done, out);
+    if (got) onward(got.next, got.reason, done);
+  })().catch((e) => {
+    capture(e, { at: "goal verification", session: id });
+    const now = get(id);
+    if (ours(now)) done({ ...now!, verifying: false, status: "paused", status_reason: `its verification could not go on: ${(e as Error).message}. Resume to try again.` });
+  }).finally(() => judging.delete(key));
+}
+
+// What a finished verification decides: met ends the goal, no verdict pauses
+// it and tells the owner, and not met gives the goal as it goes on and what
+// the next turn is told. Nothing when the goal ended, paused or is not this
+// check's any more.
+function verified(sessionId: string, ours: (x?: Goal) => boolean, done: (x: Goal) => Goal, out: Outcome, turn?: string): { next: Goal; reason: string } | undefined {
+  const after = get(sessionId);
+  if (!ours(after)) return; // cleared or replaced meanwhile: the goal there now is not this check's to touch
+  if (!active(after)) return void done({ ...after!, verifying: false }); // paused meanwhile
+  let next: Goal = { ...after!, verifying: false, verifier_session: out.child_id, tokens_used: after!.tokens_used + out.tokens };
+  if ("error" in out.result) {
+    // No verdict to act on (a met with no evidence, no answer, a verifier that ran out of time):
+    // the goal stops here until the owner resumes it, so the owner is told.
+    const why = `the judge said met; ${out.result.error}. Resume to try again.`;
+    activity.record("turn", "goal", sessionId, `Goal paused: ${why}`.slice(0, 400), undefined, turn);
+    alertHook.raise?.("failed", sessionId, `Goal paused: ${D().store.session(sessionId)?.title || "a session"}`, why, { open_session: sessionId });
+    return void done({ ...next, status: "paused", status_reason: why });
+  }
+  const r = out.result;
+  activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400), undefined, turn);
+  next = { ...next, last_verdict: r.verdict, last_reason: r.reason, evidence: r.evidence };
+  if (r.verdict === "met") return void done({ ...next, status: "achieved", status_reason: r.reason, verified: true });
+  return { next, reason: `${r.reason}${r.evidence.length ? `\n${r.evidence.map((e) => `- ${e}`).join("\n")}` : ""}` };
+}
+
+// A goal that is not met goes on with the reason, unless its budget is spent or it stalled.
+function onward(next: Goal, reason: string, done: (x: Goal) => Goal) {
+  if (spent(next)) return void done({ ...next, status: "budget", status_reason: next.max_turns != null && next.turns >= next.max_turns ? `ran its ${next.max_turns} turns` : `spent its ${next.token_budget} tokens` });
+  if (next.idle_turns >= STALL_TURNS) return void done({ ...next, status: "stalled", status_reason: `${STALL_TURNS} turns in a row used no tool` });
+  done(next);
+  deliver(next.session_id, `[harness] The goal is not met yet${next.evidence ? " (an independent check of the work found this)" : ""}: ${reason}\nContinue toward it.`, { kind: "goal", goal: "continue" });
 }
 
 // A restart was called off: a turn that ended while the daemon drained was
@@ -336,32 +397,17 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     activity.record("turn", "goal", sessionId, `Goal check: ${v.verdict.replace("_", " ")}. ${v.reason}`.slice(0, 400), undefined, opts.turn);
     if (v.verdict === "met") {
       // Met by the judge: the verifier checks the work before it counts.
-      save({ ...next, verifying: true, evidence: null });
+      // The verifier of a check before this one is not this check's: a start that finds no session makes one.
+      save({ ...next, verifying: true, evidence: null, verifier_session: null });
       const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (ours(c)) save({ ...c!, verifier_session: child }); }, () => ours(get(sessionId)));
-      const after = get(sessionId);
-      if (!ours(after)) return; // cleared or replaced meanwhile: the goal there now is not this check's to touch
-      if (!active(after)) return void done({ ...after!, verifying: false }); // paused meanwhile
-      next = { ...after!, verifying: false, verifier_session: out.child_id, tokens_used: after!.tokens_used + out.tokens };
-      if ("error" in out.result) {
-        // No verdict to act on (a met with no evidence, no answer, a verifier that ran out of time):
-        // the goal stops here until the owner resumes it, so the owner is told.
-        const why = `the judge said met; ${out.result.error}. Resume to try again.`;
-        activity.record("turn", "goal", sessionId, `Goal paused: ${why}`.slice(0, 400), undefined, opts.turn);
-        alertHook.raise?.("failed", sessionId, `Goal paused: ${D().store.session(sessionId)?.title || "a session"}`, why, { open_session: sessionId });
-        return void done({ ...next, status: "paused", status_reason: why });
-      }
-      const r = out.result;
-      activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400), undefined, opts.turn);
-      next = { ...next, last_verdict: r.verdict, last_reason: r.reason, evidence: r.evidence };
-      if (r.verdict === "met") return void done({ ...next, status: "achieved", status_reason: r.reason, verified: true });
-      v.reason = `${r.reason}${r.evidence.length ? `\n${r.evidence.map((e) => `- ${e}`).join("\n")}` : ""}`;
+      const got = verified(sessionId, ours, done, out, opts.turn);
+      if (!got) return;
+      next = got.next;
+      v.reason = got.reason;
       v.verdict = "not_met";
     }
     if (v.verdict === "impossible") return void done({ ...next, status: "impossible", status_reason: v.reason });
-    if (spent(next)) return void done({ ...next, status: "budget", status_reason: next.max_turns != null && next.turns >= next.max_turns ? `ran its ${next.max_turns} turns` : `spent its ${next.token_budget} tokens` });
-    if (next.idle_turns >= STALL_TURNS) return void done({ ...next, status: "stalled", status_reason: `${STALL_TURNS} turns in a row used no tool` });
-    done(next);
-    deliver(sessionId, `[harness] The goal is not met yet${next.evidence ? " (an independent check of the work found this)" : ""}: ${v.reason}\nContinue toward it.`, { kind: "goal", goal: "continue" });
+    onward(next, v.reason, done);
   } catch (e) {
     capture(e, { at: "goal check", session: sessionId });
     const now = get(sessionId);

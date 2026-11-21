@@ -208,6 +208,18 @@ export class ScriptedProvider implements Provider {
         // that believes it: what the independent goal check exists for.
         if (lastText.includes("[harness] Goal check")) return reply('{"verdict": "met", "reason": "The reply says goal.txt holds the word ready."}');
         return reply("Done: goal.txt holds the word ready.");
+      case "verify-holds": {
+        // `script:verify-holds <pipe> <n>` as a goal's objective: the worker says
+        // done, its judge believes it, and the verifier reads the named pipe n
+        // times, one call a round (each a step a daemon restart can cut), before
+        // its verdict.
+        if (lastText.includes("[harness] Goal check")) return reply('{"verdict": "met", "reason": "The reply says it is done."}');
+        if (!textOf(msgs[0]).startsWith("You are an independent verifier")) return reply("Done.");
+        const [, pipe, n] = owner.match(/script:verify-holds\s+(\S+)\s+(\d+)/) ?? [];
+        const round = msgs.filter((m) => m.role === "assistant").length;
+        if (round < Number(n)) return reply(`Check ${round + 1} of ${n}.`, "tool_use", [{ type: "tool_use", id: `hold-${msgs.length}`, name: "Bash", input: { command: `cat ${pipe}; echo released` } }]);
+        return reply(JSON.stringify({ verdict: "met", reason: "Every check ran.", evidence: [`${n} reads of the pipe were started`] }));
+      }
       case "rate-limit-long":
         throw longRateLimit();
       case "rate-limit":

@@ -1,3 +1,4 @@
+import { lineage } from "../core/tree.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { sandboxStatus } from "../safety/sandbox.ts";
 import { gate } from "../server/routes/permissions.ts";
@@ -77,9 +78,14 @@ let hooked = false;
 function hook() {
   if (hooked) return;
   hooked = true;
-  // A turn parked for a daemon stop has not ended: the wait goes with the
-  // daemon, the goal stays verifying, and the next start checks it again (goals.recover).
-  registerHooks({ turnEnd: (s, reason) => { if (reason !== "restart") waiting.get(s.id)?.(reason); } });
+  registerHooks({
+    // A turn parked for a daemon stop has not ended: the wait goes with the
+    // daemon, the goal stays verifying, and the next start waits for the same
+    // verifier again (reattach), whose turn the engine continues.
+    turnEnd: (s, reason) => { if (reason !== "restart") waiting.get(s.id)?.(reason); },
+    // The engine did not continue its cut turn: nothing runs for it any more.
+    cutTurnHeld: (s) => waiting.get(s.id)?.("held"),
+  });
 }
 
 const lastText = (childId: string) => {
@@ -94,13 +100,58 @@ const lastText = (childId: string) => {
   return "";
 };
 
+export type Outcome = { result: Verdict | { error: string }; child_id: string | null; tokens: number };
+
+// The end of the verifier's turn that runs now or is about to: one it was just
+// sent, or one a restart cut that the engine continues.
+const turnEnd = (childId: string) =>
+  new Promise<string>((resolve) => {
+    const timer = setTimeout(() => { waiting.delete(childId); D().engine.interrupt(childId).catch(() => {}); resolve("timeout"); }, WAIT_MS);
+    waiting.set(childId, (reason) => { clearTimeout(timer); waiting.delete(childId); resolve(reason); });
+  });
+
+const WHY: Record<string, string> = {
+  timeout: `the verifier ran past ${Math.round(WAIT_MS / 60_000)} minutes`,
+  held: "the verifier's turn was cut by daemon restarts and was not continued",
+};
+const answer = (childId: string, reason: string): Verdict | { error: string; unproven?: true } =>
+  reason === "end_turn" ? parseVerdict(lastText(childId)) : { error: WHY[reason] ?? `the verifier's turn ended: ${reason}` };
+
+// The prompts the verifier got: its task, then at most one request for its evidence.
+const prompts = (childId: string) => D().store.events(childId).filter((e) => e.kind === "user" && e.data.kind === "verify_goal").length;
+const ask = (childId: string, text: string) => {
+  const ended = turnEnd(childId);
+  D().engine.send(childId, text, { meta: { kind: "verify_goal" } });
+  return ended;
+};
+
+// From the end of a verifier's turn to the verification's outcome.
+async function conclude(childId: string, ended: string | Promise<string>): Promise<Outcome> {
+  const { store, engine } = D();
+  let result = answer(childId, await ended);
+  if ("unproven" in result && prompts(childId) < 2) {
+    // Asked once for what it saw, in its own context (what it read is cached there).
+    await engine.idle(childId);
+    result = answer(childId, await ask(childId, EVIDENCE));
+  }
+  const u = store.session(childId)?.usage as any;
+  const tokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cache_read ?? 0) + (u?.cache_write ?? 0);
+  return { result, child_id: childId, tokens };
+}
+
+type Checked = { objective: string; started_ms: number; judge_model?: string | null; verifier_model?: string | null };
+const taskFor = (sessionId: string, g: Checked, judged: string) => {
+  const t = trail(sessionId, g.started_ms);
+  return task({ objective: g.objective, claim: t.claim, judged, commands: t.commands, cwd: D().store.session(sessionId)!.workspace });
+};
+
 // Runs one verification; resolves with its verdict (or why there is none),
 // the child session and what it spent. `still`: whether the goal it checks is
 // still the one there; asked before its session is made, so a goal cleared or
 // replaced while the model resolved gets no verifier (and no child session).
-export async function verify(sessionId: string, g: { objective: string; started_ms: number; judge_model?: string | null; verifier_model?: string | null }, judged: string, onChild?: (childId: string) => void, still?: () => boolean): Promise<{ result: Verdict | { error: string }; child_id: string | null; tokens: number }> {
+export async function verify(sessionId: string, g: Checked, judged: string, onChild?: (childId: string) => void, still?: () => boolean): Promise<Outcome> {
   hook();
-  const { store, providers, engine, bus } = D();
+  const { store, providers, bus } = D();
   const s = store.session(sessionId)!;
   const model = g.verifier_model ?? g.judge_model ?? s.model;
   const { info } = await providers.resolve(model);
@@ -112,24 +163,22 @@ export async function verify(sessionId: string, g: { objective: string; started_
   agents.adopt(sessionId, child.id, { title: child.title || "Verify goal", type: "verifier", model: info.id });
   bus.emit({ t: "session", session: store.session(child.id)! });
   onChild?.(child.id);
-  const t = trail(sessionId, g.started_ms);
-  // One turn of the verifier: its answer, or why it gave none.
-  const turn = async (text: string): Promise<Verdict | { error: string; unproven?: true }> => {
-    const ended = new Promise<string>((resolve) => {
-      const timer = setTimeout(() => { waiting.delete(child.id); engine.interrupt(child.id).catch(() => {}); resolve("timeout"); }, WAIT_MS);
-      waiting.set(child.id, (reason) => { clearTimeout(timer); waiting.delete(child.id); resolve(reason); });
-    });
-    engine.send(child.id, text, { meta: { kind: "verify_goal" } });
-    const reason = await ended;
-    return reason === "end_turn" ? parseVerdict(lastText(child.id)) : { error: reason === "timeout" ? `the verifier ran past ${Math.round(WAIT_MS / 60_000)} minutes` : `the verifier's turn ended: ${reason}` };
-  };
-  let result = await turn(task({ objective: g.objective, claim: t.claim, judged, commands: t.commands, cwd: s.workspace }));
-  if ("unproven" in result) {
-    // Asked once for what it saw, in its own context (what it read is cached there).
-    await engine.idle(child.id);
-    result = await turn(EVIDENCE);
-  }
-  const u = store.session(child.id)?.usage as any;
-  const tokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cache_read ?? 0) + (u?.cache_write ?? 0);
-  return { result, child_id: child.id, tokens };
+  return conclude(child.id, ask(child.id, taskFor(sessionId, g, judged)));
+}
+
+// After a restart: the verification goes on with the verifier it had. Its turn
+// the restart cut is the engine's to continue (it asks agents.onCutTurn), and
+// the wait is put back on that same session; a turn that had ended before the
+// daemon went down is read now; a verifier that never got its task gets it.
+// One verifier and one verdict per check, however many restarts it spans.
+export function reattach(sessionId: string, g: Checked, judged: string, childId: string): Promise<Outcome> {
+  hook();
+  const { store, engine } = D();
+  if (!prompts(childId)) return conclude(childId, ask(childId, taskFor(sessionId, g, judged)));
+  const line = lineage(store.events(childId), store.session(childId)?.head ?? null);
+  const last = line.findLast((e) => e.kind === "user" || e.kind === "turn_start" || e.kind === "turn_end");
+  const over = last?.kind === "turn_end" && !engine.isRunning(childId);
+  // Held by the daemon before this one (its note follows the cut turn): no turn is coming.
+  if (over && last.data.reason === "restart" && line.at(-1)?.kind === "note" && line.at(-1)!.data.kind === "restart") return conclude(childId, "held");
+  return conclude(childId, over && last.data.reason !== "restart" ? String(last.data.reason) : turnEnd(childId));
 }

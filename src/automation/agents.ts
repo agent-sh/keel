@@ -1260,7 +1260,8 @@ export function recover() {
     // start waited for the first agent's cache): it starts now, with all of it.
     if (sendTask(a)) continue;
     // No turn to continue (its task was stored and never started): start it.
-    if (!waits.cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
+    // A goal's verifier is its goal's to go on with (goals.recover): its task, or the wait for its turn.
+    if (a.type !== "verifier" && !waits.cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
   }
   sendAllOwed(D().store.db.query<Owed, []>("SELECT * FROM agent_owed ORDER BY created, rowid").all(), true);
 }

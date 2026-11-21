@@ -17,7 +17,8 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 function daemon(state: string, extra: Record<string, string> = {}, opts: { bin?: string; bind?: string } = {}): Promise<{ proc: ChildProcess; url: string }> {
   const args = ["serve", "--bind", opts.bind ?? "127.0.0.1:0", "--state-dir", state, "--workspace", state];
   const proc = spawn(opts.bin ?? "bun", opts.bin ? args : ["src/main.ts", ...args], {
-    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", ...extra },
+    // A config folder of its own unless the run names one: never the owner's.
+    env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", ...extra },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
@@ -279,6 +280,65 @@ test("a background agent is continued across restarts and its record matches wha
     await shoot(page, "restart-04-agent-reports");
   } finally {
     d.proc.kill("SIGKILL");
+  }
+});
+
+// Feature: a goal's verification that needs longer than the gap between
+// restarts still ends. The verifier's turn is cut three times (a stop that
+// parks it, then two crashes); each start continues that same turn and the
+// goal waits for it again: one judge call, one verifier session, one verdict.
+test("a goal's verifier is continued across restarts and gives one verdict", async ({ page }) => {
+  const state = join(ROOT, `restart-verifier-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const log = join(state, "requests.jsonl");
+  const pipe = join(state, "hold");
+  spawnSync("mkfifo", [pipe]);
+  let d = await daemon(state, { KEEL_SCRIPTED_LOG: log });
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Verifier across restarts" });
+    await call(`/api/sessions/${session.id}/goal`, { objective: `script:verify-holds ${pipe} 3` }, "PUT");
+    const goal = async () => (await call(`/api/sessions/${session.id}/goal`, undefined, "GET")).goal;
+    const verifiers = async () => ((await call(`/api/sessions/${session.id}/agents`, undefined, "GET")).agents as any[]).filter((a) => a.type === "verifier");
+    await expect.poll(async () => (await goal())?.verifier_session, { timeout: 30_000 }).toBeTruthy();
+    const child = (await goal()).verifier_session as string;
+    const view = (id: string) => call(`/api/sessions/${id}`, undefined, "GET");
+    const holds = async () => ((await view(child)).events as any[]).filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")).length;
+
+    for (const [n, how] of [[1, "SIGTERM"], [2, "SIGKILL"], [3, "SIGKILL"]] as const) {
+      await expect.poll(holds, { timeout: 60_000 }).toBe(n);
+      expect(await goal()).toMatchObject({ status: "pursuing", verifying: true, verifier_session: child });
+      await page.waitForTimeout(500); // the read runs
+      d.proc.kill(how);
+      await exited(d.proc);
+      d = await daemon(state, { KEEL_SCRIPTED_LOG: log });
+    }
+    // The third start continues the turn to its verdict: nothing is left to read.
+    await expect.poll(async () => (await goal()).status, { timeout: 60_000 }).toBe("achieved");
+    expect(await goal()).toMatchObject({ verified: true, verifying: false, verifier_session: child, evidence: ["3 reads of the pipe were started"] });
+    expect((await verifiers()).map((a) => [a.session_id, a.status])).toEqual([[child, "completed"]]);
+    const ev = (await view(child)).events as any[];
+    expect(ev.filter((e) => e.kind === "user").map((e) => e.data.kind ?? e.data.origin)).toEqual(["verify_goal", "restart", "restart", "restart"]);
+    expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "restart", "restart", "end_turn"]);
+    // The judge was asked once, in the first daemon; no start asked it again.
+    const sent = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(sent.filter((r) => r.session === session.id && r.purpose === "side")).toHaveLength(1);
+    const rows = ((await call(`/api/activity?session_id=${session.id}`, undefined, "GET")).items as any[]).map((a) => a.text as string);
+    expect(rows.filter((t) => t.startsWith("Goal verification"))).toHaveLength(1);
+    const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
+    expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+
+    await page.goto(`${d.url}/s/${session.id}`);
+    await page.getByTestId("composer").fill("/goal"); // opens the goal's panel
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("goal-verify")).toHaveAttribute("data-state", "met", { timeout: 30_000 });
+    await shoot(page, "restart-06-verifier-one-verdict");
+  } finally {
+    d.proc.kill("SIGKILL");
+    // The reads a crash cut outlive their daemon: released.
+    spawnSync("sh", ["-c", `echo go > ${pipe}`], { timeout: 5_000 });
   }
 });
 
