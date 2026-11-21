@@ -5,7 +5,7 @@
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
 import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
-import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { createContext, Fragment, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
@@ -29,7 +29,7 @@ import { archive } from "../lib/sessops.ts";
 import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
-import { Seg } from "./Seg.tsx";
+import { Seg, tabId } from "./Seg.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -305,6 +305,7 @@ function Index({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
   useFleet((s) => s.machines.length); // machine names in the group heads
   const [tab, setTab] = useState<"active" | "archived">(() => { const t = openOn; openOn = "active"; return t; });
+  const panel = useId();
   const [archived, setArchived] = useState<Session[]>([]);
   // The archive is asked for when its tab opens and when what it lists moved:
   // a session was archived or restored, or one is gone. A status or a title
@@ -357,7 +358,7 @@ function Index({ current }: { current: string | null }) {
   const sections = useMemo(() => machineRuns(rest), [rest]);
   return (
     <>
-      <Seg kind="tabs" fill className="mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
+      <Seg kind="tabs" panel={panel} fill className="mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
       <ListFind q={q} setQ={setQ} />
       {tags.length > 0 && (
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
@@ -369,6 +370,8 @@ function Index({ current }: { current: string | null }) {
           ))}
         </div>
       )}
+      {/* The tabs' panel: it takes no box of its own, the list keeps its place in the rail. */}
+      <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="contents">
       <nav className="k-index" data-testid="session-list" aria-label="Sessions" onKeyDown={stepRows}>
         {pinned.length > 0 && (
           <section className="k-group" data-testid="pinned-group">
@@ -414,6 +417,7 @@ function Index({ current }: { current: string | null }) {
           <button type="button" className="k-more" data-testid="hidden-done" onClick={() => setArrange({ hideDone: false })}>{hidden} finished hidden</button>
         )}
       </nav>
+      </div>
     </>
   );
 }

@@ -1,8 +1,15 @@
-// A choice of a few on one track: the one control for a set of tabs, a
-// segmented choice and a filter, with one keyboard on every surface. The
-// track is one Tab stop, on the chosen option (the first when none is
-// chosen). The arrow keys move to the next option and choose it, wrapping at
-// the ends; Home and End choose the first and the last. A value set from
+// A choice of a few: the one control for a set of tabs, a segmented choice, a
+// filter (on a track) and a list of choices with a line about each (rows),
+// with one keyboard on every surface. It is one Tab stop, on the chosen
+// option (the first when none is chosen). The arrow keys move to the next
+// option and choose it, wrapping at the ends; Home and End choose the first
+// and the last. Tabs lie in a row, so they take Left and Right; rows take Up
+// and Down; a choice on a track takes both pairs, as a radio group does.
+// Where choosing does something that must be meant (it loosens a
+// permission, loads over the network, drops what was typed), the control is
+// manual: the arrows, Home and End move the focus only and stop at the ends,
+// and Space, Enter or a click chooses. A click on the option already chosen
+// does nothing. A value set from
 // elsewhere (a command, a shortcut, another control) moves the Tab stop with
 // it, and the focus too when the focus is inside the track. A track wider
 // than its place scrolls sideways inside itself and keeps the chosen option
@@ -25,7 +32,7 @@ export type SegOption<T> = {
 // The id of a tab, for the panel it shows to name it (aria-labelledby).
 export const tabId = (panel: string, value: string | number) => `${panel}-tab-${value}`;
 
-export function Seg<T extends string | number>({ value, options, onChange, label, kind = "choice", panel, fill, className, testid, title }: {
+export function Seg<T extends string | number>({ value, options, onChange, label, kind = "choice", rows, manual, again, panel, fill, className, testid, title }: {
   value: T;
   options: SegOption<T>[];
   onChange: (v: T) => void;
@@ -33,6 +40,12 @@ export function Seg<T extends string | number>({ value, options, onChange, label
   label: string;
   // Tabs switch what is shown below them; a choice sets a value.
   kind?: "tabs" | "choice";
+  // A list of rows, one under the other, instead of a track: each option brings its own look.
+  rows?: boolean;
+  // The arrows only move the focus; Space, Enter or a click chooses.
+  manual?: boolean;
+  // A click on the chosen option sets it again (the pane count, while only the helm shows).
+  again?: boolean;
   // The id of the panel the tabs switch: each tab names it, and it names its tab with tabId().
   panel?: string;
   // The options share the track's width in equal parts.
@@ -65,22 +78,21 @@ export function Seg<T extends string | number>({ value, options, onChange, label
     const open = options.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0);
     if (!open.length) return;
     const from = open.indexOf((e.target as HTMLElement).closest("[data-seg]") ? [...track.current!.children].indexOf((e.target as HTMLElement).closest("[data-seg]")!) : stop);
-    const to =
-      e.key === "ArrowRight" || e.key === "ArrowDown" ? open[(from + 1) % open.length]
-      : e.key === "ArrowLeft" || e.key === "ArrowUp" ? open[(from - 1 + open.length) % open.length]
-      : e.key === "Home" ? open[0]
-      : e.key === "End" ? open[open.length - 1]
-      : undefined;
+    // Tabs lie in a row and rows stand in a column; a choice on a track is a radio group and takes both.
+    const across = !rows, down = rows || !tabs;
+    const step = (across && e.key === "ArrowRight") || (down && e.key === "ArrowDown") ? 1 : (across && e.key === "ArrowLeft") || (down && e.key === "ArrowUp") ? -1 : 0;
+    const next = manual ? Math.min(open.length - 1, Math.max(0, from + step)) : (from + step + open.length) % open.length;
+    const to = step ? open[next] : e.key === "Home" ? open[0] : e.key === "End" ? open[open.length - 1] : undefined;
     if (to === undefined) return;
     e.preventDefault();
     e.stopPropagation();
     button(to)?.focus();
-    if (options[to]!.value !== value) onChange(options[to]!.value);
+    if (!manual && options[to]!.value !== value) onChange(options[to]!.value);
   };
 
   const tabs = kind === "tabs";
   return (
-    <div ref={track} role={tabs ? "tablist" : "radiogroup"} aria-label={label} title={title} data-testid={testid} data-fill={fill || undefined} className={cn("k-seg", className)} onKeyDown={keys}>
+    <div ref={track} role={tabs ? "tablist" : "radiogroup"} aria-label={label} aria-orientation={rows ? "vertical" : tabs ? "horizontal" : undefined} title={title} data-testid={testid} data-fill={fill || undefined} className={cn(rows ? "flex flex-col" : "k-seg", className)} onKeyDown={keys}>
       {options.map((o, i) => (
         <button
           key={String(o.value)}
@@ -95,8 +107,7 @@ export function Seg<T extends string | number>({ value, options, onChange, label
           tabIndex={i === stop ? 0 : -1}
           className={o.className}
           style={o.style}
-          // The option shown again still sets it (one pane while only the helm shows).
-          onClick={() => onChange(o.value)}
+          onClick={() => { if (again || o.value !== value) onChange(o.value); }}
         >
           {o.label}
         </button>

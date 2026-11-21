@@ -10,7 +10,7 @@
 // one, the list and the preview take turns, and going back to the list finds
 // it where it was, on the row that was picked.
 import { ArrowLeft, Code2, Download, ExternalLink, FileText, Globe, Image as ImageIcon } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Artifact } from "../../../src/server/routes/artifacts.ts";
 import { copyOrSay } from "../lib/copy.ts";
@@ -19,7 +19,7 @@ import { ago, cn, when } from "../lib/utils.ts";
 import { DiffView, type FileChange } from "./DiffView.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { PathText } from "./PathText.tsx";
-import { Seg } from "./Seg.tsx";
+import { Seg, tabId } from "./Seg.tsx";
 
 export type Listed = Artifact & { session_title?: string };
 const ICON = { image: ImageIcon, html: Globe, markdown: FileText, code: Code2 } as const;
@@ -169,6 +169,7 @@ export function ArtifactBrowser({ list, testid, withSession }: { list: Listed[] 
 function Preview({ a }: { a: Listed }) {
   const inFolder = a.place === "folder";
   const [view, setView] = useState<"show" | "source" | "diff">("show");
+  const panel = useId();
   const [text, setText] = useState<string | null>(null);
   const [html, setHtml] = useState<string | null>(null);
   const [diff, setDiff] = useState<{ files: FileChange[]; diff: string; truncated: boolean } | null>(null);
@@ -194,7 +195,7 @@ function Preview({ a }: { a: Listed }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="artifact-preview" data-kind={a.kind}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2" data-testid="artifact-toolbar">
-        <Seg kind="tabs" label="View" value={view} onChange={setView} options={views.map(([v, label]) => ({ value: v, label, testid: `artifact-view-${v}` }))} />
+        <Seg kind="tabs" panel={panel} label="View" value={view} onChange={setView} options={views.map(([v, label]) => ({ value: v, label, testid: `artifact-view-${v}` }))} />
         <div className="ml-auto flex items-center gap-1.5">
         <button type="button" className={button} data-testid="artifact-open" title={said || "Open in your editor on this machine"} onClick={() => api(`/api/sessions/${a.session_id}/artifacts/open`, { method: "POST", body: JSON.stringify({ path: a.path }) }).then(() => setSaid("Opened"), (e) => setSaid((e as Error).message))}><ExternalLink className="size-3.5" />{said === "Opened" ? "Opened" : "Open"}</button>
         <button type="button" className={button} data-testid="artifact-copy-path" onClick={(e) => copyOrSay(a.path, e.currentTarget).then((ok) => { if (ok) setSaid("Path copied"); })}>{said === "Path copied" ? "Copied" : "Copy path"}</button>
@@ -202,7 +203,7 @@ function Preview({ a }: { a: Listed }) {
         </div>
       </div>
       <p className="flex px-3 pb-2"><PathText path={a.path} className="font-mono text-micro text-faint" /></p>
-      <div className="min-h-0 flex-1 overflow-auto border-t border-line" data-testid="artifact-body">
+      <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, view)} className="min-h-0 flex-1 overflow-auto border-t border-line" data-testid="artifact-body">
         {!a.exists ? <p className="p-4 text-ui text-faint">The file is gone from disk.</p>
           : view === "diff" ? <div className="p-3">{diff ? <DiffView files={diff.files} patch={diff.diff} truncated={diff.truncated} empty="No change of this file is in the session's checkpoints." /> : <p className="text-caption text-faint">Loading…</p>}</div>
           : view === "show" && a.kind === "image" ? <div className="grid place-items-center p-4"><img src={raw(a)} alt={a.name} className="max-h-full max-w-full rounded-md border border-line bg-[repeating-conic-gradient(var(--color-sunken)_0_25%,transparent_0_50%)] bg-[length:1rem_1rem]" data-testid="artifact-image" /></div>

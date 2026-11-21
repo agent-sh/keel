@@ -36,6 +36,7 @@ export function PaneCount() {
       title="How many panes are open"
       value={shown}
       // The number shown again (one pane while only the helm shows) still sets it.
+      again
       onChange={setPanes}
       options={Array.from({ length: max }, (_, i) => i + 1).map((n) => ({
         value: n,

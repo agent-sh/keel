@@ -129,9 +129,9 @@ export function Toggle({ on, onChange, label, testid }: { on: boolean; onChange:
   );
 }
 
-export function Seg<T extends string>({ value, options, onChange, label }: { value: T; options: [T, string][]; onChange: (v: T) => void; label: string }) {
+export function Seg<T extends string>({ value, options, onChange, label, manual }: { value: T; options: [T, string][]; onChange: (v: T) => void; label: string; manual?: boolean }) {
   return (
-    <Track label={label} value={value} onChange={onChange} options={options.map(([v, l]) => ({ value: v, label: l, testid: `seg-${v}` }))} />
+    <Track label={label} manual={manual} value={value} onChange={onChange} options={options.map(([v, l]) => ({ value: v, label: l, testid: `seg-${v}` }))} />
   );
 }
 

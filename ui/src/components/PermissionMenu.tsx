@@ -1,7 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Popover } from "@base-ui/react/popover";
-import { Radio } from "@base-ui/react/radio";
-import { RadioGroup } from "@base-ui/react/radio-group";
 import { Switch } from "@base-ui/react/switch";
 import { ChevronDown, Shield, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -58,20 +56,30 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
           <Popover.Positioner align="end" sideOffset={6} className="z-50">
             <Popover.Popup className="max-h-[var(--available-height)] w-[min(22rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] overflow-y-auto rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
               <Popover.Title className="px-2 pt-1 pb-1.5 k-label">Permissions</Popover.Title>
-              <RadioGroup value={perm.mode} onValueChange={(v) => set({ mode: v as SessionPerm["mode"] })} className="flex flex-col">
-                {modes.map((m) => (
-                  // The whole row is the radio: its mark is drawn inside it.
-                  <Radio.Root key={m.id} value={m.id} data-testid={`mode-${m.id}`} className="group/mode flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring data-checked:bg-accent-soft/60">
-                    <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong group-data-checked/mode:border-accent">
-                      <Radio.Indicator className="size-2 rounded-full bg-accent" />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-ui font-medium">{m.name}</span>
-                      <span className="block text-caption leading-snug text-muted">{m.description}</span>
-                    </span>
-                  </Radio.Root>
-                ))}
-              </RadioGroup>
+              {/* Nothing here changes on an arrow key: the arrows move the focus, and Space, Enter or a click chooses. */}
+              <Seg
+                rows
+                manual
+                label="Permission mode"
+                value={perm.mode}
+                onChange={(mode) => set({ mode })}
+                options={modes.map((m) => ({
+                  value: m.id,
+                  testid: `mode-${m.id}`,
+                  className: "group/mode flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent-soft/60",
+                  label: (
+                    <>
+                      <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong group-aria-checked/mode:border-accent">
+                        <span className="hidden size-2 rounded-full bg-accent group-aria-checked/mode:block" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-ui font-medium">{m.name}</span>
+                        <span className="block text-caption leading-snug text-muted">{m.description}</span>
+                      </span>
+                    </>
+                  ),
+                }))}
+              />
               <div className="mx-2 my-1.5 h-px bg-line" />
               <div className="px-2 py-1">
                 <div className="flex items-baseline justify-between">
@@ -80,6 +88,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                 </div>
                 <Seg
                   fill
+                  manual
                   className="mt-1.5"
                   label="Sandbox"
                   value={perm.sandbox}

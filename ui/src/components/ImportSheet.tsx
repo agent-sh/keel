@@ -5,7 +5,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
 import { ArrowDownToLine, FileUp, FolderOpen, History, RefreshCw, Search, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { KEEL_FILE_MAX, sizeText } from "../../../src/core/keel-file.ts";
 import type { Found, Harness } from "../../../src/integrations/import/types.ts";
 import { useFleet } from "../lib/fleet.ts";
@@ -15,7 +15,7 @@ import { takeOver, TOOL } from "./TakeOver.tsx";
 import { noteRows, OriginalStrip, ResumeCard, useStopped, type Intent, type Original, type Wait } from "./ResumeFrom.tsx";
 import { ago, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
-import { Seg } from "./Seg.tsx";
+import { Seg, tabId } from "./Seg.tsx";
 
 // `original`, `wait`: on a machine reached over ssh, what the harness that still runs it does, and a resume waiting for it.
 type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean }; original?: Original; wait?: Wait };
@@ -226,6 +226,7 @@ function Running({ onDone }: { onDone: () => void }) {
 
 export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [harness, setHarness] = useState<Harness>("claude");
+  const panel = useId();
   const [harnesses, setHarnesses] = useState<HarnessState[]>([]);
   const [q, setQ] = useState("");
   const [all, setAll] = useState(false);
@@ -381,6 +382,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             <Dialog.Title className="font-semibold">Import sessions</Dialog.Title>
             <Seg
               kind="tabs"
+              // Each source is listed over the network and a change drops the pick: the arrows only move, Space or Enter chooses.
+              manual
+              panel={panel}
               className="ml-2"
               label="Where to import from"
               value={harness}
@@ -471,7 +475,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                   </div>
                 </div>
               )}
-              <div className="min-h-0 flex-1 overflow-y-auto" data-testid="import-list">
+              <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, harness)} className="min-h-0 flex-1 overflow-y-auto" data-testid="import-list">
                 {rows?.map((r) => (
                   <div key={r.path + r.id} className={cn("border-b border-line/60 transition-colors", sel?.id === r.id ? "k-picked" : "hover:bg-hover")}>
                     <button

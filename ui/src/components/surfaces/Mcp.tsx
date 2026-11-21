@@ -363,7 +363,9 @@ function AddServer({ onAdded }: { onAdded: (servers: McpServerState[], name: str
   const [kind, setKind] = useState<"command" | "url">("command");
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
-  const [extra, setExtra] = useState("");
+  // The lines typed for each kind are kept apart: looking at the other kind does not erase them.
+  const [extras, setExtras] = useState({ command: "", url: "" });
+  const extra = extras[kind], setExtra = (v: string) => setExtras((x) => ({ ...x, [kind]: v }));
   const [bearer, setBearer] = useState("");
   const [err, setErr] = useState("");
   const submit = async (e: FormEvent) => {
@@ -384,7 +386,7 @@ function AddServer({ onAdded }: { onAdded: (servers: McpServerState[], name: str
   return (
     <form onSubmit={submit} className="k-form" data-testid="mcp-add">
       <div className="k-form-row">
-        <Seg value={kind} onChange={(k) => { setKind(k); setExtra(""); }} label="Kind" options={[["command", "Local command"], ["url", "Remote URL"]]} />
+        <Seg manual value={kind} onChange={setKind} label="Kind" options={[["command", "Local command"], ["url", "Remote URL"]]} />
         <span className="k-form-hint">{kind === "command" ? "A program Keel starts, speaking MCP over stdio." : "Streamable HTTP. Sign-in (OAuth) is offered when the server asks for it."}</span>
       </div>
       <label>Name<input data-testid="mcp-add-name" data-mono value={name} onChange={(e) => setName(e.target.value)} placeholder="docs" /></label>

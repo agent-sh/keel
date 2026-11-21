@@ -1,12 +1,12 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Activity, Bug, Check, CheckCheck, ChevronRight, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
 import type { ErrorRecord } from "../../../src/core/types.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { Seg } from "./Seg.tsx";
+import { Seg, tabId } from "./Seg.tsx";
 
 // One row per kind of failure (the daemon folds repeats into a count), with
 // where it last happened and a way to mark it fixed. A resolved kind that
@@ -150,6 +150,7 @@ function Row({ e }: { e: ErrorRecord }) {
 export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const errors = useStore((s) => s.errors);
   const [tab, setTab] = useState<"open" | "resolved">("open");
+  const panel = useId();
   const [unreadOnly, setUnreadOnly] = useState(false);
   const openList = errors.filter((e) => !e.resolved_ts);
   const unread = openList.filter((e) => !e.read_ts);
@@ -178,6 +179,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
           <div className="flex items-center gap-2 border-b border-line px-3 py-2">
             <Seg
               kind="tabs"
+              panel={panel}
               label="Which errors"
               value={tab}
               onChange={setTab}
@@ -200,7 +202,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               </button>
             )}
           </div>
-          <div className="flex-1 overflow-y-auto p-2">
+          <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex-1 overflow-y-auto p-2">
             {list.length === 0 && <p className="k-empty px-3 py-4">{tab === "open" ? (unreadOnly && openList.length ? "Everything open is read." : "Nothing open has failed.") : "Nothing is marked resolved."}</p>}
             {list.map((e) => <Row key={e.id} e={e} />)}
           </div>

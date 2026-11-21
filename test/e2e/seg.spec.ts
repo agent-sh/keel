@@ -78,3 +78,93 @@ test("tabs and segmented choices share one keyboard", async ({ page, request }) 
   // Every track on the page is that one control.
   for (const track of await page.locator(".k-seg").all()) expect(await shape(track)).toEqual(sound);
 });
+
+// Where a choice does something that must be meant, an arrow key does not make it. In the
+// permission menu the arrows, Home and End only move the focus, for the modes and for the
+// sandbox, and stop at the ends; Space, Enter or a click chooses. Tabs in a row take Left
+// and Right only, a click on the option already chosen saves nothing, and every set of
+// tabs names the panel it switches.
+test("an arrow key never loosens permissions, and tabs keep to their own keys", async ({ page, request }) => {
+  const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
+  const { session } = await (await request.post("/api/sessions", { data: { model, title: "Choices that must be meant" } })).json();
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const writes: string[] = [];
+  page.on("request", (r) => { if (["PUT", "PATCH", "POST"].includes(r.method()) && /\/api\/(sessions\/[^/]+\/permissions|settings|alerts\/settings)/.test(r.url())) writes.push(`${r.method()} ${new URL(r.url()).pathname.replace(session.id, ":id")}`); });
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").first().waitFor();
+
+  await page.getByTestId("permission-menu").first().click();
+  const modes = page.getByRole("radiogroup", { name: "Permission mode" });
+  await modes.waitFor();
+  const checked = (group: typeof modes) => group.locator('[aria-checked="true"]');
+  const was = await checked(modes).getAttribute("data-testid");
+  // The menu opens with the keyboard on the mode in force.
+  await expect(checked(modes)).toBeFocused();
+  for (const key of ["ArrowDown", "ArrowDown", "ArrowDown", "End", "ArrowDown", "Home", "ArrowUp", "ArrowUp"]) await page.keyboard.press(key);
+  // Home, then Up twice: still the first row, not wrapped to the last.
+  await expect(modes.getByRole("radio").first()).toBeFocused();
+  expect(await checked(modes).getAttribute("data-testid")).toBe(was);
+  const sandbox = page.getByRole("radiogroup", { name: "Sandbox" });
+  const box = await checked(sandbox).getAttribute("data-testid");
+  await checked(sandbox).focus();
+  for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "Home", "ArrowLeft", "End"]) await page.keyboard.press(key);
+  await expect(sandbox.getByRole("radio").last()).toBeFocused();
+  expect(await checked(sandbox).getAttribute("data-testid")).toBe(box);
+  expect(writes).toEqual([]);
+  // Space on a mode chooses it, once.
+  const other = modes.getByRole("radio").filter({ hasNot: page.locator('[aria-checked="true"]') }).and(page.locator('[aria-checked="false"]')).first();
+  const want = await other.getAttribute("data-testid");
+  await other.focus();
+  await page.keyboard.press("Space");
+  await expect(checked(modes)).toHaveAttribute("data-testid", want!);
+  expect(writes).toEqual(["PUT /api/sessions/:id/permissions"]);
+  await shoot(page, "seg-03-permission-menu");
+  await page.keyboard.press("Escape");
+
+  // Tabs in a row: Up and Down are not theirs.
+  const list = page.getByRole("tablist", { name: "Session list" });
+  await list.getByRole("tab", { selected: true }).focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowUp");
+  await expect(list.getByRole("tab", { selected: true })).toHaveText("Sessions");
+  // Each set of tabs names its panel, and the panel names its tab.
+  const tied = async (tabs: typeof list) => {
+    const tab = tabs.getByRole("tab", { selected: true });
+    const panel = page.locator(`[id="${await tab.getAttribute("aria-controls")}"]`);
+    await expect(panel).toHaveAttribute("role", "tabpanel");
+    await expect(panel).toHaveAttribute("aria-labelledby", (await tab.getAttribute("id"))!);
+  };
+  await tied(list);
+  await page.getByTestId("errors-button").first().click();
+  await tied(page.getByRole("tablist", { name: "Which errors" }));
+  await page.keyboard.press("Escape");
+
+  // A click on the option already chosen saves nothing; a click on another saves once.
+  await page.goto("/settings/daemon");
+  const awake = page.getByRole("radiogroup", { name: "Keep awake" });
+  await awake.waitFor();
+  writes.length = 0;
+  await checked(awake).click();
+  await page.waitForTimeout(300);
+  expect(writes).toEqual([]);
+
+  // The MCP form's Kind: an arrow does not switch it, and the lines typed for a kind are kept
+  // while the other kind is looked at.
+  await page.goto("/settings/mcp");
+  await page.getByTestId("toolkit-add-+add").click();
+  const kind = page.getByRole("radiogroup", { name: "Kind" });
+  const lines = page.getByTestId("mcp-add-extra");
+  await lines.fill("LOG_LEVEL=warn");
+  await checked(kind).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(checked(kind)).toHaveText("Local command");
+  await expect(lines).toHaveValue("LOG_LEVEL=warn");
+  await page.keyboard.press("Enter");
+  await expect(checked(kind)).toHaveText("Remote URL");
+  await expect(lines).toHaveValue("");
+  await lines.fill("X-Team: tools");
+  await kind.getByRole("radio", { name: "Local command" }).click();
+  await expect(lines).toHaveValue("LOG_LEVEL=warn");
+  await kind.getByRole("radio", { name: "Remote URL" }).click();
+  await expect(lines).toHaveValue("X-Team: tools");
+});
