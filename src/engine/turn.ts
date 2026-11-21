@@ -28,7 +28,7 @@ import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
-import { fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
+import { damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
@@ -829,8 +829,14 @@ export class Engine {
             fixed = { cause: e, edge: refusal.edge };
             limits = imageLimits(st.info.family, refusal.edge);
           } else {
-            fixed = { cause: fixed?.cause ?? e, edge: fixed?.edge, out: left };
-            out = new Set([...out, ...left]);
+            // The refusal names no image. The ones that do not decode in full
+            // (a file cut short passes the header read it was stored on) go
+            // first; all of them only when none is damaged, or when the
+            // request was refused again without the damaged ones.
+            const bad = fixed?.out ? [] : await damagedImages(whole, out);
+            const drop = bad.length && bad.length < left.length ? bad : left;
+            fixed = { cause: fixed?.cause ?? e, edge: fixed?.edge, out: [...(fixed?.out ?? []), ...drop] };
+            out = new Set([...out, ...drop]);
           }
           req = { ...req, messages: await fitForWire(whole, limits, out) };
           continue;

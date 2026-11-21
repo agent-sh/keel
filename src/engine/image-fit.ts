@@ -209,6 +209,27 @@ const images = (messages: Message[]): ImageBlock[] =>
 // The identities of the images a request would carry.
 export const imageKeys = (messages: Message[]): string[] => [...new Set(images(messages).map((b) => imageKey(b.data)))];
 
+// The images of `messages`, less those in `skip`, that do not decode in full.
+// A file cut short passes a read of its header, which is all an image within
+// the limits gets when it is stored; a provider that then refuses the request
+// names no image, so this finds the ones to leave out.
+export async function damagedImages(messages: Message[], skip: ReadonlySet<string>): Promise<string[]> {
+  const seen = new Map<string, ImageBlock>();
+  for (const b of images(messages)) {
+    const key = imageKey(b.data);
+    if (!skip.has(key)) seen.set(key, b);
+  }
+  const bad: string[] = [];
+  await Promise.all([...seen].map(([key, b]) => decoding(async () => {
+    try {
+      await new Bun.Image(Buffer.from(b.data, "base64"), { maxPixels: DECODE_PIXELS }).resize(1, 1, { filter: "nearest" }).png().bytes();
+    } catch {
+      bad.push(key);
+    }
+  })));
+  return bad;
+}
+
 // The messages as a request to a host with limits `l` carries them: an image
 // over a limit as its scaled copy, one that cannot be scaled as a note, and
 // the ones in `out` (left out after a refusal) as a note. The same array when
