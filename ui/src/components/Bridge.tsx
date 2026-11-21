@@ -74,10 +74,9 @@ function Tool({ label, onClick, children, testid, on, move }: { label: string; o
 
 function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boolean; pinned: boolean }) {
   const events = useStore((x) => x.events[s.id]);
-  const start = useMemo(() => events?.findLast((e) => e.kind === "turn_start")?.ts, [events]);
   const st = useSessionState(s);
-  const turning = w === "work" && s.phase === "working";
-  const now = useNow(turning || timed(st));
+  // One clock for one state: the band shows what the row shows (the step's time, the ask's, the wait's).
+  const now = useNow(timed(st));
   const focus = useStations((x) => x.focus);
   const agents = st.agents;
   return (
@@ -88,8 +87,7 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
           <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
           {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {st.text && <span className="k-station-why" data-testid="station-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
-          {turning && start ? <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>
-            : timed(st) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
+          {timed(st) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
         </span>
         <span className="k-station-meta truncate" title={s.workspace}>
           {s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}

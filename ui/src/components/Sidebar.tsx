@@ -4,16 +4,17 @@
 // it is a column of marks, each a session's state and a short code of its
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
-import { createContext, Fragment, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
+import { createContext, Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
+import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { lastLine, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { AT_REST, lastLine, LIST_TIER, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
@@ -82,7 +83,7 @@ function stepRows(e: KeyboardEvent<HTMLElement>) {
 }
 
 // States a row spells out; a finished or untouched session is its mark alone.
-const SPELLED: Watch[] = ["need", "work", "wait", "fail", "resume", "stop"];
+const SPELLED: Watch[] = ["need", "work", "wait", "fail", "declined", "resume", "stop"];
 
 // Opens a session in a new pane beside the one worked in (Ctrl or middle click, the row's button).
 export function openBeside(id: string) {
@@ -131,15 +132,7 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
     >
       <Mark w={w} />
       <span className="k-row-main">
-        <span className="k-row-title">{s.title || "New session"}</span>
-        {SPELLED.includes(w) && (
-          <span className="k-row-sub">
-            <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
-            {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-            {st.text && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
-          </span>
-        )}
-        {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
+        <span className="k-row-title" title={s.title || undefined}>{s.title || "New session"}</span>
       </span>
       {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag max-w-20 shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
       <SessionBadges sessionId={s.id} />
@@ -169,6 +162,15 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       >
         {restore ? <ArchiveRestore /> : <Archive />}
       </button>
+      {/* Two lines at most. The second is the state with why, as wide as the row (and the folder, where the list is not grouped by it). */}
+      {(SPELLED.includes(w) || where) && (
+        <span className="k-row-sub">
+          {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>}
+          {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
+          {SPELLED.includes(w) && st.text && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
+          {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
+        </span>
+      )}
     </div>
   );
 }
@@ -184,13 +186,15 @@ function rootSessionId(sessions: Record<string, Session>, current: string | null
 // one is always shown, also when it is a subagent's: its parent's row then).
 // A session that needs the owner, failed, works or waits is never folded
 // away: only the ones at rest are (done, stopped, not started).
+// Within the folder what needs the owner comes first, then what failed, what
+// waits, what works, then what is at rest; inside each the list's own order holds.
 const SHOWN = 6;
-const AT_REST: Watch[] = ["done", "idle", "stop"];
-export function Group({ list, current, every, where }: { list: Session[]; current: string | null; every?: boolean; where?: boolean }) {
+export function Group({ list: given, current, every, where }: { list: Session[]; current: string | null; every?: boolean; where?: boolean }) {
   const [more, setAll] = useState(false);
   const all = more || !!every;
   const root = useStore((x) => rootSessionId(x.sessions, current));
-  const watches = useWatches(list);
+  const watches = useWatches(given);
+  const list = useMemo(() => [...given].sort((a, b) => LIST_TIER[watches[a.id] ?? "idle"] - LIST_TIER[watches[b.id] ?? "idle"]), [given, watches]);
   const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || !AT_REST.includes(watches[s.id] ?? "idle"));
   return (
     <div className="flex flex-col gap-px">
@@ -211,17 +215,57 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
 let openOn: "active" | "archived" = "active";
 
 // Folded: one mark per session, banded by what each needs from you, each band
-// headed by its word and count. Within a band the newest work is on top. A
-// finished session you have not looked at keeps a full mark; one you have
-// seen goes quiet. Hovering or focusing a mark shows its card.
+// headed by its word and count, in the list's order: what needs you, what
+// failed, what waits, what works, then what is at rest. Within a band the
+// newest work is on top. Every band is on screen: one with more marks than
+// the rail has room for ends in a count that opens the list. A finished
+// session you have not looked at keeps a full mark; one you have seen goes
+// quiet. Hovering or focusing a mark shows its card.
 const BANDS: { w: Watch[]; label: string; short: string }[] = [
   { w: ["need"], label: "Needs you", short: "Need" },
-  { w: ["work"], label: "Working", short: "Work" },
+  { w: ["fail", "declined"], label: "Failed", short: "Fail" },
   { w: ["wait"], label: "Waiting", short: "Wait" },
-  { w: ["fail"], label: "Failed", short: "Fail" },
+  { w: ["work"], label: "Working", short: "Work" },
   { w: ["resume", "stop"], label: "Stopped", short: "Stop" },
   { w: ["done", "idle"], label: "Done", short: "Done" },
 ];
+// The folded rail keeps every band on screen. When the marks do not fit at
+// their usual size the rail sets them tighter (smaller marks, slimmer heads);
+// only when they do not fit even so does a band hold some back behind a count.
+// Returns how many marks there is room for (null: all of them), measured on the rail itself.
+function useRailRoom(bands: number, marks: number) {
+  const probe = useRef<HTMLSpanElement>(null);
+  const [tight, setTight] = useState(false);
+  const [rows, setRows] = useState<number | null>(null);
+  const loose = useRef({ tick: 0, over: 0 }); // the usual sizes, kept to know when they fit again
+  useLayoutEffect(() => {
+    const nav = probe.current?.parentElement;
+    if (!nav) return;
+    nav.toggleAttribute("data-tight", tight);
+    const measure = () => {
+      const tick = nav.querySelector<HTMLElement>(".k-tick");
+      const band = nav.querySelector<HTMLElement>(".k-marks");
+      if (!tick || !band) return setRows(null);
+      const cs = getComputedStyle(nav), bs = getComputedStyle(band), gap = parseFloat(getComputedStyle(band.querySelector("ol")!).rowGap) || 0;
+      const over = (band.querySelector<HTMLElement>(".k-marks-head")?.offsetHeight ?? 0) + parseFloat(bs.paddingTop) + parseFloat(bs.paddingBottom) + 1;
+      const room = nav.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      const need = (t: number, o: number, g: number) => marks * (t + g) + bands * o;
+      if (!tight) {
+        loose.current = { tick: tick.offsetHeight + gap, over };
+        setRows(null);
+        if (need(tick.offsetHeight, over, gap) > room) setTight(true);
+        return;
+      }
+      if (loose.current.tick && marks * loose.current.tick + bands * loose.current.over <= room) return setTight(false);
+      setRows(need(tick.offsetHeight, over, gap) <= room ? null : Math.max(bands, Math.floor((room - bands * over) / (tick.offsetHeight + gap))));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(nav);
+    return () => ro.disconnect();
+  }, [bands, marks, tight]);
+  return { probe, rows };
+}
 function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.updated - a.updated), [sessions]);
@@ -231,14 +275,22 @@ function Marks({ current }: { current: string | null }) {
   const shown = useStations((x) => x.shown);
   const unread = useAuto((s) => s.unread.sessions);
   const bind = useContext(CardCtx);
+  const bands = BANDS.map((b) => ({ ...b, items: list.filter((s) => b.w.includes(watches[s.id]!)) })).filter((b) => b.items.length);
+  const { probe, rows } = useRailRoom(bands.length, list.length);
+  const fit = fitBands(bands.map((b) => b.items.length), rows);
   return (
     <>
-      {BANDS.map((b) => {
-        const items = list.filter((s) => b.w.includes(watches[s.id]!));
-        if (!items.length) return null;
+      <span ref={probe} hidden />
+      {bands.map((b, bi) => {
+        const all = b.items;
+        // A band cut to its room keeps the session on screen among its marks and ends in a count of the rest.
+        const room = fit[bi]! < all.length ? Math.max(0, fit[bi]! - 1) : all.length;
+        const at = all.findIndex((s) => s.id === current);
+        const items = (at >= room ? [all[at]!, ...all.filter((s) => s.id !== current)] : all).slice(0, room);
+        const rest = all.length - items.length;
         return (
-          <section key={b.label} className="k-marks" data-watch={b.w[0]} aria-label={`${b.label}: ${items.length}`} data-testid="rail-band">
-            <h3 className="k-marks-head" aria-hidden="true"><span>{b.short}</span><span className="tabular-nums">{items.length}</span></h3>
+          <section key={b.label} className="k-marks" data-watch={b.w[0]} aria-label={`${b.label}: ${all.length}`} data-testid="rail-band">
+            <h3 className="k-marks-head" aria-hidden="true"><span>{b.short}</span><span className="tabular-nums">{all.length}</span></h3>
             <ol>
               {items.map((s) => {
                 const card = bind(s, 0);
@@ -269,6 +321,13 @@ function Marks({ current }: { current: string | null }) {
                   </li>
                 );
               })}
+              {rest > 0 && (
+                <li>
+                  <button type="button" className="k-tick k-tick-more" data-testid="rail-more" aria-label={`${rest} more ${b.label.toLowerCase()}. Show the list`} title={`${rest} more: ${all.filter((s) => !items.includes(s)).map((s) => s.title || "New session").join(", ")}`} onClick={() => toggleList(true)}>
+                    +{rest}
+                  </button>
+                </li>
+              )}
             </ol>
           </section>
         );

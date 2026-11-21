@@ -8,6 +8,7 @@
 .k-mark { display: inline-block; flex-shrink: 0; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--st-done); }
 .k-mark[data-watch="need"] { border-radius: 1px; background: var(--st-need); transform: rotate(45deg) scale(0.86); }
 .k-mark[data-watch="fail"] { border-radius: 1px; background: var(--st-fail); }
+.k-mark[data-watch="declined"] { border-radius: 1px; background: var(--st-fail); }
 .k-mark[data-watch="idle"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-idle); }
 /* Stopped: a hollow square. Waiting to resume: an open ring that does not turn. */
 .k-mark[data-watch="stop"] { border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 2px var(--st-idle); }
@@ -74,16 +75,16 @@
 /* "Is anything stuck": the steps that made no progress for too long, above the
    sessions, in the working ink. There only while something is stuck. */
 .k-stuck { flex-shrink: 0; margin: 0 0.625rem 0.5rem; padding: 0.25rem 0 0.3125rem; border-radius: 0.25rem; background: color-mix(in oklch, var(--st-work) 11%, transparent); box-shadow: inset 0.1875rem 0 0 var(--st-work); }
-.k-stuck-head { display: flex; align-items: center; gap: 0.375rem; height: 1.375rem; padding: 0 0.5rem 0 0.6875rem; font: 700 0.6562rem/1 var(--font-inst); font-stretch: 75%; letter-spacing: 0.05em; text-transform: uppercase; color: var(--st-work-ink); }
+.k-stuck-head { display: flex; align-items: center; gap: 0.375rem; height: 1.375rem; padding: 0 0.5rem 0 0.6875rem; font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.05em; text-transform: uppercase; color: var(--st-work-ink); }
 .k-stuck-head svg { width: 0.75rem; height: 0.75rem; }
 .k-stuck-head span:last-child { margin-left: auto; }
-.k-stuck-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0.5rem; width: 100%; padding: 0.1875rem 0.5rem 0.1875rem 0.6875rem; text-align: left; font-size: 0.8125rem; line-height: 1.125rem; color: var(--fg); }
+.k-stuck-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0.5rem; width: 100%; padding: 0.1875rem 0.5rem 0.1875rem 0.6875rem; text-align: left; font-size: var(--text-caption); line-height: 1.125rem; color: var(--fg); }
 .k-stuck-item:hover, .k-stuck-item:focus-visible { background: var(--hover); }
 .k-stuck-title { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-stuck-of { color: var(--muted); }
-.k-stuck-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; color: var(--muted); }
-.k-stuck-time { font: 600 0.75rem/1.125rem var(--font-inst); font-stretch: 75%; color: var(--st-work-ink); }
-.k-stuck-chip { display: flex; align-items: center; justify-content: center; gap: 0.25rem; flex-shrink: 0; width: 3.125rem; height: 1.625rem; margin: 0.375rem auto 0; border-radius: 0.25rem; background: color-mix(in oklch, var(--st-work) 14%, transparent); font: 700 0.75rem/1 var(--font-inst); font-stretch: 75%; color: var(--st-work-ink); }
+.k-stuck-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
+.k-stuck-time { font-weight: 600; font-size: var(--text-micro); line-height: 1.125rem; color: var(--st-work-ink); }
+.k-stuck-chip { display: flex; align-items: center; justify-content: center; gap: 0.25rem; flex-shrink: 0; width: 3.125rem; height: var(--spacing-ctl-sm); margin: 0.375rem auto 0; border-radius: 0.25rem; background: color-mix(in oklch, var(--st-work) 14%, transparent); font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--st-work-ink); }
 .k-stuck-chip svg { width: 0.8125rem; height: 0.8125rem; }
 .k-stuck-chip:hover { background: color-mix(in oklch, var(--st-work) 24%, transparent); }
 
@@ -114,6 +115,14 @@
 .k-tick[data-shown]::before { content: ""; position: absolute; left: -0.4375rem; top: 0.25rem; bottom: 0.25rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-tick[aria-current]::before { background: var(--fg); }
 .k-tick[aria-current] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* More marks than fit at the usual size: they sit tighter, so every band stays on screen. */
+.k-rail-list[data-tight] .k-marks { padding: 0.0625rem 0 0.1875rem; }
+.k-rail-list[data-tight] .k-marks ol { gap: 0; }
+.k-rail-list[data-tight] .k-marks-head { height: 1rem; padding-top: 0.125rem; line-height: 0.875rem; }
+.k-rail-list[data-tight] .k-tick { height: 1.375rem; }
+/* A band with more marks than the rail has room for even so ends in how many it holds back; the list has them. */
+.k-tick-more { justify-content: center; padding-left: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-tick-more:hover { color: var(--fg); }
 
 /* The card beside an entry (hover or focus): the whole title, what it needs,
    where it runs and when it last moved. */
@@ -144,8 +153,15 @@
 .k-rail-card-time { margin-left: auto; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--faint); }
 .k-rail-card-title { margin-top: 0.375rem; font-size: var(--text-base); font-weight: 600; line-height: 1.35; letter-spacing: -0.005em; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card-line { margin-top: 0.375rem; font-size: var(--text-caption); line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.k-rail-card-need, .k-rail-card-new { margin-top: 0.375rem; font-size: var(--text-caption); font-weight: 500; }
-.k-rail-card-need { color: var(--st-need-ink); }
+.k-rail-card-why, .k-rail-card-new { margin-top: 0.375rem; font-size: var(--text-caption); font-weight: 500; }
+/* Why, in the state's ink: the ask, the step, the wait, the failure. Three lines at most. */
+.k-rail-card-why { line-height: 1.4; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.k-rail-card[data-watch="need"] .k-rail-card-why { color: var(--st-need-ink); }
+.k-rail-card:is([data-watch="fail"], [data-watch="declined"]) .k-rail-card-why { color: var(--st-fail-ink); }
+.k-rail-card[data-watch="wait"] .k-rail-card-why { color: var(--st-wait); }
+.k-rail-card-why[data-why="stalled"] { color: var(--st-work-ink); }
+.k-rail-card-row .k-row-class { margin-left: 0.125rem; }
+.k-rail-card-time[data-live] { color: var(--muted); font-weight: 600; }
 .k-rail-card-new { color: var(--muted); }
 .k-rail-card-meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 0.75rem; margin-top: 0.5625rem; padding-top: 0.5rem; border-top: 1px solid var(--line); font-size: var(--text-micro); line-height: 1.0625rem; }
 .k-rail-card-meta dt { color: var(--faint); }
@@ -175,20 +191,18 @@
    when it is not simply finished, the time. */
 .k-row { position: relative; display: flex; align-items: flex-start; gap: 0.5625rem; min-height: 1.875rem; padding: 0.375rem 0.375rem 0.375rem 0.5625rem; border-radius: 0.25rem; font-size: var(--text-ui); line-height: 1.125rem; color: var(--muted); user-select: none; }
 .k-row > .k-mark { margin-top: 0.25rem; }
-.k-row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.k-row-main { min-width: 0; flex: 1 1 0; display: flex; flex-direction: column; }
 .k-row-state { margin-top: 1px; font-weight: 700; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-state { color: var(--st-need-ink); }
 .k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
 .k-row[data-watch="wait"] .k-row-state { color: var(--st-wait); }
 /* A failure's class beside the word, in its colour: rate limit, billing, sign-in. */
-.k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font: 600 0.6562rem/1rem var(--font-inst); font-stretch: 75%; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-fail); }
-/* Why, after the word: what it waits for and since when, on the same line. */
-/* The state line reads as one sentence: the word, then why. It may take a
-   second line (the command of an approval, a question) and is cut after it. */
-.k-row-why { font-size: 0.75rem; color: var(--muted); }
+.k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-fail-ink); }
+/* The state line reads as one sentence on one line: the word, then why, cut at the row's edge.
+   The card beside the row has the reason in full. */
+.k-row-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
 /* A stream that went silent is said in the working ink: it may need a look. */
 :is(.k-row-why, .k-station-why)[data-why="stalled"] { color: var(--st-work-ink); font-weight: 500; }
-.k-row-clock { flex-shrink: 0; margin-left: auto; font: 0.6875rem/1rem var(--font-inst); font-stretch: 75%; color: var(--faint); }
 .k-row[data-watch="fail"] .k-row-state { color: var(--st-fail-ink); }
 .k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-row > :is(.k-needs, .k-row-tag, svg, .k-snoozed-mark) { margin-top: 1px; }
@@ -196,13 +210,18 @@
 .k-row[aria-current] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
 .k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.375rem; bottom: 0.375rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
-.k-row-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.k-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Finished and seen rows step back; what moved or needs them stays in ink. */
 .k-row:not([data-watch="done"], [data-watch="idle"]) .k-row-title { color: var(--fg); }
 /* Unread: the title in ink and a little heavier, instead of a dot on every row. */
 .k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 550; }
 .k-row .k-unread-dot { display: none; }
 .k-row-time { flex-shrink: 0; min-width: 1.375rem; text-align: right; font-size: var(--text-micro); line-height: 1.25rem; color: var(--faint); }
+/* The time column of a live row is the state's own clock, in its ink. */
+.k-row-time[data-live] { color: var(--muted); font-weight: 600; }
+.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need); }
+.k-row[data-watch="work"] .k-row-time[data-live] { color: var(--st-work-ink); }
+.k-row[data-watch="wait"] .k-row-time[data-live] { color: var(--st-wait); }
 /* Where a session runs when that is not here (Where.tsx): a tag tinted with the
    machine's colour, its server glyph in that colour; one that does not answer
    loses the tint and says offline in the failure colour. A local session has none. */
@@ -239,8 +258,14 @@
 .k-where-pip { --where: var(--muted); position: absolute; right: 0.25rem; top: 0.25rem; width: 0.375rem; height: 0.375rem; border-radius: 1px; background: var(--where); box-shadow: 0 0 0 1.5px var(--panel); }
 .k-where-pip[data-reach="offline"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-fail), 0 0 0 1.5px var(--panel); }
 /* A row's second line: its state word and where it runs. */
-.k-row-sub { display: flex; align-items: center; gap: 0.4375rem; min-width: 0; margin-top: 0.1875rem; }
+/* The second line is the row's own: under the title, as wide as the row (the time column is the first line's). */
+.k-row { flex-wrap: wrap; row-gap: 0.0625rem; padding-block: 0.3125rem; }
+.k-row-sub { order: 9; flex: 0 0 100%; display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; padding-left: 1.1875rem; line-height: 1rem; }
 .k-row-sub .k-row-state { margin-top: 0; white-space: nowrap; }
+.k-row-sub .k-row-class { align-self: center; }
+/* Where it runs, at the line's end, when the list is not grouped by folder. */
+.k-row-sub .k-row-in { flex-shrink: 1; min-width: 2rem; max-width: 40%; margin-left: auto; }
+.k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }
 .k-row-sub .k-where { flex-shrink: 1; }
 .k-row-act { flex-shrink: 0; margin: -0.1875rem 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: 0.1875rem; color: var(--faint); }
 .k-row-act:hover { background: var(--hover); color: var(--fg); }
@@ -344,7 +369,7 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Why the pane is in its state, beside the word: one line, cut at the pane's room. */
 .k-station-state { display: inline-flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
 .k-station-state .k-row-class { align-self: center; }
-.k-station-why { min-width: 0; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; color: var(--muted); }
+.k-station-why { min-width: 0; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--muted); }
 .k-station[data-watch="fail"] .k-station-word { color: var(--st-fail-ink); }
 .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
 .k-station:is([data-watch="stop"], [data-watch="resume"]) .k-station-word { color: var(--muted); }
@@ -533,10 +558,10 @@ html[data-resizing] iframe { pointer-events: none; }
   /* A mark and the session's short code under it: no two read alike. */
   .k-dock-mark { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; width: 2.5rem; height: 2.75rem; padding-bottom: 0.25rem; border-radius: 0.3125rem; }
   .k-dock-mark .k-mark { width: 0.5625rem; height: 0.5625rem; }
-  .k-dock-code { font: 700 0.6562rem/1 var(--font-inst); font-stretch: 75%; letter-spacing: 0.03em; color: var(--muted); }
+  .k-dock-code { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.03em; color: var(--muted); }
   .k-dock-mark[aria-current] .k-dock-code, .k-dock-mark[data-watch="need"] .k-dock-code { color: var(--fg); }
   .k-dock-mark[aria-current] { background: var(--raised); }
-  .k-dock-mark[aria-current]::after { content: ""; position: absolute; left: 0.5rem; right: 0.5rem; bottom: 0.25rem; height: 0.1875rem; border-radius: 2px; background: var(--fg); }
+  .k-dock-mark[aria-current]::after { content: ""; position: absolute; left: 0.5rem; right: 0.5rem; bottom: 0.125rem; height: 0.125rem; border-radius: 2px; background: var(--fg); }
   .k-dock-need { flex-shrink: 0; padding: 0 0.5rem; border-radius: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; color: var(--accent-fg); background: var(--st-need); }
 }
 
@@ -743,3 +768,14 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);
 }
 .k-inbox-count[data-watch="idle"] { background: var(--accent); }
+
+/* A turn the model declined: a failure under its own word. The same red and
+   the same shapes as a failed one, wherever a state is drawn. */
+.k-marks[data-watch="declined"] .k-marks-head,
+.k-rail-card[data-watch="declined"] .k-rail-card-word,
+.k-row[data-watch="declined"] .k-row-state,
+.k-station[data-watch="declined"] .k-station-word { color: var(--st-fail-ink); }
+.k-rail-card[data-watch="declined"] { border-left-color: var(--st-fail); }
+.k-station[data-watch="declined"] .k-band { background-color: var(--st-fail); height: 0.375rem; }
+.k-station[data-watch="declined"] .k-station-head { box-shadow: inset 3px 0 0 var(--st-fail); }
+:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="declined"] { --k-st: var(--st-fail); }

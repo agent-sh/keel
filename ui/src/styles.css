@@ -271,15 +271,15 @@
    being listed here; no other rule and no component names the face
    (src/ui-conventions.test.ts). */
 /* 1. A state word: Working, Needs you, Failed, Done, Stopped, Offline. */
-.k-face-state, .k-station-word, .k-row-state, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-pane-empty-word, .k-alert[data-unread] .k-alert-word {
+.k-face-state, .k-station-word, .k-row-state, .k-row-class, .k-stuck-head, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-pane-empty-word, .k-alert[data-unread] .k-alert-word {
   font-family: var(--font-inst); font-stretch: 75%;
 }
 /* 2. A figure a glance reads: a clock, an age, a count. */
-.k-face-figure, .k-station-clock, .k-row-time, .k-rail-card-time, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
+.k-face-figure, .k-station-clock, .k-row-time, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
   font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
 }
 /* 3. A session's call sign on the folded rail. */
-.k-tick-code { font-family: var(--font-inst); font-stretch: 75%; }
+.k-tick-code, .k-dock-code { font-family: var(--font-inst); font-stretch: 75%; }
 /* 4. The name of a surface: the product, a page, a panel, a dialog. */
 .k-face-title, .text-display, .text-title, .k-page h1, .k-brand-name, .k-surface-title, .k-settings-jump-label, .k-reader-title h3 {
   font-family: var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.02em;
