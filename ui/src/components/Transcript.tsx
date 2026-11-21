@@ -9,7 +9,8 @@ import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
-import { cn, fmtCost, fmtTokens, fmtWait, scrollMotion } from "../lib/utils.ts";
+import { Kbd } from "./Kbd.tsx";
+import { cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
@@ -633,7 +634,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const to = Math.min(prompts.length - 1, Math.max(0, i + dir));
       const edge = to === i ? (dir < 0 ? "This is the first prompt." : "This is the last prompt.") : "";
       const text = edge || `Prompt ${to + 1} of ${prompts.length}`;
-      announce(edge ? `${edge} Prompt ${to + 1} of ${prompts.length}.` : text);
+      // Leaving the message box for the conversation: the way back is said with the place.
+      announce(`${edge ? `${edge} Prompt ${to + 1} of ${prompts.length}.` : text}${on ? "" : `${edge ? "" : "."} Escape returns to the message box.`}`);
       setWhole(true); // a prompt before the rows rendered first is rendered now
       setAt((cur) => ({ id: prompts[to]!.id, n: (cur?.n ?? 0) + 1, text }));
     };
@@ -678,6 +680,16 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       <div
         ref={scroller}
         className="relative h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
+        // A row that holds the keyboard itself (reached by Previous or Next prompt, or from a
+        // search hit) gives it back to the pane's message box on Escape. The press ends
+        // there: it does not also stop the turn or leave an agent's session.
+        onKeyDown={(e) => {
+          const row = e.target as HTMLElement;
+          if (e.key !== "Escape" || e.shiftKey || row.tabIndex !== -1 || !row.hasAttribute("data-event-id")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          focusBox(sessionId);
+        }}
         onScroll={(e) => {
           const el = e.currentTarget;
           const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -757,7 +769,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} previewing={previewing} />
         </div>
       </div>
-      {at && <div aria-hidden="true" data-testid="prompt-place" className={cn("pointer-events-none absolute left-1/2 z-10 flex h-7 -translate-x-1/2 items-center whitespace-nowrap rounded-full border border-line bg-raised px-3 text-caption font-medium tabular-nums text-muted shadow-2 animate-pop", away ? "bottom-[3.25rem]" : "bottom-3")}>{at.text}</div>}
+      {at && (
+        <div aria-hidden="true" className={cn("pointer-events-none absolute left-1/2 z-10 flex h-7 -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-line bg-raised px-3 text-caption font-medium tabular-nums text-muted shadow-2 animate-pop", away ? "bottom-[3.25rem]" : "bottom-3")}>
+          <span data-testid="prompt-place">{at.text}</span>
+          <span className="flex items-center gap-1 border-l border-line pl-2 font-normal text-faint" data-testid="prompt-place-back"><Kbd keys="escape" /> message box</span>
+        </div>
+      )}
       {away && (
         <button
           type="button"

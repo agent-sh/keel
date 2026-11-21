@@ -67,3 +67,6 @@ export function folderNames(paths: Iterable<string>): Map<string, string> {
 // someone whose system asks for reduced motion (the CSS rule for it covers
 // animations and transitions, not scrolls asked for from script).
 export const scrollMotion = (): ScrollBehavior => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth");
+
+// The message box of a session's pane takes the keyboard.
+export const focusBox = (id: string) => (document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer"]`) ?? document.querySelector<HTMLElement>('[data-testid="composer"]'))?.focus();

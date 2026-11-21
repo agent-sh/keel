@@ -4,13 +4,14 @@ import { copyOrSay } from "./copy.ts";
 import { FolderTree } from "lucide-react";
 import { createElement, lazy } from "react";
 import { panels, slash } from "./extend.ts";
-import { fuzzy, registerCommand } from "./keys.ts";
+import { fuzzy, isMac, registerCommand } from "./keys.ts";
 import { getSafetyModes, safety } from "./safety.ts";
 import { actions, getState, reportError } from "./store.ts";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import { getUI, navigate, notePick, savePref, setScale, setTheme, setUI, stepScale, type ThemePref } from "./ui.ts";
 import { resolveModelArg } from "./picker.ts";
 import { toggleList } from "./rail.ts";
+import { focusBox } from "./utils.ts";
 import { switchSession } from "./switch.ts";
 import { stopHere } from "./automation.ts";
 
@@ -88,8 +89,11 @@ registerCommand(
   { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => void copyOrSay(location.href) },
   { id: "end", label: "Go to the end and follow", group: "Session", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:end", { detail: current()!.id })) }, // the pane worked in, not every transcript on screen
   // The transcript of the pane with the keys moves to the prompt before or after the one it is on.
-  { id: "prev-prompt", label: "Previous prompt", group: "Conversation", keys: "alt+arrowup", inInput: true, words: "message question earlier jump back", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: -1 } })) },
-  { id: "next-prompt", label: "Next prompt", group: "Conversation", keys: "alt+arrowdown", inInput: true, words: "message question later jump forward", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: 1 } })) },
+  // On a Mac, Option Up and Down move the caret by paragraph: in a field they stay the field's.
+  { id: "prev-prompt", label: "Previous prompt", group: "Conversation", keys: "alt+arrowup", inInput: () => !isMac, words: "message question earlier jump back", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: -1 } })) },
+  { id: "next-prompt", label: "Next prompt", group: "Conversation", keys: "alt+arrowdown", inInput: () => !isMac, words: "message question later jump forward", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: 1 } })) },
+  // Back to typing from anywhere in the pane worked in (Escape does it from a prompt reached by the two above).
+  { id: "focus-box", label: "Focus the message box", group: "Conversation", keys: "shift+escape", inInput: true, words: "composer input type reply write", when: () => !!current(), run: () => focusBox(current()!.id) },
   { id: "settings", label: "Settings", group: "General", keys: "mod+,", inInput: true, words: "preferences options", run: () => navigate({ name: "settings", section: "general" }) },
   { id: "errors", label: "Show recorded errors", group: "General", words: "failures bugs log", run: () => setUI({ errors: true }) },
   { id: "theme-light", label: "Theme: light", group: "View", words: "appearance", run: () => setTheme("light") },

@@ -11,7 +11,10 @@ export type Command = {
   words?: string; // extra words the palette matches
   when?: () => boolean; // shown and bound only when true
   run: () => void;
-  inInput?: boolean; // the shortcut also fires while typing in a field
+  // The shortcut also fires while typing in a field. One with a modifier does
+  // anyway; a function that says no keeps even that one out of a field (a key
+  // the platform's text editing owns).
+  inInput?: boolean | (() => boolean);
 };
 
 const commands = new Map<string, Command>();
@@ -60,7 +63,8 @@ export function installKeymap() {
     const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
     for (const c of allCommands()) {
       if (!c.keys) continue;
-      if (typing && !c.inInput && !/mod|ctrl|meta|alt/.test(c.keys)) continue;
+      const inInput = typeof c.inInput === "function" ? c.inInput() : c.inInput;
+      if (typing && (typeof c.inInput === "function" ? !inInput : !inInput && !/mod|ctrl|meta|alt/.test(c.keys))) continue;
       if (c.keys.split(" ").some((k) => matches(e, k))) {
         e.preventDefault();
         c.run();

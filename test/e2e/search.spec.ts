@@ -197,10 +197,13 @@ test("previous and next prompt walk the conversation by keyboard", async ({ page
     await page.keyboard.press("Alt+ArrowUp");
     await shown(N - 1);
     await expect(place).toHaveText(`Prompt ${N} of ${N}`);
-    await expect(said).toHaveText(`Prompt ${N} of ${N}`);
+    // Leaving the box, the way back is said and shown with the place.
+    await expect(said).toHaveText(`Prompt ${N} of ${N}. Escape returns to the message box.`);
+    await expect(page.getByTestId("prompt-place-back")).toHaveText("Esc message box");
     await page.keyboard.press("Alt+ArrowUp");
     await shown(N - 2);
     await expect(place).toHaveText(`Prompt ${N - 1} of ${N}`);
+    await expect(said).toHaveText(`Prompt ${N - 1} of ${N}`);
     await shoot(page, "search-04-prompt-step");
     // Forward again, and the end says it is the end.
     await page.keyboard.press("Alt+ArrowDown");
@@ -237,7 +240,51 @@ test("previous and next prompt walk the conversation by keyboard", async ({ page
     await expect(options.filter({ hasText: "Previous prompt" }).locator("kbd")).toHaveText(["Alt", "↑"]);
     await expect(options.filter({ hasText: "Next prompt" }).locator("kbd")).toHaveText(["Alt", "↓"]);
     await shoot(page, "search-07-prompt-commands");
+    await page.getByTestId("palette-input").fill("message box");
+    await expect(options.filter({ hasText: "Focus the message box" }).locator("kbd")).toHaveText(["Shift", "Esc"]);
     await page.keyboard.press("Escape");
+
+    // Escape on a prompt reached this way goes back to the message box and ends there: a
+    // turn that runs meanwhile is not stopped by it.
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto" } });
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:long-tool" } });
+    await expect(page.getByTestId("stop")).toBeVisible();
+    await box.focus();
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect(page.getByTestId("user-message").last()).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(box).toBeFocused();
+    await page.waitForTimeout(400);
+    await expect(page.getByTestId("stop")).toBeVisible();
+    expect((await state()).session.phase).toBe("working");
+    // From a control further in (a prompt's own action), the command's key does the same.
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect(page.locator('[data-testid="user-message"]:focus')).toHaveCount(1);
+    await page.keyboard.press("Tab");
+    await expect(page.locator('[data-testid="copy-message"]:focus')).toHaveCount(1);
+    await page.keyboard.press("Shift+Escape");
+    await expect(box).toBeFocused();
+    expect((await state()).session.phase).toBe("working");
+    await expect(box).toHaveValue("A draft that stays where it is.");
+    await request.post(`/api/sessions/${id}/interrupt`);
+    await expect(page.getByTestId("stop")).toHaveCount(0);
+
+    // On a Mac, Option Up and Down are the text field's own (the caret moves by paragraph):
+    // in the box the two commands leave them alone, and they work from the conversation.
+    const mac = await page.context().newPage();
+    await mac.addInitScript(() => Object.defineProperty(navigator, "platform", { get: () => "MacIntel" }));
+    await mac.goto(`/s/${id}`);
+    const macBox = mac.getByTestId("composer");
+    await expect(macBox).toBeFocused();
+    await expect(mac.getByTestId("user-message").last()).toBeVisible();
+    await mac.keyboard.press("Alt+ArrowUp");
+    await mac.waitForTimeout(300);
+    await expect(macBox).toBeFocused();
+    await expect(mac.getByTestId("prompt-place")).toHaveCount(0);
+    await mac.getByTestId("assistant-text").last().click();
+    await mac.keyboard.press("Alt+ArrowUp");
+    await expect(mac.getByTestId("user-message").last()).toBeFocused();
+    await mac.close();
     expect(await errors()).toBe(errorsBefore);
   } finally { await request.delete(`/api/sessions/${id}`); }
 });
