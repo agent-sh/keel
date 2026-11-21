@@ -74,9 +74,12 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
   usePrefs();
   const [show, setShow] = useState(false);
   const [q, setQ] = useState("");
-  const hits = useMemo(() => {
+  // The matches as the list shows them, group by group: Enter takes the one at the top.
+  const shown = useMemo(() => {
     const w = q.trim().toLowerCase();
-    return list.filter((p) => !w || `${p.label} ${groupOf(p)} ${p.id}`.toLowerCase().includes(w));
+    const hits = list.filter((p) => !w || `${p.label} ${groupOf(p)} ${p.id}`.toLowerCase().includes(w));
+    const place = (p: Panel) => (GROUPS.includes(groupOf(p)) ? groupOf(p) : "More"); // a group the picker does not know is listed under More
+    return GROUPS.map((g) => ({ g, items: hits.filter((p) => place(p) === g) })).filter((x) => x.items.length);
   }, [list, q]);
   // Picking shows the panel; it never closes one (the X and the header toggles do).
   const pick = (id: string) => { openPanel(id); setShow(false); setQ(""); };
@@ -97,13 +100,11 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
                 aria-label="Find a panel"
                 data-testid="panel-search"
                 onChange={(e) => setQ(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && hits[0]) pick(hits[0].id); }}
+                onKeyDown={(e) => { const top = shown[0]?.items[0]; if (e.key === "Enter" && top) pick(top.id); }}
               />
             </label>
             <div className="k-picker-list">
-              {GROUPS.map((g) => {
-                const items = hits.filter((p) => groupOf(p) === g);
-                if (!items.length) return null;
+              {shown.map(({ g, items }) => {
                 return (
                   <section key={g}>
                     <h3 className="k-picker-group">{g}</h3>
@@ -127,7 +128,7 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
                   </section>
                 );
               })}
-              {!hits.length && <p className="k-picker-empty">No panel matches.</p>}
+              {!shown.length && <p className="k-picker-empty">No panel matches.</p>}
             </div>
           </Popover.Popup>
         </Popover.Positioner>

@@ -480,3 +480,37 @@ test("the shortcut sheet follows the Send with setting", async ({ page }) => {
   await expect(keys("New line")).toHaveText(["Shift", "Enter"]);
   await close();
 });
+
+// Panels search: Enter opens the result at the top of the list as it is
+// shown (grouped), and nothing when nothing matches.
+test("Enter in the Panels search opens the first result shown", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Panels search" } })).json();
+  try {
+    await page.goto(`/s/${session.id}`);
+    const search = page.getByTestId("panel-search");
+    const picks = page.getByTestId("panel-picker").locator('[data-testid^="panel-pick-"]');
+    const side = page.getByTestId("side-panel");
+    // "re" matches Review (shown first, under Work) and Terminal (earlier in the registry, shown last under More).
+    for (const q of ["re", "t", "u"]) {
+      await page.getByTestId("panel-menu").click();
+      await search.fill(q);
+      expect(await picks.count()).toBeGreaterThan(1);
+      const first = (await picks.first().getAttribute("data-testid"))!.replace("panel-pick-", "");
+      if (q === "re") { expect(first).toBe("review"); await shoot(page, "wb-18-panel-search"); }
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId("panel-picker")).toBeHidden();
+      await expect(side).toHaveAttribute("data-panel", first);
+    }
+    // Nothing matches: Enter opens nothing and the panel on screen stays.
+    const before = await side.getAttribute("data-panel");
+    await page.getByTestId("panel-menu").click();
+    await search.fill("no such panel");
+    await expect(page.getByTestId("panel-picker")).toContainText("No panel matches.");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("panel-picker")).toBeVisible();
+    await expect(search).toHaveValue("no such panel");
+    await expect(side).toHaveAttribute("data-panel", before!);
+  } finally { await request.delete(`/api/sessions/${session.id}`); }
+});
