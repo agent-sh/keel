@@ -409,6 +409,8 @@ export function apply(f: Frame) {
     if (s && newer(`${s.id}:session`, f.rev)) state = { ...state, sessions: { ...state.sessions, [s.id]: { ...s, head: e.id } } };
     set({ events: { ...state.events, [e.session_id]: [...list, e] } });
   } else if (f.t === "delta") {
+    // A whole draft taken at this rev or a later one (a snapshot that overtook this frame) holds it already.
+    if (f.rev !== undefined && f.rev <= (revs.get(`${f.session_id}:draft`) ?? 0)) return;
     set({ drafts: { ...state.drafts, [f.session_id]: draftStep(state.drafts[f.session_id] ?? {}, f)! } });
   } else if (f.t === "queue") {
     if (newer(`${f.session_id}:queue`, f.rev)) set({ queues: { ...state.queues, [f.session_id]: { queue: f.queue, held: f.held } } });
@@ -470,12 +472,17 @@ export function preloadSession(id: string) {
 let opened = false;
 let bootLoad: Promise<unknown> | null = null;
 export const setBootLoad = (p: Promise<unknown>) => { bootLoad = p; };
-let onReplayed: (() => void) | undefined;
+let onReplayed: ((ends: Record<string, number>) => void) | undefined;
+// The last socket opened and closed before its replay was through (a replay
+// too large for it): the next one reads the open transcripts by HTTP too.
+let cutShort = false;
 export function connect() {
   const ws = (socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`));
   let pinger: ReturnType<typeof setInterval> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
+  let open = false, caught = false;
   ws.onopen = () => {
+    open = true;
     retry = 500;
     const loaded = Object.entries(state.events);
     const cursors = Object.fromEntries(loaded.filter(([id]) => !splitId(id)).map(([id, list]) => [id, list.at(-1)?.seq ?? 0]));
@@ -493,28 +500,46 @@ export function connect() {
     };
     const first = !opened && bootLoad;
     opened = true;
-    const loads: Promise<unknown>[] = [first ? first.then(() => {}, reload) : reload()];
-    // Queue and status of the open sessions moved meanwhile (their events come by the
-    // replay); one deleted meanwhile is dropped. On the page's first socket the
-    // snapshots were just taken and the replay brings queue and status: no second load.
-    // The local resume cannot replay events from a peer, even when the
-    // daemon-to-peer relay stayed up. Catch those transcripts up by HTTP too.
-    // A session of this daemon is asked for without its transcript: the page
-    // holds it, and the replay brings every event after its cursor.
+    const listed = first ? first.then(() => {}, reload) : reload();
+    const loads: Promise<unknown>[] = [listed];
+    // Where the daemon's replay of each session ended, once it is through.
+    const replayed = new Promise<Record<string, number>>((done) => (onReplayed = done));
+    const whole = cutShort;
+    cutShort = false;
+    // One deleted meanwhile is dropped.
+    const gone = (id: string) => (e: unknown) => {
+      if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
+      const { [id]: _, ...events } = state.events;
+      const { [id]: __, ...sessions } = state.sessions;
+      set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
+      forgetLegacyQuestions(id);
+      dropSendDrafts(id);
+    };
+    // The open sessions moved meanwhile. On the page's first socket the
+    // snapshots were just taken and the replay brings queue and status: no load.
     for (const [id] of first ? [] : loaded) {
-      loads.push(actions.loadSession(id, !!splitId(id)).catch((e) => {
-        if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
-        const { [id]: _, ...events } = state.events;
-        const { [id]: __, ...sessions } = state.sessions;
-        set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
-        forgetLegacyQuestions(id);
-        dropSendDrafts(id);
+      // The local resume cannot replay events from a peer, even when the
+      // daemon-to-peer relay stayed up: its transcript is read again by HTTP.
+      // So is every transcript after a socket that closed inside its replay.
+      if (splitId(id) || whole) { loads.push(actions.loadSession(id).catch(gone(id))); continue; }
+      // A session of this daemon: the replay brings every event after the
+      // page's cursor, so it is asked for without its transcript, and only
+      // once the replay and the list are in. Its answer (row, head, queue,
+      // status, draft) is then newer than every replayed frame and lands
+      // after them, and after the list, which holds no archived row.
+      loads.push(Promise.all([replayed, listed]).then(([ends]) => {
+        if (socket !== ws) return;
+        // The daemon holds less of it than the page (its replay ended below the
+        // page's cursor: a restored backup): what the page holds is dropped
+        // and the session is read whole, or its new events would be taken for old ones.
+        const behind = (ends[id] ?? cursors[id]!) < cursors[id]!;
+        if (behind) { const { [id]: _, ...events } = state.events; set({ events }); }
+        return actions.loadSession(id, behind).catch(gone(id));
       }));
     }
     // Caught up when this socket's replay came and the reloads landed; a late
     // answer from a socket that dropped meanwhile declares nothing.
-    const replayed = new Promise<void>((done) => (onReplayed = done));
-    Promise.all([replayed, ...loads]).then(() => { if (socket === ws && state.connected) set({ synced: true }); });
+    Promise.all(loads).then(() => { if (socket === ws && state.connected) set({ synced: true }); });
     // Features load their own state here, the first open included.
     for (const l of features) l.reconnect?.();
     questionPoll = setInterval(() => {
@@ -533,7 +558,7 @@ export function connect() {
     // The replay's whole draft, also at the rev of a snapshot that came before this socket
     // opened (nothing was emitted between them): the open dropped the snapshot's copy.
     else if (f.t === "draft") { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); }
-    else if (f.t === "replayed") { if (socket === ws) onReplayed?.(); }
+    else if (f.t === "replayed") { caught = true; if (socket === ws) onReplayed?.(f.cursors ?? {}); }
     else if (f.t === "hello" || f.t === "ui") servedUi(f.t === "ui" ? f.version : f.ui);
     else apply(f);
   };
@@ -541,6 +566,7 @@ export function connect() {
     clearInterval(pinger);
     clearTimeout(deadline);
     if (socket !== ws) return;
+    if (open && !caught) cutShort = true;
     clearInterval(questionPoll);
     drops++;
     set({ connected: false, synced: false });

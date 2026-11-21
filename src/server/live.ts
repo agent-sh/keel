@@ -4,7 +4,9 @@
 // cursor and the reply a running turn has streamed so far, then subscribes the
 // socket to them. JavaScript runs the replay and the subscribe in one go, so
 // no event can slip between them: no gap and no duplicate, also across a
-// reconnect or a daemon restart (the cursor is the stored seq).
+// reconnect or a daemon restart (the cursor is the stored seq). `replayed`
+// names where each session's replay ended: the cursor it was given or the
+// last event sent, or less when this daemon holds less than the page.
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { ClientFrame, DraftBlocks, Frame, SocketFrame } from "../core/types.ts";
@@ -63,11 +65,16 @@ export class Live {
     const cursors: Record<string, number> = {};
     for (const [id, seq] of Object.entries(m.cursors ?? {})) {
       if (!this.store.session(id)) continue;
-      let last = Number(seq) || 0;
-      for (const e of this.store.events(id, last)) {
+      const from = Number(seq) || 0;
+      let last = from;
+      for (const e of this.store.events(id, from)) {
         ws.send(JSON.stringify(this.bus.filter({ t: "event", event: e })));
         last = e.seq;
       }
+      // Nothing after the cursor: the page is level, or ahead of what is
+      // stored here (a restored backup). Then the replay ends at the last
+      // stored seq, below the cursor, and the page reads the session whole.
+      if (last === from && from > 0) last = Math.min(from, this.store.db.query<{ n: number | null }, [string]>("SELECT MAX(seq) AS n FROM events WHERE session_id = ?").get(id)?.n ?? 0);
       cursors[id] = last;
       const d = this.drafts.get(id);
       if (d) send(ws, { t: "draft", session_id: id, blocks: d, rev: this.bus.rev() });
