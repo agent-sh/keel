@@ -14,7 +14,7 @@ import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { ToolCall } from "./ToolCall.tsx";
 import { InputNotice, SYSTEM_INPUT } from "./automation/TranscriptExtras.tsx";
-import { isPeerMessage, PeerMessage } from "./FleetMessages.tsx";
+import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
 
 function Thinking({ text, live }: { text: string; live?: boolean }) {
   if (!text.trim() && !live) return null;
@@ -668,6 +668,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             if (e.kind === "note" && (e.data.hook || e.data.memory)) { notes.push(e); return null; }
             if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "note" && e.data.kind === "fork") return <ForkNote key={e.id} e={e} />;
+            if (e.kind === "note" && e.data.kind === "peer_refused") return <RefusedNote key={e.id} e={e} />;
             // What the new model is told after a switch: the switch note above already says it.
             if (e.kind === "note" && e.data.kind === "model_told") return null;
             // A model switch: who made it and when, inline where it took effect.

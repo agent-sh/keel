@@ -77,14 +77,17 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         pending: async () => (await linkJson<{ messages: Message[] }>(p, "/api/fleet/outbox", { method: "POST", body: JSON.stringify({ daemon_id: f.id, name: f.name }) })).messages,
         // Proven by the link's answer; it counts as that daemon's when it says it was written there.
         keep: (m) => msgs.keepOutbound(m, m.from.daemon_id === p.daemonId),
-        ack: (ids, refused) => linkJson(p, "/api/fleet/outbox/ack", { method: "POST", body: JSON.stringify({ daemon_id: f.id, ids, refused }) }),
+        ack: (ids, refused, titles) => linkJson(p, "/api/fleet/outbox/ack", { method: "POST", body: JSON.stringify({ daemon_id: f.id, ids, refused, titles }) }),
       };
     },
     live: (machineId) => f.relayLive(machineId),
     failed: (e, machineId) => errors.capture("server", e, { at: "fleet outbox", machine: machineId }),
   }));
   f.onOutbox = (machineId) => outbox.kick(machineId);
-  if (!runMode.client) f.start();
+  if (!runMode.client) {
+    f.start();
+    msgs.tellPending(); // refusals a previous run settled and did not get to say
+  }
   const spillRoot = `${store.stateDir}/spill`;
 
   // A session placed on another machine: its workspace tools run there.
@@ -540,11 +543,10 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const c = paired(req);
         const b = await body(req);
         if (!c || c.daemonId !== b.daemon_id) return proven(bad("not a paired daemon", 403), c, f.id);
-        // `refused` maps an id to why its daemon did not keep it (a daemon that sends none kept them all).
-        const refused = b.refused && typeof b.refused === "object" && !Array.isArray(b.refused)
-          ? Object.fromEntries(Object.entries(b.refused).map(([id, why]) => [id, String(why).slice(0, 500)]))
-          : {};
-        msgs.ackOutbound(c.daemonId, Array.isArray(b.ids) ? b.ids.map(String).slice(0, 500) : [], refused);
+        // `refused` maps an id to why its daemon did not keep it (a daemon that sends none kept them all),
+        // `titles` to what it calls the session. Both are its words: ackOutbound cleans and bounds them.
+        const words = (v: unknown): Record<string, string> => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([id, x]) => [id, String(x).slice(0, 500)])) : {});
+        msgs.ackOutbound(c.daemonId, Array.isArray(b.ids) ? b.ids.map(String).slice(0, 500) : [], words(b.refused), words(b.titles));
         return proven(json({ ok: true }), c, f.id);
       },
     },

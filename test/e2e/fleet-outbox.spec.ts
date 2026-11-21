@@ -52,11 +52,12 @@ test("fleet outbox: an accepted message is delivered, a refused one says why to 
 
     // The sender, seen from the linking daemon: each refusal in its transcript.
     await page.goto(`/s/${peer.id}--${sender.id}`);
-    const refusal = (why: string) => page.getByTestId("note").filter({ hasText: "was refused there and not delivered" }).filter({ hasText: why });
-    await expect(refusal("the session is archived")).toHaveCount(1);
-    await expect(refusal("the session is archived")).toContainText(`Your message to session ${archived.id}`);
-    await expect(refusal("no such session there (deleted)")).toHaveCount(1);
-    await refusal("the session is archived").scrollIntoViewIfNeeded();
+    const refused = page.getByTestId("peer-refused");
+    await expect(refused).toHaveCount(2);
+    // By its title where the other daemon knows one, by its id where the session is gone.
+    await expect(refused.filter({ hasText: "the session is archived" })).toContainText("Not delivered to Archived receiver on");
+    await expect(refused.filter({ hasText: "no such session there (deleted)" })).toContainText(`Not delivered to session ${deleted.id} on`);
+    await refused.first().scrollIntoViewIfNeeded();
     await shoot(page, "fleet-outbox-01-refused");
 
     // The accepted one reached its session here once, as another session's text.

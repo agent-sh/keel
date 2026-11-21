@@ -57,6 +57,8 @@ export type MachineRow = {
 export function migrate(store: Store) {
   store.migrate(SCHEMA);
   if (!store.columnExists("sessions", "machine")) store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+  // What the receiving daemon called the session of a refused outbox message.
+  if (!store.columnExists("fleet_messages", "to_title")) store.migrate("ALTER TABLE fleet_messages ADD COLUMN to_title TEXT");
 }
 
 export function meta(store: Store, key: string, make: () => string): string {

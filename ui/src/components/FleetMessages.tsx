@@ -1,7 +1,7 @@
 // Messages between sessions in the workbench: one in the transcript (another
 // session's text, not the owner's), and the ones held for the owner above the
 // composer, with deliver and drop.
-import { Inbox, MessageSquareShare, Send, X } from "lucide-react";
+import { Inbox, MessageSquareOff, MessageSquareShare, Send, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { StoredEvent } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -33,6 +33,27 @@ export function PeerMessage({ e }: { e: StoredEvent }) {
       <div className="rounded-lg border border-dashed border-line-strong bg-sunken/60 px-4 py-2.5 text-read leading-relaxed text-fg">
         <Markdown text={body} />
       </div>
+    </div>
+  );
+}
+
+// A message this session wrote that the other daemon refused: a failure of
+// the send, in the transcript where the send is. Names the session by its
+// title when that daemon gave one. Every word here is cleaned by the daemon.
+export function RefusedNote({ e }: { e: StoredEvent }) {
+  const d = e.data as { to_session?: string; to_title?: string; machine?: string; reason?: string; text?: string };
+  return (
+    <div id={`e-${e.id}`} role="status" data-testid="peer-refused" data-event-id={e.id} className="flex items-start gap-2.5 rounded-lg border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-ui animate-in">
+      <MessageSquareOff className="mt-0.5 size-4 shrink-0 text-danger" />
+      {d.reason ? (
+        <span className="min-w-0 break-words text-fg">
+          <span className="font-medium">Not delivered</span> to <span className="font-medium" title={d.to_title ? `session ${d.to_session}` : undefined}>{d.to_title || `session ${d.to_session}`}</span>
+          {d.machine ? ` on ${d.machine}` : ""}: {d.reason}.
+          <span className="whitespace-nowrap text-muted" title={when(e.ts)}> {ago(e.ts)}</span>
+        </span>
+      ) : (
+        <span className="min-w-0 break-words text-fg">{String(d.text ?? "").replace(/<\/?system-reminder>/g, "").trim()}</span>
+      )}
     </div>
   );
 }

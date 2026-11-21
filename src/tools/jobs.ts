@@ -510,15 +510,6 @@ export function addNotice(sessionId: string, text: string) {
   notices.set(sessionId, list);
 }
 
-// Takes a note back when no request has read it yet (its turn ended first).
-export function takeNotice(sessionId: string, text: string): boolean {
-  const list = notices.get(sessionId) ?? [];
-  const i = list.findIndex((n) => n.text === text && !n.job);
-  if (i < 0) return false;
-  list.splice(i, 1);
-  return true;
-}
-
 export function drainNotices(sessionId: string): Notice[] {
   const n = notices.get(sessionId) ?? [];
   notices.delete(sessionId);
