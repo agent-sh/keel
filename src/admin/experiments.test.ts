@@ -407,3 +407,18 @@ test("an offline run's metrics share one scope, and the runner's report is the d
     expect(theirs.effects.some((f: any) => f.metric === "cost_usd")).toBe(false);
   } finally { d.close(); }
 });
+
+test("a guard's alpha is a probability, and the report carries the threshold it gives", async () => {
+  const d = daemon();
+  try {
+    const { x, call } = d.open();
+    const make = (stop: unknown, template = "effort") => call("POST", "/api/experiments", { template, name: "alpha", stop });
+    for (const alpha of [0, 1, 1.5, -0.05, "0.05", null, Number.NaN]) expect([alpha, (await make({ alpha })).status]).toEqual([alpha, 400]);
+    const usual = (await make({})).body.experiment as Experiment;
+    expect((await call("PATCH", `/api/experiments/${usual.id}`, { stop: { alpha: 2 } })).status).toBe(400);
+    const strict = (await make({ alpha: 0.01 })).body.experiment as Experiment;
+    const offline = (await make({ alpha: 0.02, reps: 3 }, "readers")).body.experiment as Experiment;
+    const threshold = (e: Experiment) => { const r = x.report(x.get(e.id)!); return [r.threshold, r.guard?.threshold]; };
+    expect([threshold(usual), threshold(strict), threshold(offline)]).toEqual([[20, 20], [100, 100], [50, undefined]]);
+  } finally { d.close(); }
+});

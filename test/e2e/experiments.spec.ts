@@ -73,6 +73,8 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await expect(detail.getByTestId("experiment-sessions")).toContainText("effort");
   await expect(detail.getByTestId("experiment-report")).toContainText("n=");
   await expect(detail.getByTestId("experiment-guards")).toContainText(`${made.length} session families read, each once, 3 s after it started`);
+  // The default alpha: the guards stop at 20.
+  await expect(detail.getByTestId("guard-threshold")).toHaveText("20");
   await shoot(page, "experiments-02-live-running");
   await detail.getByTestId("experiment-sessions").scrollIntoViewIfNeeded();
   await shoot(page, "experiments-02b-live-guards");
@@ -95,7 +97,9 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await shoot(page, "experiments-03-live-decided");
 
   // Offline: the runner uploads one row per run; the report judges them.
-  const off = (await (await request.post("/api/experiments", { data: { template: "readers", name: `Readers ${tag}` } })).json()).experiment;
+  // An alpha that is no probability is refused; a valid one of the owner's sets what the guards need.
+  for (const alpha of [0, 1, -0.05, "0.05"]) expect((await request.post("/api/experiments", { data: { template: "readers", name: `Readers ${tag}`, stop: { reps: 3, alpha } } })).status()).toBe(400);
+  const off = (await (await request.post("/api/experiments", { data: { template: "readers", name: `Readers ${tag}`, stop: { reps: 3, alpha: 0.01 } } })).json()).experiment;
   await request.post(`/api/experiments/${off.id}/start`);
   const runs: { receipt: string; arm: string; task: string; rep: number; metrics: Record<string, number> }[] = [];
   for (const task of ["readlog", "readspec", "readcode"]) for (let rep = 1; rep <= 3; rep++) {
@@ -120,6 +124,7 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await expect(detail.getByTestId("metric-cost_usd").getByTestId("metric-partial")).toHaveText("over 8 of 9");
   await expect(detail.getByTestId("metric-prompt_tokens").getByTestId("metric-partial")).toHaveCount(0);
   await expect(detail.getByTestId("experiment-decision")).toContainText("readers on wins");
+  await expect(detail.getByTestId("guard-threshold")).toHaveText("100");
   await expect(detail.getByTestId("experiment-command")).toContainText(`--experiment ${off.id}`);
   await shoot(page, "experiments-04-offline-report");
 

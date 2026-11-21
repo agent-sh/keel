@@ -102,6 +102,8 @@ export type Guard = { metric: Metric; mde: number; relative?: boolean };
 // `window_min`: live, the minutes after its assignment over which a family's guard observation is read.
 export type Stop = { sessions_per_arm?: number | null; alpha?: number; window_min?: number; reps?: number; tasks?: string[]; model?: string };
 export const WINDOW_MIN = 24 * 60;
+// The chance a guard stops an experiment whose arms do not differ, unless `stop.alpha` names another.
+export const ALPHA = 0.05;
 export type Decision = { winner: string | null; verdict: "won" | "inconclusive" | "regression"; text: string; remove: string; ts: number };
 export type RunUpload = { receipt: string; arm: string; task?: string; rep?: number; metrics: Record<string, number> };
 const sorted = (m: Record<string, number>) => Object.fromEntries(Object.entries(m).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
@@ -215,6 +217,8 @@ export function validate(e: Partial<Experiment>): void {
     if (!(g.metric in METRICS)) throw bad(`guard metric ${g.metric} is unknown`);
     if (!(g.mde > 0)) throw bad(`guard ${g.metric}: mde, the smallest change worth stopping for, is above 0`);
   }
+  const alpha = e.stop?.alpha;
+  if (alpha !== undefined && !(typeof alpha === "number" && alpha > 0 && alpha < 1)) throw bad("alpha, the chance a guard stops an experiment whose arms do not differ, is a number above 0 and below 1");
   const w = e.stop?.window_min;
   if (w !== undefined && !(typeof w === "number" && w > 0 && Number.isFinite(w))) throw bad("window_min, the minutes a family's guard observation is read over, is above 0");
   const n = e.stop?.sessions_per_arm;
@@ -233,7 +237,8 @@ export type GuardTest = { arm: string; metric: Metric; lr: number; reject: boole
 // stops at, and the families read and still inside their window.
 export type GuardState = { evidence: number; threshold: number; tests: number; window_min: number; fixed: number; pending: number };
 // `final_ms`: when the experiment stopped and this report was frozen.
-export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: GuardTest[]; guard?: GuardState; decision: Decision; final_ms?: number };
+// `threshold`: the evidence a guard needs, 1 / alpha (live: the average over the tests).
+export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: GuardTest[]; threshold: number; guard?: GuardState; decision: Decision; final_ms?: number };
 // A family's fixed guard observation: its mean of each metric over its window.
 export type Obs = { arm: string; m: Partial<Record<Metric, number>> };
 export type Live = { obs: Obs[]; pending: number };
@@ -266,7 +271,7 @@ export function report(e: Experiment, rows: Row[], live?: Live): Report {
   const seq = e.mode === "live" ? liveGuards(e, live?.obs ?? []) : undefined;
   const guards = seq?.guards ?? guardTests(e, rows);
   const guard = seq && { evidence: seq.evidence, threshold: seq.threshold, tests: seq.tests, window_min: e.stop.window_min ?? WINDOW_MIN, fixed: live?.obs.length ?? 0, pending: live?.pending ?? 0 };
-  return { mode: e.mode, unit: e.mode === "live" ? "turn (resampled by session family)" : "run (resampled within task)", arms, effects, guards, ...(guard ? { guard } : {}), decision: decide(e, effects, guards) };
+  return { mode: e.mode, unit: e.mode === "live" ? "turn (resampled by session family)" : "run (resampled within task)", arms, effects, guards, threshold: 1 / (e.stop.alpha ?? ALPHA), ...(guard ? { guard } : {}), decision: decide(e, effects, guards) };
 }
 
 // Live guards over the fixed family observations, in the order they were
@@ -283,7 +288,7 @@ export function liveGuards(e: Experiment, obs: Obs[], look?: (seen: number, evid
       bet: labelBet(w / (w0 + w), (level) => (g.relative ? g.mde * Math.abs(level) : g.mde)),
     }));
   });
-  const threshold = 1 / (e.stop.alpha ?? 0.05);
+  const threshold = 1 / (e.stop.alpha ?? ALPHA);
   const average = () => (tests.length ? tests.reduce((n, t) => n + t.bet.evidence, 0) / tests.length : 1);
   obs.forEach((o, i) => {
     for (const t of tests) {
@@ -322,7 +327,7 @@ export function guardTests(e: Experiment, rows: Row[]): Report["guards"] {
     const ca = perCluster(control, g.metric), cb = perCluster(a.name, g.metric);
     const base = ca.length ? ca.reduce((x, y) => x + y, 0) / ca.length : 0;
     const tau = g.relative ? g.mde * Math.abs(base) : g.mde;
-    const t = msprt(ca, cb, tau, e.stop.alpha ?? 0.05);
+    const t = msprt(ca, cb, tau, e.stop.alpha ?? ALPHA);
     return { arm: a.name, metric: g.metric, lr: t.lr, reject: t.reject, diff: t.diff, worse: t.reject && worse(g.metric, t.diff), n: [ca.length, cb.length] as [number, number] };
   }));
 }
