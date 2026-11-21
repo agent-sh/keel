@@ -22,7 +22,17 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   const row = panel.getByTestId("error-row").filter({ hasText: tag });
   await expect(row).toHaveCount(1);
   await expect(row.getByTestId("error-count")).toHaveText("3x");
+  // The row says it opens: a marker in a token color, turned once it has.
+  const marker = row.getByTestId("error-marker");
+  const isOpen = () => row.evaluate((d) => (d as HTMLDetailsElement).open);
+  const turned = () => marker.evaluate((m) => getComputedStyle(m).rotate);
+  await expect(marker).toBeVisible();
+  expect(await isOpen()).toBe(false);
+  expect(await turned()).toBe("none");
+  expect(await marker.evaluate((m) => { const probe = Object.assign(document.createElement("i"), { className: "text-faint" }); m.parentElement!.append(probe); const same = getComputedStyle(m).color === getComputedStyle(probe).color; probe.remove(); return same; })).toBe(true);
   await row.locator("summary").click();
+  expect(await isOpen()).toBe(true);
+  await expect.poll(turned).toBe("90deg");
   // The link is where it last happened, not where all three did.
   await expect(row.getByTestId("error-session")).toContainText("Last in Error tracker check");
   await shoot(page, "errors-01-open");
@@ -33,12 +43,24 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await row.getByTestId("error-read").click();
   await expect(row).toHaveAttribute("data-read", "1");
   await expect.poll(badge).toBe(before - 1);
+  // Marking read is not opening: the row stays as it was, and so does its marker.
+  expect(await isOpen()).toBe(true);
+  expect(await turned()).toBe("90deg");
   await panel.getByTestId("errors-unread-only").check();
   await expect(panel.getByTestId("error-row").filter({ hasText: tag })).toHaveCount(0);
   await panel.getByTestId("errors-unread-only").uncheck();
   await page.reload();
   await page.getByTestId("errors-button").click();
   await expect(row).toHaveAttribute("data-read", "1");
+  await expect.poll(badge).toBe(before - 1);
+  // A closed row stays closed when its read state is changed, either way.
+  expect(await isOpen()).toBe(false);
+  await row.getByTestId("error-read").click();
+  await expect(row).not.toHaveAttribute("data-read", "1");
+  await row.getByTestId("error-read").click();
+  await expect(row).toHaveAttribute("data-read", "1");
+  expect(await isOpen()).toBe(false);
+  expect(await turned()).toBe("none");
   await expect.poll(badge).toBe(before - 1);
   await shoot(page, "errors-01b-read");
   // It happens again: unread, in the badge again.

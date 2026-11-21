@@ -1,5 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Activity, Check, CheckCheck, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
+import { Activity, Check, CheckCheck, ChevronRight, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
 import type { ErrorRecord } from "../../../src/core/types.ts";
@@ -57,7 +57,9 @@ function Row({ e }: { e: ErrorRecord }) {
   };
   return (
     <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
-      <summary className="flex cursor-default list-none items-baseline gap-2.5 text-ui">
+      <summary className="flex cursor-default list-none items-baseline gap-2 text-ui [&::-webkit-details-marker]:hidden">
+        {/* The row opens: a marker of its own says so, and turns when it has. */}
+        <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform duration-150 group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
         <span className="rounded-xs bg-danger-soft px-1.5 py-px text-micro font-medium text-danger">{e.source}</span>
         <span className={cn("min-w-0 flex-1 truncate", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
         {n > 1 && (
@@ -79,7 +81,7 @@ function Row({ e }: { e: ErrorRecord }) {
           </button>
         )}
       </summary>
-      <div className="mt-2 flex flex-col gap-2">
+      <div className="mt-2 ml-[1.375rem] flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted">
           <span>First <span className="tabular-nums text-fg">{when(e.first_ts ?? e.ts)}</span></span>
           {n > 1 && <span>Last <span className="tabular-nums text-fg">{when(e.ts)}</span></span>}
