@@ -718,14 +718,18 @@ export function replyBytes(blocks: AssistantBlock[]): number {
 export const TRANSCRIPT_CLIP = 2_000;
 
 // `output`: a tool's result; `call`: a call's name and input; `said`: words
-// someone sent (the owner, a report, a reply's own text), never shortened here.
-type Piece = { text: string; output?: boolean; call?: boolean; said?: boolean };
+// someone sent to the model (the owner's, a report's), never shortened or
+// left out here; `answer`: the reply that ended a turn (one with no call in
+// it), kept for as long as anything else can go. What the model wrote
+// between two calls is part of the work.
+type Piece = { text: string; output?: boolean; call?: boolean; said?: boolean; answer?: boolean };
 
 function pieces(m: Message): Piece[] {
   const out: Piece[] = [];
   const who = m.role === "assistant" ? "assistant" : "user";
+  const answer = who === "assistant" && !(m.content as any[]).some((b) => b.type === "tool_use");
   for (const b of m.content as any[]) {
-    if (b.type === "text") { if (b.text) out.push({ text: `[${who}]\n${b.text}\n`, said: who === "user" }); }
+    if (b.type === "text") { if (b.text) out.push({ text: `[${who}]\n${b.text}\n`, said: who === "user", answer }); }
     else if (b.type === "tool_use") out.push({ text: `[assistant called ${b.name} (${b.id})]\n${JSON.stringify(b.input ?? {})}\n`, call: true });
     else if (b.type === "tool_result") {
       const body = typeof b.content === "string" ? b.content : (b.content ?? []).map((c: any) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n");
@@ -746,11 +750,17 @@ function pieces(m: Message): Piece[] {
 // the history (a 30,000-event import took 255 requests) while the oldest
 // parts are worn down to a line each anyway. A history too long for this
 // many parts is shortened further (transcriptParts) and says what it left out.
+// It is the plan that is held to this: a summary of the earlier parts that
+// comes back longer than planned leaves less room for each next part, and a
+// request the provider refuses is planned again smaller. Either can add
+// requests, and the status counts the plan as it stands.
 export const TRANSCRIPT_PARTS_MAX = 8;
 // What a tool output or a call's input keeps when the transcript is still
 // too long with every output at TRANSCRIPT_CLIP.
 export const TRANSCRIPT_CLIP_HARD = 300;
 
+// `left_out.steps`: the model's rounds (a reply with its calls and their
+// results) that are not in the transcript, whole or in part.
 export type TranscriptPlan = { parts: string[]; clipped: number; left_out: { steps: number; bytes: number } };
 
 // The conversation as transcript parts of at most `budget` UTF-8 bytes each,
@@ -758,9 +768,12 @@ export type TranscriptPlan = { parts: string[]; clipped: number; left_out: { ste
 // With `maxParts`, a transcript that needs more parts than that is shortened
 // until it does not, oldest first and never the owner's or another sender's
 // words: tool outputs and call inputs down to TRANSCRIPT_CLIP_HARD, then
-// whole steps of the work (calls, results and the replies between them) left
-// out, each run of them named in its place with its size (`left_out`). The
-// events stay stored and searchable; only this summary does not read them.
+// whole steps of the work (calls, their results and what the model wrote
+// between them) left out, each run of them named in its place with its size
+// (`left_out`). The answer that ended each turn stays while that is enough;
+// a history of so many turns that their answers alone do not fit has the
+// oldest answers left out the same way. The events stay stored and
+// searchable; only this summary does not read them.
 export function transcriptParts(messages: Message[], budget: number, maxParts = Infinity): TranscriptPlan {
   const plan = transcriptPlan(messages, budget, maxParts);
   for (let r = plan.next(); ; r = plan.next()) if (r.done) return r.value;
@@ -784,10 +797,17 @@ function* transcriptPlan(messages: Message[], budget: number, maxParts: number):
   const due = (n: number) => (worked += n) >= PACE_BYTES && ((worked = 0), true);
   const all: (Piece | null)[] = [];
   const size: number[] = [];
-  for (const m of messages) for (const p of pieces(m)) {
-    all.push(p);
-    size.push(utf8Bytes(p.text));
-    if (due(size.at(-1)!)) yield;
+  // The model's round each piece belongs to: the reply it is in, or the reply whose call it answers.
+  const round: number[] = [];
+  let reply = -1;
+  for (const [at, m] of messages.entries()) {
+    if (m.role === "assistant") reply = at;
+    for (const p of pieces(m)) {
+      all.push(p);
+      size.push(utf8Bytes(p.text));
+      round.push(p.said ? -1 : reply);
+      if (due(size.at(-1)!)) yield;
+    }
   }
   let total = size.reduce((a, b) => a + b, 0);
   let clipped = 0;
@@ -815,21 +835,46 @@ function* transcriptPlan(messages: Message[], budget: number, maxParts: number):
       clip(i, TRANSCRIPT_CLIP_HARD);
     }
     // Still too long: the oldest steps of the work go, one run at a time, with a line in their place.
-    for (let i = 0; i < all.length && total > most; ) {
-      if (!all[i] || all[i]!.said) { i++; continue; }
-      let j = i, bytes = 0;
-      const note = (n: number, b: number) => `[${n} steps of the work (calls, results and replies) from here are not in this transcript: ${b} bytes. They stay stored and searchable.]\n`;
-      while (j < all.length && all[j] && !all[j]!.said && total - bytes + utf8Bytes(note(j - i, bytes)) > most) bytes += size[j++]!;
-      if (j === i) break;
-      const text = note(j - i, bytes);
-      total += utf8Bytes(text) - bytes;
-      left_out.steps += j - i;
-      left_out.bytes += bytes;
-      all[i] = { text, said: true };
-      size[i] = utf8Bytes(text);
-      for (let k = i + 1; k < j; k++) { all[k] = null; size[k] = 0; }
-      i = j;
-      yield;
+    // `gaps`: the lines that stand for what went, by where they are; a later
+    // run that reaches one takes it in, so the lines do not pile up.
+    const gone = new Set<number>();
+    const gaps = new Map<number, { rounds: Set<number>; bytes: number }>();
+    const line = (n: number, b: number) => `[${n} more rounds not here: ${b} bytes]\n`;
+    const drop = function* (may: (p: Piece) => boolean): Generator<void> {
+      for (let i = 0; i < all.length && total > most; ) {
+        const takes = (k: number) => all[k] === null || gaps.has(k) || may(all[k]!);
+        if (!takes(i)) { i++; continue; }
+        const g = { rounds: new Set<number>(), bytes: 0 };
+        let j = i, freed = 0, real = 0;
+        while (j < all.length && takes(j) && total - freed + utf8Bytes(line(g.rounds.size, g.bytes)) > most) {
+          const was = gaps.get(j);
+          if (was) { for (const r of was.rounds) g.rounds.add(r); g.bytes += was.bytes; }
+          else if (all[j]) { g.rounds.add(round[j]!); g.bytes += size[j]!; real++; }
+          freed += size[j++]!;
+        }
+        if (!real) { i = Math.max(j, i + 1); continue; }
+        const text = line(g.rounds.size, g.bytes);
+        total += utf8Bytes(text) - freed;
+        for (const r of g.rounds) gone.add(r);
+        for (let k = i; k < j; k++) { gaps.delete(k); all[k] = null; size[k] = 0; }
+        all[i] = { text };
+        size[i] = utf8Bytes(text);
+        gaps.set(i, g);
+        i = j;
+        yield;
+      }
+    };
+    yield* drop((p) => !p.said && !p.answer);
+    // The answers of thousands of turns alone do not fit: the oldest go too, the newest stay whole.
+    yield* drop((p) => !p.said);
+    left_out.steps = gone.size;
+    for (const g of gaps.values()) left_out.bytes += g.bytes;
+    // The first line says what the lines mean.
+    const first = Math.min(...gaps.keys());
+    if (Number.isFinite(first)) {
+      const g = gaps.get(first)!;
+      all[first] = { text: `[${g.rounds.size} of the model's rounds from here are not in this transcript (their calls, results and words): ${g.bytes} bytes. They stay stored and searchable. Each line like this one stands for rounds left out where it is.]\n` };
+      size[first] = utf8Bytes(all[first]!.text);
     }
   }
   const parts: string[] = [];

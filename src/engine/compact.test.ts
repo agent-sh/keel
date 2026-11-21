@@ -357,17 +357,41 @@ test("a transcript is planned in at most the most parts, the oldest steps left o
   // Every prompt once, in order.
   for (let n = 0; n < 600; n++) expect(joined.split(`[user]\nprompt ${n}\n`)).toHaveLength(2);
   expect(joined.indexOf("prompt 3\n")).toBeLessThan(joined.indexOf("prompt 599\n"));
-  // The oldest steps are gone and say so; the newest are there with their call, result and reply.
+  // The oldest steps are gone and say so: one round a turn here (a call and its result), counted as rounds, not as pieces.
   expect(cut.left_out.steps).toBeGreaterThan(100);
+  expect(cut.left_out.steps).toBeLessThan(600);
   expect(joined).not.toContain("[assistant called Bash (t0)]");
-  expect(joined).toMatch(/^\[user\]\nprompt 0\n\[\d+ steps of the work \(calls, results and replies\) from here are not in this transcript: \d+ bytes\. They stay stored and searchable\.\]\n\[user\]\nprompt 1\n/);
+  expect(joined).toMatch(/^\[user\]\nprompt 0\n\[1 of the model's rounds from here are not in this transcript \(their calls, results and words\): \d+ bytes\. They stay stored and searchable\. Each line like this one stands for rounds left out where it is\.\]\n\[assistant\]\ndone 0\n\[user\]\nprompt 1\n\[1 more rounds not here: \d+ bytes\]\n\[assistant\]\ndone 1\n/);
+  // The newest are there with their call and result, and the answer that ended every turn is, the oldest too.
   expect(joined).toContain("[assistant called Bash (t599)]");
   expect(joined).toContain("[result of t599]\nOUT599 ");
-  expect(joined).toContain("[assistant]\ndone 599\n");
-  const named = [...joined.matchAll(/\[(\d+) steps of the work/g)].reduce((n, m) => n + Number(m[1]), 0);
+  for (let n = 0; n < 600; n++) expect(joined.split(`[assistant]\ndone ${n}\n`)).toHaveLength(2);
+  const named = [...joined.matchAll(/\[(\d+) (?:of the model's rounds|more rounds not here)/g)].reduce((n, m) => n + Number(m[1]), 0);
   expect(named).toBe(cut.left_out.steps);
+  // What the model wrote between two calls is part of the work: it goes with the round it is in.
+  const chatty = [...Array(600).keys()].flatMap((n) => [
+    { role: "user" as const, content: [{ type: "text" as const, text: `prompt ${n}` }] },
+    { role: "assistant" as const, content: [{ type: "text" as const, text: `looking ${n}` }, { type: "tool_use" as const, id: `t${n}`, name: "Bash", input: { command: `run ${n}` } }] },
+    { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: `t${n}`, content: "o".repeat(6_000) }] },
+    { role: "assistant" as const, content: [{ type: "text" as const, text: `answer ${n}` }] },
+  ]);
+  const short = transcriptParts(chatty, 20_000, TRANSCRIPT_PARTS_MAX).parts.join("");
+  expect([short.includes("[assistant]\nlooking 0\n"), short.includes("[assistant]\nanswer 0\n"), short.includes("[assistant]\nlooking 599\n")]).toEqual([false, true, true]);
   // The request says the earliest work is not in it.
   expect(partPrompt("PART", 0, 8, "", cut.clipped, undefined, cut.left_out.steps)).toContain(`${cut.left_out.steps} of the oldest steps of the work are left out`);
+
+  // So many turns that their answers alone do not fit: the plan still holds, the oldest answers shortened, then left out.
+  const many = [...Array(600).keys()].flatMap((n) => [
+    { role: "user" as const, content: [{ type: "text" as const, text: `prompt ${n}` }] },
+    { role: "assistant" as const, content: [{ type: "tool_use" as const, id: `t${n}`, name: "Bash", input: { command: `run ${n}` } }] },
+    { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: `t${n}`, content: "o".repeat(3_000) }] },
+    { role: "assistant" as const, content: [{ type: "text" as const, text: `answer ${n} ${"a".repeat(900)} end ${n}` }] },
+  ]);
+  const held = transcriptParts(many, 20_000, TRANSCRIPT_PARTS_MAX);
+  expect(held.parts.length).toBeLessThanOrEqual(TRANSCRIPT_PARTS_MAX);
+  const heldText = held.parts.join("");
+  for (let n = 0; n < 600; n++) expect(heldText.split(`[user]\nprompt ${n}\n`)).toHaveLength(2);
+  expect([heldText.includes("answer 0 "), heldText.includes(`answer 599 ${"a".repeat(900)} end 599`)]).toEqual([false, true]);
 
   // Paced: the same plan, with the loop turning while it is made.
   const big = [...Array(900).keys()].flatMap((n) => turn(n, `OUT${n} ${"o".repeat(12_000)}`));
