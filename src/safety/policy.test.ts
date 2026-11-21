@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { asksLess, childMode, classify, decide, type Facts, type Mode, type Rule } from "./policy.ts";
+import { asksLess, childMode, classify, decide, shellText, type Facts, type Mode, type Rule } from "./policy.ts";
 
 const ws = "/w/repo";
 const rule = (kind: Rule["kind"], pattern: string): Rule => ({ id: pattern, kind, pattern, scope: ws, lifetime: "always", created: 0 });
@@ -11,7 +11,15 @@ const kind = (d: ReturnType<typeof decide>) => ("allow" in d ? "allow" : "deny" 
 test("a call's class comes from its tool's definition", () => {
   expect(classify(tool("Bash", "shell"), { command: "ls" }, ws)).toEqual({ kind: "shell", command: "ls", cwd: ws });
   expect(classify(tool("exec_command", "shell", false, escalating), { cmd: "npm test", sandbox_permissions: "require_escalated" }, ws)).toEqual({ kind: "shell", command: "npm test", escalate: true, cwd: ws });
-  expect(classify(tool("shell", "shell"), { command: ["bash", "-lc", "git status"] }, ws)).toEqual({ kind: "shell", command: "git status", cwd: ws });
+  // What is judged is what runs: the text of the one key the tool reads. A
+  // tool runs a list as its joined text, where "$(...)" is shell again, and it
+  // never reads a second key.
+  expect(classify(tool("Bash", "shell"), { command: ["echo", "$(touch M)"] }, ws)).toEqual({ kind: "refused", why: "Bash takes its command as one string." });
+  expect(classify(tool("Bash", "shell"), { command: { text: "ls" } }, ws).kind).toBe("refused");
+  expect(classify(tool("exec_command", "shell", false, escalating), { command: "echo harmless", cmd: "touch M" }, ws)).toEqual({ kind: "shell", command: "touch M", cwd: ws });
+  expect(classify(tool("exec_command", "shell", false, escalating), { command: "echo harmless", cmd: ["touch", "M"] }, ws).kind).toBe("refused");
+  expect(classify(tool("Bash", "shell", false, { properties: { command: {} } }), { cmd: "touch M" }, ws)).toEqual({ kind: "other" }); // Bash reads command: nothing runs
+  expect(classify(tool("x", "shell"), { command: "echo harmless", cmd: "touch M" }, ws).kind).toBe("refused"); // no definition says which one runs
   expect(classify(tool("Edit", "edit"), { file_path: "src/a.ts" }, ws)).toEqual({ kind: "edit", paths: ["/w/repo/src/a.ts"] });
   expect(classify(tool("apply_patch", "edit"), { input: "*** Begin Patch\n*** Update File: a.ts\n*** Add File: b.ts\n*** End Patch" }, ws)).toEqual({ kind: "edit", paths: ["/w/repo/a.ts", "/w/repo/b.ts"] });
   expect(classify(tool("apply_patch", "edit"), "*** Begin Patch\n*** Delete File: c.ts\n*** End Patch", ws)).toEqual({ kind: "edit", paths: ["/w/repo/c.ts"] });
@@ -135,8 +143,10 @@ test("a command another interpreter runs is never read as a read", () => {
   const d = decide(cls({ cmd: "ls", shell: "fish" }), facts("read-only"));
   expect("deny" in d && d.deny).toContain("run it with bash");
   // Only bash's own script is unwrapped from an argument list; the words of any other are quoted as words.
-  expect(classify(tool("shell", "shell"), { command: ["sh", "-c", "ls"] }, ws)).toMatchObject({ command: "sh -c ls" });
-  const argv = classify(tool("shell", "shell"), { command: ["find", ".", "'", "-delete", "-name", "'"] }, ws);
+  // (An argument list is what an external agent's shell call carries; Keel's own tools take text.)
+  expect(shellText({ command: ["bash", "-lc", "git status"] })).toBe("git status");
+  expect(shellText({ command: ["sh", "-c", "ls"] })).toBe("sh -c ls");
+  const argv = { kind: "shell" as const, command: shellText({ command: ["find", ".", "'", "-delete", "-name", "'"] })!, cwd: ws };
   expect(kind(decide(argv, facts("read-only")))).toBe("deny");
   expect(kind(decide(argv, facts("ask")))).toBe("ask-low");
 });

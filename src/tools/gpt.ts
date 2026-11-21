@@ -77,7 +77,8 @@ const exec_command: Tool = {
     prefix_rule: { type: "array", items: { type: "string" }, description: "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"]." },
   }, ["cmd"]),
   async run(input, ctx) {
-    const cmd = String(input.cmd ?? "");
+    if (input.cmd != null && typeof input.cmd !== "string") return fail("exec_command failed: cmd must be one string");
+    const cmd: string = input.cmd ?? "";
     if (!cmd.trim()) return fail("exec_command failed: cmd is empty");
     const cwd = execCwd(ctx, input);
     const gone = goneCwd(ctx, cwd);

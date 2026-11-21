@@ -61,6 +61,7 @@ const runOn: Tool = {
   peer: true,
   async run(input, ctx) {
     if (!fleet) return fail("The fleet is not running.");
+    if (typeof input.command !== "string") return fail("command must be one string.");
     const m = fleet.byName(String(input.machine ?? ""));
     if (!m) return fail(`No machine named ${input.machine}. Known: ${fleet.rows().map((r) => r.name).join(", ") || "none"}.`);
     if (!m.workspace_root) return fail(`${m.name} has no granted directory: the owner sets one in Settings, Machines.`);

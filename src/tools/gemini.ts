@@ -33,6 +33,7 @@ const run_shell_command: Tool = {
     delay_ms: { type: "integer", description: "Optional. Delay in milliseconds to wait after starting the process in the background. Useful to allow the process to start and generate initial output before returning." },
   }, ["command"]),
   async run(input, ctx) {
+    if (input.command != null && typeof input.command !== "string") return fail("command must be one string.");
     // A background start with a delay runs in front for that long, then moves behind.
     const delay = input.is_background ? Math.max(0, Number(input.delay_ms) || 0) : 0;
     const r = await runShell(ctx, {

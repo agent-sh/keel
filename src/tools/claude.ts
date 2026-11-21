@@ -37,7 +37,8 @@ const Bash: Tool = {
     run_in_background: { type: "boolean", description: "Run in the background; read its output file later" },
   }, ["command"]),
   async run(input, ctx) {
-    const command = String(input.command ?? "");
+    if (input.command != null && typeof input.command !== "string") return fail("command must be one string.");
+    const command = input.command ?? "";
     if (!command.trim()) return fail("command is empty.");
     const timeout = Math.min(Math.max(Number(input.timeout) || 120_000, 1000), 600_000);
     const r = await runShell(ctx, {

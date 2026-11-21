@@ -68,7 +68,17 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
     case "control":
       return { kind: "control" };
     case "shell": {
-      const cmd = shellText(input);
+      // The command is read from the key the tool itself reads (its schema
+      // names it), and only as text. A tool runs the text of that one key: a
+      // list or an object there is not the words it seems to hold, and a
+      // second key the tool never reads says nothing about what runs.
+      const props = (tool.built ?? tool.input_schema)?.properties;
+      const key = props ? ("cmd" in props && !("command" in props) ? "cmd" : "command")
+        : input?.command == null ? "cmd" : input?.cmd == null ? "command" : null;
+      if (key === null) return { kind: "refused", why: `${tool.name} was given both command and cmd.` };
+      const raw = input?.[key];
+      if (raw != null && typeof raw !== "string") return { kind: "refused", why: `${tool.name} takes its ${key} as one string.` };
+      const cmd = typeof raw === "string" ? raw : null;
       if (cmd === null) return { kind: "other" }; // a monitor of a socket: judged by the tool's name
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
       // Read from the running build's schema: a session may carry an older definition (Tool.built).

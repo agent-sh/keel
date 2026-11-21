@@ -337,6 +337,7 @@ const monitorSchema = {
 
 const monitorRun = (input: any, ctx: ToolContext) => guard(() => {
   if (!!input.command === !!input.ws) return fail("Give a monitor either command or ws, not both.");
+  if (input.command != null && typeof input.command !== "string") return fail("command must be one string.");
   const spec = input.ws
     ? waits.normalize({ kind: "websocket", url: input.ws.url, protocols: input.ws.protocols, match: input.match }, ctx.cwd)
     : waits.normalize({ kind: "monitor", command: input.command, match: input.match }, ctx.cwd);
