@@ -111,3 +111,78 @@ test("a rejected plan update and answered questions read right", async ({ page, 
   await expect(page.getByTestId("question-option").nth(3)).toHaveAttribute("aria-checked", "true");
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// The approval and the mode it starts are one unit on the card: on a narrow
+// screen at a large text size the button says all of what it does, the mode
+// keeps its name and its label, and the two stay together when they stack.
+// Keep planning stands apart from them.
+test("plan approval stays paired with its mode on a narrow screen", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Plan on a narrow screen" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "plan" } });
+  const plan = "## Retry policy\n\n1. Read the importer.\n2. Change the retry policy.\n3. Run the tests.";
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "present_plan", input: { plan } }])}` } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/plan`)).json()).open.length, { timeout: 30_000 }).toBe(1);
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`/s/${session.id}`);
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.reload();
+  expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))).toBeCloseTo(25.5, 1);
+  const card = page.locator(`[data-station="${session.id}"]`).getByTestId("plan-card");
+  await expect(card).toBeVisible();
+  const approve = card.getByTestId("plan-approve"), mode = card.getByTestId("plan-mode"), back = card.getByTestId("plan-back");
+  // Whole inside the card and the screen, with none of its words cut.
+  const whole = async (l: typeof approve) => {
+    await l.scrollIntoViewIfNeeded();
+    const b = (await l.boundingBox())!, c = (await card.boundingBox())!;
+    expect(b.x).toBeGreaterThanOrEqual(c.x);
+    expect(b.x + b.width).toBeLessThanOrEqual(Math.min(320, c.x + c.width));
+    expect(await l.evaluate((el) => [el, ...el.querySelectorAll("*")].every((n) => !(n instanceof HTMLElement) || n.scrollWidth <= n.clientWidth + 1))).toBe(true);
+  };
+  // The button says what it does on its own; the mode shows its name under a label.
+  await expect(approve).toHaveText("Approve plan");
+  await whole(approve);
+  await expect(mode).toHaveText("Auto edits");
+  await expect(mode).toHaveAccessibleName("Work goes on in");
+  await whole(mode);
+  const unit = card.getByRole("group", { name: "Approve the plan" });
+  await expect(unit.getByText("Work goes on in")).toBeVisible();
+  // One unit holds both, stacked or not; Keep planning is outside it.
+  await expect(unit.getByTestId("plan-mode")).toHaveCount(1);
+  await expect(unit.getByTestId("plan-approve")).toHaveCount(1);
+  await expect(unit.getByTestId("plan-back")).toHaveCount(0);
+  await expect(back).toHaveText("Keep planning");
+  await whole(back);
+  const u = (await unit.boundingBox())!, k = (await back.boundingBox())!;
+  expect(k.y >= u.y + u.height || k.x >= u.x + u.width).toBe(true);
+  // Tab goes mode, Approve, Keep planning.
+  await mode.focus();
+  await page.keyboard.press("Tab");
+  await expect(approve).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(back).toBeFocused();
+  await approve.scrollIntoViewIfNeeded();
+  await shoot(page, "plan-03-approval-narrow");
+
+  // It still approves in the mode picked.
+  await choose(mode, "full-auto");
+  await expect(mode).toHaveText("Full auto");
+  await approve.click();
+  await expect(card).toHaveCount(0);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/plan`)).json()).plan?.mode).toBe("full-auto");
+  expect((await (await request.get(`/api/sessions/${session.id}/permissions`)).json()).perm.mode).toBe("full-auto");
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+
+  // A wide card keeps the unit on one line.
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "plan" } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "present_plan", input: { plan: `${plan}\n4. Report.` } }])}` } });
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.reload();
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  expect((await unit.boundingBox())!.height).toBeLessThan(2.6 * 17);
+  await shoot(page, "plan-04-approval-wide");
+  await request.post(`/api/sessions/${session.id}/interrupt`);
+  await request.delete(`/api/sessions/${session.id}`);
+});

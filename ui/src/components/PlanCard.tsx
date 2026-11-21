@@ -60,13 +60,19 @@ function Plan({ c }: { c: Card }) {
           <button type="button" onClick={() => setBack(false)} className="h-8 rounded-lg px-2 text-ui text-faint hover:text-fg">Cancel</button>
         </form>
       ) : (
-        <div className="flex flex-wrap items-center gap-1.5 px-4 py-3">
-          <button data-testid="plan-approve" disabled={!plan.trim()} title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"} onClick={() => send({ approve: true, mode, plan })} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
-            Approve and go on in
-          </button>
-          <Select value={mode} onChange={(e) => setMode(e.target.value)} data-testid="plan-mode" className="h-8 rounded-lg border border-line bg-raised px-2 text-ui outline-none">
-            {MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </Select>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+          {/* One unit: the mode the work goes on in, named, and the approval that starts it. They wrap inside it, never apart. */}
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-lg border border-line bg-sunken p-1" role="group" aria-label="Approve the plan" data-testid="plan-approval">
+            <span className="flex min-w-0 flex-[1_1_auto] flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="shrink-0 pl-1.5 text-caption text-muted" aria-hidden>Work goes on in</span>
+              <Select value={mode} onChange={(e) => setMode(e.target.value)} aria-label="Work goes on in" data-testid="plan-mode" className="h-7 w-[7.5rem] grow rounded-md border border-line bg-raised px-2 text-ui outline-none">
+                {MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </Select>
+            </span>
+            <button data-testid="plan-approve" disabled={!plan.trim()} title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"} onClick={() => send({ approve: true, mode, plan })} className="h-7 grow whitespace-nowrap rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">
+              Approve plan
+            </button>
+          </div>
           <button data-testid="plan-back" onClick={() => setBack(true)} className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">Keep planning</button>
           {err && <span className="ml-auto text-micro text-danger">{err}</span>}
         </div>
