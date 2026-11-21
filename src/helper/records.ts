@@ -92,16 +92,36 @@ export const preview = (r: MemoryRecord) => {
   return v.length > PREVIEW_CHARS ? `${v.slice(0, PREVIEW_CHARS - 1)}…` : v;
 };
 
-// The index: every lookup is a hash lookup, except the word search that
-// find falls back to when nothing names a record exactly.
+// The index: every lookup reads only what it asks for. Keys, aliases, topics
+// and namespaces are hash lookups; a key prefix is a range of the sorted keys;
+// the word search and the per-turn recall read the postings of the words they
+// carry (written when a record is set), never the records one by one.
 export class RecordIndex {
   readonly byKey = new Map<string, MemoryRecord>();
   private alias = new Map<string, Set<string>>();
   private topic = new Map<string, Set<string>>();
   private space = new Map<string, Set<string>>();
+  // Words of a record's value, aliases and key, and words of its topics: each
+  // word to the keys that hold it. Imported reference data has postings of its
+  // own: a turn recalls it only by name, so the recall never reads them.
+  private body = new Map<string, Set<string>>();
+  private refBody = new Map<string, Set<string>>();
+  private topicWord = new Map<string, Set<string>>();
+  // Per key: the words it was indexed under (taken out again as they went in)
+  // and its place in the order records were set, which breaks every tie.
+  private own = new Map<string, { body: string[]; topics: string[]; seq: number; words: Map<string, Set<string>> }>();
+  // Preferences and commitments: recalled without being named.
+  private standing = new Set<string>();
+  private sorted: string[] = [];
+  private seq = 0;
+  // What the index did so far, for checks that a lookup stays sparse: records
+  // a lookup looked at, and record texts split into words (when a record is
+  // set, never while answering).
+  readonly work = { records: 0, tokenized: 0 };
 
   constructor(list: MemoryRecord[] = []) {
-    for (const r of list) this.set(r);
+    for (const r of list) this.set(r, false);
+    this.sorted = [...this.byKey.keys()].sort();
   }
   get size() {
     return this.byKey.size;
@@ -113,21 +133,53 @@ export class RecordIndex {
     return this.byKey.get(normKey(key));
   }
 
-  set(r: MemoryRecord) {
-    this.remove(r.key);
+  // Where a key sits, or would sit, among the sorted keys.
+  private place(k: string): number {
+    let lo = 0, hi = this.sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.sorted[mid]! < k) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  set(r: MemoryRecord, order = true) {
+    this.remove(r.key, order);
     this.byKey.set(r.key, r);
     for (const a of [...r.aliases, ...ownAliases(r.key)]) add(this.alias, a, r.key);
     for (const t of r.topics) add(this.topic, t, r.key);
     for (const n of namespaces(r.key)) add(this.space, n, r.key);
+    const own = { body: [...wordSet(`${r.value} ${r.aliases.join(" ")} ${r.key}`)], topics: [...wordSet(r.topics.join(" "))], seq: ++this.seq, words: r.kind === "reference" ? this.refBody : this.body };
+    this.work.tokenized++;
+    for (const w of own.body) add(own.words, w, r.key);
+    for (const w of own.topics) add(this.topicWord, w, r.key);
+    this.own.set(r.key, own);
+    if (r.kind === "preference" || r.kind === "commitment") this.standing.add(r.key);
+    if (order) this.sorted.splice(this.place(r.key), 0, r.key);
   }
-  remove(key: string): MemoryRecord | undefined {
+  remove(key: string, order = true): MemoryRecord | undefined {
     const r = this.byKey.get(key);
     if (!r) return undefined;
     this.byKey.delete(key);
     for (const a of [...r.aliases, ...ownAliases(r.key)]) del(this.alias, a, key);
     for (const t of r.topics) del(this.topic, t, key);
     for (const n of namespaces(key)) del(this.space, n, key);
+    const own = this.own.get(key);
+    for (const w of own?.body ?? []) del(own!.words, w, key);
+    for (const w of own?.topics ?? []) del(this.topicWord, w, key);
+    this.own.delete(key);
+    this.standing.delete(key);
+    if (order) {
+      const at = this.place(key);
+      if (this.sorted[at] === key) this.sorted.splice(at, 1);
+    }
     return r;
+  }
+
+  // Keys in the order their records were set: the order every list of equals keeps.
+  private inOrder(keys: string[]): string[] {
+    return keys.sort((a, b) => this.own.get(a)!.seq - this.own.get(b)!.seq);
   }
 
   byAlias(term: string): string[] {
@@ -137,13 +189,16 @@ export class RecordIndex {
     return [...(this.topic.get(normTerm(term)) ?? [])];
   }
   // Keys under a namespace ("mail.label" or "mail.label."), else keys that
-  // start with the text.
+  // start with the text: one run of the sorted keys.
   byPrefix(p: string): string[] {
     const k = normKey(p);
     if (!k) return [];
     const under = this.space.get(k);
     if (under) return [...under];
-    return [...this.byKey.keys()].filter((x) => x.startsWith(k));
+    const out: string[] = [];
+    for (let i = this.place(k); i < this.sorted.length && this.sorted[i]!.startsWith(k); i++) out.push(this.sorted[i]!);
+    this.work.records += out.length;
+    return this.inOrder(out);
   }
 
   // A key, or the one record an alias names.
@@ -155,14 +210,15 @@ export class RecordIndex {
     return { candidates: al.length ? al : this.byPrefix(ref).slice(0, 5) };
   }
 
+  // Topics with how many records each holds: of every record, or of the keys given.
   topicCounts(keys?: Iterable<string>): { topic: string; count: number }[] {
-    const pick = keys ? new Set(keys) : null;
-    const out: { topic: string; count: number }[] = [];
-    for (const [t, s] of this.topic) {
-      const n = pick ? [...s].filter((k) => pick.has(k)).length : s.size;
-      if (n) out.push({ topic: t, count: n });
+    const n = new Map<string, number>();
+    if (keys) {
+      for (const k of new Set(keys)) for (const t of new Set(this.byKey.get(k)?.topics ?? [])) n.set(t, (n.get(t) ?? 0) + 1);
+    } else {
+      for (const [t, s] of this.topic) n.set(t, s.size);
     }
-    return out.sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic));
+    return [...n].map(([topic, count]) => ({ topic, count })).sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic));
   }
 
   // The index of the index: namespaces (a key's first one or two parts) and
@@ -181,6 +237,22 @@ export class RecordIndex {
     return { spaces, topics: this.topicCounts().slice(0, max) };
   }
 
+  // How many of the words each record holds, from the postings of those words
+  // alone. `all`: reference data and topic words count too (a search); without
+  // it, only what a turn may recall unnamed.
+  private wordHits(words: Iterable<string>, all: boolean): Map<string, number> {
+    const n = new Map<string, number>();
+    for (const w of words) {
+      // A key is in one of the two body postings; its topic words may repeat a body word.
+      const body = [this.body.get(w), all ? this.refBody.get(w) : undefined];
+      for (const s of body) if (s) for (const k of s) n.set(k, (n.get(k) ?? 0) + 1);
+      const t = all ? this.topicWord.get(w) : undefined;
+      if (t) for (const k of t) if (!body.some((s) => s?.has(k))) n.set(k, (n.get(k) ?? 0) + 1);
+    }
+    this.work.records += n.size;
+    return n;
+  }
+
   // Exact key, then alias, topic and key prefix, then a word search over
   // keys, aliases, topics and values. Keys with previews, at most `limit`.
   find(query: string, limit = FIND_LIMIT): Found {
@@ -196,18 +268,14 @@ export class RecordIndex {
       if (!seen.size) {
         const want = [...wordSet(q)];
         if (want.length) {
-          const scored: { key: string; n: number; u: number }[] = [];
-          for (const r of this.byKey.values()) {
-            const have = wordSet(`${r.key.replace(/[._-]+/g, " ")} ${r.aliases.join(" ")} ${r.topics.join(" ")} ${r.value}`);
-            const n = want.filter((w) => have.has(w)).length;
-            if (n) scored.push({ key: r.key, n, u: r.updated });
-          }
+          const scored = [...this.wordHits(want, true)].map(([key, n]) => ({ key, n, u: this.byKey.get(key)!.updated, seq: this.own.get(key)!.seq }));
           const best = Math.max(0, ...scored.map((s) => s.n));
           // Every word when some record has them all; else the best partial matches.
-          scored.filter((s) => s.n === best || (best < want.length && s.n >= Math.max(1, best - 1))).sort((a, b) => b.n - a.n || b.u - a.u).forEach((s) => put([s.key], "words"));
+          scored.filter((s) => s.n === best || (best < want.length && s.n >= Math.max(1, best - 1))).sort((a, b) => b.n - a.n || b.u - a.u || a.seq - b.seq).forEach((s) => put([s.key], "words"));
         }
       }
     } else {
+      // No query: the whole list, newest first (what the owner's page shows).
       put([...this.byKey.values()].sort((a, b) => b.updated - a.updated).map((r) => r.key), "prefix");
     }
     const keys = [...seen.keys()];
@@ -222,31 +290,33 @@ export class RecordIndex {
   // namespaces the text names come back as one-line hints (how many records,
   // how to look them up), never as their values.
   recall(text: string, seen: Set<string>, budget: number): { records: MemoryRecord[]; hints: string[] } {
-    const named: string[] = [];
+    const named = new Set<string>();
     const hintKeys = new Map<string, number>();
     for (const c of candidates(text)) {
       const k = normKey(c);
-      if (this.byKey.has(k)) named.push(k);
-      for (const x of this.byAlias(c)) named.push(x);
+      if (this.byKey.has(k)) named.add(k);
+      for (const x of this.byAlias(c)) named.add(x);
       const t = this.topic.get(normTerm(c));
       if (t && t.size > 1) hintKeys.set(`topic "${normTerm(c)}"`, t.size);
       const sp = this.space.get(k);
       if (sp && sp.size > 1) hintKeys.set(`keys ${k}.*`, sp.size);
     }
-    const q = wordSet(text);
-    const scored: { r: MemoryRecord; rank: number; hits: number }[] = [];
-    const named1 = [...new Set(named)];
-    for (const r of this.byKey.values()) {
-      if (seen.has(r.key)) continue;
-      const at = named1.indexOf(r.key);
-      if (at >= 0) { scored.push({ r, rank: 3, hits: named1.length - at }); continue; }
-      if (r.kind === "reference") continue;
-      let hits = 0;
-      for (const w of wordSet(`${r.value} ${r.aliases.join(" ")} ${r.key.replace(/[._-]+/g, " ")}`)) if (q.has(w)) hits++;
-      if (hits) scored.push({ r, rank: 2, hits });
-      else if (r.kind === "preference" || r.kind === "commitment") scored.push({ r, rank: 1, hits: 0 });
+    const scored: { r: MemoryRecord; rank: number; hits: number; seq: number }[] = [];
+    const push = (key: string, rank: number, hits: number) => scored.push({ r: this.byKey.get(key)!, rank, hits, seq: this.own.get(key)!.seq });
+    // Named: the earlier the text names it, the higher.
+    let at = 0;
+    for (const key of named) {
+      if (!seen.has(key)) push(key, 3, named.size - at);
+      at++;
     }
-    scored.sort((a, b) => b.rank - a.rank || b.hits - a.hits || b.r.updated - a.r.updated);
+    this.work.records += named.size;
+    // Sharing words: from the postings of the text's words.
+    const shared = this.wordHits(wordSet(text), false);
+    for (const [key, hits] of shared) if (!seen.has(key) && !named.has(key)) push(key, 2, hits);
+    // Standing: every preference and commitment not already in.
+    for (const key of this.standing) if (!seen.has(key) && !named.has(key) && !shared.has(key)) push(key, 1, 0);
+    this.work.records += this.standing.size;
+    scored.sort((a, b) => b.rank - a.rank || b.hits - a.hits || b.r.updated - a.r.updated || a.seq - b.seq);
     const records: MemoryRecord[] = [];
     let used = 0;
     for (const { r } of scored) {
