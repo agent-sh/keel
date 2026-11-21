@@ -373,6 +373,57 @@ describe("a prompt next to other work in its session", () => {
       refused: [3, expect.stringContaining("takes no new work: nothing was sent and the draft is as it was"), kept],
     });
   }, 60_000);
+
+  test("a command shows the output of the prompt it sent, and no other's", async () => {
+    const { api, idle, url } = dm;
+    const GROW = `Growing. ${"dolor sit amet ".repeat(280)}`.trim();
+    const said = async (sid: string) => (await api(`/api/sessions/${sid}/events`)).events.filter((e: any) => e.kind === "assistant").map((e: any) => e.data.blocks.map((b: any) => b.text ?? "").join(""));
+    // A session whose first prompt streams its reply for a couple of seconds.
+    const streaming = async () => {
+      const sid = (await api("/api/sessions", { model: "scripted:stand-in", workspace: WS })).session.id as string;
+      await api(`/api/sessions/${sid}/messages`, { text: "script:render" });
+      return sid;
+    };
+    const seen: Record<string, unknown> = {};
+    const partial = (out: string) => {
+      const ls = lines(out);
+      return {
+        prompts: ls.filter((l) => l.type === "user").map((l) => l.message.content[0].text),
+        replies: ls.filter((l) => l.type === "assistant").map((l) => l.message.content[0].text),
+        streamed: ls.filter((l) => l.type === "stream_event").map((l) => l.event.delta.text).join(""),
+        result: ls.at(-1).result,
+      };
+    };
+    const noSocket = front(url);
+    for (const [name, via] of [["socket", []], ["polling", ["--url", noSocket.url]]] as const) {
+      // The first command stays for the work of its own prompt; the second's prompt runs behind it.
+      const a = (await api("/api/sessions", { model: "scripted:stand-in", workspace: WS })).session.id as string;
+      const first = k(["run", "-r", a, "--output-format", "json", "script:render", ...via]);
+      for (let i = 0; i < 100 && !(await api(`/api/cli/state/${a}`)).running; i++) await Bun.sleep(20);
+      const sent = await k(["send", a, "script:grow", "--queue", "--wait", ...via]);
+      const own = json((await first).out);
+      seen[`${name} send`] = [sent.code, sent.out, own.num_turns, own.result === (await said(a))[0].trim()];
+
+      const b = await streaming();
+      const run = await k(["run", "-r", b, "--queue", "--stream-json", "--include-partial-messages", "script:grow", ...via]);
+      seen[`${name} run`] = [run.code, partial(run.out)];
+      await idle(b);
+    }
+    noSocket.stop();
+    // A reply already streaming when the command connects is printed once, whole.
+    const direct = await k(["send", "--new", "script:render", "--wait"]);
+    const whole = (await said(json((await k(["sessions", "--json", "-n", "1"])).out)[0].id))[0];
+    seen.direct = [direct.code, direct.out === `${whole}\n`];
+
+    const stream = (streamed: string) => [0, { prompts: ["script:grow"], replies: [GROW], streamed, result: GROW }];
+    expect(seen).toEqual({
+      "socket send": [0, `${GROW}\n`, 1, true],
+      "socket run": stream(GROW),
+      "polling send": [0, `${GROW}\n`, 1, true],
+      "polling run": stream(""),
+      direct: [0, true],
+    });
+  }, 90_000);
 });
 
 // A secret's value reaches the command that uses it and nothing else: not the

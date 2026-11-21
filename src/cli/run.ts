@@ -114,12 +114,21 @@ export async function watch(w: Watch): Promise<Watched> {
   // Staying for one turn, what that turn said is final once it ended: a later
   // prompt's turn read in the same batch is not this one's.
   let frozen = false;
+  // Staying for the work a turn left: the turn of another prompt, begun after
+  // this one's ended, is not this command's to show or to count.
+  let theirs = false;
   const mine = (e: StoredEvent) =>
     e.id === w.eventId || (!!w.queueId && e.data?.queue_id === w.queueId) || (!w.eventId && !w.queueId && String(e.data?.text ?? "").trim() === w.prompt.trim());
+  const prompt = (e: StoredEvent) => e.kind === "user" && !e.data?.kind && [undefined, "queued", "steer", "voice"].includes(e.data?.origin);
   const f = new Follower(w.c, w.sessionId, w.afterSeq, (e) => {
     if (frozen) return;
     if (!ours && e.kind === "user" && mine(e)) ours = true;
     if (!ours) return;
+    if (ended && prompt(e)) theirs = true;
+    if (theirs) {
+      if (e.kind === "turn_end") theirs = false;
+      return;
+    }
     w.onEvent?.(e);
     if (e.kind === "assistant") {
       const t = assistantText(e).trim();
@@ -138,7 +147,9 @@ export async function watch(w: Watch): Promise<Watched> {
       r.usage.unpriced += u.unpriced ?? (u.cost === undefined && (u.input || u.output) ? 1 : 0);
       if (w.stay === "turn") frozen = true;
     } else if (e.kind === "turn_start") ended = false;
-  }, (d) => { if (!frozen) w.onDelta?.(d); });
+    // Text streams in line with the events (see Follower): before this prompt's
+    // own event it is the reply to another prompt.
+  }, (d) => { if (ours && !frozen && !theirs) w.onDelta?.(d); });
   // The deadline counts from now, and the socket (streamed text, early wakes)
   // is not waited for: stored events are read by seq whether it opens or not.
   const deadline = w.timeoutS !== undefined ? Date.now() + w.timeoutS * 1000 : Infinity;

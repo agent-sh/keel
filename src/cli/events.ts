@@ -1,7 +1,8 @@
 // A session's stored events for a terminal: as text lines, or as stream-json
 // lines (Claude Code's shapes where Keel says the same thing). Following a
-// session reads stored events by seq (ordered, never lost) and uses the
-// WebSocket for streamed text and to wake the next read early.
+// session takes its events from the WebSocket, in line with the streamed
+// text, and reads them by seq (ordered, never lost) when the socket is not
+// there or skipped one.
 import type { StoredEvent } from "../core/types.ts";
 import { authHeaders, clean, type Client } from "./client.ts";
 
@@ -79,27 +80,52 @@ export function streamLine(e: StoredEvent): Record<string, unknown> {
 
 export type Delta = { kind: "text" | "thinking" | "tool_input"; text: string };
 
-// Reads a session's events after `seq` as they are stored.
+// Reads a session's events after `seq`, in order and each once. Over the
+// socket they come as they are stored, in line with the text streamed between
+// them; without it, or past a gap, they are read by seq.
 export class Follower {
   private ws?: WebSocket;
   private wake?: () => void;
   private stopped = false;
+  // The last stored event the socket has passed. Streamed text is of the reply
+  // after that event: when a read by seq is ahead of the socket, the text
+  // still arriving is of a reply already handed over whole, or of a turn before it.
+  private wsSeq = -1;
   constructor(private c: Client, private sessionId: string, public seq: number, private onEvent: (e: StoredEvent) => void, private onDelta?: (d: Delta) => void) {}
+
+  private take(e: StoredEvent) {
+    if (e.seq <= this.seq) return;
+    this.seq = e.seq;
+    this.onEvent(e);
+  }
 
   connect(): Promise<void> {
     return new Promise((resolve) => {
       try {
         const ws = new WebSocket(this.c.base.replace(/^http/, "ws") + "/ws", { headers: authHeaders() } as any);
         this.ws = ws;
-        // The daemon sends a socket events and deltas only after its resume;
-        // events before now are read by seq, so this one asks from now on.
-        ws.onopen = () => { ws.send(JSON.stringify({ op: "resume", cursors: {} })); resolve(); };
+        // The daemon sends a socket events and deltas only after its resume:
+        // the events after this cursor, what the running reply has streamed
+        // so far, then both as they happen.
+        ws.onopen = () => {
+          this.wsSeq = this.seq;
+          ws.send(JSON.stringify({ op: "resume", cursors: { [this.sessionId]: this.seq } }));
+          resolve();
+        };
         ws.onerror = () => resolve(); // reading by seq still works
         ws.onmessage = (m) => {
           let f: any;
           try { f = JSON.parse(String(m.data)); } catch { return; }
-          if (f.t === "delta" && f.session_id === this.sessionId) this.onDelta?.({ kind: f.kind, text: f.text });
-          else if ((f.t === "event" && f.event?.session_id === this.sessionId) || (f.t === "session" && f.session?.id === this.sessionId) || f.t === "queue") this.wake?.();
+          const here = (f.session_id ?? f.event?.session_id ?? f.session?.id) === this.sessionId;
+          if (f.t === "event" && here) {
+            this.wsSeq = Math.max(this.wsSeq, f.event.seq);
+            if (f.event.seq === this.seq + 1) this.take(f.event);
+            this.wake?.();
+          } else if (f.t === "delta" && here) {
+            if (this.wsSeq === this.seq) this.onDelta?.({ kind: f.kind, text: f.text });
+          } else if (f.t === "draft" && here) {
+            if (this.wsSeq === this.seq) for (const b of Object.entries(f.blocks ?? {}).sort((x, y) => Number(x[0]) - Number(y[0])).map((x) => x[1] as Delta)) this.onDelta?.({ kind: b.kind, text: b.text });
+          } else if ((f.t === "session" && here) || f.t === "queue") this.wake?.();
           else if (f.t === "feature" && (f.name === "approval" || f.name === "question")) this.wake?.();
         };
       } catch { resolve(); }
@@ -108,10 +134,7 @@ export class Follower {
 
   async read(): Promise<StoredEvent[]> {
     const { events } = await this.c.get<{ events: StoredEvent[] }>(`/api/sessions/${this.sessionId}/events?after=${this.seq}`);
-    for (const e of events) {
-      this.seq = Math.max(this.seq, e.seq);
-      this.onEvent(e);
-    }
+    for (const e of events) this.take(e);
     return events;
   }
 
