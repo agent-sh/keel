@@ -69,7 +69,10 @@ export class Memory {
     if (!key) key = prev?.key ?? keyFor(kind, value, taken);
     const now = Date.now();
     const old = this.index.byKey.get(key);
-    return { key, value, kind, aliases, topics, source: source === "owner" ? "owner" : old?.source === "owner" && source === "helper" ? "owner" : source, ts: old?.ts ?? now, updated: now, used: old?.used ?? 0 };
+    // Written again as it is, the record did not change: it keeps its time, so
+    // a note that already carried it is not followed by another.
+    const same = !!old && old.value === value && old.kind === kind && old.aliases.join("\n") === aliases.join("\n") && old.topics.join("\n") === topics.join("\n");
+    return { key, value, kind, aliases, topics, source: source === "owner" ? "owner" : old?.source === "owner" && source === "helper" ? "owner" : source, ts: old?.ts ?? now, updated: same ? old.updated : now, used: old?.used ?? 0 };
   }
 
   // Records written by key (a new key adds, a known one is replaced; a field

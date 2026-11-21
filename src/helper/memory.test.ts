@@ -48,3 +48,21 @@ test("keys made within one list do not collide; a key named twice is still one r
   expect(c.put([{ key: "Pref.Tone", value: "plain" }, { key: "pref.tone", value: "plain and short" }], "helper")).toHaveLength(1);
   expect(keys(c)).toEqual([["pref.tone", "plain and short"]]);
 });
+
+// A record's time moves when the record changes, not when it is written again
+// as it is: the helper sends a record again only after its time moved.
+test("a put with the same value keeps the record's time; a changed one moves it", async () => {
+  const { setSystemTime } = await import("bun:test");
+  const m = new Memory(new Database(":memory:"));
+  try {
+    setSystemTime(new Date(Date.UTC(2026, 0, 1)));
+    const first = m.put([{ key: "pref.tone", value: "plain", aliases: ["tone"] }], "helper")[0]!;
+    setSystemTime(new Date(Date.UTC(2026, 0, 2)));
+    expect(m.put([{ key: "pref.tone", value: "plain" }], "helper")[0]!.updated).toBe(first.updated);
+    expect(m.put([{ key: "pref.tone", value: "plain", aliases: ["tone"] }], "owner")[0]!.updated).toBe(first.updated);
+    expect(m.put([{ key: "pref.tone", value: "plain and short" }], "helper")[0]!.updated).toBeGreaterThan(first.updated);
+    expect(m.put([{ key: "pref.tone", value: "plain and short", aliases: ["tone", "voice"] }], "helper")[0]!.updated).toBe(Date.UTC(2026, 0, 2));
+  } finally {
+    setSystemTime();
+  }
+});
