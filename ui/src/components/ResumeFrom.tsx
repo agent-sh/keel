@@ -38,7 +38,8 @@ type Target = { machine: string; harness: string; id: string };
 // What is known of each conversation's original and of a wait for it: from
 // the list, from the pane's own look every two seconds, and from the daemon's
 // frames while a wait runs.
-type Known = { original?: Original; wait?: Wait };
+// `stopped`: the original was ended and its copy is still to be made.
+type Known = { original?: Original; wait?: Wait; stopped?: boolean };
 const known = new Map<string, Known>();
 const subs = new Set<() => void>();
 const keyOf = (t: Target) => `${t.machine}:${t.harness}:${t.id}`;
@@ -49,9 +50,13 @@ onFeature({ frame: (f) => { if (f.name === "fleet_resume") { const w = (f.data a
 
 // The rows of a listing say what their originals do.
 export function noteRows(machine: string, rows: { harness: string; id: string; original?: Original; wait?: Wait }[]) {
-  for (const r of rows) known.set(`${machine}:${r.harness}:${r.id}`, { original: r.original, wait: r.wait });
+  for (const r of rows) { const k = `${machine}:${r.harness}:${r.id}`; known.set(k, { original: r.original, wait: r.wait, stopped: known.get(k)?.stopped }); }
   subs.forEach((f) => f());
 }
+
+// Whether a conversation's original was ended with its copy not made yet: the
+// sheet's footer then points at the card instead of offering a plain import.
+export const useStopped = (t: Target): boolean => !!useKnown(t).stopped;
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const KIND: Record<InFlight["kind"], string> = { job: "job", tool: "call", subagent: "subagent", turn: "reply", prompt: "prompt" };
@@ -152,7 +157,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
     const look = () => api<Seen>(`/api/fleet/machines/${target.machine}/transcripts/activity?harness=${target.harness}&id=${encodeURIComponent(target.id)}`).then((r) => {
       if (!live) return;
       setSeen(r);
-      put(k, { original: r.state === "ended" ? undefined : { state: r.state, why: r.why, brief: r.brief, in_flight: r.in_flight.length, jobs: r.in_flight.filter((i) => i.kind === "job").length }, wait: r.wait });
+      put(k, { original: r.state === "ended" ? undefined : { state: r.state, why: r.why, brief: r.brief, in_flight: r.in_flight.length, jobs: r.in_flight.filter((i) => i.kind === "job").length }, wait: r.wait, stopped: !!r.pending });
       if (r.state !== "ended") timer = setTimeout(look, every);
     }, (e) => {
       // In the sheet a machine that did not answer is asked again; a session's page asks once.

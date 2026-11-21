@@ -317,6 +317,9 @@ test("resume from an ssh machine: checked before the stop, and a copy that fails
     await expect(card.getByTestId("resume-stopped")).toContainText("Keel kept what was in flight (2 items)");
     await expect(card.getByTestId("resume-stopped")).toContainText("Nothing is stopped again.");
     await expect(card.getByTestId("resume-copy-go")).toBeVisible();
+    // The sheet's own footer points at the card: a plain import would leave the note out.
+    await expect(sheet.getByTestId("import-foot")).toContainText("The original was stopped. Finish the copy above");
+    await expect(sheet.getByTestId("import-go")).toBeDisabled();
     expect(alive(original)).toBe(false);
     expect(alive(job)).toBe(true); // its job was to keep running
     const before = (await (await request.get(`${base}?q=${tag}`)).json()).sessions.find((s: any) => s.id === sid(7));

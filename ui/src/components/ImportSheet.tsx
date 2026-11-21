@@ -12,7 +12,7 @@ import { useFleet } from "../lib/fleet.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { takeOver, TOOL } from "./TakeOver.tsx";
-import { noteRows, OriginalStrip, ResumeCard, type Intent, type Original, type Wait } from "./ResumeFrom.tsx";
+import { noteRows, OriginalStrip, ResumeCard, useStopped, type Intent, type Original, type Wait } from "./ResumeFrom.tsx";
 import { ago, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 
@@ -89,6 +89,8 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
     }
   };
   const done = row.imported;
+  // Its original was ended and the copy is owed: the card above finishes it, with what was in flight.
+  const stopped = useStopped({ machine: from, harness: row.harness, id: row.id });
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="import-preview">
       <div className="border-b border-line px-5 py-4">
@@ -142,8 +144,8 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
         ); })()}
       </div>
       <div className="flex items-center gap-2 border-t border-line px-5 py-3">
-        <span className="min-w-0 flex-1 text-caption text-faint">
-          {done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : row.original ? "Import makes a copy and leaves the original running; resuming ends it." : "A copy: the original stays as it is."}
+        <span className="min-w-0 flex-1 text-caption text-faint" data-testid="import-foot">
+          {stopped ? "The original was stopped. Finish the copy above: a plain import would leave out what it was in the middle of." : done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : row.original ? "Import makes a copy and leaves the original running; resuming ends it." : "A copy: the original stays as it is."}
         </span>
         {done ? (
           <>
@@ -152,7 +154,7 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
             <button type="button" disabled={busy} onClick={() => open(shown?.links[0]?.session_id ?? done.session_id)} data-testid="import-open" className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90">Open</button>
           </>
         ) : (
-          <button type="button" disabled={busy || !shown} onClick={() => go()} data-testid="import-go" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+          <button type="button" disabled={busy || !shown || stopped} onClick={() => go()} data-testid="import-go" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
             <ArrowDownToLine className="size-4" /> Import
           </button>
         )}
