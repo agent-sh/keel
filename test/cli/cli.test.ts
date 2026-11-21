@@ -78,6 +78,40 @@ describe("help, usage and completion", () => {
   });
 });
 
+// The daemon's administration, against a stand-in that records what it is asked.
+describe("admin commands", () => {
+  const state = join(SCRATCH, "state-admin");
+  const asked: string[] = [];
+  let answers: Record<string, unknown> = {};
+  let stand: ReturnType<typeof Bun.serve>;
+  const k = (args: string[]) => keel([...args, "--url", `http://127.0.0.1:${stand.port}`], { state, env: { XDG_CONFIG_HOME: join(SCRATCH, "config") } });
+  beforeAll(() => {
+    stand = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => {
+      const u = new URL(req.url);
+      asked.push(`${req.method} ${u.pathname}${u.search}`);
+      return Response.json(u.pathname === "/api/health" ? { ok: true, pid: 1 } : answers[u.pathname] ?? {});
+    } });
+  });
+  afterAll(() => stand?.stop(true));
+
+  test("usage --days takes a number of days above 0, and nothing else", async () => {
+    const sinceOf = async (args: string[]) => {
+      asked.length = 0;
+      const r = await k(["usage", "--json", ...args]);
+      const since = Number(asked.join(" ").match(/since_ms=(\d+)/)?.[1]);
+      return [r.code, asked.length, Math.round((Date.now() - since) / 3_600_000)];
+    };
+    const got: Record<string, unknown> = { none: await sinceOf([]), two: await sinceOf(["--days", "2"]), half: await sinceOf(["--days=0.5"]) };
+    for (const bad of ["soon", "0", "-3", "Infinity", ""]) {
+      asked.length = 0;
+      const r = await k(["usage", `--days=${bad}`]);
+      got[`bad ${bad}`] = [r.code, asked.length, r.err.includes("--days is a number of days above 0") && r.err.includes("keel usage [--days N]")];
+    }
+    const refused = [3, 0, true];
+    expect(got).toEqual({ none: [0, 1, 168], two: [0, 1, 48], half: [0, 1, 12], "bad soon": refused, "bad 0": refused, "bad -3": refused, "bad Infinity": refused, "bad ": refused });
+  }, 60_000);
+});
+
 describe("an address another program answers on", () => {
   const state = join(SCRATCH, "state-other");
   test("is said to be no Keel daemon, not shown as the daemon's refusal", async () => {

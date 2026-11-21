@@ -159,8 +159,11 @@ const report = wrap("keel report [--session ID] [--note TEXT] [--dry-run] [--url
     return 0;
   });
 
-const usage = wrap("keel usage [--days N] [--url URL] [--json]  Tokens, spend, cache and timings of the last N days (default 7).", { days: { type: "string" } }, async (v) => {
-  const since = Date.now() - (Number(v.days) || 7) * 86_400_000;
+const USAGE_USAGE = "keel usage [--days N] [--url URL] [--json]  Tokens, spend, cache and timings of the last N days (default 7).";
+const usage = wrap(USAGE_USAGE, { days: { type: "string" } }, async (v) => {
+  const days = v.days === undefined ? 7 : Number(v.days);
+  if (!(Number.isFinite(days) && days > 0)) return (console.error(`keel usage: --days is a number of days above 0\n\n${USAGE_USAGE}`), 3);
+  const since = Date.now() - days * 86_400_000;
   const t = await call(urlOf(v.url), `/api/telemetry?since_ms=${since}`);
   const ms = (x: number | null) => (x == null ? "none" : x < 1000 ? `${x} ms` : `${(x / 1000).toFixed(2)} s`);
   out(t, !!v.json, () => [
