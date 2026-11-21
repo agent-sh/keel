@@ -788,6 +788,88 @@ test("a secret the model asks for reads Needs you with its name", async ({ page,
   }
 });
 
+test("a long session the page holds only the newest part of reads the daemon's word and reason", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.setTimeout(240_000);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const ended = async (id: string, n: number) => {
+    const d = await (await request.get(`/api/sessions/${id}?events=0`)).json();
+    if (d.running) return false;
+    const ev = (await (await request.get(`/api/sessions/${id}/events`)).json()).events as { kind: string }[];
+    return ev.filter((e) => e.kind === "turn_end").length >= n;
+  };
+  // Four turns of 70 commands each: some 570 events, where the page reads the newest 200 of a session
+  // (back to the turn they begin in) and the rest when asked.
+  const TURNS = 4;
+  const long = (turn: number) => script(Array.from({ length: 70 }, (_, i) => ({ name: "Bash", input: { command: `echo turn ${turn} step ${i}` } })));
+  try {
+    const watcher = await start(request, "A quiet session to watch from");
+    const waits = await start(request, "A long migration, then a look in a quarter of an hour");
+    const failed = await start(request, "A long reindex that ran out of credit");
+    const declined = await start(request, "A long audit the model then declined");
+    made.push(watcher, waits, failed, declined);
+    for (let t = 0; t < TURNS; t++) {
+      for (const id of [waits, failed, declined]) await send(request, id, long(t));
+      for (const id of [waits, failed, declined]) await expect.poll(() => ended(id, t + 1), { timeout: 120_000, intervals: [1000] }).toBe(true);
+    }
+    await send(request, declined, "script:refuse");
+    await expect.poll(async () => (await stateOf(request, declined))?.watch, { timeout: 30_000 }).toBe("declined");
+    await send(request, waits, script([{ name: "wait_for", input: { kind: "timer", seconds: 900, note: "look at the migration" } }]));
+    await send(request, failed, "script:billing");
+    await expect.poll(async () => (await stateOf(request, waits))?.watch, { timeout: 30_000 }).toBe("wait");
+    await expect.poll(async () => (await stateOf(request, failed))?.watch, { timeout: 30_000 }).toBe("fail");
+
+    // The page reads each in parts: the newest part only, with the rest a press away.
+    const read: string[] = [];
+    page.on("request", (r) => { const u = new URL(r.url()); if (r.method() === "GET" && [waits, failed, declined].some((id) => u.pathname === `/api/sessions/${id}/events`)) read.push(u.pathname); });
+    for (const [id, word, why] of [[waits, "Waiting", "Timer: look at the migration"], [failed, "Failed", /^HTTP 402/]] as const) {
+      await page.goto(`/s/${id}`);
+      await expect(page.getByTestId("load-earlier")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("transcript").getByText("echo turn 0 step 0", { exact: false })).toHaveCount(0);
+      // The word and the reason are the daemon's, on the row and on the pane, as /api/state has them.
+      await expect(row(page, id).getByTestId("row-state")).toHaveText(word);
+      await expect(row(page, id).getByTestId("row-why")).toHaveText(why);
+      await expect(page.getByTestId("station-word")).toHaveText(word);
+      await expect(page.getByTestId("station-why")).toHaveText(why);
+    }
+    await expect(row(page, failed).getByTestId("row-class")).toHaveText("billing");
+    await expect(row(page, waits).getByTestId("row-time")).toHaveText(/^in 1[45]m$/);
+    await shoot(page, "session-state-15-part-held");
+
+    // From another session's page neither is read at all, and both rows say the same.
+    await page.goto(`/s/${watcher}`);
+    await expect(row(page, waits)).toHaveAttribute("data-watch", "wait");
+    await expect(row(page, waits).getByTestId("row-why")).toHaveText("Timer: look at the migration");
+    await expect(row(page, failed)).toHaveAttribute("data-watch", "fail");
+    await expect(row(page, failed).getByTestId("row-class")).toHaveText("billing");
+    // Nothing read a session whole to know its word.
+    expect(read).toEqual([]);
+
+    // The daemon's states cannot be read (the snapshot fails): a row falls back to the marks the daemon
+    // keeps on the session, not to the part of its events the page holds. Failed stays Failed.
+    await page.route("**/api/state", (r) => r.abort());
+    await page.goto(`/s/${failed}`);
+    await expect(page.getByTestId("load-earlier")).toBeVisible({ timeout: 30_000 });
+    await expect(row(page, failed)).toHaveAttribute("data-watch", "fail");
+    await expect(page.getByTestId("station-word")).toHaveText("Failed");
+    // The reader is far up in a session whose last turn the model declined: the part held ends in an
+    // earlier turn that finished. The row and the pane still say Declined, not Done.
+    const first = ((await (await request.get(`/api/sessions/${declined}/events`)).json()).events as { id: string; kind: string; data: { text?: string } }[])
+      .find((e) => e.kind === "user" && String(e.data.text).includes("turn 0 step 0"))!;
+    await page.goto(`/s/${declined}?e=${first.id}`);
+    await expect(page.locator(`#e-${first.id}`)).toBeInViewport({ timeout: 30_000 });
+    await expect(page.getByTestId("refusal")).toHaveCount(0);
+    await expect(row(page, declined)).toHaveAttribute("data-watch", "declined");
+    await expect(row(page, declined).getByTestId("row-state")).toHaveText("Declined");
+    await expect(page.getByTestId("station-word")).toHaveText("Declined");
+    await shoot(page, "session-state-16-part-far-up");
+    await page.unroute("**/api/state");
+  } finally {
+    await drop(request, made);
+  }
+});
+
 // The look of it: a dozen sessions in mixed states, in the list, on the folded
 // rail and on a phone, in both themes. Each row is checked for its state.
 test("twelve sessions in mixed states read apart at a glance, wide and on a phone", async ({ page, request }) => {
