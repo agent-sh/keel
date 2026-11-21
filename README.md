@@ -208,7 +208,7 @@ These fire, most used first:
 | Event | When | Matcher | Own fields | What its hooks can do |
 | --- | --- | --- | --- | --- |
 | `SessionStart` | The first prompt of a session, and the first prompt after its context was cleared or compacted | `source`: `startup`, `clear`, `compact` | `source` | Add context (plain stdout or `additionalContext`) |
-| `Stop` | A turn ends by itself, outside a subagent | none | `stop_hook_active`, `last_assistant_message` | Exit code 2 or `decision: "block"` sends the session back to work with the reason, five times in a row at most. `continue: false` from any hook lets it stop |
+| `Stop` | A turn ends by itself, outside a subagent | none | `stop_hook_active`, `last_assistant_message` | Exit code 2 or `decision: "block"` sends the session back to work with the reason, five times in a row at most (a daemon restart does not start the five again). `continue: false` from any hook lets it stop |
 | `UserPromptSubmit` | A prompt is about to reach the model | none | `prompt` | Block the prompt, add context |
 | `PostToolUse` | A call ran and did not fail | tool name | `tool_name`, `tool_input`, `tool_response`, `tool_use_id`, `duration_ms` | Add context to the result. A block is told to the model: the call already ran |
 | `PostToolUseFailure` | A call's result is an error, or its tool threw | tool name | `tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`, `duration_ms` | Add context to the result |
@@ -217,14 +217,14 @@ These fire, most used first:
 | `StopFailure` | A turn ends in an error, or at the output limit | error type: `rate_limit`, `authentication_failed`, `billing_error`, `server_error`, `invalid_request`, `max_output_tokens`, `unknown` | `error`, `error_details`, `last_assistant_message` | Told only |
 | `SubagentStop` | A subagent's turn ends by itself | agent type | `stop_hook_active`, `agent_transcript_path` (`null`), `last_assistant_message` | Told only: the agent's report is already on its way to its parent |
 | `SessionEnd` | A session is archived or deleted, once | `reason`: `other` | `reason`, `keel_reason` (`archived`, `deleted`) | Told only. 1.5 s unless the hook names a timeout, 60 s at most |
-| `PermissionRequest` | An approval card is about to open | tool name | `tool_name`, `tool_input`, `keel_risk`, `keel_reason` | `decision.behavior` `deny` refuses the call. `allow` answers a low-risk card, as a `PreToolUse` allow does. An allow that carries `updatedInput` or `updatedPermissions` is not taken |
+| `PermissionRequest` | An approval card is about to open | tool name | `tool_name`, `tool_input`, `keel_risk`, `keel_reason` | `decision.behavior` `deny` refuses the call. `allow` answers the card where a `PreToolUse` allow would (see below). An allow that carries `updatedInput` or `updatedPermissions` is not taken. Exit code 2 does nothing here |
 | `PreCompact` | Before a compaction | `trigger`: `manual`, `auto` | `trigger`, `custom_instructions` | The compaction waits for it. It cannot block: a compaction at the window has to happen |
 | `SubagentStart` | A subagent's first prompt | agent type | none | Add context for the subagent |
 | `PostCompact` | A summary took the place of the history | `trigger` | `trigger`, `compact_summary` | Told only |
 | `Notification` | Keel raises an alert for a session | `notification_type`: `permission_prompt`, `agent_needs_input`, `idle_prompt`, or Keel's alert kind | `message`, `title`, `notification_type`, `keel_kind` | Told only |
 | `PermissionDenied` | The judge or the reviewer refuses a call without you | tool name | `tool_name`, `tool_input`, `tool_use_id`, `reason` | Told only: the retry is yours to allow |
 | `PostToolBatch` | All calls of a step returned, before the next model request | none | `tool_calls` | Add context. A block stops the turn as your stop does |
-| `Interrupt` | You stop a running turn | none | none | Told only. 1 s, 3 s at most |
+| `Interrupt` | You stop a running turn, outside a subagent | none | none | Told only. 1 s, 3 s at most |
 | `PreModelRequest` | Before every request to a model, a retry too | none | `model`, `purpose` | Told only |
 | `PostModelRequest` | That request ended | none | `model`, `purpose`, `status`, `error`, `token_usage` | Told only |
 
@@ -259,6 +259,30 @@ The event list and fields are from the
 events) and the [Codex hooks page](https://developers.openai.com/codex/hooks)
 (14 events, three of them its own), read on 2026-11-21.
 
+### Where Keel differs from the two documents
+
+- Fields not sent: Codex's `turn_id`; Claude Code's `prompt_id`, `effort`,
+  `scratchpad_dir` and `mcp_server`; Stop's `background_tasks` and
+  `session_crons`.
+- Plain stdout is context for the model on `PreToolUse`, `PostToolUse`,
+  `PostToolUseFailure` and `PostToolBatch` too. Both documents ignore it
+  there.
+- `systemMessage` goes to the model as context, not to you as a warning.
+- A `PreToolUse` or `UserPromptSubmit` hook that answers JSON Keel cannot
+  read blocks. Both documents let the action go ahead.
+- `continue: false` on `PreToolUse` blocks that call and does not end the
+  turn.
+- A `Stop` hook's `additionalContext` is ignored. A `PreCompact` hook's
+  stdout is not used as summary instructions.
+- `StopFailure`'s `last_assistant_message` is the model's last text. The
+  error is in `error_details`.
+- `UserPromptExpansion`'s `prompt` is the text the command expands to, not
+  the line you typed.
+- A failed call fires `PostToolUseFailure` and not `PostToolUse`, as in
+  Claude Code. Codex fires `PostToolUse` for a failing Bash command.
+- `SubagentStop` and `PreCompact` cannot hold what they are told of back.
+- An allow answers less than in either document: see the table below.
+
 ### Handlers
 
 A hook's `type` says what runs. Every kind is under the same rule: a
@@ -285,8 +309,24 @@ wrote or pinned the file.
 
 `prompt` and `agent` hooks are read and not run, as in Codex. Each asks a
 model on every event. Keel's model checks on a call are the judge and the
-reviewer, on the model you chose for them. Settings lists such a hook under
-the file's problems.
+reviewer, on the model you chose for them. Settings lists such a hook in the
+file's notes: the file loads, and the hook never runs.
+
+A hook that fails (any exit code but 0 and 2, a command that is not there, a
+timeout, a port nobody listens on) is one row in Errors with its command or
+URL, its event and its session. The action goes ahead unless the hook has
+`onFailure: "block"`. A command hook runs in the session's folder, or in your
+home folder when that folder is gone or on another machine.
+
+What a hook says is bounded and inert. Each reason, context text and Stop
+prompt is cut at 10,000 characters. A hook's stdout, its stderr and an `http`
+answer are read to 1 MB; a longer `http` answer is a failed hook. Text that
+would close the hook's frame, open one of the harness's or start a line as
+the harness reaches the model defused.
+
+Before you pin a repository's file, Settings shows all of it, each URL an
+`http` hook sends your prompts, tool inputs and tool results to, and each MCP
+tool a hook calls. A file longer than 400,000 characters is not pinned.
 
 ### What a PreToolUse hook can do to a call
 
@@ -298,38 +338,63 @@ A `PreToolUse` hook runs before the permission gate. It answers with
 | --- | --- |
 | `deny`, exit code 2, or `decision: "block"` | The call does not run. The model reads the reason. |
 | `ask` | The call goes to you on a card, after the gate let it through. The card takes no standing answer. |
-| `allow` | It answers the call's low-risk ask in your place, once. Nothing else. |
+| `allow` | It answers the card you would have got for this call, once, when the call stays inside what the session may already touch. Nothing else. |
 | `updatedInput` | The call's input is replaced before anything judges it. |
 
 Between hooks, a deny beats an ask and an ask beats an allow. When several
 hooks change the input, the first one in file order wins, your file before
-the repository's.
+the repository's. An allow then counts only from the hook whose input won:
+another hook allowed the call as the model wrote it, not the one that runs.
 
-An allow never widens what the session's mode and sandbox permit:
+The rule for an allow: it answers only a question you would have been asked,
+for a call that stays inside what the session may already touch, and nothing
+else. Exactly:
 
-- A high-risk action still gets its card, or its judge in Auto and Full auto.
-- A command that never runs without you is still refused or asked.
-- Read only and Plan still refuse what they refuse.
-- A tool that asks for your confirmation on every call still asks.
-- The sandbox still confines the command.
+| The call | With a hook's allow |
+| --- | --- |
+| An edit whose every path is inside the workspace or the session's scratch folder, in Ask | Runs without a card |
+| A command the session's sandbox confines, in Ask | Runs confined, without a card |
+| An edit with a path outside the workspace and the scratch folder | Still asks |
+| A command with no sandbox to confine it | Still asks |
+| A tool (an MCP tool too) or a message into another session | Still asks: only your own rule allows it |
+| Anything in Auto or Reviewer | The judge or the reviewer still decides, and the Auto size limit holds |
+| Anything in Full auto | Unchanged: ordinary calls run, flagged ones go to the judge |
+| A high-risk action, a tool that confirms every call, an escalation out of the sandbox | Still asks |
+| A command that never runs without you | Still refused or asked |
+| Anything in Read only or Plan | Still refused |
 
-What the allow does skip is the card, or the review, of an ordinary action
-that the mode would ask about: an edit outside the workspace, a command no
-grant covers, a tool with no standing answer.
+So an allow hook makes Ask run what Auto edits runs without asking, and
+never more. In Auto edits those calls already run, and the allow changes
+nothing there. The sandbox still confines whatever a hook allowed. A
+`PermissionRequest` hook's allow follows the same table.
+
+Some edits are yours alone, one card each, whatever a hook, a grant or the
+reviewer says: a file a repository runs later (git hooks, `.envrc`, the
+project's hook and MCP files), any file in Keel's own config folder (your
+hooks file there runs with no pin, as do its MCP servers, skills and agents),
+a shell's start file in your home folder (`.bashrc`, `.profile`, `.zshrc` and
+the like), and the `.ssh` folder. Full auto runs every edit, as before.
+
+An approval is for exactly the input its card shows. A card left open across
+a daemon restart is closed when the call comes back with another input (a
+hook answered differently the second time, or not at all), and the call is
+judged as new.
 
 A changed input is the one the gate judges, the one an approval card shows
-and the one that runs. The session's history keeps what the model wrote. The
-model reads the input that ran on the call's result. The call's card shows
+and the one that runs. A changed shell command must be text: a list or an
+object there is refused. The session's history keeps what the model wrote. The
+model reads the input that was judged on the call's result, and whether it ran. The call's card shows
 the input that ran and names what the model asked for. The call's trace span
 carries `hook_rewrote` and the size of the input the model wrote, and
 `hook_allowed` when a hook's allow answered an ask. For a tool that runs
 another tool (`mcp_call`), the hook sees and changes that tool's arguments.
 
-Both follow the documented contracts, read on 2026-11-21:
+The documented contracts, read on 2026-11-21:
 [Claude Code hooks](https://code.claude.com/docs/en/hooks) evaluates deny
 and ask rules whatever a hook allows, and judges the returned input, not the
 one the model sent. [Codex hooks](https://developers.openai.com/codex/hooks)
-accepts `updatedInput` together with `allow`.
+accepts `updatedInput` together with `allow`. Keel's allow is narrower than
+both: it never answers for a call that leaves the session's own scope.
 
 ## Subagent concurrency
 

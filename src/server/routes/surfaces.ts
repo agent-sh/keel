@@ -266,9 +266,9 @@ export const surfaceRoutes: RouteModule = (deps) => {
         if (guard) return guard;
         const t = text(await body(req));
         try { JSON.parse(t); } catch (e) { return bad(`not JSON: ${(e as Error).message}`); }
-        const { problems } = parseHooks(t);
+        const { problems, notes } = parseHooks(t);
         write(ownerHooksPath(), t, true);
-        return json({ path: ownerHooksPath(), text: t, problems });
+        return json({ path: ownerHooksPath(), text: t, problems, notes });
       }),
     },
 

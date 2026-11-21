@@ -1632,7 +1632,7 @@ export class Engine {
       const h = call.hook;
       if (!h || (h.from === undefined && !h.skipped)) return r;
       if (h.from !== undefined) {
-        const note = hookChanged(call.input);
+        const note = hookChanged(call.input, t0 !== undefined);
         r.content = typeof r.content === "string" ? `${r.content}\n\n${note}` : [...r.content, { type: "text", text: note }];
       }
       const shown = this.shown.get(u.id);

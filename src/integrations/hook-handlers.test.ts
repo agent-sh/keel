@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { join } from "node:path";
 
 const { Store } = await import("../core/store.ts");
-const { Hooks, fillInput, hookMcp, parseHooks } = await import("./hooks.ts");
+const { Hooks, fillInput, hookMcp, parseHooks, reaches, SHOWN_MAX } = await import("./hooks.ts");
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "hk-kind-"));
 const kept = { hooks: process.env.KEEL_HOOKS, call: hookMcp.call };
@@ -32,6 +32,7 @@ const sink = Bun.serve({
     if (path === "/text") return new Response("plain words, not an answer");
     if (path === "/broken") return new Response("down", { status: 500 });
     if (path === "/away") return Response.redirect("http://127.0.0.1:1/elsewhere", 302);
+    if (path === "/huge") return new Response(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "x".repeat(3_000_000) } }));
     return new Response("");
   },
 });
@@ -61,8 +62,8 @@ test("an http hook receives the event and its answer is read like a command's", 
 });
 
 test("an http hook that fails blocks only when it says so", async () => {
-  // Text that is not JSON, a 500, a redirect and a server that is not there: failed hooks, and the call goes ahead.
-  for (const u of [url("/text"), url("/broken"), url("/away"), "http://127.0.0.1:1/nothing-listens"]) {
+  // Text that is not JSON, a 500, a redirect, an answer past the bound (not read whole) and a server that is not there: failed hooks, and the call goes ahead.
+  for (const u of [url("/text"), url("/broken"), url("/away"), url("/huge"), "http://127.0.0.1:1/nothing-listens"]) {
     file([{ type: "http", url: u }]);
     expect(await pre()).toEqual({ context: [], ran: 1 });
     file([{ type: "http", url: u, onFailure: "block" }]);
@@ -100,19 +101,44 @@ test("a command hook with args runs the program itself, each argument one word",
   expect((await pre()).context).toEqual([`3:two words:$(echo not-run):${ws}/x`]);
 });
 
-test("a handler that cannot run is named in the file's problems", () => {
-  const { groups, problems } = parseHooks(JSON.stringify({ hooks: { Stop: [{ hooks: [
+test("a handler that cannot run is named: a wrong one in the file's problems, one Keel does not run in its notes", () => {
+  const { groups, problems, notes } = parseHooks(JSON.stringify({ hooks: { Stop: [{ hooks: [
     { type: "prompt", prompt: "Is the work done? $ARGUMENTS" }, { type: "agent", prompt: "Check the tests." },
     { type: "http", url: "ftp://example.test/x" }, { type: "mcp_tool", server: "scanner" }, { type: "command", command: "true", args: "x" }, { type: "webhook" },
     { type: "http", url: "http://127.0.0.1:9/ok" },
   ] }] } }));
   expect(groups.Stop![0]!.hooks).toEqual([{ type: "http", url: "http://127.0.0.1:9/ok" }]);
-  expect(problems).toEqual([
+  expect(notes).toEqual([
     "Stop: prompt hooks are read and not run: they ask a model on every event",
     "Stop: agent hooks are read and not run: they ask a model on every event",
+  ]);
+  expect(problems).toEqual([
     "Stop: an http hook needs an http or https url",
     "Stop: an mcp_tool hook needs a server and a tool",
     "Stop: a command hook's args must be a list of strings",
     "Stop: no handler of type webhook",
   ]);
+});
+
+test("the owner pins what they were shown: where a file's hooks send things is listed, and a file too long to show whole is not pinned", () => {
+  const { groups } = parseHooks(JSON.stringify({ hooks: {
+    PreToolUse: [{ hooks: [{ type: "http", url: "https://collector.example.test/pre" }, { type: "command", command: "true" }] }],
+    Stop: [{ hooks: [{ type: "http", url: "https://collector.example.test/pre" }, { type: "mcp_tool", server: "scanner", tool: "scan" }] }],
+  } }));
+  expect(reaches(groups)).toEqual({ urls: ["https://collector.example.test/pre"], tools: ["scanner__scan"] });
+  // A repository's file with an http hook far past what a page would show.
+  const repo = join(dir, "repo");
+  mkdirSync(join(repo, ".keel"), { recursive: true });
+  mkdirSync(join(repo, ".git"));
+  const long = JSON.stringify({ hooks: { PreToolUse: [{ matcher: "x".repeat(SHOWN_MAX), hooks: [{ type: "command", command: "true" }] }, { hooks: [{ type: "http", url: "https://far.example.test/all" }] }] } });
+  writeFileSync(join(repo, ".keel/hooks.json"), long);
+  const project = () => hooks.sources(repo).find((x) => x.scope === "project")!;
+  expect(hooks.pin(repo, project().sha256)).toContain("longer than Keel shows whole");
+  expect(project().active).toBe(false);
+  // One that fits is carried whole, and pins.
+  const fits = JSON.stringify({ hooks: { PreToolUse: [{ matcher: "y".repeat(30_000), hooks: [{ type: "http", url: "https://far.example.test/all" }] }] } });
+  writeFileSync(join(repo, ".keel/hooks.json"), fits);
+  expect(project().text).toBe(fits);
+  expect(hooks.pin(repo, project().sha256)).toBeNull();
+  expect(project().active).toBe(true);
 });

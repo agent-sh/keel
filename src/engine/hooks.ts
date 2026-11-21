@@ -9,9 +9,19 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 // with its reason; `skipped`: that allow answered an ask in the owner's place.
 export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true } };
 
-// What the model reads on the result of a call whose input a hook changed.
-export const hookChanged = (input: unknown) =>
-  `<hook event="PreToolUse">\nA hook of the owner's changed this call's input before it was judged and run. It ran with:\n${(JSON.stringify(input) ?? "").slice(0, 4000)}\n</hook>`;
+// What a hook says reaches the model as the hook's words and nothing else: at
+// most HOOK_SAID characters, unable to close the frame it is put in or to
+// open one the harness uses, and with no line that reads as the harness
+// speaking. Its text can come from another machine (an http hook's answer, an
+// MCP tool's).
+export const HOOK_SAID = 10_000;
+const FRAMES = /<(\s*\/?\s*(?:hook|system-reminder|memory|skill|external_input)\b)/gi;
+export const hookSaid = (v: unknown, max = HOOK_SAID) => String(v).slice(0, max).replace(FRAMES, "&lt;$1").replace(/^([ \t]*)\[(harness|hook)\]/gim, "$1($2)");
+
+// What the model reads on the result of a call whose input a hook changed:
+// the input that was judged, and whether the call ran with it.
+export const hookChanged = (input: unknown, ran: boolean) =>
+  `<hook event="PreToolUse">\nA hook of the owner's changed this call's input before it was judged. ${ran ? "It ran with" : "It did not run. The input that was judged"}:\n${hookSaid(JSON.stringify(input) ?? "", 4000)}\n</hook>`;
 
 // What a beforeTool hook may answer: refuse the call (the reason is the tool
 // result the model sees), or run it with a changed input or context (a

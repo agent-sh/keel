@@ -9,7 +9,8 @@ const scripted = HAIKU.startsWith("scripted:");
 const calls = (...commands: string[]) => `script:calls ${JSON.stringify(commands.map((command) => ({ name: "Bash", input: { command } })))}`;
 
 // A repository of its own under the scratch home, with a hooks file the owner pins in Settings.
-async function pinned(page: any, request: any, hooks: Record<string, unknown>) {
+// `beforePin`: what the test looks at on the page the owner reads before pinning.
+async function pinned(page: any, request: any, hooks: Record<string, unknown>, beforePin?: () => Promise<void>) {
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `hooks-e2e-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
   mkdirSync(join(ws, ".keel"), { recursive: true });
   writeFileSync(join(ws, ".keel/hooks.json"), JSON.stringify({ hooks }, null, 1));
@@ -18,52 +19,69 @@ async function pinned(page: any, request: any, hooks: Record<string, unknown>) {
   const project = page.locator(`[data-testid="hook-source"][data-scope="project"]`).filter({ hasText: ws.split("/").pop()! });
   await expect(project).toHaveAttribute("data-active", "false");
   await project.click();
+  await beforePin?.();
   await page.getByTestId("hook-pin").click();
   await expect(project).toHaveAttribute("data-active", "true");
   return { ws, id: session.id as string };
 }
 
 // Feature: a PreToolUse hook changes a call's input and allows it. The changed
-// command is the one that is judged and runs: a low-risk one runs without a
-// card (the hook's allow answers it), a high-risk one still asks the owner,
-// with the changed command on the card. The transcript shows what ran and what
-// the model asked for, and the model reads what ran on the result.
+// input is the one that is judged and runs. The allow answers only the card
+// the owner would have got for a call inside the session's own scope: an edit
+// moved to another file of the workspace runs without a card; a changed
+// command that no sandbox confines still asks, with the changed command on the
+// card; a high-risk one always asks. The transcript shows what ran and what
+// the model asked for, and the model reads what was judged on the result.
 test("a hook changes a call's input and allows it", async ({ page, request }) => {
   test.skip(!scripted, "needs the scripted model: the calls are given exactly");
-  const { ws, id } = await pinned(page, request, { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `${HOOK} rewrite` }] }] });
+  const { ws, id } = await pinned(page, request, { PreToolUse: [{ matcher: "Bash|Write", hooks: [{ type: "command", command: `${HOOK} rewrite` }] }] });
   await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await page.goto(`/s/${id}`);
-  await page.getByTestId("composer").fill(calls("echo asked-by-model"));
+  const asked = join(ws, "asked-by-model.txt");
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Write", input: { file_path: asked, content: "from the model" } }])}`);
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
-  // The changed command ran, with no card: the file it makes is there.
-  expect(existsSync(join(ws, "hook-made.txt"))).toBe(true);
+  // The changed edit ran, with no card: the hook's file is there and the model's is not.
+  expect(readFileSync(join(ws, "hook-made.txt"), "utf8")).toBe("from the hook");
+  expect(existsSync(asked)).toBe(false);
   const call = page.getByTestId("tool-call").first();
   await expect(call).toHaveAttribute("data-state", "ok");
-  await expect(call).toContainText("touch hook-made.txt");
+  await expect(call).toContainText("hook-made.txt");
   await expect(call.getByTestId("tool-rewritten")).toBeVisible();
-  await expect(call.getByTestId("tool-asked")).toHaveText("echo asked-by-model");
-  await expect(call.getByTestId("tool-hook-allowed")).toContainText("touching files is fine here");
+  await expect(call.getByTestId("tool-asked")).toContainText("asked-by-model.txt");
+  await expect(call.getByTestId("tool-hook-allowed")).toContainText("edits in this repository are fine");
   await shoot(page, "hook-events-01-rewritten");
   const events = async () => (await (await request.get(`/api/sessions/${id}`)).json()).events;
-  const results = JSON.stringify((await events()).filter((e: any) => e.kind === "tool_result"));
-  expect(results).toContain("It ran with:");
-  expect(results).toContain("touch hook-made.txt");
+  const results = async () => JSON.stringify((await events()).filter((e: any) => e.kind === "tool_result"));
+  expect(await results()).toContain("It ran with:");
+  expect(await results()).toContain("hook-made.txt");
   // The history keeps what the model wrote.
-  expect(JSON.stringify((await events()).filter((e: any) => e.kind === "assistant"))).toContain("echo asked-by-model");
+  expect(JSON.stringify((await events()).filter((e: any) => e.kind === "assistant"))).toContain("asked-by-model.txt");
 
-  // Changed into a high-risk command: the hook's allow does not answer it. The card shows the changed command.
+  // A command changed by the hook, with nothing to confine it: the allow does not answer for it. The card shows the changed command.
+  const card = page.getByTestId("approval");
+  await page.getByTestId("composer").fill(calls("echo asked-by-model-cmd"));
+  await page.keyboard.press("Enter");
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  await expect(card).toContainText("touch hook-made-by-command.txt");
+  await expect(card).toContainText("The model asked for: echo asked-by-model-cmd");
+  expect(existsSync(join(ws, "hook-made-by-command.txt"))).toBe(false);
+  await shoot(page, "hook-events-02-command-still-asks");
+  await card.getByTestId("allow-once").click();
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+  expect(existsSync(join(ws, "hook-made-by-command.txt"))).toBe(true);
+
+  // Changed into a high-risk command: it asks, and the refusal tells the model what was judged without saying it ran.
   await page.getByTestId("composer").fill(calls("echo asked-by-model-high"));
   await page.keyboard.press("Enter");
-  const card = page.getByTestId("approval");
   await expect(card).toBeVisible({ timeout: 60_000 });
   await expect(card).toContainText("sudo rm -rf /var/lib/hook-e2e-thing");
   await expect(card).toContainText("The model asked for: echo asked-by-model-high");
-  await shoot(page, "hook-events-02-high-risk-asks");
   await card.getByTestId("deny").click();
   await page.getByTestId("deny-send").click();
-  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
-  await expect(page.getByTestId("tool-call").nth(1).getByTestId("tool-asked")).toHaveText("echo asked-by-model-high");
+  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 60_000 });
+  await expect(page.getByTestId("tool-call").nth(2).getByTestId("tool-asked")).toHaveText("echo asked-by-model-high");
+  expect(await results()).toContain("It did not run. The input that was judged:");
 });
 
 // Every event Keel fires, named in one pinned hooks file.
@@ -84,6 +102,7 @@ test("every hook event fires", async ({ page, request }) => {
   const { ws, id } = await pinned(page, request, Object.fromEntries(FIRED.map((e) => [e, [{ hooks: [{ type: "command", command: `${HOOK} log ${e}` }] }]])));
   const source = (await (await request.get(`/api/hooks?cwd=${encodeURIComponent(ws)}`)).json()).sources.find((s: any) => s.scope === "project");
   expect(source.problems).toEqual([]);
+  expect(source.notes).toEqual([]);
   expect(Object.keys(source.events).sort()).toEqual([...FIRED].sort());
   await page.getByTestId("hook-source").filter({ hasText: ws.split("/").pop()! }).click();
   await shoot(page, "hook-events-03-every-event-pinned");
@@ -205,9 +224,19 @@ test("an http hook receives the event at a local sink", async ({ page, request }
   await new Promise<void>((done) => sink.listen(0, "127.0.0.1", done));
   const at = `http://127.0.0.1:${(sink.address() as { port: number }).port}`;
   try {
+    // Before the pin the page names each URL and what goes to it, as a line of its own, and shows the whole file.
     const { ws, id } = await pinned(page, request, {
       PreToolUse: [{ matcher: "Bash", hooks: [{ type: "http", url: `${at}/pre` }] }],
       PostToolUse: [{ matcher: "Bash", hooks: [{ type: "http", url: `${at}/post` }] }],
+      Stop: [{ hooks: [{ type: "prompt", prompt: "Is the work done?" }] }],
+    }, async () => {
+      const sends = page.getByTestId("hook-sends");
+      await expect(sends).toHaveCount(2);
+      await expect(sends.first()).toContainText(`Sends your prompts, tool inputs and tool results to ${at.replace("http://", "")}`);
+      await expect(sends.first()).toContainText(`${at}/pre`);
+      // A handler Keel does not run is a note on a file that loads, not a problem of it.
+      await expect(page.getByTestId("hook-notes")).toContainText("prompt hooks are read and not run");
+      await shoot(page, "hook-events-04-http-before-pin");
     });
     const source = (await (await request.get(`/api/hooks?cwd=${encodeURIComponent(ws)}`)).json()).sources.find((s: any) => s.scope === "project");
     expect(source.problems).toEqual([]);
@@ -227,7 +256,7 @@ test("an http hook receives the event at a local sink", async ({ page, request }
     const results = JSON.stringify((await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "tool_result"));
     expect(results).toContain("A hook blocked this call: the sink refused it");
     await page.getByTestId("tool-call").nth(1).click();
-    await shoot(page, "hook-events-04-http-sink");
+    await shoot(page, "hook-events-05-http-sink");
   } finally {
     sink.close();
   }

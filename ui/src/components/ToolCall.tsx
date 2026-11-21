@@ -85,7 +85,7 @@ function HookRow({ hook, asked, name, cwd, alone }: { hook: HookMark; asked: any
     <div className={cn("flex items-start gap-2 px-3 py-2 text-caption text-muted", alone ? "rounded-lg border border-line bg-raised" : "border-t border-line")} data-testid="tool-hook">
       <Webhook className="mt-0.5 size-3.5 shrink-0 text-faint" />
       <p className="min-w-0 flex-1">
-        {hook.input !== undefined && <>A hook changed this call before it was judged and run. The model asked for <span className="font-mono text-micro break-all text-fg" data-testid="tool-asked">{summary(toolKind(name), name, asked ?? {}, cwd) || JSON.stringify(asked ?? {}).slice(0, 400)}</span>. </>}
+        {hook.input !== undefined && <>A hook changed this call before it was judged. The model asked for <span className="font-mono text-micro break-all text-fg" data-testid="tool-asked">{summary(toolKind(name), name, asked ?? {}, cwd) || JSON.stringify(asked ?? {}).slice(0, 400)}</span>. </>}
         {hook.allowed !== undefined && <span data-testid="tool-hook-allowed">A hook allowed it without asking you{hook.allowed ? `: ${hook.allowed}` : ""}.</span>}
       </p>
     </div>

@@ -6,7 +6,7 @@ import type { Deps, RouteModule } from "../app.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { toMessages } from "../../engine/turn.ts";
 import type { Session, ToolResultBlock } from "../../core/types.ts";
-import { Hooks, hookContext, namesOf, ownerHooksPath, projectRoot, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
+import { Hooks, hookContext, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, SHOWN_MAX, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 
@@ -48,12 +48,14 @@ export const hookRoutes: RouteModule = (deps) => joinHooks(deps, daemonGate);
 // `gate`: the permission gate the hooks answer to (the daemon's; a test gives its own).
 export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteModule> {
   const { store, bus, engine, errors } = deps;
-  const hooks = new Hooks(store);
+  // A hook that failed is one row in Errors, folded with its repeats: what failed, on which event, in which session.
+  const hooks = new Hooks(store, (f) => errors.capture("tool", new Error(`Hook failed on ${f.event} (${f.why}): ${f.hook}`), { hook: f.hook, event: f.event, session: f.session }));
   const answered = new Set<string>(); // user events already given to UserPromptSubmit
   // The calls in flight that a hook follows: what the hooks see of it, and what PreToolUse left for later.
+  // Kept by session and call id: a call id is its session's (two sessions can each have a call-1).
   type Followed = { session: string; name: string; input: any; names: string[]; context?: string[]; ask?: string; ms?: number };
   const calls = new Map<string, Followed>();
-  const stops = new Map<string, number>();
+  const callKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
   const events = (id: string) => store.lineage(id); // kept by the store: no copy or walk of the session per request
   const note = (sid: string, event: string, lines: string[]) => {
     const ev = store.append(sid, "note", { text: hookContext(event, lines), model: true, hook: event });
@@ -94,9 +96,9 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
   };
   // PostToolUse for a call that ran, PostToolUseFailure for one that failed.
   const afterCall = async (s: Session, callId: string, result: ToolResultBlock, error?: string) => {
-    const c = calls.get(callId);
+    const c = calls.get(callKey(s.id, callId));
     if (!c) return;
-    calls.delete(callId);
+    calls.delete(callKey(s.id, callId));
     const failed = error !== undefined || !!result.is_error;
     const event = failed ? "PostToolUseFailure" : "PostToolUse";
     const r = await fire(event, s, () => ({
@@ -120,7 +122,6 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       if (last?.kind !== "user" || answered.has(last.id)) return req;
       answered.add(last.id);
       const text = String(last.data.text ?? "");
-      if (!text.startsWith(HOOK_PREFIX)) stops.delete(s.id); // the owner's own words start the count again
       const before = evs.findLastIndex((e, k) => k < i && e.kind === "user");
       // A session starts with its first prompt, and again after its context
       // was cleared or summarized: what a SessionStart hook told the model is
@@ -149,7 +150,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const name = target?.name ?? call.tool.name;
       const input = target ? target.input : call.input;
       const c: Followed = { session: s.id, name, input, names: namesOf(name, input, call.tool.name) };
-      calls.set(call.id, c);
+      calls.set(callKey(s.id, call.id), c);
       const r = await fire("PreToolUse", s, () => ({ tool_name: name, tool_input: input, tool_use_id: call.id }), c.names, srcs);
       if (r.block) return { deny: `A hook blocked this call: ${r.block}` };
       if (r.context.length) c.context = r.context;
@@ -162,7 +163,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     },
     // A hook's ask goes to the owner after the gate let the call through (a call the gate refuses asks nobody).
     async beforeTool(s, call) {
-      const c = calls.get(call.id);
+      const c = calls.get(callKey(s.id, call.id));
       if (c?.ask === undefined) return;
       const ask = c.ask;
       c.ask = undefined;
@@ -170,8 +171,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const d = await gate.askOnce(s, call, c.name, `a hook asks: ${ask}`);
       if (d) return d;
     },
-    toolRan(_s, call, _result, ran) {
-      const c = calls.get(call.id);
+    toolRan(s, call, _result, ran) {
+      const c = calls.get(callKey(s.id, call.id));
       if (c) c.ms = ran.ms;
     },
     afterTool: (s, call, result) => afterCall(s, call.id, result),
@@ -194,7 +195,11 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     },
     async turnEnd(s, reason) {
       for (const [id, c] of calls) if (c.session === s.id) calls.delete(id); // calls a gate refused, or a stop cut
-      if (reason === "interrupted") return tell("Interrupt", s, () => ({}));
+      // The owner stopped a turn of the session itself (not a subagent's, and not a hook's own stop at PostToolBatch).
+      if (reason === "interrupted") {
+        if (!s.parent_id && events(s.id).findLast((e) => e.kind === "turn_end")?.data.stopped_by !== "hook") tell("Interrupt", s, () => ({}));
+        return;
+      }
       if (reason === "error" || reason === "max_tokens") {
         // The error is stored once the turn has closed, after these hooks: its event is waited for, briefly.
         const failure = () => { const evs = events(s.id); return evs.slice(evs.findLastIndex((e) => e.kind === "turn_start") + 1).findLast((e) => e.kind === "error"); };
@@ -208,15 +213,21 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       if (reason !== "end_turn") return;
       // A subagent's turn end is told as SubagentStop: its report is already on its way to its parent.
       if (s.parent_id) return tell("SubagentStop", s, () => ({ stop_hook_active: false, agent_transcript_path: null, last_assistant_message: lastReply(s.id) }), [agentType(s)]);
-      const n = stops.get(s.id) ?? 0;
-      const r = await fire("Stop", s, () => ({ stop_hook_active: n > 0, last_assistant_message: lastReply(s.id) }));
-      if (!r.continueWith) { stops.delete(s.id); return; }
-      if (n >= STOP_LIMIT) {
-        note(s.id, "Stop", [`A Stop hook asked to go on ${n} times in a row; Keel stops here.`]);
-        stops.delete(s.id);
-        return;
+      // How often in a row a Stop hook already sent this session back: read off
+      // the branch (the prompts a hook queued since the last one of anyone
+      // else's), so a daemon restart in between starts no new five. The
+      // harness's own prompts (a continuation after a restart) are nobody's new words.
+      let n = 0;
+      const evs = events(s.id);
+      for (let i = evs.length - 1; i >= 0; i--) {
+        const e = evs[i]!;
+        if (e.kind !== "user" || e.data.origin === "restart" || e.data.origin === "harness") continue;
+        if (e.data.origin !== "hook") break;
+        n++;
       }
-      stops.set(s.id, n + 1);
+      const r = await fire("Stop", s, () => ({ stop_hook_active: n > 0, last_assistant_message: lastReply(s.id) }));
+      if (!r.continueWith) return;
+      if (n >= STOP_LIMIT) return note(s.id, "Stop", [`A Stop hook asked to go on ${n} times in a row; Keel stops here.`]);
       // Queued: the next turn starts when this one has ended.
       try { engine.send(s.id, `${HOOK_PREFIX} ${r.continueWith}`, { mode: "queue", meta: { origin: "hook" } }); } catch (e) { errors.capture("server", e, { at: "stop hook" }); }
     },
@@ -237,7 +248,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
   // A card is about to open: PermissionRequest. A deny refuses the call; an
   // allow answers a low-risk card and no other (the gate decides which).
   if (gate) gate.requestHook = async (s, call, _name, ask) => {
-    const c = calls.get(call.id);
+    const c = calls.get(callKey(s.id, call.id));
     if (!c) return;
     const r = await fire("PermissionRequest", s, () => ({ tool_name: c.name, tool_input: c.input, keel_risk: ask.risk, keel_reason: ask.why ?? null }), c.names);
     if (r.block) return { deny: `A hook denied this request: ${r.block}` };
@@ -275,14 +286,17 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     if (f.name === "blocked" && f.session_id && !f.data?.retry) {
       // The judge or the reviewer refused a call without the owner: PermissionDenied.
       const id = (f.data.calls as string[] | undefined)?.at(-1);
-      const c = id ? calls.get(id) : undefined;
+      const c = id ? calls.get(callKey(f.session_id, id)) : undefined;
       const s = c && store.session(f.session_id);
       if (s && c) tell("PermissionDenied", s, () => ({ tool_name: c.name, tool_input: c.input, tool_use_id: id, reason: String(f.data.reason ?? "") }), c.names);
     }
   });
 
   const workspaces = () => [...new Set(store.sessions({}).map((s) => projectRoot(s.workspace)).concat(projectRoot(deps.workspace)))];
-  const shown = (cwd: string) => hooks.sources(cwd).map(({ groups, ...rest }) => rest);
+  // A file as the page shows it: whole (or said not to be), with what loads and never runs, and where its hooks send things.
+  const shown = (cwd: string) => hooks.sources(cwd).map(({ groups, ...rest }) => ({
+    ...rest, text: rest.text.slice(0, SHOWN_MAX), whole: rest.text.length <= SHOWN_MAX, notes: rest.text ? parseHooks(rest.text).notes : [], reaches: reaches(groups),
+  }));
 
   return {
     "/api/hooks": {

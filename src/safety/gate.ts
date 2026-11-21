@@ -14,10 +14,11 @@ import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
-import { splitCommand } from "./shell.ts";
+import { readOnlyCommand, splitCommand } from "./shell.ts";
+import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
-import { classify, decide, isMode, shellText, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { classify, decide, isMode, ownPath, shellText, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
 // An edit is judged by where it sits (its folders' links resolved) and by
 // where it lands (the file's own link followed too): a link inside the
@@ -105,6 +106,9 @@ function hasSecret(input: unknown, values: string[]): boolean {
   if (!input || typeof input !== "object") return false;
   return Object.entries(input).some(([k, v]) => hasSecret(k, values) || hasSecret(v, values));
 }
+
+// Keel's own config: the folder, and a hooks or MCP file the daemon was pointed at elsewhere.
+const ownConfig = () => [configDir(), process.env.KEEL_HOOKS, process.env.KEEL_MCP_CONFIG].filter((x): x is string => !!x).map((x) => realOf(x));
 
 function callClass(call: ToolCall, target: Target): CallClass {
   const cls = target ? target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" }) : classifyCall(call);
@@ -345,13 +349,41 @@ export class Gate {
     this.bus.emit({ t: "feature", name: "approval", session_id: a.session_id, data: a });
   }
 
-  private evaluate(session: Session, name: string, cls: CallClass, bind?: string): Decision {
-    const p = this.perm(session.id);
-    // Edits are judged where they land (links resolved), so the workspace is too.
+  // Where a session's edits are its own: its workspace and its scratch folder, links resolved (edits are judged where they land).
+  private scope(session: Session) {
     let root = session;
     for (let n = 0; root.parent_id && !root.machine && n < 32; n++) root = this.store.session(root.parent_id) ?? root;
-    const scratch = session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))];
-    return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch });
+    return { workspace: realOf(session.workspace), scratch: session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))] };
+  }
+
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string): Decision {
+    const p = this.perm(session.id);
+    const { workspace, scratch } = this.scope(session);
+    const edit = cls.kind === "edit";
+    return decide(cls, {
+      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch,
+      // What Keel itself runs things from: an edit there is the owner's alone (on this machine's disk).
+      ...(edit && !session.machine ? { home: realOf(homedir()), config: ownConfig() } : {}),
+    });
+  }
+
+  // Whether a hook's allow may answer this ask. It answers only a question the
+  // owner would have been asked (a mode that opens an owner card, for an
+  // ordinary action: not high risk, not the owner's alone), for a call that
+  // stays inside what the session may already touch: an edit whose every path
+  // is in its workspace or its scratch folder, on this machine's disk; a
+  // command the session's sandbox confines, or one the rules read as a read.
+  // A tool, or a message into another session, runs unasked only by the
+  // owner's own rule, and with one there is no ask to answer.
+  private hookMayAnswer(session: Session, cls: CallClass, ask: { risk: "high" | "low"; ownerOnly?: true }): boolean {
+    const p = this.perm(session.id);
+    if ((p.mode !== "ask" && p.mode !== "auto-edits") || ask.risk !== "low" || ask.ownerOnly) return false;
+    if (cls.kind === "edit") {
+      const f = this.scope(session);
+      return !session.machine && cls.paths.every((x) => ownPath(x, f));
+    }
+    if (cls.kind === "shell") return (!cls.escalate && p.sandbox !== "off" && this.sandboxed(session, p)) || (cls.interpreter === undefined && readOnlyCommand(cls.command));
+    return false;
   }
 
   // The beforeTool hook: the gate first; a call it lets through runs confined
@@ -388,7 +420,7 @@ export class Gate {
     const d = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source);
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
-    const back = this.unpark(session.id, call.id, false) ?? (mode === "auto" ? this.unpark(session.id, call.id, true) : undefined);
+    const back = this.recovered(session.id, call, false) ?? (mode === "auto" ? this.recovered(session.id, call, true) : undefined);
     if (back) {
       // Do not authorize a recovered non-hook card under the new mode. A
       // saved answer is not evidence about the current binding or landing.
@@ -417,14 +449,14 @@ export class Gate {
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation).authorization } : {}) };
     if (cls.kind === "control") return { cls };
     // A hook's allow (the owner's own hooks file, or a repository's they read
-    // and pinned) answers this one call's low-risk ask in their place, and
-    // nothing more: what is refused above stays refused (Read only, Plan, the
-    // never-allowed commands), a high-risk action still gets its card or its
-    // judge, a tool that asks for the owner's confirmation still asks, and the
-    // sandbox still confines what runs.
-    if (call.hook?.allowed !== undefined && d.ask.risk === "low" && !d.ask.ownerOnly) {
+    // and pinned) answers the card this call would open, and nothing more
+    // (hookMayAnswer): what is refused above stays refused (Read only, Plan,
+    // the never-allowed commands), the judge and the reviewer still review
+    // what is theirs, a high-risk or owner-only action and a tool that
+    // confirms every call still ask, and the sandbox still confines what runs.
+    if (call.hook?.allowed !== undefined && this.hookMayAnswer(session, cls, d.ask)) {
       call.hook.skipped = true;
-      return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation).authorization } : {}) };
+      return { cls };
     }
     const { summary, cut } = inShort(cls, target ? target.input : call.input);
     const key = keyOf(name, target, cls, call, summary);
@@ -593,14 +625,14 @@ export class Gate {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
-    const parked = this.unpark(session.id, call.id, once);
+    const parked = this.recovered(session.id, call, once);
     // A new card is about to open: the owner's PermissionRequest hooks first.
-    // A deny refuses the call. An allow answers a low-risk card in the owner's
-    // place, as a PreToolUse hook's allow does, and no other card.
+    // A deny refuses the call. An allow answers the card where a PreToolUse
+    // hook's allow would have (hookMayAnswer), and no other card.
     if (!parked && this.requestHook) {
       const r = await this.requestHook(session, call, name, { risk: ask.risk, why: ask.why });
       if (r && "deny" in r) return r;
-      if (r && "allow" in r && ask.risk === "low" && !once && !ask.autoOwner) {
+      if (r && "allow" in r && !once && !ask.autoOwner && this.hookMayAnswer(session, cls, ask)) {
         call.hook = { ...call.hook, allowed: call.hook?.allowed ?? "", skipped: true };
         return;
       }
@@ -613,6 +645,19 @@ export class Gate {
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,
     };
     return this.wait(a, session, call, name, cls);
+  }
+
+  // The parked card of this call, when it is still for this call. An approval
+  // is for exactly the input its card shows. The continued turn runs the call
+  // again, and what a hook makes of it the second time may differ (another
+  // input, or none when the hook fails): a card whose stored input is not the
+  // input now judged is closed, answered or not, and the call is judged as new.
+  private recovered(sessionId: string, call: ToolCall, once: boolean): Approval | undefined {
+    const a = this.unpark(sessionId, call.id, once);
+    if (!a) return undefined;
+    if (JSON.stringify(a.input) === JSON.stringify(this.redact({ ...a, input: clip(call.input) }).input)) return a;
+    this.finish(a, { state: "cancelled", choice: undefined, reason: "the call changed since this card opened" });
+    return undefined;
   }
 
   // A parked card of this call (a one-call card only for askOnce), taken back.

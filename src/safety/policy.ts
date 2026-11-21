@@ -128,8 +128,31 @@ export function shellText(input: any): string | null {
 
 export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
 
+// Files of the home folder that run, or let someone in, later: the shells'
+// start files and the remote-login folder. An edit of one is the owner's call
+// like a repository's RUNS_LATER files, wherever the session's workspace is.
+const HOME_RUNS_LATER = /^(?:\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|zshrc|zshenv|zprofile|zlogin|zlogout|inputrc|xprofile|xsessionrc|pam_environment)$|\.ssh(?:\/|$)|\.config\/(?:fish\/|environment\.d\/|systemd\/user\/|autostart\/))/;
+// Why an edit of this path is the owner's alone, or nothing. `config`: folders
+// and files Keel itself runs things from (its config folder: hooks, MCP
+// servers, skills, agents), which no repository's pin holds.
+function ownerOnlyEdit(p: string, f: Facts): string | null {
+  const rel = relative(f.workspace, p);
+  if (RUNS_LATER.test(rel)) return `it changes ${rel}, which runs or configures things outside the sandbox later`;
+  const own = f.config?.find((c) => contains(c, p));
+  if (own) return `it changes ${p}, a file of Keel's own configuration (its hooks, MCP servers, skills and agents run from there with no pin)`;
+  const home = f.home ?? homedir();
+  if (contains(home, p) && HOME_RUNS_LATER.test(relative(home, p))) return `it changes ${p}, which runs at every login or shell start, or lets someone log in`;
+  return null;
+}
+
+// Whether an edit stays inside what the session may already touch: its
+// workspace (the repository's own metadata aside) or a scratch folder of its own.
+const protectedPath = (workspace: string, p: string) => /(^|\/)\.git(\/|$)/.test(relative(workspace, p));
+export const ownPath = (p: string, f: Pick<Facts, "workspace" | "scratch">) => (contains(f.workspace, p) && !protectedPath(f.workspace, p)) || !!f.scratch?.some((d) => contains(d, p));
+
 // `scratch`: folders of the harness's own the session writes in like its workspace (its artifacts folder).
-export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string };
+// `config`: Keel's own config folder and files (ownerOnlyEdit).
+export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[] };
 
 export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read" || c.kind === "control") return { allow: true };
@@ -155,18 +178,17 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "edit") {
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };
-    // A file the repository runs or reads its configuration from later (git
-    // hooks, direnv, the project's hook and MCP files): the owner's call, one at a time.
-    const runs = c.paths.find((p) => RUNS_LATER.test(relative(f.workspace, p)));
-    if (runs) return onlyOwner(`it changes ${relative(f.workspace, runs)}, which runs or configures things outside the sandbox later`);
+    // A file something runs or reads its configuration from later (git hooks,
+    // direnv, the project's hook and MCP files, Keel's own config, a shell's
+    // start file, the login keys): the owner's call, one at a time. No grant,
+    // reviewer or hook answers it.
+    for (const p of c.paths) { const why = ownerOnlyEdit(p, f); if (why) return onlyOwner(why); }
     const editRules = f.rules.filter((r) => r.kind === "edit");
     const covered = (p: string) => editRules.some((r) => contains(r.pattern, p));
     // The repository's own metadata is not an in-scope edit.
-    const protectedPath = (p: string) => /(^|\/)\.git(\/|$)/.test(relative(f.workspace, p));
-    const mine = (p: string) => (contains(f.workspace, p) && !protectedPath(p)) || !!f.scratch?.some((d) => contains(d, p));
-    const open = c.paths.filter((p) => !covered(p) && !((f.mode === "auto-edits" || f.mode === "auto") && mine(p)));
+    const open = c.paths.filter((p) => !covered(p) && !((f.mode === "auto-edits" || f.mode === "auto") && ownPath(p, f)));
     if (!open.length) return { allow: true };
-    const dirs = [...new Set(open.map((p) => (contains(f.workspace, p) && !protectedPath(p) ? f.workspace : dirname(p))))];
+    const dirs = [...new Set(open.map((p) => (contains(f.workspace, p) && !protectedPath(f.workspace, p) ? f.workspace : dirname(p))))];
     return { ask: { risk: "low", suggest: dirs.map((d) => ({ kind: "edit", pattern: d })) } };
   }
   if (f.mode === "full-auto") return { allow: true };

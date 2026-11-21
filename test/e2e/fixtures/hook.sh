@@ -18,9 +18,11 @@ case "$1" in
     mkdir -p "$KEEL_PROJECT_DIR/.hook-seen" && printf '%s' "$input" > "$KEEL_PROJECT_DIR/.hook-seen/$2.$$.$RANDOM.json"
     if [ "$2" = UserPromptSubmit ] && has 'refuse-this-prompt'; then echo '{"decision":"block","reason":"this prompt is refused"}'; fi ;;
   rewrite)
-    # A changed input with an allow: a low-risk command the allow answers, and a high-risk one that still asks.
+    # A changed input with an allow. An edit moved to another file of the workspace: the allow answers its card.
+    # A command changed with no sandbox to confine it: the allow does not answer for it. A high-risk one always asks.
+    if has 'asked-by-model.txt'; then echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"edits in this repository are fine\",\"updatedInput\":{\"file_path\":\"$KEEL_PROJECT_DIR/hook-made.txt\",\"content\":\"from the hook\"}}}"; exit 0; fi
     if has 'asked-by-model-high'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"sudo rm -rf /var/lib/hook-e2e-thing"}}}'; exit 0; fi
-    if has 'asked-by-model'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"touching files is fine here","updatedInput":{"command":"touch hook-made.txt"}}}'; exit 0; fi ;;
+    if has 'asked-by-model-cmd'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"touch hook-made-by-command.txt"}}}'; exit 0; fi ;;
   post)
     echo '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"project-ctx: the repository hook saw the result"}}' ;;
   stop)

@@ -15,13 +15,15 @@
 // (src/safety/gate.ts: no high-risk card, no never-allowed command, nothing in
 // Read only or Plan).
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { contains, realOf } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
 import { configDir } from "../providers/config.ts";
-import { readText } from "../core/proc.ts";
+import { chunks, pumpText } from "../core/proc.ts";
+import { hookSaid } from "../engine/hooks.ts";
 import { shellText } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
 
@@ -250,13 +252,16 @@ export function pinKey(root: string): string {
   return key;
 }
 
-export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Group[]>>; problems: string[] } {
-  const problems: string[] = [];
+// `problems`: what is wrong with the file. `notes`: what loads and never runs
+// here (an event Keel has no moment for, a prompt or agent handler): said in
+// the file's list, and no fault of the file.
+export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Group[]>>; problems: string[]; notes: string[] } {
+  const problems: string[] = [], notes: string[] = [];
   const groups: Partial<Record<HookEvent, Group[]>> = {};
   let raw: any;
-  try { raw = JSON.parse(text); } catch (e) { return { groups, problems: [`not JSON: ${(e as Error).message}`] }; }
+  try { raw = JSON.parse(text); } catch (e) { return { groups, notes, problems: [`not JSON: ${(e as Error).message}`] }; }
   for (const [event, list] of Object.entries<any>(raw?.hooks ?? {})) {
-    if (NOT_FIRED[event]) { problems.push(`${event}: never runs here (${NOT_FIRED[event]})`); continue; }
+    if (NOT_FIRED[event]) { notes.push(`${event}: never runs here (${NOT_FIRED[event]})`); continue; }
     if (!(EVENTS as readonly string[]).includes(event)) { problems.push(`${event}: not an event of Claude Code, Codex or Keel`); continue; }
     if (!Array.isArray(list)) { problems.push(`${event}: must be a list`); continue; }
     const out: Group[] = [];
@@ -266,14 +271,30 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
       }
       const hooks = (Array.isArray(g?.hooks) ? g.hooks : []).filter((h: any) => {
         const why = handlerProblem(h);
-        if (why) problems.push(`${event}: ${why}`);
+        if (why) (h?.type === "prompt" || h?.type === "agent" ? notes : problems).push(`${event}: ${why}`);
         return !why;
       });
       if (hooks.length) out.push({ matcher: g.matcher, hooks });
     }
     if (out.length) groups[event as HookEvent] = out;
   }
-  return { groups, problems };
+  return { groups, problems, notes };
+}
+
+// The most of a hooks file a Source carries. The page shows all of it, and a
+// file longer than this is not pinned: the owner pins what they were shown.
+export const SHOWN_MAX = 400_000;
+
+// Where a file's hooks send what they are given, for the owner to read before
+// a pin: each http hook's URL (it gets prompts, tool inputs and tool results),
+// and each MCP tool a hook calls.
+export function reaches(groups: Partial<Record<HookEvent, Group[]>>): { urls: string[]; tools: string[] } {
+  const urls = new Set<string>(), tools = new Set<string>();
+  for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
+    if (h.type === "http") urls.add(h.url);
+    else if (h.type === "mcp_tool") tools.add(`${h.server}__${h.tool}`);
+  }
+  return { urls: [...urls], tools: [...tools] };
 }
 
 // A tool's own name and the names other harnesses give it, for hook matchers
@@ -341,8 +362,11 @@ export function ifHolds(rule: string, names: string[] | undefined, input: any, c
   return [path, full, relative(cwd, full), basename(full)].some((x) => glob.test(x));
 }
 
+export type HookFailure = { hook: string; event: HookEvent; session: string; why: string };
+
 export class Hooks {
-  constructor(private store: Store) {
+  // `failed`: told of each hook that failed (exit 1, a command that is not there, a timeout, an http port nobody listens on).
+  constructor(private store: Store, private failed?: (f: HookFailure) => void) {
     store.migrate("CREATE TABLE IF NOT EXISTS hook_pins (root TEXT NOT NULL, sha256 TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (root));");
   }
 
@@ -372,7 +396,7 @@ export class Hooks {
     try { text = readFileSync(path, "utf8"); } catch (e) { return { path, scope: "owner", root, text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }; }
     const { groups, problems } = parseHooks(text);
     const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
-    const source = { path, scope: "owner" as const, text: text.slice(0, 20_000), sha256: sha(text), active: true, events, problems, covers: [], groups };
+    const source = { path, scope: "owner" as const, text: text.slice(0, SHOWN_MAX + 1), sha256: sha(text), active: true, events, problems, covers: [], groups };
     // Kept only when its last change is old enough to tell from a later one (the time taken before the read).
     if (mark !== "missing" && t0 - newest.ms > this.racyMs) this.owner = { path, mark, source };
     return { ...source, root };
@@ -410,7 +434,7 @@ export class Hooks {
     const links = linksOut(root, files);
     if (links.length) { active = false; problems.unshift(`${links.map((f) => relative(root, f)).join(", ")} ${links.length > 1 ? "are links" : "is a link"} out of .keel/: the pin cannot hold what ${links.length > 1 ? "they run" : "it runs"}`); }
     const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
-    return { path, scope: "project", root, text: text.slice(0, 20_000), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups };
+    return { path, scope: "project", root, text: text.slice(0, SHOWN_MAX + 1), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups };
   }
 
   // `run`: for an event, which needs only what can run (a file with no pin is left out unread).
@@ -423,6 +447,7 @@ export class Hooks {
     const project = this.sources(cwd).find((s) => s.scope === "project");
     if (!project) return "this folder has no .keel/hooks.json";
     if (project.sha256 !== digest) return "the file is no longer the one that was shown: read it again";
+    if (project.text.length > SHOWN_MAX) return `the file is longer than Keel shows whole (${SHOWN_MAX} characters), so it cannot be pinned: you would pin hooks you were not shown`;
     this.store.db.query("INSERT INTO hook_pins (root, sha256, created) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET sha256 = excluded.sha256, created = excluded.created").run(pinKey(projectRoot(cwd)), digest, Date.now());
     return null;
   }
@@ -454,58 +479,76 @@ export class Hooks {
       return h.type === "http" ? runHttp(h, input, ms) : h.type === "mcp_tool" ? runMcp(h, data, ms) : runHook(h, input, s.workspace, ms);
     }));
     let stop: string | undefined;
+    // What each PreToolUse hook answered about the call's input and its allow, in file order.
+    const said: { input?: Record<string, unknown>; allow?: string }[] = [];
     for (const [i, o] of outs.entries()) {
       const h = handlers[i]!;
       const refuse = (why: string) => { if (can.block) res.block ??= why; };
-      const fails = (why: string) => { if (h.onFailure === "block") refuse(`a hook failed (${why})`); };
+      // A hook that failed is said once in Errors, with what it is: a mistyped policy hook otherwise never runs and nobody is told.
+      const fails = (why: string) => {
+        const what = h.type === "http" ? h.url : h.type === "mcp_tool" ? `${h.server}__${h.tool}` : [h.command, ...(h.args ?? [])].join(" ");
+        this.failed?.({ hook: what.slice(0, 500), event, session: s.id, why: `${why}${o.stderr.trim() ? `: ${o.stderr.trim().slice(0, 300)}` : ""}` });
+        if (h.onFailure === "block") refuse(`a hook failed (${why})`);
+      };
       if (o.code === null) { fails("it did not finish in time"); continue; }
       if (o.code === 2) {
-        if (can.goOn) res.continueWith ??= o.stderr.trim() || "a hook asked to go on";
-        else refuse(o.stderr.trim() || "a hook blocked this");
+        // (Not honoured on PermissionRequest, as documented: a hook denies there with its decision.)
+        if (can.goOn) res.continueWith ??= hookSaid(o.stderr.trim() || "a hook asked to go on");
+        else if (event !== "PermissionRequest") refuse(hookSaid(o.stderr.trim() || "a hook blocked this"));
         continue;
       }
-      if (o.code !== 0) { fails(`exit ${o.code}`); continue; }
+      if (o.code !== 0) { fails(o.code === -1 ? "it could not be started" : `exit ${o.code}`); continue; }
       const text = o.stdout.trim();
       if (!text) continue;
       let j: any;
       try { j = JSON.parse(text); } catch {
-        if (!text.startsWith("{")) { if (can.text) res.context.push(text.slice(0, 10_000)); }
+        if (!text.startsWith("{")) { if (can.text) res.context.push(hookSaid(text)); }
         else if (event === "PreToolUse" || event === "UserPromptSubmit") refuse("a hook answered JSON that cannot be read");
         continue;
       }
       if (!j || typeof j !== "object") continue;
       const hso = j.hookSpecificOutput ?? {};
       if (j.decision === "block") {
-        if (can.goOn) res.continueWith ??= String(j.reason ?? "a hook asked to go on");
-        else refuse(String(j.reason ?? "a hook blocked this"));
+        if (can.goOn) res.continueWith ??= hookSaid(j.reason ?? "a hook asked to go on");
+        else refuse(hookSaid(j.reason ?? "a hook blocked this"));
       }
       if (j.continue === false) {
-        if (can.goOn) stop ??= String(j.stopReason ?? "");
-        else refuse(String(j.stopReason ?? "a hook stopped this"));
+        if (can.goOn) stop ??= "";
+        else refuse(hookSaid(j.stopReason ?? "a hook stopped this"));
       }
       if (event === "PreToolUse") {
         // The older top-level form: "approve" is "allow" ("block" is read above).
         const decision = hso.permissionDecision ?? (j.decision === "approve" ? "allow" : undefined);
-        if (decision === "deny") res.block ??= String(hso.permissionDecisionReason ?? "a hook denied this call");
-        else if (decision === "ask") res.ask ??= String(hso.permissionDecisionReason ?? "a hook asks the owner about this call");
-        else if (decision === "allow") res.allow ??= String(hso.permissionDecisionReason ?? j.reason ?? "");
+        const mine: (typeof said)[number] = {};
+        if (decision === "deny") res.block ??= hookSaid(hso.permissionDecisionReason ?? "a hook denied this call");
+        else if (decision === "ask") res.ask ??= hookSaid(hso.permissionDecisionReason ?? "a hook asks the owner about this call");
+        else if (decision === "allow") mine.allow = hookSaid(hso.permissionDecisionReason ?? j.reason ?? "");
         // A changed input replaces the whole input. One that is not an object cannot be judged: the call does not run.
         if (hso.updatedInput !== undefined && decision !== "deny") {
-          if (hso.updatedInput && typeof hso.updatedInput === "object" && !Array.isArray(hso.updatedInput)) res.input ??= hso.updatedInput;
+          if (hso.updatedInput && typeof hso.updatedInput === "object" && !Array.isArray(hso.updatedInput)) mine.input = hso.updatedInput;
           else res.block ??= "a hook answered an input for this call that is not an object";
         }
+        said.push(mine);
       }
       if (event === "PermissionRequest") {
         const d = hso.decision ?? {};
-        if (d.behavior === "deny") res.block ??= String(d.message ?? "a hook denied this request");
+        if (d.behavior === "deny") res.block ??= hookSaid(d.message ?? "a hook denied this request");
         // An allow that also changes the input or the standing rules is not taken: the owner gets the card.
         else if (d.behavior === "allow" && d.updatedInput === undefined && d.updatedPermissions === undefined) res.allow ??= "";
       }
       if (can.context) {
-        if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) res.context.push(hso.additionalContext.trim().slice(0, 10_000));
-        if (typeof j.systemMessage === "string" && j.systemMessage.trim()) res.context.push(j.systemMessage.trim().slice(0, 10_000));
+        if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) res.context.push(hookSaid(hso.additionalContext.trim()));
+        if (typeof j.systemMessage === "string" && j.systemMessage.trim()) res.context.push(hookSaid(j.systemMessage.trim()));
       }
     }
+    // The first hook in file order that changed the input wins. An allow is
+    // for the input its hook saw or wrote: with a changed input, only the
+    // allow of the hook whose input won counts; another hook's allow was for
+    // the call as the model wrote it.
+    const won = said.find((x) => x.input !== undefined);
+    if (won) res.input = won.input;
+    const allow = won ? won.allow : said.find((x) => x.allow !== undefined)?.allow;
+    if (allow !== undefined) res.allow = allow;
     // Between hooks: a block beats an ask, and an ask beats an allow; a hook that ends the session's work beats one that sends it back.
     if (res.block || res.ask) delete res.allow;
     if (stop !== undefined) delete res.continueWith;
@@ -513,10 +556,15 @@ export class Hooks {
   }
 }
 
+// What is kept of a hook's stdout, of its stderr and of an http hook's answer: a hook that says more has failed or is cut there.
+const OUT_MAX = 1_000_000;
+
 type Out = { code: number | null; stdout: string; stderr: string };
 
-async function runHook(h: Extract<Handler, { type: "command" }>, input: string, cwd: string, ms: number): Promise<Out> {
-  const root = projectRoot(cwd);
+async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number): Promise<Out> {
+  const root = projectRoot(folder);
+  // A session whose folder is gone, or is on another machine, still runs its hooks (one that denies must still deny): in the home folder.
+  const cwd = existsSync(folder) ? folder : homedir();
   // With `args` the program runs as given, no shell: each argument is one word, and the project folder's placeholders are filled in.
   const place = (x: string) => x.replace(/\$\{(?:KEEL|CLAUDE)_PROJECT_DIR\}/g, root);
   const argv = h.args ? [place(h.command), ...h.args.map(place)] : ["bash", "-c", h.command];
@@ -528,7 +576,12 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   }
   let timedOut = false;
   const t = setTimeout(() => { timedOut = true; try { process.kill(-p.pid, "SIGKILL"); } catch {} }, ms);
-  const read = (s: ReadableStream<Uint8Array> | number | undefined) => readText(s, "hook").catch(() => "");
+  // Read to the end, kept to a bound: a hook that prints without end fills no memory.
+  const read = async (s: ReadableStream<Uint8Array> | number | undefined) => {
+    let out = "";
+    await pumpText(s, (t) => { if (out.length < OUT_MAX) out += t.slice(0, OUT_MAX - out.length); }, "hook").catch(() => {});
+    return out;
+  };
   const [stdout, stderr, code] = await Promise.all([read(p.stdout), read(p.stderr), p.exited]);
   clearTimeout(t);
   return { code: timedOut ? null : code, stdout, stderr };
@@ -546,8 +599,16 @@ async function runHttp(h: Extract<Handler, { type: "http" }>, input: string, ms:
   for (const [k, v] of Object.entries(h.headers ?? {})) headers[k] = fill(v);
   try {
     const r = await fetch(h.url, { method: "POST", headers, body: input, signal: AbortSignal.timeout(ms), redirect: "error" });
-    const text = (await r.text()).trim();
-    if (!r.ok) return { code: 1, stdout: "", stderr: `the hook's server answered ${r.status}` };
+    if (!r.ok) { await r.body?.cancel().catch(() => {}); return { code: 1, stdout: "", stderr: `the hook's server answered ${r.status}` }; }
+    // The answer is read to a bound and no further (leaving the loop cancels the stream).
+    let size = 0;
+    const parts: Uint8Array[] = [];
+    if (r.body) for await (const chunk of chunks(r.body)) {
+      size += chunk.byteLength;
+      if (size > OUT_MAX) return { code: 1, stdout: "", stderr: `the hook's server answered more than ${OUT_MAX} bytes` };
+      parts.push(chunk);
+    }
+    const text = Buffer.concat(parts).toString("utf8").trim();
     if (!text) return { code: 0, stdout: "", stderr: "" };
     let j: unknown;
     try { j = JSON.parse(text); } catch {}
@@ -578,10 +639,11 @@ async function runMcp(h: Extract<Handler, { type: "mcp_tool" }>, data: Record<st
   if (!hookMcp.call) return { code: 1, stdout: "", stderr: "no MCP servers here" };
   try {
     const r = await hookMcp.call(h.server, h.tool, fillInput(h.input ?? {}, data), ms);
-    return r.error ? { code: 1, stdout: "", stderr: r.text } : { code: 0, stdout: r.text, stderr: "" };
+    return r.error ? { code: 1, stdout: "", stderr: r.text.slice(0, OUT_MAX) } : { code: 0, stdout: r.text.slice(0, OUT_MAX), stderr: "" };
   } catch (e) {
     return { code: (e as Error).name === "TimeoutError" ? null : 1, stdout: "", stderr: (e as Error).message };
   }
 }
 
-export const hookContext = (event: string, lines: string[]) => `<hook event="${event}">\n${lines.join("\n\n")}\n</hook>`;
+// A hook's words for the model, in a frame they cannot close (each line went through hookSaid; said again here for a caller's own line).
+export const hookContext = (event: string, lines: string[]) => `<hook event="${event.replace(/[^\w, ]/g, "")}">\n${lines.map((l) => hookSaid(l)).join("\n\n")}\n</hook>`;
