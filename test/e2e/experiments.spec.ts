@@ -72,6 +72,9 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await page.reload();
   await expect(detail.getByTestId("experiment-sessions")).toContainText("effort");
   await expect(detail.getByTestId("experiment-report")).toContainText("n=");
+  // The counts are of session families (a session with its subagents), and say so.
+  await expect(detail.getByTestId("experiment-report")).toContainText(/n=\d+, \d+ famil/);
+  await expect(panel.getByTestId("experiment-item").filter({ hasText: `Effort ${tag}` })).toContainText(`${made.length} families`);
   await expect(detail.getByTestId("experiment-guards")).toContainText(`${made.length} session families read, each once, 3 s after it started`);
   // The default alpha: the guards stop at 20.
   await expect(detail.getByTestId("guard-threshold")).toHaveText("20");

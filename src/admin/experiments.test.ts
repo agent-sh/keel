@@ -98,13 +98,16 @@ test("a session family is one randomized sample, whatever its subagents ran", ()
     store.db.exec("UPDATE experiment_sessions SET root = NULL");
     ({ store, x } = d.open());
     expect(armOf(store, subsub)!.root).toBe(top);
+    // Every assignment has its key after that, and a family's sessions are found by it.
+    expect(store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM experiment_sessions WHERE root IS NULL").get()!.n).toBe(0);
+    expect(store.db.query<{ detail: string }, [string, string]>("EXPLAIN QUERY PLAN SELECT session_id FROM experiment_sessions WHERE exp_id = ? AND root = ?").all(e.id, top).map((r) => r.detail).join(" ")).toContain("experiment_sessions_root");
     expect(seen()).toEqual({ turns: 4, families: 1, counted: 1, guard: [2, 1] });
 
     // A second family in the low arm meets the cap.
     const second = root(store, x, e, "low");
     turn(store, second);
     x.check(second);
-    expect(x.get(e.id)).toMatchObject({ state: "stopped", stop_reason: "reached 2 sessions per arm" });
+    expect(x.get(e.id)).toMatchObject({ state: "stopped", stop_reason: "reached 2 session families per arm" });
   } finally { d.close(); }
 });
 
@@ -435,7 +438,7 @@ test("the sessions per arm cap is over the arms that get sessions; a live contro
     expect(x.get(e.id)!.state).toBe("running"); // the variant has one family with a turn
     turn(store, last);
     x.check(last);
-    expect(x.get(e.id)).toMatchObject({ state: "stopped", stop_reason: "reached 2 sessions per arm" });
+    expect(x.get(e.id)).toMatchObject({ state: "stopped", stop_reason: "reached 2 session families per arm" });
     // The shelved arm got nothing and is tested against nothing.
     const r = x.report(x.get(e.id)!);
     expect(r.arms.map((a) => [a.arm, a.clusters])).toEqual([["current", 2], ["variant", 2], ["shelved", 0]]);

@@ -5,8 +5,9 @@
 //   tokens are skewed and n is small; the percentile bootstrap under-covers
 //   there, BCa corrects for bias and skew from the data (Efron 1987).
 // - Units are resampled in clusters within strata: a live experiment
-//   randomizes sessions, so a session's turns move together (cluster = the
-//   session); an offline run keeps its task mix fixed (stratum = the task).
+//   randomizes session families (a top-level session with its subagents),
+//   so a family's turns move together (cluster = the family); an offline
+//   run keeps its task mix fixed (stratum = the task).
 // - Live guards: a test martingale that bets on each new observation's arm
 //   label (labelBet). Under "the arm changes nothing" the label is a coin
 //   flip that no outcome predicts, so the bet is fair whatever the metric's

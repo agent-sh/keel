@@ -11,8 +11,9 @@
 // top-level session that drew the arm (the root) with every subagent session
 // under it. Subagents take the root's arm and its family key, so their turns
 // count in the report, but the family is one independent sample: intervals
-// resample families, guards read one value per family, and the sessions per
-// arm cap counts families. The key is stored with the assignment.
+// resample families, guards read one value per family, and the cap
+// (`stop.sessions_per_arm`) counts families per arm. The key is stored with
+// the assignment.
 //
 // Live guards stop the experiment on sequential evidence that is valid at
 // every look:
@@ -49,7 +50,7 @@
 // whole batch it came in.
 //
 // A stop is final. The report the decision was read from is stored with it
-// (the counts, the intervals, the guards, the sessions per arm), and a
+// (the counts, the intervals, the guards, the families per arm), and a
 // stopped experiment is read from that copy: a turn that started before the
 // stop and ended after it, a rating changed later or a late upload does not
 // revise what was decided.
@@ -128,22 +129,29 @@ export function experimentTables(store: Store) {
   if (!store.columnExists("experiment_sessions", "root")) db.exec("ALTER TABLE experiment_sessions ADD COLUMN root TEXT");
   if (!store.columnExists("experiment_runs", "receipt")) db.exec("ALTER TABLE experiment_runs ADD COLUMN receipt TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS experiment_runs_receipt ON experiment_runs(exp_id, receipt) WHERE receipt IS NOT NULL");
-  // Assignments from before the family key: the root is the highest ancestor in the same experiment.
+  // A family's sessions are read by its key (its turns, at every look).
+  db.exec("CREATE INDEX IF NOT EXISTS experiment_sessions_root ON experiment_sessions(exp_id, root)");
+  // Assignments from before the family key: the root is the highest ancestor
+  // in the same experiment. All of them or none, so every row has a key once
+  // this has run and no reader has to allow for a missing one.
   const old = db.query<{ session_id: string; exp_id: string }, []>("SELECT session_id, exp_id FROM experiment_sessions WHERE root IS NULL").all();
   if (!old.length) return;
   const inExp = db.query<{ exp_id: string }, [string]>("SELECT exp_id FROM experiment_sessions WHERE session_id = ?");
   const parent = store.columnExists("sessions", "parent_id") ? db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?") : null;
-  for (const r of old) {
-    let root = r.session_id;
-    for (let up = parent?.get(root)?.parent_id; up && inExp.get(up)?.exp_id === r.exp_id; up = parent?.get(up)?.parent_id) root = up;
-    db.query("UPDATE experiment_sessions SET root = ? WHERE session_id = ?").run(root, r.session_id);
-  }
+  const set = db.query("UPDATE experiment_sessions SET root = ? WHERE session_id = ?");
+  db.transaction(() => {
+    for (const r of old) {
+      let root = r.session_id;
+      for (let up = parent?.get(root)?.parent_id; up && inExp.get(up)?.exp_id === r.exp_id; up = parent?.get(up)?.parent_id) root = up;
+      set.run(root, r.session_id);
+    }
+  })();
 }
 
 // The arm a session runs in, for tagging rows: null when it is in none.
 // `root` is its family: the top-level session that drew the arm.
 export function armOf(store: Store, sessionId: string): { exp_id: string; arm: string; root: string } | null {
-  return store.db.query<{ exp_id: string; arm: string; root: string }, [string]>("SELECT exp_id, arm, COALESCE(root, session_id) AS root FROM experiment_sessions WHERE session_id = ?").get(sessionId) ?? null;
+  return store.db.query<{ exp_id: string; arm: string; root: string }, [string]>("SELECT exp_id, arm, root FROM experiment_sessions WHERE session_id = ?").get(sessionId) ?? null;
 }
 
 const READERS = ["AskReaders", "ask_readers"];
@@ -223,7 +231,7 @@ export function validate(e: Partial<Experiment>): void {
   const w = e.stop?.window_min;
   if (w !== undefined && !(typeof w === "number" && w > 0 && Number.isFinite(w))) throw bad("window_min, the minutes a family's guard observation is read over, is above 0");
   const n = e.stop?.sessions_per_arm;
-  if (n !== undefined && n !== null && !(Number.isInteger(n) && n >= 2)) throw bad("sessions_per_arm is a whole number of 2 or more, or null");
+  if (n !== undefined && n !== null && !(Number.isInteger(n) && n >= 2)) throw bad("sessions_per_arm, the session families per arm, is a whole number of 2 or more, or null");
 }
 
 // A guard's or primary's verdict by its direction: is the change good or bad.
@@ -583,7 +591,7 @@ export class Experiments {
     // Turns of the experiment's sessions while it ran, each in its family's
     // cluster and arm (the assignment, not the row's own tag).
     return this.store.db.query<any, [string, number, number]>(
-      `SELECT t.*, x.arm AS family_arm, COALESCE(x.root, x.session_id) AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND t.ts <= ?`).all(e.id, e.started_ms ?? 0, until)
+      `SELECT t.*, x.arm AS family_arm, x.root AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND t.ts <= ?`).all(e.id, e.started_ms ?? 0, until)
       .map((t) => ({ arm: t.family_arm, cluster: t.family, m: turnMetrics(t) }));
   }
 
@@ -603,12 +611,12 @@ export class Experiments {
     if (e.mode !== "live" || e.state !== "running") return;
     const db = this.store.db, window = (e.stop.window_min ?? WINDOW_MIN) * 60_000;
     const due = db.query<{ root: string; arm: string; ts: number }, [string, number, number]>(
-      `SELECT x.session_id AS root, x.arm, x.ts FROM experiment_sessions x WHERE x.exp_id = ? AND COALESCE(x.root, x.session_id) = x.session_id AND x.ts + ? <= ?
+      `SELECT x.session_id AS root, x.arm, x.ts FROM experiment_sessions x WHERE x.exp_id = ? AND x.root = x.session_id AND x.ts + ? <= ?
        AND NOT EXISTS (SELECT 1 FROM experiment_obs o WHERE o.exp_id = x.exp_id AND o.root = x.session_id) ORDER BY x.ts, x.session_id`).all(e.id, window, now);
     for (const f of due) {
       const turns = db.query<any, [string, string, number, number]>(
         `SELECT t.* FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id
-         WHERE x.exp_id = ? AND COALESCE(x.root, x.session_id) = ? AND t.ts >= ? AND t.ts + COALESCE(t.ms, 0) <= ?`).all(e.id, f.root, e.started_ms ?? 0, f.ts + window).map(turnMetrics);
+         WHERE x.exp_id = ? AND x.root = ? AND t.ts >= ? AND t.ts + COALESCE(t.ms, 0) <= ?`).all(e.id, f.root, e.started_ms ?? 0, f.ts + window).map(turnMetrics);
       const m: Partial<Record<Metric, number>> = {};
       for (const k of Object.keys(METRICS) as Metric[]) {
         const vs = turns.map((t) => t[k]).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
@@ -624,19 +632,19 @@ export class Experiments {
     const db = this.store.db;
     const obs = db.query<{ arm: string; metrics: string }, [string]>("SELECT arm, metrics FROM experiment_obs WHERE exp_id = ? AND turns > 0 ORDER BY seq").all(e.id).map((r) => ({ arm: r.arm, m: JSON.parse(r.metrics) }));
     const pending = db.query<{ n: number }, [string]>(
-      `SELECT COUNT(*) AS n FROM experiment_sessions x WHERE x.exp_id = ? AND COALESCE(x.root, x.session_id) = x.session_id
+      `SELECT COUNT(*) AS n FROM experiment_sessions x WHERE x.exp_id = ? AND x.root = x.session_id
        AND NOT EXISTS (SELECT 1 FROM experiment_obs o WHERE o.exp_id = x.exp_id AND o.root = x.session_id)`).get(e.id)!.n;
     return { obs, pending };
   }
 
   // Session families per arm: a root with its subagents is one.
   sessions(e: Experiment) {
-    return this.store.db.query<{ arm: string; n: number }, [string]>("SELECT arm, COUNT(DISTINCT COALESCE(root, session_id)) AS n FROM experiment_sessions WHERE exp_id = ? GROUP BY arm").all(e.id);
+    return this.store.db.query<{ arm: string; n: number }, [string]>("SELECT arm, COUNT(DISTINCT root) AS n FROM experiment_sessions WHERE exp_id = ? GROUP BY arm").all(e.id);
   }
 
   // After a turn ends while a live experiment runs (a turn of any session:
   // a window can close while the experiment's own sessions are quiet): the
-  // guards' evidence stops it; so does reaching the sessions per arm it asked
+  // guards' evidence stops it; so does reaching the families per arm it asked
   // for, in every arm that gets sessions (session families with a turn, so
   // a subagent adds none).
   check(sessionId: string, now = Date.now()) {
@@ -651,7 +659,7 @@ export class Experiments {
     const rows = this.rows(e, now);
     // An arm with weight 0 gets no sessions, so the cap is over the arms that do.
     const enabled = e.arms.filter((a) => (a.weight ?? 1) > 0);
-    if (enabled.every((a) => new Set(rows.filter((r) => r.arm === a.name).map((r) => r.cluster)).size >= n)) return this.stop(e.id, `reached ${n} sessions per arm`);
+    if (enabled.every((a) => new Set(rows.filter((r) => r.arm === a.name).map((r) => r.cluster)).size >= n)) return this.stop(e.id, `reached ${n} session families per arm`);
   }
 }
 

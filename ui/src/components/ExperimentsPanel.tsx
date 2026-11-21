@@ -109,7 +109,7 @@ export function ExperimentsPanel() {
             <button key={e.id} type="button" onClick={() => setOpen(e.id)} data-testid="experiment-item"
               className={cn("flex flex-col gap-1 rounded-md border px-3 py-2 text-left", current?.id === e.id ? "border-line-strong bg-raised shadow-1" : "border-transparent hover:bg-hover")}>
               <span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-ui font-medium">{e.name}</span><StateChip e={e} /></span>
-              <span className="text-caption text-faint">{e.mode} · {e.mode === "live" ? `${e.sessions.reduce((n, s) => n + s.n, 0)} sessions` : `${e.runs} runs`} · {ago(e.started_ms ?? e.created_ms)}</span>
+              <span className="text-caption text-faint">{e.mode} · {e.mode === "live" ? `${e.sessions.reduce((n, s) => n + s.n, 0)} families` : `${e.runs} runs`} · {ago(e.started_ms ?? e.created_ms)}</span>
             </button>
           ))}
         </nav>
@@ -198,7 +198,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
         <dl className="mt-3 grid grid-cols-[9rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-caption">
           <dt className="text-faint">Judged by</dt><dd>{metrics[e.primary]?.label} ({metrics[e.primary]?.better} is better)</dd>
           <dt className="text-faint">Guards</dt><dd>{e.guards.length ? e.guards.map((g) => `${metrics[g.metric]?.label} may not get worse by ${g.relative ? `${Math.round(g.mde * 100)}%` : metrics[g.metric]!.unit === "share" ? `${Math.round(g.mde * 100)} points` : fmtMetric(metrics[g.metric]!.unit, g.mde)}`).join("; ") : "none"}</dd>
-          <dt className="text-faint">Stop rule</dt><dd>{e.mode === "live" ? `a guard regression (sequential evidence, at most ${Number((alpha * 100).toFixed(2))}% false stops over all guards, arms and looks)${e.stop.sessions_per_arm ? `, or ${e.stop.sessions_per_arm} sessions per arm` : ", or the owner"}` : `${e.stop.reps ?? 3} repetitions per task and arm`}</dd>
+          <dt className="text-faint">Stop rule</dt><dd>{e.mode === "live" ? `a guard regression (sequential evidence, at most ${Number((alpha * 100).toFixed(2))}% false stops over all guards, arms and looks)${e.stop.sessions_per_arm ? `, or ${e.stop.sessions_per_arm} session families per arm` : ", or the owner"}` : `${e.stop.reps ?? 3} repetitions per task and arm`}</dd>
           {e.mode === "offline" && <><dt className="text-faint">Run it</dt><dd><code className="block w-fit max-w-full select-all break-all rounded-sm bg-sunken px-1.5 py-0.5 font-mono text-micro" data-testid="experiment-command">{runCmd}</code></dd></>}
           {e.stop_reason && <><dt className="text-faint">Stopped</dt><dd data-testid="experiment-stop-reason">{e.stop_reason}{e.stopped_ms ? `, ${ago(e.stopped_ms)}` : ""}</dd></>}
         </dl>
@@ -212,7 +212,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
             <thead>
               <tr className="border-b border-line text-caption text-faint">
                 <th className="px-4 py-1.5 text-left font-normal">Metric</th>
-                {r.arms.map((a) => <th key={a.arm} className="px-4 py-1.5 text-right font-normal">{a.arm} <span className="text-faint">n={a.units}{e.mode === "live" ? `, ${a.clusters} sessions` : ""}</span></th>)}
+                {r.arms.map((a) => <th key={a.arm} className="px-4 py-1.5 text-right font-normal">{a.arm} <span className="text-faint">n={a.units}{e.mode === "live" ? `, ${a.clusters} ${a.clusters === 1 ? "family" : "families"}` : ""}</span></th>)}
                 {e.arms.slice(1).map((a) => <th key={a.name} className="px-4 py-1.5 text-right font-normal">{a.name} minus {control}</th>)}
               </tr>
             </thead>
@@ -257,7 +257,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
         )}
       </Panel>
       {e.mode === "live" && (
-        <Panel title="Sessions by arm" hint="a new top-level session draws its arm at its first turn; its subagents share the arm and count with it as one family">
+        <Panel title="Session families by arm" hint="a new top-level session draws its arm at its first turn; its subagents share the arm and count with it as one family">
           <div className="flex flex-wrap gap-6 text-ui" data-testid="experiment-sessions">
             {e.arms.map((a) => (
               <div key={a.name} className="flex flex-col">
