@@ -8,7 +8,9 @@
 // DELETE /api/experiments/:id             a draft or a stopped one
 // POST   /api/experiments/:id/start       live: new sessions get arms from now on
 // POST   /api/experiments/:id/stop        ends it and records the decision with its report
-// POST   /api/experiments/:id/runs        { runs: [{ arm, task, rep, metrics }] } from the offline runner
+// POST   /api/experiments/:id/runs        { runs: [{ receipt, arm, task, rep, metrics }] } from the offline runner:
+//                                         201 { added, duplicates }, 200 when every run was already there,
+//                                         409 for a receipt uploaded before with another payload
 // GET    /api/features?period=|since_ms&until_ms   each feature's turns, savings, trend, regression state
 // POST   /api/features/check              the regression check now (it also runs hourly)
 // POST   /api/features/rating             { event_id, value: 1 | -1 | 0 }
@@ -41,8 +43,8 @@ export const experimentRoutes: RouteModule = ({ store, errors }) => {
   g.__keelRegressionTimer = setInterval(() => { try { o.regressions(); } catch (e) { errors.capture("server", e, { at: "regression check" }); } }, HOUR);
   g.__keelRegressionTimer.unref?.();
 
-  const run = async (f: () => unknown | Promise<unknown>, status = 200) => {
-    try { return json(await f(), status); } catch (e: any) {
+  const run = async <T>(f: () => T | Promise<T>, status: number | ((v: T) => number) = 200) => {
+    try { const v = await f(); return json(v, typeof status === "function" ? status(v) : status); } catch (e: any) {
       if (e?.status) return json({ error: e.message }, e.status);
       errors.capture("server", e, { at: "experiments" });
       return json({ error: String(e?.message ?? e) }, 500);
@@ -72,8 +74,8 @@ export const experimentRoutes: RouteModule = ({ store, errors }) => {
       POST: async (req: P) => run(async () => {
         const b = await body(req);
         if (!Array.isArray(b.runs)) throw Object.assign(new Error("runs is a list"), { status: 400 });
-        return { added: x.addRuns(req.params.id, b.runs) };
-      }, 201),
+        return x.addRuns(req.params.id, b.runs);
+      }, (r) => (r.added ? 201 : 200)),
     },
     "/api/features": {
       GET: (req: Request) => run(() => {

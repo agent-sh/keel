@@ -97,13 +97,19 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   // Offline: the runner uploads one row per run; the report judges them.
   const off = (await (await request.post("/api/experiments", { data: { template: "readers", name: `Readers ${tag}` } })).json()).experiment;
   await request.post(`/api/experiments/${off.id}/start`);
-  const runs = [];
+  const runs: { receipt: string; arm: string; task: string; rep: number; metrics: Record<string, number> }[] = [];
   for (const task of ["readlog", "readspec", "readcode"]) for (let rep = 1; rep <= 3; rep++) {
     const base = { readlog: 0.006, readspec: 0.004, readcode: 0.005 }[task]! + rep * 0.0001;
-    runs.push({ arm: "readers on", task, rep, metrics: { cost_usd: base * 0.7, ok: 1, prompt_tokens: 40_000 + rep * 300, ms: 14_000 + rep * 200 } });
-    runs.push({ arm: "readers off", task, rep, metrics: { cost_usd: base, ok: 1, prompt_tokens: 66_000 + rep * 300, ms: 13_000 + rep * 200 } });
+    runs.push({ receipt: `${tag}:${task}:${rep}:on`, arm: "readers on", task, rep, metrics: { cost_usd: base * 0.7, ok: 1, prompt_tokens: 40_000 + rep * 300, ms: 14_000 + rep * 200 } });
+    runs.push({ receipt: `${tag}:${task}:${rep}:off`, arm: "readers off", task, rep, metrics: { cost_usd: base, ok: 1, prompt_tokens: 66_000 + rep * 300, ms: 13_000 + rep * 200 } });
   }
   expect((await request.post(`/api/experiments/${off.id}/runs`, { data: { runs } })).status()).toBe(201);
+  // The runner sends a batch again when its answer was lost: every run still counts once.
+  const resent = await request.post(`/api/experiments/${off.id}/runs`, { data: { runs } });
+  expect([resent.status(), await resent.json()]).toEqual([200, { added: 0, duplicates: runs.length }]);
+  // A receipt that comes back with another payload is refused.
+  expect((await request.post(`/api/experiments/${off.id}/runs`, { data: { runs: [{ ...runs[0], metrics: { ...runs[0]!.metrics, ok: 0 } }] } })).status()).toBe(409);
+  expect((await (await request.get(`/api/experiments/${off.id}`)).json()).experiment.runs).toBe(runs.length);
   await request.post(`/api/experiments/${off.id}/stop`, { data: { reason: "the offline run finished" } });
   await page.reload();
   await panel.getByTestId("experiment-item").filter({ hasText: `Readers ${tag}` }).click();

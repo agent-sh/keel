@@ -42,6 +42,12 @@
 // Offline guards are read once over the uploaded runs (mSPRT, each test at
 // alpha): the run set is fixed in advance, so no look is repeated.
 //
+// An offline run is uploaded under a receipt, a name the runner gives it
+// once and keeps on disk. Uploading a receipt again with the same payload
+// adds nothing and is acknowledged (the first answer may have been lost on
+// the way); the same receipt with another payload is refused, and so is the
+// whole batch it came in.
+//
 // A stop is final. The report the decision was read from is stored with it
 // (the counts, the intervals, the guards, the sessions per arm), and a
 // stopped experiment is read from that copy: a turn that started before the
@@ -97,6 +103,8 @@ export type Guard = { metric: Metric; mde: number; relative?: boolean };
 export type Stop = { sessions_per_arm?: number | null; alpha?: number; window_min?: number; reps?: number; tasks?: string[]; model?: string };
 export const WINDOW_MIN = 24 * 60;
 export type Decision = { winner: string | null; verdict: "won" | "inconclusive" | "regression"; text: string; remove: string; ts: number };
+export type RunUpload = { receipt: string; arm: string; task?: string; rep?: number; metrics: Record<string, number> };
+const sorted = (m: Record<string, number>) => Object.fromEntries(Object.entries(m).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 export type Experiment = {
   id: string; name: string; hypothesis: string; mode: "offline" | "live"; template?: string;
   arms: Arm[]; primary: Metric; guards: Guard[]; stop: Stop;
@@ -116,6 +124,8 @@ export function experimentTables(store: Store) {
   store.migrate(SCHEMA);
   const db = store.db;
   if (!store.columnExists("experiment_sessions", "root")) db.exec("ALTER TABLE experiment_sessions ADD COLUMN root TEXT");
+  if (!store.columnExists("experiment_runs", "receipt")) db.exec("ALTER TABLE experiment_runs ADD COLUMN receipt TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS experiment_runs_receipt ON experiment_runs(exp_id, receipt) WHERE receipt IS NOT NULL");
   // Assignments from before the family key: the root is the highest ancestor in the same experiment.
   const old = db.query<{ session_id: string; exp_id: string }, []>("SELECT session_id, exp_id FROM experiment_sessions WHERE root IS NULL").all();
   if (!old.length) return;
@@ -490,17 +500,36 @@ export class Experiments {
     if (arm.settings && Object.keys(arm.settings).length) this.store.mergeSettings(s.id, arm.settings);
   }
 
-  addRuns(id: string, runs: { arm: string; task?: string; rep?: number; metrics: Record<string, number> }[]) {
+  // Offline runs from the runner, each under its receipt. Returns how many
+  // were new and how many the experiment already had. A stopped experiment
+  // still acknowledges what it has; anything new for it is refused.
+  addRuns(id: string, runs: RunUpload[]): { added: number; duplicates: number } {
     const e = this.must(id);
-    if (e.state !== "running") throw Object.assign(new Error(e.state === "stopped" ? "it is stopped: its report is final" : "it is a draft: start it first"), { status: 409 });
     const names = new Set(e.arms.map((a) => a.name));
     for (const r of runs) {
+      if (typeof r?.receipt !== "string" || !r.receipt.trim()) throw bad("a run has a receipt: the name it is uploaded under, the same at every attempt");
       if (!names.has(r.arm)) throw bad(`no arm ${r.arm}`);
-      if (!r.metrics || typeof r.metrics !== "object") throw bad("a run has metrics");
+      if (!r.metrics || typeof r.metrics !== "object" || Object.values(r.metrics).some((v) => typeof v !== "number" || !Number.isFinite(v))) throw bad("a run has metrics, each a number; one that could not be measured is left out");
     }
-    const q = this.store.db.query("INSERT INTO experiment_runs (exp_id, arm, task, rep, ts, metrics) VALUES (?, ?, ?, ?, ?, ?)");
-    this.store.db.transaction(() => { for (const r of runs) q.run(id, r.arm, r.task ?? null, r.rep ?? null, Date.now(), JSON.stringify(r.metrics)); })();
-    return runs.length;
+    const db = this.store.db;
+    const had = db.query<{ arm: string; task: string | null; rep: number | null; metrics: string }, [string, string]>("SELECT arm, task, rep, metrics FROM experiment_runs WHERE exp_id = ? AND receipt = ?");
+    const add = db.query("INSERT INTO experiment_runs (exp_id, arm, task, rep, ts, metrics, receipt) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    return db.transaction(() => {
+      let added = 0, duplicates = 0;
+      for (const r of runs) {
+        const payload = { arm: r.arm, task: r.task ?? null, rep: r.rep ?? null, metrics: sorted(r.metrics) };
+        const old = had.get(id, r.receipt);
+        if (old) {
+          if (JSON.stringify({ ...old, metrics: sorted(JSON.parse(old.metrics)) }) !== JSON.stringify(payload)) throw Object.assign(new Error(`receipt ${r.receipt} was uploaded before with another payload`), { status: 409 });
+          duplicates++;
+          continue;
+        }
+        if (e.state !== "running") throw Object.assign(new Error(e.state === "stopped" ? "it is stopped: its report is final" : "it is a draft: start it first"), { status: 409 });
+        add.run(id, payload.arm, payload.task, payload.rep, Date.now(), JSON.stringify(payload.metrics), r.receipt);
+        added++;
+      }
+      return { added, duplicates };
+    })();
   }
 
   private freeze(e: Experiment, f: Final) {

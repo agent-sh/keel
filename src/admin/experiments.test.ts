@@ -9,6 +9,7 @@ import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
 import { armOf, Experiments, liveGuards, WINDOW_MIN, type Experiment, type Obs } from "./experiments.ts";
+import { Uploads } from "./offline.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { assignArm, rng } from "./stats.ts";
 import { Telemetry } from "./telemetry.ts";
@@ -35,7 +36,7 @@ function daemon() {
     };
     return { store, x: experiments!, o: outcomes!, call };
   };
-  return { open, close: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, open, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 // A look after every family made so far has closed its guard window.
@@ -162,12 +163,12 @@ test("a stopped experiment's report is frozen with its decision", async () => {
 
     // An offline run uploaded after the stop is refused, not counted.
     const off = (await call("POST", "/api/experiments", { template: "readers", name: "late upload" })).body.experiment as Experiment;
-    const run = { arm: "readers on", task: "readlog", rep: 1, metrics: { cost_usd: 0.01, ok: 1 } };
+    const run = { receipt: "late:1", arm: "readers on", task: "readlog", rep: 1, metrics: { cost_usd: 0.01, ok: 1 } };
     await call("POST", `/api/experiments/${off.id}/start`);
     expect((await call("POST", `/api/experiments/${off.id}/runs`, { runs: [run] })).status).toBe(201);
     await call("POST", `/api/experiments/${off.id}/stop`);
     const offFinal = (await call("GET", `/api/experiments/${off.id}`)).body;
-    expect((await call("POST", `/api/experiments/${off.id}/runs`, { runs: [{ ...run, rep: 2 }] })).status).toBe(409);
+    expect((await call("POST", `/api/experiments/${off.id}/runs`, { runs: [{ ...run, receipt: "late:2", rep: 2 }] })).status).toBe(409);
     expect((await call("GET", `/api/experiments/${off.id}`)).body).toEqual(offFinal);
     expect(offFinal.experiment.runs).toBe(1);
   } finally { d.close(); }
@@ -259,4 +260,95 @@ test("live guards keep the false-stop bound over every look and find a sustained
   expect(found.length / PLANTED).toBeGreaterThanOrEqual(0.95);
   expect(found.filter((x) => x.named.arm === "a" && x.named.metric === "error").length / found.length).toBeGreaterThanOrEqual(0.95);
   console.log(`live guards: ${falseStops}/${NULLS} null experiments stopped (bound ${ALPHA} + ${tolerance.toFixed(4)}); planted regression found in ${found.length}/${PLANTED}, median look ${found.map((x) => x.at).sort((a, b) => a - b)[found.length >> 1]} of ${FAMILIES}`);
+});
+
+test("an offline run uploaded twice is one observation; another payload under its receipt is refused", async () => {
+  const d = daemon();
+  try {
+    const { x, call } = d.open();
+    const e = (await call("POST", "/api/experiments", { template: "readers", name: "receipts" })).body.experiment as Experiment;
+    await call("POST", `/api/experiments/${e.id}/start`);
+    const path = `/api/experiments/${e.id}/runs`;
+    const a = { receipt: "run-a", arm: "readers on", task: "readlog", rep: 1, metrics: { cost_usd: 0.004, ok: 1 } };
+    const b = { receipt: "run-b", arm: "readers off", task: "readlog", rep: 1, metrics: { cost_usd: 0.006, ok: 1 } };
+    const runs = async () => (await call("GET", `/api/experiments/${e.id}`)).body;
+
+    expect(await call("POST", path, { runs: [a] })).toEqual({ status: 201, body: { added: 1, duplicates: 0 } });
+    // The answer was lost: the runner sends it again, with the next run and the keys in another order.
+    expect(await call("POST", path, { runs: [{ ...a, metrics: { ok: 1, cost_usd: 0.004 } }, b] })).toEqual({ status: 201, body: { added: 1, duplicates: 1 } });
+    expect(await call("POST", path, { runs: [a, b] })).toEqual({ status: 200, body: { added: 0, duplicates: 2 } });
+    expect((await runs()).experiment.runs).toBe(2);
+    expect((await runs()).report.arms.map((r: any) => r.units)).toEqual([1, 1]);
+
+    // The same receipt with another payload: refused, and nothing of its batch is kept.
+    const c = { receipt: "run-c", arm: "readers on", task: "readspec", rep: 1, metrics: { cost_usd: 0.005, ok: 1 } };
+    const clash = await call("POST", path, { runs: [c, { ...a, metrics: { cost_usd: 0.001, ok: 1 } }] });
+    expect(clash.status).toBe(409);
+    expect(clash.body.error).toContain("run-a");
+    expect((await runs()).experiment.runs).toBe(2);
+    // A run without a receipt, or with a metric that is not a number, is not an observation.
+    expect((await call("POST", path, { runs: [{ arm: "readers on", metrics: { ok: 1 } }] })).status).toBe(400);
+    expect((await call("POST", path, { runs: [{ ...c, metrics: { cost_usd: null, ok: 1 } }] })).status).toBe(400);
+
+    // After the stop the experiment still acknowledges what it has.
+    await call("POST", `/api/experiments/${e.id}/stop`);
+    expect(await call("POST", path, { runs: [a, b] })).toEqual({ status: 200, body: { added: 0, duplicates: 2 } });
+    expect((await call("POST", path, { runs: [a, c] })).status).toBe(409);
+    expect(x.runs(x.get(e.id)!)).toBe(2);
+  } finally { d.close(); }
+});
+
+test("the offline runner recovers a lost upload from its receipt file and stops the experiment only when every run is acknowledged", async () => {
+  const d = daemon();
+  try {
+    const { x, call } = d.open();
+    const e = (await call("POST", "/api/experiments", { template: "readers", name: "recover" })).body.experiment as Experiment;
+    await call("POST", `/api/experiments/${e.id}/start`);
+    // The runner's connection to the daemon: up, down, or the request arrives and its answer is lost.
+    let net: "up" | "down" | "lost" = "up";
+    const fetch = async (url: string, init?: RequestInit) => {
+      if (net === "down") throw new Error("connection refused");
+      const r = await call(init?.method ?? "GET", new URL(url).pathname, init?.body ? JSON.parse(String(init.body)) : undefined);
+      if (net === "lost") throw new Error("socket closed before the answer");
+      return Response.json(r.body, { status: r.status });
+    };
+    const file = join(d.dir, "receipts", "recover.json");
+    const up = Uploads.start(file, { daemon: "http://keel", experiment: e.id, label: "recover" }, fetch);
+    const run = (n: number, arm: string) => ({ receipt: `recover:readlog:${n}:${arm}`, arm, task: "readlog", rep: n, metrics: { cost_usd: arm === "readers on" ? 0.004 : 0.006, ok: 1 } });
+    const state = () => ({ state: x.get(e.id)!.state, runs: x.runs(x.get(e.id)!) });
+
+    // The first upload arrives and its answer is lost: the run is not acknowledged, the daemon has it once.
+    net = "lost";
+    up.add(run(1, "readers on"));
+    expect(await up.flush()).toBe(false);
+    expect([up.pending.length, state()]).toEqual([1, { state: "running", runs: 1 }]);
+    // The daemon goes down for the next run; the run ends: the experiment is not stopped.
+    net = "down";
+    up.add(run(1, "readers off"));
+    expect(await up.flush()).toBe(false);
+    expect(await up.finalize("the offline run finished")).toMatchObject({ finalized: false, pending: 2 });
+    expect(state()).toEqual({ state: "running", runs: 1 });
+
+    // Later, from the receipt file alone: both runs are sent, the daemon counts each once, and it stops.
+    net = "up";
+    const again = Uploads.open(file, fetch);
+    expect(again.pending.map((r) => r.receipt)).toEqual(["recover:readlog:1:readers on", "recover:readlog:1:readers off"]);
+    expect(await again.finalize("the offline run finished")).toEqual({ finalized: true, pending: 0, problem: "" });
+    expect(state()).toEqual({ state: "stopped", runs: 2 });
+    expect(x.get(e.id)!.stop_reason).toBe("the offline run finished");
+    // Resuming once more changes nothing.
+    expect(await Uploads.open(file, fetch).finalize("the offline run finished")).toMatchObject({ finalized: true });
+    expect(state()).toEqual({ state: "stopped", runs: 2 });
+
+    // A payload the daemon refuses (its receipt is taken by another payload) blocks the stop too.
+    const e2 = (await call("POST", "/api/experiments", { template: "readers", name: "clash" })).body.experiment as Experiment;
+    await call("POST", `/api/experiments/${e2.id}/start`);
+    await call("POST", `/api/experiments/${e2.id}/runs`, { runs: [{ ...run(1, "readers on"), metrics: { cost_usd: 1, ok: 0 } }] });
+    const clash = Uploads.start(join(d.dir, "receipts", "clash.json"), { daemon: "http://keel", experiment: e2.id, label: "clash" }, fetch);
+    clash.add(run(1, "readers on"));
+    const refused = await clash.finalize("the offline run finished");
+    expect(refused).toMatchObject({ finalized: false, pending: 1 });
+    expect(refused.problem).toContain("409");
+    expect(x.get(e2.id)!.state).toBe("running");
+  } finally { d.close(); }
 });

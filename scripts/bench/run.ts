@@ -13,13 +13,17 @@
 //   bun scripts/bench/run.ts --experiment readers --tasks readlog,readspec,readcode --reps 3 --model ID
 //     (an experiment: a template id, a JSON file, or --daemon URL --experiment ID; the arms run
 //      interleaved per task and repetition, the report has per-arm intervals and the effect;
-//      --daemon also uploads each run to that daemon's experiment)
+//      --daemon also uploads each run to that daemon's experiment, under a receipt kept in
+//      $KEEL_BENCH_DIR/receipts, and stops the experiment there once every run is acknowledged)
+//   bun scripts/bench/run.ts --resume FILE   (a receipt file whose runs the daemon did not all
+//      acknowledge: sends them again, each counted once, then stops the experiment)
 //
 // Results go to $KEEL_BENCH_DIR (default ~/.cache/keel-work/bun/tokens): never into the repo.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
+import { Uploads } from "../../src/admin/offline.ts";
 import { TASKS } from "./tasks.ts";
 
 const OUT = process.env.KEEL_BENCH_DIR ?? join(homedir(), ".cache/keel-work/bun/tokens");
@@ -295,12 +299,15 @@ async function experiment(opts: { spec: string; daemon?: string; model?: string;
   if (!tasks.length) throw new Error("name the tasks (--tasks) or put them in the experiment's stop.tasks");
   const label = `exp-${e.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
   const rows: Row[] = [];
+  // Every run is kept in a local receipt file before it is sent; a failed upload is sent again with the next one.
+  const receipts = join(OUT, "receipts", `${label}.json`);
+  const up = daemon ? Uploads.start(receipts, { daemon, experiment: e.id, label }) : null;
   await bench({ model, label, reps: opts.reps ?? e.stop.reps ?? 3, tasks, without: [], arms: e.arms,
     onRow: async (r) => {
       rows.push(r);
-      if (!daemon) return;
-      const res = await fetch(`${daemon}/api/experiments/${e.id}/runs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runs: [{ arm: r.arm, task: r.task, rep: r.rep, metrics: runMetrics(r) }] }) });
-      if (!res.ok) console.error(`upload failed: ${res.status} ${await res.text()}`);
+      if (!up) return;
+      up.add({ receipt: `${label}:${r.task}:${r.rep}:${r.arm}`, arm: r.arm!, task: r.task, rep: r.rep, metrics: runMetrics(r) });
+      if (!(await up.flush())) console.error(`upload not acknowledged, ${up.pending.length} pending in ${receipts}: ${up.problem}`);
     } });
   const rep = ex.report(e, rows.map((r, i) => ({ arm: r.arm!, cluster: `run-${i}`, stratum: r.task, m: runMetrics(r) })));
   console.log(`\n${e.name}: ${e.hypothesis}\nmodel ${model}, tasks ${tasks.join(", ")}, unit: ${rep.unit}. Means with 95% BCa bootstrap intervals; effects are arm minus ${e.arms[0]!.name}.\n`);
@@ -322,20 +329,29 @@ async function experiment(opts: { spec: string; daemon?: string; model?: string;
   }
   console.log(`\nGuards: ${rep.guards.map((g) => `${g.arm} ${g.metric}: likelihood ratio ${g.lr.toFixed(2)}${g.worse ? " (worse)" : ""}`).join("; ") || "none"}`);
   console.log(`Decision: ${rep.decision.text} ${rep.decision.remove}`);
-  if (daemon) {
-    const r = await fetch(`${daemon}/api/experiments/${e.id}/stop`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "the offline run finished" }) });
-    if (!r.ok) console.error(`could not stop it on the daemon: ${r.status} ${await r.text()}`);
+  return up ? finish(up) : true;
+}
+
+// Stops the experiment on the daemon when it has every run; says how to recover when it does not.
+async function finish(up: Uploads): Promise<boolean> {
+  const f = await up.finalize("the offline run finished");
+  if (f.finalized) {
+    console.log(`The daemon has all ${up.ledger.runs.length} runs and stopped the experiment: its report is final.`);
+    return true;
   }
+  console.error(`Not finalized: ${f.pending ? `${f.pending} of ${up.ledger.runs.length} runs are not acknowledged by the daemon` : "the daemon did not stop the experiment"} (${f.problem}). The experiment stays running there and the report above is local only.\nSend them again, each counted once, with: bun scripts/bench/run.ts --resume ${up.file}`);
+  return false;
 }
 
 const { values, positionals } = parseArgs({
   args: Bun.argv.slice(2), allowPositionals: true,
-  options: { experiment: { type: "string" }, daemon: { type: "string" }, model: { type: "string" }, label: { type: "string" }, reps: { type: "string", default: "1" }, tasks: { type: "string", default: "" }, gap: { type: "string" }, without: { type: "string", default: "" }, "no-defer": { type: "boolean", default: false } },
+  options: { resume: { type: "string" }, experiment: { type: "string" }, daemon: { type: "string" }, model: { type: "string" }, label: { type: "string" }, reps: { type: "string", default: "1" }, tasks: { type: "string", default: "" }, gap: { type: "string" }, without: { type: "string", default: "" }, "no-defer": { type: "boolean", default: false } },
 });
 if (positionals[0] === "compare") compare(positionals.slice(1));
+else if (values.resume) process.exit((await finish(Uploads.open(values.resume))) ? 0 : 1);
 else if (values.experiment) {
-  await experiment({ spec: values.experiment, daemon: values.daemon, model: values.model, reps: Bun.argv.includes("--reps") ? Number(values.reps) : undefined, tasks: values.tasks ? values.tasks.split(",") : [] });
-  process.exit(0);
+  const done = await experiment({ spec: values.experiment, daemon: values.daemon, model: values.model, reps: Bun.argv.includes("--reps") ? Number(values.reps) : undefined, tasks: values.tasks ? values.tasks.split(",") : [] });
+  process.exit(done ? 0 : 1);
 } else {
   if (!values.model || !values.label) {
     console.error("usage: run.ts --model ID --label NAME [--reps N] [--tasks a,b] [--without tool,tool] [--no-defer] | run.ts compare LABEL...");
