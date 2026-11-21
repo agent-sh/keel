@@ -440,3 +440,19 @@ test("recovery settles a child whose turn had ended before the daemon went down,
   expect(agents.get(cut.id)).toMatchObject({ status: "running" });
   expect(sends.filter((x) => x.id === cut.session_id).map((x) => x.text).join("")).toContain("Continue your task");
 });
+
+test("a blocking spawn cancelled before its task is sent owes its stopped parent no report", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "cold" }); // no reply yet: the second agent waits behind the first
+  await agents.spawn(p.id, { prompt: "lead", isolation: "none", background: true });
+  const ctl = new AbortController();
+  const blocked = agents.spawn(p.id, { prompt: "second", isolation: "none", background: false }, ctl.signal);
+  await settled();
+  const b = agents.list(p.id).find((a) => !sends.some((s) => s.id === a.session_id))!;
+  busy.add(p.id); // the parent's stopped turn is still ending
+  ctl.abort();
+  expect((await blocked).status).toBe("stopped");
+  await settled();
+  expect(agents.get(b.id)).toMatchObject({ status: "stopped", stopped_by: "parent_turn", handback: false });
+  expect(store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE agent_id = ?").get(b.id)!.n).toBe(0);
+  busy.delete(p.id);
+});

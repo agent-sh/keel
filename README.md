@@ -51,7 +51,8 @@ return to `KEEL_MAX_SUBAGENTS` (8 when unset). The override survives a restart
 and does not change other sessions. Starting, running and waiting agents
 occupy slots. Lowering the limit does not stop any agents. Blocking spawns
 wait for room. Background spawns and agent messages that would restart a
-finished agent are refused while the session is full. The daemon that owns
+finished agent are refused while the session is full. A turn the owner
+starts on an agent's own page is not refused. The daemon that owns
 the parent counts its agents even when their tools run on another machine.
 
 ## Refresh the frontend without restarting

@@ -81,7 +81,9 @@ export type AgentDef = {
   format?: "codex"; // a Codex TOML file: its model is another harness's id, a preference rather than a demand
 };
 
-const MAX_LIVE = Number(process.env.KEEL_MAX_SUBAGENTS ?? 8);
+// A value that is not a whole number of at least 1 would mean no limit (NaN) or no agents (0).
+const envLimit = Number(process.env.KEEL_MAX_SUBAGENTS);
+const MAX_LIVE = Number.isSafeInteger(envLimit) && envLimit >= 1 ? envLimit : 8;
 const RESULT_CAP = 40_000;
 
 const BUILTIN: AgentDef[] = [
@@ -575,7 +577,12 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const waited = await stagger(parentId, model, child.id, signal);
   if (waited) activity.record("agent", "staggered", parentId, `Agent "${title}" started ${Math.round(waited / 100) / 10} s after the first one on ${model}, to read its prompt cache`, { agent_id: id });
   if (settling.has(id) || get(id)?.status !== "running") return get(id)!; // stopped while it waited
-  if (input.background === false && signal?.aborted) return stop(id, "parent_turn")!;
+  if (input.background === false && signal?.aborted) {
+    const ended = waitFor(id); // this call holds the result: no report is owed to the stopped parent
+    stop(id, "parent_turn");
+    await ended;
+    return get(id)!;
+  }
   // task_at: where the parent's own words start, so the page shows them verbatim.
   // traceparent: the spawn call's span, so the child's turns trace under it.
   const parentTurn = input.call_id ? store.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(parentId) : null;
