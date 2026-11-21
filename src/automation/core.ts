@@ -50,7 +50,8 @@ export function cursor(before: string | null | undefined): { ts: number; id: str
 // starts a turn when the session is idle and waits for the turn to end when it
 // is busy. Inputs waiting together arrive as one message.
 type Input = { text: string; meta: Record<string, unknown> };
-type Delivery = { coalesceMs?: number; onSent?: (e: StoredEvent) => void; refresh?: () => Input | undefined };
+// `hold`: the input waits for the session's next turn to end (a turn the engine is about to continue).
+type Delivery = { coalesceMs?: number; hold?: boolean; onSent?: (e: StoredEvent) => void; refresh?: () => Input | undefined };
 type Pending = Input & Omit<Delivery, "coalesceMs">;
 const pending = new Map<string, Pending[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -65,7 +66,7 @@ export function deliver(sessionId: string, text: string, meta: Record<string, un
   const list = pending.get(sessionId) ?? [];
   list.push({ text, meta, onSent: opts.onSent, refresh: opts.refresh });
   pending.set(sessionId, list);
-  if (D().engine.isRunning(sessionId)) return true; // flushed by the turn-end hook
+  if (D().engine.isRunning(sessionId) || opts.hold) return true; // flushed by the turn-end hook
   if (opts.coalesceMs) {
     if (!timers.has(sessionId)) timers.set(sessionId, setTimeout(() => { timers.delete(sessionId); flush(sessionId); }, opts.coalesceMs));
   } else flush(sessionId);
@@ -92,7 +93,8 @@ export const isPending = (sessionId: string, which: (meta: Record<string, unknow
 export function flush(sessionId: string) {
   const list = pending.get(sessionId);
   if (!list?.length) return;
-  if (D().engine.isRunning(sessionId)) return;
+  // A daemon on its way down starts no turn: what is owed is sent by the next one.
+  if (D().engine.isRunning(sessionId) || D().engine.isDraining?.()) return;
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
   if (!s || s.archived) return;

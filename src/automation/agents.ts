@@ -1053,15 +1053,6 @@ function endedTurn(sessionId: string): string | undefined {
   return undefined;
 }
 
-// Whether the engine's recovery has a cut turn of this session to decide on:
-// one the last daemon left open, or one it parked.
-function cutTurn(sessionId: string): boolean {
-  const { store } = D();
-  if (store.bootWorking.includes(sessionId)) return true;
-  const end = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null).at(-1);
-  return end?.kind === "turn_end" && end.data.reason === "restart";
-}
-
 export function recover() {
   for (const a of list()) {
     if (a.handback && a.status !== "running" && a.status !== "waiting") {
@@ -1081,7 +1072,7 @@ export function recover() {
     if (ended) { onTurnEnd(a.session_id, ended); continue; }
     update(a.id, { background: true, status: "running" });
     // No turn to continue (its task was stored and never started): start it.
-    if (!cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
+    if (!waits.cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
   }
   sendAllOwed(D().store.db.query<Owed, []>("SELECT * FROM agent_owed ORDER BY created, rowid").all());
 }

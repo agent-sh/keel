@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
 import * as activity from "./activity.ts";
 import { pumpText, readText } from "../core/proc.ts";
+import { lineage } from "../core/tree.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -75,6 +76,7 @@ CREATE INDEX IF NOT EXISTS waits_status ON waits(status, session_id);`);
   // session: set in the statement that settles it, cleared when the wake is
   // stored in the transcript. A restart sends what is still owed.
   if (!D().store.columnExists("waits", "wake")) D().store.migrate("ALTER TABLE waits ADD COLUMN wake INTEGER NOT NULL DEFAULT 0");
+  D().store.migrate("CREATE INDEX IF NOT EXISTS waits_wake ON waits(wake) WHERE wake = 1"); // the few owed ones, read at start
 }
 
 type Row = Omit<WaitRecord, "spec" | "tail"> & { spec: string; state: string | null; wake: number };
@@ -121,6 +123,11 @@ const live = new Map<string, { offset?: number; ident?: string; skip?: boolean; 
 const LOG_READ = 4 << 20; // a probe reads at most this much of a log
 const LINE_MAX = 64 * 1024; // a monitor matches lines up to this long; a longer one is cut there
 const DISPLAY = 2000; // characters of one line shown in an event
+// What is kept of an outcome, and so what its wake says: room for the longest
+// one made here (a monitor's five last lines, each with its marks). A longer
+// one is cut there and says how much went.
+const OUTCOME_MAX = 6 * DISPLAY;
+const kept = (outcome: string) => (outcome.length <= OUTCOME_MAX ? outcome : `${outcome.slice(0, OUTCOME_MAX)}\n[cut here: ${outcome.length - OUTCOME_MAX} more characters are not kept]`);
 
 const identOf = (path: string) => {
   const st = statSync(path);
@@ -264,7 +271,7 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   return get(rec.id)!;
 }
 
-function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true, coalesceMs?: number): boolean {
+function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true, boot = false): boolean {
   const w = get(id);
   if (!w || w.status !== "active") return false;
   const st = live.get(id);
@@ -276,22 +283,28 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   live.delete(id);
   // The status changes only from active, in the same statement that reads it,
   // and the same statement records that the wake is owed.
-  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, outcome.slice(0, 4000), Date.now(), wake ? 1 : 0, id).changes) return false;
+  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, kept(outcome), Date.now(), wake ? 1 : 0, id).changes) return false;
   const rec = get(id)!;
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id });
-  if (wake) sendWake(rec, coalesceMs);
+  if (wake) sendWake(rec, boot);
   return true;
 }
+
+const BOOT_COALESCE = 300; // how long a wake sent at start waits for the engine to close open turns
 
 // The wake of a settled wait, from its row: the same text now or after a
 // restart. It stays owed until it is stored in the session's transcript.
 const wakeSent = (id: string) => void D().store.db.query("UPDATE waits SET wake = 0 WHERE id = ?").run(id);
-function sendWake(w: WaitRecord, coalesceMs?: number) {
+function sendWake(w: WaitRecord, boot = false) {
   const body = `${w.note ? w.note + "\n" : ""}${w.outcome ?? ""}`;
   const text = `<wait_fired id="${w.id}" kind="${w.kind}" outcome="${w.status}">\n${inert(body, "wait_fired")}\n</wait_fired>`;
   // An archived session runs no waits: nothing is owed to it.
-  if (!deliver(w.session_id, text, { kind: "wait", wait_id: w.id, outcome: w.status }, { coalesceMs, onSent: () => wakeSent(w.id) })) wakeSent(w.id);
+  // At start the engine first closes the turns the last daemon left open, and a
+  // wake never lands inside one. A session whose cut turn the engine is about
+  // to continue gets the wake when that turn ends, not ahead of it.
+  const when = !boot ? {} : cutTurn(w.session_id) ? { hold: true } : { coalesceMs: BOOT_COALESCE };
+  if (!deliver(w.session_id, text, { kind: "wait", wait_id: w.id, outcome: w.status }, { ...when, onSent: () => wakeSent(w.id) })) wakeSent(w.id);
 }
 
 // Whether the wake already reached the session: stored as a prompt (alone or
@@ -667,9 +680,14 @@ export async function tick() {
   }
 }
 
-// A wake sent at start waits this long: the engine first closes the turns the
-// last daemon left open, and a wake never lands inside one.
-const BOOT_COALESCE = 300;
+// Whether the engine's recovery has a cut turn of this session to decide on:
+// one the last daemon left open, or one it parked.
+export function cutTurn(sessionId: string): boolean {
+  const { store } = D();
+  if (store.bootWorking.includes(sessionId)) return true;
+  const end = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null).at(-1);
+  return end?.kind === "turn_end" && end.data.reason === "restart";
+}
 
 // At start: monitors died with the last daemon (stop their process groups if
 // they are still the same processes); other waits keep going. A wake the last
@@ -679,7 +697,7 @@ export function recover() {
   for (const w of owed) {
     if (isPending(w.session_id, (m) => m.wait_id === w.id && m.outcome === w.status)) continue; // already on its way
     if (wakeStored(w)) wakeSent(w.id);
-    else sendWake(w, BOOT_COALESCE);
+    else sendWake(w, true);
   }
   for (const w of list(undefined, 0)) {
     if (w.status !== "active") continue;
@@ -696,7 +714,7 @@ export function recover() {
     if (st.pgid && st.start && startTime(st.pgid) === st.start) {
       try { process.kill(-st.pgid, "SIGTERM"); } catch {}
     }
-    settle(w.id, "ended", "The daemon restarted and stopped this monitor. Start it again if it is still needed.", true, BOOT_COALESCE);
+    settle(w.id, "ended", "The daemon restarted and stopped this monitor. Start it again if it is still needed.", true, true);
   }
 }
 

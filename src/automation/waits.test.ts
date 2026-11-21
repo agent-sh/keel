@@ -17,9 +17,10 @@ const dir = mkdtempSync(join(tmpdir(), "keel-waits-"));
 const sent: string[] = [];
 const store = new Store(join(dir, "state"));
 const busy = new Set<string>(); // sessions with a turn running
-const faults: { afterAppend?: boolean } = {};
+const faults: { afterAppend?: boolean; draining?: boolean } = {};
 const engine = {
   isRunning: (id: string) => busy.has(id),
+  isDraining: () => !!faults.draining,
   send: (id: string, text: string, o: any) => {
     sent.push(text);
     const event = store.append(id, "user", { text, ...o?.meta });
@@ -306,4 +307,41 @@ test("a monitor that reaches its deadline delivers the lines it still held, then
   expect(said).toContain("READY one");
   expect(said.indexOf("READY one")).toBeLessThan(said.indexOf('outcome="timeout"'));
   expect(waits.get(w.id)).toMatchObject({ status: "timeout", events: 1 });
+});
+
+test("a wake says the whole outcome, and a cut one says it was cut", async () => {
+  // A monitor that ends with five long last lines and no event to carry them.
+  const line = (i: number) => `${"x".repeat(1900)}END${i}`;
+  const cmd = [1, 2, 3, 4, 5].map((i) => `printf '%s\\n' ${line(i)}`).join("; ");
+  const w = waits.create(s.id, waits.normalize({ kind: "monitor", command: cmd, match: "never-there" }, dir), { timeout_seconds: 30 });
+  await until(() => status(w.id) !== "active");
+  expect(wakes(w.id)).toHaveLength(1);
+  for (const i of [1, 2, 3, 4, 5]) expect(wakes(w.id)[0]).toContain(`END${i}`);
+  expect(wakes(w.id)[0]).not.toContain("[cut here");
+  // An outcome longer than what is kept: cut with a mark, in the row and in the wake.
+  waits.registerWaitKind("wordy", { every: 0, normalize: (spec) => ({ kind: spec.kind }) as any, probe: () => `START${"y".repeat(20_000)}` });
+  const long = waits.create(s.id, waits.normalize({ kind: "wordy" }, dir), { timeout_seconds: 600 });
+  await waits.tick();
+  expect(waits.get(long.id)!.outcome).toMatch(/y\n\[cut here: 8005 more characters are not kept\]$/);
+  expect(wakes(long.id)[0]).toContain("[cut here: 8005 more characters are not kept]");
+});
+
+test("a wake owed at start waits for a cut turn to end, and a draining daemon sends none", async () => {
+  const cut = store.createSession({ model: "m", workspace: dir, title: "cut" });
+  const stored = () => store.events(cut.id).filter((e) => e.kind === "user").length;
+  const w = waits.create(cut.id, waits.normalize({ kind: "timer", seconds: 0.001 }, dir));
+  await Bun.sleep(5);
+  faults.draining = true; // the daemon is on its way down: the wake starts no turn
+  await waits.tick();
+  faults.draining = false;
+  expect([status(w.id), stored()]).toEqual(["fired", 0]);
+  // The next daemon finds the session's turn cut by the restart: the engine continues it.
+  store.append(cut.id, "turn_end", { reason: "restart" });
+  dropPending(cut.id);
+  waits.recover();
+  await Bun.sleep(400); // past the wait a wake at start has for other sessions
+  expect(stored()).toBe(0);
+  flush(cut.id); // the continued turn ended
+  expect(stored()).toBe(1);
+  expect(store.events(cut.id).at(-1)!.data.text).toContain(`<wait_fired id="${w.id}"`);
 });
