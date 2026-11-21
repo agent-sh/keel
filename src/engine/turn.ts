@@ -1046,9 +1046,23 @@ export class Engine {
     const ready = await this.step(session, session.model)
       .finally(() => this.setting.delete(id))
       // A setup that fails after the stop has nothing left to say: the turn is closed.
-      .catch((e) => { if (this.stoppedEarly.has(id)) return undefined; throw e; });
-    if (this.stoppedEarly.delete(id) || !ready) {
-      for (const h of allHooks()) await (async () => h.turnEnd?.(session, "interrupted"))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
+      // One that fails while the daemon parks its turns is closed below.
+      .catch((e) => { if (this.stoppedEarly.has(id) || this.parking.has(id)) return undefined; throw e; });
+    const stopped = this.stoppedEarly.delete(id);
+    if (stopped || !ready) {
+      // Failed while the daemon was on its way down (a provider that went
+      // first, a listing cut short): the prompt keeps its turn, closed as cut
+      // at its start, and the next start runs it like any turn a restart cut,
+      // instead of a prompt with no turn, no error and nothing to continue.
+      const parked = !stopped;
+      if (parked) {
+        const closing = this.store.atomic(id, () => [
+          this.store.append(id, "turn_start", { model: session.model }),
+          this.store.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: 0, unstarted: true }),
+        ]);
+        for (const e of closing) this.emitEvent(e);
+      }
+      for (const h of allHooks()) await (async () => h.turnEnd?.(session, parked ? "restart" : "interrupted"))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
       return;
     }
     let st = ready;

@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { promptsOf, QUEUED, rig, SENT, untilStopped } from "./delivery.fixture.ts";
+import { registerHooks } from "./hooks.ts";
 import { STALLED_MAX } from "./turn.ts";
 
 const scratch = (name: string) => mkdtempSync(join(process.env.TMPDIR ?? ".", `${name}-`));
@@ -341,4 +342,35 @@ test("a session recovery cannot read is set aside and the others are still recov
   expect(requests.map((r) => r.filter((t) => t === "owed a turn").length)).toEqual([1]);
   expect([store.session(bad.id)!.phase, store.session(good.id)!.phase]).toEqual(["idle", "idle"]);
   expect(store.events(bad.id).map((e) => e.kind)).toEqual(["user", "turn_start", "assistant"]);
+});
+
+// A daemon stop that parks a turn still in setup, whose setup then fails (a
+// provider that went down first): the prompt keeps a turn, closed as cut at
+// its start, and the next daemon runs it. Before, the failure was dropped with
+// the stop: a prompt with no turn, no error, an idle session and nothing to continue.
+test("a turn parked in setup whose setup then fails is run by the next start", async () => {
+  const dir = scratch("park-setup-fails");
+  let fail!: (e: Error) => void;
+  let inSetup!: () => void;
+  const reached = new Promise<void>((r) => (inSetup = r));
+  const first = rig(dir, { setup: () => new Promise<void>((_, reject) => { fail = reject; inSetup(); }) });
+  const s = first.session();
+  const ends: string[] = [];
+  // The setup fails once the turn is being parked.
+  registerHooks({ turnEnd: (x, reason) => { if (x.id === s.id) ends.push(reason); }, turnParking: (id) => { if (id === s.id) fail(new Error("the provider is gone")); } });
+  first.engine.send(s.id, SENT.text);
+  await reached;
+  await first.engine.drain(0);
+  const line = first.engine.lineage(s.id);
+  expect(line.map((e) => e.kind)).toEqual(["user", "turn_start", "turn_end"]);
+  expect(line.at(-1)!.data).toMatchObject({ reason: "restart", unstarted: true });
+  expect(ends).toEqual(["restart"]);
+  expect(first.requests).toEqual([]);
+  first.store.db.close();
+
+  const next = rig(dir);
+  await next.engine.recover(next.store.bootWorking, async () => {});
+  await next.engine.idle(s.id);
+  expect(next.requests.map((r) => r.filter((t) => t === SENT.text).length)).toEqual([1]);
+  expect(next.engine.lineage(s.id).filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
 });
