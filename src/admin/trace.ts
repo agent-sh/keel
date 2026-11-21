@@ -100,14 +100,28 @@ export function turnPlace(turnEvent: string, spawn: { trace: string; span: strin
 type Turn = { id: string; ts: number; seq: number };
 
 // Where a session's turn sits, read from its events: a subagent's task prompt
-// carries the context of the spawn call that started it.
+// carries the context of the spawn call that started it. A turn that never
+// ran (stopped while it was set up, or closed unstarted when the daemon came
+// back: a turn_start with its turn_end right after it, of no length) is not
+// the agent's first turn; the first one that ran is.
+// Kept by turn: what is before a turn does not change once it has started.
+const places = new Map<string, Place>();
 export function placeOf(store: Store, sessionId: string, turn: Pick<Turn, "id" | "seq">): Place {
+  const hit = places.get(turn.id);
+  if (hit) return hit;
   const task = store.db.query<{ seq: number; tp: string }, [string]>(
     "SELECT seq, json_extract(data, '$.traceparent') AS tp FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.traceparent') IS NOT NULL ORDER BY seq LIMIT 1",
   ).get(sessionId);
   const spawn = task && task.seq < turn.seq ? parseTraceparent(task.tp) : null;
-  const first = !!spawn && !store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' AND seq > ? AND seq < ? LIMIT 1").get(sessionId, task!.seq, turn.seq);
-  return turnPlace(turn.id, spawn, first);
+  const first = !!spawn && !store.db.query(
+    `SELECT 1 FROM events t WHERE t.session_id = ? AND t.kind = 'turn_start' AND t.seq > ? AND t.seq < ?
+       AND NOT EXISTS (SELECT 1 FROM events e WHERE e.session_id = t.session_id AND e.seq = t.seq + 1 AND e.kind = 'turn_end' AND e.parent = t.id
+         AND (json_extract(e.data, '$.unstarted') OR json_extract(e.data, '$.ms') = 0))
+     LIMIT 1`).get(sessionId, task!.seq, turn.seq);
+  const p = turnPlace(turn.id, spawn, first);
+  if (places.size > 500) places.clear();
+  places.set(turn.id, p);
+  return p;
 }
 
 // The context a spawn call hands the session it starts: the call's span, in
@@ -232,14 +246,8 @@ export class Tracer {
     return this.store.db.query<Turn, [string]>("SELECT id, ts, seq FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(sessionId);
   }
 
-  private places = new Map<string, Place>();
   place(sessionId: string, turn: Turn): Place {
-    const hit = this.places.get(turn.id);
-    if (hit) return hit;
-    const p = placeOf(this.store, sessionId, turn);
-    if (this.places.size > 500) this.places.clear();
-    this.places.set(turn.id, p);
-    return p;
+    return placeOf(this.store, sessionId, turn);
   }
 
   // The trace context of a session's open turn (for TRACEPARENT in its commands).

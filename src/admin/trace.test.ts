@@ -102,6 +102,61 @@ test("a chain of spawns stays in the first turn's trace, each agent under the ca
   }
 });
 
+test("a turn that never ran is not a spawned agent's first turn", () => {
+  const x = tracer(true);
+  try {
+    const session = () => x.store.createSession({ workspace: x.dir, model: "p:m" });
+    const [root, stopped, restarted, worked] = [session(), session(), session(), session()];
+    const turn = (s: { id: string }) => x.store.append(s.id, "turn_start", { model: "p:m" });
+    const rootTurn = turn(root);
+    const trace = traceIdOf(rootTurn.id);
+    const task = (s: { id: string }, call: string) => x.store.append(s.id, "user", { text: "task", kind: "task", traceparent: spawnContext(x.store, root.id, call) });
+    const place = (s: { id: string }) => { const t = turn(s); return x.t.place(s.id, t); };
+
+    // Stopped while the turn was set up, and closed unstarted when the daemon came back: a pair of no length.
+    task(stopped, "c1");
+    turn(stopped);
+    x.store.append(stopped.id, "turn_end", { reason: "interrupted", ms: 0 });
+    expect(place(stopped)).toMatchObject({ trace, parent: toolSpanId(root.id, "c1"), links: [] });
+    task(restarted, "c2");
+    turn(restarted);
+    x.store.append(restarted.id, "turn_end", { reason: "restart", ms: 0, crashed: true, unstarted: true });
+    expect(place(restarted)).toMatchObject({ trace, parent: toolSpanId(root.id, "c2"), links: [] });
+    // A turn that ran, however short: the next one is a later turn, linked.
+    task(worked, "c3");
+    turn(worked);
+    x.store.append(worked.id, "assistant", { blocks: [{ type: "text", text: "done" }], model: "p:m", usage: {}, stop: "end_turn" });
+    x.store.append(worked.id, "turn_end", { reason: "end_turn", ms: 0 });
+    expect(place(worked)).toMatchObject({ parent: null, links: [{ trace_id: trace, span_id: toolSpanId(root.id, "c3") }] });
+  } finally {
+    x.close();
+  }
+});
+
+test("a spawn from a turn the tracer has placed reads no task prompt again", () => {
+  const x = tracer(true);
+  try {
+    const session = () => x.store.createSession({ workspace: x.dir, model: "p:m" });
+    const [root, child] = [session(), session()];
+    const turn = (s: { id: string }) => x.store.append(s.id, "turn_start", { model: "p:m" });
+    const trace = traceIdOf(turn(root).id);
+    x.store.append(child.id, "user", { text: "task", kind: "task", traceparent: spawnContext(x.store, root.id, "c4") });
+    const childTurn = turn(child);
+    // The calling turn is placed when its first request or call is recorded.
+    x.hooks.toolRan!(child as any, { id: "c5", tool: { name: "Agent" }, input: {} } as any, { type: "tool_result", tool_use_id: "c5", content: "done" } as any, { ms: 1, outcome: "ok" });
+    const seen: string[] = [];
+    const query = x.store.db.query.bind(x.store.db);
+    (x.store.db as any).query = (sql: string) => (seen.push(sql), query(sql));
+    const handed = spawnContext(x.store, child.id, "c5");
+    (x.store.db as any).query = query;
+    expect(parseTraceparent(handed)).toEqual({ trace, span: toolSpanId(child.id, "c5") });
+    expect(x.t.span(turnSpanId(traceIdOf(childTurn.id)))!.trace_id).toBe(trace);
+    expect(seen.filter((q) => q.includes("traceparent"))).toEqual([]);
+  } finally {
+    x.close();
+  }
+});
+
 test("a turn the model declined is a failed turn in the list of traces, with the refusal's words", () => {
   const x = tracer(true);
   try {
