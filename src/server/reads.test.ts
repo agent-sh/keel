@@ -77,3 +77,37 @@ test("a thread that ends or stops answering fails the reads that wait on it, and
     }
   }
 });
+
+// A backup takes its snapshot with the write-ahead log empty, which a read
+// in flight prevents: it holds the reads. The hold waits for the read that
+// runs, a read asked meanwhile waits for the hold to be let go, and a read
+// that outlasts the hold's patience does not keep it.
+test("a hold waits for the read in flight and keeps the next one back until it is let go", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-reads-"));
+  dirs.push(dir);
+  const store = new Store(dir);
+  const reads = new Reads(store, true);
+  try {
+    const slow = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000000) SELECT count(*) AS n FROM c";
+    const order: string[] = [];
+    const first = reads.sql(slow).then(() => void order.push("the read in flight"));
+    const release = await reads.hold(30_000);
+    order.push("held");
+    const next = reads.sql("SELECT 1 AS one").then((r) => (order.push("the read asked meanwhile"), r));
+    await new Promise((ok) => setTimeout(ok, 50));
+    expect(order).toEqual(["the read in flight", "held"]);
+    release();
+    expect(await next).toEqual([{ one: 1 }]);
+    await first;
+    expect(order).toEqual(["the read in flight", "held", "the read asked meanwhile"]);
+    // Nothing in flight: held at once. A read longer than the hold waits: the hold is given anyway.
+    (await reads.hold(30_000))();
+    const long = reads.sql(slow);
+    const t0 = performance.now();
+    (await reads.hold(5))();
+    expect(performance.now() - t0).toBeLessThan(200);
+    await long;
+  } finally {
+    reads.close();
+  }
+});

@@ -368,7 +368,11 @@ export class Storage {
       // The worker reads the database file itself once the write-ahead log is
       // emptied into it: asked for here, between two writes of the daemon.
       const checkpoint = () => { try { this.store.db.run("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} }; // not emptied: the worker sees that
-      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(this.config ? { config: resolve(this.config) } : {}) }, checkpoint);
+      // The read thread's connection would keep the log from being emptied
+      // while a read of it runs: its reads are held until the worker has its
+      // snapshot (a read already running is waited for, ten seconds at most).
+      const release = await readsOf(this.store).hold(READS_HOLD_MS);
+      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(this.config ? { config: resolve(this.config) } : {}) }, checkpoint, release).finally(release);
       if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
       renameSync(tmp, final);
       syncPath(this.backupRoot); // the name itself is on disk
@@ -441,7 +445,9 @@ declare const __KEEL_BACKUP_WORKER_JS__: string | undefined;
 // half minutes; the limit is ten times that.)
 const HOLD_MS = 25;
 const WORKER_MS = 30 * 60_000;
-function inWorker<T>(job: BackupJob | CheckJob, checkpoint?: () => void): Promise<T> {
+const READS_HOLD_MS = 10_000;
+// `snapped`: called once the worker has tried its snapshot (it has it, or will make the backup from a copy).
+function inWorker<T>(job: BackupJob | CheckJob, checkpoint?: () => void, snapped?: () => void): Promise<T> {
   return new Promise((ok, fail) => {
     const built = typeof __KEEL_BACKUP_WORKER_JS__ === "string" ? URL.createObjectURL(new Blob([__KEEL_BACKUP_WORKER_JS__], { type: "text/javascript" })) : undefined;
     const w = new Worker(built ?? new URL("./backup-worker.ts", import.meta.url).href);
@@ -464,6 +470,7 @@ function inWorker<T>(job: BackupJob | CheckJob, checkpoint?: () => void): Promis
         Atomics.store(gate, 0, 1);
         Atomics.notify(gate, 0);
         Atomics.wait(gate, 0, 1, HOLD_MS);
+        if (Atomics.load(gate, 0) === 2) snapped?.();
       } else end(() => (m.t === "done" ? ok(m.done) : fail(new Error(m.error))));
     };
     w.onerror = (e) => end(() => fail(new Error(`the backup worker failed: ${e.message}`)));

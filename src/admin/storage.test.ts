@@ -555,8 +555,9 @@ test("the storage report adds up to du of the state folder and is measured again
     expect((await storage.report()).total_bytes).toBe(r.total_bytes);
     (storage as any).last.measured_ms -= REPORT_MAX_AGE_MS;
     const sql: string[] = [];
-    const query = src.db.query.bind(src.db);
+    const query = src.db.query.bind(src.db), prepare = src.db.prepare.bind(src.db);
     src.db.query = ((q: string) => (sql.push(q), query(q))) as typeof src.db.query;
+    src.db.prepare = ((q: string) => (sql.push(q), prepare(q))) as typeof src.db.prepare;
     const later = await storage.report();
     expect(sql.filter((q) => q.includes("FROM events"))).toEqual([]);
     expect(near(later.memory_transcripts_bytes, 400_000)).toBe(true);
@@ -566,6 +567,7 @@ test("the storage report adds up to du of the state folder and is measured again
     expect(sql.filter((q) => q.includes("FROM events")).length).toBeGreaterThan(0);
     expect(asked.sessions.transcript_bytes).toBeGreaterThan(r.sessions.transcript_bytes + 30_000);
     src.db.query = query as typeof src.db.query;
+    src.db.prepare = prepare as typeof src.db.prepare;
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

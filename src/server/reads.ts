@@ -50,7 +50,35 @@ export class Reads {
   // `program`: another thread program than the daemon's own (a test's).
   constructor(private store: Pick<Store, "db" | "stateDir">, private thread = process.env.NODE_ENV !== "test", private program?: string, private deadlineMs = DEADLINE_MS) {}
 
+  // Reads held back: a backup takes its snapshot with the write-ahead log
+  // empty, and a read in flight on this thread's connection keeps the log
+  // from being emptied (the backup would fall back to a whole copy). While
+  // held, a read that is asked for waits; it starts when the hold is let go.
+  private held?: Promise<void>;
+  private drained: (() => void)[] = [];
+
+  // Holds new reads back and waits for the ones in flight, at most `ms`
+  // (a read can take minutes; the backup then goes on without the log
+  // emptied and says so by what it writes). Returns what lets the reads go.
+  async hold(ms: number): Promise<() => void> {
+    while (this.held) await this.held;
+    let release!: () => void;
+    this.held = new Promise<void>((ok) => (release = ok));
+    if (this.waiting.size) {
+      await new Promise<void>((ok) => {
+        const t = setTimeout(ok, ms);
+        this.drained.push(() => { clearTimeout(t); ok(); });
+      });
+    }
+    return () => { this.held = undefined; release(); };
+  }
+  private settled() {
+    if (this.waiting.size) return;
+    for (const f of this.drained.splice(0)) f();
+  }
+
   run<K extends TaskName>(name: K, args: Args<K>): Promise<Result<K>> {
+    if (this.held) return this.held.then(() => this.run(name, args));
     const w = this.thread ? this.start() : undefined;
     if (!w) return new Promise((resolve) => resolve(this.onLoop(name, args) as Result<K>));
     this.counts.thread++;
@@ -93,6 +121,7 @@ export class Reads {
       clearTimeout(p.due);
       if (m.error) p.reject(Object.assign(new Error(m.error.message), m.error.stack ? { stack: m.error.stack } : {}));
       else p.resolve(m.value);
+      this.settled();
       if (!this.waiting.size) this.rest();
     };
     // The thread is gone: it threw, it ended by itself, or a read got no answer.
@@ -113,6 +142,7 @@ export class Reads {
     w.terminate();
     const waited = [...this.waiting.values()];
     this.waiting.clear();
+    this.settled();
     if (!this.proved) this.thread = false;
     for (const p of waited) {
       clearTimeout(p.due);
@@ -138,6 +168,7 @@ export class Reads {
       p.reject(new Error("the read thread was closed"));
     }
     this.waiting.clear();
+    this.settled();
   }
 }
 
