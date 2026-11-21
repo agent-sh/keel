@@ -54,3 +54,6 @@ export function rig(stateDir: string, hooks: RigHooks = {}) {
 // The stored prompts a queued row became, by the row's id.
 export const promptsOf = (store: Store, sessionId: string, queueId: string) =>
   store.events(sessionId).filter((e) => e.kind === "user" && e.data.queue_id === queueId);
+
+// What the crash tests queue: words and an attachment the owner was told are queued.
+export const QUEUED = { text: "queued while the first turn ran", images: [{ type: "image" as const, media_type: "image/png", data: "iVBORw0KGgo=" }] };

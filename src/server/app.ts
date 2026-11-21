@@ -83,7 +83,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   initAccess(store.stateDir);
   // Bun's publish writes a frame to every subscribed tab natively, serialized once.
   const live = new Live(store, bus, (topic, data) => server.publish(topic, data));
-  live.state = (id) => ({ queue: store.queue(id), held: engine.isHeld(id), status: engine.statusOf(id) });
+  live.state = (id) => ({ queue: engine.queued(id), held: engine.isHeld(id), status: engine.statusOf(id) });
 
   const session = (id: string) => store.session(id);
 
@@ -182,7 +182,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         GET: wrap((req) => {
           const s = session(req.params.id);
           return s
-            ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id), queue: store.queue(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() })
+            ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() })
             : bad("no such session", 404);
         }),
         PATCH: wrap(async (req) => {

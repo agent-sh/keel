@@ -304,7 +304,7 @@ export class Engine {
   // on. One written on another branch waits like any queued prompt of that
   // branch: the queue is held at the turn's end until the owner says where it goes.
   private liveSteers(id: string): QueueItem[] {
-    return this.store.queue(id).filter((q) => q.steer && !this.offBranch(q));
+    return this.queued(id).filter((q) => q.steer && !this.offBranch(q));
   }
 
   private offBranchError() {
@@ -314,6 +314,30 @@ export class Engine {
   // A queued prompt that Send now has taken: it can no longer be edited or removed.
   isSending(qid: string) {
     return this.sending.has(qid);
+  }
+
+  // The queue as the owner sees it: a prompt Send now has taken is on its way
+  // out (its row stays stored until its prompt is, see deliver).
+  queued(id: string): QueueItem[] {
+    const q = this.store.queue(id);
+    return this.sending.size ? q.filter((x) => !this.sending.has(x.id)) : q;
+  }
+
+  // A queued prompt leaves the queue and enters the history in one write: a
+  // daemon killed at any point finds the row still queued or its one stored
+  // prompt, never neither and never both. `release`: the queue's hold ends in
+  // the same write. The prompt is the row as it is now (it may have been
+  // edited while it waited). Undefined when the row is gone.
+  private deliver(qid: string, origin: "queued" | "steer", release = false): StoredEvent | undefined {
+    const q = this.store.queueItem(qid);
+    if (!q) return undefined;
+    const ev = this.store.atomic(q.session_id, () => {
+      if (!this.store.dequeue(q.id)) return undefined;
+      if (release) this.release(q.session_id);
+      return this.store.append(q.session_id, "user", { text: q.text, images: q.images, origin, queue_id: q.id, ...q.meta });
+    });
+    if (ev) this.emitEvent(ev);
+    return ev;
   }
 
   isRunning(id: string) {
@@ -369,7 +393,7 @@ export class Engine {
   }
 
   emitQueue(id: string) {
-    this.bus.emit({ t: "queue", session_id: id, queue: this.store.queue(id), held: this.held.has(id) });
+    this.bus.emit({ t: "queue", session_id: id, queue: this.queued(id), held: this.held.has(id) });
   }
 
   private statuses = new Map<string, TurnStatus>();
@@ -439,20 +463,23 @@ export class Engine {
   }
 
   // A queued prompt now: the running turn stops and this one is the next turn.
-  // The row is taken before the stop is awaited, so a second Send now, an
-  // edit or a Remove in that time is told it is already sending.
+  // The row is marked as sending before the stop is awaited, so a second Send
+  // now, an edit or a Remove in that time is told it is already sending, and
+  // neither the stopping turn nor the queue takes it. It stays stored until
+  // the stop is done and its prompt is written: a daemon killed while the
+  // turn stops still has it queued.
   // `here`: on the branch shown now, also when it was queued on another one.
   async sendNow(id: string, qid: string, here = false) {
     if (this.sending.has(qid)) throw Object.assign(new Error("this queued prompt is already sending"), { status: 409 });
+    const gone = () => Object.assign(new Error("no such queued prompt"), { status: 404 });
     const q = this.store.queueItem(qid);
     if (q && q.session_id === id && !here && this.offBranch(q)) throw this.offBranchError();
-    if (!q || q.session_id !== id || !this.store.dequeue(qid)) throw Object.assign(new Error("no such queued prompt"), { status: 404 });
+    if (!q || q.session_id !== id) throw gone();
     this.sending.add(qid);
     try {
       this.emitQueue(id);
       await this.interrupt(id);
-      this.release(id);
-      this.append(id, "user", { text: q.text, images: q.images, origin: "queued", queue_id: q.id, ...q.meta });
+      if (!this.deliver(qid, "queued", true)) throw gone();
       this.start(id);
       this.emitQueue(id);
     } finally {
@@ -487,12 +514,13 @@ export class Engine {
     if (this.held.has(id) || this.running.has(id) || this.draining) return;
     const s = this.store.session(id);
     if (!s || s.archived) return;
+    // A Send now that is waiting for its turn to stop starts the next turn itself.
+    if (this.sending.size && this.store.queue(id).some((x) => this.sending.has(x.id))) return;
     const q = this.store.queue(id)[0];
     if (!q) return;
     // Written on another branch: it waits for the owner to say where it goes.
     if (this.offBranch(q)) { this.hold(id); this.emitQueue(id); return; }
-    if (!this.store.dequeue(q.id)) return;
-    this.append(id, "user", { text: q.text, images: q.images, origin: q.steer ? "steer" : "queued", queue_id: q.id, ...q.meta });
+    if (!this.deliver(q.id, q.steer ? "steer" : "queued")) return;
     this.start(id);
     this.emitQueue(id);
   }
@@ -828,11 +856,7 @@ export class Engine {
       }
       for (;;) {
         // Steers sent while the last step ran join here, after its tool results.
-        for (const q of this.liveSteers(id)) {
-          if (!this.store.dequeue(q.id)) continue;
-          this.append(id, "user", { text: q.text, images: q.images, origin: "steer", queue_id: q.id, ...q.meta });
-          this.emitQueue(id);
-        }
+        for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer")) this.emitQueue(id);
         session = this.store.session(id)!;
         // A model or effort chosen while the turn runs takes effect at its next request.
         if (session.model !== st.info.id || effectiveEffort(st.info, session.settings.effort) !== st.effort) st = await this.step(session, session.model);

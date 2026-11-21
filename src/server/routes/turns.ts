@@ -13,7 +13,7 @@ const bad = (error: string, status = 400) => json({ error }, status);
 
 export const turnRoutes: RouteModule = (deps) => {
   const { store, engine, providers, bus, errors } = deps;
-  const queueBody = (id: string) => ({ queue: store.queue(id), held: engine.isHeld(id) });
+  const queueBody = (id: string) => ({ queue: engine.queued(id), held: engine.isHeld(id) });
   const sessionOr404 = (id: string) => store.session(id);
 
   return {
@@ -21,7 +21,8 @@ export const turnRoutes: RouteModule = (deps) => {
       GET: (req: any) => (sessionOr404(req.params.id) ? json(queueBody(req.params.id)) : bad("no such session", 404)),
       DELETE: (req: any) => {
         if (!sessionOr404(req.params.id)) return bad("no such session", 404);
-        for (const q of store.queue(req.params.id)) store.dequeue(q.id);
+        // A prompt Send now has taken is no longer in the queue to clear.
+        for (const q of engine.queued(req.params.id)) store.dequeue(q.id);
         engine.emitQueue(req.params.id);
         return json(queueBody(req.params.id));
       },

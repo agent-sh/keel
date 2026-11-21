@@ -175,6 +175,18 @@ export class Store {
     this.db.exec(sql);
   }
 
+  // Several writes of one session as one: all of them are stored or none,
+  // also when the daemon is killed in between. A throw undoes them, and the
+  // session's parsed events are read from the table again.
+  atomic<T>(session_id: string, fn: () => T): T {
+    try {
+      return this.db.transaction(fn)();
+    } catch (e) {
+      this.parsed.delete(session_id);
+      throw e;
+    }
+  }
+
   columnExists(table: string, column: string): boolean {
     return this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
   }
