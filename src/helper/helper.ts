@@ -274,8 +274,16 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
   // items it calls up that the context has not seen since its last summary.
   private note(s: Session, events: StoredEvent[], prompt: string): { text: string; recalled: string[]; told: DigestEvent[] } | null {
     const at = checkpointAt(events).at;
+    // A record a note already carried is not sent again while it is as that
+    // note had it. One changed since (by the owner, or by a tool) is: its new
+    // value comes in a new note, and the earlier note stays as it was stored.
     const seen = new Set<string>();
-    for (const e of events.slice(at + 1)) for (const id of e.data?.helper?.recall ?? []) seen.add(id);
+    for (const e of events.slice(at + 1)) {
+      for (const id of e.data?.helper?.recall ?? []) {
+        const r = this.records.index.byKey.get(id);
+        if (r && r.updated <= e.ts) seen.add(id);
+      }
+    }
     const told = this.unfed();
     const query = `${prompt}\n${told.map((e) => `${e.title} ${e.body}`).join("\n")}`;
     const { records: items, hints } = this.records.index.recall(query, seen, RECALL_CHARS);

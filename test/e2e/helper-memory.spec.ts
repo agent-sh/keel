@@ -85,6 +85,28 @@ test("helper memory: import a labels file once, look up by key and alias, recall
   expect(note.match(/mail\.label\./g)?.length).toBe(1);
   await shoot(page, "helper-memory-01-imported");
 
+  // A record a note already carried is not sent again while it is unchanged.
+  // Once its value changes, the next prompt that names it gets the new value,
+  // in a new note: the notes stored before stay as they were.
+  const helperNotes = async () => ((await (await request.get(`/api/sessions/${helper.session_id}`)).json()).events as any[]).filter((e) => e.kind === "note" && e.data.helper);
+  const ask = async (text: string, turns: number) => {
+    await page.getByTestId("composer").fill(text);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(turns, { timeout: 30_000 });
+  };
+  const before = await helperNotes();
+  await ask("What is Label_12 again?", 3);
+  expect((await helperNotes()).filter((e) => e.data.helper.recall.includes("mail.label.label_12"))).toHaveLength(1);
+  expect((await request.patch(`/api/helper/memory/${encodeURIComponent("mail.label.label_12")}`, { data: { value: "Projects/Kitchen remodel" } })).ok()).toBe(true);
+  await ask("And what is Label_12 now?", 4);
+  const changed = await helperNotes();
+  expect(changed.filter((e) => e.data.helper.recall.includes("mail.label.label_12")).map((e) => (e.data.text as string).match(/- mail\.label\.label_12: .*/)![0]))
+    .toEqual(["- mail.label.label_12: Projects/Kitchen", "- mail.label.label_12: Projects/Kitchen remodel"]);
+  expect(changed.slice(0, before.length)).toEqual(before);
+  await ask("Label_12 once more, please.", 5);
+  expect((await helperNotes()).filter((e) => e.data.helper.recall.includes("mail.label.label_12"))).toHaveLength(2);
+  expect(((await (await request.get(`/api/sessions/${helper.session_id}`)).json()).events as any[]).filter((e) => e.kind === "compaction")).toHaveLength(0);
+
   // The panel: search narrows hundreds to a few; edit aliases; add with a key; delete.
   const search = page.getByTestId("memory-search");
   await search.fill("finance");
