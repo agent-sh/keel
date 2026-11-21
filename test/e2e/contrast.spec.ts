@@ -1,5 +1,9 @@
 import { expect, test } from "./isolate.ts";
 import type { Page } from "./isolate.ts";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { openPanel, shoot } from "./shots.ts";
 
 // Feature: the color tokens read on every surface they are used on, in both
 // themes. Warn text (a caption, or a chip on its own tint) has 4.5:1 against
@@ -135,4 +139,97 @@ test("the focus ring stands off every surface in both themes", async ({ page }) 
   const ring = await page.locator(":focus").evaluate((el) => { const c = getComputedStyle(el); return { style: c.outlineStyle, width: c.outlineWidth }; });
   expect(ring.style).toBe("solid");
   expect(ring.width).toBe("2px");
+});
+
+// Every word the owner reads has 4.5:1 (3:1 for large text) in both themes:
+// the quiet text tokens and the state colors used as words on each surface,
+// and, on a real session with its Changes panel open, every text node on
+// screen: the list's faint text, an earlier turn's stats (its icons step back,
+// its words do not), a diff's line numbers and signs.
+test("every text reads in both themes, an earlier turn's stats and a diff's line numbers too", async ({ page, request }) => {
+  await page.goto("/settings/general");
+  await page.getByTestId("text-size").waitFor();
+  const tokens = await measure(page, ["faint", "muted", "danger", "ok", "st-fail", "st-done", "st-need", "accent-ink"].map((t) => ({ name: t, classes: `text-caption text-${t}` })));
+  expect(tokens).toHaveLength(64);
+  expect(tokens.filter((g) => g.ratio < 4.5)).toEqual([]);
+
+  const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
+  test.skip(!model.startsWith("scripted:"), "the turns are scripted");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `contrast-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  writeFileSync(join(ws, "a.ts"), "// A comment.\nexport const a = 1;\nexport const b = 2;\n");
+  execFileSync("git", ["init", "-q"], { cwd: ws });
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model, title: "Contrast of every text" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const turns = async (n: number) => expect.poll(async () => {
+    const r = await (await request.get(`/api/sessions/${session.id}`)).json();
+    return !r.running && r.events.filter((e: any) => e.kind === "turn_end").length;
+  }, { timeout: 60_000 }).toBe(n);
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `Change the file. script:calls ${JSON.stringify([{ name: "Edit", input: { file_path: join(ws, "a.ts"), old_string: "export const b = 2;", new_string: "export const b = 3;\nexport const c = 4;" } }])}` } });
+  await turns(1);
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "And say it is done." } });
+  await turns(2);
+  await page.goto(`/s/${session.id}`);
+  await openPanel(page, "changes");
+  await page.locator(".k-diff-no").first().waitFor();
+  await expect(page.getByTestId("turn-end")).toHaveCount(2);
+  // The panel has faded in: nothing is read half way through its entrance.
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running" || a.effect?.getComputedTiming().iterations === Infinity));
+
+  const scan = () => page.evaluate(() => {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 1;
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+    const rgba = (css: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = "#000"; ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1); const d = ctx.getImageData(0, 0, 1, 1).data; return [d[0]!, d[1]!, d[2]!, d[3]! / 255]; };
+    const over = (f: number[], b: number[]) => [0, 1, 2].map((i) => f[i]! * f[3]! + b[i]! * (1 - f[3]!)).concat(1);
+    const lum = (c: number[]) => { const v = c.slice(0, 3).map((u) => { u /= 255; return u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4; }); return 0.2126 * v[0]! + 0.7152 * v[1]! + 0.0722 * v[2]!; };
+    const ratio = (a: number[], b: number[]) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x! + 0.05) / (y! + 0.05); };
+    // What is painted behind an element: every background up to the first opaque one, composed.
+    const behind = (el: Element) => {
+      const stack: number[][] = [];
+      for (let p: Element | null = el; p; p = p.parentElement) { const c = rgba(getComputedStyle(p).backgroundColor); if (c[3]! > 0) stack.push(c); if (c[3] === 1) break; }
+      let b = rgba(getComputedStyle(document.body).backgroundColor);
+      for (const c of stack.reverse()) b = over(c, b);
+      return b;
+    };
+    const low: string[] = [];
+    const seen = new Set<Element>();
+    let texts = 0, stats = 0, numbers = 0;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const t = n.textContent!.trim();
+      const el = n.parentElement;
+      if (!t || !el || seen.has(el) || el.closest("[disabled],[aria-disabled=true]")) continue;
+      seen.add(el);
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
+      const s = getComputedStyle(el);
+      if (s.visibility === "hidden") continue;
+      let op = 1;
+      for (let p: Element | null = el; p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
+      if (!op) continue;
+      texts++;
+      if (el.closest('[data-testid="turn-end"]')) stats++;
+      if (el.closest(".k-diff-no")) numbers++;
+      const fg = rgba(s.color);
+      fg[3] = fg[3]! * op;
+      const bg = behind(el);
+      const cr = ratio(over(fg, bg), bg);
+      const px = parseFloat(s.fontSize);
+      const big = px >= 24 || (px >= 18.66 && Number(s.fontWeight) >= 700);
+      if (cr < (big ? 3 : 4.5)) low.push(`${Math.round(cr * 100) / 100} "${t.slice(0, 30)}" ${el.tagName.toLowerCase()}.${String(el.className).slice(0, 60)}`);
+    }
+    return { texts, stats, numbers, low };
+  });
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.toggle("dark", t === "dark"); }, theme);
+    const got = await scan();
+    console.log(`${theme}: ${got.texts} texts, ${got.stats} in turn stats, ${got.numbers} line numbers, ${got.low.length} under the ratio\n${got.low.join("\n")}`);
+    // The earlier turn's stats and the diff's numbers were on screen and counted.
+    expect(got.stats).toBeGreaterThan(3);
+    expect(got.numbers).toBeGreaterThan(2);
+    expect(got.low).toEqual([]);
+  }
+  await page.evaluate(() => document.documentElement.classList.remove("theme-switch"));
+  await shoot(page, "contrast-every-text");
 });

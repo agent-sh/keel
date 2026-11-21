@@ -204,7 +204,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                         </td>
                       ) : (
                         <>
-                          <td className="k-diff-gutter select-none p-0 text-faint/80 tabular-nums">
+                          <td className="k-diff-gutter select-none p-0 text-faint tabular-nums">
                             <span className="flex">
                               <span className="k-diff-no">{l.old ?? ""}</span>
                               <span className="k-diff-no relative">

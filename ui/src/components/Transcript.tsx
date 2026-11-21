@@ -395,7 +395,7 @@ function TurnFooter({ e, reply, prompt, s, last, notes = [] }: { e: StoredEvent;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
   return (
-    <div className={cn("group/foot -mt-1 flex h-7 items-center gap-0.5", !last && "opacity-50 hover:opacity-100 focus-within:opacity-100 max-md:opacity-100")}>
+    <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
       {reply && <CopyButton text={() => reply} label="Copy the reply" testid="copy-reply" className="size-7" />}
       {prompt && last && s.phase !== "working" && (
         <ActionButton label="Answer again (a new version; this one stays a branch)" testid="retry" onClick={() => actions.edit(s.id, prompt.id, prompt.data.text).catch(reportError)}>
