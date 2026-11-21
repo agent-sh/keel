@@ -14,8 +14,7 @@
 // POST  /api/drain                         { timeout_seconds?, restart? } -> { ok, running, restart }
 // GET   /api/awake | POST { until_ms }     keep-awake state, a timed hold
 // POST  /api/report                        { session_id?, note?, dry_run? } -> { includes, path?, summary }
-import { createHash } from "node:crypto";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
@@ -26,6 +25,7 @@ import { configDir } from "../../providers/config.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
 import { runMode } from "../../core/runmode.ts";
+import { buildId } from "../../core/build.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const body = async (req: Request) => (await req.json().catch(() => undefined)) as any;
@@ -49,12 +49,7 @@ export function redact(v: unknown): unknown {
   return walk(v);
 }
 
-export function buildId(): string {
-  const parts = [process.execPath, process.argv[1] ?? ""].map((p) => {
-    try { const st = statSync(p); return `${p}:${st.size}:${st.mtimeMs}`; } catch { return p; }
-  });
-  return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 12);
-}
+export { buildId };
 
 export const adminRoutes: RouteModule = (deps) => {
   const { store, errors, bus, providers } = deps;

@@ -1,3 +1,4 @@
+import { testBuild } from "../core/build.ts";
 import type { ModelInfo } from "../providers/types.ts";
 import { claudeTools } from "./claude.ts";
 import { geminiTools } from "./gemini.ts";
@@ -46,6 +47,16 @@ export const asksOwner = (name: string) => [...byFamily.values(), shared].some((
 // The provider-neutral way to deferred tools, replaced by ToolSearch where tools load natively.
 const SEARCH_PAIR = new Set(["search_tools", "mcp_call"]);
 
+// The stand-in build of the upgrade e2e (src/core/build.ts): its tools as that build would have them.
+const asBuilt = (list: Tool[]): Tool[] => {
+  const as = testBuild?.tools;
+  if (!as) return list;
+  return list.filter((t) => !as[t.name]?.remove).map((t) => {
+    const c = as[t.name];
+    return c ? { ...t, ...(c.description !== undefined && { description: c.description }), ...(c.input_schema && { input_schema: c.input_schema }) } : t;
+  });
+};
+
 // Stable order (family tools, then shared sorted by name) so the tools prefix
 // of the request never changes between turns and stays cached.
 // `native`: the request can carry deferred tools (src/tools/defer.ts): the
@@ -55,7 +66,7 @@ export function toolsFor(family: ModelInfo["family"], native = false, sessionId?
   const base = byFamily.get(family) ?? byFamily.get("claude")!;
   const extra = shared.filter((t) => !t.families || t.families.includes(family));
   const off = toolsOff(sessionId);
-  const all = [...base, ...extra.sort((a, b) => a.name.localeCompare(b.name)), ...sessionTools(sessionId, family)].filter((t) => !off.has(t.name));
+  const all = asBuilt([...base, ...extra.sort((a, b) => a.name.localeCompare(b.name)), ...sessionTools(sessionId, family)]).filter((t) => !off.has(t.name));
   if (!native) return all;
   const kept = all.filter((t) => !SEARCH_PAIR.has(t.name));
   const deferred = kept.filter((t) => DEFERRED_BUILTINS.has(t.name)).map((t) => ({ ...t, defer: true }));

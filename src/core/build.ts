@@ -1,0 +1,45 @@
+// Which build of Keel this process is, and what a build marks as urgent for
+// the sessions that still carry an older build's tools and system prompt
+// (src/engine/build-pin.ts).
+import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
+
+// A stand-in for another build, for the upgrade e2e (test/e2e/build-pin.spec.ts):
+// KEEL_TEST_BUILD is JSON that names the build and changes what a new build
+// would: a line added to the core block of the system prompt, a tool's
+// description or input, a tool removed, and urgent marks.
+export type TestBuild = {
+  id?: string;
+  core?: string;
+  tools?: Record<string, { description?: string; input_schema?: Record<string, unknown>; remove?: boolean }>;
+  urgent?: { tools?: Record<string, string>; blocks?: Record<string, string> };
+};
+export const testBuild: TestBuild | undefined = (() => {
+  const raw = process.env.KEEL_TEST_BUILD;
+  if (!raw) return undefined;
+  try { return JSON.parse(raw) as TestBuild; } catch { throw new Error("KEEL_TEST_BUILD is not JSON"); }
+})();
+
+// Changes with every build: the program and its entry file, by size and time.
+export function buildId(): string {
+  if (testBuild?.id) return testBuild.id;
+  const parts = [process.execPath, process.argv[1] ?? ""].map((p) => {
+    try { const st = statSync(p); return `${p}:${st.size}:${st.mtimeMs}`; } catch { return p; }
+  });
+  return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 12);
+}
+
+// A change a live session must not wait for: a safety rule, or the fix of an
+// instruction that does harm. A session keeps the tools and system prompt it
+// was last sent until its cache is cold, so a reworded description or prompt
+// block reaches it late by design. The build that makes a change of this kind
+// gives the tool (by its name) or the prompt block (by its name in the kept
+// prompt: "core", "instruction files", a feature block's first words) a mark
+// here, any new text. A session whose pinned copy carries another mark, or
+// none, takes this build's tools and prompt at its next request, at the price
+// of one cache write of its context. Everything not marked waits.
+// A mark can be removed once the builds before it are no longer pinned anywhere.
+export const URGENT: { tools: Record<string, string>; blocks: Record<string, string> } = {
+  tools: { ...testBuild?.urgent?.tools },
+  blocks: { ...testBuild?.urgent?.blocks },
+};

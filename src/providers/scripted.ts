@@ -70,8 +70,9 @@ export class ScriptedProvider implements Provider {
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     const msgs = req.messages;
-    // For specs that compare what was sent across daemon restarts: one line per request.
-    if (process.env.KEEL_SCRIPTED_LOG) appendFileSync(process.env.KEEL_SCRIPTED_LOG, JSON.stringify({ ts: Date.now(), session: req.sessionKey, purpose: req.purpose ?? "turn", system: req.system, tools: req.tools.map((t) => t.name), messages: msgs.length }) + "\n");
+    // For specs that compare what was sent across daemon restarts: one line per
+    // request, with a fingerprint of the tool definitions as they were sent.
+    if (process.env.KEEL_SCRIPTED_LOG) appendFileSync(process.env.KEEL_SCRIPTED_LOG, JSON.stringify({ ts: Date.now(), session: req.sessionKey, purpose: req.purpose ?? "turn", system: req.system, tools: req.tools.map((t) => t.name), tools_hash: Bun.hash(JSON.stringify(req.tools.map((t) => [t.name, t.description, t.input_schema, t.freeform ?? null, !!t.defer]))).toString(36), messages: msgs.length }) + "\n");
     const last = msgs.at(-1);
     const lastText = textOf(last);
     // A retry is the same request: system, messages, tools, model and effort, byte for byte.

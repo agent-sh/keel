@@ -10,6 +10,7 @@ import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
+import { testBuild } from "../core/build.ts";
 import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
@@ -911,7 +912,7 @@ export class Engine {
     // Each block as the model is sent it, secrets as placeholders: the kept
     // prompt and its fingerprints never hold a secret's value.
     const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id) });
-    const shared: PromptPart[] = [CORE, ...extra].map((t, i) => sent({ name: i ? blockName(t) : "core", text: t + "\n\n" }));
+    const shared: PromptPart[] = [CORE + (testBuild?.core ? `\n${testBuild.core}` : ""), ...extra].map((t, i) => sent({ name: i ? blockName(t) : "core", text: t + "\n\n" }));
     const own = (await Promise.all(allHooks().map((h) => h.sessionSystem?.(session, info) ?? ""))).filter(Boolean).map((t) => sent({ name: blockName(t), text: `\n${t}\n` }));
     const parts = [...shared, ...sessionParts(session.workspace, session.created).map(sent), ...own];
     return { text: parts.map((p) => p.text).join(""), split: shared.reduce((n, p) => n + p.text.length, 0), blocks: blocksOf(parts), model: info?.id ?? null };
