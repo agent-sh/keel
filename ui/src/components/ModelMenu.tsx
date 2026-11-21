@@ -120,20 +120,21 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
         <TriggerLabel label={selected ? (all.some((o) => o.label === selected.label && o.value !== selected.value) ? `${selected.label} · ${selected.providerLabel}` : selected.label) : undefined} any={all.length > 0} value={value} placeholder={placeholder} />
       </Combobox.Trigger>
       <Combobox.Portal>
-        <Combobox.Positioner align="start" sideOffset={6} className="z-50 outline-none">
+        <Combobox.Positioner align="start" sideOffset={6} className={cn("z-50 outline-none", SHEET.place)}>
           <Combobox.Popup
             aria-label="Choose a model"
             data-testid="model-popup"
             className={cn(
-              "w-[min(30rem,calc(100vw-1.5rem))] overflow-hidden rounded-lg border border-line bg-raised shadow-3",
+              "@container/picker flex max-h-[min(33rem,var(--available-height))] w-[min(30rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg border border-line bg-raised shadow-3",
+              SHEET.popup,
               "origin-[var(--transform-origin)] transition-[scale,opacity] duration-150",
               "data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0",
             )}
           >
-            <div className="flex items-center border-b border-line">
+            <div className="flex shrink-0 flex-wrap items-center border-b border-line">
               <Combobox.Input
                 placeholder="Search models"
-                className="h-10 w-full bg-transparent px-3 text-ui outline-none placeholder:text-faint"
+                className="h-10 min-w-0 flex-1 bg-transparent px-3 text-ui outline-none placeholder:text-faint"
                 onKeyDown={(e) => {
                   if (held && e.key === "Enter") {
                     e.preventDefault();
@@ -151,7 +152,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                   else hide(i);
                 }}
               />
-              <span className="shrink-0 whitespace-nowrap pr-1 text-micro tabular-nums text-faint" data-testid="model-count" role="status">{count}</span>
+              <span className={cn("shrink-0 whitespace-nowrap pr-1 text-micro tabular-nums text-faint", NARROW.count)} data-testid="model-count" role="status">{count}</span>
               <button
                 type="button"
                 title="Read the provider listings again"
@@ -164,9 +165,9 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                 <RefreshCw className="size-3.5" />
               </button>
             </div>
-            {hint && <div className="border-b border-line px-3 py-1.5 text-caption text-warn" role="status" data-testid="picker-hint">{hint}</div>}
+            {hint && <div className="shrink-0 border-b border-line px-3 py-1.5 text-caption text-warn" role="status" data-testid="picker-hint">{hint}</div>}
             {machine && (
-              <div data-testid="peer-catalog" className={cn("border-b border-line px-3 py-1.5 text-caption", peer?.error ? "text-warn" : "text-faint")}>
+              <div data-testid="peer-catalog" className={cn("shrink-0 border-b border-line px-3 py-1.5 text-caption", peer?.error ? "text-warn" : "text-faint")}>
                 {peer?.error
                   ? `${machineName(machine)}'s listing cannot be read now (${peer.error})${peer.models ? "; the last one it gave is shown" : ""}.`
                   : peer?.models ? `Models ${machineName(machine)} lists: the session runs there.` : `Reading ${machineName(machine)}'s models.`}
@@ -175,12 +176,12 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
             <Combobox.Empty>
               <div className="px-3 py-4 text-ui text-muted">No model matches.</div>
             </Combobox.Empty>
-            <Combobox.List className="max-h-[min(28rem,var(--available-height))] overflow-y-auto overscroll-contain p-1 scroll-py-8">
+            <Combobox.List className="min-h-0 overflow-y-auto overscroll-contain p-1 scroll-py-8">
               {(group: Group) => (
                 <Combobox.Group key={group.value} items={group.items} className="pb-1 last:pb-0" data-testid="model-group" data-group={group.value}>
-                  <Combobox.GroupLabel className="group/head sticky top-0 z-10 flex h-7 items-center gap-1.5 bg-raised px-2 text-micro font-medium text-faint">
-                    {group.value === "favorites" && <Star className="size-3 fill-current text-brass" />}
-                    <span className="truncate">{group.label}</span>
+                  <Combobox.GroupLabel className="group/head sticky top-0 z-10 flex min-h-7 items-center gap-1.5 bg-raised px-2 text-micro font-medium text-faint">
+                    {group.value === "favorites" && <Star className="size-3 shrink-0 fill-current text-brass" />}
+                    <span className={cn("truncate", NARROW.wrap)} data-testid="model-group-label">{group.label}</span>
                     {group.provider && <span className="font-normal tabular-nums">{group.total}</span>}
                     {group.plan && <span className="rounded-xs bg-sunken px-1 font-normal text-muted">plan</span>}
                     {group.provider && problems?.[group.provider] && (
@@ -196,7 +197,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         data-testid="hide-provider"
                         onPointerDown={(e) => e.preventDefault()}
                         onClick={(e) => { e.stopPropagation(); actions.choose({ hide_provider: group.provider }).catch(reportError); }}
-                        className="ml-auto grid size-5 place-items-center rounded-xs opacity-0 hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover/head:opacity-100"
+                        className="ml-auto grid size-5 shrink-0 place-items-center rounded-xs opacity-0 hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover/head:opacity-100 pointer-coarse:size-7 pointer-coarse:opacity-100"
                       >
                         <EyeOff className="size-3" />
                       </button>
@@ -213,42 +214,49 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         data-model={item.value}
                         data-provider={item.provider}
                         className={cn(
-                          "group/row grid h-8 cursor-default grid-cols-[1rem_1fr_auto] items-center gap-2 rounded-md px-2 text-ui select-none outline-none",
+                          "group/row relative grid min-h-8 cursor-default grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1 text-ui select-none outline-none",
+                          NARROW.row,
                           held ? "data-held:bg-hover" : "data-highlighted:bg-hover",
                           item.hidden && "text-muted",
                         )}
                       >
-                        <Combobox.ItemIndicator className="col-start-1 text-accent">
+                        <Combobox.ItemIndicator className={cn("col-start-1 text-accent", NARROW.mark)}>
                           <Check className="size-3.5" />
                         </Combobox.ItemIndicator>
-                        <span className="col-start-2 flex min-w-0 items-center gap-1.5">
-                          <span className={cn("truncate", item.hidden && "shrink-0 max-w-[55%]")}>{item.label}</span>
+                        <span className={cn("col-start-2 flex min-w-0 items-center gap-1.5", NARROW.apart)}>
+                          <span className={cn("min-w-0 text-balance [overflow-wrap:anywhere]", item.hidden && "max-w-[55%]", NARROW.name)} data-testid="model-name">{item.label}</span>
                           {item.value === def && <span data-testid="model-default" className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
-                          {!group.provider && !item.hidden && <span className="shrink-0 truncate text-micro text-faint">{item.providerLabel}</span>}
-                          {item.hidden && <span className="min-w-0 truncate text-micro text-faint" title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
+                          {!group.provider && !item.hidden && <span className={cn("shrink-0 truncate text-micro text-faint", NARROW.wrap)} data-testid="model-provider">{item.providerLabel}</span>}
+                          {item.hidden && <span className={cn("min-w-0 truncate text-micro text-faint", NARROW.wrap)} title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>
-                        <span className="col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint">
-                          {own && !item.hidden && <RowAction
-                            label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
-                            on={pinned.includes(item.value)}
-                            testid="pin-model"
-                            onPress={() => togglePin(item)}
-                          >
-                            <Star className={cn("size-3", pinned.includes(item.value) && "fill-current text-brass")} />
-                          </RowAction>}
-                          {own && !item.hidden && item.value !== def && (
-                            <RowAction label="Hide" on={false} testid="hide-model" onPress={() => hide(item)}>
-                              <EyeOff className="size-3" />
-                            </RowAction>
+                        <span className={cn("col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint", NARROW.tail)}>
+                          <span className={cn("contents", NARROW.actions)}>
+                            {own && !item.hidden && <RowAction
+                              label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
+                              on={pinned.includes(item.value)}
+                              testid="pin-model"
+                              onPress={() => togglePin(item)}
+                            >
+                              <Star className={cn("size-3", pinned.includes(item.value) && "fill-current text-brass")} />
+                            </RowAction>}
+                            {own && !item.hidden && item.value !== def && (
+                              <RowAction label="Hide" on={false} testid="hide-model" onPress={() => hide(item)}>
+                                <EyeOff className="size-3" />
+                              </RowAction>
+                            )}
+                            {own && item.hidden === "model" && <TextAction testid="show-model" label="Show" onPress={() => show(item)} />}
+                            {own && (item.hidden === "provider" || item.hidden === "both") && (
+                              <TextAction testid="show-provider" label="Show provider" title={item.hidden === "both" ? `Show ${item.providerLabel} again; this model stays hidden` : `Show ${item.providerLabel} again`} onPress={() => showProvider(item, false)} />
+                            )}
+                            {own && item.hidden === "both" && <TextAction testid="show-both" label="Show both" title={`Show ${item.providerLabel} and this model`} onPress={() => showProvider(item, true)} />}
+                          </span>
+                          {!item.hidden && (
+                            <span className={cn("contents", NARROW.facts)}>
+                              {item.vision === true && <Image className="ml-0.5 size-3 shrink-0" aria-label="Reads images" />}
+                              {item.vision === false && <ImageOff className="ml-0.5 size-3 shrink-0" aria-label="Does not read images" />}
+                              <span className={cn("w-8 text-right", NARROW.window)} title="Context window">{item.context ? fmtTokens(item.context) : ""}</span>
+                            </span>
                           )}
-                          {own && item.hidden === "model" && <TextAction testid="show-model" label="Show" onPress={() => show(item)} />}
-                          {own && (item.hidden === "provider" || item.hidden === "both") && (
-                            <TextAction testid="show-provider" label="Show provider" title={item.hidden === "both" ? `Show ${item.providerLabel} again; this model stays hidden` : `Show ${item.providerLabel} again`} onPress={() => showProvider(item, false)} />
-                          )}
-                          {own && item.hidden === "both" && <TextAction testid="show-both" label="Show both" title={`Show ${item.providerLabel} and this model`} onPress={() => showProvider(item, true)} />}
-                          {!item.hidden && item.vision === true && <Image className="ml-0.5 size-3" aria-label="Reads images" />}
-                          {!item.hidden && item.vision === false && <ImageOff className="ml-0.5 size-3" aria-label="Does not read images" />}
-                          {!item.hidden && <span className="w-8 text-right" title="Context window">{item.context ? fmtTokens(item.context) : ""}</span>}
                         </span>
                       </Combobox.Item>
                     )}
@@ -267,11 +275,11 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                 </Combobox.Group>
               )}
             </Combobox.List>
-            <div className="flex items-center gap-3 border-t border-line px-3 py-1.5 text-micro text-faint">
+            <div className={cn("flex shrink-0 items-center gap-3 border-t border-line px-3 py-1.5 text-micro text-faint", own && NARROW.gone)}>
               {own ? (
                 <>
-                  <span className="inline-flex items-center gap-1"><Kbd keys="mod+f" /> favorite</span>
-                  <span className="inline-flex items-center gap-1"><Kbd keys="mod+h" /> hide</span>
+                  <span className="inline-flex items-center gap-1 pointer-coarse:hidden"><Kbd keys="mod+f" /> favorite</span>
+                  <span className="inline-flex items-center gap-1 pointer-coarse:hidden"><Kbd keys="mod+h" /> hide</span>
                   <span className="ml-auto">Search finds hidden models</span>
                 </>
               ) : <span data-testid="peer-choices-note">Favorites and hidden models are set on {machineName(machine!)} itself</span>}
@@ -282,6 +290,34 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
     </Combobox.Root>
   );
 }
+
+// On a phone the chooser is a sheet hung from the top of the window, not a
+// popup beside its trigger (the trigger sits low, with room for one row under
+// it): the search field stays at the top, clear of an on-screen keyboard, and
+// the results get the rest of the window. A tap beside the sheet still closes it.
+const SHEET = {
+  place: "max-md:fixed! max-md:inset-3! max-md:flex max-md:transform-none! max-md:flex-col max-md:pointer-events-none",
+  popup: "max-md:pointer-events-auto max-md:max-h-full",
+};
+
+// The popup narrower than 24rem (a phone, a large text size; the variant is in
+// styles.css): a row is the name on a line of its own, whole, then what it is
+// under it, and last a line that starts with its window and ends with its
+// actions (it shares the line before when both fit). The count goes under
+// the search field and the keyboard hints leave.
+const NARROW = {
+  row: "picker-narrow:flex picker-narrow:flex-wrap picker-narrow:gap-x-1.5 picker-narrow:gap-y-0.5 picker-narrow:py-1.5 picker-narrow:pl-8",
+  mark: "picker-narrow:absolute picker-narrow:left-2 picker-narrow:top-2",
+  apart: "picker-narrow:contents",
+  tail: "picker-narrow:min-h-7 picker-narrow:flex-[1_0_auto]",
+  name: "picker-narrow:max-w-none picker-narrow:basis-full",
+  wrap: "picker-narrow:shrink picker-narrow:whitespace-normal picker-narrow:[overflow-wrap:anywhere]",
+  facts: "picker-narrow:order-first picker-narrow:flex picker-narrow:items-center picker-narrow:gap-1",
+  window: "picker-narrow:w-auto",
+  actions: "picker-narrow:ml-auto picker-narrow:flex picker-narrow:flex-wrap picker-narrow:items-center picker-narrow:justify-end picker-narrow:gap-1",
+  count: "picker-narrow:order-last picker-narrow:basis-full picker-narrow:px-3 picker-narrow:pb-1.5",
+  gone: "picker-narrow:hidden",
+};
 
 // A small button inside an option that acts without choosing the option.
 function RowAction({ label, on, testid, onPress, children }: { label: string; on: boolean; testid: string; onPress: () => void; children: React.ReactNode }) {
@@ -295,8 +331,8 @@ function RowAction({ label, on, testid, onPress, children }: { label: string; on
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
       className={cn(
-        "grid size-5 place-items-center rounded-xs hover:bg-line hover:text-fg",
-        on ? "opacity-100" : "opacity-0 group-hover/row:opacity-100 group-data-highlighted/row:opacity-100",
+        "grid size-5 shrink-0 place-items-center rounded-xs hover:bg-line hover:text-fg pointer-coarse:size-7",
+        on ? "opacity-100" : "opacity-0 group-hover/row:opacity-100 group-data-highlighted/row:opacity-100 pointer-coarse:opacity-100",
       )}
     >
       {children}
@@ -314,7 +350,7 @@ function TextAction({ label, title, testid, onPress }: { label: string; title?: 
       data-testid={testid}
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
-      className="shrink-0 rounded-xs px-1.5 py-0.5 text-micro text-accent-ink hover:bg-line"
+      className="shrink-0 rounded-xs px-1.5 py-0.5 text-micro text-accent-ink hover:bg-line pointer-coarse:px-2 pointer-coarse:py-1.5"
     >
       {label}
     </span>

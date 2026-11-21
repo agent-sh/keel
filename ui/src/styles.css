@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
+/* Inside a model chooser narrower than 24rem (ModelMenu.tsx): rem here is the owner's text size. */
+@custom-variant picker-narrow (@container picker (width < 24rem));
 
 /* The Bridge: the shell and how its parts look. Unlayered, so it wins over utilities. */
 @import "./bridge.css";

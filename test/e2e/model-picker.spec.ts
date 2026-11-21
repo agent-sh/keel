@@ -1,4 +1,5 @@
-import { expect, test } from "./isolate.ts";
+import { createServer } from "node:http";
+import { expect, test, type APIRequestContext, type Locator } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: the model picker over hundreds of listed models. With no query it
@@ -180,4 +181,127 @@ test("model picker: counts, exact ids, the default, recent picks, two hide rules
   await expect(popup.locator('[data-model="scripted:stand-in-text"]').first()).toBeVisible();
   await page.keyboard.press("Escape");
   await request.post("/api/providers/choices", { data: { show_provider: "scripted", provider: "scripted", show: ["stand-in-text"] } });
+});
+
+// Two stand-in OpenAI-compatible servers with long, alike names: providers
+// whose labels differ in their last word, models whose ids differ in their
+// last letter.
+const LAB_MODELS = "abcdefgh".split("").map((x) => `laboratory/long-context-instruct-preview-quantized-${x}`);
+async function withLab(request: APIRequestContext, run: () => Promise<void>) {
+  const server = createServer((req, res) => {
+    res.writeHead(req.url?.startsWith("/v1/models") ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ object: "list", data: LAB_MODELS.map((id) => ({ id, object: "model", owned_by: "lab", max_model_len: 131072 })) }));
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+  const labs = [["lab-east", "Laboratory inference cluster east"], ["lab-west", "Laboratory inference cluster west"]] as const;
+  try {
+    for (const [id, label] of labs) expect((await request.put(`/api/providers/endpoints/${id}`, { data: { config: { label, base_url: url } } })).ok()).toBe(true);
+    await run();
+  } finally {
+    for (const [id] of labs) {
+      await request.post("/api/providers/choices", { data: { unpin: LAB_MODELS.map((m) => `${id}:${m}`), provider: id, show: LAB_MODELS } });
+      await request.delete(`/api/providers/endpoints/${id}`);
+    }
+    server.close();
+  }
+}
+// Every name in the list is shown whole: nothing is cut off at its end.
+const whole = (names: Locator) => names.evaluateAll((els) => els.every((el) => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight));
+
+// Long names stay apart in the chooser at its full width: a name too long for
+// its row goes on to a second line instead of losing its end.
+test("model picker: long names are shown whole", async ({ page, request }) => {
+  await withLab(request, async () => {
+    await page.goto("/");
+    const popup = page.getByTestId("model-popup");
+    await page.getByTestId("model-picker").click();
+    await page.getByPlaceholder("Search models").fill("preview-quantized");
+    await expect(popup.getByTestId("model-option")).toHaveCount(2 * LAB_MODELS.length);
+    expect(await whole(popup.getByTestId("model-name"))).toBe(true);
+    await expect(popup.getByTestId("model-group-label")).toHaveText(["Laboratory inference cluster east", "Laboratory inference cluster west"]);
+    expect(await whole(popup.getByTestId("model-group-label"))).toBe(true);
+    await expect(popup.getByTestId("model-option").first()).toContainText(`${LAB_MODELS[0]}`);
+    await shoot(page, "picker-04-long-names");
+  });
+});
+
+// A small phone at the largest text size: the chooser fits the screen with
+// the search field in view, only the results scroll, names and providers are
+// shown whole, and the last result's actions answer a tap.
+test.describe("on a small phone", () => {
+  test.use({ viewport: { width: 320, height: 480 }, hasTouch: true, isMobile: true });
+  test("model picker: fits, scrolls its results only, acts by touch", async ({ page, request }) => {
+    await page.addInitScript(() => localStorage.setItem("keel.textScale", "1.5"));
+    const { session } = await (await request.post("/api/sessions", { data: { title: "Chooser on a phone" } })).json();
+    await withLab(request, async () => {
+      await page.goto(`/s/${session.id}`);
+      const popup = page.getByTestId("model-popup");
+      const search = page.getByPlaceholder("Search models");
+      const list = popup.getByRole("listbox");
+      const fits = async () => {
+        const box = (await popup.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.y).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(320);
+        expect(box.y + box.height).toBeLessThanOrEqual(480);
+        await expect(search).toBeInViewport({ ratio: 1 });
+        await expect(page.getByTestId("model-count")).toBeInViewport({ ratio: 1 });
+      };
+      await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
+      await expect(popup).toBeVisible();
+      await fits();
+      await shoot(page, "picker-05-phone");
+
+      // The results have at least half of the window, and only they scroll: the popup itself has nothing more below.
+      expect(await list.evaluate((el) => el.clientHeight)).toBeGreaterThanOrEqual(240);
+      expect(await popup.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+      expect(await list.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+      await list.evaluate((el) => (el.scrollTop = el.scrollHeight));
+      await fits();
+
+      // Alike names from alike providers, whole.
+      await search.fill("preview-quantized");
+      await expect(popup.getByTestId("model-option")).toHaveCount(2 * LAB_MODELS.length);
+      expect(await whole(popup.getByTestId("model-name"))).toBe(true);
+      expect(await whole(popup.getByTestId("model-group-label"))).toBe(true);
+      await fits();
+      await shoot(page, "picker-06-phone-long-names");
+
+      // The last result: its star and its hide are on the screen, large enough for a finger.
+      const last = popup.getByTestId("model-option").last();
+      const id = (await last.getAttribute("data-model"))!;
+      const [provider, model] = [id.slice(0, id.indexOf(":")), id.slice(id.indexOf(":") + 1)];
+      const reach = async (action: Locator) => {
+        await action.scrollIntoViewIfNeeded();
+        await expect(action).toBeInViewport({ ratio: 1 });
+        await expect(action).toHaveCSS("opacity", "1");
+        const box = (await action.boundingBox())!;
+        expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(24);
+        await fits();
+      };
+      await reach(last.getByTestId("pin-model"));
+      await Promise.all([page.waitForResponse("**/api/providers/choices"), last.getByTestId("pin-model").tap()]);
+      await search.fill("");
+      const favorite = popup.locator(`[data-group="favorites"] [data-model="${id}"]`);
+      await expect(favorite).toBeVisible();
+      // Under Favorites a row names its provider, whole as well.
+      await expect(favorite.getByTestId("model-provider")).toHaveText("Laboratory inference cluster west");
+      expect(await whole(favorite.getByTestId("model-provider"))).toBe(true);
+      expect(await whole(favorite.getByTestId("model-name"))).toBe(true);
+      await search.fill(model);
+      const row = popup.locator(`[data-testid="model-option"][data-model="${id}"]`).last();
+      await reach(row.getByTestId("hide-model"));
+      await Promise.all([page.waitForResponse("**/api/providers/choices"), row.getByTestId("hide-model").tap()]);
+      const hidden = popup.locator(`[data-group="hidden"] [data-model="${id}"]`);
+      await expect(hidden).toBeVisible();
+      await reach(hidden.getByTestId("show-model"));
+      await shoot(page, "picker-07-phone-hidden");
+      await Promise.all([page.waitForResponse("**/api/providers/choices"), hidden.getByTestId("show-model").tap()]);
+      await expect(hidden).toHaveCount(0);
+      await expect(popup.locator(`[data-model="${id}"]`).first()).toBeVisible();
+      expect((await (await request.get("/api/models")).json()).models.find((m: any) => m.id === id && m.provider === provider).hidden).toBeFalsy();
+    });
+    await request.delete(`/api/sessions/${session.id}`);
+  });
 });
