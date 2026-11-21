@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
-import { flush, setDeps } from "./core.ts";
+import { alertHook, flush, setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as loops from "./loops.ts";
 
@@ -257,7 +257,18 @@ test("a calendar loop whose saved schedule the parser now refuses is turned off 
   const { loop } = loops.create({ session_id: s.id, schedule: "0 9 * * *", prompt: "tick" });
   store.db.run("UPDATE loops SET schedule = '*/2/3 * * * *', next_ms = ? WHERE id = ?", [Date.now() - 1000, loop.id]);
   expect(loops.get(loop.id)!.next_runs).toEqual([]);
-  loops.tick();
+  const alerts: string[][] = [];
+  alertHook.raise = (kind, _session, title, body) => void alerts.push([kind, title, body]);
+  try {
+    loops.tick();
+    loops.tick();
+  } finally {
+    alertHook.raise = undefined;
+  }
   expect(loops.get(loop.id)).toMatchObject({ enabled: false, next_ms: null, disabled_reason: expect.stringContaining("not valid") });
   expect(sent).toHaveLength(0);
+  // The owner is told, once: an activity row and an alert.
+  expect(alerts).toEqual([["loop_failed", expect.stringContaining("tick"), expect.stringContaining("*/2/3")]]);
+  const rows = store.db.query<{ text: string }, [string]>("SELECT text FROM activity WHERE session_id = ? AND kind = 'loop'").all(s.id);
+  expect(rows.map((r) => r.text)).toEqual([expect.stringContaining("turned off")]);
 });

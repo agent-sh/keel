@@ -565,8 +565,12 @@ export function tick() {
         try {
           next = l.kind === "auto" ? null : nextDue(l, l.kind === "interval" ? Math.max(now, l.next_ms!) : now);
         } catch (e) {
-          // A schedule saved before the parser refused it: off, with the reason, not retried every second.
-          patch(l.id, { enabled: false, next_ms: null, disabled_reason: `its schedule is not valid: ${(e as Error).message}` });
+          // A schedule saved before the parser refused it: off, with the reason, not
+          // retried every second, and the owner is told (the activity, an alert).
+          const why = `its schedule "${l.schedule}" is not valid: ${(e as Error).message}`;
+          patch(l.id, { enabled: false, next_ms: null, disabled_reason: why });
+          activity.record("loop", "failed", l.session_id, `Loop "${l.name}" was turned off: ${why}`, { loop_id: l.id });
+          alertHook.raise?.("loop_failed", l.session_id, `Loop turned off: ${l.name}`, `${why}. Give it a schedule that reads, then turn it on.`, { loop_id: l.id });
           continue;
         }
         db().transaction(() => {
