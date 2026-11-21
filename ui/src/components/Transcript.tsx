@@ -5,13 +5,14 @@ import { Fragment, startTransition, useEffect, useLayoutEffect, useMemo, useRef,
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
-import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
+import { actions, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
 import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
+import { TurnFailure } from "./TurnFailure.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
@@ -332,7 +333,7 @@ function Status({ sessionId }: { sessionId: string }) {
     <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-raised px-3 py-2 text-ui" data-testid="retrying">
       <span className="size-1.5 rounded-full bg-warn animate-pulse-dot" />
       <span className="min-w-0 flex-1 truncate text-muted" title={st.message}>{st.message}</span>
-      <span className="shrink-0 tabular-nums text-faint">retrying in {fmtWait(st.at - Date.now())}, attempt {st.attempt} of {st.max}</span>
+      <span className="shrink-0 tabular-nums text-faint">retrying in {fmtWait(st.at - liveNow())}, attempt {st.attempt} of {st.max}</span>
     </div>
   );
 }
@@ -374,7 +375,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const [, tick] = useState(0);
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
-  const s = from ? Math.max(0, Math.round((Date.now() - from) / 1000)) : 0;
+  const s = from ? Math.max(0, Math.round((liveNow() - from) / 1000)) : 0; // stopped while the daemon is unreachable
   const what = approving ? "Waiting for your approval" : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Waiting on ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
   return (
     <div className="flex items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
@@ -390,7 +391,11 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
 
 const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "Cut at the output limit", refusal: "Declined", error: "Failed", restart: "Cut by a daemon restart" };
 
-function TurnFooter({ e, reply, prompt, s, last, notes = [] }: { e: StoredEvent; reply: string; prompt?: StoredEvent; s: Session; last: boolean; notes?: StoredEvent[] }) {
+// `boxed`: the turn failed and its failure box is shown above. The box has the
+// way on (try again, the fix), and a turn with no reply has nothing to copy,
+// mark or rate: the footer keeps only what applies.
+// `times`: how many restarts in a row this footer stands for.
+function TurnFooter({ e, reply, prompt, s, last, notes = [], boxed = false, times = 1 }: { e: StoredEvent; reply: string; prompt?: StoredEvent; s: Session; last: boolean; notes?: StoredEvent[]; boxed?: boolean; times?: number }) {
   const u = e.data.usage;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
@@ -402,16 +407,16 @@ function TurnFooter({ e, reply, prompt, s, last, notes = [] }: { e: StoredEvent;
           <RotateCcw className="size-3.5" />
         </ActionButton>
       )}
-      <Extra on="assistant" e={e} s={s} />
+      {!(boxed && !reply) && <Extra on="assistant" e={e} s={s} />}
       <TurnNotes notes={notes} working={s.phase === "working"} />
       <span className="k-turn-end ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
-        {REASONS[e.data.reason] && <span className={e.data.reason === "error" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}</span>}
+        {REASONS[e.data.reason] && <span className={e.data.reason === "error" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
         {u && <span>{fmtTokens(u.output)} out</span>}
         {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">{fmtCost(u.cost)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
       </span>
-      {last && s.phase !== "working" && REASONS[e.data.reason] && (
+      {last && s.phase !== "working" && REASONS[e.data.reason] && !boxed && (
         <button type="button" data-testid="resume" onClick={() => actions.resume(s.id).catch(reportError)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
           <Play className="size-3" /> Continue
         </button>
@@ -691,6 +696,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   let prompt: StoredEvent | undefined;
   let reply: string[] = [];
   let notes: StoredEvent[] = []; // harness notes of the turn, shown on its footer
+  const boxed = new Set<string>(); // failures shown above their turn's footer
+  let cuts = 0; // restart footers folded into the next one
   const lastEnd = [...events].reverse().find((e) => e.kind === "turn_end")?.id;
   const lastImages = events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id;
 
@@ -753,14 +760,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               for (const b of e.data.blocks) if (b.type === "text" && b.text.trim()) reply.push(b.text);
               return <div key={e.id} id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} results={results} s={session} /></div>;
             }
-            if (e.kind === "error") {
-              return (
-                <div key={e.id} className="k-turn-error flex items-start gap-2.5 rounded-lg border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-ui text-danger" data-testid="turn-error">
-                  <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                  <span className="whitespace-pre-wrap break-words">{e.data.message}</span>
-                </div>
-              );
-            }
+            // The failure of a turn is shown where the turn ended, above its footer (below).
+            if (e.kind === "error") return boxed.has(e.id) ? null : <TurnFailure key={e.id} e={e} s={session} live={session.phase !== "working" && (events[idx - 1]?.id === lastEnd || idx === events.length - 1)} />;
             // Memory and hook notes fold into the turn's notes on its footer: quiet at six stations.
             if (e.kind === "note" && (e.data.hook || e.data.memory)) { notes.push(e); return null; }
             if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
@@ -780,10 +781,26 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               return <Divider key={e.id} testid="note"><span>{text}</span></Divider>;
             }
             if (e.kind === "turn_end") {
+              // Restarts in a row with nothing said between (a card that waits through them) are one footer, with their count.
+              if (e.data.reason === "restart") {
+                let k = idx + 1;
+                while (events[k] && (events[k]!.kind === "turn_start" || events[k]!.kind === "tool_result" || (events[k]!.kind === "user" && events[k]!.data.origin === "restart"))) k++;
+                if (events[k]?.kind === "turn_end" && events[k]!.data.reason === "restart") { cuts++; return null; }
+              }
+              const times = cuts + 1;
+              cuts = 0;
               const r = reply.join("\n\n");
               const mine = notes;
               notes = [];
-              return <Fragment key={e.id}><TurnFooter e={e} reply={r} prompt={prompt} s={session} last={e.id === lastEnd} notes={mine} /></Fragment>;
+              // A failed turn says what failed first, then its footer; the failure follows the turn's end in the record.
+              const failures: StoredEvent[] = [];
+              if (e.data.reason === "error") for (let k = idx + 1; events[k]?.kind === "error"; k++) { failures.push(events[k]!); boxed.add(events[k]!.id); }
+              return (
+                <Fragment key={e.id}>
+                  {failures.map((f) => <TurnFailure key={f.id} e={f} s={session} live={e.id === lastEnd && session.phase !== "working"} />)}
+                  <TurnFooter e={e} reply={r} prompt={prompt} s={session} last={e.id === lastEnd} notes={mine} boxed={failures.length > 0} times={times} />
+                </Fragment>
+              );
             }
             return null;
           })}
