@@ -13,8 +13,9 @@ import { authHeaders, findDaemon, refusal } from "./client.ts";
 const USAGE = `keel debug [ERROR_ID] | --session ID [--turn EVENT]   the debug bundle, as Markdown
 keel debug errors [--all] [--json]                    the open errors, newest first
 keel debug trace TRACE_ID [--json]                    one trace's spans
-keel debug timeline SESSION [--since 1h] [--only failures|turns|agents] [--limit N] [--before CURSOR] [--json]
+keel debug timeline SESSION [--since 1h] [--only failures|turns|agents] [--limit N] [--before CURSOR] [--no-ids] [--json]
                                                       what happened in a session, newest first, and what it does now
+                                                      (--no-ids leaves the ids off the lines: fewer tokens for a model that only reads)
 keel debug log [-f] [--level debug|info|warn|error] [--grep TEXT] [--lines N]
   Every form takes --url URL (else KEEL_URL, else the daemon of the state folder).`;
 
@@ -39,7 +40,7 @@ export async function debug(argv: string[]): Promise<number> {
     options: {
       url: { type: "string" }, json: { type: "boolean" }, help: { type: "boolean" }, session: { type: "string" }, turn: { type: "string" },
       all: { type: "boolean" }, follow: { type: "boolean", short: "f" }, level: { type: "string" }, grep: { type: "string" }, lines: { type: "string" },
-      since: { type: "string" }, only: { type: "string" }, limit: { type: "string" }, before: { type: "string" },
+      since: { type: "string" }, only: { type: "string" }, limit: { type: "string" }, before: { type: "string" }, "no-ids": { type: "boolean" },
     },
   });
   if (v.help) return (console.log(USAGE), 0);
@@ -66,7 +67,7 @@ export async function debug(argv: string[]): Promise<number> {
     if (pos[0] === "timeline") {
       const id = pos[1] ?? v.session;
       if (!id) throw new Error("name the session: keel debug timeline SESSION");
-      const q = new URLSearchParams(Object.entries({ since: v.since, only: v.only, limit: v.limit, before: v.before, format: v.json ? undefined : "text" }).filter(([, x]) => x) as [string, string][]);
+      const q = new URLSearchParams(Object.entries({ since: v.since, only: v.only, limit: v.limit, before: v.before, format: v.json ? undefined : "text", ids: v["no-ids"] && !v.json ? "0" : undefined }).filter(([, x]) => x) as [string, string][]);
       const r = await get(url, `/api/sessions/${encodeURIComponent(id)}/timeline?${q}`);
       process.stdout.write(v.json ? JSON.stringify(await r.json(), null, 2) + "\n" : await r.text());
       return 0;

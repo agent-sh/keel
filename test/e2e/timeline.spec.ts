@@ -43,26 +43,40 @@ const made: string[] = [];
 test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
 
 test("the timeline tells a session's story, live, and opens each turn's receipt", async ({ page }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(420_000);
   const state = join(ROOT, `timeline-${Date.now()}`);
   made.push(state);
   for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
   let d = await daemon(state);
   const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
     fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+  // Every view at the owner's window and at a narrow one, in both themes.
+  const shots = async (name: string) => {
+    await page.mouse.move(600, 4);
+    await shoot(page, name);
+    await page.setViewportSize({ width: 900, height: 1040 });
+    await shoot(page, `${name}-narrow`);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+  };
   try {
-    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Parser cleanup" });
-    const base = `/api/sessions/${session.id}`;
-    await call(`${base}/permissions`, { mode: "full-auto" }, "PUT");
-    const events = async (): Promise<StoredEvent[]> => (await call(base)).events;
-    const ended = (n: number) => expect.poll(async () => (await events()).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(n);
-    const send = (text: string, mode?: "queue") => call(`${base}/messages`, { text, mode });
-    const timeline = (q = ""): Promise<TimelinePage> => call(`${base}/timeline${q}`);
+    const open = async (title: string) => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+      return session.id as string;
+    };
+    const id = await open("Parser cleanup");
+    const base = `/api/sessions/${id}`;
+    const events = async (sid = id): Promise<StoredEvent[]> => (await call(`/api/sessions/${sid}`)).events;
+    const ends = async (sid = id) => (await events(sid)).filter((e) => e.kind === "turn_end");
+    const ended = (n: number, sid = id) => expect.poll(async () => (await ends(sid)).length, { timeout: 60_000 }).toBe(n);
+    const send = (text: string, mode?: "queue", sid = id) => call(`/api/sessions/${sid}/messages`, { text, mode });
+    const timeline = (q = "", sid = id): Promise<TimelinePage> => call(`/api/sessions/${sid}/timeline${q}`);
     const turnAfter = async (text: string) => {
       const ev = await events();
       const prompt = ev.find((e) => e.kind === "user" && String(e.data.text).includes(text))!;
       return ev.find((e) => e.kind === "turn_start" && e.parent === prompt.id)!;
     };
+    const text = (r: TimelineRow) => r.text;
 
     // An owner's turn, then a queued one whose two tool calls fail.
     await send("script:slow timeline-prompt-marker");
@@ -73,30 +87,54 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await expect.poll(async () => (await timeline("?only=agents")).rows.map((r) => r.sub).sort(), { timeout: 60_000 }).toEqual(["completed", "started"]);
     // Its report starts a turn of its own.
     await expect.poll(async () => (await timeline("?only=turns")).rows.find((r) => r.turn?.origin === "subagent")?.sub, { timeout: 60_000 }).toBe("ok");
-    const before = (await events()).filter((e) => e.kind === "turn_end").length;
+    let n = (await ends()).length;
     await send(script([{ name: "wait_for", input: { kind: "timer", seconds: 2, note: "timeline-note-marker" } }]));
-    await ended(before + 2);
-    // A crash while a tool runs: the next daemon closes the turn and continues it.
+    await ended((n += 2));
+    // A model request that fails twice before it answers: the turn is fine, the failures are told.
+    await send("script:overloaded");
+    await ended(++n);
+    // The owner stops a turn while its tool runs: the call was stopped, it did not fail.
     await send("script:long-tool");
+    await expect.poll(async () => (await timeline()).now!.lines[0]?.text, { timeout: 30_000 }).toBe("Running a turn started by the owner: step 1, running Bash");
+    await call(`${base}/interrupt`, { by: "owner" });
+    await ended(++n);
+    // A crash while a tool runs: the next daemon closes the turn and continues it.
+    await send(script([{ name: "Bash", input: { command: "sleep 30; echo slept" } }]));
     await expect.poll(async () => (await timeline()).now!.lines[0]?.text, { timeout: 30_000 }).toBe("Running a turn started by the owner: step 1, running Bash");
     d.proc.kill("SIGKILL");
     await exited(d.proc);
     d = await daemon(state);
-    await expect.poll(async () => (await events()).filter((e) => e.kind === "turn_end").map((e) => e.data.reason).slice(-2), { timeout: 90_000 }).toEqual(["restart", "end_turn"]);
+    await expect.poll(async () => (await ends()).map((e) => e.data.reason).slice(-2), { timeout: 90_000 }).toEqual(["restart", "end_turn"]);
 
     // --- the route
     const all = await timeline("?limit=200");
-    const text = (r: TimelineRow) => r.text;
     const turns = all.rows.filter((r) => r.kind === "turn").reverse();
-    expect(turns.map(text).slice(0, 2)).toEqual(["Turn started by the owner, 1 step", "Turn started by a queued prompt, 2 steps, 2 failed tools"]);
+    // Each sentence leads with who started the turn.
+    expect(turns.map(text)).toEqual([
+      "Owner prompt, 1 step",
+      "Queued prompt, 2 steps, 2 failed tools",
+      "Owner prompt, 2 steps",
+      "Agent report, 1 step",
+      "Owner prompt, 2 steps",
+      "Wait wake, 1 step",
+      "Owner prompt, 1 step",
+      "Owner prompt, stopped by the owner after 1 step",
+      "Owner prompt, cut when the daemon went down after 1 step",
+      "Continued after a daemon restart, 1 step",
+    ]);
     expect(turns[1]).toMatchObject({ bad: "2 failed tools", tone: "plain", turn: { origin: "queued", outcome: "ok", steps: 2, tools: 2, failed_tools: 2 } });
     expect(turns[1]!.ms).toBeGreaterThan(0);
     expect(turns[1]!.turn!.cost).toBeGreaterThan(0);
-    expect(turns.map(text)).toContain("Turn started by a wait wake, 1 step");
-    expect(turns.at(-2)).toMatchObject({ text: "Turn started by the owner, cut by a daemon restart after 1 step", turn: { outcome: "cut" } });
-    expect(turns.at(-1)).toMatchObject({ text: "Turn continued after a daemon restart, 1 step", turn: { origin: "restart", outcome: "ok" } });
-    const cut = all.rows.find((r) => r.kind === "restart")!;
-    expect(cut).toMatchObject({ sub: "crash", turn_event: turns.at(-2)!.id });
+    // The stopped call is a result, not a failure: the row has nothing wrong in it and is no failure.
+    expect(turns[7]).toMatchObject({ turn: { outcome: "stopped_by_owner", tools: 1, failed_tools: 0 } });
+    expect(turns[7]!.bad).toBeUndefined();
+    // A cut turn is one row: its end makes no second row saying the same.
+    expect(turns[8]).toMatchObject({ turn: { outcome: "cut" } });
+    expect(turns[9]).toMatchObject({ turn: { origin: "restart", outcome: "ok" } });
+    expect(all.rows.filter((r) => r.kind === "restart")).toEqual([]);
+    // The failed requests, counted for this session.
+    const failed = all.rows.filter((r) => r.kind === "error");
+    expect(failed.map(text)).toEqual(["Model request failed (overloaded), 2 times"]);
     // Agents, the wait and its wake, each with the ids that open it and the turn it happened in.
     const spawning = await turnAfter("spawn_agent");
     const agents = all.rows.filter((r) => r.kind === "agent").reverse();
@@ -106,10 +144,13 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(waits.map(text)).toEqual(["Wait set on a timer", expect.stringMatching(/^Wait on a timer fired after \d s$/)]);
     expect(waits[0]!.turn_event).toBe((await turnAfter("wait_for")).id);
     expect(turns.find((r) => r.turn?.origin === "wait")!.refs!.wait_id).toBe(waits[0]!.refs!.wait_id);
+    // The agent's own session has its side of the story: its task's turn, and what its parent's list holds about it.
+    const child = await timeline("", agents[0]!.refs!.child_session!);
+    expect(child.rows.map(text)).toEqual(expect.arrayContaining(["Parent's task, 1 step", 'Agent "Check the parser" started (general-purpose)']));
     // Newest first, and a page at a time gives the same rows once each.
     expect(all.rows.map((r) => r.ts)).toEqual([...all.rows.map((r) => r.ts)].sort((a, b) => b - a));
     const paged: string[] = [];
-    for (let before: string | null = "", n = 0; before !== null && n < 50; n++) {
+    for (let before: string | null = "", k = 0; before !== null && k < 50; k++) {
       const p = await timeline(`?limit=3&now=0${before ? `&before=${encodeURIComponent(before)}` : ""}`);
       expect(p.rows.length).toBeLessThanOrEqual(3);
       expect(p.now).toBeUndefined();
@@ -118,42 +159,68 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     }
     expect(paged).toEqual(all.rows.map((r) => r.id));
     expect((await timeline("?only=turns")).rows.map((r) => r.id)).toEqual(turns.map((r) => r.id).reverse());
-    expect((await timeline("?only=failures")).rows.map(text)).toEqual(["Turn started by a queued prompt, 2 steps, 2 failed tools"]);
-    expect((await timeline(`?since=${Date.now() + 1000}`)).rows).toEqual([]);
+    const failures = await timeline("?only=failures");
+    expect(failures.rows.map(text)).toEqual(["Model request failed (overloaded), 2 times", "Queued prompt, 2 steps, 2 failed tools"]);
+    expect(failures.scanned).toBe(all.rows.length);
+    // A refresh asks only for what is newer than what it holds: nothing older is read or returned.
+    expect((await timeline(`?since=${all.as_of + 1000}`)).rows).toEqual([]);
+    expect((await timeline(`?since=${turns[9]!.ts}`)).rows.map((r) => r.id)).toEqual([turns[9]!.id]);
     expect((await fetch(`${d.url}${base}/timeline?only=nothing`)).status).toBe(400);
     expect((await fetch(`${d.url}/api/sessions/none/timeline`)).status).toBe(404);
     // Content-free: the title and the agent's title, never a prompt, a command or a note.
     const body = JSON.stringify(all);
     for (const word of PRIVATE) expect(body).not.toContain(word);
-    // The same story as text, for a model.
+    // The same story as text, for a model; without ids when it only reads.
     const plain = await (await fetch(`${d.url}${base}/timeline?format=text`)).text();
     expect(plain).toContain('Timeline of session "Parser cleanup"');
     expect(plain).toContain("Now: idle.");
-    expect(plain).toMatch(/\n\d\d-\d\d \d\d:\d\d {3}Turn started by a wait wake, 1 step, \d+ m?s, \$[\d.]+ {2}\[turn=[0-9a-f-]{36}\]\n/);
+    expect(plain).toMatch(/\n\d\d-\d\d \d\d:\d\d:\d\d {3}Wait wake, 1 step, \d+ m?s, \$[\d.]+ {2}\[turn=[0-9a-f-]{36}\]\n/);
     for (const word of PRIVATE) expect(plain).not.toContain(word);
+    expect(await (await fetch(`${d.url}${base}/timeline?format=text&ids=0`)).text()).not.toMatch(/\[turn=/);
 
     // Activity rows keep the turn they happened in, also after later turns ran.
-    const activity = (await call(`/api/activity?session_id=${session.id}&limit=100`)).items as { kind: string; sub: string; turn_event: string | null }[];
+    const activity = (await call(`/api/activity?session_id=${id}&limit=100`)).items as { kind: string; sub: string; turn_event: string | null }[];
     expect(activity.find((a) => a.kind === "agent" && a.sub === "started")!.turn_event).toBe(spawning.id);
     // A turn's own row names it (the turn the crash cut never told its end).
     const starts = (await events()).filter((e) => e.kind === "turn_start").map((e) => e.id);
-    expect(activity.filter((a) => a.kind === "turn" && a.sub !== "goal").map((a) => a.turn_event).reverse()).toEqual(starts.filter((s) => s !== turns.at(-2)!.id));
+    expect(activity.filter((a) => a.kind === "turn" && a.sub !== "goal").map((a) => a.turn_event).reverse()).toEqual(starts.filter((x) => x !== turns[8]!.id));
+
+    // --- another session: its own failures, and a branch that is not shown
+    const other = await open("Second session");
+    await send("script:overloaded", undefined, other);
+    await ended(1, other);
+    await send("script:slow", undefined, other);
+    await ended(2, other);
+    // The same failure happened elsewhere: this session's row is still here, with its own count.
+    expect((await timeline("?only=failures")).rows.map(text)).toContain("Model request failed (overloaded), 2 times");
+    expect((await timeline("?only=failures", other)).rows.map(text)).toEqual(["Model request failed (overloaded), 2 times"]);
+    // The owner goes back to the first prompt and writes another: the two turns after it are on a branch not shown.
+    const firstPrompt = (await events(other)).find((e) => e.kind === "user")!;
+    await call(`/api/sessions/${other}/head`, { head_event_id: firstPrompt.id, leaf: false });
+    await send("script:slow again", undefined, other);
+    await ended(3, other);
+    const branched = (await timeline("?only=turns", other)).rows;
+    expect(branched.map(text)).toEqual(["Owner prompt, 1 step", "Owner prompt, 1 step, on a branch not shown", "Owner prompt, 1 step, on a branch not shown"]);
+    expect(branched.map((r) => r.turn?.branch)).toEqual([undefined, "other", "other"]);
 
     // --- the panel
     await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
-    await page.goto(`${d.url}/s/${session.id}`);
+    await page.goto(`${d.url}/s/${id}`);
     await page.getByTestId("panel-menu").click();
     await page.getByTestId("panel-search").fill("timeline");
     await page.getByTestId("panel-pick-timeline").click();
     const panel = page.getByTestId("timeline-panel");
     const rows = panel.getByTestId("timeline-row");
+    const line = (r: TimelineRow) => panel.locator(`[data-testid="timeline-row"][data-id="${r.id}"]`);
     await expect(rows).toHaveCount(all.rows.length);
     await expect(panel.getByTestId("timeline-state")).toHaveText("Idle");
     await expect(panel.getByTestId("timeline-now-line")).toHaveText(/Nothing is running or waited on\. The last turn finished\./);
-    await expect(rows.first()).toContainText("Turn continued after a daemon restart, 1 step");
+    await expect(rows.first()).toContainText("Continued after a daemon restart, 1 step");
     await expect(panel.getByTestId("timeline-bad")).toHaveText("2 failed tools");
-    await page.mouse.move(600, 4);
-    await shoot(page, "timeline-01-story");
+    // The minute is said once; rows in the same minute carry their seconds, so a burst keeps its order.
+    await expect(panel.locator("time").first()).toHaveText(/^\d\d:\d\d$/);
+    await expect(panel.locator("time").filter({ hasText: /^:\d\d$/ }).first()).toBeVisible();
+    await shots("timeline-01-story");
 
     // Keyboard: the list is one Tab stop; arrows move, Enter opens the receipt.
     await page.getByTestId("timeline-only-all").focus();
@@ -164,70 +231,104 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await rows.first().locator("button[data-row]").focus();
     await page.keyboard.press("End");
     await page.keyboard.press("ArrowUp");
-    const failedTurn = panel.locator(`[data-testid="timeline-row"][data-id="${turns[1]!.id}"]`);
+    const failedTurn = line(turns[1]!);
     await expect(failedTurn.locator("button[data-row]")).toBeFocused();
     await page.keyboard.press("Enter");
     const receipt = failedTurn.getByTestId("timeline-receipt");
     await expect(receipt.getByTestId("receipt-inputs")).toContainText("a queued prompt");
     await expect(receipt.getByTestId("receipt-requests")).toContainText("2 model requests");
-    // One call ran and failed (it opens in the trace); the other named no tool and never ran.
+    // One call ran and failed (it opens in the trace); the other named no tool and never ran. The row said 2 failed.
     await expect(receipt.getByTestId("receipt-tools")).toContainText("2 tool calls, 2 failed: call 1 (1 more never ran");
     await expect(receipt.getByTestId("receipt-end")).toContainText("Finished after");
-    await page.mouse.move(600, 4);
-    await shoot(page, "timeline-02-receipt");
-    // The failed call opens in the trace, at its span.
+    await shots("timeline-02-receipt");
+    // Escape from inside the open row closes it and puts the keys back on its line.
+    await receipt.getByTestId("receipt-bundle").focus();
+    await page.keyboard.press("Escape");
+    await expect(receipt).toHaveCount(0);
+    await expect(failedTurn.locator("button[data-row]")).toBeFocused();
+    await expect(panel).toBeVisible();
+    await page.keyboard.press("Enter");
+    // The receipt leads to the turn's place in the conversation.
+    const queuedPrompt = (await events()).find((e) => e.kind === "user" && e.data.origin === "queued")!;
+    await receipt.getByTestId("receipt-show").click();
+    await expect(page.locator(`#e-${queuedPrompt.id}`)).toBeInViewport();
+    // The failed call opens in the trace, at its span; coming back, the panel is where it was left.
     await receipt.getByTestId("receipt-failed-tool").first().click();
     await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "traces");
     await expect(page.locator('[data-testid="span-row"][aria-current="true"]')).toHaveAttribute("data-status", "error");
     await page.getByTestId("panel-switch").click();
     await page.getByTestId("panel-pick-timeline").click();
+    await expect(failedTurn.getByTestId("timeline-receipt")).toBeVisible();
+    // The stopped turn's receipt agrees with its row: a call stopped with the turn, none failed.
+    await line(turns[7]!).locator("button[data-row]").click();
+    await expect(line(turns[7]!).getByTestId("receipt-tools")).toHaveText("1 tool call, 1 stopped with the turn");
+    await expect(line(turns[7]!).getByTestId("receipt-end")).toContainText("Stopped after");
 
     // Filters.
     await page.getByTestId("timeline-only-failures").click();
-    await expect(rows).toHaveCount(1);
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first()).toContainText("Model request failed (overloaded), 2 times");
     await page.getByTestId("timeline-only-agents").click();
     await expect(rows).toHaveCount(2);
     await rows.last().locator("button[data-row]").click();
     await expect(rows.last().getByTestId("timeline-open-agent")).toBeVisible();
     await rows.last().getByTestId("timeline-its-turn").click();
     await expect(rows.last().getByTestId("timeline-receipt")).toHaveAttribute("data-turn", spawning.id);
-    await page.mouse.move(600, 4);
-    await shoot(page, "timeline-03-agents");
+    await shots("timeline-03-agents");
     await page.getByTestId("timeline-only-all").click();
     await expect(rows).toHaveCount(all.rows.length);
 
-    // Live: a call that needs the owner turns "now" to them; the answer moves it on.
+    // Live: a call that needs the owner turns "now" to them, and the line leads to the card.
     await call(`${base}/permissions`, { mode: "ask" }, "PUT");
     await send(script([{ name: "Bash", input: { command: "rm timeline-tool-marker.txt" } }]));
     await expect(panel.getByTestId("timeline-state")).toHaveText("Needs you", { timeout: 30_000 });
-    await expect(panel.locator('[data-testid="timeline-now-line"][data-tone="owner"]')).toHaveText(/Waits on the owner: approval for Bash/);
+    const needs = panel.locator('[data-testid="timeline-now-line"][data-tone="owner"]');
+    await expect(needs).toHaveText(/Waits on the owner: approval for Bash/);
     await expect(panel.locator('[data-testid="timeline-now-line"][data-kind="turn"]')).toContainText("Running a turn started by the owner: step 1");
-    await expect(rows.first()).toHaveAttribute("data-kind", "approval");
-    await expect(rows.first()).toHaveAttribute("data-tone", "owner");
-    await expect(rows.nth(1)).toContainText("Turn started by the owner: running");
-    await page.mouse.move(600, 4);
-    await shoot(page, "timeline-04-needs-you");
-    await page.setViewportSize({ width: 900, height: 1040 });
-    await shoot(page, "timeline-05-narrow");
-    await page.setViewportSize({ width: 1920, height: 1040 });
+    // What "now" says is not said again as rows: the list still starts at the last turn that ended.
+    await expect(panel.locator('[data-testid="timeline-row"][data-sub="running"]')).toHaveCount(0);
+    await expect(panel.locator('[data-testid="timeline-row"][data-tone="owner"]')).toHaveCount(0);
+    await expect(rows).toHaveCount(all.rows.length);
+    await shots("timeline-04-needs-you");
+    await needs.getByRole("button").click();
+    await expect(page.locator('[data-testid="approval"] button:focus')).toHaveCount(1);
+    // The running turn's line shows its receipt above the list (it has no row yet).
+    await panel.locator('[data-testid="timeline-now-line"][data-kind="turn"]').getByRole("button").click();
+    await expect(panel.getByTestId("timeline-asked").getByTestId("receipt-end")).toHaveText("Still running");
+    await panel.getByTestId("timeline-asked").getByRole("button", { name: "Close the receipt" }).click();
+    await expect(panel.locator("button[data-row]:focus")).toHaveCount(1);
     const pending = (await call(`${base}/approvals`)).approvals.filter((a: any) => a.state === "pending");
     expect(pending).toHaveLength(1);
     await call(`${base}/approvals/${pending[0].id}`, { choice: "deny" });
+    // The answer moves it on, and what was open is now a row each.
     await expect(panel.getByTestId("timeline-state")).toHaveText("Idle", { timeout: 30_000 });
     await expect(rows.first()).toContainText(/Approval for Bash denied after/);
-    await expect(rows.nth(2)).toContainText("Turn started by the owner, 2 steps, 1 failed tool");
+    await expect(rows.nth(1)).toContainText("Approval asked for Bash");
+    await expect(rows.nth(2)).toContainText("Owner prompt, 2 steps, 1 failed tool");
+    await expect(rows).toHaveCount(all.rows.length + 3);
     expect(JSON.stringify(await timeline())).not.toContain("timeline-tool-marker");
 
-    // An Activity row opens the receipt of the turn it happened in.
+    // An Activity row opens the turn it happened in: its own row, open and shown.
     await page.getByTestId("inbox-button").click();
     await page.getByTestId("tab-activity").click();
     const started = page.locator('[data-testid="activity-item"][data-kind="agent"]').filter({ hasText: "Started agent" });
     await started.getByTestId("activity-receipt").click();
-    const asked = panel.getByTestId("timeline-asked");
-    await expect(asked.getByTestId("timeline-receipt")).toHaveAttribute("data-turn", spawning.id);
-    await expect(asked.getByTestId("receipt-tools")).toContainText("1 tool call");
-    await page.mouse.move(600, 4);
-    await shoot(page, "timeline-06-asked");
+    const spawned = panel.locator(`[data-testid="timeline-row"][data-id="${spawning.id}"]`);
+    await expect(spawned.locator("button[data-row]")).toHaveAttribute("aria-expanded", "true");
+    await expect(spawned.locator("button[data-row]")).toBeFocused();
+    await expect(spawned.getByTestId("receipt-tools")).toContainText("1 tool call");
+    await expect(spawned).toBeInViewport();
+    await expect(panel.getByTestId("timeline-asked")).toHaveCount(0);
+    await shots("timeline-05-asked");
+
+    // A branch that is not shown reads faint, and says so.
+    await page.goto(`${d.url}/s/${other}`);
+    await page.getByTestId("panel-menu").click();
+    await page.getByTestId("panel-pick-timeline").click();
+    await expect(rows.first()).toBeVisible();
+    await expect(panel.locator('[data-testid="timeline-row"][data-branch="other"]')).toHaveCount(2);
+    await expect(panel.locator('[data-testid="timeline-row"][data-branch="other"]').first()).toContainText("on a branch not shown");
+    await shots("timeline-06-branch");
   } finally {
     d.proc.kill("SIGKILL");
   }

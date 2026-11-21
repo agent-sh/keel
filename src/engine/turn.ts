@@ -40,6 +40,11 @@ export const QUESTION_CUT = "No answer was recorded before the daemon restarted:
 // A call cut while it waited for the owner's approval never ran.
 export const APPROVAL_CUT = "The daemon restarted while this call waited for the owner's approval: it did not run. Call it again if it is still needed.";
 const CUT = new Set([RESTART_CUT, QUESTION_CUT, APPROVAL_CUT]);
+// What a call's result says when the owner's stop reached it.
+const STOPPED_BEFORE = "Interrupted by the user before this tool ran.";
+const STOPPED_WHILE = "Interrupted by the user while this tool ran.";
+// A result that says the turn was stopped or cut under the call, not that the call failed.
+export const isStopResult = (content: unknown) => typeof content === "string" && (CUT.has(content) || content === STOPPED_BEFORE || content === STOPPED_WHILE);
 const outcomeOf = (session: string, callId: string) => allHooks().map((h) => h.callOutcome?.(session, callId)).find(Boolean);
 const cutText = (session: string, u: { id: string; name: string }) => {
   if (asksOwner(u.name)) return QUESTION_CUT;
@@ -119,7 +124,7 @@ export function toMessages(events: StoredEvent[]): Message[] {
   // and replaying its output as user text loses the untrusted tool-result role.
   const projected: Message[] = [];
   const interrupted = (id: string): ToolResultBlock => ({
-    type: "tool_result", tool_use_id: id, content: "Interrupted by the user before this tool ran.", is_error: true,
+    type: "tool_result", tool_use_id: id, content: STOPPED_BEFORE, is_error: true,
   });
   const pending = new Map<string, ToolResultBlock | undefined>();
   for (const m of merged) {
@@ -939,7 +944,10 @@ export class Engine {
     let compactedForFit = false;
     let summaryFailed = false;
     let steps = 0;
-    // What the turn's end says it took: its tool results, and those that were errors.
+    // What the turn's end says it took: the replies the model gave, its tool
+    // results, and those that were errors. A call the turn's stop or a restart
+    // cut did not fail: it is a result, not an error.
+    let replies = 0;
     let toolResults = 0;
     let toolErrors = 0;
     const partial = new Map<number, { kind: string; text: string }>();
@@ -951,7 +959,7 @@ export class Engine {
     const settle = (u: ToolUseBlock) => (r: ToolResultBlock) => {
       if (this.parking.has(id) && outcomeOf(id, u.id) === "waiting") return;
       toolResults++;
-      if (r.is_error) toolErrors++;
+      if (r.is_error && !signal.aborted && !isStopResult(r.content)) toolErrors++;
       const shown = this.shown.get(r.tool_use_id);
       this.shown.delete(r.tool_use_id);
       this.store.db.transaction(() => {
@@ -1032,7 +1040,7 @@ export class Engine {
           if (signal.aborted) {
             // Keep what the owner already saw of the reply.
             const text = [...partial.entries()].sort(([a], [b]) => a - b).filter(([, p]) => p.kind === "text" && p.text.trim()).map(([, p]) => ({ type: "text" as const, text: p.text }));
-            if (text.length) this.append(id, "assistant", { blocks: text, model: st.info.id, usage: emptyUsage(), stop: "interrupted" });
+            if (text.length) { this.append(id, "assistant", { blocks: text, model: st.info.id, usage: emptyUsage(), stop: "interrupted" }); replies++; }
           }
           throw e;
         }
@@ -1045,6 +1053,7 @@ export class Engine {
 
         if (res.stop === "refusal") {
           this.append(id, "assistant", { blocks: res.blocks, model: st.info.id, usage: u, stop: "refusal", stop_details: res.stop_details ?? null });
+          replies++;
           const fb = session.settings.fallback;
           if (fb && fb !== st.info.id && !fellBack) {
             fellBack = true;
@@ -1064,6 +1073,7 @@ export class Engine {
         // parses: it is kept (its id stays paired) but never run.
         const cut = res.stop === "max_tokens" && blocks.at(-1)?.type === "tool_use" ? (blocks.at(-1) as ToolUseBlock) : undefined;
         this.append(id, "assistant", { blocks, model: st.info.id, usage: u, stop: res.stop });
+        replies++;
 
         if (res.stop === "model_context_window_exceeded") {
           await this.compactNow(id, { auto: true, trigger: "overflow", signal, step: st });
@@ -1099,7 +1109,7 @@ export class Engine {
     } finally {
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
-      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps, tools: toolResults, tool_errors: toolErrors, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
+      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps: replies, tools: toolResults, tool_errors: toolErrors, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
       // Between turns, a context past the preparing share gets its summary ready.
       if (!signal.aborted) {
         const events = this.lineage(id);
@@ -1115,7 +1125,7 @@ export class Engine {
     // Built when the stop comes: a stop for a daemon restart says so.
     const interrupted = (): ToolResultBlock => ({
       type: "tool_result", tool_use_id: u.id, is_error: true,
-      content: this.parking.has(ctx.sessionId) ? cutText(ctx.sessionId, u) : "Interrupted by the user while this tool ran.",
+      content: this.parking.has(ctx.sessionId) ? cutText(ctx.sessionId, u) : STOPPED_WHILE,
     });
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);

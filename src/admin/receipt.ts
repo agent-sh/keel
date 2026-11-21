@@ -2,6 +2,7 @@
 // debug bundle, the receipt never returns event data or span attrs wholesale.
 import type { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
+import { isStopResult } from "../engine/turn.ts";
 import { traceIdOf, turnSpanId, type SpanStatus, type Tracer } from "./trace.ts";
 
 const origins = new Set(["owner", "queued", "steer", "harness", "restart", "voice", "hook", "momentum",
@@ -84,7 +85,8 @@ export function turnReceipt(store: Store, tracer: Tracer, turnEvent: string) {
     for (const r of e.data.results) {
       const span = dispatched.get(r?.tool_use_id);
       dispatched.delete(r?.tool_use_id);
-      tools.push({ result_event_id: e.id, span_id: span?.span_id ?? null, status: span?.status ?? (r?.is_error === true ? "error" : "ok") });
+      // A call with no span that the turn's stop or a restart reached was stopped, not failed.
+      tools.push({ result_event_id: e.id, span_id: span?.span_id ?? null, status: span?.status ?? (r?.is_error === true ? (isStopResult(r.content) ? "interrupted" : "error") : "ok") });
     }
   }
   // Nested tools and parked calls can have a span but no result event.

@@ -35,15 +35,26 @@ CREATE INDEX IF NOT EXISTS activity_session ON activity(session_id, ts DESC);`);
   g.__keelActivitySweep = setInterval(() => { try { prune(); } catch (e) { capture(e, { at: "activity sweep" }); } }, 3600_000);
 }
 
+// The turn that just ended in a session, while what its end sets off is
+// written (a loop run's outcome, the alert that it finished): by then no turn
+// runs there, or the next one already does.
+const ended = new Map<string, string>();
+export function ofTurn<T>(sessionId: string, turn: string | undefined, f: () => T): T {
+  if (!turn) return f();
+  ended.set(sessionId, turn);
+  try { return f(); } finally { ended.delete(sessionId); }
+}
+
 // `turn`: the turn it belongs to when the caller knows (a turn's own end, told
-// after the turn is over); otherwise the turn running now in the session the
-// row is listed under. A later turn never changes it.
+// after the turn is over); otherwise the turn whose end is being settled
+// (ofTurn), else the turn running now in the session the row is listed under.
+// A later turn never changes it.
 export function record(kind: ActivityKind, sub: string, sessionId: string | null, text: string, data?: unknown, turn?: string) {
   try {
     // A subagent's happenings are listed under its parent, with the child named.
     const s = sessionId ? D().store.session(sessionId) : undefined;
     const sid = s?.parent_id ?? sessionId;
-    const running = (id: string | null) => (id ? D().engine?.turnOf?.(id) : undefined);
+    const running = (id: string | null) => (id ? ended.get(id) ?? D().engine?.turnOf?.(id) : undefined);
     const childTurn = s?.parent_id ? turn ?? running(sessionId) : undefined;
     const extra = s?.parent_id ? { ...(data as object), child_session: sessionId, child_title: s.title || undefined, ...(childTurn ? { child_turn: childTurn } : {}) } : data;
     const turnEvent = (s?.parent_id ? running(sid) : turn ?? running(sid)) ?? null;

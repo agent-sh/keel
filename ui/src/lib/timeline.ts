@@ -1,7 +1,8 @@
-// The session timeline on the client: its page, and the turn another view
-// asked it to show (an Activity row's receipt).
+// The session timeline on the client: its page, how a refresh joins what the
+// panel holds, and the turn another view asked it to show (an Activity row's
+// receipt).
 import type { turnReceipt } from "../../../src/admin/receipt.ts";
-import type { TimelinePage, TimelineRow } from "../../../src/admin/timeline-rows.ts";
+import type { TimelinePage } from "../../../src/admin/timeline-rows.ts";
 import { api } from "./store.ts";
 import { getUI, navigate, savePref, setUI } from "./ui.ts";
 
@@ -9,23 +10,11 @@ export type { TimelineKind, TimelineNow, TimelinePage, TimelineRow, Tone } from 
 export type Receipt = NonNullable<ReturnType<typeof turnReceipt>>;
 export type Only = "" | "failures" | "turns" | "agents";
 export const PAGE = 50;
+export { mergeSince, refreshFrom, type Held } from "./timeline-merge.ts";
 
-export const fetchTimeline = (sessionId: string, o: { only?: Only; before?: string | null; now?: boolean } = {}) =>
-  api<TimelinePage>(`/api/sessions/${sessionId}/timeline?limit=${PAGE}${o.only ? `&only=${o.only}` : ""}${o.before ? `&before=${encodeURIComponent(o.before)}` : ""}${o.now === false ? "&now=0" : ""}`);
+export const fetchTimeline = (sessionId: string, o: { only?: Only; before?: string | null; since?: number; now?: boolean } = {}) =>
+  api<TimelinePage>(`/api/sessions/${sessionId}/timeline?limit=${PAGE}${o.only ? `&only=${o.only}` : ""}${o.before ? `&before=${encodeURIComponent(o.before)}` : ""}${o.since ? `&since=${Math.floor(o.since)}` : ""}${o.now === false ? "&now=0" : ""}`);
 export const fetchReceipt = (turnEvent: string) => api<Receipt>(`/api/debug/turns/${turnEvent}/receipt`);
-
-// A fresh first page over what the panel holds. The pages loaded below it stay
-// when they still join it; when more arrived than one page holds, they go and
-// the list starts again from the top (no gap is ever shown as if it were whole).
-export function mergeHead(cur: { rows: TimelineRow[]; next: string | null } | null, head: TimelinePage): { rows: TimelineRow[]; next: string | null } {
-  const last = head.rows.at(-1);
-  if (!cur || !last || cur.rows.length <= head.rows.length) return { rows: head.rows, next: head.next };
-  const older = (r: TimelineRow) => r.ts < last.ts || (r.ts === last.ts && r.id < last.id);
-  const top = cur.rows[0];
-  if (head.next && top && older(top)) return { rows: head.rows, next: head.next };
-  const have = new Set(head.rows.map((r) => r.id));
-  return { rows: [...head.rows, ...cur.rows.filter((r) => !have.has(r.id) && older(r))], next: cur.next };
-}
 
 // The turn the Timeline panel shows when it opens next.
 let focus: string | null = null;
@@ -42,4 +31,15 @@ export function openReceipt(sessionId: string, turnEvent: string) {
   setUI({ errors: false });
   if (getUI().panel !== "timeline") savePref("panel", "timeline");
   navigate({ name: "session", id: sessionId });
+}
+
+// What the panel showed for a session, kept while another panel is open in
+// its place (a trace opened from a receipt): coming back is where it was left.
+export type View = { only: Only; open: string | null; active: string | null; top: number };
+const views = new Map<string, View>();
+export const viewOf = (sessionId: string): View => views.get(sessionId) ?? { only: "", open: null, active: null, top: 0 };
+export function keepView(sessionId: string, v: View) {
+  views.delete(sessionId);
+  views.set(sessionId, v);
+  if (views.size > 20) views.delete(views.keys().next().value!);
 }

@@ -7,7 +7,7 @@ import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 
 export type TimelineKind =
-  | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit"
+  | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files"
   // Only in "now": what is queued, and a session with nothing going on.
   | "queue" | "idle";
 // Color is state: `failed` went wrong, `owner` waits on the owner, `live` runs now.
@@ -18,7 +18,8 @@ export type Refs = {
 };
 export type TurnFacts = {
   origin: string; queued?: true; outcome: string; reason?: string; model?: string;
-  steps: number; tools: number; failed_tools: number; compactions?: number;
+  // `steps`: the replies the model gave. `branch`: "other" when the turn is not on the branch shown.
+  steps: number; tools: number; failed_tools: number; compactions?: number; branch?: "other";
   input?: number; output?: number; cache_read?: number; cost?: number;
 };
 export type TimelineRow = {
@@ -37,7 +38,9 @@ export type TimelineRow = {
   turn?: TurnFacts;
 };
 export type TimelineNow = { state: "working" | "owner" | "waiting" | "idle"; lines: TimelineRow[] };
-export type TimelinePage = { session_id: string; now?: TimelineNow; rows: TimelineRow[]; next: string | null };
+// `as_of`: when it was read (the daemon's clock). `scanned`: how many rows a
+// filtered page read to find its rows, when it stopped at its bound.
+export type TimelinePage = { session_id: string; as_of: number; now?: TimelineNow; rows: TimelineRow[]; next: string | null; scanned?: number };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n === 0 ? "no" : n} ${n === 1 ? one : many}`;
 const clean = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== "")) as T;
@@ -62,20 +65,29 @@ export function dur(ms: number): string {
 
 // Who started a turn, from the prompt before it: what it says it is (`kind`:
 // a wake, a report, a loop run, a message from another session), else how it
-// arrived (`origin`), else the owner typing.
+// arrived (`origin`), else the owner typing. The owner's Continue is stored as
+// a harness prompt with no kind of its own; a note the harness writes has one.
 const WHO: Record<string, string> = {
-  owner: "the owner", queued: "a queued prompt", steer: "a steer", harness: "the harness", restart: "a daemon restart",
+  owner: "the owner", queued: "a queued prompt", steer: "a steer", continue: "the owner's Continue", harness: "a harness note", restart: "a daemon restart",
   voice: "the owner by voice", hook: "a stop hook", momentum: "a momentum message", wait: "a wait wake", wake: "several wakes",
   subagent: "an agent report", loop: "a loop run", goal: "a goal check", task: "its parent's task", parent: "its parent",
   peer: "another session", task_start: "a task from another session", verify_goal: "a goal verification", review: "a review request",
-  review_fix: "review findings", diagnostic: "a diagnostic", helper_digest: "the helper's digest",
+  review_fix: "review findings", diagnostic: "a diagnostic", helper_digest: "the helper's digest", failures: "a failure notice",
+};
+// The same, as the words a turn's row starts with: the column scans by them.
+const LEAD: Record<string, string> = {
+  owner: "Owner prompt", queued: "Queued prompt", steer: "Steer", continue: "Owner's Continue", harness: "Harness note", restart: "Continued after a daemon restart",
+  voice: "Owner by voice", hook: "Stop hook", momentum: "Momentum message", wait: "Wait wake", wake: "Several wakes",
+  subagent: "Agent report", loop: "Loop run", goal: "Goal check", task: "Parent's task", parent: "Parent's message",
+  peer: "Message from another session", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
+  review_fix: "Review findings", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
 };
 export type Opener = { origin?: unknown; kind?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown } | null | undefined;
 export const whoWords = (key: string) => WHO[key] ?? "something else";
-export function originOf(o: Opener): { key: string; words: string; queued: boolean } {
+export function originOf(o: Opener): { key: string; words: string; lead: string; queued: boolean } {
   const origin = str(o?.origin), kind = str(o?.kind);
-  const key = origin === "restart" ? "restart" : kind && WHO[kind] ? kind : origin && WHO[origin] ? origin : kind || origin ? "other" : "owner";
-  return { key, words: WHO[key] ?? "something else", queued: origin === "queued" && key !== "queued" };
+  const key = origin === "restart" ? "restart" : kind && WHO[kind] ? kind : origin === "harness" && !kind ? "continue" : origin && WHO[origin] ? origin : kind || origin ? "other" : "owner";
+  return { key, words: WHO[key] ?? "something else", lead: LEAD[key] ?? "Other input", queued: origin === "queued" && key !== "queued" };
 }
 
 // A turn's end reason as an outcome class: the classes of src/admin/outcomes.ts
@@ -93,20 +105,23 @@ export function outcomeOf(reason: string, stoppedBy?: string | null): string {
 export type TurnInput = {
   start: { id: string; ts: number; model?: string };
   opener?: Opener;
-  end?: { reason: string; ms?: number; ts?: number; stopped_by?: string | null; usage?: { input?: number; output?: number; cache_read?: number; cost?: number } } | null;
+  // `crashed`: the daemon went down under it. `unstarted`: it never began (the pair a restart writes for a prompt it found accepted).
+  end?: { reason: string; ms?: number; ts?: number; stopped_by?: string | null; crashed?: boolean; unstarted?: boolean } | null;
+  // What it spent: its rollup over all its requests when there is one, else what its end says.
+  usage?: { input?: number; output?: number; cache_read?: number; cost?: number | null } | null;
   running?: boolean;
   steps: number;
   tools: number;
   failed_tools: number;
   compactions?: number;
   error_id?: string;
-  now?: number;
+  other_branch?: boolean;
 };
 
 export function turnRow(t: TurnInput): TimelineRow {
   const who = originOf(t.opener);
-  const outcome = t.end ? outcomeOf(t.end.reason, t.end.stopped_by) : t.running ? "running" : "open";
-  const head = who.key === "restart" ? "Turn continued after a daemon restart" : `Turn started by ${who.words}${who.queued ? " (queued)" : ""}`;
+  const outcome = t.end?.unstarted ? "unstarted" : t.end ? outcomeOf(t.end.reason, t.end.stopped_by) : t.running ? "running" : "open";
+  const head = `${who.lead}${who.queued ? " (queued)" : ""}`;
   const n = plural(t.steps, "step");
   const after = t.steps ? ` after ${n}` : " before its first step";
   const bad = t.failed_tools ? plural(t.failed_tools, "failed tool") : undefined;
@@ -115,31 +130,37 @@ export function turnRow(t: TurnInput): TimelineRow {
   switch (outcome) {
     case "running": text = `${head}: running, ${t.steps ? `${n} so far` : "on its first step"}`; tone = "live"; break;
     case "ok": text = `${head}, ${n}`; break;
-    case "error": text = `${head} failed${after}`; tone = "failed"; break;
+    case "error": text = `${head}: failed${after}`; tone = "failed"; break;
     case "refusal": text = `${head}: the model declined${after}`; tone = "failed"; break;
     case "stopped_by_owner": text = `${head}, stopped by the owner${after}`; break;
     case "stopped_by_parent": text = `${head}, stopped by its parent${after}`; break;
-    case "cut": text = `${head}, cut by a daemon restart${after}`; break;
+    case "cut": text = `${head}, cut ${t.end!.crashed ? "when the daemon went down" : "by a daemon restart"}${after}`; break;
     case "budget": text = `${head}, ended at ${t.end!.reason === "max_tokens" ? "the output limit" : "its step budget"}${after}`; break;
+    // No turn ran: the row says what happened instead of a turn of no length.
+    case "unstarted": text = "A prompt was accepted; the daemon went down before its turn started"; break;
     default: text = `${head}: no end was recorded, ${n}`;
   }
   if (bad) text += `, ${bad}`;
-  const u = t.end?.usage;
-  const ms = t.end ? t.end.ms ?? (t.end.ts !== undefined ? t.end.ts - t.start.ts : undefined) : undefined;
+  if (t.other_branch) text += ", on a branch not shown";
+  const u = t.usage;
+  const took = t.end && outcome !== "unstarted" ? t.end.ms ?? (t.end.ts !== undefined ? t.end.ts - t.start.ts : undefined) : undefined;
   return clean({
-    id: t.start.id, ts: t.start.ts, kind: "turn" as const, sub: outcome, tone, text, bad, ms,
+    id: t.start.id, ts: t.start.ts, kind: "turn" as const, sub: outcome, tone, text, bad,
+    // A turn of no length (stopped while it was set up) has no duration to show.
+    ms: took ? took : undefined,
     open: outcome === "running" ? (true as const) : undefined,
     turn_event: t.start.id,
     ...refs({ error_id: t.error_id, queue_id: str(t.opener?.queue_id), wait_id: str(t.opener?.wait_id), agent_id: str(t.opener?.agent_id), loop_id: str(t.opener?.loop_id), run_id: str(t.opener?.run_id), from_session: str(t.opener?.from) }),
     turn: clean({
       origin: who.key, queued: who.queued || who.key === "queued" ? (true as const) : undefined, outcome, reason: t.end?.reason, model: t.start.model,
-      steps: t.steps, tools: t.tools, failed_tools: t.failed_tools, compactions: t.compactions || undefined,
-      input: u?.input, output: u?.output, cache_read: u?.cache_read, cost: u?.cost,
+      steps: t.steps, tools: t.tools, failed_tools: t.failed_tools, compactions: t.compactions || undefined, branch: t.other_branch ? ("other" as const) : undefined,
+      input: u?.input, output: u?.output, cache_read: u?.cache_read, cost: u?.cost ?? undefined,
     }),
   });
 }
 
-// The marks a session's events leave besides its turns.
+// The marks a session's events leave besides its turns. A turn's end makes no
+// row of its own: the turn's row says how it ended (cut by a restart included).
 export type Mark = { id: string; ts: number; kind: string; data: Record<string, any> | null };
 const short = (model: unknown) => String(model ?? "").split(":").pop() || "another model";
 const tokens = (n: unknown) => (typeof n === "number" && n > 0 ? `, from ${n < 1000 ? n : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`} tokens` : "");
@@ -150,17 +171,14 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
     const text = d.mode === "clear" ? "Context cleared" : d.trigger === "model" ? "The model started a fresh context" : d.auto ? "Context compacted by itself" : "Context compacted by the owner";
     return row("compaction", String(d.mode ?? "summary"), `${text}${tokens(d.tokens_before)}`);
   }
-  if (e.kind === "turn_end") {
-    if (d.reason !== "restart") return null;
-    return row("restart", d.crashed ? "crash" : "stop", d.crashed ? "The daemon went down without warning: the turn was cut" : "The daemon stopped for a restart: the turn was parked");
-  }
   if (e.kind !== "note") return null;
   switch (d.kind) {
     case "model_told": return row("model", "switch", `Model changed from ${short(d.from)} to ${short(d.to)}`);
     case "fallback": return row("model", "fallback", "The model declined: the turn went on with the fallback model");
     case "restart": return row("restart", "held", "Not continued after the daemon restart: it waits for the owner", "owner");
     case "compaction_failed": return row("compaction", "failed", "The context could not be compacted", "failed");
-    case "rewind": return row("compaction", "rewind", "The conversation was rewound");
+    // Written when files are put back from a checkpoint: the conversation is as it was.
+    case "rewind": return row("files", "restored", "Files were restored to an earlier state");
     case "fork": return row("model", "fork", "Forked from another session");
     default: return null;
   }
@@ -187,13 +205,15 @@ const AGENT_END: Record<string, string> = { refusal: "the model declined", max_t
 const CHOICE: Record<string, string> = { once: " once", session: " for the session", always: " from now on" };
 const toolOf = (text: string) => { const t = text.split(":")[0] ?? ""; return /^[\w.-]{1,80}$/.test(t) ? t : "a tool"; };
 
-export function activityRow(a: ActivityIn, look: Lookups = {}): TimelineRow | null {
+// `own`: the row is read for the agent's own session (its happenings are
+// stored under its parent): it is that session's row, in that session's turn.
+export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): TimelineRow | null {
   const d = a.data ?? {};
   // A subagent's happening is listed under its parent: the row says whose it is.
-  const inChild = d.child_session && a.kind !== "agent" ? `, in agent ${title(d.child_title, "of this session")}` : "";
+  const inChild = !own && d.child_session && a.kind !== "agent" ? `, in agent ${title(d.child_title, "of this session")}` : "";
   const row = (kind: TimelineKind, text: string, o: Partial<TimelineRow> = {}, r: Refs = {}): TimelineRow => clean({
-    id: a.id, ts: a.ts, kind, sub: a.sub, tone: "plain" as Tone, text: `${text}${inChild}`, turn_event: a.turn_event ?? undefined, ...o,
-    ...refs({ child_session: str(d.child_session), child_turn: str(d.child_turn), ...r }),
+    id: a.id, ts: a.ts, kind, sub: a.sub, tone: "plain" as Tone, text: `${text}${inChild}`, turn_event: (own ? str(d.child_turn) : a.turn_event) ?? undefined, ...o,
+    ...refs(own ? r : { child_session: str(d.child_session), child_turn: str(d.child_turn), ...r }),
   });
   if (a.kind === "agent") {
     if (a.sub === "staggered") return null;
@@ -263,7 +283,7 @@ export function activityRow(a: ActivityIn, look: Lookups = {}): TimelineRow | nu
     return null;
   }
   if (a.kind === "turn" && a.sub === "goal") {
-    const m = /^Goal (set|cleared)|^Goal (check|verification): ([a-z ]+)\./.exec(a.text);
+    const m = /^Goal (set|cleared|paused)|^Goal (check|verification): ([a-z ]+)\./.exec(a.text);
     if (!m) return null;
     return row("goal", m[1] ? `Goal ${m[1]}` : `Goal ${m[2]}: ${m[3]}`, { sub: m[1] ?? m[2]! });
   }
@@ -275,15 +295,30 @@ const CLASS: Record<string, string> = {
   rate_limit: "rate limit", overloaded: "overloaded", server: "server error", stream_drop: "dropped stream", context_overflow: "context too long",
   auth: "sign-in", quota: "quota or billing", refusal: "declined", invalid_request: "refused request",
 };
-// One row per kind of failure (the errors table folds repeats): its class, how
-// often, and where it last happened. The message stays in the Errors panel.
+// A kind of failure that last happened in this session. The errors table folds
+// repeats across every session, so its count is said as that; the message
+// stays in the Errors panel.
 export function errorRow(e: Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts">): TimelineRow {
   const cls = e.source === "provider" ? errorClass({ message: e.message }) : null;
   const n = e.count ?? 1;
   return clean({
     id: e.id, ts: e.ts, kind: "error" as const, sub: e.source, tone: (e.resolved_ts ? "plain" : "failed") as Tone,
-    text: `${SOURCE[e.source] ?? "Other"} error${cls && CLASS[cls] ? ` (${CLASS[cls]})` : ""}${n > 1 ? `, ${n} times` : ""}${e.resolved_ts ? ", marked fixed" : ""}`,
+    text: `${SOURCE[e.source] ?? "Other"} error${cls && CLASS[cls] ? ` (${CLASS[cls]})` : ""}${n > 1 ? `, ${n} times in all sessions` : ""}${e.resolved_ts ? ", marked fixed" : ""}`,
     turn_event: e.turn_event, ...refs({ error_id: e.id, span_id: e.span_id }),
+  });
+}
+
+// A cause of failed model requests in this session's own record (one row per
+// cause, with the session's count and its agents'): the count is this
+// session's, whatever happened elsewhere. `link`: the Errors row of the same
+// class that last happened here, when there is one.
+export type FailureIn = { fp: string; cls: string; count: number; last_ts: number; refs?: { id: string; n: number }[] };
+export function failureRow(g: FailureIn, link?: Pick<ErrorRecord, "id" | "turn_event" | "span_id" | "resolved_ts">): TimelineRow {
+  const inAgents = (g.refs ?? []).filter((r) => r.id !== "self").reduce((n, r) => n + r.n, 0);
+  return clean({
+    id: `f:${g.fp}`, ts: g.last_ts, kind: "error" as const, sub: "provider", tone: (link?.resolved_ts ? "plain" : "failed") as Tone,
+    text: `Model request failed${CLASS[g.cls] ? ` (${CLASS[g.cls]})` : ""}${g.count > 1 ? `, ${g.count} times` : ""}${inAgents ? `, ${inAgents === g.count ? "all" : inAgents} in its agents` : ""}${link?.resolved_ts ? ", marked fixed" : ""}`,
+    turn_event: link?.turn_event, ...refs({ error_id: link?.id, span_id: link?.span_id }),
   });
 }
 
@@ -291,7 +326,8 @@ export function errorRow(e: Pick<ErrorRecord, "id" | "ts" | "source" | "message"
 export type NowInput = {
   ts: number;
   turn?: { id: string; ts: number; opener?: Opener; steps: number; status: TurnStatus } | null;
-  approvals: { id: string; tool?: string; risk?: string; created?: number; child_session?: string; child_title?: string }[];
+  starting?: boolean; // a turn is being set up: nothing of it is stored yet
+  approvals: { id: string; call_id?: string; tool?: string; risk?: string; created?: number; child_session?: string; child_title?: string }[];
   questions: { call_id: string; child_session?: string; child_title?: string }[];
   held?: { since?: number } | null; // a cut turn that was not continued
   waits: { id: string; kind: string; created: number; deadline: number }[];
@@ -320,7 +356,7 @@ export function nowLines(n: NowInput): TimelineNow {
     void lines.push(clean({ id: `now:${id}`, ts: o.ts ?? n.ts, kind, sub: "now", tone, text, ...o, ...refs(r) }));
   const inChild = (c: { child_session?: string; child_title?: string }) => (c.child_session ? `, in agent ${title(c.child_title, "of this session")}` : "");
   for (const a of n.approvals) {
-    add(`approval:${a.id}`, "approval", "owner", `Waits on the owner: approval for ${a.tool ?? "a tool"}${a.risk === "high" ? " (high risk)" : ""}${inChild(a)}`, { ts: a.created, open: true }, { approval_id: a.id, child_session: a.child_session });
+    add(`approval:${a.id}`, "approval", "owner", `Waits on the owner: approval for ${a.tool ?? "a tool"}${a.risk === "high" ? " (high risk)" : ""}${inChild(a)}`, { ts: a.created, open: true }, { approval_id: a.id, call_id: a.call_id, child_session: a.child_session });
   }
   for (const q of n.questions) add(`question:${q.call_id}`, "question", "owner", `Waits on the owner: a question${inChild(q)}`, { open: true }, { call_id: q.call_id, child_session: q.child_session });
   if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not continued", { ts: n.held.since });
@@ -328,7 +364,7 @@ export function nowLines(n: NowInput): TimelineNow {
     const who = originOf(n.turn.opener);
     const head = who.key === "restart" ? "Running a turn continued after a daemon restart" : `Running a turn started by ${who.words}`;
     add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${DOING(n.turn.status)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });
-  }
+  } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
     add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${a.status === "waiting" ? "is waiting on a wake of its own" : "is running"}`, { ts: a.created, open: true }, { agent_id: a.id, child_session: a.session_id });
   }
@@ -341,18 +377,19 @@ export function nowLines(n: NowInput): TimelineNow {
   } else if (q.held && !n.turn) add("queue", "queue", "plain", "The queue is held: nothing starts by itself until the owner sends or resumes");
   if (q.owed) add("owed", "queue", "plain", "A report or a wake waits for the turn to end");
   for (const l of n.loops.slice(0, 2)) add(`loop:${l.id}`, "loop", "plain", `Loop ${title(l.name, "(unnamed)")} runs next`, { until: l.next_ms }, { loop_id: l.id });
-  const state: TimelineNow["state"] = n.approvals.length || n.questions.length || n.held ? "owner" : n.turn || n.agents.length ? "working" : n.waits.length || n.loops.length || q.queued || q.steers || q.owed ? "waiting" : "idle";
+  const state: TimelineNow["state"] = n.approvals.length || n.questions.length || n.held ? "owner" : n.turn || n.starting || n.agents.length ? "working" : n.waits.length || n.loops.length || q.queued || q.steers || q.owed ? "waiting" : "idle";
   if (!lines.length) add("idle", "idle", "plain", n.last ? `Nothing is running or waited on. The last turn ${ENDED[n.last.outcome] ?? "ended"}.` : "Nothing has run in this session yet.", n.last ? { ts: n.last.ts } : {});
   return { state, lines };
 }
 
 // The same story as text, for a model: one line per row, newest first, the ids
-// that open a row's detail at the end of its line. Times are UTC.
+// that open a row's detail or that a coordinator acts on at the end of its
+// line (`ids: false` leaves them out). Times are UTC.
 const STATE: Record<TimelineNow["state"], string> = { working: "working", owner: "waiting on the owner", waiting: "waiting", idle: "idle" };
-const stamp = (ts: number) => new Date(ts).toISOString().slice(5, 16).replace("T", " ");
-export function timelineText(p: TimelinePage, opts: { title?: string; ids?: boolean; now?: number } = {}): string {
-  const at = opts.now ?? Date.now();
-  const out: string[] = [`Timeline of session ${title(opts.title, p.session_id)} (${p.session_id}), newest first, UTC.`];
+const stamp = (ts: number) => new Date(ts).toISOString().slice(5, 19).replace("T", " ");
+export function timelineText(p: TimelinePage, opts: { title?: string; ids?: boolean } = {}): string {
+  const at = p.as_of;
+  const out: string[] = [`Timeline of session ${title(opts.title, p.session_id)} (${p.session_id}), newest first. Times are UTC; read at ${new Date(at).toISOString().slice(0, 19).replace("T", " ")}.`];
   if (p.now) {
     out.push(`Now: ${STATE[p.now.state]}.`);
     for (const l of p.now.lines) {
@@ -361,7 +398,7 @@ export function timelineText(p: TimelinePage, opts: { title?: string; ids?: bool
       out.push(`  ${l.text}${since}${due}${opts.ids === false ? "" : idsOf(l)}`);
     }
   }
-  if (!p.rows.length) out.push("No rows.");
+  if (!p.rows.length) out.push(p.next && p.scanned ? `None in the newest ${p.scanned} rows.` : "No rows.");
   for (const r of p.rows) {
     const took = r.ms !== undefined && r.kind === "turn" ? `, ${dur(r.ms)}` : "";
     const cost = r.turn?.cost ? `, $${r.turn.cost < 0.01 ? r.turn.cost.toFixed(4) : r.turn.cost.toFixed(2)}` : "";
@@ -371,10 +408,15 @@ export function timelineText(p: TimelinePage, opts: { title?: string; ids?: bool
   return out.join("\n");
 }
 function idsOf(r: TimelineRow): string {
+  const now = r.sub === "now";
   const ids = [
     r.kind === "turn" && r.turn_event ? `turn=${r.turn_event}` : "",
     r.refs?.error_id ? `error=${r.refs.error_id}` : "",
     r.kind === "agent" && r.refs?.child_session ? `session=${r.refs.child_session}` : "",
+    // What a coordinator acts on: the wait to cancel, the card to answer (in the agent's session when it is an agent's).
+    now && r.refs?.wait_id ? `wait=${r.refs.wait_id}` : "",
+    now && r.refs?.approval_id ? `approval=${r.refs.approval_id}` : "",
+    now && r.kind !== "agent" && r.refs?.child_session ? `session=${r.refs.child_session}` : "",
   ].filter(Boolean);
   return ids.length ? `  [${ids.join(" ")}]` : "";
 }

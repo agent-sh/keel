@@ -286,7 +286,8 @@ async function owed(sessionId: string) {
 // it judges leaves the turn counted once and the check owed (recover). A
 // daemon on its way down asks no judge and starts no verifier: what it decided
 // would not be sent, and a verifier's turn would be parked at once.
-export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean; recheck?: boolean } = {}) {
+// `turn`: the turn that ended, which the check judges: its activity rows name it.
+export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean; recheck?: boolean; turn?: string } = {}) {
   const g = get(sessionId);
   if (!active(g)) return;
   const mine = instance(g);
@@ -328,7 +329,7 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     // The daemon began to stop while it judged: the verdict is dropped (its cost is not) and the next start asks again.
     if (D().engine.isDraining?.()) return void save({ ...now!, tokens_used: now!.tokens_used + judgeTokens });
     let next: Goal = { ...now!, tokens_used: now!.tokens_used + judgeTokens, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id, evidence: null };
-    activity.record("turn", "goal", sessionId, `Goal check: ${v.verdict.replace("_", " ")}. ${v.reason}`.slice(0, 400));
+    activity.record("turn", "goal", sessionId, `Goal check: ${v.verdict.replace("_", " ")}. ${v.reason}`.slice(0, 400), undefined, opts.turn);
     if (v.verdict === "met") {
       // Met by the judge: the verifier checks the work before it counts.
       save({ ...next, verifying: true, evidence: null });
@@ -341,12 +342,12 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
         // No verdict to act on (a met with no evidence, no answer, a verifier that ran out of time):
         // the goal stops here until the owner resumes it, so the owner is told.
         const why = `the judge said met; ${out.result.error}. Resume to try again.`;
-        activity.record("turn", "goal", sessionId, `Goal paused: ${why}`.slice(0, 400));
+        activity.record("turn", "goal", sessionId, `Goal paused: ${why}`.slice(0, 400), undefined, opts.turn);
         alertHook.raise?.("failed", sessionId, `Goal paused: ${D().store.session(sessionId)?.title || "a session"}`, why, { open_session: sessionId });
         return void done({ ...next, status: "paused", status_reason: why });
       }
       const r = out.result;
-      activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400));
+      activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400), undefined, opts.turn);
       next = { ...next, last_verdict: r.verdict, last_reason: r.reason, evidence: r.evidence };
       if (r.verdict === "met") return void done({ ...next, status: "achieved", status_reason: r.reason, verified: true });
       v.reason = `${r.reason}${r.evidence.length ? `\n${r.evidence.map((e) => `- ${e}`).join("\n")}` : ""}`;

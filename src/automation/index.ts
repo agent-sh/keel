@@ -105,15 +105,15 @@ function init(deps: Deps) {
         failures.onTurnEnd(s.id, reason);
         // A notice held back while the owner had stopped the session goes after the owner's next turn.
         failures.wake(s.id);
-        loops.onTurnEnd(s.id, reason);
-        agents.onTurnEnd(s.id, reason);
+        // What the end sets off is this turn's: a loop run's outcome, an agent it settles.
+        activity.ofTurn(s.id, turn, () => { loops.onTurnEnd(s.id, reason); agents.onTurnEnd(s.id, reason); });
         // A session whose agents still work has not finished: its alert waits
         // for their reports (they start its next turn, whose end tells).
         const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || liveAgents(s.id) > 0;
         const child = !!deps.store.session(s.id)?.parent_id;
         if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`, undefined, turn);
-        alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more });
-        if (!child) goals.afterTurn(s.id, reason, { judge: !more }).catch((e) => capture(e, { at: "goal" }));
+        activity.ofTurn(s.id, turn, () => alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more }));
+        if (!child) goals.afterTurn(s.id, reason, { judge: !more, turn }).catch((e) => capture(e, { at: "goal" }));
       });
     },
   });

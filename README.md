@@ -31,17 +31,37 @@ was necessarily skipped.
 ## Session timeline
 
 `GET /api/sessions/<id>/timeline` is a session's story from one place: its
-turns (who started each: the owner, a queued prompt, a steer, a loop run, a
-wait wake, an agent report, another session, the harness, a daemon restart;
-how it ended; how long it took; its steps, tool calls and failed tool calls;
-tokens and cost), the agents it started and how each ended, waits set and
-fired, loop runs, compactions, model switches, daemon restarts, approvals
-asked and settled, and its errors. Rows are newest first, `limit` at a time
-(50 by default, at most 200); `next` is the cursor of the following page
-(`before`). `only` is `failures`, `turns` or `agents`; `since` is a span back
-from now (`90s`, `30m`, `1h`, `2d`), epoch milliseconds or an ISO time. `now`
-says what the session is doing: the running turn's step and tool, what waits
-on the owner, the waits and agents still out, what is queued.
+turns (who started each: the owner, a queued prompt, a steer, the owner's
+Continue, a loop run, a wait wake, an agent report, another session, a harness
+note, a daemon restart; how it ended; how long it took; its steps, tool calls
+and failed tool calls; tokens and cost), the agents it started and how each
+ended, waits set and fired, loop runs, compactions, model switches, restored
+files, approvals asked and settled, and what failed. Rows are newest first,
+`limit` at a time (50 by default, at most 200); `next` is the cursor of the
+following page (`before`). `only` is `failures`, `turns` or `agents`. `since`
+is a span back from now (`90s`, `30m`, `1h`, `2d`), epoch milliseconds or an
+ISO time: nothing older is read or returned. `as_of` is when the page was
+read. `now` says what the session is doing: the running turn's step and tool,
+what waits on the owner, the waits and agents still out, what is queued. What
+`now` says (the running turn, a card still open) is not a row too.
+
+What the rows mean:
+
+- A turn is one row, at its start. Its steps are the replies the model gave.
+  A call the turn's stop or a restart reached is a tool call, not a failed
+  one. Its tokens and cost are the turn's rollup over every request made while
+  it ran (its own, a reader's, a summary's), else what its end summed.
+- A turn a daemon restart cut says so in its own row, and the turn that went
+  on after it starts with "Continued after a daemon restart". A prompt the
+  daemon went down on before its turn began is one row that says that.
+- A turn that is not on the branch the session shows is marked
+  (`turn.branch: "other"`) and says "on a branch not shown".
+- A failed model request is a row per cause from the session's own failure
+  record, with this session's count and its agents'. A row from the errors
+  table marks only where a kind of failure last happened; its count is over
+  every session and says so.
+- A filtered page reads at most 500 rows (`scanned`) and gives `next` when it
+  stopped there, with however many rows it found.
 
 Each row carries the IDs that open its detail: `turn_event` (the turn's
 receipt and trace), `refs.child_session` (an agent's session), `refs.error_id`.
@@ -50,11 +70,13 @@ durations and session titles, never a prompt, a tool's input or output, a
 wait's note or an error's message. Turns, compactions and restarts come from
 the session's events and are kept as long as the session; agents, waits, loops
 and approvals come from the activity list, which keeps 30 days. An activity
-row keeps the turn it happened in (`turn_event`).
+row keeps the turn it happened in (`turn_event`); an agent's own session reads
+its rows from its parent's list.
 
 `format=text` gives the same story as plain text, a line a row, for a model:
-`keel debug timeline SESSION --since 1h` prints it. The Timeline side panel
-shows it live.
+`keel debug timeline SESSION --since 1h` prints it, and `--no-ids` (`ids=0`)
+leaves the IDs off the lines. The Timeline side panel shows it live: it asks
+only for what is newer than what it holds, and not at all from a hidden tab.
 
 ## Auto and Full auto
 

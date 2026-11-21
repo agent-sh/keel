@@ -2,12 +2,17 @@
 // it waits on and what went wrong, from one place.
 //
 // GET /api/sessions/:id/timeline?before=&limit=&only=&since=&now=&format=
-//   -> { session_id, now: { state, lines }, rows, next }
+//   -> { session_id, as_of, now: { state, lines }, rows, next, scanned? }
 //   rows are newest first; `next` is the cursor of the following page (`before`),
 //   null at the end. limit: 1 to 200, 50 by default. only: failures | turns |
 //   agents. since: a span back from now (90s, 30m, 1h, 2d), epoch milliseconds
-//   or an ISO time: nothing older is returned. now=0 leaves "now" out.
-//   format=text: the same story as plain text, a line a row, for a model.
+//   or an ISO time: nothing older is read or returned (a page that refreshes
+//   itself asks only for what is newer than what it holds). now=0 leaves "now"
+//   out; with it, what "now" says (the running turn, an open card) is not a row
+//   too. A filtered page reads a bounded number of rows (`scanned`) and gives
+//   `next` when it stopped there, with however many rows it found.
+//   format=text: the same story as plain text, a line a row, for a model
+//   (ids=0 leaves the ids off the lines).
 // Content-free like the turn receipt: ids, kinds, counts, classes, durations
 // and titles, never a prompt, a tool's input or output or an error's message.
 import { ONLY, PAGE, PAGE_MAX, parseSince, Timeline, type Only } from "../../admin/timeline.ts";

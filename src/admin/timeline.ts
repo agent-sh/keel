@@ -5,14 +5,16 @@
 //
 // Read only, and a page at a time: the marks of a session's events come from
 // a small partial index (never the session's whole history), the rest from
-// the activity list and the errors table by their session indexes, and each
-// row's facts from the records its ids name. Nothing here parses a prompt or
-// a tool result into the answer: see timeline-rows.ts for what a row may say.
+// the activity list, the session's failure record and the errors table by
+// their session indexes, and each row's facts from the records its ids name.
+// Nothing here parses a prompt or a tool result into the answer: see
+// timeline-rows.ts for what a row may say.
 import type { Store } from "../core/store.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
+import { errorClass } from "./classes.ts";
 import {
-  activityRow, errorRow, isFailure, markRow, nowLines, outcomeOf, turnRow,
-  type ActivityIn, type Lookups, type Mark, type NowInput, type Opener, type TimelinePage, type TimelineRow,
+  activityRow, errorRow, failureRow, isFailure, markRow, nowLines, outcomeOf, turnRow,
+  type ActivityIn, type Lookups, type NowInput, type Opener, type TimelinePage, type TimelineRow,
 } from "./timeline-rows.ts";
 
 // The event kinds that mark the story. The index holds only these, so a
@@ -29,8 +31,9 @@ const PICK = `CASE WHEN kind IN ('turn_start', 'turn_end') THEN data ELSE json_o
 
 export const PAGE = 50;
 export const PAGE_MAX = 200;
-// Rows a filtered page reads before it answers with what it found so far.
-const SCAN_MAX = 4000;
+// Rows a filtered page reads before it answers with what it found so far: a
+// filter that matches nothing costs about ten plain pages, never the session.
+export const SCAN_MAX = 500;
 export type Only = "failures" | "turns" | "agents";
 export const ONLY: Only[] = ["failures", "turns", "agents"];
 export type PageOpts = { before?: string | null; limit?: number; only?: Only | null; since?: number | null; now?: boolean };
@@ -49,6 +52,10 @@ export type Live = {
 type MarkRow = { id: string; ts: number; seq: number; kind: string; parent: string | null; data: string | null };
 type Cursor = { ts: number; id: string };
 const TOP: Cursor = { ts: Number.MAX_SAFE_INTEGER, id: "\uffff" };
+// The branch shown, walked from its head only as far down as a page asked.
+type Line = { head: string; top: number; low: { id: string; seq: number; parent: string | null }; turns: Set<string>; done: boolean };
+const LINES_KEPT = 16;
+type ErrorLite = Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts">;
 
 export function parseCursor(v: string | null | undefined): Cursor | undefined {
   if (!v) return undefined;
@@ -59,71 +66,82 @@ export function parseCursor(v: string | null | undefined): Cursor | undefined {
 }
 
 export class Timeline {
-  private has: Record<string, boolean> = {};
+  private has = new Set<string>();
+  private lines = new Map<string, Line>();
 
   constructor(private store: Store, private live: Live = {}) {
     store.migrate(SCHEMA);
   }
 
-  // Tables of other modules are read when the daemon made them.
+  // Tables of other modules are read when the daemon made them. Only a yes is
+  // kept: a table made after the first look is found at the next one.
   private table(name: string): boolean {
-    return (this.has[name] ??= !!this.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+    if (this.has.has(name)) return true;
+    const there = !!this.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+    if (there) this.has.add(name);
+    return there;
   }
 
   page(sessionId: string, opts: PageOpts = {}): TimelinePage {
+    const as_of = Date.now();
     const limit = Math.min(Math.max(Math.floor(opts.limit ?? PAGE), 1), PAGE_MAX);
     const since = opts.since ?? 0;
+    const now = opts.now === false ? undefined : this.now(sessionId);
+    // What "now" already says is not said again as a row: the running turn
+    // and a card still open are there, with how long they have been.
+    const told = new Set((now?.lines ?? []).flatMap((l) => [l.kind === "turn" ? l.turn_event : undefined, l.kind === "approval" ? l.refs?.approval_id : undefined]).filter(Boolean));
+    const shown = (r: TimelineRow) => !(r.open && ((r.kind === "turn" && told.has(r.id)) || (r.kind === "approval" && told.has(r.refs?.approval_id))));
     let at = parseCursor(opts.before) ?? TOP;
     const rows: TimelineRow[] = [];
     let next: string | null = null;
+    let scanned = 0;
     // A filter may drop most of what is read: read on, up to a bound, and say
     // where the next page starts whether or not this one is full.
-    for (let scanned = 0; ;) {
-      const got = this.merged(sessionId, at, limit + 1, opts.only ?? null);
+    for (;;) {
+      const got = this.merged(sessionId, at, limit + 1, opts.only ?? null, since);
       const part = got.slice(0, limit);
       let taken = 0;
-      let reached = false; // rows from here on are older than what was asked for
       for (const r of part) {
-        if (r.ts < since) { reached = true; break; }
         at = { ts: r.ts, id: r.id };
         taken++;
-        if (opts.only !== "failures" || isFailure(r)) rows.push(r);
+        if ((opts.only !== "failures" || isFailure(r)) && shown(r)) rows.push(r);
         if (rows.length === limit) break;
       }
       scanned += taken;
-      if (reached || !(got.length > limit || taken < part.length)) break;
+      if (!(got.length > limit || taken < part.length)) break;
       if (rows.length === limit || scanned >= SCAN_MAX) { next = `${at.ts}:${at.id}`; break; }
     }
-    return { session_id: sessionId, ...(opts.now === false ? {} : { now: this.now(sessionId) }), rows, next };
+    return { session_id: sessionId, as_of, ...(now ? { now } : {}), rows, next, ...(opts.only === "failures" ? { scanned } : {}) };
   }
 
-  // The three sources, each already newest first, as one list.
-  private merged(sessionId: string, at: Cursor, n: number, only: Only | null): TimelineRow[] {
+  // The sources, each already newest first, as one list.
+  private merged(sessionId: string, at: Cursor, n: number, only: Only | null, since: number): TimelineRow[] {
     const all = [
-      ...(only === "agents" ? [] : this.marks(sessionId, at, n, only === "turns")),
-      ...(only === "turns" ? [] : this.activity(sessionId, at, n, only === "agents")),
-      ...(only === "turns" || only === "agents" ? [] : this.errors(sessionId, at, n)),
+      ...(only === "agents" ? [] : this.marks(sessionId, at, n, only === "turns", since)),
+      ...(only === "turns" ? [] : this.activity(sessionId, at, n, only === "agents", since)),
+      ...(only === "turns" || only === "agents" ? [] : this.errors(sessionId, at, n, since)),
     ];
     all.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
     return all.slice(0, n);
   }
 
   // --- turns and the other marks of the event tree
-  private marks(sessionId: string, at: Cursor, n: number, turnsOnly: boolean): TimelineRow[] {
-    const q = this.store.db.query<MarkRow, [string, number, string, number]>(
+  private marks(sessionId: string, at: Cursor, n: number, turnsOnly: boolean, since: number): TimelineRow[] {
+    const q = this.store.db.query<MarkRow, [string, number, number, string, number]>(
       `SELECT id, ts, seq, kind, parent, ${PICK} AS data FROM events
-       WHERE session_id = ? AND kind IN ${MARKS}${turnsOnly ? " AND kind = 'turn_start'" : ""} AND (ts, id) < (?, ?)
+       WHERE session_id = ? AND kind IN ${MARKS} AND kind IN (${turnsOnly ? "'turn_start'" : "'turn_start', 'compaction', 'note'"}) AND ts >= ? AND (ts, id) < (?, ?)
        ORDER BY ts DESC, id DESC LIMIT ?`);
     const out: TimelineRow[] = [];
     const byTurn = this.errorsByTurn(sessionId);
+    const head = this.store.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(sessionId)?.head ?? null;
     for (let cur = at; out.length < n;) {
-      const got = q.all(sessionId, cur.ts, cur.id, n * 2 + 8);
+      const got = q.all(sessionId, since, cur.ts, cur.id, n + 8);
       for (const m of got) {
-        const row = m.kind === "turn_start" ? this.turn(sessionId, m, byTurn) : markRow(toMark(m), m.kind === "turn_end" ? this.turnBefore(sessionId, m) : this.turnAround(sessionId, m));
+        const row = m.kind === "turn_start" ? this.turn(sessionId, m, byTurn, head) : markRow({ id: m.id, ts: m.ts, kind: m.kind, data: m.data ? JSON.parse(m.data) : null }, this.turnAround(sessionId, m));
         if (row) out.push(row);
         if (out.length === n) break;
       }
-      if (got.length < n * 2 + 8) break;
+      if (got.length < n + 8) break;
       const last = got.at(-1)!;
       cur = { ts: last.ts, id: last.id };
     }
@@ -169,18 +187,17 @@ export class Timeline {
     return null;
   }
 
-  // What a turn took. Its end says so (the engine counts as it goes); a turn
-  // from before that, or one cut without an end of its own, is counted from
-  // its events and its telemetry row; a running turn from what ran so far.
+  // What a turn took: the replies the model gave and its tool results. Its
+  // end says so (the engine counts as it goes); a turn from before that, or
+  // one cut without an end of its own, is counted from its events and its
+  // telemetry row; a running turn from what ran so far.
   private counts(sessionId: string, start: MarkRow, end: MarkRow | undefined, said: Record<string, any> | null, nextSeq: number | undefined) {
     const num = (v: unknown) => (typeof v === "number" && v >= 0 ? v : undefined);
     if (said && num(said.steps) !== undefined && num(said.tools) !== undefined) return { steps: said.steps as number, tools: said.tools as number, failed_tools: num(said.tool_errors) ?? 0 };
     const db = this.store.db;
     const to = end?.seq ?? nextSeq ?? Number.MAX_SAFE_INTEGER;
     const steps = db.query<{ n: number }, [string, number, number]>("SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND seq > ? AND seq < ? AND kind = 'assistant'").get(sessionId, start.seq, to)!.n;
-    const told = end && this.table("telemetry_turns")
-      ? db.query<{ tool_calls: number; tool_errors: number }, [string]>("SELECT tool_calls, tool_errors FROM telemetry_turns WHERE turn_event = ?").get(start.id)
-      : undefined;
+    const told = end ? this.rollup(start.id) : undefined;
     if (told) return { steps, tools: told.tool_calls, failed_tools: told.tool_errors };
     if (!this.table("telemetry_tools")) return { steps, tools: 0, failed_tools: 0 };
     const t = db.query<{ n: number; bad: number | null }, [number, number, string]>("SELECT COUNT(*) AS n, SUM(is_error) AS bad FROM telemetry_tools WHERE ts >= ? AND ts <= ? AND session_id = ?")
@@ -188,18 +205,71 @@ export class Timeline {
     return { steps, tools: t.n, failed_tools: t.bad ?? 0 };
   }
 
-  private turn(sessionId: string, m: MarkRow, byTurn: Map<string, string>): TimelineRow {
+  // The turn's telemetry row: all its requests (its own, a reader's, a
+  // summary's) and tool runs, joined by the turn's id.
+  private rollup(turnEvent: string) {
+    if (!this.table("telemetry_turns")) return undefined;
+    return this.store.db.query<{ tool_calls: number; tool_errors: number; requests: number; input: number; output: number; cache_read: number; cost: number | null }, [string]>(
+      "SELECT tool_calls, tool_errors, requests, input, output, cache_read, cost FROM telemetry_turns WHERE turn_event = ?").get(turnEvent) ?? undefined;
+  }
+
+  private turn(sessionId: string, m: MarkRow, byTurn: Map<string, string>, head: string | null): TimelineRow {
     const f = this.after(sessionId, m);
     const end = f.end ? JSON.parse(f.end.data ?? "{}") : null;
+    // What it spent, over every request made while it ran; a turn with no
+    // such row (it is from before the table, or no request was recorded)
+    // says what its end summed, which is its own steps only.
+    const roll = f.end ? this.rollup(m.id) : undefined;
     return turnRow({
       start: { id: m.id, ts: m.ts, model: JSON.parse(m.data ?? "{}").model },
       opener: this.opener(sessionId, m.parent),
-      end: end && { reason: String(end.reason ?? "error"), ms: typeof end.ms === "number" ? end.ms : undefined, ts: f.end!.ts, stopped_by: end.stopped_by, usage: end.usage },
+      end: end && { reason: String(end.reason ?? "error"), ms: typeof end.ms === "number" ? end.ms : undefined, ts: f.end!.ts, stopped_by: end.stopped_by, crashed: !!end.crashed, unstarted: !!end.unstarted },
+      usage: roll && roll.requests > 0 ? roll : end?.usage,
       running: !f.end && this.live.turnOf?.(sessionId) === m.id,
       ...this.counts(sessionId, m, f.end, end, f.nextSeq),
       compactions: f.compactions,
       error_id: byTurn.get(m.id) ?? f.errorId,
+      other_branch: !this.onBranch(sessionId, head, m),
     });
+  }
+
+  // Whether a turn is on the branch shown: its start is an ancestor of the
+  // session's head. The branch is walked from the head down only as far as
+  // the oldest turn asked about, and kept: the next page goes on from there,
+  // and a head that moved on along the same branch adds its few new events.
+  private onBranch(sessionId: string, head: string | null, turn: { id: string; seq: number }): boolean {
+    if (!head) return true;
+    const step = this.store.db.query<{ id: string; seq: number; parent: string | null; kind: string; session_id: string }, [string]>("SELECT id, seq, parent, kind, session_id FROM events WHERE id = ?");
+    const walk = (c: Line, until: (c: Line) => boolean) => {
+      while (!c.done && !until(c)) {
+        const p = c.low.parent ? step.get(c.low.parent) : undefined;
+        if (!p || p.session_id !== sessionId || p.seq >= c.low.seq) { c.done = true; break; }
+        if (p.kind === "turn_start") c.turns.add(p.id);
+        c.low = p;
+      }
+    };
+    let c = this.lines.get(sessionId);
+    if (!c || c.head !== head) {
+      const h = step.get(head);
+      if (!h || h.session_id !== sessionId) return true;
+      const fresh: Line = { head, top: h.seq, low: h, turns: new Set(h.kind === "turn_start" ? [h.id] : []), done: false };
+      const old = c;
+      if (old) {
+        // Down to where the old head was: reaching it means the same branch, longer.
+        walk(fresh, (l) => l.low.seq <= old.top);
+        if (fresh.low.id === old.head) {
+          for (const t of old.turns) fresh.turns.add(t);
+          fresh.low = old.low;
+          fresh.done = old.done;
+        }
+      }
+      c = fresh;
+      this.lines.delete(sessionId);
+      this.lines.set(sessionId, c);
+      if (this.lines.size > LINES_KEPT) this.lines.delete(this.lines.keys().next().value!);
+    }
+    walk(c, (l) => l.low.seq <= turn.seq);
+    return c.turns.has(turn.id);
   }
 
   // The turn a mark belongs to: the newest turn_start before it, when that
@@ -208,10 +278,6 @@ export class Timeline {
     const prev = this.store.db.query<{ id: string; kind: string }, [string, number, string]>(
       `SELECT id, kind FROM events WHERE session_id = ? AND kind IN ${MARKS} AND kind IN ('turn_start', 'turn_end') AND (ts, id) < (?, ?) ORDER BY ts DESC, id DESC LIMIT 1`).get(sessionId, m.ts, m.id);
     return prev?.kind === "turn_start" ? prev.id : undefined;
-  }
-  private turnBefore(sessionId: string, m: { ts: number; id: string }): string | undefined {
-    return this.store.db.query<{ id: string }, [string, number, string]>(
-      `SELECT id FROM events WHERE session_id = ? AND kind IN ${MARKS} AND kind = 'turn_start' AND (ts, id) < (?, ?) ORDER BY ts DESC, id DESC LIMIT 1`).get(sessionId, m.ts, m.id)?.id;
   }
 
   // The session's kinds of failure by the turn each last happened in.
@@ -247,18 +313,25 @@ export class Timeline {
     };
   }
 
-  private activity(sessionId: string, at: Cursor, n: number, agentsOnly: boolean): TimelineRow[] {
+  // An agent's happenings are stored under its parent, with the agent named:
+  // the agent's own timeline reads them from there, within the agent's lifetime.
+  private activity(sessionId: string, at: Cursor, n: number, agentsOnly: boolean, since: number): TimelineRow[] {
     if (!this.table("activity")) return [];
     const kinds = agentsOnly ? "kind = 'agent'"
       : "(kind IN ('agent', 'wait', 'loop', 'approval') OR (kind = 'turn' AND sub = 'goal') OR (kind = 'alert' AND sub IN ('approval', 'question', 'limit')))";
-    const q = this.store.db.query<ActivityIn & { data: string | null }, [string, number, string, number]>(
-      `SELECT id, ts, kind, sub, text, data, turn_event FROM activity WHERE session_id = ? AND (ts, id) < (?, ?) AND ${kinds} ORDER BY ts DESC, id DESC LIMIT ?`);
+    const self = this.table("agents") ? this.store.db.query<{ parent_id: string | null; created: number }, [string]>("SELECT parent_id, created FROM sessions WHERE id = ?").get(sessionId) : undefined;
+    const under = self?.parent_id ?? sessionId;
+    const own = under !== sessionId;
+    const q = this.store.db.query<ActivityIn & { data: string | null }, [string, number, number, string, string | null, number]>(
+      `SELECT id, ts, kind, sub, text, data, turn_event FROM activity WHERE session_id = ? AND ts >= ? AND (ts, id) < (?, ?) AND ${kinds}
+         AND (?5 IS NULL OR data ->> '$.child_session' = ?5) ORDER BY ts DESC, id DESC LIMIT ?6`);
+    if (own) since = Math.max(since, self!.created);
     const look = this.lookups();
     const out: TimelineRow[] = [];
     for (let cur = at; out.length < n;) {
-      const got = q.all(sessionId, cur.ts, cur.id, n + 8);
+      const got = q.all(under, since, cur.ts, cur.id, own ? sessionId : null, n + 8);
       for (const a of got) {
-        const row = activityRow({ ...a, data: a.data ? JSON.parse(a.data) : null }, look);
+        const row = activityRow({ ...a, data: a.data ? JSON.parse(a.data) : null }, look, own);
         if (row) out.push(row);
         if (out.length === n) break;
       }
@@ -269,12 +342,35 @@ export class Timeline {
     return out;
   }
 
-  private errors(sessionId: string, at: Cursor, n: number): TimelineRow[] {
-    return this.store.db
-      .query<Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts">, [string, number, string, number]>(
-        "SELECT id, ts, source, message, count, turn_event, span_id, resolved_ts FROM errors WHERE session_id = ? AND (ts, id) < (?, ?) ORDER BY ts DESC, id DESC LIMIT ?")
-      .all(sessionId, at.ts, at.id, n)
-      .map((e) => errorRow({ ...e, turn_event: e.turn_event ?? undefined, span_id: e.span_id ?? undefined, resolved_ts: e.resolved_ts ?? undefined }));
+  // --- what failed. A failed model request is told from the session's own
+  // record (one row a cause, counted for this session and its agents, kept
+  // whatever happens elsewhere). The errors table folds a kind of failure
+  // across every session and keeps only where it last happened: its rows are
+  // shown for what the record does not hold (a daemon or page failure, a
+  // session from before the record), and as the way into the Errors panel.
+  private errors(sessionId: string, at: Cursor, n: number, since: number): TimelineRow[] {
+    const db = this.store.db;
+    const mine = db.query<ErrorLite, [string, number, number, string, number]>(
+      "SELECT id, ts, source, message, count, turn_event, span_id, resolved_ts FROM errors WHERE session_id = ? AND ts >= ? AND (ts, id) < (?, ?) ORDER BY ts DESC, id DESC LIMIT ?");
+    const lite = (e: ErrorLite): ErrorLite => ({ ...e, turn_event: e.turn_event ?? undefined, span_id: e.span_id ?? undefined, resolved_ts: e.resolved_ts ?? undefined });
+    if (!this.table("session_failures")) return mine.all(sessionId, since, at.ts, at.id, n).map((e) => errorRow(lite(e)));
+    // The causes the record holds, by class, and the Errors row of each class that last happened here.
+    const classes = new Set(db.query<{ cls: string }, [string]>("SELECT DISTINCT cls FROM session_failures WHERE session_id = ? AND kind = 'provider'").all(sessionId).map((r) => r.cls));
+    const links = new Map<string, ErrorLite>();
+    if (classes.size) {
+      for (const e of db.query<ErrorLite, [string]>("SELECT id, ts, source, message, count, turn_event, span_id, resolved_ts FROM errors WHERE session_id = ? AND source = 'provider' ORDER BY ts DESC LIMIT 500").all(sessionId)) {
+        const cls = errorClass({ message: e.message });
+        if (cls && !links.has(cls)) links.set(cls, lite(e));
+      }
+    }
+    const groups = db.query<{ fp: string; cls: string; count: number; last_ts: number; refs: string }, [string, number, number, string, number]>(
+      "SELECT fp, cls, count, last_ts, refs FROM session_failures WHERE session_id = ? AND kind = 'provider' AND last_ts >= ? AND (last_ts, 'f:' || fp) < (?, ?) ORDER BY last_ts DESC, fp DESC LIMIT ?")
+      .all(sessionId, since, at.ts, at.id, n)
+      .map((g) => failureRow({ ...g, refs: JSON.parse(g.refs) }, links.get(g.cls)));
+    const rest = mine.all(sessionId, since, at.ts, at.id, n)
+      .filter((e) => !(e.source === "provider" && classes.has(errorClass({ message: e.message }) ?? "")))
+      .map((e) => errorRow(lite(e)));
+    return [...groups, ...rest];
   }
 
   // --- what it is doing and waiting on now
@@ -314,7 +410,7 @@ export class Timeline {
       for (const sid of [sessionId, ...children.keys()]) {
         for (const r of q.all(sid)) {
           const a = JSON.parse(r.data);
-          approvals.push({ id: a.id, tool: a.tool, risk: a.risk, created: a.created, ...(sid === sessionId ? {} : { child_session: sid, child_title: children.get(sid) }) });
+          approvals.push({ id: a.id, call_id: a.call_id, tool: a.tool, risk: a.risk, created: a.created, ...(sid === sessionId ? {} : { child_session: sid, child_title: children.get(sid) }) });
         }
       }
     }
@@ -330,12 +426,12 @@ export class Timeline {
       : [];
     return nowLines({
       ts, turn, last, held, approvals, questions, waits, agents, loops,
+      // A turn the engine has taken up and not opened yet: its system prompt, its model, its first event.
+      starting: !turn && !!live.isRunning?.(sessionId),
       queue: { queued: queued.find((r) => !r.steer)?.n ?? 0, steers: queued.find((r) => r.steer)?.n ?? 0, held: !!live.isHeld?.(sessionId), owed: !!live.owed?.(sessionId) },
     });
   }
 }
-
-const toMark = (m: MarkRow): Mark => ({ id: m.id, ts: m.ts, kind: m.kind, data: m.data ? JSON.parse(m.data) : null });
 
 // "1h", "30m", "2d", "90s", or a time in epoch milliseconds or ISO form.
 export function parseSince(v: string, now = Date.now()): number {
