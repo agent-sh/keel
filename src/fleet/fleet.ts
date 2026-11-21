@@ -348,12 +348,14 @@ export class Fleet {
       const p = await this.peer(id);
       const who = await linkJson<{ daemon_id: string; server_name: string; version: string }>(p, "/api/fleet/identity");
       const facts = await linkJson<Facts>(p, `/api/fleet/facts${m.workspace_root ? `?root=${encodeURIComponent(m.workspace_root)}` : ""}`);
+      if (this.stopped) return m; // stopped while the machine answered: nothing is recorded
       const q = this.queues.get(id);
       const busy = (q?.waiting.length ?? 0) > 0 || facts.load1 >= facts.cpus;
       this.set(id, { state: busy ? "busy" : "ready", reason: null, checked_ms: Date.now(), facts: JSON.stringify({ ...facts, measured_ms: Date.now() }) });
       this.links.set(id, { state: "linked", daemon_id: who.daemon_id, server_name: who.server_name, version: who.version });
       this.ensureRelay(id);
     } catch (e) {
+      if (this.stopped) return m; // its store may be closed by now
       const reason = (e as Error).message;
       this.set(id, { state: "offline", reason, checked_ms: Date.now() });
       this.links.set(id, { state: "offline", reason });
@@ -497,7 +499,7 @@ export class Fleet {
       const m = this.row(id);
       if (m?.state === "offline") {
         this.set(id, { state: "starting", reason: null });
-        void this.check(id);
+        this.check(id).catch((e) => this.errors.capture("server", e, { at: "fleet check", machine: id }));
       }
       this.emitMachines();
       this.bus.emit({ t: "feature", name: "fleet_sessions", data: { machine: id } });
