@@ -10,6 +10,7 @@ import * as consult from "./consult.ts";
 import * as goals from "./goals.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
+import * as failures from "./failures.ts";
 import * as snooze from "./snooze.ts";
 import { afterTurn, capture, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
@@ -55,10 +56,12 @@ function init(deps: Deps) {
   snooze.migrate();
   consult.migrate();
   goals.migrate();
+  failures.init();
   registerShared(...automationTools, consult.advisorTool);
   extendTaskStop();
 
   registerHooks(waitAckHooks);
+  registerHooks(failures.hooks);
   registerHooks({
     // The owner's task-list edits since the last request, as one note.
     beforeRequest: (s, req) =>
@@ -95,6 +98,7 @@ function init(deps: Deps) {
     turnEnd: (s, reason) => {
       afterTurn(s.id, () => {
         const loopRun = loops.runOpenIn(s.id);
+        failures.onTurnEnd(s.id, reason);
         loops.onTurnEnd(s.id, reason);
         agents.onTurnEnd(s.id, reason);
         // A session whose agents still work has not finished: its alert waits
@@ -190,6 +194,7 @@ function init(deps: Deps) {
       waits.recover();
       loops.recover();
       agents.recover();
+      failures.recover();
       goals.recover();
     } catch (e) {
       capture(e, { at: "recover" });

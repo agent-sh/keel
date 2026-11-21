@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { D, alertHook, capture, deliver, emit, familyOf, inert, withdraw } from "./core.ts";
 import { checkZone, localZone, nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
 import * as activity from "./activity.ts";
+import * as failures from "./failures.ts";
 
 // Loops: a prompt that runs again in its session on an interval, a calendar
 // schedule, its own pace (the model names the next delay), or a webhook. The
@@ -448,6 +449,7 @@ function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["ou
   const next = patch(l.id, out)!;
   const said = outcome === "ok" ? "ended" : outcome === "stopped" ? "was stopped" : outcome === "incomplete" ? `did not finish: ${why}` : `failed: ${why}`;
   activity.record("loop", outcome === "ok" ? "ok" : outcome, l.session_id, `Loop "${l.name}" run ${said}`, { loop_id: l.id, run_id: r.id });
+  if (outcome === "failed") failures.seen(l.session_id, "loop", l.name, why);
   if (bad) alertHook.raise?.("loop_failed", l.session_id, `Loop ${outcome === "failed" ? "failed" : "did not finish"}: ${l.name}`, `${why}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
   if (l.max_runs && next.runs >= l.max_runs && next.enabled) patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` });
   // A webhook request that waited for this run goes now.

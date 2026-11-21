@@ -2,6 +2,7 @@ import { existsSync, openSync, readSync, closeSync, readFileSync, statSync } fro
 import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
 import * as activity from "./activity.ts";
+import * as failures from "./failures.ts";
 import { pumpText, readText } from "../core/proc.ts";
 import { lineage } from "../core/tree.ts";
 
@@ -287,6 +288,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   const rec = get(id)!;
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id });
+  if (status === "timeout") failures.seen(w.session_id, "wait", w.kind, outcome);
   if (wake) sendWake(rec, boot);
   return true;
 }

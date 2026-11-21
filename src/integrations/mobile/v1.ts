@@ -104,6 +104,7 @@ function originOf(e: StoredEvent, titleOf: (sid: string) => string | undefined, 
       return wakeOf(text, d);
     }
     case "wait": return wakeOf(text, d);
+    case "failures": return { origin: "harness", label: "", text: text.replace(/^\[harness\]\s*/, "") };
     case "loop": return { origin: "loop", label: `Loop run${d.loop_name ? `: ${d.loop_name}` : ""}`, text, meta: { loop_id: d.loop_id ?? null } };
     case "goal": return { origin: "goal", label: d.goal === "start" ? "Goal set" : d.goal === "resume" ? "Goal resumed" : "Goal not met yet: next turn", text: text.replace(/^\[harness\]\s*/, "") };
     case "task": {

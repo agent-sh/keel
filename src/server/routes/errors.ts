@@ -1,5 +1,7 @@
-// The error tracker's routes: the list (open or resolved, read or unread), a
+// The error tracker's routes: the list (open or resolved, read or unread, of
+// every session or of one, with that session's grouped failures), a
 // browser error posted by the page, and marking one kind of failure fixed or read.
+import { recordOf } from "../../automation/failures.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -24,7 +26,13 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
         const flag = (k: string) => (q.get(k) === null ? undefined : q.get(k) === "1");
-        return json({ errors: store.errors(200, { resolved: flag("resolved"), read: flag("read") }) });
+        // ?session=: what went wrong in that session's scope. `errors` are the
+        // kinds that last happened in it or in its agents; `failures` is its own
+        // grouped record (one row per cause, with counts and where), the same
+        // one its model is told from.
+        const session = q.get("session") ?? undefined;
+        const errors = store.errors(200, { resolved: flag("resolved"), read: flag("read"), session });
+        return json(session ? { errors, failures: recordOf(store, session) } : { errors });
       },
       POST: async (req: Request) => {
         const b = (await req.json().catch(() => ({}))) as any;

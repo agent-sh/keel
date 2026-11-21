@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Network, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Network, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
 import { useMemo } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -12,7 +12,7 @@ import { Markdown } from "../Markdown.tsx";
 import { AgentStatus, agentWhy, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
-export const SYSTEM_INPUT = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal"]);
+export const SYSTEM_INPUT = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal", "failures"]);
 
 type Report = { id: string; title: string; status: AgentRecord["status"]; text: string; why?: string; key: string; task?: string };
 
@@ -42,6 +42,23 @@ function reports(text: string, meta?: Record<string, any>): Report[] {
     if (same.length > 1) r.task = same.at(-1) === r ? "latest task" : "earlier task";
   }
   return out;
+}
+
+// The failure notice inside an input (src/automation/failures.ts): its entries,
+// the lines after them, and the input's text without it.
+const FAILURES = /\[harness\] Failures in this session's work[^\n]*\n<failures>\n([\s\S]*?)\n<\/failures>((?:\n(?!\n)[^\n]*)*)/;
+function failuresOf(text: string, meta: Record<string, any>) {
+  const part = ((meta.parts ?? [meta]) as Record<string, any>[]).find((p) => p.kind === "failures");
+  const m = part && text.match(FAILURES);
+  if (!m) return undefined;
+  const groups = (part.groups ?? []) as { owed: number }[];
+  const n = groups.reduce((s, g) => s + (g.owed ?? 0), 0);
+  return {
+    body: unframe(m[1]!, "failures"),
+    after: m[2]!.trim(),
+    rest: text.replace(m[0], "").trim(),
+    sub: `${n} failure${n === 1 ? "" : "s"}, ${groups.length} cause${groups.length === 1 ? "" : "s"}`,
+  };
 }
 
 // Each wake with its own header: a monitor's note (or short id) beside its batch number.
@@ -95,11 +112,11 @@ export function toolSummary(name: string, input: any): string | undefined {
   }
 }
 
-function Shell({ icon: Icon, label, sub, children, testid, defaultOpen }: { icon: typeof Bot; label: string; sub?: string; children?: React.ReactNode; testid: string; defaultOpen?: boolean }) {
+function Shell({ icon: Icon, label, sub, children, testid, defaultOpen, tone }: { icon: typeof Bot; label: string; sub?: string; children?: React.ReactNode; testid: string; defaultOpen?: boolean; tone?: "danger" }) {
   return (
     <Collapsible.Root defaultOpen={defaultOpen} className="group/in animate-in rounded-lg border border-dashed border-line-strong bg-sunken/60" data-testid={testid}>
       <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-caption text-muted outline-none hover:text-fg">
-        <Icon className="size-3.5 shrink-0 text-accent" />
+        <Icon className={cn("size-3.5 shrink-0", tone === "danger" ? "text-danger" : "text-accent")} />
         <span className="font-medium text-fg">{label}</span>
         {sub && <span className="min-w-0 truncate text-faint">{sub}</span>}
         <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/in:rotate-90" />
@@ -117,6 +134,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   const sessions = useStore((s) => s.sessions);
   const rs = useMemo(() => reports(text, e.data), [text, e.data]);
   const ws = useMemo(() => wakes(text), [text]);
+  const fails = useMemo(() => failuresOf(text, e.data), [text, e.data]);
 
   // One input can carry agents' reports and wakes together: every part shows.
   const reportCards = rs.length > 0 && (kind === "subagent" || kind === "wake") && (
@@ -153,7 +171,22 @@ export function InputNotice({ e }: { e: StoredEvent }) {
       <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">Agent {p.agent_id} parked on {p.waiting_on}. It has not finished.</p>
     </Shell>
   ));
-  if (reportCards || wakeCard || parkCards.length) return <div className="flex flex-col gap-2">{reportCards}{wakeCard}{parkCards}</div>;
+  // What failed around the session, one entry per cause: open, since it is what needs a look.
+  const failCard = fails && (
+    <Shell icon={AlertTriangle} tone="danger" label="Failures, grouped by cause" sub={fails.sub} testid="failure-notice" defaultOpen>
+      <div className="mx-3 mb-3 flex max-h-80 flex-col gap-2 overflow-auto rounded-lg bg-code p-2.5 font-mono text-caption text-muted">
+        <pre className="whitespace-pre-wrap" data-testid="failure-entries">{fails.body}</pre>
+        {fails.after && <p className="whitespace-pre-wrap font-sans text-faint">{fails.after}</p>}
+      </div>
+    </Shell>
+  );
+  if (reportCards || wakeCard || parkCards.length || (failCard && !fails.rest)) return <div className="flex flex-col gap-2">{reportCards}{wakeCard}{parkCards}{failCard}</div>;
+  // With another input that has no card of its own: that one as it reads, then the failures.
+  if (failCard) {
+    const others = ((e.data.parts ?? []) as Record<string, any>[]).filter((p) => p.kind !== "failures");
+    const data = others.length === 1 ? { ...others[0], text: fails.rest } : { ...e.data, text: fails.rest, parts: others };
+    return <div className="flex flex-col gap-2"><InputNotice e={{ ...e, data }} />{failCard}</div>;
+  }
   if (kind === "loop") {
     return (
       <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice">

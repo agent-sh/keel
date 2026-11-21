@@ -16,6 +16,7 @@ import type { Deps, RouteModule } from "../app.ts";
 import { asksLess, gate, presence } from "./permissions.ts";
 import { carrySettings, commitSwitch } from "../switch.ts";
 import * as agents from "../../automation/agents.ts";
+import { owedWake } from "../../automation/failures.ts";
 import * as waits from "../../automation/waits.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
@@ -92,7 +93,8 @@ export const runRoutes: RouteModule = (deps) => {
         const questions = ids.flatMap((id) => pendingQuestions(id).map((call_id) => ({ session_id: id, call_id })));
         // An agent that ended but whose report has not reached the session yet
         // still counts: its report starts the turn that uses it.
-        const agentsLive = agents.list(s.id).filter((a) => a.status === "running" || a.status === "waiting" || a.handback).length;
+        // (A failure notice that stands in for failed agents' reports counts the same.)
+        const agentsLive = agents.list(s.id).filter((a) => a.status === "running" || a.status === "waiting" || a.handback).length + (owedWake(s.id) ? 1 : 0);
         const waitsLive = waits.list(s.id, 0).filter((w) => w.status === "active").length;
         const jobsLive = jobsOf(s.id).filter((j) => j.background && running(j)).length;
         return json({

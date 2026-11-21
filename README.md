@@ -118,6 +118,35 @@ can notify again; the Errors panel remains the record. A notice already written
 to the coordinator's transcript is part of its normal session history and that
 turn follows the usual restart behavior.
 
+## Failures in a session's own work
+
+A session is told what went wrong in its own scope without asking: its agents,
+their tools and its own turns. Keel keeps one row per cause (the kind of
+failure, its class and its first lines, with numbers, ids and paths folded) and
+sends what the session has not seen yet as one harness input, built from the
+table with no model call. Ten agents that failed on the same provider error
+arrive as one entry with the error once and each agent's id, not as ten
+reports. An agent that failed and wrote something of its own still reports
+normally.
+
+- An agent's failure that stands in for its report starts a turn, as the
+  report would have. Everything else goes with the session's next input and
+  never starts a turn: a tool failure an agent repeated three times or more,
+  and a turn of the session itself that ended on an error.
+- A cause appears once per notice. If it happens again later, the next notice
+  says how many more and the total.
+- What is owed is in the table, so a notice owed when the daemon stops is sent
+  once after it starts.
+- Text is redacted like everything stored, an entry holds at most three lines
+  and twenty ids, and a notice at most eight causes.
+- A session's own tool failures are counted but not sent back: it has their
+  results. Failed model requests (retried ones too) and timed out waits are
+  counted too.
+
+The same rows are read at `GET /api/errors?session=<id>` (`failures`), with the
+Errors rows that last happened in that session or its agents. For an agent's
+session it returns the rows of its parent that name it.
+
 ## Phone
 
 `android/` holds Keel for Android: sessions, approvals, questions and push on

@@ -7,6 +7,8 @@ import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPend
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
+import * as failures from "./failures.ts";
+import { classOf } from "./failure-groups.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { Worktrees } from "../worktree/manager.ts";
 import { contains } from "../core/paths.ts";
@@ -126,6 +128,7 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE INDEX IF NOT EXISTS agents_parent ON agents(parent_id);
 CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
   store.migrate(OWED_SCHEMA);
+  failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
   for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
@@ -637,8 +640,9 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
 // correction is what the parent reads first), the earlier ones after it. Words
 // said before a tool call are not a report: a round that ended without a final
 // answer says so, with the last tool failure it did not get past. A long result
-// keeps its start and its end.
-function collectResult(a: AgentRecord, end?: string): string {
+// keeps its start and its end. `own`: the agent wrote something itself;
+// `error`: the error its last turn ended on.
+function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string } {
   const evs = D().store.events(a.session_id, a.first_seq);
   const rounds: string[] = [];
   let final = "";
@@ -671,8 +675,9 @@ function collectResult(a: AgentRecord, end?: string): string {
   if (end && END_TEXT[end]) text += `${text ? "\n\n" : ""}It did not finish: ${END_TEXT[end]}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
   if (err) text += `${text ? "\n\n" : ""}Error: ${err}`;
   if (text.length > RESULT_CAP) text = `${text.slice(0, RESULT_CAP / 2)}\n\n[... cut ...]\n\n${text.slice(-RESULT_CAP / 2)}`;
-  return text || "(the agent ended without a report)";
+  return { text: text || "(the agent ended without a report)", own: rounds.length > 0, error: err };
 }
+const collectResult = (a: AgentRecord, end?: string) => collect(a, end).text;
 
 export function reportBlock(a: AgentRecord): string {
   const by = a.status === "stopped" && a.stopped_by ? ` stopped_by="${a.stopped_by}"` : "";
@@ -725,10 +730,12 @@ function waitHolds(a: AgentRecord, report = reportId(a)): boolean {
   return false;
 }
 
-function handback(a: AgentRecord) {
+// `grouped`: the agent failed with no words of its own, so the failure notice
+// (failures.ts) tells it with the others of its cause instead of a report.
+function handback(a: AgentRecord, grouped = false) {
   const parent = D().store.session(a.parent_id);
   if (!parent || parent.archived) return;
-  owe(a);
+  if (!grouped) owe(a);
   // Said with each report while others run: models set timers to wait for the rest.
   const left = list(a.parent_id).filter((o) => o.id !== a.id && !isEnded(o) && o.type !== "reviewer").length;
   let still = left ? `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.` : "";
@@ -742,6 +749,7 @@ function handback(a: AgentRecord) {
     for (const w of timers) waits.cancel(w.id, a.parent_id);
     if (timers.length) still = `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.map((w) => w.id).join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.`;
   }
+  if (grouped) return failures.wake(a.parent_id, left ? undefined : still);
   sendOwed({ report_id: reportId(a), agent_id: a.id, block: reportBlock(a), status: a.status }, a.parent_id, still);
 }
 
@@ -821,8 +829,12 @@ function lastRound(a: AgentRecord): string {
 
 async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: StopBy | null; end_reason: string; note?: string }) {
   withdrawParked(a);
-  let result = collectResult(a, status === "incomplete" ? how.end_reason : undefined);
+  const got = collect(a, status === "incomplete" ? how.end_reason : undefined);
+  let result = got.text;
   if (how.note) result += `${result ? "\n\n" : ""}${how.note}`;
+  // What it failed on, when that is all it has to report (it wrote nothing itself).
+  let cause = status === "failed" && !got.own ? got.error || how.note || "" : "";
+  let cls = how.end_reason === "restart" ? "restart" : classOf(got.error);
   const row = D().store.db.query<{ output_schema: string | null; schema_tries: number }, [string]>("SELECT output_schema, schema_tries FROM agents WHERE id = ?").get(a.id)!;
   if (row.output_schema && status === "completed") {
     const text = lastRound(a);
@@ -836,20 +848,26 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
       return;
     } else {
       status = "failed";
+      cls = "schema";
       result = `The report never matched its schema (${why}). Its last answer:\n${text}`;
     }
   }
-  if (a.machine) result += remote ? await remote.finished(a) : "";
-  else if (a.worktree) result += await worktreeNote(a);
+  // Work it left behind is its own to report (an emptied worktree's note is not).
+  const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
+  result += work;
+  if (work && !/\(The agent changed no files; its worktree[^)]* was removed\.\)\s*$/.test(work)) cause = "";
   const silent = !!defOf(a.id)?.silent;
   // A blocking agent's result is held by the call that started it: while that
   // call waits, and after a stop of the parent's turn cut it (cutCalls).
   const blocked = silent || (!a.background && (waitersOn(a.id) > 0 || cutCalls.has(a.id)));
-  const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason })!;
+  // Told in the failure notice with the others of its cause: no report of its own is owed.
+  const grouped = !!cause && !blocked;
+  const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason })!;
+  if (status === "failed") failures.agentFailed(rec, cls, cause || got.error || how.note || result, grouped);
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);
-  if (!blocked) handback(rec);
+  if (!blocked) handback(rec, grouped);
 }
 
 // A worktree with nothing in it goes (its branch too); one with work stays,
@@ -947,6 +965,7 @@ export function ackWaited(parentId: string, reports: { id: string; report: strin
     withdraw(parentId, (m) => m.kind === "subagent" && m.report_id === r.report);
     settle(r.id, r.report);
   }
+  failures.ackAgents(parentId, reports.map((r) => r.id));
 }
 
 export function resolveTarget(parentId: string, target: string): AgentRecord {
@@ -1105,6 +1124,7 @@ export function tick() {
 export function deliverOwed(parentId: string) {
   for (const a of list(parentId)) if (a.handback && isEnded(a)) owe(a);
   sendAllOwed(owedOf(parentId));
+  failures.wake(parentId);
 }
 
 export function stopChildrenOf(parentId: string) {

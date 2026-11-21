@@ -454,13 +454,15 @@ export class Store {
     return r ? errorRow(r) : undefined;
   }
 
-  errors(limit = 200, opts: { resolved?: boolean; read?: boolean } = {}): ErrorRecord[] {
+  // `session`: only the kinds that last happened in that session or in an agent of it.
+  errors(limit = 200, opts: { resolved?: boolean; read?: boolean; session?: string } = {}): ErrorRecord[] {
     const conds = [
       opts.resolved === undefined ? "" : opts.resolved ? "resolved_ts IS NOT NULL" : "resolved_ts IS NULL",
       opts.read === undefined ? "" : opts.read ? "read_ts IS NOT NULL" : "read_ts IS NULL",
+      opts.session === undefined ? "" : "(session_id = ?1 OR session_id IN (SELECT id FROM sessions WHERE parent_id = ?1))",
     ].filter(Boolean);
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-    return this.db.query<any, [number]>(`SELECT * FROM errors ${where} ORDER BY ts DESC LIMIT ?`).all(limit).map(errorRow);
+    return this.db.query<any, [string | null, number]>(`SELECT * FROM errors ${where} ORDER BY ts DESC LIMIT ?2`).all(opts.session ?? null, limit).map(errorRow);
   }
 
   // Seen by the owner: out of the counts, still on the list. Happening again makes it unread.

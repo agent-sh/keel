@@ -32,6 +32,12 @@ under `~/.cache/keel-work/bun/research/`.
   then in parts, each with the summary of the parts before it.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
+- A session is told what went wrong in its scope without asking: failures of its
+  turns, its agents and their tools are grouped per cause in `session_failures`
+  (`src/automation/failures.ts`, the grouping in `failure-groups.ts`) and go to
+  its model as one harness input, each cause once with a count. An agent that
+  failed with no words of its own is told there instead of in a report of its
+  own. The same rows are read at `GET /api/errors?session=<id>`.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving
