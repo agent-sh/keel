@@ -24,8 +24,9 @@ export type WaitSpec =
 
 // A wait kind another module probes (the fleet's session notices): how a spec
 // is read, how often it is probed, and the probe itself (an outcome fires it;
-// a thrown error is kept as the last probe's error).
-export type WaitKind = { normalize(spec: any, cwd: string): WaitSpec; every: number; probe(w: WaitRecord): Promise<string | undefined> | string | undefined };
+// a thrown error is kept as the last probe's error). The signal aborts when
+// the probe took too long or its wait was settled.
+export type WaitKind = { normalize(spec: any, cwd: string): WaitSpec; every: number; probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> | string | undefined };
 const kinds = new Map<string, WaitKind>();
 export const registerWaitKind = (kind: string, k: WaitKind) => void kinds.set(kind, k);
 
@@ -113,7 +114,10 @@ export function describeActive(sessionId: string): string {
 // wait's cursor (the first unread byte, the file's identity, a line being
 // skipped) is also kept in the row, so a restart reads on from where it was.
 type LogCursor = { offset: number; ident?: string; skip?: boolean; skipped?: number };
-const live = new Map<string, { offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
+// `probing`: the one probe of the wait that has not answered yet (`late` once
+// it was given up on).
+type Probing = { started: number; abort: AbortController; late?: boolean };
+const live = new Map<string, { offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; probing?: Probing; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
 const LOG_READ = 4 << 20; // a probe reads at most this much of a log
 const LINE_MAX = 64 * 1024; // a monitor matches lines up to this long; a longer one is cut there
 const DISPLAY = 2000; // characters of one line shown in an event
@@ -263,6 +267,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
     try { process.kill(-st.proc.pid, "SIGTERM"); } catch {}
   }
   if (st?.ws) try { st.ws.close(1000); } catch {}
+  st?.probing?.abort.abort(); // a probe still out is stopped; what it says later is not used
   live.delete(id);
   // The status changes only from active, in the same statement that reads it,
   // and the same statement records that the wake is owed.
@@ -318,8 +323,10 @@ export function cancelForSession(sessionId: string) {
   D().store.db.query("UPDATE waits SET wake = 0 WHERE session_id = ? AND wake = 1").run(sessionId);
 }
 
+// The last probe's error, of a wait still active (a probe that answers after
+// its wait was settled changes nothing).
 function setError(id: string, msg: string | null) {
-  D().store.db.query("UPDATE waits SET last_error = ? WHERE id = ?").run(msg, id);
+  D().store.db.query("UPDATE waits SET last_error = ? WHERE id = ? AND status = 'active'").run(msg, id);
 }
 
 // pr_checks at the pace gh pr checks --watch polls (10 s).
@@ -328,10 +335,19 @@ const PROBE_MS: Partial<Record<WaitSpec["kind"], number>> = { file: 1000, log: 1
 // as "no checks" only after this long.
 const EMPTY_CHECKS_GRACE = 120_000;
 
-async function probe(w: WaitRecord): Promise<string | undefined> {
+// How long a probe that goes out of the process may take before it is stopped
+// and said so: an HTTP request five seconds, gh and a module's own probe three
+// of gh's ten-second periods.
+const PROBE_LIMIT_MS = 30_000;
+const limitOf = (kind: string) => (kind === "http" ? 5000 : PROBE_LIMIT_MS);
+
+// A probe of a local fact (a clock, a file, a process) answers at once; one
+// that asks something outside (HTTP, gh, another machine) returns a promise,
+// which the scheduler does not wait for.
+function probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> | string | undefined {
   const s = w.spec;
   const custom = kinds.get(s.kind);
-  if (custom) return custom.probe(w);
+  if (custom) return custom.probe(w, signal);
   switch (s.kind) {
     case "timer":
       return Date.now() >= s.at_ms! ? "The timer is up." : undefined;
@@ -388,32 +404,39 @@ async function probe(w: WaitRecord): Promise<string | undefined> {
         closeSync(fd);
       }
     }
-    case "http": {
-      try {
-        const r = await fetch(s.url, { signal: AbortSignal.timeout(5000), redirect: "manual" });
+    case "http":
+      return fetch(s.url, { signal, redirect: "manual" }).then((r) => {
         const ok = s.status ? r.status === s.status : r.status >= 200 && r.status < 400;
         setError(w.id, ok ? null : `HTTP ${r.status}`);
         return ok ? `${s.url} answered ${r.status}.` : undefined;
-      } catch (e) {
-        setError(w.id, (e as Error).message);
-        return undefined;
-      }
-    }
+      });
     case "process":
       if (!procAlive(s.pid)) return `Process ${s.pid} has ended.`;
       // The pid names another process now: the one waited on has ended. An
       // unreadable start time proves nothing either way; the pid is alive.
       const now = s.start && startTime(s.pid);
       return now && now !== s.start ? `Process ${s.pid} has ended (its id now names another process).` : undefined;
-    case "pr_checks": {
-      const p = Bun.spawn([process.env.KEEL_GH_BIN || "gh", "pr", "view", String(s.pr_number), "--repo", s.repo, "--json", "state,statusCheckRollup"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-      const [out, err, code] = await Promise.all([readText(p.stdout, "gh pr view"), readText(p.stderr, "gh pr view"), p.exited]);
-      if (code !== 0) throw new Error(`gh pr view failed: ${err.trim().slice(0, 300)}`);
-      setError(w.id, null);
-      return prChecksVerdict(JSON.parse(out), s.repo, s.pr_number, Date.now() - w.created >= EMPTY_CHECKS_GRACE);
-    }
+    case "pr_checks":
+      return prChecks(w, s, signal);
     default:
       return undefined;
+  }
+}
+
+// gh in a process group of its own, so stopping it also stops what it started
+// (a credential helper) and closes the pipes read here.
+async function prChecks(w: WaitRecord, s: Extract<WaitSpec, { kind: "pr_checks" }>, signal: AbortSignal): Promise<string | undefined> {
+  const p = Bun.spawn([process.env.KEEL_GH_BIN || "gh", "pr", "view", String(s.pr_number), "--repo", s.repo, "--json", "state,statusCheckRollup"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+  const stop = () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} };
+  if (signal.aborted) stop();
+  else signal.addEventListener("abort", stop, { once: true });
+  try {
+    const [out, err, code] = await Promise.all([readText(p.stdout, "gh pr view"), readText(p.stderr, "gh pr view"), p.exited]);
+    if (code !== 0) throw new Error(`gh pr view failed: ${err.trim().slice(0, 300)}`);
+    setError(w.id, null);
+    return prChecksVerdict(JSON.parse(out), s.repo, s.pr_number, Date.now() - w.created >= EMPTY_CHECKS_GRACE);
+  } finally {
+    signal.removeEventListener("abort", stop);
   }
 }
 
@@ -576,36 +599,65 @@ function flushMonitor(id: string, force = false) {
   if (events >= (s.max_events ?? 20)) settle(id, "ended", `The monitor delivered its ${events} batches and stopped.`);
 }
 
-let ticking = false;
+const timedOut = (w: WaitRecord, last?: string | null) => `Timed out after ${Math.round((w.deadline - w.created) / 1000)} s.${last ? ` Last probe: ${last}` : ""}`;
+
+// What a probe said: an outcome fires the wait, nothing at the deadline times it out.
+function probed(w: WaitRecord, hit: string | undefined) {
+  if (hit) settle(w.id, "fired", hit);
+  else if (Date.now() >= w.deadline) settle(w.id, "timeout", timedOut(w, get(w.id)?.last_error));
+}
+
+function probeFailed(w: WaitRecord, e: unknown) {
+  const msg = (e as Error)?.message || String(e);
+  setError(w.id, msg);
+  if (Date.now() >= w.deadline) settle(w.id, "timeout", timedOut(w, msg));
+}
+
+// One pass over the active waits. It never waits for a probe: a probe that
+// asks something outside the process answers later, and until it does (or is
+// stopped at its limit) its wait is not probed again, so a slow target holds
+// neither the other waits nor a second request of its own.
 export async function tick() {
-  if (ticking) return;
-  ticking = true;
-  try {
-    const now = Date.now();
-    for (const w of list(undefined, 0)) {
-      if (w.status !== "active") continue;
-      if (isMonitor(w.kind)) {
-        flushMonitor(w.id);
-        if (now >= w.deadline) settle(w.id, "timeout", "The monitor reached its deadline and was stopped. Start it again if it is still needed.");
-        continue;
-      }
-      const st = live.get(w.id) ?? {};
-      live.set(w.id, st);
-      const every = kinds.get(w.kind)?.every ?? PROBE_MS[w.kind] ?? 0;
-      const due = w.kind === "timer" || now >= w.deadline || !st.lastProbe || now - st.lastProbe >= every;
-      if (!due) continue;
-      st.lastProbe = now;
-      try {
-        const hit = await probe(w);
-        if (hit) settle(w.id, "fired", hit);
-        else if (now >= w.deadline) settle(w.id, "timeout", `Timed out after ${Math.round((w.deadline - w.created) / 1000)} s.${w.last_error ? ` Last probe: ${w.last_error}` : ""}`);
-      } catch (e) {
-        setError(w.id, (e as Error).message);
-        if (now >= w.deadline) settle(w.id, "timeout", `Timed out. Last probe: ${(e as Error).message}`);
-      }
+  const now = Date.now();
+  for (const w of list(undefined, 0)) {
+    if (isMonitor(w.kind)) {
+      flushMonitor(w.id);
+      if (now >= w.deadline) settle(w.id, "timeout", "The monitor reached its deadline and was stopped. Start it again if it is still needed.");
+      continue;
     }
-  } finally {
-    ticking = false;
+    const st = live.get(w.id) ?? {};
+    live.set(w.id, st);
+    const out = st.probing;
+    if (out) {
+      const limit = limitOf(w.kind);
+      if (!out.late && now - out.started >= limit) {
+        out.late = true;
+        const what = w.kind === "http" ? (w.spec as Extract<WaitSpec, { kind: "http" }>).url : w.kind === "pr_checks" ? "gh pr view" : "the probe";
+        setError(w.id, `${what} did not answer within ${limit / 1000} s and was stopped`);
+        out.abort.abort();
+      }
+      // A probe that cannot be stopped does not keep the wait past its deadline.
+      if (out.late && now >= w.deadline) settle(w.id, "timeout", timedOut(w, get(w.id)?.last_error));
+      continue;
+    }
+    const every = kinds.get(w.kind)?.every ?? PROBE_MS[w.kind] ?? 0;
+    const due = w.kind === "timer" || now >= w.deadline || !st.lastProbe || now - st.lastProbe >= every;
+    if (!due) continue;
+    st.lastProbe = now;
+    const abort = new AbortController();
+    try {
+      const r = probe(w, abort.signal);
+      if (!(r instanceof Promise)) { probed(w, r); continue; }
+      const mine: Probing = { started: now, abort };
+      st.probing = mine;
+      r.then(
+        (hit) => { if (!abort.signal.aborted) probed(w, hit); },
+        // A stopped probe fails because it was stopped: its error is already said.
+        (e) => { if (!abort.signal.aborted) probeFailed(w, e); },
+      ).catch((e) => capture(e, { at: "wait probe", wait: w.id })).finally(() => { if (st.probing === mine) st.probing = undefined; });
+    } catch (e) {
+      probeFailed(w, e);
+    }
   }
 }
 

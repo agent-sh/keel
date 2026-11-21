@@ -4,7 +4,7 @@
 // reading the match and storing the wake. What a restart does cannot be
 // reached from the page.
 import { expect, setSystemTime, test } from "bun:test";
-import { appendFileSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -36,6 +36,7 @@ const wait = (path: string) => waits.create(s.id, waits.normalize({ kind: "log",
 const status = (id: string) => waits.get(id)!.status;
 // The wakes of a wait stored in the session's transcript.
 const wakes = (id: string) => store.events(s.id).filter((e) => e.kind === "user" && String(e.data.text).includes(`<wait_fired id="${id}"`)).map((e) => String(e.data.text));
+const until = async (ok: () => boolean) => { for (let i = 0; i < 150 && !ok(); i++) await Bun.sleep(20); };
 // A new daemon: what was only in memory is gone, and it recovers from the store.
 const restart = () => { busy.clear(); dropPending(s.id); waits.recover(); flush(s.id); };
 
@@ -171,6 +172,90 @@ test("a cancelled wait sends no wake, before or after a restart", async () => {
   await waits.tick();
   restart();
   await waits.tick();
+  expect(status(w.id)).toBe("cancelled");
+  expect(wakes(w.id)).toHaveLength(0);
+});
+
+// The scheduler's pass never waits for a probe that asks something outside the
+// process. The clock is the test's: a probe period, then the probe's limit.
+test("a held PR probe holds neither the other waits nor a second request of its own", async () => {
+  const pids = join(dir, "gh.pids");
+  const gh = join(dir, "gh-held.sh");
+  writeFileSync(gh, `#!/bin/sh\necho $$ >> ${pids}\nsleep 20\n`, { mode: 0o755 }); // gh, and a child of its own, not answering
+  const started = () => (existsSync(pids) ? readFileSync(pids, "utf8").trim().split("\n").map(Number) : []);
+  const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+  const env = process.env.KEEL_GH_BIN;
+  process.env.KEEL_GH_BIN = gh;
+  let t = Date.now();
+  const at = async (ms: number) => { setSystemTime(new Date((t += ms))); void waits.tick(); await Bun.sleep(0); };
+  try {
+    setSystemTime(new Date(t));
+    const pr = waits.create(s.id, waits.normalize({ kind: "pr_checks", repo: "o/r", pr_number: 7 }, dir), { timeout_seconds: 600 });
+    await at(0);
+    const timer = waits.create(s.id, waits.normalize({ kind: "timer", seconds: 1 }, dir));
+    const file = waits.create(s.id, waits.normalize({ kind: "file", path: gh }, dir), { timeout_seconds: 600 });
+    await at(1000); // the next pass
+    expect([status(timer.id), status(file.id)]).toEqual(["fired", "fired"]);
+    await until(() => started().length === 1);
+    await at(10_000); // its period comes round twice: still the one request
+    await at(10_000);
+    expect(started()).toHaveLength(1);
+    expect(waits.get(pr.id)).toMatchObject({ status: "active", last_error: null });
+    await at(10_000); // past the limit: stopped and said so
+    expect(waits.get(pr.id)!.last_error).toContain("gh pr view did not answer within 30 s");
+    const first = started()[0]!;
+    await until(() => gone(first));
+    for (let i = 0; i < 10 && started().length < 2; i++) { await at(10_000); await Bun.sleep(50); }
+    expect(started()).toHaveLength(2); // the next request, after the first was gone
+    expect(status(pr.id)).toBe("active");
+    expect(waits.cancel(pr.id)).toBe("cancelled"); // cancelling stops the request that is out
+    await until(() => gone(started()[1]!));
+    expect(gone(started()[1]!)).toBe(true);
+    restart();
+    expect(wakes(pr.id)).toHaveLength(0);
+  } finally {
+    for (const pid of started()) { Bun.spawnSync(["pkill", "-P", String(pid)]); try { process.kill(pid); } catch {} }
+    if (env === undefined) delete process.env.KEEL_GH_BIN; else process.env.KEEL_GH_BIN = env;
+    setSystemTime();
+  }
+});
+
+test("a slow HTTP target is given up at its limit with one request out", async () => {
+  let requests = 0;
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => (requests++, new Promise<Response>(() => {})) });
+  let t = Date.now();
+  const at = async (ms: number) => { setSystemTime(new Date((t += ms))); void waits.tick(); await Bun.sleep(0); };
+  try {
+    setSystemTime(new Date(t));
+    const w = waits.create(s.id, waits.normalize({ kind: "http", url: `http://127.0.0.1:${server.port}/slow` }, dir), { timeout_seconds: 600 });
+    await at(0);
+    await until(() => requests === 1);
+    await at(3000); // its period: the first request is still out
+    await Bun.sleep(50);
+    expect(requests).toBe(1);
+    await at(3000); // six seconds: past the limit
+    expect(waits.get(w.id)).toMatchObject({ status: "active" });
+    expect(waits.get(w.id)!.last_error).toContain("did not answer within 5 s");
+    expect(waits.cancel(w.id)).toBe("cancelled");
+  } finally {
+    setSystemTime();
+    server.stop(true);
+  }
+});
+
+test("a probe that answers after its wait was cancelled wakes nobody", async () => {
+  let calls = 0;
+  let answer!: (v: string) => void;
+  waits.registerWaitKind("held", { every: 0, normalize: (spec) => ({ kind: spec.kind }) as any, probe: () => (calls++, new Promise<string>((r) => (answer = r))) });
+  const w = waits.create(s.id, waits.normalize({ kind: "held" }, dir), { timeout_seconds: 600 });
+  void waits.tick();
+  void waits.tick();
+  await Bun.sleep(0);
+  expect(calls).toBe(1);
+  expect(waits.cancel(w.id)).toBe("cancelled");
+  answer("it is ready");
+  await Bun.sleep(0);
+  restart();
   expect(status(w.id)).toBe("cancelled");
   expect(wakes(w.id)).toHaveLength(0);
 });
