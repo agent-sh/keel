@@ -144,7 +144,11 @@ export class PluginProcess {
       provider_settings: Object.fromEntries(Object.entries(this.entry.providers).map(([k, v]) => [k, v.settings ?? {}])),
       capabilities: { system_prefix: true },
     }, ACK_MS).catch((e: any) => {
-      if (e.code === -32000 || e.code === -32003) { this.stop(`the plugin refused this host: ${e.message}`); }
+      // A refusal stops the plugin for good: said once here, since no restart follows to say it.
+      if (e.code === -32000 || e.code === -32003) {
+        this.stop(`the plugin refused this host: ${e.message}`);
+        this.capture(e, { plugin: this.entry.id, at: "start" });
+      }
       throw e;
     });
     if (init.protocol_version !== 1) return this.stop(`protocol version ${init.protocol_version} is not offered (keel-bun speaks 1)`);

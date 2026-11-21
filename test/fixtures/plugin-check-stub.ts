@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // A minimal protocol v1 plugin (chat_completions wire) for the conformance
 // runner's own test. Its first argument makes it misbehave: leak (the
-// credential on stderr), body (changes the body), nocancel, noretry.
+// credential on stderr), body (changes the body), nocancel, noretry, refuse
+// (it does not take this host).
 const BAD = process.argv[2] ?? "";
 const base = process.env.KEEL_PLUGIN_TEST_BASE_URL!;
 const cred = process.env.KEEL_PLUGIN_TEST_CREDENTIAL!;
@@ -26,6 +27,7 @@ function handle(m: any) {
   const p = m.params ?? {};
   switch (m.method) {
     case "initialize":
+      if (BAD === "refuse") return out({ id: m.id, error: { code: -32003, message: "this host is not supported" } });
       if (!p.protocol_versions.includes(1)) return out({ id: m.id, error: { code: -32000, message: "no common version", data: { supported: [1] } } });
       return out({ id: m.id, result: { protocol_version: 1, plugin: { id: p.plugin_id, name: "Stub", version: "0.0.1" }, providers: [{ id: "stub", label: "Stub", wire: "chat_completions", stream_format: "sse", response_headers: BAD === "noretry" ? ["content-type"] : ["content-type", "retry-after"] }], capabilities: { cancel: BAD !== "nocancel", max_concurrent: 8, status: true, ping: true } } });
     case "models/list":

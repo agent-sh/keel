@@ -71,3 +71,26 @@ for (const [name, command, said] of [
     }
   }, 30_000);
 }
+
+// A plugin that refuses the host is stopped for good: one capture, no restart.
+test("a plugin that refuses the host is captured once and not started again", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "/var/tmp", "keel-plugins-"));
+  const conf = join(dir, "config");
+  process.env.KEEL_CONFIG_DIR = conf;
+  mkdirSync(conf);
+  writeFileSync(join(conf, "plugins.toml"), `[plugins.stub]\ncommand = "${stub}"\nargs = ["refuse"]\n`);
+  const got: { message: string; ctx: any }[] = [];
+  const p = new Plugins(dir, (e, ctx) => got.push({ message: (e as Error).message, ctx }));
+  try {
+    p.load();
+    await p.settled();
+    await Bun.sleep(1500); // longer than the first restart delay
+    expect(got.map((g) => [g.message, g.ctx.plugin, g.ctx.at])).toEqual([["plugin stub: this host is not supported", "stub", "start"]]);
+    const proc = p.procs.get("stub")!;
+    expect([proc.state, proc.reason]).toEqual(["stopped", "the plugin refused this host: plugin stub: this host is not supported"]);
+  } finally {
+    p.killAll();
+    delete process.env.KEEL_CONFIG_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);
