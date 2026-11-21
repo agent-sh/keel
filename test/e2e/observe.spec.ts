@@ -176,6 +176,40 @@ test("a replay the model declines shows as declined, an answered one as answered
   await shoot(page, "observe-08-replay-answered");
 });
 
+// A trace opened while its turn runs follows the turn to its end: the same
+// view, nothing clicked, shows the calls made since and how the turn ended.
+// The scripted turn runs a command that holds it for a few seconds.
+test("an open trace follows its turn to the end", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Live trace check" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 8 && echo held" } }])}`);
+  await page.getByTestId("composer").press("Enter");
+  // The first request has answered and the command is running.
+  await expect.poll(async () => (await (await request.get(`/api/debug/traces?session_id=${session.id}`)).json()).traces[0]?.status, { timeout: 15_000 }).toBe("running");
+  await openPanel(page, "traces");
+  const view = page.getByTestId("trace-view");
+  const turn = view.locator('[data-testid="span-row"][data-kind="turn"]');
+  const detail = page.getByTestId("span-detail");
+  await expect(turn).toHaveAttribute("data-status", "running");
+  await expect(view.getByTestId("span-row")).toHaveCount(2);
+  await expect(detail).toContainText("still running");
+  await shoot(page, "observe-12-trace-running");
+
+  // The command ends and the turn with it: the open view has the call, the
+  // second request and the turn's end, and the row in the list above too.
+  await expect(view.getByTestId("span-row")).toHaveCount(4, { timeout: 30_000 });
+  await expect(turn).toHaveAttribute("data-status", "ok", { timeout: 15_000 });
+  await expect(view.locator('[data-testid="span-row"][data-kind="tool"]')).toContainText("Bash");
+  await expect(detail).toContainText("invoke_agent");
+  await expect(detail).toContainText("end_turn");
+  await expect(detail).not.toContainText("still running");
+  await expect(page.locator('[data-testid="trace-row"][aria-current="true"]')).toHaveAttribute("data-status", "ok");
+  await shoot(page, "observe-13-trace-ended");
+});
+
 // An error opens the span it names, not the first failure of the trace and not
 // the session's newest turn. The scripted overload fails twice and then
 // answers: the row's last occurrence is attempt 2. Asked on the side, the same

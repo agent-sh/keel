@@ -59,6 +59,7 @@ export function TracesPanel({ session }: { session: Session }) {
             type="button"
             onClick={() => show(t.trace_id)}
             data-testid="trace-row"
+            data-status={t.status}
             aria-current={open === t.trace_id}
             className={cn("flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui hover:bg-hover", open === t.trace_id && picked)}
           >
@@ -69,7 +70,7 @@ export function TracesPanel({ session }: { session: Session }) {
           </button>
         ))}
       </div>
-      {open && <Trace key={`${open} ${span ?? ""} ${asks}`} id={open} span={span} onOpen={show} />}
+      {open && <Trace key={`${open} ${span ?? ""} ${asks}`} id={open} span={span} ends={ends} onOpen={show} />}
     </div>
   );
 }
@@ -92,7 +93,9 @@ function tree(spans: Span[]): { s: Span; depth: number }[] {
 
 // `span`: the one to open on (the span an error names). Without it, or when the
 // trace no longer holds it, the first failed request or call is picked.
-function Trace({ id, span, onOpen }: { id: string; span: string | null; onOpen: (trace: string) => void }) {
+// `ends`: how many turns of the session have ended. The open trace is read
+// again when one does, so a trace opened while its turn ran shows how it ended.
+function Trace({ id, span, ends, onOpen }: { id: string; span: string | null; ends: number; onOpen: (trace: string) => void }) {
   const [spans, setSpans] = useState<Span[] | null>(null);
   const [sel, setSel] = useState<string | null>(span);
   // Spans are kept for a while: a trace opened from an old error may be gone.
@@ -105,7 +108,15 @@ function Trace({ id, span, onOpen }: { id: string; span: string | null; onOpen: 
       setSel((s) => (s && r.spans.some((x) => x.span_id === s) ? s : (r.spans.find((x) => x.status === "error" && x.kind !== "turn") ?? r.spans[0])?.span_id ?? null));
     }).catch((e) => (e?.status === 404 ? setGone(true) : reportError(e, { at: "trace" })));
   }, [id]);
-  useEffect(load, [load]);
+  useEffect(load, [load, ends]);
+  // A span still running: looked at again every two seconds, so the calls a
+  // turn makes show as they end, and a turn whose end was missed is caught up.
+  const running = !!spans?.some((s) => s.status === "running");
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(load, 2000);
+    return () => clearInterval(t);
+  }, [running, load]);
   // In a long trace the span that was asked for may sit below the fold, and
   // its detail under every row: the row first, then the detail, which wins
   // when the two do not fit together (the row stays marked above it).
