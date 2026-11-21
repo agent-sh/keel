@@ -86,7 +86,7 @@ function wrap(t: CatalogTool): Deferred {
       return { name: t.qualified, readOnly: !!t.readOnly, input, source: t.source, shape: j.shape, cls: t.judge ? await t.judge(input) : undefined };
     },
     async run(input, ctx): Promise<ToolOutput> {
-      const now = (await catalogTools()).find((x) => x.qualified === t.qualified);
+      const now = (await catalogTools(ctx?.sessionId)).find((x) => x.qualified === t.qualified);
       if (!now) return fail(`${name} is no longer available (its server was removed or is not connected). Search with ${TOOL_SEARCH} again.`);
       const why = stale(input && typeof input === "object" ? judged.get(input) : undefined, now, name, "Load it again");
       if (why) return fail(why);
@@ -121,12 +121,12 @@ export function referenced(messages: Message[]): Set<string> {
 // Two catalog tools that still share a native name (a hash clash, or one
 // server listing a name twice) are reported once each; the first one stays.
 const clashes = new Set<string>();
-export async function withCatalog(tools: Tool[], family: string, messages: Message[], report?: (e: Error, context: unknown) => void): Promise<Tool[]> {
+export async function withCatalog(tools: Tool[], family: string, messages: Message[], report?: (e: Error, context: unknown) => void, session?: string): Promise<Tool[]> {
   const own = tools.filter((t) => !(t as Deferred).catalog);
   const names = new Set(own.map((t) => t.name));
   const cat: Deferred[] = [];
   // A hidden tool (its server turned off) stays declared: a call by name gets the plain reason.
-  for (const t of await catalogReady(family)) {
+  for (const t of await catalogReady(family, session)) {
     const w = wrap(t);
     if (names.has(w.name)) {
       const first = cat.find((c) => c.name === w.name);
@@ -198,7 +198,7 @@ export function toolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
       const query = String(input?.query ?? "").trim();
       const limit = Math.min(Math.max(Number(input?.max_results) || 5, 1), 20);
       const own = builtins(ctx?.sessionId).map((t) => ({ name: t.name, qualified: t.name, description: t.description, server: "built-in", hidden: false }));
-      const cat = (await catalogTools()).map((t) => ({ name: nativeName(t), qualified: nativeName(t), description: t.description, server: t.server, hidden: !!t.hidden }));
+      const cat = (await catalogTools(ctx?.sessionId)).map((t) => ({ name: nativeName(t), qualified: nativeName(t), description: t.description, server: t.server, hidden: !!t.hidden }));
       // A hidden tool answers an exact name only (its call says why it is off).
       const all = [...own, ...cat.filter((c) => !own.some((o) => o.name === c.name))];
       const pool = all.filter((t) => !t.hidden);

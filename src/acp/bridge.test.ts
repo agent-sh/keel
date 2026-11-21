@@ -29,8 +29,10 @@ function fixture(sessions: any[], events: Record<string, any[]>) {
       const s = sessions.find((x) => path === `/api/sessions/${x.id}`);
       return { session: s, events: events[s.id] ?? [], running: false };
     },
-    send: async (method: string, path: string) => {
+    sent: [] as { method: string; path: string; body: any }[],
+    send: async (method: string, path: string, body?: any) => {
       calls.push(`${method} ${path}`);
+      d.sent.push({ method, path, body });
       const r = await d.post?.(method, path);
       return r ?? (path.endsWith("/messages") ? { event: { id: `u${++n}`, seq: n } } : {});
     },
@@ -236,4 +238,31 @@ test("an embedded file reaches the prompt or the prompt is refused", async () =>
   expect(img.images).toEqual([{ type: "image", media_type: "image/png", data: "iVBO" }, { type: "image", media_type: "image/png", data: "iVBO" }]);
   const text = await promptOf([{ type: "resource", resource: { uri: "file:///a.txt", text: "hi" } }, { type: "resource_link", uri: "file:///b.txt", name: "b" }]);
   expect(text.text).toBe('<file path="/a.txt">\nhi\n</file>\n\n@/b.txt');
+});
+
+test("the editor's MCP servers go to the daemon with the session, the whole list each time, and one it cannot take is said by name", async () => {
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const f = fixture([s], {});
+  f.d.post = (_method, path) => (path === "/api/sessions" ? { session: s } : path.endsWith("/mcp") ? { set: [{ name: "fs", label: "fs" }, { name: "old", error: "not spoken" }] } : undefined);
+  const init = await call(f.bridge, f.out, "initialize", {});
+  expect(init.result.agentCapabilities.mcpCapabilities).toEqual({ http: true, sse: false });
+  await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [
+    { name: "fs", command: "srv", args: ["-x"], env: [{ name: "A", value: "1" }] },
+    { type: "http", name: "api", url: "https://example.test/mcp", headers: [{ name: "Authorization", value: "Bearer t" }] },
+    { type: "sse", name: "old", url: "https://example.test/sse", headers: [] },
+  ] });
+  const puts = () => f.d.sent.filter((x) => x.method === "PUT" && x.path === "/api/sessions/s/mcp").map((x) => x.body.servers);
+  expect(puts()).toEqual([[
+    { name: "fs", command: "srv", args: ["-x"], env: { A: "1" } },
+    { name: "api", url: "https://example.test/mcp", headers: { Authorization: "Bearer t" } },
+    { name: "old", url: "https://example.test/sse", headers: {}, transport: "sse" },
+  ]]);
+  await Bun.sleep(0);
+  expect(JSON.stringify(f.updates("s"))).toContain("old: not spoken");
+  // A session opened again brings its list again (none: the earlier ones go); a new one with none asks nothing.
+  await call(f.bridge, f.out, "session/resume", { sessionId: "s", cwd: "/w", mcpServers: [] });
+  expect(puts().at(-1)).toEqual([]);
+  const before = puts().length;
+  await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [] });
+  expect(puts().length).toBe(before);
 });

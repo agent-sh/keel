@@ -11,7 +11,7 @@ import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/c
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type McpCallResult, type McpTool, type Transport } from "./client.ts";
-import { canon, expand, importable, mergeServers, parseConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
+import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
 import { readText } from "../core/proc.ts";
@@ -44,6 +44,7 @@ export type BundledServer = {
 };
 
 export type McpServerState = {
+  session?: string;        // the one session this server is for (an editor's own)
   name: string;
   transport: "stdio" | "http" | "socket";
   target: string;
@@ -113,7 +114,22 @@ type Entry = {
   resourcesRev: number;
   updates: Record<string, number>;
   subscribed: Set<string>;
+  // A session's own server (an editor passed it with the session, over ACP):
+  // the session it is for, and the name that session knows it by. Its key in
+  // `entries` is `label@session`, which no name in the owner's file can be.
+  session?: string;
+  label?: string;
+  given?: string; // as the editor named it
 };
+
+// A server an editor named, as a name Keel's tools can carry: the characters a
+// server name takes, and never one a shared server already has.
+function sessionLabel(name: string, taken: (n: string) => boolean): string {
+  let label = String(name ?? "").trim().replace(/[^\w.-]+/g, "-").replace(/_{2,}/g, "_").replace(/^[-_.]+|[-_.]+$/g, "").slice(0, 56) || "editor";
+  if (RESERVED.has(label.toLowerCase()) || taken(label)) label += "-editor";
+  for (let n = 2; taken(label); n++) label = `${label.replace(/-\d+$/, "")}-${n}`;
+  return label;
+}
 
 // Credential-shaped variables stay out of tool servers' environments unless
 // the config names them; a server gets what it was configured with.
@@ -217,6 +233,40 @@ export class McpManager {
   // A session ended: what a bundled server held for it (tabs) is let go.
   releaseSession(session: string) {
     for (const e of this.entries.values()) e.bundled?.released?.(session);
+    this.setSessionServers(session, []);
+  }
+
+  // The servers an editor passed with a session: started for that session,
+  // offered to it alone, kept in memory only (never in the owner's file) and
+  // closed when the session is archived, deleted, closed by its editor or
+  // given another list. The whole list each time: one not named again goes,
+  // one named again unchanged keeps its connection. `cwd` is the session's
+  // folder, where a command starts.
+  setSessionServers(session: string, servers: { name: string; config: McpServerConfig }[], cwd?: string): { name: string; label?: string; error?: string }[] {
+    const mine = () => [...this.entries.values()].filter((e) => e.session === session);
+    const keep = new Set<string>();
+    const out: { name: string; label?: string; error?: string }[] = [];
+    for (const s of servers.slice(0, 32)) {
+      const config: McpServerConfig = s.config.command ? { ...s.config, cwd: s.config.cwd ?? cwd } : s.config;
+      const had = mine().find((e) => e.given === s.name && !keep.has(e.name) && same(e.config, config));
+      if (had) { keep.add(had.name); out.push({ name: s.name, label: had.label }); continue; }
+      const label = sessionLabel(s.name, (n) => [...this.entries.values()].some((e) => (e.label ?? e.name) === n && (!e.session || e.session === session)));
+      const bad = config.transport === "sse" ? "it uses the older SSE transport, which Keel does not speak: give its Streamable HTTP address"
+        // A session whose folder was deleted, or is on another machine: a command has nowhere to start.
+        : config.command && config.cwd && !existsSync(config.cwd) ? `the session's folder ${config.cwd} is not on this machine, so the command cannot start there`
+        : validate(label, config);
+      if (bad) { out.push({ name: s.name, error: bad }); continue; }
+      const key = `${label}@${session}`;
+      const e = this.addEntry(key, config);
+      e.session = session;
+      e.label = label;
+      e.given = s.name;
+      keep.add(key);
+      out.push({ name: s.name, label });
+      this.ensure(key).catch(() => {}); // its state says why it failed
+    }
+    for (const e of mine()) if (!keep.has(e.name)) this.drop(e.name);
+    return out;
   }
 
   private readFile(): { cfg: McpConfigFile; text: string | null } {
@@ -262,7 +312,7 @@ export class McpManager {
   // its new config, or dropped. Null for a name that is not the file's to set.
   private adopt(name: string, now: McpServerConfig | undefined): McpReloadedServer["change"] | null {
     const e = this.entries.get(name);
-    if (e?.bundled) return null;
+    if (e?.bundled || e?.session) return null;
     if (!now) return e ? (this.drop(name), "removed") : null;
     if (e && same(e.config, now) && (e.config.enabled === false) === (now.enabled === false)) return "unchanged";
     const bad = validate(name, now);
@@ -325,6 +375,8 @@ export class McpManager {
     this.entries.set(name, e);
     registerCatalog({
       name,
+      // Read when asked: a session's own server is marked right after it is added.
+      get session() { return e.session; },
       tools: async () => {
         // Phone control turned off leaves search, and a call still gets the plain reason.
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
@@ -338,7 +390,7 @@ export class McpManager {
         }
         return e.tools.map((t) => this.catalogTool(e, t));
       },
-      pending: () => (e.state === "connecting" ? [name] : []),
+      pending: () => (e.state === "connecting" ? [e.label ?? name] : []),
       known: () => {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];
@@ -350,10 +402,11 @@ export class McpManager {
   }
 
   private catalogTool(e: Entry, t: McpTool): CatalogTool {
+    const server = e.label ?? e.name;
     return {
-      server: e.name,
+      server,
       name: t.name,
-      qualified: `${e.name}__${t.name}`,
+      qualified: `${server}__${t.name}`,
       mcp: true,
       source: binding(sourced(e.config), this.bindKey),
       description: t.description ?? t.title ?? "",
@@ -501,14 +554,15 @@ export class McpManager {
 
   private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>): Promise<ToolOutput> {
     const e = this.entries.get(name);
+    const shown = e?.label ?? name; // the name the session knows it by
     const config = e?.config;
     const tools = e?.tools;
     let client: McpClient;
     try {
       client = await this.ensure(name);
     } catch (err) {
-      const msg = e?.state === "needs_auth" ? `${name} needs sign-in: the owner signs in from the MCP servers panel.` : (err as Error).message;
-      return { content: `MCP server ${name} is not available: ${msg}`, is_error: true };
+      const msg = e?.state === "needs_auth" ? `${shown} needs sign-in: the owner signs in from the MCP servers panel.` : (err as Error).message;
+      return { content: `MCP server ${shown} is not available: ${msg}`, is_error: true };
     }
     // Keep the same entry and listing across connection setup and (for HTTP)
     // header preparation. Those awaits are still before the request is sent.
@@ -523,22 +577,25 @@ export class McpManager {
       if (err instanceof AuthRequired && e) {
         e.state = "needs_auth";
         e.www = err.wwwAuthenticate;
-        return { content: `${name} needs sign-in again: the owner signs in from the MCP servers panel.`, is_error: true };
+        return { content: `${shown} needs sign-in again: the owner signs in from the MCP servers panel.`, is_error: true };
       }
       this.errors.capture("tool", err, { mcp: name, tool, session: ctx.sessionId });
-      if (err instanceof SessionExpired) return { content: `${name}__${tool} did not run: ${err.message}. Keel opens a new session; the call was not sent again. Look the tool up again and call it if it is still needed.`, is_error: true };
-      return { content: `${name}__${tool} failed: ${(err as Error).message}`, is_error: true };
+      if (err instanceof SessionExpired) return { content: `${shown}__${tool} did not run: ${err.message}. Keel opens a new session; the call was not sent again. Look the tool up again and call it if it is still needed.`, is_error: true };
+      return { content: `${shown}__${tool} failed: ${(err as Error).message}`, is_error: true };
     }
-    return toOutput(r, ctx, `${name}__${tool}`);
+    return toOutput(r, ctx, `${shown}__${tool}`);
   }
 
   // ---- owner actions ----
 
-  list(): McpServerState[] {
-    return [...this.entries.values()].sort((a, b) => a.name.localeCompare(b.name)).map((e) => {
+  // The owner's servers and the ones Keel brings; with a session, that
+  // session's own too (`session` on each), under the names it knows them by.
+  list(session?: string): McpServerState[] {
+    return [...this.entries.values()].filter((e) => !e.session || e.session === session).sort((a, b) => (a.label ?? a.name).localeCompare(b.label ?? b.name)).map((e) => {
       const live = e.bundled?.live && e.state !== "disabled" ? e.bundled.live.state() : null;
       return {
-      name: e.name,
+      name: e.label ?? e.name,
+      ...(e.session ? { session: e.session } : {}),
       transport: e.bundled?.live ? "socket" : e.config.url ? "http" : "stdio",
       target: e.bundled?.live?.target ?? e.config.url ?? [e.config.command, ...(e.config.args ?? [])].join(" "),
       enabled: e.state !== "disabled",
@@ -566,8 +623,11 @@ export class McpManager {
     });
   }
 
+  // A server the owner's routes can name. A session's own is not one: it is
+  // set and dropped with its session and never written to the owner's file.
   has(name: string) {
-    return this.entries.has(name);
+    const e = this.entries.get(name);
+    return !!e && !e.session;
   }
 
   add(name: string, config: McpServerConfig): string | null {
@@ -871,7 +931,7 @@ export class McpManager {
   }
 
   ready(): string[] {
-    return [...this.entries.values()].filter((e) => e.state === "ready").map((e) => e.name);
+    return [...this.entries.values()].filter((e) => e.state === "ready" && !e.session).map((e) => e.name);
   }
 
   private configKey(e: Entry) {
@@ -879,6 +939,7 @@ export class McpManager {
   }
 
   private publish(e: Entry, published: string | undefined) {
+    if (e.session) return; // no shared prompt carries a session's own server
     // Kept as a session's prompt carries it: a secret in it is a placeholder.
     const instructions = published === undefined ? undefined : conceal(published);
     const key = this.configKey(e), was = this.published[e.name];
@@ -903,7 +964,7 @@ export class McpManager {
   // config and is connecting now is waited for, up to `waitMs` in all, so a
   // session started with the daemon gets its instructions too.
   async configured(waitMs = 0): Promise<{ name: string; instructions?: string }[]> {
-    const live = () => [...this.entries.values()].filter((e) => e.state !== "disabled" && e.state !== "missing");
+    const live = () => [...this.entries.values()].filter((e) => e.state !== "disabled" && e.state !== "missing" && !e.session);
     const unknown = live().filter((e) => e.state === "connecting" && !e.bundled && !this.lastPublished(e));
     if (waitMs > 0 && unknown.length && !runMode.client) {
       const settled = async (e: Entry) => {

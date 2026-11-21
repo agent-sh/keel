@@ -34,6 +34,9 @@ export type CatalogSource = {
   // Families that have these tools among their own (the web pair for Claude):
   // where tools load natively they are left out for those families.
   except?: string[];
+  // The one session these tools are for (a server an editor passed with its
+  // session): no other session, and no list of the owner's, is offered them.
+  session?: string;
 };
 
 const sources = new Map<string, CatalogSource>();
@@ -53,18 +56,21 @@ export function stale(was: Judged | undefined, now: CatalogTool, name: string, a
 
 export const registerCatalog = (s: CatalogSource) => void sources.set(s.name, s);
 export const unregisterCatalog = (name: string) => void sources.delete(name);
-export const catalogSources = () => [...sources.values()];
+// The sources a session is offered: every shared one and its own. With no
+// session named (the owner's lists), the shared ones.
+const offered = (session?: string) => [...sources.values()].filter((s) => !s.session || s.session === session);
+export const catalogSources = (session?: string) => offered(session);
 
 // What every source offers now, without waiting on a connection: the deferred
 // tools a request declares (src/tools/defer.ts).
-export async function catalogReady(family?: string): Promise<CatalogTool[]> {
-  const use = [...sources.values()].filter((s) => !family || !s.except?.includes(family));
+export async function catalogReady(family?: string, session?: string): Promise<CatalogTool[]> {
+  const use = offered(session).filter((s) => !family || !s.except?.includes(family));
   const lists = await Promise.allSettled(use.map((s) => (s.known ? s.known() : s.tools())));
   return lists.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
 
-export async function catalogTools(): Promise<CatalogTool[]> {
-  const lists = await Promise.allSettled([...sources.values()].map((s) => s.tools()));
+export async function catalogTools(session?: string): Promise<CatalogTool[]> {
+  const lists = await Promise.allSettled(offered(session).map((s) => s.tools()));
   return lists.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
 

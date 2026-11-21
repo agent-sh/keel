@@ -63,8 +63,8 @@ export async function acp(argv: string[]): Promise<number> {
     }
   }
   // The editor closed its end: running turns go on in the workbench; answer what is open and stop.
-  bridge.close();
-  await Promise.allSettled([...inflight]);
+  const released = bridge.close();
+  await Promise.allSettled([...inflight, released]);
   return 0;
 }
 

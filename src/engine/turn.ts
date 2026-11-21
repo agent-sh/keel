@@ -1063,7 +1063,7 @@ export class Engine {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
     if (st.native && purpose !== "reader") {
-      st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c));
+      st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c), id);
       // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
       if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
     }

@@ -150,7 +150,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const srcs = hooks.sources(s.workspace, true);
       const live = hooks.events(s.workspace, srcs);
       if (!CALL_EVENTS.some((e) => live.has(e))) return;
-      const target = call.tool.target ? await call.tool.target(call.input) : null;
+      // (With the session: a tool only this session is offered, an editor's own server's, is found for it.)
+      const target = call.tool.target ? await call.tool.target(call.input, s.id) : null;
       const name = target?.name ?? call.tool.name;
       const input = target ? target.input : call.input;
       const c: Followed = { session: s.id, name, input, names: namesOf(name, input, call.tool.name) };

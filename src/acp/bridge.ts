@@ -241,9 +241,41 @@ export class AcpBridge {
     if (!this.stopFrames) this.stopFrames = await this.daemon.frames((f) => this.onFrame(f));
   }
 
-  close() {
+  // The MCP servers the editor passed with a session (session/new, load and
+  // resume carry the whole list): the daemon starts them for that session
+  // alone, and the session's permission mode decides what their tools may do.
+  // One Keel cannot take is said to the editor by name; the session opens
+  // either way. A session the editor closes lets go of them.
+  private served = new Set<string>();
+  private async mcpServers(sessionId: string, given: unknown, fresh = false) {
+    const list = Array.isArray(given) ? given : [];
+    // A new session has none to drop; one opened again may hold an earlier editor's.
+    if (!list.length && fresh) return;
+    const pairs = (v: unknown) => (Array.isArray(v) ? Object.fromEntries(v.filter((x) => x && typeof x.name === "string").map((x) => [x.name, String(x.value ?? "")])) : undefined);
+    const servers = list.map((m: Json) => (m?.type === "http" || m?.type === "sse" || (m?.url && !m?.command)
+      ? { name: m.name, url: m.url, headers: pairs(m.headers), ...(m.type === "sse" ? { transport: "sse" } : {}) }
+      : { name: m?.name, command: m?.command, args: m?.args, env: pairs(m?.env) }));
+    let failed: string[];
+    try {
+      const r = await this.daemon.send("PUT", `/api/sessions/${sessionId}/mcp`, { servers });
+      failed = (r.set ?? []).filter((x: Json) => x.error).map((x: Json) => `${x.name}: ${x.error}`);
+    } catch (e) {
+      failed = [`${list.map((m: Json) => m?.name).join(", ")}: ${(e as Error).message}`];
+    }
+    if (list.length) this.served.add(sessionId);
+    else this.served.delete(sessionId);
+    // After the answer, so the editor knows the session first.
+    if (failed.length) queueMicrotask(() => this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not connect ${failed.length === 1 ? "an MCP server" : "MCP servers"} the editor passed (${failed.join("; ")}).\n\n` } }));
+  }
+
+  // Resolves when the daemon was told what this editor held is let go.
+  close(): Promise<unknown> {
     this.stopFrames?.();
+    // The editor is gone: the servers it passed go with it (it passes them again when it loads the session).
+    const released = Promise.allSettled([...this.served].map((id) => this.daemon.send("PUT", `/api/sessions/${id}/mcp`, { servers: [] })));
+    this.served.clear();
     for (const [id, l] of [...this.live]) for (const p of [...l.prompts]) if (this.take(id, p)) p.resolve({ stopReason: "cancelled" });
+    return released;
   }
 
   // A prompt's call leaves the session's open prompts to be answered; false when it was answered before.
@@ -362,7 +394,8 @@ export class AcpBridge {
           agentCapabilities: {
             loadSession: true,
             promptCapabilities: { image: true, audio: false, embeddedContext: true },
-            mcpCapabilities: { http: false, sse: false },
+            // Streamable HTTP servers are taken; the older SSE transport is not spoken.
+            mcpCapabilities: { http: true, sse: false },
             sessionCapabilities: { list: {}, resume: {}, close: {} },
           },
           agentInfo: { name: "keel", title: "Keel", version: "0.1.0" },
@@ -376,11 +409,7 @@ export class AcpBridge {
         await this.ensureFrames();
         const perm = await this.daemon.get(`/api/sessions/${session.id}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
         const setup = await this.sessionSetup(session, perm.perm?.mode ?? "ask", true);
-        if (Array.isArray(p.mcpServers) && p.mcpServers.length) {
-          const names = p.mcpServers.map((m: Json) => m.name).join(", ");
-          // After the answer, so the editor knows the session first.
-          queueMicrotask(() => this.notify(session.id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not connect the editor's MCP servers (${names}): it uses the servers set up in its own MCP panel.\n\n` } }));
-        }
+        await this.mcpServers(session.id, p.mcpServers, true);
         setTimeout(() => void this.commands(session.id), 0); // after the answer
         return { sessionId: session.id, ...setup };
       }
@@ -390,6 +419,7 @@ export class AcpBridge {
         await this.ensureFrames();
         const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
         const setup = await this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
+        await this.mcpServers(p.sessionId, p.mcpServers);
         this.replay(p.sessionId, lineage(r.events ?? [], r.session.head ?? null), !!r.running);
         setTimeout(() => void this.commands(p.sessionId), 0); // after the answer
         return setup;
@@ -400,6 +430,7 @@ export class AcpBridge {
         if (!r?.session) throw Object.assign(new Error(`no session ${p.sessionId}`), { code: -32002 });
         await this.ensureFrames();
         const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
+        await this.mcpServers(p.sessionId, p.mcpServers);
         setTimeout(() => void this.commands(p.sessionId), 0); // after the answer
         return this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
       }
@@ -407,6 +438,7 @@ export class AcpBridge {
         // Ends this editor's hold on the session: a running turn is stopped; the session stays in Keel.
         const id = String(p.sessionId);
         if (this.live.has(id)) await this.stop(id).catch(() => {});
+        await this.mcpServers(id, []);
         return {};
       }
       case "session/list": {

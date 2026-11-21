@@ -1002,7 +1002,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         // Runs beside the tool; its answer joins the result, or the next request.
         const p = t.call(s, "pre-tool", input);
         // Whether the result is held for the answer: only for a call that changes something.
-        const holds = call.tool.target ? call.tool.target(call.input).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
+        const holds = call.tool.target ? call.tool.target(call.input, s.id).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
         t.preTool.set(call.id, { call: p, holds });
       },
       async afterTool(s, call, result) {

@@ -36,12 +36,12 @@ const SearchTools: Tool = {
     required: ["query"],
     additionalProperties: false,
   },
-  async run(input) {
+  async run(input, ctx) {
     const query = String(input.query ?? "");
     const limit = Math.min(Math.max(Number(input.limit) || 5, 1), 20);
     const offset = Math.max(Number(input.offset) || 0, 0);
-    const all = (await catalogTools()).filter((t) => !t.hidden);
-    const pending = catalogSources().flatMap((s) => s.pending?.() ?? []);
+    const all = (await catalogTools(ctx?.sessionId)).filter((t) => !t.hidden);
+    const pending = catalogSources(ctx?.sessionId).flatMap((s) => s.pending?.() ?? []);
     const note = pending.length ? `\nStill connecting: ${pending.join(", ")}; search again shortly for their tools.` : "";
     if (!query.trim()) {
       const by = new Map<string, number>();
@@ -68,9 +68,9 @@ const SearchTools: Tool = {
   },
 };
 
-function unknownTool(name: string, all: CatalogTool[]): string {
+function unknownTool(name: string, all: CatalogTool[], session?: string): string {
   const near = all.map((x) => ({ x, s: score(x, name.replace(/__/g, " ")) })).filter((h) => h.s > 0).sort((a, b) => b.s - a.s).slice(0, 3);
-  const pending = catalogSources().flatMap((s) => s.pending?.() ?? []);
+  const pending = catalogSources(session).flatMap((s) => s.pending?.() ?? []);
   return `No tool named ${name}.${near.length ? ` Closest: ${near.map((h) => h.x.qualified).join(", ")}.` : ""}${pending.length ? ` Still connecting: ${pending.join(", ")}; search again shortly.` : ""} Find tools with search_tools.`;
 }
 
@@ -81,9 +81,9 @@ const judged = new WeakMap<object, Judged>();
 const McpCall: Tool = {
   name: "mcp_call",
   readOnly: false,
-  async target(input) {
+  async target(input, session) {
     const name = String(input?.tool ?? "");
-    const all = await catalogTools();
+    const all = await catalogTools(session);
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
     const args = input?.arguments ?? {};
     const j = t && judgedOf(t);
@@ -92,7 +92,7 @@ const McpCall: Tool = {
     // A name not known yet (its server still starting, after the catalog
     // waited on it) is refused, never judged as a read: by the time it would
     // run, the server may know it.
-    return { name, readOnly: false, input: args, cls: { kind: "refused" as const, why: unknownTool(name, all) } };
+    return { name, readOnly: false, input: args, cls: { kind: "refused" as const, why: unknownTool(name, all, session) } };
   },
   description: "Run a tool found with search_tools, by its full name (server__tool), with its arguments as an object.",
   input_schema: {
@@ -106,9 +106,9 @@ const McpCall: Tool = {
   },
   async run(input, ctx) {
     const name = String(input.tool ?? "");
-    const all = await catalogTools();
+    const all = await catalogTools(ctx?.sessionId);
     const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
-    if (!t) return fail(unknownTool(name, all));
+    if (!t) return fail(unknownTool(name, all, ctx?.sessionId));
     const why = stale(judged.get(input), t, t.qualified, "Search for it again");
     if (why) return fail(why);
     const args = input.arguments ?? {};

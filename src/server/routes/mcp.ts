@@ -43,7 +43,8 @@ export const mcpRoutes: RouteModule = (deps) => {
   };
   // A deleted or archived session lets go of what a bundled server held for it (tabs).
   (g as any).__keelMcpOff?.();
-  (g as any).__keelMcpOff = deps.bus.on((f) => { if (f.t === "session" && f.session.archived) m.releaseSession(f.session.id); });
+  // (And of the servers an editor passed with it.)
+  (g as any).__keelMcpOff = deps.bus.on((f) => { if (f.t === "session" && (f.session.archived || f.deleted)) m.releaseSession(f.session.id); });
 
   const servers = () => json({ servers: m.list() });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
@@ -52,6 +53,32 @@ export const mcpRoutes: RouteModule = (deps) => {
   const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));
 
   return {
+    // A session's MCP list: the owner's servers and the ones an editor passed
+    // with this session (`session` on each). PUT sets the session's own, the
+    // whole list each time, as ACP's session/new, load and resume give it:
+    // `servers` holds `{ name, command, args?, env? }` or `{ name, url, headers? }`.
+    // They are started for this session, offered to it alone, asked about as
+    // its permission mode says, and never written to the owner's file.
+    "/api/sessions/:id/mcp": {
+      GET: (req: any) => (deps.store.session(req.params.id) ? json({ servers: m.list(req.params.id) }) : bad("no such session", 404)),
+      PUT: async (req: any) => {
+        const s = deps.store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (s.archived) return bad("the session is archived", 409);
+        const b = await body(req);
+        if (!Array.isArray(b.servers)) return bad("servers is a list");
+        const record = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, String(x)])) : undefined);
+        const list = b.servers.map((x: any) => ({
+          name: String(x?.name ?? ""),
+          config: (x?.command
+            ? { command: String(x.command), args: Array.isArray(x.args) ? x.args.map(String) : undefined, env: record(x.env) }
+            : { url: typeof x?.url === "string" ? x.url : undefined, headers: record(x?.headers), ...(x?.transport === "sse" ? { transport: "sse" as const } : {}) }) as McpServerConfig,
+        }));
+        // A command runs a program as the owner: from a remote device that takes the passkey.
+        if (list.some((x: { config: McpServerConfig }) => x.config.command)) { const guard = needs(req); if (guard) return guard; }
+        return json({ set: m.setSessionServers(s.id, list, s.workspace), servers: m.list(s.id).filter((x) => x.session) });
+      },
+    },
     "/api/mcp/servers": {
       GET: servers,
       POST: async (req: Request) => {

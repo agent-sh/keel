@@ -40,7 +40,7 @@ class Editor {
 }
 
 // Feature: an editor drives Keel over the Agent Client Protocol. It makes a
-// session (told that its own MCP servers are not connected), picks the model
+// session, picks the model
 // and mode, prompts, answers the gate's approval as a permission request, sees
 // the tool call and the reply stream, and the same session is in the
 // workbench. Loading it replays the history; cancel ends a turn as cancelled.
@@ -53,12 +53,11 @@ test("acp", async ({ page, baseURL }) => {
   expect(init.agentCapabilities.loadSession).toBe(true);
   expect(init.agentCapabilities.sessionCapabilities).toMatchObject({ resume: {}, close: {} });
 
-  const s = await ed.call("session/new", { cwd: ws, mcpServers: [{ name: "editor-fs", command: "true", args: [], env: [] }] });
+  const s = await ed.call("session/new", { cwd: ws, mcpServers: [] });
   const id = s.sessionId as string;
   expect(s.configOptions.find((o: any) => o.id === "model").options.some((g: any) => g.options.some((m: any) => m.value === HAIKU))).toBe(true);
   await ed.call("session/set_config_option", { sessionId: id, configId: "model", value: HAIKU });
   await ed.call("session/set_mode", { sessionId: id, modeId: "ask" });
-  await expect.poll(() => ed.updates.some((u) => u.sessionId === id && JSON.stringify(u.update).includes("did not connect the editor's MCP servers"))).toBe(true);
   // The daemon's MCP prompts are the editor's slash commands (none on a scratch daemon is fine; the update comes).
   await expect.poll(() => ed.kinds(id)).toContain("available_commands_update");
 
@@ -122,6 +121,59 @@ test("acp", async ({ page, baseURL }) => {
   await expect.poll(() => ed.updates.slice(before).some((u) => u.update.sessionUpdate === "tool_call"), { timeout: 60_000 }).toBe(true);
   ed.notify("session/cancel", { sessionId: id });
   expect((await turn).stopReason).toBe("cancelled");
+  ed.close();
+});
+
+// Feature: an editor passes its own MCP servers with the session. Keel says
+// which transports it takes, starts the server for that session only, the
+// model finds and calls its tool through the session's permission mode (the
+// editor is asked), the session's MCP list has it and the owner's list and
+// other sessions do not, and closing the session lets go of it.
+test("acp mcp servers", async ({ request, baseURL }) => {
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-mcp-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const echo = join(import.meta.dirname, "fixtures/echo-mcp.ts");
+  const ed = new Editor(baseURL!);
+  const init = await ed.call("initialize", { protocolVersion: 1, clientCapabilities: {} });
+  // Streamable HTTP is spoken; the older SSE transport is not, so it is not offered.
+  expect(init.agentCapabilities.mcpCapabilities).toEqual({ http: true, sse: false });
+
+  const s = await ed.call("session/new", { cwd: ws, mcpServers: [
+    { name: "editor-notes", command: "bun", args: [echo], env: [{ name: "EDITOR_NOTE", value: "1" }] },
+    { type: "sse", name: "old-stream", url: "http://127.0.0.1:9/sse", headers: [] },
+  ] });
+  const id = s.sessionId as string;
+  await ed.call("session/set_config_option", { sessionId: id, configId: "model", value: HAIKU });
+  await ed.call("session/set_mode", { sessionId: id, modeId: "ask" });
+  // The one it cannot take is said to the editor, by name; the other connects.
+  await expect.poll(() => ed.updates.some((u) => u.sessionId === id && /old-stream/.test(JSON.stringify(u.update)))).toBe(true);
+  const list = async (sid: string) => ((await (await request.get(`/api/sessions/${sid}/mcp`)).json()).servers as any[]);
+  await expect.poll(async () => (await list(id)).find((x) => x.name === "editor-notes")?.state, { timeout: 30_000 }).toBe("ready");
+  expect((await list(id)).find((x) => x.name === "editor-notes")).toMatchObject({ session: id, transport: "stdio", tool_names: ["echo", "add"] });
+  // Not the owner's server: their list and their file do not have it.
+  const owners = (await (await request.get("/api/mcp/servers")).json()).servers as any[];
+  expect(owners.some((x) => /editor-notes/.test(x.name))).toBe(false);
+
+  // Its tool runs in this session, asked about as the mode says.
+  const asked: any[] = [];
+  ed.onRequest = (m) => (asked.push(m), { outcome: { outcome: "selected", optionId: "once" } });
+  const call = `script:calls ${JSON.stringify([{ name: "mcp_call", input: { tool: "editor-notes__echo", arguments: { text: "from the editor" } } }])}`;
+  const r = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: call }] });
+  expect(r.stopReason).toBe("end_turn");
+  expect(asked.map((m) => m.method)).toEqual(["session/request_permission"]);
+  const events = async (sid: string) => JSON.stringify((await (await request.get(`/api/sessions/${sid}/events`)).json()).events.filter((e: any) => e.kind === "tool_result"));
+  expect(await events(id)).toContain("echo: from the editor");
+
+  // Another session does not have it: the same call finds no such tool there.
+  const other = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: ws } })).json()).session.id as string;
+  expect((await list(other)).some((x) => x.name === "editor-notes")).toBe(false);
+  await request.put(`/api/sessions/${other}/permissions`, { data: { mode: "full-auto" } });
+  await request.post(`/api/sessions/${other}/messages`, { data: { text: call } });
+  await expect.poll(async () => await events(other), { timeout: 30_000 }).toContain("No tool named editor-notes__echo");
+
+  // Loading the session again with no servers, or closing it, ends the server.
+  await ed.call("session/close", { sessionId: id });
+  await expect.poll(async () => (await list(id)).some((x) => x.name === "editor-notes")).toBe(false);
   ed.close();
 });
 

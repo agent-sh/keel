@@ -432,7 +432,7 @@ export class Gate {
   // and grants for that tool alone. Returns the class it judged.
   async check(session: Session, call: ToolCall): Promise<CheckResult> {
     if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
-    const target = call.tool.target ? await call.tool.target(call.input) : null;
+    const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
     const name = target?.name ?? call.tool.name;
     const cls = callClass(call, target);
     const mode = this.perm(session.id).mode;
@@ -521,7 +521,7 @@ export class Gate {
     const authorization: ToolAuthorization = {
       deny: changedReview.deny,
       refresh: tool.target ? async (now) => {
-        if (active() && now.tool === tool && JSON.stringify(now.input) === originalInput) currentTarget = await tool.target!(now.input);
+        if (active() && now.tool === tool && JSON.stringify(now.input) === originalInput) currentTarget = await tool.target!(now.input, session.id);
       } : undefined,
       valid: (now, input) => {
         if (!active() || now.tool !== tool || now.ctx.signal !== signal || now.ctx.cwd !== cwd ||

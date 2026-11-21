@@ -81,7 +81,7 @@ function init(deps: Deps) {
       return { name: "Agent types you can start besides the built-ins", data: lines, text: lines ? `Agent types you can start besides the built-ins:\n${lines}` : "" };
     },
     beforeTool: async (s, call) => {
-      const target = call.tool.target && agents.byChild(s.id) ? await call.tool.target(call.input) : null;
+      const target = call.tool.target && agents.byChild(s.id) ? await call.tool.target(call.input, s.id) : null;
       const name = target?.name ?? call.tool.name;
       const why = agents.gate(s.id, call.tool.name, call.input, namesOf(name, target ? target.input : call.input, call.tool.name));
       if (why) return { deny: why };
