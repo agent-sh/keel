@@ -146,6 +146,26 @@ test("sessions on another machine sit under that machine's separator; a local on
     await page.goto(`/s/${local.id}`);
     await expect(page.getByTestId("machine-chip")).not.toHaveAttribute("data-machine", /./);
 
+    // A session that lives on the other daemon is told here by that daemon's own state, from the first
+    // paint: one that waits on a timer reads Waiting with the reason after a reload, when no change of
+    // its state is there to bring it (the relay's snapshot and the fleet view carry the states).
+    const theirs = (await (await request.post(`${PEER}/api/sessions`, { data: { model: STAND_IN, title: "Lives on the other daemon", workspace: ROOT } })).json()).session.id as string;
+    try {
+      await request.put(`${PEER}/api/sessions/${theirs}/permissions`, { data: { mode: "full-auto" } });
+      await request.post(`${PEER}/api/sessions/${theirs}/messages`, { data: { text: script([{ name: "wait_for", input: { kind: "timer", seconds: 900, note: "check the deploy" } }]) } });
+      await expect.poll(async () => ((await (await request.get(`${PEER}/api/state`)).json()).states ?? {})[theirs]?.watch, { timeout: 30_000 }).toBe("wait");
+      const remote = `${mid}--${theirs}`;
+      await expect(row(page, remote)).toBeVisible({ timeout: 30_000 });
+      await page.waitForTimeout(1500); // past the frame that told of the change: the reload below has only the snapshot
+      await page.reload();
+      await expect(row(page, remote)).toHaveAttribute("data-watch", "wait");
+      await expect(row(page, remote).getByTestId("row-why")).toHaveText("Timer: check the deploy");
+      await expect(row(page, remote).getByTestId("row-time")).toHaveText(/^in 1[45]m$/);
+      await shoot(page, "session-rows-05-peer-state");
+    } finally {
+      await request.delete(`${PEER}/api/sessions/${theirs}`).catch(() => {});
+    }
+
     // The machine stops answering: its separator says offline.
     await request.patch(`/api/fleet/machines/${mid}`, { data: { daemon_url: "http://127.0.0.1:9" } });
     await request.post(`/api/fleet/machines/${mid}/check`);
