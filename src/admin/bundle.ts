@@ -5,11 +5,11 @@
 // home folder are redacted. Built for one error, or for a session's turn.
 import { homedir } from "node:os";
 import type { Store } from "../core/store.ts";
-import { lineage } from "../core/tree.ts";
+import { leafOf, lineage } from "../core/tree.ts";
 import type { ErrorRecord, StoredEvent, TurnStatus } from "../core/types.ts";
 import { redact } from "../server/routes/admin.ts";
 import { logDir, logLines } from "./logs.ts";
-import { type Span, traceIdOf, type Tracer } from "./trace.ts";
+import { type Span, SPAN_DAYS, traceIdOf, type Tracer } from "./trace.ts";
 
 const LOG_WINDOW_MS = 2 * 60_000;
 const LOG_LINES = 80;
@@ -21,30 +21,47 @@ const iso = (ms: number) => new Date(ms).toISOString().replace("T", " ").replace
 const dur = (ms: number | null) => (ms === null ? "still running" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`);
 const fence = (s: string, lang = "") => "```" + lang + "\n" + s.replace(/```/g, "` ` `") + "\n```";
 
-export type BundleOpts = { error?: ErrorRecord; session_id?: string; turn_event?: string; daemon: Record<string, unknown>; version?: string; live?: (sessionId: string) => { running: boolean; status: TurnStatus } };
+export type BundleOpts = { error?: ErrorRecord; session_id?: string; turn_event?: string; span_id?: string; daemon: Record<string, unknown>; version?: string; live?: (sessionId: string) => { running: boolean; status: TurnStatus } };
 
 export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { markdown: string; title: string; trace_id?: string } {
   const e = o.error;
+  // The span the bundle was asked from (the one picked in a trace): the bundle
+  // is about that span, its turn and the branch that turn ran on.
+  const asked = o.span_id ? tracer.span(o.span_id) : undefined;
   // What was asked for wins over where the row last happened: a bundle asked
   // from a span of an earlier turn is about that turn, in that session.
-  const sid = o.session_id ?? e?.session_id;
+  const sid = o.session_id ?? asked?.session_id ?? e?.session_id;
   const s = sid ? store.session(sid) : undefined;
-  const events = s ? lineage(store.events(s.id), s.head) : [];
+  const all = s ? store.events(s.id) : [];
   // The row's last occurrence, when it was in this session. Its turn is the one
   // it names, or none (a side request ran in no turn): the trace is then its
   // span's own. Only a bundle asked for a session alone is about that
   // session's newest turn.
-  const last = e && e.session_id === sid ? e : undefined;
-  const named = last?.span_id ? tracer.span(last.span_id) : undefined;
-  const turnEvent = o.turn_event ?? last?.turn_event ?? (e ? undefined : events.findLast((x) => x.kind === "turn_start")?.id);
-  const traceId = turnEvent ? traceIdOf(turnEvent) : named?.trace_id;
+  const last = e && e.session_id === sid && !o.span_id ? e : undefined;
+  const named = asked ?? (last?.span_id ? tracer.span(last.span_id) : undefined);
+  // A span that was asked for, or that the row names, and is no longer kept:
+  // said as it is, with no other span shown in its place.
+  const spanGone = o.span_id && !asked ? o.span_id : last?.span_id && !named ? last.span_id : undefined;
+  const head = s ? lineage(all, s.head) : [];
+  const turnEvent = (asked ? (asked.attrs.turn_event as string | undefined) : o.turn_event ?? last?.turn_event) ?? (e || o.span_id ? undefined : head.findLast((x) => x.kind === "turn_start")?.id);
+  const traceId = asked?.trace_id ?? (turnEvent ? traceIdOf(turnEvent) : named?.trace_id);
   const spans = traceId ? tracer.trace(traceId) : [];
   // One trace a bundle: the span the row names is its failing span only when it
   // is in the trace shown. A row that moved on since leaves that trace's own failure.
   const own = named && (!spans.length || spans.some((x) => x.span_id === named.span_id)) ? named : undefined;
-  const failing = own ?? spans.findLast((x) => x.status === "error" && x.kind !== "turn");
-  const elsewhere = !!e && (!last || (!!named && !own));
-  const at = (elsewhere ? failing?.end_ms : undefined) ?? e?.ts ?? failing?.end_ms ?? Date.now();
+  // A turn's span has no request of its own: its failure is its last failed child's.
+  const failing = asked
+    ? asked.kind === "turn" ? spans.findLast((x) => x.parent_id === asked.span_id && x.status === "error") ?? asked : asked
+    : spanGone ? undefined : own ?? spans.findLast((x) => x.status === "error" && x.kind !== "turn");
+  const elsewhere = !!e && !asked && (!last || (!!named && !own));
+  const at = asked ? failing?.end_ms ?? asked.end_ms ?? Date.now() : (elsewhere ? failing?.end_ms : undefined) ?? e?.ts ?? failing?.end_ms ?? Date.now();
+  // The transcript is the branch the turn ran on. A session that went back and
+  // took another branch since still has it; the present branch is another
+  // conversation and is never shown in its place.
+  const turnAt = turnEvent ? all.find((x) => x.id === turnEvent) : undefined;
+  const left = !!turnAt && !head.some((x) => x.id === turnEvent);
+  const turnGone = !!s && !!turnEvent && !turnAt;
+  const events = left ? lineage(all, leafOf(all, turnEvent!)) : turnGone ? [] : head;
   const out: string[] = [];
 
   const title = e ? `${e.source}: ${clip(e.message, 120)}` : `turn in ${s?.title || sid}`;
@@ -72,11 +89,14 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
       out.push(`- Now: a turn is running; ${st.kind === "tool" ? `waiting on the tool${st.names.length > 1 ? "s" : ""} ${st.names.join(", ")} ${since(st.since)}` : st.kind === "model" ? `waiting on ${st.model} ${since(st.since)}${st.connected ? `, connected ${since(st.connected)} with no output yet` : ", not connected yet"}` : st.kind === "retry" ? `retry ${st.attempt} of ${st.max} at ${iso(st.at)} after: ${clip(st.message, 300)}` : st.kind === "compacting" ? "compacting the context" : "between steps"}`);
     }
     if (turnEvent) {
-      const t = store.event(turnEvent);
-      out.push(`- Turn \`${turnEvent}\` started ${t ? iso(t.ts) : "(event gone)"}; trace id \`${traceId}\``);
+      out.push(`- Turn \`${turnEvent}\` started ${turnAt ? iso(turnAt.ts) : "(event gone)"}; trace id \`${traceId}\``);
+      if (left) out.push("- The session went back and took another branch since: this turn is on the branch it left, and the transcript below is that branch's.");
+      if (turnGone) out.push("- The turn's events are no longer in the session. No transcript is shown: the session's present branch is another conversation.");
     } else if (e) out.push(`- In no turn${traceId ? `: a request of its own, trace id \`${traceId}\`` : ""}`);
   } else if (sid) out.push(`- Session \`${sid}\` (deleted since)`);
   else out.push("- Not tied to a session (a daemon or page failure).");
+  if (asked) out.push(`- Asked from the span \`${asked.span_id}\` (\`${asked.name}\`, ${asked.status}).`);
+  if (spanGone) out.push(`- The span ${o.span_id ? "this bundle was asked from" : "this error names"}, \`${spanGone}\`, is no longer kept (spans are kept ${SPAN_DAYS} days). No other span is shown in its place.`);
   if (e?.context?.url) out.push(`- Page: ${e.context.url}`);
   out.push("");
 
@@ -99,7 +119,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
   if (failing) out.push(...failingSection(failing));
 
   if (events.length) {
-    out.push(`## Transcript before the failure (last ${TAIL} events of the branch)`, "");
+    out.push(`## Transcript before the failure (last ${TAIL} events of the branch${left ? " the turn ran on" : ""})`, "");
     const upto = events.filter((x) => x.ts <= at + 1000);
     for (const ev of upto.slice(-TAIL)) out.push(...eventLines(ev));
     out.push("");
@@ -130,7 +150,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
 
 function failingSection(f: Span): string[] {
   const a = f.attrs;
-  const out = ["## The failing span", ""];
+  const out = [f.status === "error" ? "## The failing span" : "## The span", ""];
   out.push(`- \`${f.name}\` (${f.kind}), ${f.status}${f.error_type ? `, class ${f.error_type}` : ""}, ${dur(f.end_ms === null ? null : f.end_ms - f.start_ms)}; span \`${f.span_id}\``);
   if (f.error) out.push("", fence(clip(f.error, 3000)));
   if (a.shape) {

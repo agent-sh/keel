@@ -181,7 +181,8 @@ function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; on
   const a = s.attrs;
   const w = a.wire ?? {};
   const u = a.result?.usage;
-  const turnEvent = a.turn_event as string | undefined;
+  // The bundle and the fix are about this span: its id goes with its turn and its error row.
+  const target = { session_id: s.session_id, turn_event: a.turn_event as string | undefined, error_id: s.error_id ?? undefined, span_id: s.span_id };
   const again = async () => {
     setBusy(true);
     try {
@@ -232,13 +233,13 @@ function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; on
         <button
           type="button"
           className={btn}
-          onClick={() => copyBundle({ session_id: s.session_id, turn_event: turnEvent, error_id: s.error_id ?? undefined }).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(reportError)}
+          onClick={() => copyBundle(target).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(reportError)}
           data-testid="span-bundle"
         >
           <ClipboardCopy className="size-3.5" /> {copied ? "Copied" : "Copy debug bundle"}
         </button>
         {s.status === "error" && (
-          <button type="button" className={btn} onClick={() => fixThis({ error_id: s.error_id ?? undefined, session_id: s.session_id, turn_event: turnEvent }).catch(reportError)} data-testid="span-fix">
+          <button type="button" className={btn} onClick={() => fixThis(target).catch(reportError)} data-testid="span-fix">
             <Wrench className="size-3.5" /> Fix this
           </button>
         )}

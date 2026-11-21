@@ -83,19 +83,19 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   clearInterval(G.__keelSpanPrune);
   G.__keelSpanPrune = setInterval(() => t.prune(), 6 * 3600_000);
 
-  const bundleFor = (q: { error_id?: string | null; session_id?: string | null; turn_event?: string | null }) => {
+  const bundleFor = (q: { error_id?: string | null; session_id?: string | null; turn_event?: string | null; span_id?: string | null }) => {
     const error = q.error_id ? store.error(q.error_id) : undefined;
     if (q.error_id && !error) return { status: 404, error: "no such error" } as const;
-    if (!error && !q.session_id) return { status: 400, error: "error_id or session_id" } as const;
+    if (!error && !q.session_id && !q.span_id) return { status: 400, error: "error_id, session_id or span_id" } as const;
     if (q.session_id && !store.session(q.session_id)) return { status: 404, error: "no such session" } as const;
-    return buildBundle(store, t, { error, session_id: q.session_id ?? undefined, turn_event: q.turn_event ?? undefined, daemon: { state_dir: store.stateDir }, version, live: (id) => ({ running: engine.isRunning(id), status: engine.statusOf(id) }) });
+    return buildBundle(store, t, { error, session_id: q.session_id ?? undefined, turn_event: q.turn_event ?? undefined, span_id: q.span_id ?? undefined, daemon: { state_dir: store.stateDir }, version, live: (id) => ({ running: engine.isRunning(id), status: engine.statusOf(id) }) });
   };
 
   return {
     "/api/debug/bundle": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
-        const b = bundleFor({ error_id: q.get("error_id"), session_id: q.get("session_id"), turn_event: q.get("turn_event") });
+        const b = bundleFor({ error_id: q.get("error_id"), session_id: q.get("session_id"), turn_event: q.get("turn_event"), span_id: q.get("span_id") });
         if ("status" in b) return json({ error: b.error }, b.status);
         return new Response(b.markdown, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" } });
       },
@@ -104,7 +104,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     "/api/debug/fix": {
       POST: async (req: Request) => {
         const body = (await req.json().catch(() => ({}))) as any;
-        const b = bundleFor({ error_id: body.error_id, session_id: body.session_id, turn_event: body.turn_event });
+        const b = bundleFor({ error_id: body.error_id, session_id: body.session_id, turn_event: body.turn_event, span_id: body.span_id });
         if ("status" in b) return json({ error: b.error }, b.status);
         const dir = join(store.stateDir, "debug");
         mkdirSync(dir, { recursive: true, mode: 0o700 });

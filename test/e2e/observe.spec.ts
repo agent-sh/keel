@@ -235,6 +235,13 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   // Another row is picked by hand; the error's Trace asked again picks its span again.
   await view.getByTestId("span-row").nth(1).click();
   await expect(detail).toContainText(attempts[0].span_id);
+  // The bundle asked from a span is about that span: its id goes with the
+  // request, and the bundle names it, not the span the error row last happened in.
+  const [asked] = await Promise.all([page.waitForRequest((r) => r.url().includes("/api/debug/bundle?")), detail.getByTestId("span-bundle").click()]);
+  expect(new URL(asked.url()).searchParams.get("span_id")).toBe(attempts[0].span_id);
+  const bundled = await (await request.get(asked.url())).text();
+  expect(bundled).toContain(`Asked from the span \`${attempts[0].span_id}\``);
+  expect(bundled.slice(bundled.indexOf("## The failing span")).split("\n## ")[0]).toContain(`span \`${attempts[0].span_id}\``);
   row = await openRow();
   await row.getByTestId("error-trace").click();
   await expect(detail).toContainText(attempts[1].span_id);

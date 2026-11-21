@@ -21,7 +21,8 @@ export type Span = {
   replayable: boolean;
 };
 
-export type BundleTarget = { error_id?: string; session_id?: string; turn_event?: string };
+// `span_id`: the span picked in a trace. The bundle is then about that span and the branch its turn ran on.
+export type BundleTarget = { error_id?: string; session_id?: string; turn_event?: string; span_id?: string };
 
 const query = (t: BundleTarget) => new URLSearchParams(Object.entries(t).filter(([, v]) => v) as [string, string][]).toString();
 
