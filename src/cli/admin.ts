@@ -65,14 +65,18 @@ keel status --sessions [--since 1h] [--max N] [--no-ids] [--json]
   for how long, and the turns and spend since a time (a span back such as 90s, 30m, 1h, 2d,
   or an ISO time; a day by default, at most 7 days). States, classes, counts and ids only, no prompt or output.
   --max N lists that many sessions (20 by default), the ones that need you first; --no-ids
-  leaves the ids off the lines.`;
-const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, since: { type: "string" }, max: { type: "string" }, "no-ids": { type: "boolean" } }, async (v) => {
-  if (v.sessions) {
-    const q = new URLSearchParams(Object.entries({ since: v.since, max: v.max, format: v.json ? undefined : "text", ids: v["no-ids"] && !v.json ? "0" : undefined }).filter(([, x]) => x) as [string, string][]);
+  leaves the ids off the lines.
+keel status --away [--since 1h] [--no-ids] [--json]
+  What happened while you were not at a page of the daemon (no key or pointer input for five
+  minutes): per session the turns that ended, failures by class, approvals waiting, agents parked
+  and spend. --since gives the same for a window you name, at most 7 days back.`;
+const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, away: { type: "boolean" }, since: { type: "string" }, max: { type: "string" }, "no-ids": { type: "boolean" } }, async (v) => {
+  if (v.sessions || v.away) {
+    const q = new URLSearchParams(Object.entries({ since: v.since, max: v.sessions ? v.max : undefined, format: v.json ? undefined : "text", ids: v["no-ids"] && !v.json ? "0" : undefined }).filter(([, x]) => x) as [string, string][]);
     const url = urlOf(v.url);
     let r: Response;
     try {
-      r = await fetch(`${url}/api/overview?${q}`, { headers: authHeaders() });
+      r = await fetch(`${url}/api/${v.away ? "away" : "overview"}?${q}`, { headers: authHeaders() });
     } catch {
       throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
     }
@@ -81,7 +85,7 @@ const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, since: { type
     process.stdout.write(v.json ? JSON.stringify(await r.json(), null, 2) + "\n" : clean(await r.text()));
     return 0;
   }
-  if (v.since || v.max || v["no-ids"]) throw new Error("--since, --max and --no-ids go with --sessions");
+  if (v.since || v.max || v["no-ids"]) throw new Error("--since, --max and --no-ids go with --sessions or --away");
   const d = await call(urlOf(v.url), "/api/daemon");
   const a = await call(urlOf(v.url), "/api/awake").catch(() => null);
   out({ ...d, awake: a }, !!v.json, () => [

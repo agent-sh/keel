@@ -112,6 +112,29 @@ beside them, and the spend is everyone's. A turn a daemon restart cut is not
 a failure: it is continued, and one that was not shows in the session's
 state.
 
+"While you were away" is one digest of the same read: per session the turns
+that ended, the failures by class, how its agents ended, the approvals that
+wait, the agents parked on a wake of their own, and the spend.
+
+- The owner is present while they do something in a page: each page reports
+  how long ago its last key, pointer or wheel input was. A page that only has
+  focus is not the owner. An absence is five minutes without input
+  (`KEEL_AWAY_MS`).
+- Absences are kept as a short list, across daemon restarts, until the digest
+  is dismissed, and only what happened inside them is counted. A turn that
+  ended while the owner was there between two absences is in neither.
+- Time the daemon was not running (it was down, or the machine slept) is no
+  absence. An absence in which nothing happened leaves no digest.
+- The first line counts the sessions' own turns and, beside them, how their
+  agents ended. The text form lists twenty sessions at most, within the
+  report's bound, and counts the rest.
+
+The Inbox shows the digest as one line above the alerts that opens into a row
+a session, each opening its session. Opening it is seeing it: the daemon lets
+it go, and the next absence starts a new one. `GET /api/away` gives it (`format=text`
+for the text form, `since=` for a window you name, at most seven days back),
+`keel status --away` prints it, and `DELETE /api/away` dismisses it.
+
 ## A model traces a failure by itself
 
 The notice a session gets when an agent it started fails ends with one line

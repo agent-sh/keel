@@ -5,6 +5,7 @@ import { toMessages } from "../engine/turn.ts";
 import { lineage } from "../core/tree.ts";
 import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
+import { ownerSeen } from "../admin/away.ts";
 import * as activity from "./activity.ts";
 import * as consult from "./consult.ts";
 import * as goals from "./goals.ts";
@@ -584,6 +585,9 @@ export const automationRoutes: RouteModule = (deps) => {
       POST: async (req: Request) => {
         const b = await body(req);
         alerts.setPresence(b.session_id ?? null, !!b.focused, typeof b.page === "string" ? b.page.slice(0, 64) : undefined);
+        // The owner did something in that page this long ago: the end of an absence, if there was one.
+        // A page that only has focus says nothing about where the owner is.
+        if (typeof b.idle_ms === "number" && b.idle_ms >= 0) ownerSeen(b.idle_ms);
         return json({ ok: true });
       },
     },

@@ -2,6 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { digestBrief, digestTotals, type Digest } from "../../src/admin/away.ts";
 import { TEXT_TOKENS, tokensOf, type Overview } from "../../src/admin/overview.ts";
 import type { StoredEvent } from "../../src/core/types.ts";
 import { exited, ownDaemon, ownEnv } from "./peer.ts";
@@ -11,8 +12,10 @@ import { shoot, SHOTS } from "./shots.ts";
 // tool say, for twenty sessions in under 1.5k tokens, what needs the owner,
 // what failed and why, what runs and for how long, and the turns and spend
 // since a time, in the states the page shows, without a word of a prompt or
-// a tool's output. The spec runs its own daemon on a scratch state folder, on
-// the scripted stand-in, with nothing of the caller's environment but the path.
+// a tool's output; and "while you were away" is one digest of the same read,
+// from the last time a page of the daemon had focus, in the Inbox and as
+// text. The spec runs its own daemon on a scratch state folder, on the
+// scripted stand-in, with nothing of the caller's environment but the path.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 const daemon = async (state: string, more: Record<string, string> = {}, port = 0) => ({ ...(await ownDaemon(state, port, { KEEL_RESUME_GAP_MS: "0", ...more })), env: ownEnv(state) });
 const script = (calls: unknown[]) => `script:calls ${JSON.stringify(calls)}`;
@@ -201,6 +204,201 @@ test("one report tells every session's state, failure, run time and spend, as th
     expect((await (await fetch(`${d.url}/api/overview?since=1h&format=text`)).text())).not.toContain("cut by a restart");
   } finally {
     if (!existsSync(gate)) writeFileSync(gate, "go\n");
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+  }
+});
+
+test("while the owner is away, one digest tells what each session did, what waits and what it cost", async ({ page }) => {
+  test.setTimeout(420_000);
+  const state = join(ROOT, `away-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  // An absence is 25 seconds with no input in a page (five minutes on a daemon of the owner's):
+  // longer than the 20 s between a page's reports.
+  const d = await daemon(state, { KEEL_AWAY_MS: "25000" });
+  const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+  const textOf = async (path: string) => (await fetch(d.url + path)).text();
+  try {
+    const open = async (title: string, mode = "full-auto") => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode }, "PUT");
+      return session.id as string;
+    };
+    const send = (id: string, text: string) => call(`/api/sessions/${id}/messages`, { text });
+    const events = async (id: string) => (await call(`/api/sessions/${id}`)).events as StoredEvent[];
+    const ended = (id: string, n: number) => expect.poll(async () => (await events(id)).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(n);
+    const away = async () => (await call("/api/away")).away as Digest | null;
+    const quiet = await open("Untouched notes");
+    const desk = await open("Seen at the desk");
+    const fine = await open("Changelog");
+    const billing = await open("Billing check");
+    const declined = await open("Policy text");
+    const asks = await open("Parser refactor", "ask");
+    const parent = await open("Coordinator");
+    // The owner at the page: they move the pointer. A page that is only open says nothing of them.
+    let x = 600;
+    const here = async (at = quiet) => {
+      if (!page.url().startsWith(d.url)) await page.goto(`${d.url}/s/${at}`);
+      await page.mouse.move((x += 7), 400);
+    };
+    const leaves = () => page.goto("about:blank");
+    // The daemon has heard of the owner's input after a session's last turn ended (a page says so within five seconds).
+    const seenAfter = async (id: string) => {
+      const end = (await events(id)).findLast((e) => e.kind === "turn_end")!.ts;
+      await expect.poll(async () => { await here(); return (await call("/api/away")).last_seen as number; }, { timeout: 30_000 }).toBeGreaterThan(end);
+    };
+
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${d.url}/s/${quiet}`);
+    await expect(page.getByTestId("inbox-button")).toBeVisible();
+    await page.waitForTimeout(1500);
+    expect((await call("/api/away")).last_seen).toBeNull();
+    await here();
+    await expect.poll(async () => (await call("/api/away")).last_seen, { timeout: 30_000 }).not.toBeNull();
+    expect(await call("/api/away")).toMatchObject({ away: null, gap_ms: 25_000 });
+    expect(await textOf("/api/away?format=text")).toMatch(/^No absence to tell of: the owner was at a page of the daemon \d+ m?s ago\./);
+    // A turn that ends while the owner is there is theirs to have seen: no digest will tell it.
+    await send(desk, "overview-prompt-marker say something");
+    await ended(desk, 1);
+    await seenAfter(desk);
+    await page.getByTestId("inbox-button").click();
+    await expect(page.getByTestId("inbox-list")).toBeVisible();
+    await expect(page.getByTestId("away-digest")).toHaveCount(0);
+
+    // They leave, and the sessions go on: two turns end well, one fails for billing, one is declined,
+    // one asks for approval, and a coordinator's agent parks on a timer of its own.
+    await leaves();
+    await send(fine, "overview-prompt-marker say something");
+    await ended(fine, 1);
+    await send(fine, "and once more");
+    await send(billing, "overview-prompt-marker script:billing");
+    await send(declined, "script:refuse");
+    await send(asks, script([{ name: "Bash", input: { command: "rm overview-tool-marker.txt" } }]));
+    await send(parent, script([{ name: "spawn_agent", input: { message: `Watch the queue\n${script([{ name: "wait_for", input: { kind: "timer", seconds: 600, note: "overview-prompt-marker" } }])}`, isolation: "none" } }]));
+    await ended(fine, 2);
+    await ended(billing, 1);
+    await ended(declined, 1);
+    await expect.poll(async () => (await call(`/api/sessions/${asks}/approvals`)).approvals.filter((a: any) => a.state === "pending").length, { timeout: 30_000 }).toBe(1);
+    await expect.poll(async () => (await call(`/api/sessions/${parent}/agents`)).agents[0]?.status, { timeout: 30_000 }).toBe("waiting");
+    await expect.poll(async () => (await call(`/api/sessions/${parent}`)).running, { timeout: 30_000 }).toBe(false);
+
+    // Still away: the digest runs from their last input to now.
+    await expect.poll(async () => (await away())?.present, { timeout: 60_000 }).toBe(false);
+    const open1 = (await away())!;
+    const row = (g: Digest, id: string) => g.sessions.find((r) => r.id === id);
+    expect(open1.spans).toHaveLength(1);
+    // It matches the events: each session's turns that ended inside the absence, as its events hold them.
+    for (const id of [fine, billing, declined, asks, parent]) {
+      const n = (await events(id)).filter((e) => e.kind === "turn_end" && e.ts >= open1.from && e.ts <= open1.to).length;
+      expect(row(open1, id)?.turns, id).toBe(n);
+    }
+    expect(row(open1, fine)).toMatchObject({ watch: "done", turns: 2, failed: {}, approvals: 0, parked: 0 });
+    expect(row(open1, billing)).toMatchObject({ watch: "fail", turns: 1, failed: { "quota or billing": 1 }, bad: "1 failed (quota or billing)" });
+    expect(row(open1, declined)).toMatchObject({ turns: 1, failed: { declined: 1 } });
+    expect(row(open1, asks)).toMatchObject({ watch: "need", turns: 0, approvals: 1, text: expect.stringMatching(/^1 approval waits/) });
+    expect(row(open1, parent)).toMatchObject({ watch: "work", parked: 1, text: expect.stringContaining("1 agent parked") });
+    // Neither the session nothing happened in nor the one whose turn ended at the desk.
+    expect(row(open1, quiet)).toBeUndefined();
+    expect(row(open1, desk)).toBeUndefined();
+    expect(open1.quiet).toBe(2);
+    expect(open1.totals).toMatchObject({ failed: 2, approvals: 1, parked: 1 });
+    const away1 = await textOf("/api/away?format=text");
+    writeFileSync(join(SHOTS, "overview-02-away.txt"), away1);
+    expect(tokensOf(away1)).toBeLessThan(TEXT_TOKENS);
+    expect(away1).toMatch(/^While you are away, since \d\d:\d\d UTC \(\d+ s\): \d of the sessions' own turns ended in 4 sessions, 2 failed; 1 approval waits; 1 agent parked; \$\d+\.\d+ spent in all\.\n/);
+    expect(away1).toMatch(new RegExp(`  "Billing check", failed: 1 turn ended, 1 failed \\(quota or billing\\)  \\[session=${billing.slice(-12)}\\]`));
+    expect(away1).toMatch(/  "Changelog", done: 2 turns ended; \$\d+\.\d+  \[session=/);
+    expect(away1).toContain("2 other sessions: nothing happened.");
+    for (const word of PRIVATE) expect(away1).not.toContain(word);
+    const keel = (...args: string[]) => execFileSync("bun", ["src/main.ts", ...args, "--url", d.url], { env: d.env, encoding: "utf8" });
+    const cli = keel("status", "--away", "--no-ids");
+    expect(cli).toMatch(/^While you are away, since /);
+    expect(cli).toContain('  "Policy text", done: 1 turn ended, 1 failed (declined)');
+    expect(cli).not.toContain("[session=");
+
+    // They come back: the absence closes at their first input, and the Inbox has one line for it.
+    await here();
+    await expect.poll(async () => (await away())?.present, { timeout: 30_000 }).toBe(true);
+    const back = (await away())!;
+    expect(back.spans).toHaveLength(1);
+    expect(back.from).toBe(open1.from);
+    expect(back.sessions.map((r) => [r.id, r.text])).toEqual(open1.sessions.map((r) => [r.id, r.text]));
+    await page.getByTestId("inbox-button").click();
+    const block = page.getByTestId("away-digest");
+    await expect(block).toBeVisible();
+    await expect(block.getByTestId("away-line")).toContainText(digestBrief(back));
+    expect(digestBrief(back)).toMatch(/^\d turns ended, 2 failed; 1 approval waits$/);
+    await expect(block.getByTestId("away-row")).toHaveCount(0);
+    await page.mouse.move(1200, 600);
+    await shoot(page, "overview-02-away-line");
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("inbox-panel")).toHaveCount(0);
+
+    // The owner stays a while, and a turn ends under their eyes. Then they are away again, and nothing
+    // happens. The digest, not opened yet, has two absences, and the turn that ended between them is in neither.
+    await here();
+    await send(fine, "a third time, with the owner there");
+    await ended(fine, 3);
+    await seenAfter(fine);
+    await leaves();
+    await expect.poll(async () => (await away())?.spans.length, { timeout: 60_000 }).toBe(2);
+    await here();
+    await expect.poll(async () => (await away())?.present, { timeout: 30_000 }).toBe(true);
+    const twice = (await away())!;
+    expect(twice.spans).toHaveLength(2);
+    expect(twice.spans[0]).toEqual(back.spans[0]);
+    expect(row(twice, fine)).toMatchObject({ turns: 2 });
+    expect(twice.sessions.map((r) => [r.id, r.turns, r.failed])).toEqual(back.sessions.map((r) => [r.id, r.turns, r.failed]));
+    expect(await textOf("/api/away?format=text")).toMatch(/^While you were away, 2 times between \d\d:\d\d and \d\d:\d\d UTC \(\d+ s in all\): /);
+
+    // Opened, a row a session, in the daemon's own words. Opening it is seeing it: the daemon lets it go,
+    // and it stays on screen until the Inbox closes.
+    await page.getByTestId("inbox-button").click();
+    await expect(block).toBeVisible();
+    await block.getByTestId("away-toggle").click();
+    await expect(block.getByTestId("away-totals")).toHaveText(digestTotals(twice));
+    await expect(block.getByTestId("away-row")).toHaveCount(5);
+    for (const r of twice.sessions) {
+      const el = block.locator(`[data-testid="away-row"][data-session="${r.id}"]`);
+      await expect(el).toHaveAttribute("data-watch", r.watch);
+      await expect(el.getByTestId("away-facts")).toHaveText(r.text);
+    }
+    await expect(block.locator(`[data-session="${billing}"] .text-danger`)).toHaveText("1 failed (quota or billing)");
+    await expect(block.getByTestId("away-quiet")).toHaveText("2 other sessions: nothing happened.");
+    await expect.poll(away).toBeNull();
+    await page.mouse.move(1200, 600);
+    await shoot(page, "overview-03-away-open");
+    await page.setViewportSize({ width: 900, height: 1040 });
+    await shoot(page, "overview-03-away-open-narrow");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    // A row opens its session, and the Inbox opened again has no digest left.
+    await block.locator(`[data-testid="away-row"][data-session="${billing}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`/s/${billing}$`));
+    await expect(page.getByTestId("inbox-panel")).toHaveCount(0);
+    await page.getByTestId("inbox-button").click();
+    await expect(page.getByTestId("inbox-list")).toBeVisible();
+    await page.waitForTimeout(2500); // past the block's second look
+    await expect(block).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    // An absence in which nothing happened leaves nothing to tell: no digest, no block.
+    await here();
+    await leaves();
+    await page.waitForTimeout(27_000);
+    expect(await textOf("/api/away?format=text")).toBe("Nothing happened while you were away.\n");
+    await here();
+    await expect.poll(async () => Date.now() - (await call("/api/away")).last_seen, { timeout: 30_000 }).toBeLessThan(10_000);
+    expect(await away()).toBeNull();
+    await page.getByTestId("inbox-button").click();
+    await expect(page.getByTestId("inbox-list")).toBeVisible();
+    await page.waitForTimeout(2500); // past the block's second look
+    await expect(block).toHaveCount(0);
+    // A window that is asked for is told whether or not the owner was away, up to a week back.
+    expect(await textOf("/api/away?since=1h&format=text")).toMatch(/^From \d\d:\d\d to \d\d:\d\d UTC \(1 h\): \d of the sessions' own turns ended in 5 sessions, 2 failed; /);
+    expect((await fetch(`${d.url}/api/away?since=30d`)).status).toBe(400);
+  } finally {
     d.proc.kill("SIGTERM");
     await exited(d.proc);
   }

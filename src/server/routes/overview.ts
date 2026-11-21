@@ -7,8 +7,16 @@
 //   first (and which is left out of the sessions). max: sessions listed (20 by
 //   default, at most 200), the ones that need the owner first. format=text: the same as
 //   plain text for a model or a terminal (ids=0 leaves the ids off the lines).
+// GET /api/away?since=&format=&ids=
+//   -> { away: Digest | null, last_seen, gap_ms }: what happened while the
+//   owner was away (src/admin/away.ts), per session; null when the owner was
+//   not away or nothing happened. With since (at most 7 days back), the same
+//   for that window, whether or not the owner was away. format=text as above.
+// DELETE /api/away   the owner has seen the digest: it is not shown again.
 // Content-free: titles, states, classes, counts, durations and ids.
+import { awayGap, bindPresence, digest, digestText, Presence, TICK_MS, type AwayWindow } from "../../admin/away.ts";
 import { bindOverview, DEFAULT_SINCE, overview, overviewText, tooFarBack, type From } from "../../admin/overview.ts";
+import { dur } from "../../admin/timeline-rows.ts";
 import { parseSince, Timeline } from "../../admin/timeline.ts";
 import { hasPending } from "../../automation/core.ts";
 import { agentCounts, sessionState } from "../../automation/state.ts";
@@ -33,6 +41,18 @@ export const overviewRoutes: RouteModule = ({ store, engine }) => {
     now: (id) => timeline.now(id),
   };
   bindOverview(from);
+  store.migrate("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const presence = new Presence({
+    load: () => store.db.query<{ value: string }, []>("SELECT value FROM admin_meta WHERE key = 'owner_presence'").get()?.value ?? null,
+    save: (v) => void store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES ('owner_presence', ?)").run(v),
+  });
+  bindPresence(presence);
+  // The daemon notes that it runs: a note that comes late is time it was down or asleep, which is no absence.
+  const g = globalThis as { __keelPresenceTick?: ReturnType<typeof setInterval> };
+  clearInterval(g.__keelPresenceTick);
+  g.__keelPresenceTick = setInterval(() => presence.tick(), TICK_MS);
+  g.__keelPresenceTick.unref?.();
+  const text = (body: string) => new Response(body + "\n", { headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
 
   return {
     "/api/overview": {
@@ -51,6 +71,34 @@ export const overviewRoutes: RouteModule = ({ store, engine }) => {
         const headers = { "cache-control": "no-store" };
         if (q.get("format") === "text") return new Response(overviewText(o, { ids: q.get("ids") !== "0" }) + "\n", { headers: { ...headers, "content-type": "text/plain; charset=utf-8" } });
         return Response.json(o, { headers });
+      },
+    },
+    "/api/away": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const now = Date.now();
+        const asked = q.get("since");
+        const from_ms = asked ? parseSince(asked, now) : 0;
+        const far = asked ? tooFarBack(from_ms, now) : undefined;
+        if (far) return bad(far);
+        const w: AwayWindow | null = asked ? { spans: [{ from: from_ms, to: now }], present: false } : presence.window(now);
+        const asText = q.get("format") === "text";
+        const meta = { last_seen: presence.lastSeen, gap_ms: awayGap() };
+        const d = w ? digest(overview(from, { since: w.spans[0]!.from, until: w.spans.at(-1)!.to + 1, spans: w.spans.map((s) => [s.from, s.to + 1] as [number, number]), max: 200 }), w) : null;
+        // Absences in which nothing happened leave nothing to tell: they go once the owner is back.
+        if (w && !d && !asked && w.present) presence.dismiss();
+        if (!d) {
+          if (!asText) return Response.json({ away: null, ...meta }, { headers: { "cache-control": "no-store" } });
+          const last = presence.lastSeen;
+          if (asked) return text(`Nothing happened since ${new Date(from_ms).toISOString().slice(0, 16).replace("T", " ")} UTC.`);
+          return text(w ? "Nothing happened while you were away."
+            : `No absence to tell of: ${last === null ? "nobody has been at a page of the daemon yet" : `the owner was at a page of the daemon ${dur(Math.max(now - last, 0))} ago`}. Name a time (since=1h; --since 1h on the command line) for what happened since then.`);
+        }
+        return asText ? text(digestText(d, { ids: q.get("ids") !== "0", since: !!asked })) : Response.json({ away: d, ...meta }, { headers: { "cache-control": "no-store" } });
+      },
+      DELETE: () => {
+        presence.dismiss();
+        return Response.json({ ok: true });
       },
     },
   };

@@ -7,6 +7,7 @@ import { navigate, setUI } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { ActivityList } from "./ActivityList.tsx";
+import { AwayDigest } from "./AwayDigest.tsx";
 import { ALERT_LABEL, ALERT_STATE, AlertIcon, CHANNEL_NAME, Empty } from "./bits.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 
@@ -60,6 +61,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <AwayDigest onClose={onClose} />
       <div className="flex items-center gap-1 px-3 py-2 text-caption">
         <div className="k-seg" role="group" aria-label="Show">
           <button type="button" aria-pressed={!onlyUnread} onClick={() => setOnlyUnread(false)}>All</button>

@@ -181,8 +181,9 @@ export const auto = {
   setSessionAdvisor: (sid: string, model: string | null) =>
     api<{ model: string | null; own: string | null; default: string | null }>(`/api/sessions/${sid}/advisor`, { method: "PUT", body: JSON.stringify({ model }) }),
   test: () => api<{ alert?: Alert; channels: Channel[] }>("/api/alerts/test", { method: "POST", body: JSON.stringify({ kind: "agent" }) }),
-  presence: (session_id: string | null, focused: boolean) =>
-    fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id, focused, page: PAGE }) }).catch(() => {}),
+  // `idle_ms`: how long ago the owner last did something in this page (absent: not yet).
+  presence: (session_id: string | null, focused: boolean, idle_ms?: number) =>
+    fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id, focused, page: PAGE, ...(idle_ms === undefined ? {} : { idle_ms }) }), keepalive: true }).catch(() => {}),
 };
 
 let alertsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -225,15 +226,19 @@ onFeature({
 // alert for a session the owner is watching stays in the page), sent when it
 // changes and every 20 s; a watched session's alerts are read, except those the
 // owner marked unread to come back to.
+// With it goes how long ago the owner last did something here (a key, the
+// pointer, the wheel, a touch): the daemon reads the owner's absences off
+// that, not off focus, which a page keeps while nobody is there.
 let sent = { key: "", at: 0 };
-function presence() {
+let lastInput = 0;
+function presence(now = false) {
   const r = getUI().route;
   const sid = r.name === "session" ? r.id : null;
   const focused = document.hasFocus() && document.visibilityState === "visible";
   const key = `${sid}:${focused}`;
-  if (key !== sent.key || Date.now() - sent.at > 20_000) {
+  if (now === true || key !== sent.key || Date.now() - sent.at > 20_000) {
     sent = { key, at: Date.now() };
-    auto.presence(sid, focused);
+    auto.presence(sid, focused, lastInput ? Date.now() - lastInput : undefined);
   }
   if (sid && focused && (state.unread.fresh?.[sid] ?? 0) > 0 && !reading.has(sid)) {
     reading.add(sid);
@@ -241,10 +246,21 @@ function presence() {
   }
 }
 const reading = new Set<string>();
-setInterval(presence, 1000);
-addEventListener("focus", presence);
-addEventListener("blur", presence);
-document.addEventListener("visibilitychange", presence);
+setInterval(() => presence(), 1000);
+addEventListener("focus", () => presence());
+addEventListener("blur", () => presence());
+document.addEventListener("visibilitychange", () => presence());
+// A page that goes away says when its owner was last there, so what they did since the last report is not lost.
+addEventListener("pagehide", () => presence(true));
+// The first input after a while is the owner coming back: said at once. Any other is said within
+// five seconds, not at the next report, so the daemon knows to within that when they were last there.
+function input() {
+  const now = Date.now();
+  const back = now - lastInput > 60_000;
+  lastInput = now;
+  if (back || now - sent.at > 5_000) presence(true);
+}
+for (const type of ["keydown", "pointerdown", "pointermove", "wheel", "touchstart"]) addEventListener(type, input, { capture: true, passive: true });
 auto.load().catch(reportError);
 
 
