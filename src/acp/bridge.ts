@@ -263,6 +263,8 @@ export class AcpBridge {
     const servers = list.map((m: Json) => (m?.type === "http" || m?.type === "sse" || (m?.url && !m?.command)
       ? { name: m.name, url: m.url, headers: pairs(m.headers), ...(m.type === "sse" ? { transport: "sse" } : {}) }
       : { name: m?.name, command: m?.command, args: m?.args, env: pairs(m?.env) }));
+    // Known as served before the daemon is asked: one that fails at once is told while the answer is on its way.
+    if (list.length) this.served.add(sessionId);
     let failed: string[];
     try {
       if (list.length && this.daemon.hold) await (this.holding ??= this.daemon.hold(this.holder));
@@ -272,8 +274,7 @@ export class AcpBridge {
       this.holding = undefined; // a hold that did not open is tried again with the next list
       failed = [`${list.map((m: Json) => m?.name).join(", ")}: ${(e as Error).message}`];
     }
-    if (list.length) this.served.add(sessionId);
-    else this.served.delete(sessionId);
+    if (!list.length) this.served.delete(sessionId);
     // After the answer, so the editor knows the session first.
     if (failed.length) queueMicrotask(() => this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not connect ${failed.length === 1 ? "an MCP server" : "MCP servers"} the editor passed (${failed.join("; ")}).\n\n` } }));
   }
@@ -624,6 +625,9 @@ export class AcpBridge {
       this.event(f.event.session_id, f.event);
     } else if (f.t === "queue" && this.live.has(f.session_id)) {
       void this.queueChanged(f.session_id, f.queue ?? []);
+    } else if (f.t === "feature" && f.name === "mcp-session" && f.data?.what === "failed" && this.served.has(f.session_id)) {
+      // A server the editor passed that did not connect, or went away later: said by name, as a refusal is.
+      this.notify(f.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel could not connect the MCP server ${f.data.name} the editor passed: ${f.data.error ?? "it failed"}.\n\n` } });
     } else if (f.t === "session" && this.live.has(f.session.id) && f.session.title) {
       this.notify(f.session.id, { sessionUpdate: "session_info_update", title: f.session.title });
     } else if (f.t === "feature" && f.name === "approval" && f.data?.state === "pending" && this.live.has(f.data.session_id) && !this.asked.has(f.data.id)) {

@@ -25,7 +25,8 @@ export type McpContent =
 export type McpCallResult = { content?: McpContent[]; structuredContent?: unknown; isError?: boolean };
 
 export type Transport =
-  | { kind: "stdio"; command: string; args: string[]; env: Record<string, string>; cwd?: string }
+  // `started`: told the process once it runs, so its owner can see that it ends (src/mcp/procs.ts).
+  | { kind: "stdio"; command: string; args: string[]; env: Record<string, string>; cwd?: string; started?: (proc: { pid: number; kill(signal?: number | NodeJS.Signals): void; exited: Promise<unknown> }) => void }
   // `pinned`: its headers go to this address only, so a redirect is an error (a server an editor passed).
   | { kind: "http"; url: string; headers: Record<string, string>; token?: () => Promise<string | undefined>; pinned?: boolean };
 
@@ -191,6 +192,7 @@ export class McpClient {
       stderr: "pipe",
     });
     this.proc = proc;
+    t.started?.(proc);
     void pumpLines(proc.stdout as ReadableStream<Uint8Array>, (l) => { const line = l.trim(); if (line) this.onMessage(line); }, "mcp stdout");
     void pumpText(proc.stderr as ReadableStream<Uint8Array>, (t) => (this.stderrTail = (this.stderrTail + t).slice(-4000)), "mcp stderr");
     proc.exited.then((code) => {
@@ -275,13 +277,27 @@ export class McpClient {
     return h;
   }
 
+  // A request to an address whose headers go nowhere else: a redirect is not
+  // followed, and the failure says so in plain words.
+  private async pinned(send: () => Promise<Response>): Promise<Response> {
+    try {
+      return await send();
+    } catch (e) {
+      const t = this.t as Extract<Transport, { kind: "http" }>;
+      if (t.pinned && /redirect/i.test(`${(e as any)?.code ?? ""} ${(e as any)?.name ?? ""} ${(e as Error)?.message ?? ""}`)) {
+        throw new Error(`${new URL(t.url).origin} answered with a redirect, which is not followed for a server the editor passed (its headers go only to the address given): give the address it redirects to`);
+      }
+      throw e;
+    }
+  }
+
   // POST one message; responses (JSON or an SSE stream) are dispatched.
   private async post(msg: any, signal?: AbortSignal, authorize?: () => string | undefined): Promise<void> {
     const t = this.t as Extract<Transport, { kind: "http" }>;
     const headers = await this.headers(msg.method, msg.params);
     const deny = authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
-    const res = await fetch(t.url, {
+    const res = await this.pinned(() => fetch(t.url, {
       method: "POST",
       headers,
       body: JSON.stringify(msg),
@@ -291,7 +307,7 @@ export class McpClient {
       // Bun would end a response that stays silent for five minutes, well
       // inside a long tool call's time.
       ...(signal ? { timeout: false } : {}),
-    } as RequestInit);
+    } as RequestInit));
     if (res.status === 401) throw new AuthRequired(res.headers.get("www-authenticate"));
     // Legacy sessions (2025-11-25 transports, Session Management 3 and 4): a
     // server that ended the session answers 404 to every request naming it,
@@ -394,7 +410,7 @@ export class McpClient {
           h.accept = "text/event-stream";
           if (st.id !== undefined) h["last-event-id"] = st.id;
           // Bun ends a response that stays silent for five minutes; this one is silent by nature.
-          const res = await fetch(url, { method: "GET", headers: h, signal: ac.signal, timeout: false, ...((this.t as any).pinned ? { redirect: "error" } : {}) } as RequestInit);
+          const res = await this.pinned(() => fetch(url, { method: "GET", headers: h, signal: ac.signal, timeout: false, ...((this.t as any).pinned ? { redirect: "error" } : {}) } as RequestInit));
           const stream = res.ok && (res.headers.get("content-type") ?? "").includes("text/event-stream");
           if (!stream) {
             void res.body?.cancel().catch(() => {});

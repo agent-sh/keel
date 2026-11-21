@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot } from "./shots.ts";
 
 // An editor's end of ACP: `keel acp` on stdio, JSON-RPC one message a line.
 class Editor {
@@ -133,8 +133,11 @@ test("acp", async ({ page, baseURL }) => {
 // inside the session's sandbox when that is on, its tools are asked about as
 // the mode says, no other session and no list of the owner's has it, a server
 // of the owner's with its name wins the name, and it ends with the session or
-// with the editor, however the editor went.
-test("acp mcp servers", async ({ request, baseURL }) => {
+// with the editor, however the editor went. The owner sees it: the session's
+// panel lists what runs (the command and its arguments, never a value of its
+// environment), and its start and end are in the session's activity. One that
+// does not connect is said to the editor by name.
+test("acp mcp servers", async ({ page, request, baseURL }) => {
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-mcp-${Date.now()}`);
   const outside = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-mcp-outside-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
@@ -149,6 +152,7 @@ test("acp mcp servers", async ({ request, baseURL }) => {
   const s = await ed.call("session/new", { cwd: ws, mcpServers: [
     { name: "editor-notes", command: "bun", args: [server, "${HOME}", "${KEEL_DEFAULT_MODEL:-none}"], env: [{ name: "EDITOR_NOTE", value: "1" }, { name: "FROM_DAEMON", value: "${KEEL_DEV_DIR}" }] },
     { type: "sse", name: "old-stream", url: "http://127.0.0.1:9/sse", headers: [] },
+    { name: "not-there", command: join(ws, "no-such-server"), args: ["--port", "1"], env: [{ name: "NOT_THERE_TOKEN", value: "value-of-the-token" }] },
   ] });
   const id = s.sessionId as string;
   await ed.call("session/set_config_option", { sessionId: id, configId: "model", value: HAIKU });
@@ -156,9 +160,28 @@ test("acp mcp servers", async ({ request, baseURL }) => {
   // The one it cannot take is said to the editor, by name; the other connects.
   await expect.poll(() => ed.updates.some((u) => u.sessionId === id && /old-stream/.test(JSON.stringify(u.update)))).toBe(true);
   const list = async (sid: string) => ((await (await request.get(`/api/sessions/${sid}/mcp`)).json()).servers as any[]);
-  const mine = async (sid = id) => (await list(sid)).filter((x) => x.session);
+  // (The one that never connects is listed with why; the cases below are about the ones that run.)
+  const mine = async (sid = id) => (await list(sid)).filter((x) => x.session && x.name !== "not-there");
   await expect.poll(async () => (await mine())[0]?.state, { timeout: 30_000 }).toBe("ready");
   expect((await mine())[0]).toMatchObject({ name: "editor-notes", session: id, transport: "stdio", tool_names: ["echo", "started", "write"] });
+  // A command that does not start is said to the editor too, by name and in one line, when it fails.
+  await expect.poll(() => ed.updates.some((u) => u.sessionId === id && /could not connect the MCP server not-there/.test(JSON.stringify(u.update)))).toBe(true);
+  expect((await list(id)).find((x) => x.name === "not-there")).toMatchObject({ session: id, state: "error", target: `${join(ws, "no-such-server")} --port 1` });
+
+  // The owner sees what the editor made the session run: in its panel, as the
+  // command and its arguments, and in its activity when it started. No value
+  // of its environment is in either.
+  await page.goto(`/s/${id}`);
+  await openPanel(page, "session");
+  const servers = page.getByTestId("editor-servers");
+  await expect(servers).toContainText("editor-notes");
+  await expect(servers).toContainText(`bun ${server} \${HOME} \${KEEL_DEFAULT_MODEL:-none}`);
+  await expect(servers.getByTestId("editor-server-state")).toHaveText(["Running", "Failed"]);
+  await servers.scrollIntoViewIfNeeded();
+  await shoot(page, "acp-02-editor-servers");
+  const activity = async () => ((await (await request.get(`/api/activity?session_id=${id}`)).json()).items as any[]).map((a) => `${a.sub}: ${a.text}`);
+  expect(await activity()).toEqual(expect.arrayContaining([expect.stringContaining(`mcp: MCP server editor-notes, passed by the editor, started: bun ${server}`), expect.stringContaining("mcp-failed: MCP server not-there, passed by the editor, did not connect")]));
+  expect(JSON.stringify([await activity(), await list(id), await servers.innerText()])).not.toContain("value-of-the-token");
   // Not the owner's server: their list and their file do not have it.
   const owners = async () => (await (await request.get("/api/mcp/servers")).json()).servers as any[];
   expect((await owners()).some((x) => /editor-notes/.test(x.name))).toBe(false);
@@ -216,9 +239,11 @@ test("acp mcp servers", async ({ request, baseURL }) => {
     expect(put.status()).toBe(409);
   }
 
-  // Closing the session ends its server.
+  // Closing the session ends its server, which its activity says and its panel shows.
   await ed.call("session/close", { sessionId: id });
   await expect.poll(async () => (await mine()).length).toBe(0);
+  await expect.poll(async () => (await activity()).some((a) => /^mcp: MCP server editor-notes-editor, passed by the editor, ended/.test(a))).toBe(true);
+  await expect(page.getByTestId("editor-servers")).toHaveCount(0);
 
   // An editor that is killed takes its servers with it: no session of its own is left holding a process.
   const marks = [1, 2, 3].map((n) => join(outside, `started-${n}`));

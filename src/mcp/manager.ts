@@ -14,6 +14,7 @@ import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpire
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
+import { reapLeft, track } from "./procs.ts";
 import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { conceal } from "../core/conceal.ts";
@@ -127,6 +128,8 @@ type Entry = {
   sandbox?: string;
   // Ends a connection attempt under way when the server is dropped.
   abort?: AbortController;
+  // It connected at least once: its end is told.
+  ran?: boolean;
 };
 
 // What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
@@ -144,6 +147,18 @@ function sessionLabel(name: string, taken: (n: string) => boolean): string {
 // Credential-shaped variables stay out of tool servers' environments unless
 // the config names them; a server gets what it was configured with.
 const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|SESSION)|^(AWS_|ANTHROPIC_|OPENAI_|CLAUDE_CODE_|GEMINI_|GOOGLE_|AZURE_|KEEL_)/i;
+
+// A server as it is shown: its command and arguments, or its address without
+// a user, a password or what follows a `?` (a key is often passed there).
+export function shownTarget(c: McpServerConfig): string {
+  if (c.command) return [c.command, ...(c.args ?? [])].join(" ");
+  try {
+    const u = new URL(c.url ?? "");
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return String(c.url ?? "").split("?")[0]!;
+  }
+}
 
 // What a command an editor passed inherits from the daemon: what the MCP
 // SDKs let a stdio server inherit (HOME, LOGNAME, PATH, SHELL, TERM, USER:
@@ -215,7 +230,7 @@ export class McpManager {
   // owner's mcp.json for the daemon's own manager (the route names it), a
   // scratch file for any other. One built without it holds only what it is
   // given and cannot save: it never falls back to the owner's file.
-  constructor(private errors: ErrorTracker, stateDir: string, private workspace: string, private configFile?: string) {
+  constructor(private errors: ErrorTracker, private stateDir: string, private workspace: string, private configFile?: string) {
     this.oauth = new OAuthStore(stateDir);
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
     this.publishedPath = join(stateDir, "mcp-instructions.json");
@@ -271,6 +286,17 @@ export class McpManager {
   // daemon's route); without it nothing is confined.
   sessionSandbox?: (session: string, argv: string[]) => { argv: string[]; as: string } | { refuse: string };
 
+  // What became of a session's own server: it started, it did not connect (or
+  // went away), it ended. `target` is its command and arguments, or its
+  // address without what follows a `?`: never an environment or header value.
+  onSessionServer?: (e: { session: string; name: string; what: "started" | "failed" | "ended"; target: string; error?: string }) => void;
+  private told(e: Entry, what: "started" | "failed" | "ended", error?: string) {
+    if (!e.session) return;
+    // The reason in one line: what a failed command printed is not passed on.
+    const why = error?.split("\nstderr:")[0]!.split("\n")[0];
+    try { this.onSessionServer?.({ session: e.session, name: e.label ?? e.name, what, target: shownTarget(e.config), ...(why ? { error: why } : {}) }); } catch (err) { this.errors.capture("server", err, { at: "mcp session server", mcp: e.name }); }
+  }
+
   // The servers an editor passed with a session. They run with the session's
   // permissions and nothing more:
   // - offered to that session alone, under a name no server of the owner has;
@@ -305,6 +331,9 @@ export class McpManager {
         : config.command && config.cwd && !existsSync(config.cwd) ? `the session's folder ${config.cwd} is not on this machine, so the command cannot start there`
         : validate(label, config);
       if (bad) { out.push({ name: s.name, error: bad }); continue; }
+      // A sandbox the session asks for and this machine cannot give: said now, with the others, not found out at the first call.
+      const held = config.command ? this.sessionSandbox?.(session, [config.command, ...(config.args ?? [])]) : undefined;
+      if (held && "refuse" in held) { out.push({ name: s.name, error: held.refuse }); continue; }
       const key = `${label}@${session}`;
       this.addEntry(key, config, undefined, { session, label, given: s.name, holder: opts.holder });
       keep.add(key);
@@ -406,6 +435,13 @@ export class McpManager {
   }
 
   start() {
+    // Servers the daemon before left running (it was killed, or they ignored its end) are ended first.
+    try {
+      const left = reapLeft(this.stateDir);
+      if (left.length) this.errors.capture("server", new Error(`ended ${left.length} MCP server process${left.length === 1 ? "" : "es"} the daemon before left running: ${left.join(", ")}`), { at: "mcp start" });
+    } catch (e) {
+      this.errors.capture("server", e, { at: "mcp start" });
+    }
     try {
       const { cfg, text } = this.readFile();
       this.cfg = cfg;
@@ -503,11 +539,11 @@ export class McpManager {
     // expanded against the daemon's environment, no header comes from it, and
     // no sign-in of the owner's is sent along.
     if (e.session) {
-      if (c.command) return { kind: "stdio", command: c.command, args: c.args ?? [], env: sessionEnv(c, false), cwd: c.cwd ?? this.workspace };
+      if (c.command) return { kind: "stdio", command: c.command, args: c.args ?? [], env: sessionEnv(c, false), cwd: c.cwd ?? this.workspace, started: (p) => track(this.stateDir, p, e.label ?? e.name) };
       return { kind: "http", url: c.url!, headers: Object.fromEntries(Object.entries(c.headers ?? {}).map(([k, v]) => [k, String(v)])), pinned: true };
     }
     if (c.command) {
-      return { kind: "stdio", command: expand(c.command), args: (c.args ?? []).map((a) => expand(a)), env: serverEnv(c), cwd: c.cwd ? expand(c.cwd) : this.workspace };
+      return { kind: "stdio", command: expand(c.command), args: (c.args ?? []).map((a) => expand(a)), env: serverEnv(c), cwd: c.cwd ? expand(c.cwd) : this.workspace, started: (p) => track(this.stateDir, p, e.name) };
     }
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(c.headers ?? {})) headers[k] = expand(String(v));
@@ -580,6 +616,7 @@ export class McpManager {
           }
           e.state = "error";
           e.error = why;
+          this.told(e, "failed", why);
         };
         // A server without the tools capability may still answer; one that
         // does not just has no tools (unless it went away meanwhile).
@@ -602,6 +639,8 @@ export class McpManager {
         e.client = client;
         e.era = client.era;
         e.state = "ready";
+        e.ran = true;
+        this.told(e, "started");
         this.publish(e, client.instructions);
         e.last = Date.now();
         e.failures = 0;
@@ -633,7 +672,10 @@ export class McpManager {
           } else if (e.state !== "disabled") {
             e.state = "error";
             e.error = err.message;
-            if (e.failures++ === 0) this.errors.capture("server", err, { mcp: name });
+            if (e.failures++ === 0) {
+              this.errors.capture("server", err, { mcp: name });
+              this.told(e, "failed", err.message);
+            }
           }
           throw err;
         })
@@ -697,10 +739,11 @@ export class McpManager {
       name: e.label ?? e.name,
       ...(e.session ? { session: e.session } : {}),
       transport: e.bundled?.live ? "socket" : e.config.url ? "http" : "stdio",
-      target: e.bundled?.live?.target ?? e.config.url ?? [e.config.command, ...(e.config.args ?? [])].join(" "),
+      target: e.bundled?.live?.target ?? (e.session ? shownTarget(e.config) : e.config.url ?? [e.config.command, ...(e.config.args ?? [])].join(" ")),
       enabled: e.state !== "disabled",
       state: live?.state ?? e.state,
-      error: live ? live.error : e.error,
+      // (Of a session's own server, the reason in one line: what its command printed is not shown.)
+      error: live ? live.error : e.session ? e.error?.split("\nstderr:")[0]!.split("\n")[0] : e.error,
       tools: (e.bundled && !e.client ? e.bundled.tools : e.tools).length,
       tool_names: (e.bundled && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
       read_tools: e.bundled ? [] : (e.config.read_tools ?? []),
@@ -770,6 +813,7 @@ export class McpManager {
     // One still connecting ends now: its process is not left to the handshake's own limit.
     e.abort?.abort();
     if (c) c.retire();
+    if (e.ran) this.told(e, "ended");
   }
 
   toggle(name: string, enabled: boolean) {

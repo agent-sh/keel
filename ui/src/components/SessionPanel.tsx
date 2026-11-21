@@ -221,6 +221,32 @@ function SkillMode({ s }: { s: Session }) {
   );
 }
 
+type OwnServer = { name: string; session?: string; target: string; state: string; error?: string };
+const SERVER_STATE: Record<string, string> = { ready: "Running", connecting: "Starting", error: "Failed", needs_auth: "Needs sign-in" };
+
+// The tool servers an editor passed with this session (over ACP): programs and
+// addresses that run for this session alone. Each is shown as what runs, its
+// command and arguments or its address, never an environment or header value.
+function EditorServers({ s }: { s: Session }) {
+  const [list, setList] = useState<OwnServer[]>([]);
+  useEffect(() => {
+    const load = () => api<{ servers: OwnServer[] }>(`/api/sessions/${s.id}/mcp`).then((r) => setList(r.servers.filter((x) => x.session)), reportError);
+    load();
+    return onFeature({ frame: (f) => { if (f.name === "mcp-session" && f.session_id === s.id) load(); } });
+  }, [s.id]);
+  if (!list.length) return null;
+  return (
+    <Section title="Tool servers from the editor" testid="editor-servers">
+      <p className="pb-1 text-caption text-faint">The editor that opened this session passed them. They run for this session only, with its permissions, and end with it.</p>
+      {list.map((x) => (
+        <Line key={x.name} label={x.name} hint={<><span className="block break-all font-mono">{x.target}</span>{x.state === "error" && x.error && <span className="block text-danger">{x.error.split("\n")[0]}</span>}</>}>
+          <span className={cn("shrink-0 text-caption", x.state === "error" ? "text-danger" : "text-muted")} data-testid="editor-server-state">{SERVER_STATE[x.state] ?? x.state}</span>
+        </Line>
+      ))}
+    </Section>
+  );
+}
+
 export function SessionPanel({ session: s }: { session: Session }) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-4" data-testid="session-panel">
@@ -245,6 +271,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
       <Recap s={s} />
       {!s.machine && <Place s={s} />}
       <SkillMode s={s} />
+      <EditorServers s={s} />
       <Section title="Archive">
         <Line label={s.archived ? "Archived" : "Put it away"} hint={s.archived ? "Restore it to work in it again." : "Stops its turn and background commands; it stays searchable."}>
           <button type="button" className={button} data-testid="panel-archive" onClick={() => archive(s, !s.archived).catch(reportError)}>{s.archived ? "Restore" : "Archive"}</button>

@@ -10,6 +10,7 @@ import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
 import { gate, presence } from "./permissions.ts";
 import { hookMcp } from "../../integrations/hooks.ts";
+import * as activity from "../../automation/activity.ts";
 import { confine, sandboxStatus } from "../../safety/sandbox.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -60,6 +61,15 @@ export const mcpRoutes: RouteModule = (deps) => {
     const st = sandboxStatus();
     if (!st.available) return { refuse: `the session's commands run in a sandbox (${p.sandbox}) and this machine cannot give one (${st.reason}), so the editor's command is not started outside it` };
     return { argv: confine(argv, p, s.workspace), as: `${p.sandbox}${p.network ? "" : ", no network"}` };
+  };
+  // What a session's own server did is in the session's activity and on the
+  // bus: it is a program the session runs, and the owner sees that it does.
+  m.onSessionServer = (e) => {
+    const text = e.what === "started" ? `MCP server ${e.name}, passed by the editor, started: ${e.target}`
+      : e.what === "failed" ? `MCP server ${e.name}, passed by the editor, did not connect: ${e.error ?? "it failed"}`
+      : `MCP server ${e.name}, passed by the editor, ended`;
+    activity.record("turn", e.what === "failed" ? "mcp-failed" : "mcp", e.session, text, { server: e.name, target: e.target });
+    deps.bus.emit({ t: "feature", name: "mcp-session", session_id: e.session, data: { name: e.name, what: e.what, target: e.target, ...(e.error ? { error: e.error } : {}) } });
   };
   // An editor's own socket to the daemon (keel acp opens one): the servers it
   // passed are held by it, and end when it closes, however the editor went.

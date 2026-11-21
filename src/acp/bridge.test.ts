@@ -259,6 +259,11 @@ test("the editor's MCP servers go to the daemon with the session, the whole list
   ]]);
   await Bun.sleep(0);
   expect(JSON.stringify(f.updates("s"))).toContain("old: not spoken");
+  // One that fails to connect later is said too, for a session this editor passed servers to and no other.
+  f.frame({ t: "feature", name: "mcp-session", session_id: "s", data: { name: "fs", what: "failed", error: "the server exited (code 1)" } });
+  f.frame({ t: "feature", name: "mcp-session", session_id: "s", data: { name: "fs", what: "started" } });
+  f.frame({ t: "feature", name: "mcp-session", session_id: "another", data: { name: "x", what: "failed", error: "y" } });
+  expect(f.updates("s").filter((u: any) => /could not connect/.test(u.content?.text ?? "")).map((u: any) => u.content.text)).toEqual(["Keel could not connect the MCP server fs the editor passed: the server exited (code 1).\n\n"]);
   // A session opened again brings its list again (none: the earlier ones go); a new one with none asks nothing.
   await call(f.bridge, f.out, "session/resume", { sessionId: "s", cwd: "/w", mcpServers: [] });
   expect(puts().at(-1)).toEqual([]);

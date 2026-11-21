@@ -124,19 +124,65 @@ test("a session's command runs where the session's sandbox says, is started agai
   // Dropped while it still connects: gone now, not when the handshake would have given up.
   m.setSessionServers("s1", []);
   expect(await until(() => !alive(second))).toBe(true);
-  // A sandbox this machine cannot give: the command is not started outside one, and the list says why.
+  // A sandbox this machine cannot give: refused by name when the list is set, like the other refusals, and nothing is started or kept.
   profile = "none here";
-  m.setSessionServers("s1", [{ name: "slow", config: { command: "sh", args: ["-c", `echo never >> ${runs}`] } }], { cwd: d });
-  expect(await until(() => m.list("s1").find((x) => x.session)?.state === "error")).toBe(true);
-  expect([m.list("s1").find((x) => x.session)?.error, readFileSync(runs, "utf8")]).toEqual(["this machine cannot give a sandbox", "read-only\nworkspace-write\n"]);
-  // The session's sandbox is turned off: the command it was refused for is started.
+  expect(m.setSessionServers("s1", [{ name: "slow", config: { command: "sh", args: ["-c", `echo never >> ${runs}`] } }], { cwd: d })).toEqual([{ name: "slow", error: "this machine cannot give a sandbox" }]);
+  expect(m.list("s1").filter((x) => x.session)).toEqual([]);
+  // One that runs when the session then asks for such a sandbox is stopped, not left outside it, and the list says why.
+  profile = "off";
+  m.setSessionServers("s1", [{ name: "slow", config: { command: "sh", args: ["-c", `echo again >> ${runs}; echo $$ > ${pid}; exec sleep 60`] } }], { cwd: d });
+  expect(await until(() => readFileSync(runs, "utf8").endsWith("write\nagain\n"))).toBe(true);
+  const third = Number(readFileSync(pid, "utf8"));
+  profile = "none here";
+  m.sessionPermChanged("s1");
+  expect(await until(() => !alive(third) && m.list("s1").find((x) => x.session)?.state === "error")).toBe(true);
+  expect(m.list("s1").find((x) => x.session)?.error).toBe("this machine cannot give a sandbox");
+  // The sandbox is one the machine has again: the command is started again.
   profile = "off";
   m.sessionPermChanged("s1");
-  expect(await until(() => readFileSync(runs, "utf8").endsWith("never\n"))).toBe(true);
+  expect(await until(() => readFileSync(runs, "utf8").endsWith("again\nagain\n"))).toBe(true);
   // The editor's socket closed: everything it held ends.
   m.setSessionServers("s2", [{ name: "held", config: at("h") }], { holder: "h1" });
   m.setSessionServers("s3", [{ name: "kept", config: at("k") }], { holder: "h2" });
   m.releaseHolder("h1");
   expect([m.list("s2").filter((x) => x.session).length, m.list("s3").filter((x) => x.session).length]).toEqual([0, 1]);
   m.dispose();
+}, 30_000);
+
+test("what a session's own server does is told as it happens: its start with what runs, a failure in one line, its end; never a value of its environment or headers", async () => {
+  const d = mkdtempSync(join(tmpdir(), "keel-mcp-session-"));
+  const m = new McpManager(errors, join(d, "state"), "/");
+  const told: string[] = [];
+  m.onSessionServer = (e) => void told.push(`${e.what} ${e.name}: ${e.target}${e.error ? ` (${e.error})` : ""}`);
+  const fixture = join(import.meta.dir, "../../test/e2e/fixtures/editor-mcp.ts");
+  // An address that redirects, and where it points: a server the editor passed is not followed there.
+  let hits = 0;
+  const there = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { hits++; return new Response("{}"); } });
+  const here = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.redirect(`http://127.0.0.1:${there.port}/mcp`, 307) });
+  try {
+    m.setSessionServers("s1", [
+      { name: "notes", config: { command: "bun", args: [fixture, "--flag"], env: { NOTES_TOKEN: "env-value-1" } } },
+      { name: "gone", config: { command: join(d, "no-such-server") } },
+      { name: "moved", config: { url: `http://127.0.0.1:${here.port}/mcp?key=query-value-3`, headers: { Authorization: "Bearer header-value-4" } } },
+    ], { cwd: d });
+    const until = async (ok: () => boolean) => { for (let i = 0; i < 200 && !ok(); i++) await Bun.sleep(50); return ok(); };
+    expect(await until(() => told.length >= 3)).toBe(true);
+    expect(told.sort()).toEqual([
+      expect.stringMatching(/^failed gone: .*no-such-server \(.+\)$/),
+      expect.stringMatching(new RegExp(`^failed moved: http://127\\.0\\.0\\.1:${here.port}/mcp \\(http://127\\.0\\.0\\.1:${here.port} answered with a redirect, which is not followed for a server the editor passed`)),
+      `started notes: bun ${fixture} --flag`,
+    ]);
+    expect(hits).toBe(0);
+    // The list a session's view reads shows the same and no more.
+    const shown = m.list("s1").filter((x) => x.session).map((x) => [x.name, x.state, x.target, (x.error ?? "").includes("\n")]);
+    expect(shown).toEqual([["gone", "error", join(d, "no-such-server"), false], ["moved", "error", `http://127.0.0.1:${here.port}/mcp`, false], ["notes", "ready", `bun ${fixture} --flag`, false]]);
+    // It ends with its session, and that is told for the one that ran.
+    m.releaseSession("s1");
+    expect(told.filter((t) => t.startsWith("ended"))).toEqual([`ended notes: bun ${fixture} --flag`]);
+    for (const value of ["env-value-1", "query-value-3", "header-value-4"]) expect(JSON.stringify([told, shown])).not.toContain(value);
+  } finally {
+    m.dispose();
+    here.stop(true);
+    there.stop(true);
+  }
 }, 30_000);
