@@ -4,8 +4,9 @@
 // twice. This runs for the whole page: the session's message box may be gone.
 import { dropImage, fromServer } from "./drafts.ts";
 import { toBlock } from "./images.ts";
-import { daemonAway, messageRefused, onCutSend, setSendDraft, setSendImage, sendDrafts, unread, waitingSends, type SendDraft } from "./send-drafts.ts";
-import { actions, api, failed, getState, onFeature } from "./store.ts";
+import { daemonAway, messageRefused, onCutSend, onShelf, setSendDraft, setSendImage, sendDrafts, unconfirmedSends, unread, waitingSends, type SendDraft } from "./send-drafts.ts";
+import { actions, api, failed, getState, onFeature, subscribe } from "./store.ts";
+import type { StoredEvent } from "../../../src/core/types.ts";
 
 // Requests of one message that got no answer while the socket stayed up. A
 // daemon that is there and still never answers this message (a request it
@@ -99,3 +100,37 @@ onFeature({
   // A drain that was called off: the daemon takes work again.
   frame: (f) => { if (f.name === "daemon" && !f.data?.draining) void flush(); },
 });
+
+// A send whose answer was lost says "delivery unconfirmed" until the owner
+// checks. When the transcript shows the message there is nothing left to
+// check: the item goes, with its mark on the row, and its images leave the
+// session's draft as after any send. The message is the owner's prompt with
+// the same words and as many images that came after the first try (an
+// earlier one with the same words is not it).
+const isIt = (e: StoredEvent, d: SendDraft) =>
+  e.kind === "user" && !e.data.kind && (!e.data.origin || e.data.origin === "queued" || e.data.origin === "steer")
+  && String(e.data.text ?? "").trim() === d.text.trim() && (e.data.images?.length ?? 0) === d.images.length;
+async function arrived(key: string, d: SendDraft) {
+  setSendDraft(key, d.id, { ...d, state: "done" });
+  await Promise.all(d.images.map((a) => (a.file ? undefined : dropImage(key, a.id))));
+  setSendDraft(key, d.id);
+}
+let unconfirmed = unconfirmedSends();
+const looked = new Map<string, StoredEvent[]>(); // the transcript each item was last held against
+function look() {
+  for (const { key, d } of unconfirmed) {
+    const events = getState().events[key];
+    if (!events || d.after === undefined || looked.get(d.id) === events) continue;
+    looked.set(d.id, events);
+    for (let i = events.length - 1; i >= 0 && events[i]!.seq > d.after; i--) {
+      if (isIt(events[i]!, d)) { void arrived(key, d); break; }
+    }
+  }
+}
+onShelf(() => {
+  unconfirmed = unconfirmedSends();
+  for (const id of looked.keys()) if (!unconfirmed.some((u) => u.d.id === id)) looked.delete(id);
+  look();
+});
+// The store says every change of the page; with nothing unconfirmed this is one length check.
+subscribe(() => { if (unconfirmed.length) look(); });

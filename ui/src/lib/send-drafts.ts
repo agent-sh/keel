@@ -15,6 +15,9 @@ export type SendDraft = {
   error?: string;
   // Attachments a reload could not bring back, by name.
   lost?: string[];
+  // The session's last event the page held when the message was first sent:
+  // a prompt with these words after it is this message (resend.ts).
+  after?: number;
 };
 
 // This browser's recovery shelf: sends the daemon refused or did not confirm,
@@ -43,6 +46,9 @@ export const shown = (d: SendDraft) => d.state === "waiting" || d.state === "ref
 // sending one again under its id is safe. The New box and a session of another
 // machine (a daemon that may predate the ids) keep the owner's own check.
 export const namedSends = (key: string) => key !== NEW && !splitId(key);
+// Every send of a session whose delivery nobody confirmed, with its shelf.
+export const unconfirmedSends = () => [...drafts].flatMap(([key, list]) => (key === NEW ? [] : list.filter((d) => d.state === "unconfirmed").map((d) => ({ key, d }))));
+export const onShelf = (f: () => void) => subscribe(f);
 // Every send waiting for the daemon, with its shelf.
 export const waitingSends = () => [...drafts].flatMap(([key, list]) => list.filter((d) => d.state === "waiting").map((d) => ({ key, d })));
 export const hasSavedImage = (key: string, id: string) => sendDrafts(key).some((d) => d.images.some((a) => a.id === id));

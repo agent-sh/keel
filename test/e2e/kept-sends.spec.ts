@@ -230,3 +230,38 @@ test("the New session button marks a message kept in the New box", async ({ page
   await expect(button).toHaveAccessibleName("New session");
   await request.delete(`/api/sessions/${elsewhere}`);
 });
+
+// EXTRA-S17. A message whose answer was lost after the daemon took it shows
+// as unconfirmed. Once the transcript shows that message the item says
+// nothing the owner needs: it goes, with its mark on the row. One that did
+// not arrive stays, also when an earlier message had the same words.
+test("an unconfirmed send clears itself once the transcript shows the message", async ({ page, request }) => {
+  const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Unconfirmed, then seen" } })).json()).session.id as string;
+  const messages = `/api/sessions/${a}/messages`;
+  const row = page.locator(`[data-testid="session-row"][data-session="${a}"]`);
+  await page.goto(`/s/${a}`);
+  const lose = (deliver: boolean) => page.route(messages, async (r) => {
+    if (deliver) expect((await r.fetch()).status()).toBe(201);
+    await r.fulfill({ status: 502, json: { error: "The proxy lost the daemon." } });
+  }, { times: 1 });
+  await lose(true);
+  await composer(page).fill("Arrived, though nobody said so.");
+  await composer(page).press("Enter");
+  await expect(page.getByTestId("user-message").filter({ hasText: "Arrived, though nobody said so." })).toHaveCount(1);
+  await expect(saved(page)).toHaveCount(0);
+  await expect(row).not.toHaveAttribute("data-watch", "need");
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+
+  // The same words again, and this time the daemon never got them: the earlier message is not taken for it.
+  await lose(false);
+  await composer(page).fill("Arrived, though nobody said so.");
+  await composer(page).press("Enter");
+  await expect(saved(page)).toContainText("Delivery unconfirmed");
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 500)));
+  await expect(saved(page)).toContainText("Delivery unconfirmed");
+  await expect(row).toHaveAttribute("data-watch", "need");
+  await expect(row.getByTestId("row-why")).toHaveText("A message's delivery is unconfirmed");
+  const texts = (await (await request.get(`/api/sessions/${a}`)).json()).events.filter((e: any) => e.kind === "user").map((e: any) => e.data.text);
+  expect(texts).toEqual(["Arrived, though nobody said so."]);
+  await request.delete(`/api/sessions/${a}`);
+});
