@@ -5,6 +5,7 @@ import { registerHooks } from "../../engine/hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { CLOSE_PERCENT, isClose } from "../../providers/limits.ts";
 import { recordRepairs } from "../../providers/project.ts";
+import { LOOK_WAIT_MS } from "../../providers/registry.ts";
 import { Check } from "../../providers/plugins/check.ts";
 import { readPlugins } from "../../providers/plugins/config.ts";
 
@@ -32,13 +33,16 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
   });
 
   const report = async () => {
-    // A key nobody has looked for yet counts as there: the report says what was found.
-    await providers.looked();
+    // A key nobody has looked for yet counts as there: the report says what was
+    // found, and waits a bounded time for that. `keys_read` false: a look is
+    // still out, and an "available" may be one nobody confirmed yet.
+    const keys_read = await providers.looked(LOOK_WAIT_MS);
     await providers.plugins.freshen();
     const models = providers.current();
     const count = new Map<string, number>();
     for (const m of models) count.set(m.provider, (count.get(m.provider) ?? 0) + 1);
     return {
+      keys_read,
       providers: providers.statuses().map((s) => {
         const l = providers.listing(s.id);
         return { ...s, listing: { state: l.state, fetched_ms: l.fetched, error: l.error, models: count.get(s.id) ?? 0 }, problem: providers.problem(s.id) };

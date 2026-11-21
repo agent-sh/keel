@@ -12,6 +12,7 @@ import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
 
 export type ProvidersReport = {
+  keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
   providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem })[];
   plugins: { id: string; state: string; name?: string; version?: string; reason?: string; stderr_tail?: string; violations: { count: number; last: string } }[];
   plugins_file?: string | null;

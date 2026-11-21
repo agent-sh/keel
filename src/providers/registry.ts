@@ -44,6 +44,11 @@ const USAGE_MAX_AGE = 60_000;
 
 type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown) => void; providers?: Provider[] };
 
+// A key read this recently is not read again by the refresh that asked for it.
+const JUST_LOOKED_MS = 1000;
+// How long a report of the providers waits for the keys' first looks.
+export const LOOK_WAIT_MS = 3000;
+
 export class Providers {
   readonly catalog: Catalog;
   readonly xai = new XaiProvider();
@@ -192,9 +197,13 @@ export class Providers {
 
   // Every provider has looked for its key once: from here on available()
   // is what was found, not the benefit of the doubt a key gets before its
-  // first read. A report of the providers waits for this.
-  looked(): Promise<void> {
-    return Promise.all(this.all().map((p) => p.look?.())).then(() => {});
+  // first read. A report of the providers waits for this, for `withinMs` at
+  // most (a keyring that waits on an unlock prompt, or a helper that hangs,
+  // holds no answer back): false says some key is still being looked for, so
+  // "available" may yet be that benefit of the doubt.
+  looked(withinMs?: number): Promise<boolean> {
+    const all = Promise.all(this.all().map((p) => p.look?.())).then(() => true);
+    return withinMs === undefined ? all : Promise.race([all, Bun.sleep(withinMs).then(() => false)]);
   }
 
   // Asks every available provider (or the one named) for its listing again.
@@ -207,10 +216,11 @@ export class Providers {
     if (!this.fixed) await this.plugins.settled();
     const asked = this.all().filter((p) => !only || p.id === only);
     await Promise.all(asked.map(async (p) => {
-      // Its first look has ended (it began above), so what follows reads no key twice.
+      // Its first look has ended (it began above).
       if (p.look) await p.look();
-      // A key found missing before is looked for again: one saved since makes its provider available.
-      await p.recheck?.();
+      // A key found missing before is looked for again: one saved since makes its
+      // provider available. Not one found missing a moment ago (by the look above).
+      await p.recheck?.(JUST_LOOKED_MS);
       if (!p.available()) return;
       const seq = (this.started.get(p.id) ?? 0) + 1;
       this.started.set(p.id, seq);

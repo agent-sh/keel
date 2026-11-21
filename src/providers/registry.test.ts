@@ -1,7 +1,7 @@
 // Listing state: which answer wins when refreshes overlap, whose saved list a
 // provider may show, and when a read waits for a refresh.
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EndpointProvider } from "./endpoint.ts";
@@ -150,6 +150,38 @@ test("a key is looked for before the catalog is fetched, and a report waits for 
   catalog.resolve();
   await refreshing;
   expect(r.listing("nokey-early").state).toBe("never");
+});
+
+// A report waits for the first looks, but not for ever: a keyring that waits
+// on an unlock prompt or a helper that hangs holds no answer back.
+test("the wait for the first looks is bounded and says when a look is still out", async () => {
+  const slow = { id: "slow", family: "other", available: () => true, list: async () => [], look: () => new Promise<void>(() => {}) } as any;
+  const r = new Providers(dir(), { providers: [slow], capture: () => {} });
+  const t0 = performance.now();
+  expect(await r.looked(30)).toBe(false);
+  expect(performance.now() - t0).toBeLessThan(1000);
+  const quick = { ...slow, id: "quick", look: async () => {} };
+  expect(await new Providers(dir(), { providers: [quick], capture: () => {} }).looked(30)).toBe(true);
+});
+
+// A refresh looks for each key once: the key its first look found missing is
+// not read again right after (each read is a keyring call and a helper run).
+test("a key found missing is read once by the refresh that looked for it", async () => {
+  const d = dir();
+  const log = join(d, "reads.log"), helper = join(d, "helper.sh");
+  writeFileSync(helper, `#!/bin/sh\necho "$1" >> ${log}\n`, { mode: 0o755 });
+  const before = process.env.KEEL_CRED_GET;
+  process.env.KEEL_CRED_GET = helper;
+  try {
+    const p = new EndpointProvider({ id: "once", base_url: "http://127.0.0.1:9/v1", key_cred: `keel-test-once-${process.pid}-${Date.now()}` });
+    const r = new Providers(d, { providers: [p], capture: () => {} });
+    r.catalog.load = async () => {};
+    await r.refresh();
+    expect(p.available()).toBe(false);
+    expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+  } finally {
+    if (before === undefined) delete process.env.KEEL_CRED_GET; else process.env.KEEL_CRED_GET = before;
+  }
 });
 
 test("a provider with no key is not set up: nothing failed and no key was refused", async () => {
