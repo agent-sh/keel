@@ -3,7 +3,8 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
-import { actions, api, liveNow, reportError, reportUnlessGone, useStore, type JobView } from "../lib/store.ts";
+import { actions, api, liveNow, onFeature, reportError, reportUnlessGone, useStore, type JobView } from "../lib/store.ts";
+import { splitId } from "../lib/fleet-ids.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
@@ -15,27 +16,36 @@ const since = (t: number) => {
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 };
 
+// The session's background commands. For a session of this daemon the list
+// is read when the session is shown, when the daemon says it changed (a
+// command started, went on in the background or ended: the "jobs" frame) and
+// at a reconnect: a turn at work costs no read by itself. Only while a
+// background command runs is it read again every two seconds, for the line it
+// last printed. A session on another machine has no such frame here: its
+// list is read as its turn starts and ends and every two seconds meanwhile.
 function useJobs(sessionId: string, working: boolean) {
   const [jobs, setJobs] = useState<JobView[]>([]);
+  const polled = !!splitId(sessionId) && working;
   useEffect(() => {
     let stop = false;
     let timer: Timer | undefined;
-    let misses = 0;
+    let asked = 0;
     const load = async () => {
+      clearTimeout(timer);
+      const mine = ++asked;
       try {
         const r = await actions.jobs(sessionId);
-        if (stop) return;
+        if (stop || mine !== asked) return; // a newer read is out
         // A session placed on another machine answers from there, perhaps without the list.
         const list = r.jobs ?? [];
         setJobs(list);
-        if (working || list.some((j) => j.running && j.background)) timer = setTimeout(load, 2000);
+        if (polled || list.some((j) => j.running && j.background)) timer = setTimeout(load, 2000);
       } catch (e) { reportError(e, { at: "jobs" }); }
     };
     load();
-    return () => { stop = true; clearTimeout(timer); };
-    // Read when the turn starts and ends, and every two seconds while it runs
-    // or a command still does (above): not again at each event of the turn.
-  }, [sessionId, working]);
+    const off = onFeature({ frame: (f) => { if (f.name === "jobs" && f.session_id === sessionId) void load(); }, reconnect: () => void load() });
+    return () => { stop = true; clearTimeout(timer); off(); };
+  }, [sessionId, polled]);
   return jobs.filter((j) => j.background && (j.running || (j.ended ?? 0) > Date.now() - 60_000));
 }
 

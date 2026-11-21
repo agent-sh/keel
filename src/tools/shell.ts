@@ -4,7 +4,7 @@
 // outlives its timeout instead of killing it.
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { startJob, stopJob, takeUnread, waitJob, type Job } from "./jobs.ts";
+import { backgrounded, startJob, stopJob, takeUnread, waitJob, type Job } from "./jobs.ts";
 import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
 import { SessionMap } from "../core/session-map.ts";
@@ -72,7 +72,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
       await stopJob(job, ctx.signal.aborted ? "was interrupted" : `was killed at its ${Math.round(o.timeoutMs / 1000)}s timeout`);
       return { state: "done", output: takeUnread(job), exitCode: job.exitCode ?? null, signal: job.signal, job };
     }
-    job.background = true;
+    backgrounded(job);
     return { state: "running", job, output: takeUnread(job) };
   }
   let cwdNote: string | undefined;

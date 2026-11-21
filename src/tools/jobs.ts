@@ -183,6 +183,7 @@ export function startJob(o: StartOpts): Job {
     finish(job, code, proc.signalCode == null ? null : String(proc.signalCode));
   });
   jobs.set(id, job);
+  if (job.background) jobsChanged.tell?.(job.sessionId);
   // Ended jobs are kept for their output and status, the newest MAX_ENDED of
   // them: a long-running daemon does not hold every command it ever ran (the
   // logs stay on disk).
@@ -239,11 +240,21 @@ function alive(m: Meta): boolean {
   return !m.boot || !now || now === m.boot;
 }
 
+// A session's background commands changed: one started, went on in the
+// background, or ended. The daemon says so on the bus, and a page reads the
+// list then instead of asking for it at every event of a turn.
+export const jobsChanged: { tell?: (sessionId: string) => void } = {};
+export function backgrounded(job: Job) {
+  job.background = true;
+  jobsChanged.tell?.(job.sessionId);
+}
+
 function finish(job: Job, code: number | null, signal: string | null) {
   if (job.ended !== undefined) return;
   job.ended = Date.now();
   job.exitCode = code;
   job.signal = signal;
+  if (job.background) queueMicrotask(() => jobsChanged.tell?.(job.sessionId));
   // A background job's end counts as reported once its note is stored (ackNotices), not before:
   // a restart between the two reports it again.
   try {

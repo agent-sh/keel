@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
-import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
+import { ackNotices, adoptJobs, drainNotices, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
 import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
@@ -14,6 +14,8 @@ import { pumpLines } from "../../core/proc.ts";
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 export const toolRoutes: RouteModule = (deps) => {
+  // A page shows a session's background commands above its box: it is told when the list changed.
+  jobsChanged.tell = (sessionId) => deps.bus.emit({ t: "feature", name: "jobs", session_id: sessionId, data: {} });
   // Background commands a previous daemon started run on; take them back.
   try { adoptJobs(join(deps.store.stateDir, "spill")); } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
   registerHooks({
