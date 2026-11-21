@@ -21,7 +21,8 @@ export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; 
 type Questions = Extract<Frame, { t: "questions" }>;
 // `states`: each of that daemon's sessions' state as it tells it (src/core/watch.ts), kept current by its frames.
 // `statesRev`: that daemon's bus rev the states reflect (its snapshot's, then its newest state frame's).
-type Relay = { abort: AbortController; sessions: Map<string, Session>; states: Map<string, SessionState>; statesRev?: number; questions?: Questions; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer };
+// `cut`: why its last stream was lost, when that stream had opened and did not hold (RELAY_STEADY_MS).
+type Relay = { abort: AbortController; sessions: Map<string, Session>; states: Map<string, SessionState>; statesRev?: number; questions?: Questions; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer; cut?: string };
 type Tunnel = { proc: Bun.Subprocess; port: number };
 type Queue = { running: number; waiting: { resolve: () => void; reject: (e: Error) => void }[] };
 
@@ -354,9 +355,18 @@ export class Fleet {
       if (this.stopped) return m; // stopped while the machine answered: nothing is recorded
       const q = this.queues.get(id);
       const busy = (q?.waiting.length ?? 0) > 0 || facts.load1 >= facts.cpus;
-      this.set(id, { state: busy ? "busy" : "ready", reason: null, checked_ms: Date.now(), facts: JSON.stringify({ ...facts, measured_ms: Date.now() }) });
-      this.links.set(id, { state: "linked", daemon_id: who.daemon_id, server_name: who.server_name, version: who.version });
-      this.ensureRelay(id);
+      const measured = { checked_ms: Date.now(), facts: JSON.stringify({ ...facts, measured_ms: Date.now() }) };
+      const held = this.heldRelay(id);
+      if (held) {
+        // The machine answers, and its stream is still cut as it opens: the
+        // loss stands, with its reason and the time of the next try.
+        this.set(id, { state: "offline", reason: held.cut, ...measured });
+        this.links.set(id, { state: "offline", reason: held.cut, retry_at_ms: held.retryAt, daemon_id: who.daemon_id, server_name: who.server_name, version: who.version });
+      } else {
+        this.set(id, { state: busy ? "busy" : "ready", reason: null, ...measured });
+        this.links.set(id, { state: "linked", daemon_id: who.daemon_id, server_name: who.server_name, version: who.version });
+        this.ensureRelay(id);
+      }
     } catch (e) {
       if (this.stopped) return m; // its store may be closed by now
       const reason = (e as Error).message;
@@ -364,7 +374,7 @@ export class Fleet {
       this.links.set(id, { state: "offline", reason });
       if (!(e instanceof LinkError)) this.errors.capture("server", e, { at: "fleet check", machine: id });
       const r = this.relays.get(id);
-      if (r) { clearTimeout(r.timer); r.retry = 0; }
+      if (r) { clearTimeout(r.timer); r.retry = 0; r.cut = undefined; r.retryAt = undefined; }
     }
     this.emitMachines();
     return this.row(id)!;
@@ -424,9 +434,20 @@ export class Fleet {
 
   // ---- relay: the far daemon's live frames, and the sessions it shows
 
+  // A relay whose stream opened and was lost before it held, waiting out its
+  // backoff. A check that reaches the machine meanwhile says nothing new about
+  // the stream (the machine was reachable when it was cut): it does not open
+  // the relay sooner. A snapshot of an offline machine starts such a check, so
+  // without this a stream cut right after its snapshot was opened again as
+  // soon as the check came back, every other time with no wait at all.
+  private heldRelay(id: string): Relay | undefined {
+    const r = this.relays.get(id);
+    return r && !r.live && r.cut && r.retryAt && r.retryAt > Date.now() ? r : undefined;
+  }
+
   private ensureRelay(id: string) {
     const r = this.relays.get(id);
-    if (r?.live) return;
+    if (r?.live || this.heldRelay(id)) return;
     if (r) { clearTimeout(r.timer); r.abort.abort(); }
     this.openRelay(id, r);
   }
@@ -442,7 +463,9 @@ export class Fleet {
       relay.stale = true;
       // A stream that opens and is lost at once (a reader the far daemon cuts
       // again and again) keeps backing off; one that held starts over.
-      if (opened && Date.now() - opened >= RELAY_STEADY_MS) relay.retry = 0;
+      const held = opened && Date.now() - opened >= RELAY_STEADY_MS;
+      if (held) relay.retry = 0;
+      relay.cut = opened && !held ? reason : undefined;
       const wait = Math.min(1000 * 2 ** relay.retry++, RELAY_MAX_BACKOFF);
       relay.retryAt = Date.now() + wait;
       this.links.set(id, { ...this.links.get(id), state: "offline", reason, retry_at_ms: relay.retryAt });

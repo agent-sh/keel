@@ -147,14 +147,14 @@ test("the relay: a stream that is lost as soon as it opens keeps backing off", a
   const { Bus } = await import("../core/bus.ts");
   const { Fleet } = await import("./fleet.ts");
   const key = "k", daemon_id = "far";
-  let streams = 0;
+  let streams = 0, checks = 0;
   const srv = Bun.serve({
     port: 0, hostname: "127.0.0.1",
     fetch(req) {
       const path = new URL(req.url).pathname;
       if (path === "/api/fleet/pair") return Response.json({ daemon_id, key });
       const headers = { "x-keel-proof": proof(key, req.headers.get("x-keel-nonce")!, daemon_id) };
-      if (path === "/api/fleet/identity") return Response.json({ daemon_id, server_name: "far", version: "t" }, { headers });
+      if (path === "/api/fleet/identity") { checks++; return Response.json({ daemon_id, server_name: "far", version: "t" }, { headers }); }
       if (path === "/api/fleet/facts") return Response.json({ hostname: "far", os: "linux", arch: "x64", cpus: 8, load1: 0, mem_total_mb: 1, tools: [], sandbox: false, keel_version: "t" }, { headers });
       // The far daemon cuts this reader every time, right after its snapshot.
       if (path === "/api/fleet/stream") { streams++; return new Response(`data: ${JSON.stringify({ t: "snapshot", sessions: [] })}\n\n: stalled\n\n`, { headers }); }
@@ -175,11 +175,24 @@ test("the relay: a stream that is lost as soon as it opens keeps backing off", a
     await f.check(m.id);
     for (let i = 0; i < 400 && waits.size < 2; i++) await Bun.sleep(10);
     const [first, second] = [...waits.values()];
-    expect(streams).toBeGreaterThanOrEqual(2);
+    expect(streams).toBe(2);
     expect(first).toBeGreaterThan(800);
     expect(first).toBeLessThanOrEqual(1000);
     expect(second).toBeGreaterThan(1800); // 2 s, not 1 s again
-    expect(f.view(f.row(m.id)!).daemon.reason).toContain("fell too far behind");
+    // The second stream's snapshot found the machine offline and had it
+    // measured again. That check reaches the machine while the relay waits:
+    // it does not open the stream sooner, and the loss still shows with its
+    // reason and the time of the next try.
+    const retryAt = f.view(f.row(m.id)!).daemon.retry_at_ms!;
+    await Bun.sleep(600);
+    expect(checks).toBeGreaterThanOrEqual(2);
+    expect(streams).toBe(2);
+    expect(f.relayLive(m.id)).toBe(false);
+    expect(f.view(f.row(m.id)!)).toMatchObject({ state: "offline", reason: expect.stringContaining("fell too far behind"), daemon: { state: "offline", retry_at_ms: retryAt, reason: expect.stringContaining("fell too far behind") } });
+    // The owner's own check does not cut the wait short either.
+    await f.check(m.id);
+    expect(streams).toBe(2);
+    expect(f.view(f.row(m.id)!).daemon).toMatchObject({ state: "offline", retry_at_ms: retryAt });
   } finally {
     f.stop();
     srv.stop(true);
