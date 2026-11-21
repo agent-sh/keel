@@ -320,13 +320,20 @@ home folder when that folder is gone or on another machine.
 
 What a hook says is bounded and inert. Each reason, context text and Stop
 prompt is cut at 10,000 characters. A hook's stdout, its stderr and an `http`
-answer are read to 1 MB; a longer `http` answer is a failed hook. Text that
-would close the hook's frame, open one of the harness's or start a line as
-the harness reaches the model defused.
+answer are read to 1 MB; a longer `http` answer is a failed hook. No tag
+reaches the model from a hook: every `<` that could open or close one is
+written `&lt;`, so a hook's text closes no frame and opens none, and the
+marks `[harness]` and `[hook]` are rewritten wherever they stand. A Stop
+hook's reason is sent as a prompt marked `[hook]`, under the same rules.
 
 Before you pin a repository's file, Settings shows all of it, each URL an
-`http` hook sends your prompts, tool inputs and tool results to, and each MCP
-tool a hook calls. A file longer than 400,000 characters is not pinned.
+`http` hook sends your prompts, tool inputs and tool results to, each MCP
+tool a hook calls, and each script a command runs from outside `.keel/` and
+`.claude/`: the pin does not hold such a script, so it runs as it is on disk
+when its hook fires. A file longer than 400,000 characters is not pinned.
+
+An event no hook file names costs one look at the hook files' text. The
+scripts a pinned file covers are read only for an event the file names.
 
 ### What a PreToolUse hook can do to a call
 
@@ -353,7 +360,7 @@ else. Exactly:
 | The call | With a hook's allow |
 | --- | --- |
 | An edit whose every path is inside the workspace or the session's scratch folder, in Ask | Runs without a card |
-| A command the session's sandbox confines, in Ask | Runs confined, without a card |
+| A command the session's sandbox confines, in Ask | Runs confined, without a card (a patch sent through the shell tool is an edit, not such a command) |
 | An edit with a path outside the workspace and the scratch folder | Still asks |
 | A command with no sandbox to confine it | Still asks |
 | A tool (an MCP tool too) or a message into another session | Still asks: only your own rule allows it |
@@ -368,17 +375,32 @@ never more. In Auto edits those calls already run, and the allow changes
 nothing there. The sandbox still confines whatever a hook allowed. A
 `PermissionRequest` hook's allow follows the same table.
 
-Some edits are yours alone, one card each, whatever a hook, a grant or the
-reviewer says: a file a repository runs later (git hooks, `.envrc`, the
-project's hook and MCP files), any file in Keel's own config folder (your
-hooks file there runs with no pin, as do its MCP servers, skills and agents),
-a shell's start file in your home folder (`.bashrc`, `.profile`, `.zshrc` and
-the like), and the `.ssh` folder. Full auto runs every edit, as before.
+Some changes are yours alone, one card each, whatever a hook, a grant, the
+sandbox, the reviewer or the judge says:
 
-An approval is for exactly the input its card shows. A card left open across
-a daemon restart is closed when the call comes back with another input (a
-hook answered differently the second time, or not at all), and the call is
-judged as new.
+- a file a repository runs later: git hooks, `.envrc`, the project's hook and
+  MCP files, the hook scripts under `.keel/hooks/` and `.claude/hooks/`;
+- any file in Keel's own config folder: your hooks file there runs with no
+  pin, as do its MCP servers, skills and agents;
+- a script your hooks, or a pinned repository's hooks, run by its path;
+- in your home folder: a shell's start file (`.bashrc`, `.profile`, `.zshrc`
+  and the like, `.bashrc.d/`), `.ssh/`, git's configuration (`.gitconfig`,
+  `.config/git/`), `.local/bin/`, and the session start folders under
+  `.config/`.
+
+That holds however the change is asked for: an edit tool, a patch (its files
+are read by the patch tool's own parser), a patch sent through the shell
+tool (Keel applies it itself, so it is judged as the edit it is and no
+sandbox answers for it), a command whose plain shape writes the file (a
+redirect, `tee`, `cp`, `mv`, `rm`, `install`, `ln`, `sed -i`, `dd of=`), and
+a tool given the file's path (an MCP file server). It does not see every
+write a command can make: a script or an interpreter that writes the file is
+judged as the command it is. Full auto runs all of these, as before.
+
+An approval is for exactly the input its card shows, all of it. A card left
+open across a daemon restart is closed when the call comes back with another
+input (a hook answered differently the second time, or not at all), and the
+call is judged as new. A card whose call went on without it is closed too.
 
 A changed input is the one the gate judges, the one an approval card shows
 and the one that runs. A changed shell command must be text: a list or an

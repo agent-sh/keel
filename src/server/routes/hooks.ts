@@ -6,7 +6,10 @@ import type { Deps, RouteModule } from "../app.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { toMessages } from "../../engine/turn.ts";
 import type { Session, ToolResultBlock } from "../../core/types.ts";
-import { Hooks, hookContext, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, SHOWN_MAX, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
+import { existsSync } from "node:fs";
+import { join, relative } from "node:path";
+import { contains } from "../../core/paths.ts";
+import { Hooks, hookContext, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 
@@ -142,7 +145,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     },
     // PreToolUse runs before every gate: a call a hook changed is judged as changed.
     async prepareTool(s, call) {
-      // One read of the hook files; a session with no hook on a call's events pays nothing more.
+      // A session with no hook on a call's events pays one look at the hook files' text, and nothing more.
+      if (!hooks.names(s.workspace, ...CALL_EVENTS)) return;
       const srcs = hooks.sources(s.workspace, true);
       const live = hooks.events(s.workspace, srcs);
       if (!CALL_EVENTS.some((e) => live.has(e))) return;
@@ -245,6 +249,9 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     requestFailed: (s, req, err, aborted) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: aborted ? "cancelled" : "failed", error: aborted ? null : String((err as Error)?.message ?? err).slice(0, 2000), token_usage: null })),
   });
 
+  // The scripts the session's hooks run are the owner's alone to change.
+  if (gate) gate.hookFiles = (s) => hooks.runsFrom(s.workspace);
+
   // A card is about to open: PermissionRequest. A deny refuses the call; an
   // allow answers a low-risk card and no other (the gate decides which).
   if (gate) gate.requestHook = async (s, call, _name, ask) => {
@@ -294,8 +301,10 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
 
   const workspaces = () => [...new Set(store.sessions({}).map((s) => projectRoot(s.workspace)).concat(projectRoot(deps.workspace)))];
   // A file as the page shows it: whole (or said not to be), with what loads and never runs, and where its hooks send things.
+  // (`unheld`: the scripts a repository's commands run from outside .keel/ and .claude/, which its pin does not hold.)
   const shown = (cwd: string) => hooks.sources(cwd).map(({ groups, ...rest }) => ({
     ...rest, text: rest.text.slice(0, SHOWN_MAX), whole: rest.text.length <= SHOWN_MAX, notes: rest.text ? parseHooks(rest.text).notes : [], reaches: reaches(groups),
+    unheld: rest.scope !== "project" ? [] : scriptsOf(rest.root, groups).filter((f) => ![".keel", ".claude"].some((d) => contains(join(rest.root, d), f)) && existsSync(f)).map((f) => (contains(rest.root, f) ? relative(rest.root, f) : f)),
   }));
 
   return {

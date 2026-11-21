@@ -281,6 +281,30 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
   return { groups, problems, notes };
 }
 
+// The files a hook file's commands name as what they run, as paths: a word of
+// a command (or of its args) that is a path, with the project folder's
+// placeholders, ~ and $HOME filled in, a relative one from the repository's
+// root. A script in a folder of .keel/ or .claude/ stands for its whole folder
+// (what it sources). Nothing is read: a script that is not there yet is named too.
+export function scriptsOf(root: string, groups: Partial<Record<HookEvent, Group[]>>): string[] {
+  const out = new Set<string>();
+  const home = homedir();
+  for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
+    if (h.type !== "command") continue;
+    for (const raw of [h.command, ...(h.args ?? [])].join(" ").split(/[\s;|&<>()=]+/).slice(0, 200)) {
+      let w = raw.replace(/["']/g, "").replace(/\$\{?(?:KEEL|CLAUDE)_PROJECT_DIR\}?/g, root).replace(/^(?:~|\$\{?HOME\}?)(?=\/|$)/, home);
+      if (!w.includes("/") && !/\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|php)$/.test(w)) continue;
+      if (/[$`*?]/.test(w) || w.startsWith("/dev/") || w.startsWith("-")) continue;
+      w = resolve(root, w);
+      // (Not a folder the repository or the home sits in: `//` in a jq filter is no script.)
+      if (contains(w, root) || contains(w, home) || !/[A-Za-z0-9]/.test(basename(w))) continue;
+      const held = [".keel", ".claude"].map((d) => join(root, d)).find((d) => contains(d, w) && dirname(w) !== d);
+      out.add(held ? dirname(w) : w);
+    }
+  }
+  return [...out];
+}
+
 // The most of a hooks file a Source carries. The page shows all of it, and a
 // file longer than this is not pinned: the owner pins what they were shown.
 export const SHOWN_MAX = 400_000;
@@ -437,6 +461,46 @@ export class Hooks {
     return { path, scope: "project", root, text: text.slice(0, SHOWN_MAX + 1), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups };
   }
 
+  // What the folder's hook files name, from their text alone: the owner's file
+  // (kept by its mark) and a repository's file that has a pin. No covered file
+  // is read and no pin is checked, so nothing that runs is decided here: it
+  // answers only "does any file name this event" and "which files do the hooks
+  // run", both of which the full read (`sources`) then settles.
+  private named = new Map<string, { text: string; files: string[] }>();
+  private texts(cwd: string): { scope: "owner" | "project"; root: string; text: string; groups: Source["groups"] }[] {
+    const root = projectRoot(cwd);
+    const out: ReturnType<Hooks["texts"]> = [];
+    const owner = this.ownerSource(root);
+    if (owner) out.push({ scope: "owner", root, text: owner.sha256, groups: owner.groups });
+    if (!this.pinned(root)) return out;
+    let text: string;
+    try { text = readFileSync(join(root, ".keel", "hooks.json"), "utf8"); } catch { return out; }
+    const kept = this.projects.get(root);
+    out.push({ scope: "project", root, text, groups: kept?.text === text ? kept.groups : parseHooks(text).groups });
+    return out;
+  }
+
+  // Whether any hook file of the folder names one of these events (a file that names none costs no further read).
+  names(cwd: string, ...events: HookEvent[]): boolean {
+    return this.texts(cwd).some((t) => events.some((e) => t.groups[e]?.length));
+  }
+
+  // The files and folders the folder's hooks run things from: each script a
+  // command names (scriptsOf). The pin holds those under .keel/ and .claude/;
+  // one elsewhere runs as it is on disk when its hook fires, and the owner's
+  // own hooks have no pin at all. The gate asks the owner before a session
+  // changes any of them.
+  runsFrom(cwd: string): string[] {
+    const out: string[] = [];
+    for (const t of this.texts(cwd)) {
+      const key = `${t.scope}\u0000${t.root}`;
+      let kept = this.named.get(key);
+      if (kept?.text !== t.text) this.named.set(key, (kept = { text: t.text, files: scriptsOf(t.root, t.groups) }));
+      out.push(...kept.files);
+    }
+    return out;
+  }
+
   // `run`: for an event, which needs only what can run (a file with no pin is left out unread).
   sources(cwd: string, run = false): Source[] {
     const root = projectRoot(cwd);
@@ -462,8 +526,11 @@ export class Hooks {
   // Every active handler of an event that matches, run at the same time.
   // `payload` is made only when a handler runs. `match`: the values the
   // event's matcher is tested on (none: the event takes no matcher).
-  async run(event: HookEvent, s: Session, payload: Record<string, unknown> | (() => Record<string, unknown>), match?: string[], srcs = this.sources(s.workspace, true)): Promise<HookResult> {
+  async run(event: HookEvent, s: Session, payload: Record<string, unknown> | (() => Record<string, unknown>), match?: string[], srcs?: Source[]): Promise<HookResult> {
     const res: HookResult = { context: [], ran: 0 };
+    // An event no file names reads no covered script: the events of every model request would otherwise read them all each time.
+    if (!srcs && !this.names(s.workspace, event)) return res;
+    srcs ??= this.sources(s.workspace, true);
     const groups: Group[] = [];
     for (const src of srcs) if (src.active) for (const g of src.groups[event] ?? []) if (matches(g.matcher, match)) groups.push(g);
     if (!groups.length) return res;
@@ -645,5 +712,6 @@ async function runMcp(h: Extract<Handler, { type: "mcp_tool" }>, data: Record<st
   }
 }
 
-// A hook's words for the model, in a frame they cannot close (each line went through hookSaid; said again here for a caller's own line).
-export const hookContext = (event: string, lines: string[]) => `<hook event="${event.replace(/[^\w, ]/g, "")}">\n${lines.map((l) => hookSaid(l)).join("\n\n")}\n</hook>`;
+// A hook's words for the model, in a frame they cannot close.
+// (The joined block is filtered, not each line: two hooks' lines cannot make a tag between them.)
+export const hookContext = (event: string, lines: string[]) => `<hook event="${event.replace(/[^\w, ]/g, "")}">\n${hookSaid(lines.join("\n\n"), Infinity)}\n</hook>`;

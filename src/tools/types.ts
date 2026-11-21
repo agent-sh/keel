@@ -68,6 +68,9 @@ export type ToolKind = "shell" | "edit" | "control" | "remote";
 export type Tool = ToolSpec & {
   readOnly: boolean;
   kind?: ToolKind;
+  // A shell tool that applies an apply_patch invocation in its command itself
+  // (no shell runs): the gate judges such a call as the edit it is.
+  appliesPatch?: true;
   // Its input goes to another machine (keel__run_on): sent with secret placeholders, never values.
   peer?: boolean;
   // Where a call's relative paths resolve, when not the session's folder

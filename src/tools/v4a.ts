@@ -201,7 +201,7 @@ export function patchTargetPaths(text: string): string[] {
     for (const h of parsePatch(text)) { push(h.path); if (h.type === "update") push(h.move_to); }
   } catch {
     for (const line of text.split("\n")) {
-      for (const m of [ADD_FILE, UPDATE_FILE, DELETE_FILE, MOVE_TO]) if (line.trimEnd().startsWith(m)) push(line.trimEnd().slice(m.length));
+      for (const m of [ADD_FILE, UPDATE_FILE, DELETE_FILE, MOVE_TO]) if (line.trim().startsWith(m)) push(line.trim().slice(m.length));
     }
   }
   return out;

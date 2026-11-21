@@ -10,13 +10,13 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true } };
 
 // What a hook says reaches the model as the hook's words and nothing else: at
-// most HOOK_SAID characters, unable to close the frame it is put in or to
-// open one the harness uses, and with no line that reads as the harness
-// speaking. Its text can come from another machine (an http hook's answer, an
-// MCP tool's).
+// most HOOK_SAID characters, with no tag in it (every `<` that could open or
+// close one is written `&lt;`, so it closes no frame it is put in and opens
+// none the harness uses, whatever their names), and nowhere the mark the
+// harness or a hook's own prompt starts with. Its text can come from another
+// machine (an http hook's answer, an MCP tool's).
 export const HOOK_SAID = 10_000;
-const FRAMES = /<(\s*\/?\s*(?:hook|system-reminder|memory|skill|external_input)\b)/gi;
-export const hookSaid = (v: unknown, max = HOOK_SAID) => String(v).slice(0, max).replace(FRAMES, "&lt;$1").replace(/^([ \t]*)\[(harness|hook)\]/gim, "$1($2)");
+export const hookSaid = (v: unknown, max = HOOK_SAID) => String(v).slice(0, max).replace(/<(?=\s*[A-Za-z\/!?])/g, "&lt;").replace(/\[(harness|hook)\]/gi, "($1)");
 
 // What the model reads on the result of a call whose input a hook changed:
 // the input that was judged, and whether the call ran with it.

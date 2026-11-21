@@ -7,7 +7,7 @@ import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, tilde, type Group } 
 
 // `whole`: the text is all of the file (a longer one is not pinned). `notes`: what loads and never runs here.
 // `reaches`: where its hooks send what they are given.
-type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers?: string[]; whole?: boolean; notes?: string[]; reaches?: { urls: string[]; tools: string[] } };
+type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers?: string[]; whole?: boolean; notes?: string[]; reaches?: { urls: string[]; tools: string[] }; unheld?: string[] };
 
 const host = (url: string) => { try { return new URL(url).host; } catch { return url; } };
 
@@ -20,6 +20,9 @@ function Reach({ s }: { s: Source }) {
       ))}
       {s.reaches?.tools.map((t) => (
         <p key={t} className="k-issue mt-3" data-tone="quiet" data-testid="hook-calls">Calls the MCP tool <code className="font-mono text-micro">{t}</code> with values of the event, without asking.</p>
+      ))}
+      {s.unheld?.map((f) => (
+        <p key={f} className="k-issue mt-3" data-tone="need" data-testid="hook-unheld">Runs <code className="font-mono text-micro">{f}</code>, which the pin does not hold: it runs as it is on disk when its hook fires. Keel asks you before a session changes it. Keep a script under <code className="font-mono text-micro">.keel/</code> to pin it with the file.</p>
       ))}
       {!!s.notes?.length && <ul className="k-issue mt-3" data-tone="quiet" data-testid="hook-notes">{s.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
     </>

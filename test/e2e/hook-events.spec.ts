@@ -105,6 +105,8 @@ test("every hook event fires", async ({ page, request }) => {
   expect(source.notes).toEqual([]);
   expect(Object.keys(source.events).sort()).toEqual([...FIRED].sort());
   await page.getByTestId("hook-source").filter({ hasText: ws.split("/").pop()! }).click();
+  // The script its commands run sits outside .keel/: the page says the pin does not hold it.
+  await expect(page.getByTestId("hook-unheld")).toContainText("fixtures/hook.sh");
   await shoot(page, "hook-events-03-every-event-pinned");
 
   mkdirSync(join(ws, ".claude/commands"), { recursive: true });

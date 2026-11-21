@@ -35,6 +35,9 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     callOutcome: (sid, callId) => g.callOutcome(sid, callId),
     awaitsOwner: (sid, callId) => g.awaitsOwner(sid, callId),
     turnParking: (sid) => g.park(sid),
+    // A call that was dispatched, or whose result is stored, has no use for a card a restart left parked for it.
+    toolRan: (s, call) => g.settled(s.id, call.id),
+    resultStored: (s, results) => { for (const r of results) g.settled(s.id, r.tool_use_id); },
     turnStart: (s) => g.turnStarted(s.id),
   });
 

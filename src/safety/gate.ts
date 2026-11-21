@@ -14,11 +14,11 @@ import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
-import { readOnlyCommand, splitCommand } from "./shell.ts";
+import { splitCommand } from "./shell.ts";
 import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
-import { classify, decide, isMode, ownPath, shellText, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { classify, decide, isMode, ownPath, pathsNamed, shellText, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
 // An edit is judged by where it sits (its folders' links resolved) and by
 // where it lands (the file's own link followed too): a link inside the
@@ -43,6 +43,7 @@ export type Approval = {
   summary: string;      // the command, or the paths, or the tool's input in short
   cut?: true;           // the summary is only the start of the input: the card says so, and it is answered alone
   input: any;
+  input_sha?: string;   // sha256 of the whole input the card was opened for, as stored (secrets out): `input` is only its start when it is long
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
   notice?: string;      // why the owner is asked (the reviewer could not judge it)
@@ -108,10 +109,17 @@ function hasSecret(input: unknown, values: string[]): boolean {
 }
 
 // Keel's own config: the folder, and a hooks or MCP file the daemon was pointed at elsewhere.
-const ownConfig = () => [configDir(), process.env.KEEL_HOOKS, process.env.KEEL_MCP_CONFIG].filter((x): x is string => !!x).map((x) => realOf(x));
+const ownConfig = () => [configDir(), process.env.KEEL_HOOKS, process.env.KEEL_MCP_CONFIG, process.env.KEEL_ACP_AGENTS, process.env.KEEL_ACP_FOLDERS].filter((x): x is string => !!x).map((x) => realOf(x));
+// The hash a card keeps of the whole input it was opened for (the card itself holds a clipped copy).
+const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.stringify(input ?? {}) ?? "").digest("hex");
 
 function callClass(call: ToolCall, target: Target): CallClass {
   const cls = target ? target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" }) : classifyCall(call);
+  // A tool the gate knows only by name is given the paths its input names (an MCP file server's write).
+  if (cls.kind === "other" && !cls.paths) {
+    const paths = pathsNamed(target ? target.input : call.input);
+    if (paths.length) return { ...cls, paths };
+  }
   return landing(cls.kind === "shell" && !cls.cwd ? { ...cls, cwd: cwdOf(call) } : cls);
 }
 
@@ -360,19 +368,29 @@ export class Gate {
     const p = this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
     const edit = cls.kind === "edit";
+    let own: { home: string; config: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
       mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch,
-      // What Keel itself runs things from: an edit there is the owner's alone (on this machine's disk).
-      ...(edit && !session.machine ? { home: realOf(homedir()), config: ownConfig() } : {}),
+      // What Keel itself runs things from: a change there is the owner's alone
+      // (on this machine's disk). With it, the scripts the owner's hooks and a
+      // pinned repository's hooks run: no pin holds one outside .keel/. Read
+      // once, and only for a call that names a file to change.
+      ...(session.machine ? {} : { own: () => (own ??= {
+        home: realOf(homedir()), config: [...ownConfig(), ...(this.hookFiles?.(session) ?? [])],
+        land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
+      }) }),
     });
   }
+
+  // Set by the hooks module: the files and folders the session's hooks run things from.
+  hookFiles?: (session: Session) => string[];
 
   // Whether a hook's allow may answer this ask. It answers only a question the
   // owner would have been asked (a mode that opens an owner card, for an
   // ordinary action: not high risk, not the owner's alone), for a call that
   // stays inside what the session may already touch: an edit whose every path
   // is in its workspace or its scratch folder, on this machine's disk; a
-  // command the session's sandbox confines, or one the rules read as a read.
+  // command the session's sandbox confines.
   // A tool, or a message into another session, runs unasked only by the
   // owner's own rule, and with one there is no ask to answer.
   private hookMayAnswer(session: Session, cls: CallClass, ask: { risk: "high" | "low"; ownerOnly?: true }): boolean {
@@ -382,7 +400,8 @@ export class Gate {
       const f = this.scope(session);
       return !session.machine && cls.paths.every((x) => ownPath(x, f));
     }
-    if (cls.kind === "shell") return (!cls.escalate && p.sandbox !== "off" && this.sandboxed(session, p)) || (cls.interpreter === undefined && readOnlyCommand(cls.command));
+    // (A command the rules read as a read never asks, so there is nothing of it to answer.)
+    if (cls.kind === "shell") return !cls.escalate && p.sandbox !== "off" && this.sandboxed(session, p);
     return false;
   }
 
@@ -641,7 +660,7 @@ export class Gate {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, cut: ask.cut, notice: [ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
-      input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
+      input: clip(call.input), input_sha: this.shaOf(session.id, call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,
     };
     return this.wait(a, session, call, name, cls);
@@ -655,9 +674,31 @@ export class Gate {
   private recovered(sessionId: string, call: ToolCall, once: boolean): Approval | undefined {
     const a = this.unpark(sessionId, call.id, once);
     if (!a) return undefined;
-    if (JSON.stringify(a.input) === JSON.stringify(this.redact({ ...a, input: clip(call.input) }).input)) return a;
+    // The whole input is compared, by its hash: the card's own copy is cut at
+    // 20,000 characters, and an input can differ after that. A card an older
+    // build wrote has no hash and is compared by that copy.
+    const same = a.input_sha !== undefined ? a.input_sha === this.shaOf(sessionId, call.input)
+      : JSON.stringify(a.input) === JSON.stringify(this.redact({ ...a, input: clip(call.input) }).input);
+    if (same) return a;
     this.finish(a, { state: "cancelled", choice: undefined, reason: "the call changed since this card opened" });
     return undefined;
+  }
+
+  // The hash of a call's whole input as a card stores inputs: with secrets out.
+  private shaOf(sessionId: string, input: unknown): string {
+    return inputSha(this.redact({ session_id: sessionId, input } as Approval).input);
+  }
+
+  // A call was dispatched, or its result is stored: a card of it that a
+  // restart left parked and nothing took back (a hook that asked before the
+  // restart and not after it) would stay open and answer nothing. It closes.
+  settled(sessionId: string, callId: string) {
+    const key = callKey(sessionId, callId);
+    const id = this.parked.get(key);
+    if (id === undefined) return;
+    this.parked.delete(key);
+    const a = this.approval(id);
+    if (a?.state === "pending") this.finish(a, { state: "cancelled", reason: "the call went on without this question" });
   }
 
   // A parked card of this call (a one-call card only for askOnce), taken back.

@@ -65,6 +65,7 @@ const exec_command: Tool = {
   resultCap: EXEC_CAP,
   readOnly: false,
   kind: "shell",
+  appliesPatch: true,
   cwdOf: execCwd,
   // The owner's own shell, when it is a bash, is bash wherever it is installed.
   interpreter: (input) => { const sh = execShell(input); return sh === process.env.SHELL && /(^|\/)bash$/.test(sh) ? "bash" : sh; },

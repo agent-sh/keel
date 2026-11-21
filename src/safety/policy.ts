@@ -3,9 +3,10 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
-import { isReadOnly, matchRule, risksOf, splitCommand, suggestRule } from "./shell.ts";
+import { isReadOnly, matchRule, risksOf, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
+import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
 
 // Who decides what a mode lets run: the owner, a model, or nobody because
 // nothing changes. A menu groups the modes by it, in this order.
@@ -54,7 +55,8 @@ export type CallClass =
   | { kind: "edit"; paths: string[] }
   // `grant` names the standing answer that covers it when the tool's name is
   // too wide (keel__spawn_on_machine:<machine>: one machine, not all of them).
-  | { kind: "other"; grant?: string }
+  // `paths`: the strings of its input that are a path by themselves (pathsNamed).
+  | { kind: "other"; grant?: string; paths?: string[] }
   // A message, answer or model command into another session. `resource` names
   // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
@@ -73,7 +75,7 @@ const onlyOwner = (why: string): Decision => ({ ask: { risk: "high", why, sugges
 // What a call does. The tool's own definition says which kind of call it is
 // (its read flag and its kind); the input only supplies the command or the
 // paths of that kind, so no key a model puts in a call changes how it is judged.
-export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any; interpreter?(input: any): string }, input: any, cwd: string): CallClass {
+export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any; interpreter?(input: any): string; appliesPatch?: true }, input: any, cwd: string): CallClass {
   if (tool.readOnly) return { kind: "read" };
   switch (tool.kind) {
     case "control":
@@ -91,6 +93,15 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       if (raw != null && typeof raw !== "string") return { kind: "refused", why: `${tool.name} takes its ${key} as one string.` };
       const cmd = typeof raw === "string" ? raw : null;
       if (cmd === null) return { kind: "other" }; // a monitor of a socket: judged by the tool's name
+      // A command the tool does not run but applies itself as a patch (no
+      // shell, so no sandbox confines it) is the edit it is: its files.
+      const wrapped = tool.appliesPatch ? extractShellApplyPatch(cmd) : null;
+      if (wrapped) {
+        const base = wrapped.cd ? resolve(cwd, wrapped.cd) : cwd;
+        const paths = patchTargetPaths(wrapped.patch);
+        if (!paths.length) return { kind: "refused", why: `${tool.name} was given a patch that names no file to change.` };
+        return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(base, p))) };
+      }
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
       // Read from the running build's schema: a session may carry an older definition (Tool.built).
       const escalate = !!(tool.built ?? tool.input_schema)?.properties?.sandbox_permissions && input?.sandbox_permissions === "require_escalated";
@@ -101,7 +112,9 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       const paths: string[] = [];
       for (const k of ["file_path", "path", "notebook_path"]) if (typeof input?.[k] === "string") paths.push(input[k]);
       const patch = typeof input === "string" ? input : typeof input?.patch === "string" ? input.patch : typeof input?.input === "string" ? input.input : "";
-      for (const m of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) paths.push((m[1] ?? m[2])!.trim());
+      // The files of a patch are read by the tool's own parser: a header the
+      // tool takes (no space after the colon, an indented one) is a file here too.
+      if (patch) paths.push(...patchTargetPaths(patch));
       if (!paths.length) return { kind: "refused", why: `${tool.name} names no file to change.` };
       return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p))) };
     }
@@ -126,23 +139,78 @@ export function shellText(input: any): string | null {
   return null;
 }
 
-export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
+export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.keel\/hooks\/|\.claude\/hooks\/|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
 
 // Files of the home folder that run, or let someone in, later: the shells'
-// start files and the remote-login folder. An edit of one is the owner's call
-// like a repository's RUNS_LATER files, wherever the session's workspace is.
-const HOME_RUNS_LATER = /^(?:\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|zshrc|zshenv|zprofile|zlogin|zlogout|inputrc|xprofile|xsessionrc|pam_environment)$|\.ssh(?:\/|$)|\.config\/(?:fish\/|environment\.d\/|systemd\/user\/|autostart\/))/;
-// Why an edit of this path is the owner's alone, or nothing. `config`: folders
+// start files, the remote-login folder, git's own configuration (it names
+// programs git runs) and the folder of the owner's own commands. An edit of
+// one is the owner's call like a repository's RUNS_LATER files, wherever the
+// session's workspace is.
+const HOME_RUNS_LATER = /^(?:\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|zshrc|zshenv|zprofile|zlogin|zlogout|inputrc|xprofile|xsessionrc|xinitrc|pam_environment|gitconfig)$|\.ssh(?:\/|$)|\.bashrc\.d\/|\.local\/bin\/|\.config\/(?:fish\/|git\/|environment\.d\/|systemd\/user\/|autostart\/))/;
+// Why a change of this path is the owner's alone, or nothing. `config`: folders
 // and files Keel itself runs things from (its config folder: hooks, MCP
-// servers, skills, agents), which no repository's pin holds.
-function ownerOnlyEdit(p: string, f: Facts): string | null {
+// servers, skills, agents; the scripts the owner's hooks and a pinned
+// repository's hooks run), which no sandbox confines.
+function ownerOnlyEdit(p: string, f: Facts, does = "changes"): string | null {
   const rel = relative(f.workspace, p);
-  if (RUNS_LATER.test(rel)) return `it changes ${rel}, which runs or configures things outside the sandbox later`;
-  const own = f.config?.find((c) => contains(c, p));
-  if (own) return `it changes ${p}, a file of Keel's own configuration (its hooks, MCP servers, skills and agents run from there with no pin)`;
-  const home = f.home ?? homedir();
-  if (contains(home, p) && HOME_RUNS_LATER.test(relative(home, p))) return `it changes ${p}, which runs at every login or shell start, or lets someone log in`;
+  if (RUNS_LATER.test(rel)) return `it ${does} ${rel}, which runs or configures things outside the sandbox later`;
+  const o = f.own?.();
+  const own = (f.config ?? o?.config)?.find((c) => contains(c, p));
+  if (own) return `it ${does} ${p}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox`;
+  const home = f.home ?? o?.home ?? homedir();
+  if (contains(home, p) && HOME_RUNS_LATER.test(relative(home, p))) return `it ${does} ${p}, which runs at every login or shell start, or lets someone log in`;
   return null;
+}
+// The same for a path a command or a tool's input names: asked of the path as
+// spelled and of where it lands (an edit's paths come to the gate landed already).
+function ownerOnlyNamed(w: string, cwd: string, f: Facts, does: string): string | null {
+  const p = spelled(w, cwd, f.home ?? homedir());
+  if (!p) return null;
+  for (const q of f.own?.().land(p) ?? [p]) { const why = ownerOnlyEdit(q, f, does); if (why) return why; }
+  return null;
+}
+
+// A path as a command or a tool's input spells it: ~ and $HOME are the home
+// folder, a relative one starts at `cwd`. Nothing for a word an expansion makes.
+function spelled(w: string, cwd: string, home: string): string | null {
+  w = w.replace(/^(["'])(.*)\1$/s, "$2").replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, home);
+  if (!w || /[$`*?\n]/.test(w)) return null;
+  return isAbsolute(w) ? w : resolve(cwd, w);
+}
+
+// The files a command part writes by its plain shape: the target of a
+// redirect, and what tee, cp, mv, rm, install, ln, sed -i and dd of= are given
+// to write. Not every write a command can make (an interpreter, a program of
+// the session's own): the forms that need no trick, so that a grant, the
+// reviewer or the judge does not answer for a start file in passing.
+const LAST_ARG = new Set(["cp", "install", "ln", "rsync", "scp"]);
+const EACH_ARG = new Set(["tee", "mv", "rm", "truncate", "shred"]);
+function writesOf(p: Simple): string[] {
+  const out: string[] = [];
+  if (p.redirects) for (const m of p.text.matchAll(/(?:&>>?|>>|>\||>)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g)) out.push(m[1]!);
+  const i = p.words.findIndex((w) => /^(?:.*\/)?(?:cp|install|ln|rsync|scp|tee|mv|rm|truncate|shred|sed|dd)$/.test(w));
+  if (i < 0) return out;
+  const name = p.words[i]!.replace(/^.*\//, ""), rest = p.words.slice(i + 1), args = rest.filter((a) => !a.startsWith("-"));
+  if (LAST_ARG.has(name)) out.push(...args.slice(-1));
+  else if (EACH_ARG.has(name)) out.push(...args);
+  else if (name === "sed") { if (rest.some((a) => /^(?:-[a-zA-Z]*i|--in-place)/.test(a))) out.push(...args); }
+  else for (const a of rest) if (a.startsWith("of=")) out.push(a.slice(3));
+  return out;
+}
+
+// The strings of a tool's input that are a path by themselves (an MCP file
+// server's `path`), for a tool whose input the gate cannot read otherwise.
+export function pathsNamed(input: unknown): string[] {
+  const out: string[] = [];
+  let seen = 0;
+  const walk = (v: unknown, depth: number) => {
+    if (++seen > 200 || depth > 4 || out.length >= 32) return;
+    if (typeof v === "string") { if (v.length < 4096 && /^(?:~|\/)[^\s]*$/.test(v)) out.push(v); }
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
+    else if (v && typeof v === "object") for (const x of Object.values(v)) walk(x, depth + 1);
+  };
+  walk(input, 0);
+  return out;
 }
 
 // Whether an edit stays inside what the session may already touch: its
@@ -151,8 +219,13 @@ const protectedPath = (workspace: string, p: string) => /(^|\/)\.git(\/|$)/.test
 export const ownPath = (p: string, f: Pick<Facts, "workspace" | "scratch">) => (contains(f.workspace, p) && !protectedPath(f.workspace, p)) || !!f.scratch?.some((d) => contains(d, p));
 
 // `scratch`: folders of the harness's own the session writes in like its workspace (its artifacts folder).
-// `config`: Keel's own config folder and files (ownerOnlyEdit).
-export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[] };
+// `config`: Keel's own config folder and files (ownerOnlyEdit). `own`: the
+// home folder, that config and where a path lands, read from the disk only
+// when a call names a file to change (a read never asks for them).
+export type Facts = {
+  mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[];
+  own?: () => { home: string; config: string[]; land: (p: string) => string[] };
+};
 
 export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read" || c.kind === "control") return { allow: true };
@@ -193,6 +266,11 @@ export function decide(c: CallClass, f: Facts): Decision {
   }
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
+  // A tool that can change things, given a file that is the owner's alone to change (an MCP file server's write).
+  if (c.kind === "other") for (const w of c.paths ?? []) {
+    const why = ownerOnlyNamed(w, f.workspace, f, "names");
+    if (why) return onlyOwner(why);
+  }
   const grant = (c.kind === "other" && c.grant) || f.tool;
   if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
   return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
@@ -214,6 +292,14 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only and the command could not be parsed to check it." };
     return { ask: { risk: "high", why: "the command could not be parsed, so no rule can cover it", suggest: [] } };
+  }
+  // A command whose plain shape writes a file that is the owner's alone to
+  // change (`echo x >> ~/.bashrc`, a cp into Keel's config): the owner's call,
+  // before any grant, the sandbox's allowance, the reviewer or the judge.
+  // (Full auto runs it as it runs such an edit; Read only refuses it below.)
+  if (f.mode !== "read-only" && f.mode !== "full-auto") for (const part of parts) if (interpreter !== undefined || !isReadOnly(part)) for (const w of writesOf(part)) {
+    const why = ownerOnlyNamed(w, cwd, f, "writes");
+    if (why) return onlyOwner(`the command: ${why}`);
   }
   const risks = risksOf(parts);
   if (risks.length) {

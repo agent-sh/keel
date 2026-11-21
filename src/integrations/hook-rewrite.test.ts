@@ -101,7 +101,9 @@ test("a hook's allow answers the card the owner would have got, for a call insid
   expect((await outcome(write(outside()))).what).toBe("card low");
   expect((await outcome(bash("npm install left-pad"))).what).toBe("card low");
   expect((await outcome(bash("rm -rf /var/lib/thing"))).what).toBe("card low");
-  expect((await outcome(bash(`echo x >> ${homedir()}/.bashrc`))).what).toBe("card low");
+  // A command whose plain shape writes a start file is the owner's alone: a card no grant is offered on.
+  const start = await outcome(bash(`echo x >> ${homedir()}/.bashrc`));
+  expect([start.what, start.card?.suggest]).toEqual(["card high", []]);
   expect((await outcome(run("mcp__mail__send", { to: "someone" }))).what).toBe("card low");
   // A command the sandbox confines runs, confined.
   confines = true;
