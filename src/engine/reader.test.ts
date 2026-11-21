@@ -383,3 +383,28 @@ test("the check of an answer against many sources does not walk every part read 
   const plain = fastest(), withRead = fastest(read);
   expect(withRead).toBeLessThan(plain * 4 + 100);
 });
+
+// A fetched page read in parts: an answer from the parts that were read is
+// kept when another part went unread, and names it. With no answer it throws,
+// so the caller falls back to the page itself.
+test("a page with a part no reader read keeps the answer of the parts that were read", async () => {
+  const page = Array.from({ length: 3 }, () => lines(3_500)).join("\n");
+  const job = (fail: (k: string) => boolean, found = "The header is compact-2026-09-04.") => readSource({
+    models: async () => [big], current: async () => big, capture: () => {},
+    ask: async (_m, prompt) => {
+      const k = /part (\d+) of/.exec(prompt)?.[1] ?? "compile";
+      if (fail(k)) throw new Error("throttled");
+      return { text: k === "1" ? found : NOTHING, usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } };
+    },
+  }, "https://docs.example/page", page, "which header?", new AbortController().signal);
+  const partial = await job((k) => k === "2");
+  expect(partial.text).toBe("The header is compact-2026-09-04.");
+  expect(partial.unread).toHaveLength(1);
+  expect(partial.unread[0]).toContain("https://docs.example/page:");
+  expect(partial.unread[0]).toContain("every reader failed; last: big: throttled");
+  expect((await job(() => false)).unread).toEqual([]);
+  // No part answered: nothing to keep.
+  await expect(job(() => true)).rejects.toThrow("no reader read https://docs.example/page");
+  // The parts that were read held nothing and another went unread: that is not an answer about the page.
+  await expect(job((k) => k === "2", NOTHING)).rejects.toThrow("every reader failed");
+});

@@ -194,11 +194,14 @@ async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal): Promise
 // A page fetched for a request (the prompt of WebFetch and web_fetch): a long
 // page goes to the session's reader model, which answers the request from it;
 // the page is saved whole for a Read when the answer is not enough. A short
-// page, a failed fetch, or a reader that fails returns the page as before.
-export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContext, "spillDir" | "signal" | "read">): Promise<{ text: string; error?: boolean }> {
+// page, a failed fetch, or readers that give no answer return the page as
+// before. An answer from the parts that were read is kept when a part went
+// unread: the note under it names that part and where the whole page is.
+// `fetch`: what gets the page (a test gives its own).
+export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContext, "spillDir" | "signal" | "read">, fetch: typeof webFetch = webFetch): Promise<{ text: string; error?: boolean }> {
   const ask = prompt.trim();
-  if (!ask || !ctx.read) return webFetch(url, { spillDir: ctx.spillDir }, ctx.signal);
-  const r = await webFetch(url, { spillDir: ctx.spillDir, whole: true }, ctx.signal);
+  if (!ask || !ctx.read) return fetch(url, { spillDir: ctx.spillDir }, ctx.signal);
+  const r = await fetch(url, { spillDir: ctx.spillDir, whole: true }, ctx.signal);
   if (r.error || r.text.length <= READ_WHOLE_CHARS) return { ...r, text: await spill(r.text, ctx.spillDir, "webfetch") };
   mkdirSync(join(ctx.spillDir, "web"), { recursive: true });
   const path = join(ctx.spillDir, "web", `${Date.now()}-${Bun.hash(url).toString(36)}.md`);
@@ -208,7 +211,8 @@ export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContex
     // Findings no reader could compile come back as they are, spilled when long.
     const how = a.compiled === false ? " in parts; their findings could not be compiled into one answer and follow as they are" : "";
     // A compiled answer comes back whole; only uncompiled findings can be long enough to spill.
-    return { text: `${a.compiled === false ? await spill(a.text, ctx.spillDir, "webfetch-findings") : a.text}\n\n[${a.model} read the page (${r.text.length} chars) for this request${how}. The whole page is saved to ${path}; Read or Grep it when this does not answer.]` };
+    const unread = a.unread?.length ? ` Not read, so not covered by this answer:\n- ${a.unread.join("\n- ")}\n` : "";
+    return { text: `${a.compiled === false ? await spill(a.text, ctx.spillDir, "webfetch-findings") : a.text}\n\n[${a.model} read ${unread ? "part of " : ""}the page (${r.text.length} chars) for this request${how}.${unread} The whole page is saved to ${path}; Read or Grep it ${unread ? "for what was not read, or " : ""}when this does not answer.]` };
   } catch (e) {
     if (ctx.signal.aborted) throw e;
     return { text: `[No reader could read the page for this request (${String((e as Error).message ?? e).slice(0, 300)}); the page follows as it is.]\n\n${await spill(r.text, ctx.spillDir, "webfetch")}` };

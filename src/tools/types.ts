@@ -40,7 +40,8 @@ export type ToolContext = {
   // Set by the engine: long content read by the session's reader model with a
   // request; resolves to the reader's answer (src/engine/reader.ts).
   // `compiled` false: the text is every part's findings, not one answer.
-  read?: (source: string, text: string, prompt: string) => Promise<{ text: string; model: string; compiled?: boolean }>;
+  // `unread`: parts of the content no reader read, which the answer does not cover.
+  read?: (source: string, text: string, prompt: string) => Promise<{ text: string; model: string; compiled?: boolean; unread?: string[] }>;
   // Set by the engine: one reading job over many sources, split across reader
   // models and compiled into one answer (src/engine/readers.ts).
   readMaterial?: (items: Material[], question: string, callId?: string) => Promise<ReadOutcome>;

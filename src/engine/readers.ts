@@ -243,13 +243,16 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
 
 // One source read for a request (a fetched page): the readers' answer, or,
 // when no reader could compile the findings of its parts, every part's
-// findings as they are (`compiled` false), for the caller to spill. Throws
-// when no reader read it or a part of it went unread (each failure is
-// captured once).
-export async function readSource(host: ReaderHost, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage; compiled: boolean }> {
+// findings as they are (`compiled` false), for the caller to spill. An answer
+// from the parts that were read is kept when another part went unread:
+// `unread` names what it does not cover. Throws only when there is no answer
+// (no reader read any of it; each failure is captured once).
+export async function readSource(host: ReaderHost, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage; compiled: boolean; unread: string[] }> {
   const o = await readMaterial(host, [{ source, text }], prompt, signal);
-  if (!o.text || o.unread.length) throw new Error(`no reader read ${source}: ${o.unread.join("; ") || "no answer"}`);
-  return { text: o.uncompiled?.findings ?? o.text, model: o.models.join(" and "), usage: o.usage, compiled: !o.uncompiled };
+  // Parts that held nothing say nothing about the parts no reader read.
+  const answered = o.parts.some((p) => p.state === "read");
+  if (!o.text || (o.unread.length && !answered)) throw new Error(`no reader read ${source}: ${o.unread.join("; ") || "no answer"}`);
+  return { text: o.uncompiled?.findings ?? o.text, model: o.models.join(" and "), usage: o.usage, compiled: !o.uncompiled, unread: o.unread };
 }
 
 // The line the working model reads under the answer: who read what, what went

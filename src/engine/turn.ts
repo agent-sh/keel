@@ -1785,8 +1785,9 @@ export class Engine {
 
   // Long content read by the session's reader models (src/engine/readers.ts)
   // with the working model's request; the answer goes back as the tool's result.
-  // Throws when no reader could read it (each failure is captured once).
-  async read(id: string, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage; compiled: boolean }> {
+  // An answer from part of it names what went unread; throws when no reader
+  // gave an answer (each failure is captured once).
+  async read(id: string, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage; compiled: boolean; unread: string[] }> {
     return readSource(this.readerHost(id), source, text, prompt, signal);
   }
 
