@@ -12,7 +12,7 @@ import { sendWaitingSoon } from "../lib/resend.ts";
 import { getState, onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
-import { cn } from "../lib/utils.ts";
+import { cn, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
@@ -724,6 +724,16 @@ function SessionComposer({
             if (e.key === "Escape") { e.preventDefault(); closed.current = `${menu.kind} ${menu.start}`; setMenu(null); return; }
           }
           const mod = e.metaKey || e.ctrlKey;
+          // An empty box has no caret to move: End, Page Up and Page Down are the
+          // conversation's there, as they are when nothing holds the keyboard.
+          if (sid && !e.currentTarget.value && !mod && !e.altKey && !e.shiftKey && (e.key === "End" || e.key === "PageUp" || e.key === "PageDown")) {
+            e.preventDefault();
+            const view = e.currentTarget.closest(".k-session")?.querySelector<HTMLElement>(".k-reading");
+            if (e.key === "End") dispatchEvent(new CustomEvent("keel:end", { detail: sid }));
+            // A held key pages at once: a glide started again at each repeat would crawl.
+            else view?.scrollBy({ top: (e.key === "PageUp" ? -0.9 : 0.9) * view.clientHeight, behavior: e.repeat ? "instant" : scrollMotion() });
+            return;
+          }
           // Ctrl Shift Enter queues for after the running turn, whichever key sends; with no
           // turn running it sends (the turn may have ended a moment before the press).
           if (e.key === "Enter" && mod && e.shiftKey && !e.altKey) {

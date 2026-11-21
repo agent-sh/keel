@@ -118,6 +118,8 @@ export function keyLabel(spec: string): string[] {
     if (l === "escape") return "Esc";
     if (l === "enter") return "Enter";
     if (l === "end") return "End";
+    if (l === "pageup") return "PgUp";
+    if (l === "pagedown") return "PgDn";
     if (l === "arrowup") return "↑";
     if (l === "arrowdown") return "↓";
     return p.length === 1 ? p.toUpperCase() : p[0]!.toUpperCase() + p.slice(1);

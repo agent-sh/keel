@@ -13,6 +13,9 @@ const fixed = (enterSends: boolean): [string, string, string][] => [
   ["Message box", "Queue for after the turn", QUEUE_KEYS],
   ["Message box", "Commands", "/"],
   ["Message box", "Mention a file", "@"],
+  // An empty box has no caret to move: the page keys (and End) scroll the conversation from it (Composer.tsx).
+  ["Message box", "Conversation up a page, from an empty box", "pageup"],
+  ["Message box", "Conversation down a page, from an empty box", "pagedown"],
 ];
 
 export function ShortcutList() {

@@ -55,3 +55,52 @@ test("the palette shows only rows of the query that is typed", async ({ page, re
   await page.keyboard.press("Escape");
   await request.delete(`/api/sessions/${id}`);
 });
+
+test("End, Page Up and Page Down scroll the conversation from an empty message box", async ({ page, request }) => {
+  await scripted(request);
+  const id = await create(request, "A long conversation", folder("scroll"));
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:fill" } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 30_000 }).toBe(true);
+  await page.goto(`/s/${id}`);
+  const box = page.getByTestId("composer");
+  await expect(box).toBeFocused();
+  const at = () => page.evaluate(() => { const t = document.querySelector<HTMLElement>(".k-reading")!; return { top: Math.round(t.scrollTop), max: Math.round(t.scrollHeight - t.clientHeight), page: t.clientHeight }; });
+  await expect.poll(async () => (await at()).max).toBeGreaterThan(2000);
+  await expect.poll(async () => { const s = await at(); return s.max - s.top; }).toBeLessThan(4);
+
+  // Up a page, twice; the caret stays in the box.
+  await page.keyboard.press("PageUp");
+  await expect.poll(async () => { const s = await at(); return s.max - s.top; }).toBeGreaterThan(400);
+  const one = await at();
+  await page.keyboard.press("PageUp");
+  await expect.poll(async () => (await at()).top).toBeLessThan(one.top - 400);
+  const two = await at();
+  await expect(box).toBeFocused();
+  await shoot(page, "keyboard-paths-06-paged-up");
+  // Down a page, then End: at the bottom, following again.
+  await page.keyboard.press("PageDown");
+  await expect.poll(async () => (await at()).top).toBeGreaterThan(two.top + 400);
+  await page.keyboard.press("PageUp");
+  await page.keyboard.press("PageUp");
+  await page.keyboard.press("End");
+  await expect.poll(async () => { const s = await at(); return s.max - s.top; }).toBeLessThan(4);
+  await expect(box).toBeFocused();
+
+  // With a draft in the box the keys are the box's own: the conversation stays where it is.
+  await page.keyboard.press("PageUp");
+  await expect.poll(async () => { const s = await at(); return s.max - s.top; }).toBeGreaterThan(400);
+  await box.fill("a draft\nof two lines");
+  await page.waitForTimeout(500); // the glide ends, and the box has its two lines
+  const held = await at();
+  await page.keyboard.press("End");
+  await page.keyboard.press("PageDown");
+  await page.waitForTimeout(500);
+  expect(Math.abs((await at()).top - held.top)).toBeLessThan(4);
+  await box.fill("");
+  // The sheet names the paging keys beside End.
+  await page.keyboard.press("Control+/");
+  await expect(page.getByTestId("shortcuts").locator("div").filter({ hasText: /^Conversation up a page, from an empty boxPgUp$/ })).toBeVisible();
+  await expect(page.getByTestId("shortcuts").locator("div").filter({ hasText: /^Conversation down a page, from an empty boxPgDn$/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await request.delete(`/api/sessions/${id}`);
+});
