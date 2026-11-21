@@ -13,7 +13,8 @@
 // GET  /api/debug/spans/:id                     { span }
 // POST /api/debug/spans/:id/replay { route? }   sends a failed request again (to its own route or another)
 //                                               -> { span, ok, error?, text?, stop? }; a refusal is ok: false with stop "refusal"
-// GET  /api/debug/export                        the OTLP exporter's state
+// GET  /api/debug/export                        the OTLP exporter's state (traces), with `metrics` and `events` for the other two signals
+// POST /api/debug/export/flush                  sends what waits now, the measurements of the open window included -> the same state
 // GET  /api/logs?since_ms=&level=&q=&limit=     the daemon's kept log lines -> { lines, dir }
 // GET  /api/logs/stream?level=                  the same, live, as server-sent events
 import { spawnSync } from "node:child_process";
@@ -26,7 +27,8 @@ import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin
 import { newestTurn } from "../../admin/marks.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { turnReceipt } from "../../admin/receipt.ts";
-import { endpointOf, headerRefError, headerSourceOf, OtlpExporter } from "../../admin/otlp.ts";
+import { endpointOf, headerRefError, headerSourceOf, OtlpExporter, providerName } from "../../admin/otlp.ts";
+import { type LogEvent, Meter, metricInterval, type Point, promptEvent, signalEndpoint, signalOn, spanEvent, spanMetrics, toOtlpLogs, toOtlpMetrics } from "../../admin/otlp-signals.ts";
 import { key } from "../../providers/creds.ts";
 import { onSettings, registerSettings, settings } from "../../admin/settings.ts";
 import { TRACE_LIST, TRACE_LIST_MAX, traceparent, Tracer } from "../../admin/trace.ts";
@@ -41,8 +43,11 @@ import { buildId } from "./admin.ts";
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const G = globalThis as any;
 
-registerSettings("observe", { otlp_endpoint: null, otlp_headers: null }, (v) =>
-  v.otlp_endpoint === null || (typeof v.otlp_endpoint === "string" && /^https?:\/\/\S+$/.test(v.otlp_endpoint)) ? headerRefError(v.otlp_headers) : "otlp_endpoint is an http(s) URL, or null",
+// otlp_metrics, otlp_events: whether those signals go out beside the traces
+// (null: as the OpenTelemetry selectors in the daemon's environment say).
+registerSettings("observe", { otlp_endpoint: null, otlp_headers: null, otlp_metrics: null, otlp_events: null }, (v) =>
+  ![v.otlp_metrics, v.otlp_events].every((x) => x === null || typeof x === "boolean") ? "otlp_metrics and otlp_events are true, false or null"
+    : v.otlp_endpoint === null || (typeof v.otlp_endpoint === "string" && /^https?:\/\/\S+$/.test(v.otlp_endpoint)) ? headerRefError(v.otlp_headers) : "otlp_endpoint is an http(s) URL, or null",
 );
 
 // Keel's source folder, when the daemon runs from a checkout (not the one binary), and its commit.
@@ -65,18 +70,51 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
 
   // One exporter per process; hot reload re-points it.
   G.__keelOtlp?.stop();
-  const exporter = new OtlpExporter(
-    { "service.name": "keel", "service.version": version, "process.pid": process.pid, "telemetry.sdk.name": "keel", "telemetry.sdk.language": "javascript" },
-    key,
-    (e) => errors.capture("server", e, { at: "otlp export" }),
-  );
+  const resource = { "service.name": "keel", "service.version": version, "process.pid": process.pid, "telemetry.sdk.name": "keel", "telemetry.sdk.language": "javascript" };
+  const fail = (e: Error) => errors.capture("server", e, { at: "otlp export" });
+  const exporter = new OtlpExporter(resource, key, fail);
   G.__keelOtlp = exporter;
-  const point = () => exporter.configure(endpointOf(settings().observe?.otlp_endpoint, process.env), headerSourceOf(settings().observe?.otlp_headers, process.env));
+  // The other two signals, each to its own address at the same collector (otlp-signals.ts).
+  G.__keelOtlpMore?.();
+  const metricsOut = new OtlpExporter<Point>(resource, key, fail, toOtlpMetrics, "OTLP metrics export");
+  const eventsOut = new OtlpExporter<LogEvent>(resource, key, fail, toOtlpLogs, "OTLP events export");
+  const meter = new Meter();
+  let window: ReturnType<typeof setTimeout> | undefined;
+  // A window of measurements goes out one interval after its first one: an idle daemon sends nothing.
+  const collect = () => {
+    clearTimeout(window);
+    window = undefined;
+    for (const p of meter.collect()) metricsOut.push(p);
+  };
+  meter.onFirst = () => { window ??= setTimeout(() => detached(collect), metricInterval(process.env)); };
+  const point = () => {
+    const o = settings().observe ?? {};
+    exporter.configure(endpointOf(o.otlp_endpoint, process.env), headerSourceOf(o.otlp_headers, process.env));
+    metricsOut.configure(signalOn("metrics", o.otlp_metrics, process.env) ? signalEndpoint("metrics", o.otlp_endpoint, process.env) : null, headerSourceOf(o.otlp_headers, process.env, "METRICS"));
+    eventsOut.configure(signalOn("logs", o.otlp_events, process.env) ? signalEndpoint("logs", o.otlp_endpoint, process.env) : null, headerSourceOf(o.otlp_headers, process.env, "LOGS"));
+    if (!metricsOut.state.endpoint) { clearTimeout(window); window = undefined; meter.collect(); }
+  };
   point();
   G.__keelOtlpOff?.();
   G.__keelOtlpOff = onSettings(point);
   // The export is the daemon's own work: its timers and what they fail with belong to no turn.
-  t.onEnd((s) => detached(() => exporter.push(s)));
+  t.onEnd((s) => detached(() => {
+    exporter.push(s);
+    if (metricsOut.state.endpoint) spanMetrics(meter, s);
+    const e = eventsOut.state.endpoint ? spanEvent(s) : null;
+    if (e) eventsOut.push(e);
+  }));
+  // What no span holds: a prompt arriving, and what a turn cost.
+  const offBus = bus.on((f) => {
+    if (f.t !== "event" || (!metricsOut.state.endpoint && !eventsOut.state.endpoint)) return;
+    const e = f.event;
+    if (e.kind === "user" && eventsOut.state.endpoint) detached(() => eventsOut.push(promptEvent(e)));
+    else if (e.kind === "turn_end" && metricsOut.state.endpoint && e.data?.usage?.cost > 0) {
+      const route = store.session(e.session_id)?.model ?? "";
+      meter.add("keel.cost.usage", "USD", { "gen_ai.request.model": route.slice(route.indexOf(":") + 1), "gen_ai.provider.name": providerName(route) }, e.data.usage.cost);
+    }
+  });
+  G.__keelOtlpMore = () => { clearTimeout(window); metricsOut.stop(); eventsOut.stop(); offBus(); };
   // A command a turn runs joins the turn's trace (W3C trace context), as Claude Code's shells do, when traces go out.
   registerEnv((sid): Record<string, string> => {
     if (!exporter.state.endpoint || !engine.isRunning(sid)) return {};
@@ -222,7 +260,14 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
       },
     },
 
-    "/api/debug/export": { GET: () => json(exporter.state) },
+    "/api/debug/export": { GET: () => json({ ...exporter.state, metrics: metricsOut.state, events: eventsOut.state }) },
+    "/api/debug/export/flush": {
+      POST: async () => {
+        collect();
+        await Promise.all([exporter.flush(), metricsOut.flush(), eventsOut.flush()]);
+        return json({ ...exporter.state, metrics: metricsOut.state, events: eventsOut.state });
+      },
+    },
 
     "/api/logs": {
       GET: (req: Request) => {

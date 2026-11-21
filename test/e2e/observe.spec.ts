@@ -17,12 +17,18 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
 
-  // A stand-in OTLP collector.
+  // A stand-in OTLP collector: traces, and the metrics and events beside them.
   const got: any[] = [];
+  const metrics: any[] = [];
+  const logs: any[] = [];
   const collector = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", () => { if (req.url === "/v1/traces") got.push(JSON.parse(body)); res.writeHead(200, { "content-type": "application/json" }).end("{}"); });
+    req.on("end", () => {
+      const to = req.url === "/v1/traces" ? got : req.url === "/v1/metrics" ? metrics : req.url === "/v1/logs" ? logs : null;
+      to?.push(JSON.parse(body));
+      res.writeHead(to ? 200 : 404, { "content-type": "application/json" }).end("{}");
+    });
   });
   await new Promise<void>((r) => collector.listen(0, "127.0.0.1", r));
   const port = (collector.address() as AddressInfo).port;
@@ -32,6 +38,14 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     await page.getByTestId("otlp-endpoint").fill(`http://127.0.0.1:${port}/v1/traces`);
     await page.getByTestId("otlp-save").click();
     await expect(page.getByTestId("otlp-state")).toContainText("0 sent");
+    // Metrics and events are off until the owner turns them on: a collector that takes only traces is not sent them.
+    await expect(page.getByTestId("otlp-metrics")).toHaveAttribute("aria-checked", "false");
+    await page.getByTestId("otlp-metrics").click();
+    await page.getByTestId("otlp-events").click();
+    await expect(page.getByTestId("otlp-metrics-where")).toContainText(`To http://127.0.0.1:${port}/v1/metrics.`);
+    await expect(page.getByTestId("otlp-events-where")).toContainText(`To http://127.0.0.1:${port}/v1/logs.`);
+    await page.getByTestId("otlp-events-where").evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await shoot(page, "observe-00-signals");
 
     // Auth headers by reference: a name is saved, never a secret, and the daemon says what it found there.
     const hdr = page.getByTestId("otlp-headers");
@@ -95,6 +109,20 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     expect(JSON.stringify(got)).not.toContain("credit balance");
     expect((await (await request.get(`/api/debug/spans/${err.span_id}`)).json()).span.error).toContain("credit balance is too low");
 
+    // The same turn as metrics and events at the same collector, and as little of it: names, counts, classes.
+    await request.post("/api/debug/export/flush");
+    const series = metrics.flatMap((b) => b.resourceMetrics[0].scopeMetrics[0].metrics);
+    const attrOf = (x: any, k: string) => x.attributes.find((a: any) => a.key === k)?.value?.stringValue;
+    const failed = series.filter((m: any) => m.name === "keel.request.count").flatMap((m: any) => m.sum.dataPoints).find((p: any) => attrOf(p, "error.type") === "quota");
+    expect([failed.asInt, attrOf(failed, "gen_ai.request.model"), attrOf(failed, "keel.status"), series.find((m: any) => m.name === "keel.request.count").sum.aggregationTemporality]).toEqual(["1", "stand-in", "error", 1]);
+    expect(series.map((m: any) => m.name)).toEqual(expect.arrayContaining(["keel.turn.count", "keel.request.count", "keel.request.duration", "keel.turn.duration"]));
+    const records = logs.flatMap((b) => b.resourceLogs[0].scopeLogs[0].logRecords);
+    expect(records.map((r: any) => r.eventName)).toEqual(expect.arrayContaining(["keel.user_prompt", "keel.api_error", "keel.turn"]));
+    const apiError = records.find((r: any) => r.eventName === "keel.api_error" && r.spanId === err.span_id);
+    expect([apiError.severityText, apiError.traceId, attrOf(apiError, "error.type"), attrOf(apiError, "gen_ai.conversation.id")]).toEqual(["ERROR", chat.traceId, "quota", session.id]);
+    for (const out of [metrics, logs]) for (const word of ["script:billing", "credit balance"]) expect(JSON.stringify(out)).not.toContain(word);
+    expect(JSON.stringify(metrics)).not.toContain(session.id);
+
     // A subagent's first turn sits under the spawn call in the parent's trace.
     const { session: lead } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Subagent trace" } })).json();
     await page.goto(`/s/${lead.id}`);
@@ -136,6 +164,8 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     await page.getByTestId("log-filter").fill("");
     await shoot(page, "observe-05-logs");
   } finally {
+    // The two signals go back to off: the collector they went to is closed here.
+    await request.patch("/api/settings", { data: { observe: { otlp_metrics: null, otlp_events: null } } }).catch(() => {});
     collector.close();
   }
 });

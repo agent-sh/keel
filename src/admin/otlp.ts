@@ -18,7 +18,7 @@ const val = (v: unknown): AnyValue | undefined => {
   if (Array.isArray(v)) return { arrayValue: { values: v.map(val).filter((x): x is AnyValue => !!x) } };
   return { stringValue: String(v) };
 };
-const kvs = (o: Record<string, unknown>): KV[] =>
+export const kvs = (o: Record<string, unknown>): KV[] =>
   Object.entries(o).flatMap(([key, v]) => {
     const value = val(v);
     return value ? [{ key, value }] : [];
@@ -31,7 +31,7 @@ export const providerName = (route: string) => {
   return PROVIDERS[id] ?? id;
 };
 
-const nanos = (ms: number) => `${BigInt(Math.round(ms)) * 1_000_000n}`;
+export const nanos = (ms: number) => `${BigInt(Math.round(ms)) * 1_000_000n}`;
 const hostOf = (u?: string) => {
   try { return u ? new URL(u).hostname : undefined; } catch { return undefined; }
 };
@@ -140,10 +140,11 @@ export function headerRefError(v: unknown): string | undefined {
 }
 
 export type HeaderSource = { src: KeySource; label: string; from: "setting" | "env" };
-export function headerSourceOf(ref: HeaderRef | null | undefined, env: Record<string, string | undefined>): HeaderSource | null {
+// `signal`: whose headers (TRACES, METRICS or LOGS): its own variable comes before the shared one.
+export function headerSourceOf(ref: HeaderRef | null | undefined, env: Record<string, string | undefined>, signal = "TRACES"): HeaderSource | null {
   if (ref?.env) return { src: { env: ref.env }, label: `$${ref.env}`, from: "setting" };
   if (ref?.cred) return { src: { cred: ref.cred }, label: `keyring entry ${ref.cred}`, from: "setting" };
-  for (const n of ["OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS"]) if (env[n]) return { src: { env: n }, label: `$${n}`, from: "env" };
+  for (const n of [`OTEL_EXPORTER_OTLP_${signal}_HEADERS`, "OTEL_EXPORTER_OTLP_HEADERS"]) if (env[n]) return { src: { env: n }, label: `$${n}`, from: "env" };
   return null;
 }
 
@@ -162,16 +163,21 @@ export type ExportState = { endpoint: string | null; from: "setting" | "env" | n
 // One collector's work: the spans waiting for it, its timer, its backoff and
 // the request in flight. Another collector gets another one, so nothing queued
 // or under way for the first reaches the second.
-type Target = { url: string; queue: Span[]; timer?: ReturnType<typeof setTimeout>; backoffUntil: number; busy: boolean; cancel: AbortController };
+type Target<T> = { url: string; queue: T[]; timer?: ReturnType<typeof setTimeout>; backoffUntil: number; busy: boolean; cancel: AbortController };
 
 // Batches finished spans and posts them; a failed post waits 30 s, the spans kept.
-export class OtlpExporter {
-  private target: Target | null = null;
+// The same for the other signals (otlp-signals.ts): `encode` makes a batch's
+// body, `what` names the signal in a failure.
+export class OtlpExporter<T = Span> {
+  private target: Target<T> | null = null;
   private source: HeaderSource | null = null;
   state: ExportState = { endpoint: null, from: null, headers: null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null, queued: 0 };
 
   // read: a source's value (providers/creds.ts key(), which caches a keyring read a few minutes).
-  constructor(private resource: Record<string, unknown>, private read: (src: KeySource) => Promise<string | null>, private onFail: (e: Error) => void) {}
+  constructor(
+    private resource: Record<string, unknown>, private read: (src: KeySource) => Promise<string | null>, private onFail: (e: Error) => void,
+    private encode: (batch: T[], resource: Record<string, unknown>) => unknown = toOtlp as unknown as (batch: T[], resource: Record<string, unknown>) => unknown, private what = "OTLP export",
+  ) {}
 
   configure(ep: { url: string; from: "setting" | "env" } | null, headers: HeaderSource | null = null) {
     // Another collector, or none: what waited or was under way for the last
@@ -204,11 +210,11 @@ export class OtlpExporter {
     return r.headers;
   }
 
-  private arm(t: Target, ms: number) {
+  private arm(t: Target<T>, ms: number) {
     t.timer ??= setTimeout(() => { t.timer = undefined; void this.flush(); }, ms);
   }
 
-  push(s: Span) {
+  push(s: T) {
     const t = this.target;
     if (!t) return;
     t.queue.push(s);
@@ -228,8 +234,8 @@ export class OtlpExporter {
     try {
       const headers = await this.headers();
       if (!current()) return;
-      const r = await fetch(t.url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(toOtlp(batch, this.resource)), signal: AbortSignal.any([t.cancel.signal, AbortSignal.timeout(10_000)]) });
-      if (!r.ok) throw new Error(`OTLP export to ${t.url}: HTTP ${r.status}: ${(await r.text().catch(() => "")).slice(0, 300)}`);
+      const r = await fetch(t.url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(this.encode(batch, this.resource)), signal: AbortSignal.any([t.cancel.signal, AbortSignal.timeout(10_000)]) });
+      if (!r.ok) throw new Error(`${this.what} to ${t.url}: HTTP ${r.status}: ${(await r.text().catch(() => "")).slice(0, 300)}`);
       if (!current()) return;
       this.state.sent += batch.length;
       this.state.last_ok_ms = Date.now();
@@ -240,7 +246,7 @@ export class OtlpExporter {
       this.state.failures++;
       this.state.last_error = (e as Error).message;
       t.backoffUntil = Date.now() + 30_000;
-      this.onFail(e instanceof Error && e.message.startsWith("OTLP") ? e : new Error(`OTLP export to ${t.url}: ${(e as Error).message}`));
+      this.onFail(e instanceof Error && e.message.startsWith("OTLP") ? e : new Error(`${this.what} to ${t.url}: ${(e as Error).message}`));
     } finally {
       t.busy = false;
       if (current()) {

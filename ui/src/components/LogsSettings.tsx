@@ -6,12 +6,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, reportError } from "../lib/store.ts";
 import { clock, cn, when } from "../lib/utils.ts";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
+import { Toggle } from "./surfaces/kit.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
 type Line = { ts: number; level: "debug" | "info" | "warn" | "error"; text: string };
 type HeadersShown = { label: string; from: "setting" | "env"; names: string[]; missing: boolean };
 type HeaderRef = { env?: string; cred?: string };
-type Export = { endpoint: string | null; from: "setting" | "env" | null; headers: HeadersShown | null; sent: number; dropped: number; failures: number; last_ok_ms: number | null; last_error: string | null; queued: number };
+type Sent = { endpoint: string | null; from: "setting" | "env" | null; headers: HeadersShown | null; sent: number; dropped: number; failures: number; last_ok_ms: number | null; last_error: string | null; queued: number };
+type Export = Sent & { metrics: Sent; events: Sent };
 const LEVELS = ["debug", "info", "warn", "error"] as const;
 const KEEP = 1000;
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
@@ -52,7 +54,27 @@ function Exporter() {
           {st.endpoint ? `${st.sent} sent${st.queued ? `, ${st.queued} waiting` : ""}${st.dropped ? `, ${st.dropped} dropped` : ""}${st.last_ok_ms ? `, last ${when(st.last_ok_ms)}` : ""}` : "Off"}
         </span>
       </SettingRow>
+      <Signal id="metrics" label="Send metrics" what="Counts, durations, tokens and cost per model and tool, to /v1/metrics at the same collector. No session ids, no text." on={settings.observe?.otlp_metrics ?? null} st={st.metrics} traces={saved} set={(v) => patch({ observe: { otlp_metrics: v } }).then(load).catch(reportError)} />
+      <Signal id="events" label="Send events" what="One event per prompt, model request, tool call and turn, to /v1/logs, each with its trace. Lengths, names and failure classes: never the words." on={settings.observe?.otlp_events ?? null} st={st.events} traces={saved} set={(v) => patch({ observe: { otlp_events: v } }).then(load).catch(reportError)} />
     </Card>
+  );
+}
+
+// One more signal to the collector: on or off, where it goes and how it went.
+// `on` null: the daemon's environment decides (the OpenTelemetry selectors).
+function Signal({ id, label, what, on, st, traces, set }: { id: string; label: string; what: string; on: boolean | null; st: Sent; traces: string; set: (v: boolean) => void }) {
+  const active = on ?? !!st.endpoint;
+  const state = st.last_error ? st.last_error
+    : st.endpoint ? `To ${st.endpoint}${st.from === "env" ? " (from the environment)" : ""}.`
+    : active ? (traces ? "On, with nowhere to send: the traces address does not end in /v1/traces." : "On, with nowhere to send: set the traces address.")
+    : "";
+  return (
+    <SettingRow label={label} hint={<>{what}{state && <span className={cn("mt-1 block", st.last_error ? "text-danger" : "")} data-testid={`otlp-${id}-where`}>{state}</span>}</>}>
+      <span className="flex items-center gap-3">
+        {st.endpoint && <span className="text-ui tabular-nums text-muted" data-testid={`otlp-${id}-state`}>{st.sent} sent{st.queued ? `, ${st.queued} waiting` : ""}{st.dropped ? `, ${st.dropped} dropped` : ""}</span>}
+        <Toggle on={active} label={label} testid={`otlp-${id}`} onChange={set} />
+      </span>
+    </SettingRow>
   );
 }
 
