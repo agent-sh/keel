@@ -15,6 +15,15 @@
 // it was ended in the middle of is kept (the end receipt) until the copy holds
 // it in a note. A copy that fails after the stop says so, and the retry makes
 // the copy only: nothing is stopped twice, and nothing in flight is forgotten.
+//
+// The end receipt is stored (fleet_resume_ends), so a daemon that restarts
+// between the stop and the copy still owes the copy and makes it at its start.
+// It is written before the stop is sent ("stopping") and again with the
+// machine's answer ("stopped"). A stop whose answer never came is settled by
+// looking: the original still runs (nothing was ended, the receipt goes), or
+// it is gone (ended, with what the owner was shown as the work in flight).
+// The note in the copy and the receipt's removal are one write: one copy,
+// told once.
 import type { Bus } from "../core/bus.ts";
 import { contains } from "../core/paths.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -42,7 +51,10 @@ export type Wait = {
 // The original is ended and its copy is not made yet: what the copy will be told.
 type EndReceipt = {
   machine_id: string; harness: Harness; id: string; model?: string; waited_ms?: number;
-  ended: Ended; in_flight: InFlight[]; stopped_ms: number; error?: string;
+  state: "stopping" | "stopped"; process: NonNullable<Seen["process"]>; jobs: "keep" | "end";
+  in_flight: InFlight[]; ended?: Ended; stopped_ms?: number; error?: string;
+  // The stop's answer never came: the original was found gone afterwards.
+  unconfirmed?: boolean;
 };
 export type Pending = { stopped_ms: number; how?: string; in_flight: number; error?: string };
 export type Resumed = {
@@ -57,6 +69,8 @@ export class ResumeError extends Error {
 }
 
 const POLL_MS = 2000;
+const RECOVER_MS = 20_000; // a copy owed at the start is tried again this often while the machine does not answer
+const RECOVER_TRIES = 6;
 const KEEP_MS = 10 * 60_000; // a finished wait stays on its row this long
 const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 const mins = (ms: number) => (ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`);
@@ -83,8 +97,79 @@ export class Resumes {
   private ends = new Map<string, EndReceipt>();
   // The conversations a resume works on now: one at a time each, so one copy.
   private busy = new Set<string>();
+  private timers = new Set<Timer>();
+  private stopped = false;
 
-  constructor(private d: { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker }, private fleet: Fleet, private imports: Imports) {}
+  constructor(private d: { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker }, private fleet: Fleet, private imports: Imports) {
+    d.store.migrate("CREATE TABLE IF NOT EXISTS fleet_resume_ends (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
+    for (const r of d.store.db.query<{ key: string; data: string }, []>("SELECT key, data FROM fleet_resume_ends").all()) this.ends.set(r.key, JSON.parse(r.data));
+  }
+
+  // What the last daemon left: an original it ended (or was ending) whose copy
+  // is not made. The copy is made now; a machine that does not answer is asked
+  // again for a while, then the receipt waits for the owner (the card shows it).
+  recover(delayMs = 2000) {
+    for (const k of this.ends.keys()) this.later(() => void this.recoverOne(k, 0), delayMs);
+  }
+
+  // A hot reload builds a new one: this one's timers end.
+  stop() {
+    this.stopped = true;
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
+  }
+
+  private later(f: () => void, ms: number): Timer {
+    const t = setTimeout(() => { this.timers.delete(t); if (!this.stopped) f(); }, ms);
+    this.timers.add(t);
+    return t;
+  }
+
+  private saveEnd(k: string, r: EndReceipt) {
+    this.ends.set(k, r);
+    this.d.store.db.query("INSERT OR REPLACE INTO fleet_resume_ends (key, data) VALUES (?, ?)").run(k, JSON.stringify(r));
+  }
+  private dropEnd(k: string) {
+    this.ends.delete(k);
+    this.d.store.db.query("DELETE FROM fleet_resume_ends WHERE key = ?").run(k);
+  }
+
+  private async recoverOne(k: string, n: number) {
+    const r = this.ends.get(k);
+    if (!r || this.busy.has(k)) return;
+    const m = this.fleet.row(r.machine_id);
+    if (!m?.workspace_root) return this.saveEnd(k, { ...r, error: "the machine is no longer enabled with a granted directory" });
+    this.busy.add(k);
+    try {
+      const owed = await this.owed(m, k);
+      if (owed) await this.complete(m, r.harness, r.id, owed, owed.model);
+    } catch (e) {
+      const link = e instanceof LinkError || (e instanceof ResumeError && e.more.link === true);
+      if (link && n + 1 < RECOVER_TRIES) this.later(() => void this.recoverOne(k, n + 1), RECOVER_MS);
+      else if (link) this.d.errors.capture("server", e, { at: "resume copy owed", machine: r.machine_id });
+    } finally {
+      this.busy.delete(k);
+    }
+  }
+
+  // The original of this conversation that is ended with its copy not made, if any.
+  private async owed(m: MachineRow, k: string): Promise<EndReceipt | undefined> {
+    const r = this.ends.get(k);
+    return r?.state === "stopping" ? this.settle(m, r) : r;
+  }
+
+  // A stop that was sent and whose answer is not known. The original still
+  // runs (or runs again, started there since): nothing of this stop is owed.
+  // It is gone: the stop ended it, and the copy is owed with what was in flight.
+  private async settle(m: MachineRow, r: EndReceipt): Promise<EndReceipt | undefined> {
+    const k = this.key(r.machine_id, r.harness, r.id);
+    const seen = await this.activity(m, r.harness, r.id);
+    if (seen.process) return void this.dropEnd(k);
+    const jobs = r.in_flight.filter((i) => i.kind === "job").map((j) => ({ label: j.label, command: j.command, pid: j.pid, pgid: j.pgid, since_ms: j.since_ms, running: r.jobs === "keep" }));
+    const stopped: EndReceipt = { ...r, state: "stopped", unconfirmed: true, stopped_ms: Date.now(), ended: { ended: true, was_running: true, how: "SIGTERM", in_flight: r.in_flight, jobs, calls: [] } };
+    this.saveEnd(k, stopped);
+    return stopped;
+  }
 
   private key = (machine: string, harness: string, id: string) => `${machine}:${harness}:${id}`;
   private q = (harness: string, id: string) => `harness=${encodeURIComponent(harness)}&id=${encodeURIComponent(id)}`;
@@ -105,7 +190,7 @@ export class Resumes {
   // The original was ended and the copy is still to be made.
   pendingOf(machine: string, harness: string, id: string): Pending | undefined {
     const r = this.ends.get(this.key(machine, harness, id));
-    return r && { stopped_ms: r.stopped_ms, how: r.ended.how, in_flight: r.in_flight.length, error: r.error };
+    return r?.state === "stopped" ? { stopped_ms: r.stopped_ms!, how: r.ended?.how, in_flight: r.in_flight.length, error: r.error } : undefined;
   }
 
   // A copy that went on in Keel is never appended to.
@@ -176,19 +261,26 @@ export class Resumes {
 
   // Ends the original and makes the copy. `seen`: the state the owner acted on.
   private async finish(m: MachineRow, harness: Harness, id: string, seen: Seen, o: { jobs: "keep" | "end"; model?: string; waited_ms?: number; idle_ms?: number }): Promise<Resumed | null> {
+    const k = this.key(m.id, harness, id);
+    const owed = await this.owed(m, k);
+    if (owed) return this.complete(m, harness, id, owed, o.model ?? owed.model);
     await this.preflight(m, harness, id, o.model);
     let receipt: EndReceipt | undefined;
     if (seen.process) {
+      // Stored before the stop leaves: a stop whose answer is lost (the link, or
+      // this daemon going down) is settled from it, never sent blind again.
+      this.saveEnd(k, { machine_id: m.id, harness, id, model: o.model, waited_ms: o.waited_ms, state: "stopping", process: seen.process, jobs: o.jobs, in_flight: seen.in_flight });
       const ended = await this.fleet.handsJson<Ended>(m.id, "/api/fleet/hands/harness/end", {
         method: "POST", timeout: 60_000,
         body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs, revision: seen.revision, idle_ms: o.idle_ms }),
       });
+      // An answer: nothing was ended, or it was and the copy is owed from here.
+      if (!ended.ended || !ended.was_running) this.dropEnd(k);
       if (ended.deferred) return null;
       if (!ended.ended) throw new ResumeError(409, `Keel did not end the original on ${m.name}: ${ended.why ?? "no reason given"}. Nothing was copied; end it there, or look again.`);
-      // Ended: from here the copy is owed, with what it was ended in the middle of.
       if (ended.was_running) {
-        receipt = { machine_id: m.id, harness, id, model: o.model, waited_ms: o.waited_ms, ended, in_flight: ended.in_flight ?? seen.in_flight, stopped_ms: Date.now() };
-        this.ends.set(this.key(m.id, harness, id), receipt);
+        receipt = { ...this.ends.get(k)!, state: "stopped", ended, in_flight: ended.in_flight ?? seen.in_flight, stopped_ms: Date.now() };
+        this.saveEnd(k, receipt);
       }
     }
     return this.complete(m, harness, id, receipt, o.model);
@@ -205,8 +297,8 @@ export class Resumes {
     } catch (e) {
       if (!receipt) throw e;
       if (!(e instanceof LinkError) && !(e instanceof ResumeError) && (e as any)?.status !== 409) this.d.errors.capture("server", e, { at: "resume copy", machine: m.id });
-      receipt.error = e instanceof LinkError ? `${m.name} did not answer: ${e.message}` : (e as Error).message;
-      throw new ResumeError(502, `The original on ${m.name} was stopped, but the copy did not finish: ${receipt.error}. Finish the copy: nothing is stopped again.`, { stopped: true, pending: this.pendingOf(m.id, harness, id) });
+      this.saveEnd(k, { ...receipt, error: e instanceof LinkError ? `${m.name} did not answer: ${e.message}` : (e as Error).message });
+      throw new ResumeError(502, `The original on ${m.name} was stopped, but the copy did not finish: ${this.ends.get(k)!.error}. Finish the copy: nothing is stopped again.`, { stopped: true, link: e instanceof LinkError, pending: this.pendingOf(m.id, harness, id) });
     }
     const ended: Ended = receipt?.ended ?? { ended: true, was_running: false, jobs: [], calls: [] };
     const label = HARNESSES.find((h) => h.harness === harness)?.label ?? harness;
@@ -215,12 +307,18 @@ export class Resumes {
     const flight = receipt?.in_flight ?? [];
     if (flight.length) {
       text += `\nIt was ended while this was in flight:\n${inFlightLines(flight, ended, receipt!.stopped_ms)}`;
+      if (receipt!.unconfirmed) text += "\nThe machine's answer to the stop did not arrive: this is what was in flight when Keel sent it, and what survived there is not known.";
       if (flight.some((i) => i.kind !== "job")) text += "\nCheck any surviving process before redoing interrupted work.";
       if (ended.jobs.some((j) => j.running)) text += "\nA job left running still does the original's work on that machine: look at it before starting it again.";
       if (ended.jobs.some((j) => !j.running)) text += "\nA job that ended with it did not finish: start it again if it is still needed.";
     }
-    if (ended.was_running || c.gap) this.write(c.session.id, text);
-    this.ends.delete(k);
+    // The note and the receipt's end are one write: the copy is told once.
+    const told = this.d.store.atomic(c.session.id, () => {
+      const e = (ended.was_running || c.gap) && !this.d.engine.isRunning(c.session.id) ? this.d.store.append(c.session.id, "note", { kind: "takeover", text, model: true }) : undefined;
+      this.dropEnd(k);
+      return e;
+    });
+    if (told) this.d.bus.emit({ t: "event", event: told });
     return {
       action: "taken_over", session: this.d.store.session(c.session.id)!, imported_events: c.imported_events, counts: c.read.counts, notes: c.read.notes,
       stopped: !!ended.was_running, was_running: !!ended.was_running, how: how ?? undefined, in_flight: flight, jobs: ended.jobs, not_copied: c.gap,
@@ -237,8 +335,8 @@ export class Resumes {
     if (this.busy.has(k)) throw new ResumeError(409, "Keel is resuming this conversation now.");
     this.busy.add(k);
     try {
-      const owed = this.ends.get(k);
-      if (owed) return await this.complete(m, harness, id, owed, o.model);
+      const owed = await this.owed(m, k);
+      if (owed) return await this.complete(m, harness, id, owed, o.model ?? owed.model);
       if (o.when === "copy") throw new ResumeError(409, "No stopped original waits for its copy. Look again.");
       return await this.choose(m, harness, id, { ...o, when: o.when });
     } finally {

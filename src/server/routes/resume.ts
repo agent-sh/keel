@@ -2,6 +2,7 @@
 // whether the original still works on something, the owner's choice (wait
 // until it is idle, or resume now), and the wait while it runs. The list and
 // the plain import are in imports.ts; the flow is src/fleet/resume.ts.
+import { runMode } from "../../core/runmode.ts";
 import type { MachineRow } from "../../fleet/db.ts";
 import { LinkError } from "../../fleet/link.ts";
 import { ResumeError, Resumes } from "../../fleet/resume.ts";
@@ -29,7 +30,12 @@ export function grantedMachine(id: string): MachineRow | Response {
 }
 
 export const resumeRoutes: RouteModule = (deps: Deps) => {
-  resumes = fleet ? new Resumes(deps, fleet, sharedImports(deps.store)) : undefined;
+  // A hot reload builds a new one: the old one's timers end first.
+  const g = globalThis as { __keelResumes?: Resumes };
+  g.__keelResumes?.stop();
+  resumes = g.__keelResumes = fleet ? new Resumes(deps, fleet, sharedImports(deps.store)) : undefined;
+  // A copy the last daemon still owed (it ended the original and went down) is made now.
+  if (!runMode.client) resumes?.recover();
   const service = () => resumes!;
   // The machine, and the transcript named; only a machine reached over ssh has a helper that answers.
   const named = (req: any, q: { harness?: unknown; id?: unknown }): { m: MachineRow; harness: Harness; id: string } | Response => {

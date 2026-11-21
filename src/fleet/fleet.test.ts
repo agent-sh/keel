@@ -806,3 +806,156 @@ test("a move whose commit is already at the destination still moves the carry re
     rig.close();
   }
 });
+
+// A take-over's own pieces: a machine whose helper answers from a script (what
+// runs there, the stop, the transcript), an import that counts its copies, and
+// a daemon that can start again on the same store.
+async function takeoverRig() {
+  const { rmSync } = await import("node:fs");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Resumes } = await import("./resume.ts");
+  const { LinkError } = await import("./link.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-takeover-"));
+  const root = join(dir, "work");
+  mkdirSync(root);
+  const process_ = { pid: 4242, started_ms: 1_700_000_000_000 };
+  const flight = [{ kind: "job", label: "bench.sh", command: "sh bench.sh", pid: 51, pgid: 51 }, { kind: "tool", label: "Run the slow check", pid: 52 }];
+  const rig = {
+    alive: true, stops: 0, copies: 0, reads: 0,
+    // What the helper does when asked: "lost" ends the original and the answer never arrives.
+    stop: "answer" as "answer" | "lost" | "unsent",
+    read: "ok" as "ok" | "fail",
+    store: undefined as unknown as InstanceType<typeof Store>,
+    resumes: undefined as unknown as InstanceType<typeof Resumes>,
+    m: { id: "s1", name: "box", workspace_root: root } as any,
+    copy: () => rig.store.sessions().find((s) => s.title === "copy"),
+    notes: () => (rig.copy() ? rig.store.events(rig.copy()!.id).filter((e) => e.kind === "note").map((e) => String((e.data as any).text)) : []),
+    now: (more: Record<string, unknown> = {}) => rig.resumes.resume(rig.m, "claude", "c1", { when: "now", jobs: "keep", revision: "r1", ...more } as any),
+    boot() {
+      (rig.resumes as any)?.stop?.();
+      rig.store?.db.close();
+      rig.store = new Store(join(dir, "state"));
+      const links = () => (rig.copy() ? [{ session_id: rig.copy()!.id, items: 0 }] : []);
+      const imports: any = {
+        links, wentOn: () => false,
+        async import(_f: unknown, o: any) {
+          const had = rig.copy();
+          if (!had) rig.copies++;
+          const session = had ?? rig.store.createSession({ model: o.model, workspace: o.workspace, title: "copy" });
+          return { action: had ? "updated" : "created", session, imported_events: had ? 0 : 3 };
+        },
+      };
+      const fleet: any = {
+        row: (id: string) => (id === "s1" ? rig.m : undefined),
+        async handsJson(_id: string, path: string) {
+          if (path.includes("/activity")) return rig.alive ? { state: "active", why: "a call runs", in_flight: flight, helpers: [], process: process_, revision: "r1", checked_ms: Date.now() } : { state: "ended", why: "", in_flight: [], helpers: [], checked_ms: Date.now() };
+          if (path.includes("/harness/end")) {
+            if (rig.stop === "unsent") throw new LinkError("the link dropped");
+            rig.stops++;
+            rig.alive = false;
+            if (rig.stop === "lost") throw new LinkError("no answer");
+            return { ended: true, was_running: true, how: "SIGTERM", in_flight: flight, jobs: [{ ...flight[0], running: true }], calls: [{ ...flight[1], running: false }] };
+          }
+          if (path.includes("full=1") && (rig.reads++, rig.read === "fail")) throw new LinkError("the transcript could not be read");
+          return { session: { harness: "claude", id: "c1", path: "/t.jsonl", cwd: root, cwd_exists: true }, read: { events: [], counts: {}, notes: [] } };
+        },
+      };
+      const providers: any = { resolve: async () => ({}), models: async () => [], defaultModel: async () => "fixture:m" };
+      rig.resumes = new Resumes({ store: rig.store, bus: new Bus(), engine: { isRunning: () => false } as any, providers, errors: { capture: () => ({}) } as any }, fleet, imports);
+    },
+    async settled() { for (let i = 0; i < 200 && (rig.resumes as any).ends.size; i++) await Bun.sleep(10); },
+    // The daemon's start: what the last one still owed is made good.
+    recover() { (rig.resumes as any).recover?.(0); },
+    close() { (rig.resumes as any).stop?.(); rig.store.db.close(); rmSync(dir, { recursive: true, force: true }); },
+  };
+  rig.boot();
+  return rig;
+}
+
+test("a take-over whose copy fails after the stop: one copy on the retry, told what was in flight, nothing stopped again", async () => {
+  const rig = await takeoverRig();
+  try {
+    // The stop is acknowledged, then the transcript cannot be read.
+    rig.read = "fail";
+    const failed = await rig.now().catch((e) => e);
+    expect(failed).toMatchObject({ status: 502, more: { stopped: true } });
+    expect(failed.message).toContain("was stopped, but the copy did not finish");
+    expect([rig.stops, rig.copies]).toEqual([1, 0]);
+    expect(rig.resumes.pendingOf("s1", "claude", "c1")).toMatchObject({ how: "SIGTERM", in_flight: 2 });
+    // Asked again while it still fails: the copy alone, no second stop.
+    await rig.now().catch(() => {});
+    expect(rig.stops).toBe(1);
+
+    rig.read = "ok";
+    const done: any = await rig.resumes.resume(rig.m, "claude", "c1", { when: "copy", jobs: "keep" });
+    expect(done).toMatchObject({ action: "taken_over", stopped: true, how: "SIGTERM" });
+    expect(done.in_flight).toHaveLength(2);
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    const told = rig.notes().filter((t) => t.includes("was ended"));
+    expect(told).toHaveLength(1);
+    expect(told[0]).toContain("on box was ended (SIGTERM)");
+    expect(told[0]).toContain("background job, left running there");
+    expect(told[0]).toContain("call, interrupted: Run the slow check");
+    expect(rig.resumes.pendingOf("s1", "claude", "c1")).toBeUndefined();
+    expect(await rig.resumes.resume(rig.m, "claude", "c1", { when: "copy", jobs: "keep" }).catch((e) => e.status)).toBe(409);
+  } finally {
+    rig.close();
+  }
+});
+
+test("a take-over cut by a restart after the stop: the daemon that starts makes the copy, once", async () => {
+  const rig = await takeoverRig();
+  try {
+    rig.read = "fail";
+    await rig.now().catch(() => {});
+    expect([rig.stops, rig.copies]).toEqual([1, 0]);
+    // The daemon starts again: the receipt is still there, and the copy is made from it.
+    rig.read = "ok";
+    rig.boot();
+    expect(rig.resumes.pendingOf("s1", "claude", "c1")).toMatchObject({ in_flight: 2 });
+    rig.recover();
+    await rig.settled();
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    expect(rig.notes().filter((t) => t.includes("call, interrupted: Run the slow check"))).toHaveLength(1);
+    // Another start has nothing left to do.
+    rig.boot();
+    rig.recover();
+    await Bun.sleep(30);
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    expect(rig.notes().filter((t) => t.includes("was ended"))).toHaveLength(1);
+  } finally {
+    rig.close();
+  }
+});
+
+test("a stop whose answer never came is settled by looking, never sent again", async () => {
+  const rig = await takeoverRig();
+  try {
+    // The original is ended and the answer is lost: the next start finds it gone and owes the copy.
+    rig.stop = "lost";
+    expect(await rig.now().catch((e) => e.constructor.name)).toBe("LinkError");
+    rig.boot();
+    rig.recover();
+    await rig.settled();
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    const told = rig.notes().find((t) => t.includes("was ended"))!;
+    expect(told).toContain("call, interrupted: Run the slow check");
+    expect(told).toContain("answer to the stop did not arrive");
+  } finally {
+    rig.close();
+  }
+  // The stop never reached the machine: the original still runs, nothing is owed and nothing is copied.
+  const other = await takeoverRig();
+  try {
+    other.stop = "unsent";
+    await other.now().catch(() => {});
+    other.boot();
+    other.recover();
+    await other.settled();
+    expect([other.alive, other.stops, other.copies]).toEqual([true, 0, 0]);
+    expect((other.resumes as any).ends.size).toBe(0);
+  } finally {
+    other.close();
+  }
+});
