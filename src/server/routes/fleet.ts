@@ -297,7 +297,14 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (!f.row(id)) return bad("no such machine", 404);
         const b = await body(req);
         const patch: any = {};
-        if (b.name !== undefined) { if (!String(b.name).trim()) return bad("a name cannot be empty"); patch.name = String(b.name).trim(); }
+        if (b.name !== undefined) {
+          const name = String(b.name).trim();
+          if (!name) return bad("a name cannot be empty");
+          // A name finds one machine whatever its case: no other machine may hold it. Its own case may change.
+          const other = f.rows().find((r) => r.id !== id && r.name.toLowerCase() === name.toLowerCase());
+          if (other) return bad(`a machine is already named ${other.name}`, 409);
+          patch.name = name;
+        }
         if (b.auto_connect !== undefined) patch.auto_connect = b.auto_connect ? 1 : 0;
         if (b.colour !== undefined) { if (b.colour !== null && !COLOUR.test(String(b.colour))) return bad("colour must be a CSS colour"); patch.colour = b.colour; }
         if (b.daemon_url !== undefined) { if (b.daemon_url !== null && !loopbackUrl(b.daemon_url)) return bad("daemon_url must be http on a loopback address"); patch.daemon_url = b.daemon_url && loopbackUrl(b.daemon_url)!.origin; }

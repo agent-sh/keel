@@ -1,6 +1,8 @@
 import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HAIKU, shoot, choose } from "./shots.ts";
@@ -235,5 +237,33 @@ test("fleet: a secret goes to the other machine by name only", async ({ page, re
     expect(JSON.stringify(await (await request.get(`/api/sessions/${s}`)).json())).not.toContain(token);
   } finally {
     for (const x of made) await request.delete(`${x.base}/api/sessions/${x.id}`);
+  }
+});
+
+// The rules of a machine record, at the API: the Machines page has no field
+// for a name or a daemon port yet. Two records point at a stand-in that pairs
+// with nobody, so nothing here touches a real link.
+test("fleet machines: a rename keeps names unique", async ({ request }) => {
+  const stub = createServer((_, res) => res.writeHead(404).end("{}"));
+  await new Promise<void>((resolve, reject) => stub.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const port = (stub.address() as AddressInfo).port;
+  const tag = Date.now().toString(36);
+  const add = async (name: string, host: string) => (await (await request.post("/api/fleet/machines", { data: { name, daemon_url: `http://${host}:${port}` } })).json()).id as string;
+  const name = async (id: string) => (await (await request.get(`/api/fleet/machines/${id}`)).json()).name;
+  const a = await add(`Alpha-${tag}`, "127.0.0.1"), b = await add(`Beta-${tag}`, "localhost");
+  try {
+    // The other machine's name in another case: refused, both records as they were.
+    const clash = await request.patch(`/api/fleet/machines/${a}`, { data: { name: `BETA-${tag}` } });
+    expect(clash.status()).toBe(409);
+    expect((await clash.json()).error).toBe(`a machine is already named Beta-${tag}`);
+    expect([await name(a), await name(b)]).toEqual([`Alpha-${tag}`, `Beta-${tag}`]);
+    // Its own name in another case, and a new name: taken.
+    expect((await request.patch(`/api/fleet/machines/${a}`, { data: { name: `ALPHA-${tag}` } })).ok()).toBe(true);
+    expect(await name(a)).toBe(`ALPHA-${tag}`);
+    expect((await request.patch(`/api/fleet/machines/${a}`, { data: { name: ` Gamma-${tag} ` } })).ok()).toBe(true);
+    expect(await name(a)).toBe(`Gamma-${tag}`);
+  } finally {
+    for (const id of [a, b]) await request.delete(`/api/fleet/machines/${id}`);
+    stub.close();
   }
 });
