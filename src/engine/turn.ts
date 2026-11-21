@@ -24,7 +24,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -248,6 +248,22 @@ const MIN_PART_BYTES = 2_000;
 const SUMMARY_ROOM_BYTES = (st: Step) => Math.floor(Math.min(st.info.output, st.info.context / 4) * bytesPerToken(st.info.id));
 
 type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
+
+// What the caller counted for a request before it is built: the tokens of the
+// context it carries (Engine.used), and the bytes of the messages that count
+// covered when the request holds more than them (a side question's words).
+type Fit = { tokens: number; bytes?: number };
+
+// Bytes of the tool definitions a request carries in its prompt: a deferred
+// tool is not in the prompt until a call loads it.
+const toolsBytes = (tools: Pick<Tool, "name" | "description" | "input_schema" | "defer">[]) => utf8Bytes(JSON.stringify((tools ?? []).filter((t) => !t.defer).map((t) => [t.name, t.description, t.input_schema])));
+
+// A request counted over the model's window is not sent. `unsent` tells it
+// from a provider's refusal: nothing was learned about the model's count.
+const overWindow = (info: ModelInfo, tokens: number) => Object.assign(
+  new Error(`The request is larger than ${info.name}'s window (about ${tokens} of ${info.context} tokens), so it was not sent: compact the conversation, shorten what was added, or continue on a model with a larger window.`),
+  { status: 409, code: "context_over_window", kind: "context", unsent: true },
+);
 
 const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortError" });
 
@@ -751,7 +767,12 @@ export class Engine {
 
   // One provider call with retries for passing failures. The UI is told about
   // each wait and the half-streamed reply of a failed attempt is dropped.
-  private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn"): Promise<ProviderResult> {
+  // `fit`: what the caller counted for this request. The request as it is
+  // finally built (after the hooks, the tools of this request and the files
+  // resolved for this model) is counted against the model's window from it,
+  // and one over the window is refused here instead of sent.
+  private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn", fit?: Fit): Promise<ProviderResult> {
+    const counted = fit ? { messages: fit.bytes ?? messagesBytes(messages, st.info.id), tools: toolsBytes(st.tools) } : undefined;
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
     if (st.native && purpose !== "reader") st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c));
@@ -777,6 +798,15 @@ export class Engine {
     // What an image refusal changed for this request; kept for the session once it passes.
     let fixed: { cause: unknown; edge?: number; out?: string[] } | undefined;
     let resent = false;
+
+    // The caller's count plus what the request gained since, at the model's bytes a token.
+    const fits = () => {
+      if (!fit || !counted) return;
+      const gained = messagesBytes(req.messages, st.info.id) - counted.messages + toolsBytes(req.tools) - counted.tools;
+      const tokens = fit.tokens + Math.round(gained / bytesPerToken(st.info.id));
+      if (tokens >= st.info.context) throw overWindow(st.info, tokens);
+    };
+    fits();
     for (let attempt = 0; ; attempt++) {
       partial.clear();
       this.measure(id, (h) => h.requestSent?.(session, req));
@@ -815,6 +845,7 @@ export class Engine {
           st.native = false;
           st.tools = toolsFor(st.info.family, false, id);
           req = { ...req, tools: st.tools };
+          fits(); // every built-in is in the prompt now
           continue;
         }
         // The provider refused the request over an image, or as too large in
@@ -1087,15 +1118,17 @@ export class Engine {
         const messages = toMessages(events);
         let res: ProviderResult;
         try {
-          res = await this.call(id, st, messages, signal, partial, session);
+          res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.used(events, st) });
         } catch (e) {
           // The request no longer fits the window: compact once and go on.
           // (A context that is a fresh summary, or only the prompts that opened
           // the turn, has nothing left to compact: the provider's error stands.)
           if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit && worthSummarizing(summarizable(events))) {
             compactedForFit = true;
-            this.refused(st, events);
-            await this.compactNow(id, { auto: true, trigger: "overflow", signal, step: st });
+            // Counted over the window before it was sent: the provider said nothing about its own count.
+            const unsent = !!(e as any).unsent;
+            if (!unsent) this.refused(st, events);
+            await this.compactNow(id, { auto: true, trigger: unsent ? "threshold" : "overflow", signal, step: st });
             continue;
           }
           if (signal.aborted) {
@@ -1371,12 +1404,13 @@ export class Engine {
   // Bytes of what every request carries before the conversation and the
   // provider counts: a deferred tool is not in the prompt until a call loads it.
   private prefixBytes(st: Step): number {
-    return utf8Bytes(st.system ?? "") + utf8Bytes(JSON.stringify((st.tools ?? []).filter((t) => !t.defer).map((t) => [t.name, t.description, t.input_schema])));
+    return utf8Bytes(st.system ?? "") + toolsBytes(st.tools);
   }
 
   // Tokens the next request of this context carries, as this model counts
-  // them. A context no reply has measured (an imported history, a fresh
-  // checkpoint) is estimated whole from its bytes; the system prompt and the
+  // them. A context no reply of this model has measured (an imported history,
+  // a fresh checkpoint, a session just moved from another model) is estimated
+  // whole from its bytes; the system prompt and the
   // tools are not in that estimate (they fit in the room the compaction share leaves).
   private used(events: StoredEvent[], st: Step): number {
     return contextTokens(events, st.info.id).used;
@@ -1419,8 +1453,8 @@ export class Engine {
   private async summarize(id: string, st: Step, session: Session, events: StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
     focus ??= allHooks().map((h) => h.compactFocus?.(session)).find(Boolean);
     let usage = emptyUsage();
-    const one = async (ask: Message[]) => {
-      const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary"); // the summary is not a reply
+    const one = async (ask: Message[], fit: Fit) => {
+      const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary", fit); // the summary is not a reply
       usage = addUsage(usage, res.usage);
       this.store.addUsage(id, res.usage);
       return res.stop === "refusal" ? "" : res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
@@ -1429,11 +1463,11 @@ export class Engine {
     let over: unknown;
     if (!(this.used(events, st) >= st.info.context)) {
       try {
-        return { summary: await one([...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(focus) }] }]), usage };
+        return { summary: await one([...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(focus) }] }], { tokens: this.used(events, st), bytes: messagesBytes(messages, st.info.id) }), usage };
       } catch (e) {
         if (signal.aborted || (e as any)?.kind !== "context") throw e;
         over = e;
-        this.refused(st, events);
+        if (!(e as any).unsent) this.refused(st, events);
       }
     }
     // What one request can hold of the transcript: the compaction share of
@@ -1444,7 +1478,7 @@ export class Engine {
       try {
         let summary = "";
         for (let k = 0; k < parts.length; k++) {
-          summary = await one([{ role: "user", content: [{ type: "text", text: partPrompt(parts[k]!, k, parts.length, summary, clipped, focus) }] }]);
+          summary = await one([{ role: "user", content: [{ type: "text", text: partPrompt(parts[k]!, k, parts.length, summary, clipped, focus) }] }], { tokens: 0, bytes: 0 });
           if (!summary) return { summary, usage };
         }
         return { summary, usage, parts: parts.length, clipped };
@@ -1656,17 +1690,19 @@ export class Engine {
   async ask(id: string, extra: Message[], signal: AbortSignal, model?: string, pending?: { id: string; text: string }): Promise<ProviderResult & { model_id: string }> {
     const session = this.store.session(id)!;
     const st = await this.step(session, model ?? session.model);
-    const messages = toMessages(this.lineage(id));
+    const line = this.lineage(id);
+    const messages = toMessages(line);
+    // The stored branch is what the count below covers; the question's words come on top.
+    const fit: Fit = { tokens: this.used(line, st), bytes: messagesBytes(messages, st.info.id) };
     if (pending) for (const m of messages) for (const b of m.content as any[]) if (b.type === "tool_result" && b.tool_use_id === pending.id) { b.content = pending.text; b.is_error = false; }
     const last = messages.at(-1);
     for (const m of extra) {
       if (last?.role === "user" && m === extra[0] && m.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, ...m.content] };
       else messages.push(m);
     }
-    // A request counted over the window is never sent.
-    const used = this.used(this.lineage(id), st);
-    if (used >= st.info.context) throw Object.assign(new Error(`The conversation is larger than ${st.info.name}'s window (about ${used} of ${st.info.context} tokens): compact it first.`), { status: 409, code: "context_over_window" });
-    const res = await this.call(id, st, messages, signal, new Map(), session, true);
+    // A request counted over the window is never sent: the branch with the
+    // question's words, on the model that answers (the session's or an advisor's).
+    const res = await this.call(id, st, messages, signal, new Map(), session, true, "side", fit);
     this.store.addUsage(id, res.usage);
     this.emitSession(id);
     return { ...res, model_id: st.info.id };

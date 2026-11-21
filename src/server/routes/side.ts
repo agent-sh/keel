@@ -92,7 +92,9 @@ export const sideRoutes: RouteModule = ({ store, engine, errors }) => {
         } catch (e) {
           if ((gen.get(s.id) ?? 0) !== at) return cleared();
           const rec = errors.capture("provider", e, { session: s.id, at: "side question" });
-          return json({ error: rec.message, error_id: rec.id }, 502);
+          // A question that would not fit the model's window was never sent: said as such, with its code.
+          const over = (e as any)?.code === "context_over_window";
+          return json({ error: rec.message, error_id: rec.id, ...(over ? { code: "context_over_window" } : {}) }, over ? 409 : 502);
         } finally {
           mine.delete(stop);
         }

@@ -39,6 +39,11 @@ export class ScriptedProvider implements Provider {
   readonly family = "other" as const;
   private seen = new Map<string, number>();
   private paused = new Map<string, string>();
+  // What the strict stand-in counted per session: its requests, the largest
+  // one in tokens, and those over its window, which it refused. `script:counted
+  // <session id>` on any scripted model replies with it, so a spec can show
+  // that no oversized request reached the provider.
+  private counted = new Map<string, { requests: number; largest: number; refused: number }>();
 
   available() {
     return scriptedEnabled();
@@ -71,6 +76,8 @@ export class ScriptedProvider implements Provider {
     if (req.model === STRICT) {
       const count = (v: unknown) => Math.ceil(Buffer.byteLength(typeof v === "string" ? v : JSON.stringify(v)) / STRICT_BYTES);
       const total = count(req.system) + count(req.tools.map((t: any) => [t.name, t.description, t.input_schema])) + count(msgs);
+      const seen = this.counted.get(req.sessionKey ?? "") ?? { requests: 0, largest: 0, refused: 0 };
+      this.counted.set(req.sessionKey ?? "", { requests: seen.requests + 1, largest: Math.max(seen.largest, total), refused: seen.refused + (total > STRICT_WINDOW ? 1 : 0) });
       if (total > STRICT_WINDOW) throw classify("Scripted", 400, new Headers(), JSON.stringify({ error: { code: 400, message: `The input token count exceeds the maximum number of tokens allowed (${STRICT_WINDOW}); input token count: ${total}.`, status: "INVALID_ARGUMENT" } }));
       usage.input = count(last);
       usage.cache_read = total - usage.input;
@@ -153,6 +160,8 @@ export class ScriptedProvider implements Provider {
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
     switch (scenario) {
+      case "counted":
+        return reply(`counted ${JSON.stringify({ window: STRICT_WINDOW, ...(this.counted.get(owner.match(/script:counted\s+(\S+)/)?.[1] ?? "") ?? { requests: 0, largest: 0, refused: 0 }) })}`);
       case "billing":
         // An account state, not a passing failure: turns are refused until the owner acts.
         throw new ProviderError("quota", "Scripted: your credit balance is too low to make this request. Add credits at https://example.com/billing.", 402);

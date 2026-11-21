@@ -511,7 +511,9 @@ export function setRatio(model: string, ratio: number) {
 // Tokens the next request will carry: what the provider counted on the last
 // response of this context, plus the bytes appended since at the model's
 // bytes a token. A context with no counted reply (an imported history) is
-// estimated whole.
+// estimated whole. With `model` given, only a reply of that model counts as
+// measured: another model's tokens are not this one's, so after a switch the
+// context is estimated from its bytes until the new model has replied.
 export function contextTokens(lineage: StoredEvent[], model?: string): { used: number; measured: number; estimated: number; last?: Usage } {
   const cp = checkpointAt(lineage);
   const per = bytesPerToken(model);
@@ -522,6 +524,7 @@ export function contextTokens(lineage: StoredEvent[], model?: string): { used: n
   for (let i = lineage.length - 1; i > cp.at; i--) {
     const e = lineage[i]!;
     if (e.kind === "assistant" && e.data.usage && e.data.stop !== "refusal") {
+      if (model && e.data.model && e.data.model !== model) continue;
       last = e.data.usage;
       measured = last!.input + last!.cache_read + last!.cache_write + last!.output;
       after = i + 1;
@@ -542,6 +545,28 @@ export function contextBytes(lineage: StoredEvent[], model?: string): number {
   let bytes = 0;
   for (let i = Math.max(0, Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at)); i < lineage.length; i++) bytes += tailBytes(lineage[i]!, per);
   return bytes;
+}
+
+// The bytes of built messages in the same measure as the context estimate: a
+// reply's words, thinking and calls, a tool result as JSON, an image at its
+// token cost, an attached file as it resolves (see tailBytes). What a request
+// gained after its context was counted (a hook's note, a side question's
+// words, a file inlined) is the difference of two of these.
+export function messagesBytes(messages: Message[], model?: string): number {
+  const per = bytesPerToken(model);
+  let n = 0;
+  for (const m of messages) {
+    for (const b of m.content as any[]) {
+      if (b.type === "text") n += utf8Bytes(String(b.text ?? ""));
+      else if (b.type === "thinking") n += utf8Bytes(String(b.thinking ?? ""));
+      else if (b.type === "tool_use") n += utf8Bytes(String(b.name)) + utf8Bytes(JSON.stringify(b.input ?? {}));
+      else if (b.type === "tool_result") n += jsonBytes(b, per);
+      else if (b.type === "image") n += imageTokens(b) * per;
+      else if (b.type === "attachment") n += attachmentBytes(b);
+      else if (b.type === "document") n += PATH_NOTE_BYTES;
+    }
+  }
+  return n;
 }
 
 // UTF-8 bytes of a value as JSON, with each image counted at its estimated
@@ -589,12 +614,12 @@ function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
   if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, fixed: e.data.fixed, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
   if (e.kind !== "user") return 0;
   let n = utf8Bytes(String(e.data.text ?? ""));
-  for (const b of (e.data.images ?? []) as any[]) {
-    if (b.type !== "attachment") n += jsonBytes(b, per);
-    else n += b.size <= TEXT_INLINE && (TEXT_MEDIA.test(b.media_type) || b.media_type === "application/octet-stream") ? b.size + PATH_NOTE_BYTES : PATH_NOTE_BYTES;
-  }
+  for (const b of (e.data.images ?? []) as any[]) n += b.type === "attachment" ? attachmentBytes(b) : jsonBytes(b, per);
   return n;
 }
+
+const attachmentBytes = (b: { size: number; media_type: string }) =>
+  b.size <= TEXT_INLINE && (TEXT_MEDIA.test(b.media_type) || b.media_type === "application/octet-stream") ? b.size + PATH_NOTE_BYTES : PATH_NOTE_BYTES;
 
 // A reply's bytes as the provider tokenizes them: its words, its thinking and
 // each call's name and input. A thought's signature, redacted thinking and the

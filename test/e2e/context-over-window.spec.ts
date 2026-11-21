@@ -67,3 +67,82 @@ test("an imported history over the window is compacted before its first request"
   expect(after.filter((e) => e.kind === "compaction")).toHaveLength(1);
   expect(after.at(-1).data.reason).toBe("end_turn");
 });
+
+const sessionOn = async (request: any, model: string) => {
+  const r = await (await request.post("/api/sessions", { data: { model } })).json();
+  return (r.session ?? r).id as string;
+};
+const eventsOf = async (request: any, id: string) => (await (await request.get(`/api/sessions/${id}/events`)).json()).events as any[];
+const turnEnds = (request: any, id: string, n: number) =>
+  expect.poll(async () => (await eventsOf(request, id)).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(n);
+// What the strict stand-in counted of a session's requests: how many, the
+// largest in tokens, and those over its window (which it refused).
+async function counted(request: any, id: string): Promise<{ window: number; requests: number; largest: number; refused: number }> {
+  const probe = await sessionOn(request, "scripted:stand-in");
+  await request.post(`/api/sessions/${probe}/messages`, { data: { text: `script:counted ${id}` } });
+  await turnEnds(request, probe, 1);
+  const text: string = (await eventsOf(request, probe)).findLast((e) => e.kind === "assistant").data.blocks[0].text;
+  await request.delete(`/api/sessions/${probe}`);
+  return JSON.parse(text.replace(/^counted /, ""));
+}
+
+// Feature: the request as it is finally built is held to the window of the
+// model it goes to. The strict stand-in counts every request it is sent, so
+// each case shows that none reached it over its window.
+test("a request over the destination model's window is never sent", async ({ page, request }) => {
+  const info = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === STRICT);
+  test.skip(!info, "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+
+  // A first input larger than the window: there is nothing to compact, so the
+  // turn ends saying so and the provider is never asked to answer it.
+  const first = await sessionOn(request, STRICT);
+  const long = "word ".repeat(52_000);
+  expect(Buffer.byteLength(long) / 2.5).toBeGreaterThan(info.context);
+  await request.post(`/api/sessions/${first}/messages`, { data: { text: long } });
+  await turnEnds(request, first, 1);
+  const failed = await eventsOf(request, first);
+  expect(failed.find((e) => e.kind === "turn_end").data.reason).toBe("error");
+  expect(failed.find((e) => e.kind === "error").data.message).toMatch(/larger than Scripted strict window's window \(about \d+ of 80000 tokens\), so it was not sent/);
+  expect(failed.filter((e) => e.kind === "assistant")).toHaveLength(0);
+  await page.goto(`/s/${first}`);
+  await expect(page.getByTestId("turn-end")).toHaveCount(1);
+  await shoot(page, "context-over-window-02-first-input-refused");
+
+  // A history another model measured in its own tokens (far fewer than the
+  // strict one counts), then the session moves to the smaller window: the
+  // context is counted for the model it goes to, compacted first, and the turn goes on.
+  const lines: any[] = [];
+  const add = (kind: string, data: any) => lines.push({ ref: `e${lines.length + 1}`, kind, data, ts: 1_700_000_000_000 + lines.length });
+  for (let n = 1; n <= 45; n++) {
+    add("user", { text: `Step ${n}: check the service on port ${7000 + n}.` });
+    add("assistant", { blocks: [{ type: "tool_use", id: `call-${n}`, name: "Bash", input: { command: `curl -s localhost:${7000 + n}/health` } }], stop: "tool_use", model: "scripted:stand-in", usage: { input: 300, cache_read: 500 * n, cache_write: 0, output: 40 } });
+    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${n}`, content: `BEGIN-${n} ${"status ok; ".repeat(360)} END-${n}` }] });
+    add("assistant", { blocks: [{ type: "text", text: `Port ${7000 + n} answers. ${"All checks passed. ".repeat(40)}` }], stop: "end_turn", model: "scripted:stand-in", usage: { input: 1_200, cache_read: 500 * n, cache_write: 0, output: 200 } });
+  }
+  const file = [{ keel_export: 2, events: lines.length, scope: "current branch", title: "Moved to a smaller window", model: STRICT, workspace: "", created: 1_700_000_000_000 }, ...lines].map((l) => JSON.stringify(l)).join("\n") + "\n";
+  expect(Buffer.byteLength(file) / 2.5).toBeGreaterThan(info.context);
+  const moved = (await (await request.post("/api/sessions/import", { data: file, headers: { "content-type": "application/x-ndjson" } })).json()).session.id;
+  const kept = (await eventsOf(request, moved)).findLast((e) => e.kind === "assistant");
+  expect(kept.data.usage.cache_read).toBe(22_500); // the other model's count came in with the history
+  await request.post(`/api/sessions/${moved}/messages`, { data: { text: "Which port did step 45 check?" } });
+  await turnEnds(request, moved, 1);
+  const tail = (await eventsOf(request, moved)).slice(lines.length);
+  expect(tail.filter((e) => e.kind === "compaction").map((e) => e.data.trigger)).toEqual(["threshold"]);
+  expect(tail.filter((e) => e.kind === "error")).toHaveLength(0);
+  expect(tail.find((e) => e.kind === "turn_end").data.reason).toBe("end_turn");
+
+  // A side question whose own words overflow the window is refused with its
+  // code and never sent; one that fits is answered.
+  const side = await request.post(`/api/sessions/${moved}/side`, { data: { question: "why ".repeat(60_000) } });
+  expect(side.status()).toBe(409);
+  expect((await side.json()).code).toBe("context_over_window");
+  const short = await request.post(`/api/sessions/${moved}/side`, { data: { question: "Which step was last?" } });
+  expect(short.ok()).toBe(true);
+
+  for (const id of [first, moved]) {
+    const c = await counted(request, id);
+    expect(c.refused, `requests over the window that reached the provider (${JSON.stringify(c)})`).toBe(0);
+    expect(c.largest).toBeLessThanOrEqual(c.window);
+  }
+  expect((await counted(request, moved)).requests).toBeGreaterThan(2);
+});
