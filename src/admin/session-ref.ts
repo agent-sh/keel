@@ -1,5 +1,5 @@
 // A session named loosely: its id, a prefix of it that names one session, its
-// last twelve characters (its short id), or
+// last twelve characters (the short id the report across sessions prints), or
 // an agent by its id or a prefix of that (the agent's session). The command
 // line, the timeline route and the timeline tool all name sessions this way,
 // so an id copied from a row or a card opens what it names.

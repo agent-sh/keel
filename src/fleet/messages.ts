@@ -231,6 +231,8 @@ export class Messages {
     }
     const all = this.addressable().filter((a) => a.session.id !== from.id);
     let hit = all.filter((a) => a.session.id === to);
+    // The short id the report across sessions prints: the last twelve characters of the id.
+    if (!hit.length && /^[0-9a-f]{12}$/.test(to)) hit = all.filter((a) => a.session.id.endsWith(to));
     if (!hit.length) hit = all.filter((a) => a.session.title.toLowerCase().includes(to.toLowerCase()));
     if (hit.length > 1) throw new HttpError(400, `"${to}" names ${hit.length} sessions: ${hit.slice(0, 5).map((h) => `${h.to} (${h.session.title})`).join(", ")}. Use the address.`);
     if (!hit[0]) throw new HttpError(404, `no session ${to}; keel__sessions_list shows the addresses`);
@@ -256,11 +258,14 @@ export class Messages {
     }
     const all = this.addressable().filter((a) => a.session.id !== from.id);
     let hit = all.filter((a) => a.session.id === to);
+    // The short id the report across sessions prints: the last twelve characters of the id.
+    if (!hit.length && /^[0-9a-f]{12}$/.test(to)) hit = all.filter((a) => a.session.id.endsWith(to));
     if (!hit.length) {
       const q = to.toLowerCase();
       hit = all.filter((a) => a.session.title.toLowerCase().includes(q));
-      if (hit.length > 1) throw new HttpError(400, `"${to}" names ${hit.length} sessions: ${hit.slice(0, 5).map((h) => `${h.to} (${h.session.title})`).join(", ")}. Use the address.`);
     }
+    // However it matched (a short id as well as a title): two sessions are never one address.
+    if (hit.length > 1) throw new HttpError(400, `"${to}" names ${hit.length} sessions: ${hit.slice(0, 5).map((h) => `${h.to} (${h.session.title})`).join(", ")}. Use the address.`);
     const a = hit[0];
     if (!a) throw new HttpError(404, `no session ${to}; keel__sessions_list shows the addresses`);
     if (!a.local) return this.sendRemote(a.machine_id, a.machine, a.session.id, text, wake, sender);

@@ -11,7 +11,7 @@ import { claimState, lockHolder } from "../admin/daemon.ts";
 import { parseBind } from "../core/bind.ts";
 import { backupConfig, restore as restoreBackup } from "../admin/storage.ts";
 import { configDir } from "../providers/config.ts";
-import { authHeaders, findDaemon, refusal } from "./client.ts";
+import { authHeaders, clean, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir } from "../core/paths.ts";
 
 const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
@@ -59,7 +59,29 @@ function wrap(usage: string, opts: Record<string, any>, run: (v: any, pos: strin
 
 const out = (v: any, j: boolean, text: () => string) => console.log(j ? JSON.stringify(v, null, 2) : text());
 
-const status = wrap("keel status [--url URL] [--json]", {}, async (v) => {
+const STATUS_USAGE = `keel status [--url URL] [--json]                 the running daemon
+keel status --sessions [--since 1h] [--max N] [--no-ids] [--json]
+  Every open session in one short text: what needs you, what failed and why, what runs and
+  for how long, and the turns and spend since a time (a span back such as 90s, 30m, 1h, 2d,
+  or an ISO time; a day by default, at most 7 days). States, classes, counts and ids only, no prompt or output.
+  --max N lists that many sessions (20 by default), the ones that need you first; --no-ids
+  leaves the ids off the lines.`;
+const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, since: { type: "string" }, max: { type: "string" }, "no-ids": { type: "boolean" } }, async (v) => {
+  if (v.sessions) {
+    const q = new URLSearchParams(Object.entries({ since: v.since, max: v.max, format: v.json ? undefined : "text", ids: v["no-ids"] && !v.json ? "0" : undefined }).filter(([, x]) => x) as [string, string][]);
+    const url = urlOf(v.url);
+    let r: Response;
+    try {
+      r = await fetch(`${url}/api/overview?${q}`, { headers: authHeaders() });
+    } catch {
+      throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
+    }
+    if (!r.ok) throw new Error(await refusal(url, r, await r.json().catch(() => ({}))));
+    // Titles are a model's or the owner's words: no escape sequence of theirs reaches the terminal.
+    process.stdout.write(v.json ? JSON.stringify(await r.json(), null, 2) + "\n" : clean(await r.text()));
+    return 0;
+  }
+  if (v.since || v.max || v["no-ids"]) throw new Error("--since, --max and --no-ids go with --sessions");
   const d = await call(urlOf(v.url), "/api/daemon");
   const a = await call(urlOf(v.url), "/api/awake").catch(() => null);
   out({ ...d, awake: a }, !!v.json, () => [

@@ -22,7 +22,7 @@ const GROUPS: [string, [string, string][]][] = [
   ]],
   ["Daemon", [
     ["serve", "run the daemon (the agent loop, the API and the workbench)"],
-    ["status", "the running daemon"],
+    ["status", "the running daemon; --sessions: every session in one short text"],
     ["drain", "let running turns finish, then stop"],
     ["restart", "drain, then start again (also: upgrade)"],
     ["ui", "serve a new UI bundle without a restart; rollback"],

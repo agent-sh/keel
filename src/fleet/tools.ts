@@ -1,5 +1,7 @@
 // The fleet's tools for every family: what machines the session can use, and
 // one shell command on another machine without moving the session.
+import { boundOverview, DEFAULT_SINCE, MAX, overview, overviewText, tooFarBack } from "../admin/overview.ts";
+import { parseSince } from "../admin/timeline.ts";
 import { agentCounts, sessionState } from "../automation/state.ts";
 import { watchOf, watchWord } from "../core/watch.ts";
 import { registerShared } from "../tools/registry.ts";
@@ -76,10 +78,32 @@ const runOn: Tool = {
 
 const sessionsList: Tool = {
   name: "keel__sessions_list",
-  description: "List the owner's other sessions, on this daemon and on linked machines: the address to send to, title, machine, directory and state (needs you, working, failed, stopped, done, not started; a session whose agents still work is working, with how many). Leaves out this session and archived ones.",
-  input_schema: { type: "object", properties: { machine: { type: "string", description: "Only this machine's sessions" } }, additionalProperties: false },
+  description: "List the owner's other sessions, on this daemon and on linked machines: the address to send to, title, machine, directory and state (needs you, working, failed, stopped, done, not started; a session whose agents still work is working, with how many). Leaves out this session and archived ones. report: true gives one short report instead: the agents you started, then this daemon's other sessions by what needs the owner, what failed and why, and what runs and for how long, with the turns and spend since a time.",
+  input_schema: {
+    type: "object",
+    properties: {
+      machine: { type: "string", description: "Only this machine's sessions" },
+      report: { type: "boolean", description: "The short report instead of the list." },
+      since: { type: "string", description: "With report, what was done and spent since: a span back from now (90s, 30m, 1h, 2d) or an ISO time. A day by default, at most 7 days." },
+      max: { type: "integer", description: `With report, the other sessions listed, the ones that need the owner first (default ${MAX}).` },
+    },
+    additionalProperties: false,
+  },
   readOnly: true,
   async run(input, ctx) {
+    if (input.report === true) {
+      const from = boundOverview();
+      if (!from) return fail("NOT_AVAILABLE: the report is not running on this daemon.");
+      if (input.max !== undefined && !(Number.isInteger(input.max) && input.max >= 1)) return fail(`max is a whole number of sessions from 1 up (${MAX} by default)`);
+      try {
+        const since = input.since ? parseSince(String(input.since)) : Date.now() - DEFAULT_SINCE;
+        const far = tooFarBack(since);
+        if (far) return fail(far);
+        return ok(overviewText(overview(from, { since, of: ctx.sessionId, max: input.max })));
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    }
     if (!messages) return fail("The fleet is not running.");
     const want = typeof input.machine === "string" ? input.machine.toLowerCase() : "";
     const rows = messages.addressable().filter((a) => a.session.id !== ctx.sessionId && !a.session.parent_id && (!want || a.machine.toLowerCase() === want || a.machine_id === want));

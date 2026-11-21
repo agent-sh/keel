@@ -302,7 +302,7 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
 }
 
 const SOURCE: Record<string, string> = { provider: "Model request", tool: "Tool", server: "Daemon", client: "Page" };
-const CLASS: Record<string, string> = {
+export const CLASS: Record<string, string> = {
   rate_limit: "rate limit", overloaded: "overloaded", server: "server error", stream_drop: "dropped stream", context_overflow: "context too long",
   auth: "sign-in", quota: "quota or billing", refusal: "declined", invalid_request: "refused request",
 };

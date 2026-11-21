@@ -1480,3 +1480,22 @@ test("a wait whose stop got no answer can be cancelled, and sends no stop when t
     rig.close();
   }
 });
+
+// A session is addressed by the short id the report across sessions prints (the last twelve
+// characters of its id). Two sessions that end alike are never one address, with or without text.
+test("a short id reaches its one session, and one that names two is refused", async () => {
+  const a = await scratchDaemon("dShort");
+  const from = a.store.createSession({ model: "m", workspace: a.ws, title: "Sender" });
+  const one = a.store.createSession({ model: "m", workspace: a.ws, title: "One" });
+  const twin = ["01a1fd4b-73d5-7478-a92a-aaaabbbbcccc", "01a1fd4c-0000-7478-a92a-aaaabbbbcccc"];
+  for (const [i, id] of twin.entries()) {
+    const s = a.store.createSession({ model: "m", workspace: a.ws, title: `Twin ${i}` });
+    a.store.db.query("UPDATE sessions SET id = ? WHERE id = ?").run(id, s.id);
+  }
+  expect(a.msgs.resolve(from, one.id.slice(-12)).session.id).toBe(one.id);
+  expect((await a.msgs.sendTo(from, one.id.slice(-12), "hello", true)).session).toBe(one.id);
+  expect(() => a.msgs.resolve(from, "aaaabbbbcccc")).toThrow(/names 2 sessions/);
+  expect(a.msgs.sendTo(from, "aaaabbbbcccc", "hello", true)).rejects.toThrow(/names 2 sessions/);
+  // Only the twelve: a shorter ending names nothing.
+  expect(() => a.msgs.resolve(from, one.id.slice(-11))).toThrow(/no session/);
+});

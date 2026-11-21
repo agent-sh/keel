@@ -55,6 +55,7 @@ import { acpRoutes } from "./acp.ts";
 import { helperRoutes } from "./helper.ts";
 import { experimentRoutes } from "./experiments.ts";
 import { timelineRoutes } from "./timeline.ts";
+import { overviewRoutes } from "./overview.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -114,4 +115,5 @@ export const routeModules: RouteModule[] = [
   telemetryRoutes, // its tool timing starts after every gate
   experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry
+  overviewRoutes, // every session's state, failure and spend as one answer
 ];

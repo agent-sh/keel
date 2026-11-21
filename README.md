@@ -84,6 +84,34 @@ its rows from its parent's list.
 leaves the IDs off the lines. The Timeline side panel shows it live: it asks
 only for what is newer than what it holds, and not at all from a hidden tab.
 
+## Every session at once
+
+`GET /api/overview` answers across sessions what the timeline answers for
+one: what needs the owner, what failed and why, what runs and for how long,
+and the turns and spend since a time (`since=1h`, a day by default, at most
+seven days back). A
+session's state is the word its row shows on the page. Like the timeline it
+holds metadata only: titles, states, failure classes, counts, durations and
+IDs.
+
+`format=text` is the short form for a model or a terminal: twenty rows stay
+under 1.5k tokens also when every row is heavy. The tokens are counted from
+the text's shape, never under what a local BPE measured on these texts, and a
+text over the bound is written again with less in each row, never with fewer
+rows.
+`keel status --sessions --since 1h` prints it (`--no-ids` leaves the IDs
+off, `--max N` lists another number), and a session reads it with
+`keel__sessions_list` and `report: true`, which lists the agents it started
+first. A row names its session by the last twelve characters of its ID, which
+the timeline route, the commands that name a session and
+`keel__session_send` take. Twenty sessions are listed by default, the ones
+that need the owner first; the rest are counted.
+
+The turns counted are the sessions' own; how their agents ended is counted
+beside them, and the spend is everyone's. A turn a daemon restart cut is not
+a failure: it is continued, and one that was not shows in the session's
+state.
+
 ## A model traces a failure by itself
 
 The notice a session gets when an agent it started fails ends with one line
