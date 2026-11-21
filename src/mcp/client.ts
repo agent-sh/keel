@@ -12,6 +12,24 @@ import { chunks, pumpLines, pumpText } from "../core/proc.ts";
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
 const CLIENT_INFO = { name: "keel", version: "0.1.0" };
+// What Keel offers a server, declared in initialize to a legacy server
+// (2025-11-25 lifecycle, capability negotiation) and in the _meta of every
+// request to a modern one (2026-07-28).
+//
+// Roots (roots/list: the folders the client works in, as file URIs) go to a
+// legacy server that is a local command only. The 2026-07-28 revision
+// deprecates roots (SEP-2577: a new implementation should not adopt it, a
+// folder is a tool argument or server configuration), so a modern server is
+// not offered it. A server reached over HTTP is not either: a path on this
+// machine is nothing it can open, and it would learn the owner's folder names.
+const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object> =>
+  t.kind === "stdio" && era === "legacy" ? { roots: {} } : {};
+
+// What a server asks of the client while it works on a call, and the handler
+// a call gives for it. The handler resolves to the result the method names
+// and throws an RpcError for what Keel refuses.
+export type InputRequest = { method: string; params?: any };
+export type InputHandler = (req: InputRequest) => Promise<unknown>;
 
 // Error codes the modern spec reserves; seeing one means the server is modern.
 const MODERN_ERRORS = new Set([-32020, -32021, -32022]);
@@ -88,7 +106,8 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
   signal.addEventListener("abort", end, { once: true });
 });
 
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
+// `onInput`: the call answers what the server asks while it works on it.
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onInput?: InputHandler };
 
 export class McpClient {
   era: "modern" | "legacy" = "legacy";
@@ -127,9 +146,11 @@ export class McpClient {
   // while it connected): the process ends now, not when the handshake gives up.
   // `endpointWithinMs`: how long the older transport's stream is given to
   // name its address (the whole timeout unless given).
-  static async connect(t: Transport, timeoutMs = 30_000, era?: "modern" | "legacy", signal?: AbortSignal, endpointWithinMs?: number): Promise<McpClient> {
+  // `outside`: answers what the server asks outside any call, from the handshake on.
+  static async connect(t: Transport, timeoutMs = 30_000, era?: "modern" | "legacy", signal?: AbortSignal, endpointWithinMs?: number, outside?: InputHandler): Promise<McpClient> {
     if (signal?.aborted) throw new Error("the server was dropped before it connected");
     const c = new McpClient(t, timeoutMs);
+    c.outside = outside;
     if (t.kind === "stdio") c.spawn();
     const dropped = () => c.close();
     signal?.addEventListener("abort", dropped, { once: true });
@@ -162,7 +183,7 @@ export class McpClient {
     if (this.era === "modern") return;
     const r = await this.rpc("initialize", {
       protocolVersion: LEGACY_VERSION,
-      capabilities: {},
+      capabilities: offered(this.t, "legacy"),
       clientInfo: CLIENT_INFO,
     });
     this.version = r?.protocolVersion ?? LEGACY_VERSION;
@@ -239,8 +260,9 @@ export class McpClient {
     this.dispatch(msg);
   }
 
-  private dispatch(msg: any) {
-    if (Array.isArray(msg)) return msg.forEach((m) => this.dispatch(m));
+  // `origin`: the request whose response stream carried the message (HTTP).
+  private dispatch(msg: any, origin?: number | string) {
+    if (Array.isArray(msg)) return msg.forEach((m) => this.dispatch(m, origin));
     if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && !msg.method) {
       const p = this.pending.get(msg.id);
       if (!p) return;
@@ -251,15 +273,31 @@ export class McpClient {
     }
     // The server asks whether the client is there (2025-11-25 Ping: an empty result, promptly).
     if (msg.method === "ping" && msg.id !== undefined) return this.write({ jsonrpc: "2.0", id: msg.id, result: {} });
-    if (msg.method && msg.id !== undefined) {
-      // Server-to-client requests (legacy roots/sampling/elicitation): we
-      // offer none of those capabilities, so say so.
-      this.write({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `keel does not support ${msg.method}` } });
-      return;
-    }
+    if (msg.method && msg.id !== undefined) return void this.serverRequest(msg, origin);
     if (msg.method === "notifications/tools/list_changed") this.onListChanged?.();
     else if (msg.method === "notifications/resources/list_changed") this.onResources?.({ list: true });
     else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
+  }
+
+  // A legacy server's own request (2025-11-25: roots/list, at any time). It
+  // goes to the call it belongs to: over HTTP the one whose response stream
+  // carried it. Over stdio nothing names the call, so it is the one call in
+  // flight that answers such requests, or the newest of several. With no such
+  // call it goes to `outside`: no session's folder is the answer then.
+  outside?: InputHandler;
+  private async serverRequest(msg: any, origin?: number | string) {
+    const reply = (body: object) => this.write({ jsonrpc: "2.0", id: msg.id, ...body });
+    const refuse = (code: number, message: string) => reply({ error: { code, message } });
+    if (!Object.hasOwn(offered(this.t, this.era), String(msg.method).split("/")[0]!)) return refuse(-32601, `keel does not support ${msg.method}`);
+    const asker = (origin !== undefined && this.pending.get(origin)?.onInput ? this.pending.get(origin) : undefined)
+      ?? [...this.pending.values()].filter((p) => p.onInput).at(-1);
+    const handler = asker?.onInput ?? this.outside;
+    if (!handler) return refuse(-32603, "nothing here answers this");
+    try {
+      reply({ result: await handler({ method: msg.method, params: msg.params }) });
+    } catch (e) {
+      refuse(e instanceof RpcError ? e.code : -32603, (e as Error).message);
+    }
   }
 
   private write(msg: unknown) {
@@ -383,7 +421,7 @@ export class McpClient {
       accept: "application/json, text/event-stream",
       // A modern request names its version in _meta; the header must match it (the probe runs before the era is known).
       "mcp-protocol-version": params?._meta?.["io.modelcontextprotocol/protocolVersion"] ?? this.version,
-      "mcp-method": method,
+      ...(method ? { "mcp-method": method } : {}), // a response Keel posts names none
       ...t.headers,
     };
     const name = params?.name ?? params?.uri;
@@ -447,12 +485,12 @@ export class McpClient {
     // The older transport answers on its stream: what an accepted POST says in
     // its body ("Accepted", an empty object) is no message.
     if (t.sse) return void res.body?.cancel().catch(() => {});
-    if (ctype.includes("text/event-stream")) return this.readSse(res);
+    if (ctype.includes("text/event-stream")) return this.readSse(res, undefined, msg.id);
     const text = await res.text();
-    if (text.trim()) this.dispatch(JSON.parse(text));
+    if (text.trim()) this.dispatch(JSON.parse(text), msg.id);
   }
 
-  private async readSse(res: Response, st?: SseState) {
+  private async readSse(res: Response, st?: SseState, origin?: number | string) {
     const dec = new TextDecoder();
     let buf = "";
     let data: string[] = [];
@@ -464,7 +502,7 @@ export class McpClient {
       let msg: unknown;
       try { msg = JSON.parse(data.join("\n")); } catch { return; } finally { data = []; held = 0; }
       if (st) st.messages++;
-      try { this.dispatch(msg); } catch {} // as before: a message that cannot be handled does not end the stream
+      try { this.dispatch(msg, origin); } catch {} // as before: a message that cannot be handled does not end the stream
     };
     for await (const chunk of chunks(res.body!)) {
       buf += dec.decode(chunk, { stream: true });
@@ -547,12 +585,12 @@ export class McpClient {
   private meta() {
     return {
       "io.modelcontextprotocol/protocolVersion": MODERN_VERSION,
-      "io.modelcontextprotocol/clientCapabilities": {},
+      "io.modelcontextprotocol/clientCapabilities": offered(this.t, "modern"),
       "io.modelcontextprotocol/clientInfo": CLIENT_INFO,
     };
   }
 
-  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; modern?: boolean; authorize?: () => string | undefined } = {}): Promise<any> {
+  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; modern?: boolean; authorize?: () => string | undefined; onInput?: InputHandler } = {}): Promise<any> {
     const deny = opt.authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
     if (this.closed) throw new Error("the connection is closed");
@@ -588,7 +626,7 @@ export class McpClient {
         if (told && !opt.modern && method !== "initialize" && !this.closed) this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason } });
       };
       const onAbort = () => giveUp("cancelled", "cancelled");
-      this.pending.set(id, { resolve: done(resolve), reject: fail });
+      this.pending.set(id, { resolve: done(resolve), reject: fail, onInput: opt.onInput });
       timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), timeoutMs);
       opt.signal?.addEventListener("abort", onAbort, { once: true });
       if (this.t.kind === "stdio") this.write(msg);
@@ -645,8 +683,8 @@ export class McpClient {
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
   readResource(uri: string, signal?: AbortSignal) { return this.rpc("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rpc("prompts/get", { name, arguments: args }, { signal }); }
-  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined): Promise<McpCallResult> {
-    return this.rpc("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize });
+  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, onInput?: InputHandler): Promise<McpCallResult> {
+    return this.rpc("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, onInput });
   }
 
   // Close once nothing waits on this client (a reload replaced it).

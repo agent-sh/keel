@@ -4,13 +4,14 @@
 // restarts only the servers whose config changed, and never touches a session's
 // request prefix (MCP tools are deferred, so the eager tool list is fixed).
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { basename, dirname, join } from "node:path";
 import { detached, type ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
-import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type McpCallResult, type McpTool, type Transport } from "./client.ts";
+import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
@@ -19,6 +20,14 @@ import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { conceal } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
+
+// A folder as the roots a server is told (2025-11-25 client/roots): one root,
+// a file URI of the real path, named by the folder.
+const rootsOf = (dir: string) => {
+  let real = dir;
+  try { real = realpathSync(dir); } catch {} // a folder that is gone is named as it was
+  return { roots: [{ uri: pathToFileURL(real).href, name: basename(real) || real }] };
+};
 
 // armed, not_armed, unreachable: phone control, whose state is the gateway's answer.
 export type McpState = "disabled" | "connecting" | "ready" | "error" | "needs_auth" | "idle" | "missing" | "armed" | "not_armed" | "unreachable";
@@ -605,9 +614,11 @@ export class McpManager {
           if (Object.keys(h).some((k) => k.toLowerCase() === "authorization")) t.token = undefined;
         }
         const timeout = (e.config.timeout_secs ?? 30) * 1000;
+        // What the server asks outside any call is answered for the folder it was started in.
+        const outside = (q: InputRequest) => this.inputOutside(t.kind === "stdio" && t.cwd ? t.cwd : this.workspace, q);
         let client: McpClient;
         try {
-          client = await McpClient.connect(t, timeout, e.era, abort.signal);
+          client = await McpClient.connect(t, timeout, e.era, abort.signal, undefined, outside);
         } catch (err) {
           // A server that refuses the request with a 4xx may speak only the
           // older HTTP with SSE transport, at the same address: asked that
@@ -615,7 +626,7 @@ export class McpManager {
           // neither). What the first try said stands when that fails too.
           if (t.kind !== "http" || t.sse || e.noSse || abort.signal.aborted || !/^HTTP 4\d\d/.test((err as Error).message)) throw err;
           try {
-            client = await McpClient.connect({ ...t, sse: true }, timeout, undefined, abort.signal, Math.min(timeout, SSE_TRY_MS));
+            client = await McpClient.connect({ ...t, sse: true }, timeout, undefined, abort.signal, Math.min(timeout, SSE_TRY_MS), outside);
           } catch {
             if (!abort.signal.aborted) e.noSse = true;
             throw err;
@@ -742,7 +753,7 @@ export class McpManager {
         ? "Refused: the MCP server or tool changed before invocation. Look up the tool again." : undefined) : undefined;
     let r: McpCallResult;
     try {
-      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize);
+      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, (q) => this.input(q, ctx));
     } catch (err) {
       if (err instanceof McpAuthorizationError) return { content: err.message, is_error: true };
       if (err instanceof AuthRequired && e) {
@@ -755,6 +766,21 @@ export class McpManager {
       return { content: `${shown}__${tool} failed: ${(err as Error).message}`, is_error: true };
     }
     return toOutput(r, ctx, `${shown}__${tool}`);
+  }
+
+  // ---- what a server asks while it works on a call ----
+
+  // The folders of the session whose call the server works on.
+  private input(q: InputRequest, ctx: ToolContext): Promise<unknown> {
+    if (q.method === "roots/list") return Promise.resolve(rootsOf(ctx.cwd));
+    throw new RpcError(-32601, `keel does not support ${q.method}`);
+  }
+
+  // A server that asks outside any call (many ask for the roots as soon as
+  // they are connected): the folder the server itself was started in.
+  private inputOutside(dir: string, q: InputRequest): Promise<unknown> {
+    if (q.method === "roots/list") return Promise.resolve(rootsOf(dir));
+    throw new RpcError(-32601, `keel does not support ${q.method}`);
   }
 
   // ---- owner actions ----
