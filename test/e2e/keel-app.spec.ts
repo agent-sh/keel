@@ -72,6 +72,9 @@ test("the Keel app pairs by keel://, sees chat states and asks for its own push 
     // 4. Each chat says where it stands: idle before a turn, needs you while a
     // card waits, done after the reply.
     const { chat } = await (await phone.call("POST", "/v1/chats", { title: "Keel app states" })).json();
+    // A chat made from the phone takes the daemon's default model, whatever that is on this daemon.
+    // The states below are scripted: the chat is put on the stand-in, which makes the one call it is told to.
+    expect((await request.patch(`/api/sessions/${chat.id}`, { data: { model: "scripted:stand-in" } })).status()).toBe(200);
     const statusOf = async () => (await (await phone.call("GET", "/v1/chats")).json()).chats.find((c: any) => c.id === chat.id)?.status;
     expect(await statusOf()).toBe("idle");
     const prompt = `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch keel-app-state.txt" } }])}`;
