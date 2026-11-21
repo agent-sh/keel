@@ -5,6 +5,9 @@ import type { Session } from "../../../src/core/types.ts";
 import { liveNow, useStore } from "../lib/store.ts";
 import { WATCH_LABEL, WATCH_RANK, useWatches, type SessionState, type Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
+import { span } from "../../../src/core/watch.ts";
+
+export { span, whyText } from "../../../src/core/watch.ts";
 
 // A state is a shape as well as a color, so it reads without color too.
 export function Mark({ w, className }: { w: Watch; className?: string }) {
@@ -32,15 +35,6 @@ export function elapsed(ms: number) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
-}
-
-// A span in a row's few characters: 42s, 4m, 1h 05m, 3d.
-export function span(ms: number) {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
-  return `${Math.floor(s / 86400)}d`;
 }
 
 // How long a state has held, or when what it waits for is due.

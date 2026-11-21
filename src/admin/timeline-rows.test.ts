@@ -157,6 +157,11 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   expect(busy.lines[0]).toMatchObject({ refs: { approval_id: "p1", call_id: "c1" } });
   expect(busy.lines[1]).toMatchObject({ turn_event: "t1", ts: 40_000 });
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 3, status: { kind: "model", since: 1, model: "m" } } }).lines[0]!.text).toBe("Running a turn started by the owner: step 4, waiting for the model");
+  // A reply that streams is the model answering; one that went silent says for how long.
+  expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 0, status: { kind: "idle" }, output: 60_000 } }).lines[0]!.text).toBe("Running a turn started by the owner: step 1, the model is answering");
+  expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 0, status: { kind: "idle" } } }).lines[0]!.text).toBe("Running a turn started by the owner: step 1, between steps");
+  expect(nowLines({ ...quiet, ts: 100_000, turn: { id: "t1", ts: 1, steps: 0, status: { kind: "model", since: 60_000, model: "m", connected: 60_000, quiet: 60_000 } } }).lines[0]!.text)
+    .toBe("Running a turn started by the owner: step 1, the model is answering, no output for 40 s");
   // A call of the turn whose card is open has not started: the turn waits on the answer, it does not run the tool.
   const asking = nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["Bash"] } }, approvals: [{ id: "p1", tool: "Bash" }] });
   expect(asking.lines.map((l) => l.text)).toEqual(["Waits on the owner: approval for Bash", "Running a turn started by the owner: step 1, waiting for approval"]);

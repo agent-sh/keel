@@ -550,6 +550,12 @@ export class Engine {
     return this.statuses.get(id) ?? { kind: "idle" };
   }
 
+  // When the reply being streamed last gave output; undefined between requests.
+  private outputs = new Map<string, number>();
+  outputOf(id: string): number | undefined {
+    return this.outputs.get(id);
+  }
+
   private setPhase(id: string, phase: Session["phase"]) {
     const s = this.store.updateSession(id, { phase });
     this.bus.emit({ t: "session", session: s });
@@ -1091,6 +1097,16 @@ export class Engine {
       const since = Date.now();
       if (!quiet) this.status(id, { kind: "model", since, model: st.info.name });
       let first = true;
+      // A reply that streamed and then went silent says so: after
+      // STREAM_QUIET_MS without output the status names the last output's
+      // time, until the next output or the end of the request.
+      let last = 0;
+      let silent = false;
+      const hush = quiet ? undefined : setInterval(() => {
+        if (first || silent || signal.aborted || Date.now() - last < STREAM_QUIET_MS) return;
+        silent = true;
+        this.status(id, { kind: "model", since: last, model: st.info.name, connected: last, quiet: last });
+      }, 1000);
       // The provider answered but the model has said nothing yet: shown as
       // connected, so a long silence reads as the model's, not the network's.
       const onHeaders = (h: Headers) => {
@@ -1101,19 +1117,25 @@ export class Engine {
         const tap: Wire = {};
         wireOf.set(req, tap);
         const res = await wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders }, (d) => {
-          if (first && !quiet) { first = false; this.status(id, { kind: "idle" }); }
+          if ((first || silent) && !quiet) { first = silent = false; this.status(id, { kind: "idle" }); }
+          last = Date.now();
+          if (!quiet) this.outputs.set(id, last);
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;
           partial.set(d.index, p);
           this.measure(id, (h) => h.requestDelta?.(session, req, d));
           if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
         }));
+        clearInterval(hush);
+        if (!quiet) this.outputs.delete(id);
         if (!quiet || attempt) this.status(id, { kind: "idle" });
         this.measure(id, (h) => h.requestDone?.(session, req, res));
         this.boundThinking(id, res);
         if (fixed) this.imagesFixed(id, fixed, purpose);
         return res;
       } catch (e) {
+        clearInterval(hush);
+        if (!quiet) this.outputs.delete(id);
         this.measure(id, (h) => h.requestFailed?.(session, req, e, signal.aborted));
         if (signal.aborted) throw abortError();
         // A route that cannot take deferred tools gets the search pair, once.
@@ -2438,6 +2460,10 @@ export const STALLED_MAX = 3;
 // events with no one watching. The same count as STALLED_MAX, for the same
 // reason; the owner's Try again starts the count over.
 const CONTINUE_MAX = 3;
+// A reply's outputs follow each other within a second or two, and a pause
+// before a call's input can take ten. This long without any is not a pause:
+// the status says the stream went silent, and since when.
+export const STREAM_QUIET_MS = 20_000;
 
 // How many turns at the end of a branch, in a row, were continuations after a
 // restart that a restart cut again before they finished a step (a tool call

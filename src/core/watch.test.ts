@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Session } from "./types.ts";
-import { askText, liveAgentCounts, stateOf, watchLabel, watchOf, watchWord } from "./watch.ts";
+import { askText, liveAgentCounts, stateOf, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
 
 const s = (over: Partial<Session> = {}): Session => ({
   id: "p", title: "", model: "m", workspace: "/w", created: 0, updated: 0, phase: "idle", archived: false,
@@ -52,4 +52,14 @@ test("a session whose turn ended waits while something it set up will wake it", 
   expect(stateOf(s({ phase: "working" }), undefined, { pending: [timer] }).watch).toBe("work");
   expect(stateOf(s({ settings: { last_end: "interrupted" } }), undefined, { pending: [timer] }).watch).toBe("stop");
   expect(stateOf(s(), undefined, { pending: [timer], asks: [{ kind: "plan" }] }).watch).toBe("need");
+});
+
+test("a running turn says what it does now, and a stream that went silent says for how long", () => {
+  const on = s({ phase: "working" });
+  expect(stateOf(on, undefined, { status: { kind: "tool", since: 7, names: ["Bash"] }, turn: 1 })).toEqual({ watch: "work", agents: 0, why: "tool", text: "Running Bash", since: 7 });
+  expect(stateOf(on, undefined, { status: { kind: "model", since: 9, model: "m" }, turn: 1 })).toMatchObject({ why: "model", text: "Waiting for the model", since: 9 });
+  expect(stateOf(on, undefined, { status: { kind: "idle" }, turn: 1, output: 5 })).toEqual({ watch: "work", agents: 0, why: "turn", text: "The model is answering", since: 1 });
+  const stalled = stateOf(on, undefined, { status: { kind: "model", since: 60_000, model: "m", connected: 60_000, quiet: 60_000 }, turn: 1 });
+  expect(stalled).toMatchObject({ watch: "work", why: "stalled", since: 60_000 });
+  expect(whyText(stalled, 100_000)).toBe("The model is answering, no output for 40s");
 });

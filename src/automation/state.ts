@@ -7,7 +7,7 @@
 // agents that wait). A parent whose own turn ended reads as working while an
 // agent it started still runs, and as waiting while all that is left waits.
 import type { Store } from "../core/store.ts";
-import type { Session } from "../core/types.ts";
+import type { Session, TurnStatus } from "../core/types.ts";
 import { stateOf, watchLabel, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
@@ -18,7 +18,7 @@ import { D } from "./core.ts";
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
 export type SessionState = State & { label: string; word: string };
 // What the state is read from: the daemon's store and engine (the automation's by default).
-export type From = { store: Store; engine: { isRunning(id: string): boolean } };
+export type From = { store: Store; engine: { isRunning(id: string): boolean; statusOf?(id: string): TurnStatus; turnOf?(id: string): string | undefined; outputOf?(id: string): number | undefined } };
 const from = (): From => D();
 
 // A table another module makes (agents, waits): absent in a store that module never opened.
@@ -108,7 +108,11 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
     if (theirs?.length) for (const p of theirs) pending.push({ ...p, agent: k.title });
     else pending.push({ kind: "wake", agent: k.title });
   }
-  return { asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending };
+  // A running turn: what it waits on now, when it started, whether its reply is streaming.
+  const e = l.d.engine;
+  const turn = e.isRunning(s.id) ? e.turnOf?.(s.id) : undefined;
+  const live = turn ? { status: e.statusOf?.(s.id), turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id) } : {};
+  return { asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending, ...live };
 }
 
 // The state in a tool's words. What a session waits on is named by its kind

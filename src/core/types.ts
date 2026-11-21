@@ -226,5 +226,7 @@ export type TurnStatus =
   // on tools to finish.
   // `preparing`: the request is not sent yet; images of the history are being
   // scaled for it (src/engine/image-fit.ts).
-  | { kind: "model"; since: number; model: string; connected?: number; preparing?: "images" }
+  // `quiet`: the reply was streaming and stopped: when its last output came.
+  // Told once the silence passes STREAM_QUIET_MS; the next output ends it.
+  | { kind: "model"; since: number; model: string; connected?: number; preparing?: "images"; quiet?: number }
   | { kind: "tool"; since: number; names: string[] };

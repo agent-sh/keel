@@ -10,7 +10,7 @@
 // is waiting when its turn ended and something it set up will wake it: a
 // timer or another wait, a command left running in the background, an agent
 // that itself waits. An agent's own session keeps its own state.
-import type { Session, StoredEvent } from "./types.ts";
+import type { Session, StoredEvent, TurnStatus } from "./types.ts";
 
 // `stop`: the owner (or a parent) stopped the last turn; `resume`: a daemon
 // restart cut it and it waits to go on. Neither is done. `wait`: nothing runs,
@@ -35,7 +35,8 @@ export type Ask = { kind: AskKind; text?: string; since?: number; child?: string
 export type SessionState = {
   watch: Watch;
   agents: number;   // agents of the session still at work
-  why?: string;     // need: the kind of the first thing that waits (approval, question, plan, unsent); wait: timer, wait, command, agent
+  why?: string;     // need: the kind of the first thing that waits (approval, question, plan, unsent); wait: timer, wait, command, agent;
+                    // work: tool, model, stalled (a stream that went silent), retry, compacting, turn
   text?: string;    // the reason in words: "Approve Bash: rm -rf dist", "Plan to approve", "Timer: check the deploy"
   since?: number;   // when the reason began (ms)
   until?: number;   // wait: when what it waits for is due (a timer's wake)
@@ -54,7 +55,12 @@ export type Pending = { kind: string; text?: string; since?: number; until?: num
 // waits on (its own waits and background commands, and those of its agents
 // that wait: `parked` is how many of `agents` those are). `approvals` and
 // `asking` are `asks` in short, for a caller that has only counts.
-export type WatchFacts = { asks?: Ask[]; approvals?: number; asking?: boolean; agents?: number; parked?: number; pending?: Pending[] };
+// `status`, `turn` and `output`: what the running turn waits on now, when it
+// started, and when the reply being streamed last gave output.
+export type WatchFacts = {
+  asks?: Ask[]; approvals?: number; asking?: boolean; agents?: number; parked?: number; pending?: Pending[];
+  status?: TurnStatus; turn?: number; output?: number;
+};
 
 // An agent still at work: running, or waiting on something it set up.
 export const agentLive = (a: { status: string }) => a.status === "running" || a.status === "waiting";
@@ -103,6 +109,35 @@ export function pendingText(p: Pending): string {
 }
 const whyOf = (p: Pending) => (p.agent !== undefined ? "agent" : p.kind === "timer" || p.kind === "command" ? p.kind : "wait");
 
+// A span in a few characters: 42s, 4m, 1h 05m, 3d.
+export function span(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+// What a running turn does now, and since when that step began.
+function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since"> {
+  const st = f.status;
+  const since = (t: number | undefined) => (t ? { since: t } : {});
+  if (st?.kind === "tool") return { why: "tool", text: `Running ${st.names.slice(0, 3).join(", ")}${st.names.length > 3 ? ` and ${st.names.length - 3} more` : ""}`, ...since(st.since) };
+  if (st?.kind === "model") {
+    if (st.quiet) return { why: "stalled", text: "The model is answering, no output", ...since(st.quiet) };
+    return { why: "model", text: st.preparing ? "Scaling images for the model" : "Waiting for the model", ...since(st.since) };
+  }
+  if (st?.kind === "retry") return { why: "retry", text: `Retrying the model request, attempt ${st.attempt} of ${st.max}`, ...since(f.turn) };
+  if (st?.kind === "compacting") return { why: "compacting", text: "Compacting the context", ...since(f.turn) };
+  return { why: "turn", ...(f.output ? { text: "The model is answering" } : {}), ...since(f.turn) };
+}
+
+// The reason as one sentence part: a silence says how long it has lasted.
+export function whyText(st: SessionState, now = Date.now()): string {
+  if (st.why === "stalled" && st.since) return `${st.text} for ${span(now - st.since)}`;
+  return st.text ?? "";
+}
+
 // The session's own state, from its events when they are loaded, else from
 // the marks the daemon keeps on it (failed_ms, last_end).
 function own(s: Session, events: StoredEvent[] | undefined): Watch {
@@ -139,7 +174,8 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   if ((f.approvals ?? 0) > 0 || f.asking) return { watch: "need", agents, why: f.approvals ? "approval" : "question", asks: Math.max(1, f.approvals ?? 0) };
   const w = own(s, events);
   // Agents that run keep it working, whatever its own last turn came to.
-  if (w === "work" || agents - (f.parked ?? 0) > 0) return { watch: "work", agents };
+  if (w === "work") return { watch: "work", agents, ...(f.status || f.turn ? doing(f) : {}) };
+  if (agents - (f.parked ?? 0) > 0) return { watch: "work", agents };
   // A turn the owner stopped, or a restart cut, waits on them, not on a timer.
   if (w === "stop" || w === "resume" || !f.pending?.length) return { watch: w, agents };
   // What is due first leads; without a due time, what has waited longest.

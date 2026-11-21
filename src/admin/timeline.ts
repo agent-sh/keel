@@ -73,6 +73,7 @@ export type Live = {
   isRunning?(id: string): boolean;
   turnOf?(id: string): string | undefined;
   statusOf?(id: string): TurnStatus;
+  outputOf?(id: string): number | undefined; // when the reply being streamed last gave output
   isHeld?(id: string): boolean;
   owed?(id: string): boolean; // reports and wakes waiting for the turn to end
   questions?(): { session_id: string; call_id: string; parent_id?: string }[];
@@ -520,7 +521,7 @@ export class Timeline {
     if (lastStart) {
       const f = this.after(sessionId, lastStart);
       if (!f.end && running === lastStart.id) {
-        turn = { id: lastStart.id, ts: lastStart.ts, opener: this.opener(sessionId, lastStart.parent), steps: this.steps(sessionId, lastStart), status: live.statusOf?.(sessionId) ?? { kind: "idle" } };
+        turn = { id: lastStart.id, ts: lastStart.ts, opener: this.opener(sessionId, lastStart.parent), steps: this.steps(sessionId, lastStart), status: live.statusOf?.(sessionId) ?? { kind: "idle" }, output: live.outputOf?.(sessionId) };
       } else if (f.end) {
         const end = JSON.parse(f.end.data ?? "{}");
         const reason = String(end.reason ?? "error");

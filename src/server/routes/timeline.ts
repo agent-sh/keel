@@ -39,6 +39,7 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
     isRunning: (id) => engine.isRunning(id),
     turnOf: (id) => engine.turnOf(id),
     statusOf: (id) => engine.statusOf(id),
+    outputOf: (id) => engine.outputOf(id),
     isHeld: (id) => engine.isHeld(id),
     owed: hasPending,
     questions: allPendingQuestions,

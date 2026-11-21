@@ -341,7 +341,8 @@ export function failureRow(g: FailureIn, link?: Pick<ErrorRecord, "id" | "turn_e
 // What the session is doing and waiting on now, most pressing first.
 export type NowInput = {
   ts: number;
-  turn?: { id: string; ts: number; opener?: Opener; steps: number; status: TurnStatus } | null;
+  // `output`: when the reply being streamed last gave output (absent between requests).
+  turn?: { id: string; ts: number; opener?: Opener; steps: number; status: TurnStatus; output?: number } | null;
   starting?: boolean; // a turn is being set up: nothing of it is stored yet
   approvals: { id: string; call_id?: string; tool?: string; risk?: string; created?: number; child_session?: string; child_title?: string }[];
   questions: { call_id: string; child_session?: string; child_title?: string }[];
@@ -352,13 +353,14 @@ export type NowInput = {
   loops: { id: string; name: string; next_ms: number }[];
   last?: { ts: number; outcome: string } | null;
 };
-const DOING = (s: TurnStatus): string => {
+const DOING = (s: TurnStatus, now: number, output?: number): string => {
   switch (s.kind) {
-    case "model": return s.connected ? "the model is answering" : "waiting for the model";
+    // A stream that gave output and then stopped says so, with how long it has been silent.
+    case "model": return s.quiet ? `the model is answering, no output for ${dur(now - s.quiet)}` : s.connected ? "the model is answering" : "waiting for the model";
     case "tool": return `running ${s.names.slice(0, 3).join(", ")}${s.names.length > 3 ? ` and ${s.names.length - 3} more` : ""}`;
     case "retry": return `retrying the model request (attempt ${s.attempt} of ${s.max})`;
     case "compacting": return "compacting the context";
-    default: return "between steps";
+    default: return output ? "the model is answering" : "between steps";
   }
 };
 const ENDED: Record<string, string> = {
@@ -381,7 +383,7 @@ export function nowLines(n: NowInput): TimelineNow {
     const head = who.key === "restart" ? "Running a turn continued after a daemon restart" : `Running a turn started by ${who.words}`;
     // A call of this session's own turn whose card is open has not started: the turn waits on the answer.
     const asking = n.turn.status.kind === "tool" && n.approvals.some((a) => !a.child_session);
-    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${asking ? "waiting for approval" : DOING(n.turn.status)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });
+    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${asking ? "waiting for approval" : DOING(n.turn.status, n.ts, n.turn.output)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });
   } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
     add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${a.status === "waiting" ? "is waiting on a wake of its own" : "is running"}`, { ts: a.created, open: true }, { agent_id: a.id, child_session: a.session_id });

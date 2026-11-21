@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { shoot } from "./shots.ts";
 
 // Feature: the state of a session is one fact. The daemon works it out in one
@@ -113,6 +113,40 @@ test("a session waiting on a timer or a background command says so, with what it
     const waits = (await (await request.get("/api/automation")).json()).waits as { id: string; session_id: string; status: string }[];
     for (const w of waits.filter((w) => w.session_id === timer && w.status === "active")) await request.delete(`/api/waits/${w.id}`);
     await expect(t).toHaveAttribute("data-watch", "done");
+  } finally {
+    await drop(request, made);
+  }
+});
+
+test("a stream that stopped producing output says so, with the time since its last output", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const gate = `${WS}/hold-${Date.now().toString(36)}.go`;
+  try {
+    const other = await start(request, "A quiet session to watch from");
+    const held = await start(request, "Summarize the incident from Monday");
+    made.push(other, held);
+    await send(request, held, `script:hold ${gate}`);
+    await page.goto(`/s/${other}`);
+    const r = row(page, held);
+    // While it streams it is the model answering; nothing is called silent yet.
+    await expect(r).toHaveAttribute("data-watch", "work");
+    await expect(r.getByTestId("row-why")).toHaveText("The model is answering");
+    const now = async () => (await (await request.get(`/api/sessions/${held}/timeline?format=text&limit=1`)).text()).split("\n").filter((l) => l.startsWith("  ")).join("\n");
+    expect(await now()).toContain("the model is answering");
+    // The silence passes the threshold: the row, the daemon's state and the Now line say so, with its length.
+    await expect(r.getByTestId("row-why")).toHaveText(/^The model is answering, no output for \d+s$/, { timeout: 40_000 });
+    await expect(r.getByTestId("row-why")).toHaveAttribute("data-why", "stalled");
+    expect(await stateOf(request, held)).toMatchObject({ watch: "work", why: "stalled" });
+    expect(await now()).toMatch(/the model is answering, no output for \d+ s/);
+    expect(await now()).not.toContain("between steps");
+    await shoot(page, "session-state-03-stalled-stream");
+
+    // Output again: the silence is over, and the turn ends.
+    mkdirSync(WS, { recursive: true });
+    writeFileSync(gate, "");
+    await expect(r).toHaveAttribute("data-watch", "done", { timeout: 30_000 });
   } finally {
     await drop(request, made);
   }

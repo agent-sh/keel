@@ -19,7 +19,7 @@ import { lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, use
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
-import { folderOf, Mark, modelOf, stateClock, timed, useNow } from "./Mark.tsx";
+import { folderOf, Mark, modelOf, stateClock, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { dragSession, PaneCount } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
@@ -135,7 +135,7 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
         {SPELLED.includes(w) && (
           <span className="k-row-sub">
             <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
-            {st.text && <span className="k-row-why" data-testid="row-why" title={st.text}>{st.text}</span>}
+            {st.text && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
             {timed(st) && <span className="k-row-clock tabular-nums" data-testid="row-clock">{stateClock(st, now)}</span>}
           </span>
         )}
