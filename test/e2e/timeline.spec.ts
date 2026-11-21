@@ -229,9 +229,10 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await expect(panel.getByTestId("timeline-now-line")).toHaveText(/Nothing is running or waited on\. The last turn finished\./);
     await expect(rows.first()).toContainText("Continued after a daemon restart, 1 step");
     await expect(panel.getByTestId("timeline-bad")).toHaveText("1 failed tool");
-    // The minute is said once; rows in the same minute carry their seconds, so a burst keeps its order.
+    // The minute is said once; rows in the same minute show their time to the second, whole: every row has a full time.
     await expect(panel.locator("time").first()).toHaveText(/^\d\d:\d\d$/);
-    await expect(panel.locator("time").filter({ hasText: /^:\d\d$/ }).first()).toBeVisible();
+    await expect(panel.locator("time").filter({ hasText: /^\d\d:\d\d:\d\d$/ }).first()).toBeVisible();
+    for (const t of await panel.locator("time").allTextContents()) expect(t).toMatch(/^\d\d:\d\d(:\d\d)?$/);
     await shots("timeline-01-story");
 
     // Keyboard: the list is one Tab stop; arrows move, Enter opens the receipt.

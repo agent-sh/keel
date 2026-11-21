@@ -42,7 +42,8 @@ const STATE: Record<TimelineNow["state"], { word: string; dot: string }> = {
   idle: { word: "Idle", dot: "border-2 border-line-strong" },
 };
 const ink = (tone: TimelineRow["tone"], plain: string) => (tone === "failed" ? "text-st-fail" : tone === "owner" ? "text-st-need" : tone === "live" ? "text-st-work" : plain);
-const seconds = (ts: number) => `:${String(new Date(ts).getSeconds()).padStart(2, "0")}`;
+// A row in the same minute as the one above shows its time with its seconds, whole ("09:36:37"), never ":37" alone.
+// The time column is as wide as that form (3.5rem): the rail and the detail's indent follow it.
 const DAY = 86_400_000;
 function day(ts: number, now: number): string {
   const start = (t: number) => new Date(t).setHours(0, 0, 0, 0);
@@ -325,9 +326,9 @@ function Panel({ session }: { session: Session }) {
             const isOpen = open === r.id;
             const turn = r.kind === "turn";
             const aside = r.turn?.branch === "other";
-            // The minute once, then the seconds of what follows in it: a burst keeps its order.
+            // The minute once; what follows in it shows its time to the second, whole, so a burst keeps its order and every row has a time.
             const sameMinute = !!above && !label && clock(above.ts) === clock(r.ts);
-            const stamp = !sameMinute ? clock(r.ts) : seconds(above.ts) === seconds(r.ts) ? "" : seconds(r.ts);
+            const stamp = sameMinute ? clock(r.ts, { seconds: true }) : clock(r.ts);
             return (
               <Fragment key={r.id}>
                 {label && (
@@ -337,8 +338,8 @@ function Panel({ session }: { session: Session }) {
                 )}
                 <div role="listitem" className={cn("relative", isOpen && "bg-raised shadow-1")} data-testid="timeline-row" data-kind={r.kind} data-sub={r.sub} data-tone={r.tone} data-id={r.id} data-turn={t} data-branch={aside ? "other" : undefined}>
                   {/* The course line: up to what happened later in the same turn, down to the turn's start. */}
-                  {up && <span aria-hidden className={cn("pointer-events-none absolute left-[5rem] top-0 w-px -translate-x-1/2 bg-line-strong", turn ? "h-[0.5rem]" : "h-[0.3125rem]")} />}
-                  {down && <span aria-hidden className="pointer-events-none absolute bottom-0 left-[5rem] top-[1.4375rem] w-px -translate-x-1/2 bg-line-strong" />}
+                  {up && <span aria-hidden className={cn("pointer-events-none absolute left-[5.5rem] top-0 w-px -translate-x-1/2 bg-line-strong", turn ? "h-[0.5rem]" : "h-[0.3125rem]")} />}
+                  {down && <span aria-hidden className="pointer-events-none absolute bottom-0 left-[5.5rem] top-[1.4375rem] w-px -translate-x-1/2 bg-line-strong" />}
                   <button
                     type="button"
                     data-row={i}
@@ -346,7 +347,7 @@ function Panel({ session }: { session: Session }) {
                     aria-expanded={isOpen}
                     onFocus={() => setActiveId(r.id)}
                     onClick={() => { setActiveId(r.id); setOpen(isOpen ? null : r.id); }}
-                    className="grid w-full grid-cols-[3rem_1.5rem_minmax(0,1fr)_auto] items-start gap-x-2 px-3 py-1 text-left hover:bg-hover focus-visible:bg-hover focus-visible:outline-offset-[-2px]"
+                    className="grid w-full grid-cols-[3.5rem_1.5rem_minmax(0,1fr)_auto] items-start gap-x-2 px-3 py-1 text-left hover:bg-hover focus-visible:bg-hover focus-visible:outline-offset-[-2px]"
                   >
                     <time dateTime={new Date(r.ts).toISOString()} title={when(r.ts)} className={cn("pt-px text-right k-face-figure text-micro leading-5", sameMinute ? "text-faint" : "text-muted")}>
                       {stamp}
@@ -393,7 +394,7 @@ function Now({ now, onTurn }: { now: TimelineNow | null; onTurn: (turn: string) 
   return (
     <section className="shrink-0 border-b border-line bg-raised px-3 pb-2.5 pt-2.5" aria-label="Now" data-testid="timeline-now" data-state={now.state}>
       <h3 className="flex items-center gap-2">
-        <span className="grid w-12 place-items-end pr-0.5 k-face-figure text-micro text-muted">Now</span>
+        <span className="grid w-14 place-items-end pr-0.5 k-face-figure text-micro text-muted">Now</span>
         <span className="grid w-6 place-items-center"><span className={cn("size-2 rounded-full", st.dot)} /></span>
         <span className={cn("k-face-state text-base font-semibold tracking-tight", now.state === "owner" && "text-st-need")} data-testid="timeline-state">{st.word}</span>
       </h3>
@@ -406,7 +407,7 @@ function Now({ now, onTurn }: { now: TimelineNow | null; onTurn: (turn: string) 
           const timer = l.until ? (l.until > at ? `due in ${dur(l.until - at)}` : "due now") : l.open ? dur(Math.max(0, at - l.ts)) : l.kind === "idle" && l.ts < at - 1000 ? `since ${clock(l.ts)}` : "";
           const body = (
             <>
-              <span className="w-12" />
+              <span className="w-14" />
               <span className="grid h-5 w-6 shrink-0 place-items-center" aria-hidden>
                 {l.kind === "turn" ? <Route className="size-3.5 text-st-work" /> : <Mark row={l} />}
               </span>
@@ -435,7 +436,7 @@ function Now({ now, onTurn }: { now: TimelineNow | null; onTurn: (turn: string) 
 function Apart({ turn, sessionId, onClose }: { turn: string; sessionId: string; onClose: () => void }) {
   const [start, setStart] = useState<number | null>(null);
   return (
-    <div className="border-b border-line bg-raised pb-2 pl-[6.25rem] pr-2 pt-1.5" data-testid="timeline-asked" onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
+    <div className="border-b border-line bg-raised pb-2 pl-[6.75rem] pr-2 pt-1.5" data-testid="timeline-asked" onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
       <div className="flex items-center">
         <span className="text-caption font-medium">{start ? `The turn of ${clock(start, { seconds: true })}` : "The turn's receipt"}</span>
         <button type="button" onClick={onClose} aria-label="Close the receipt" className="ml-auto grid size-6 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg"><X className="size-3.5" /></button>
@@ -460,7 +461,7 @@ function Detail({ row, sessionId }: { row: TimelineRow; sessionId: string }) {
   const error = useStore((s) => (row.refs?.error_id ? s.errors.find((e) => e.id === row.refs!.error_id) : undefined));
   const child = row.refs?.child_session;
   return (
-    <div className="flex flex-col gap-2 pb-2.5 pl-[6.25rem] pr-3 pt-0.5" data-testid="timeline-detail">
+    <div className="flex flex-col gap-2 pb-2.5 pl-[6.75rem] pr-3 pt-0.5" data-testid="timeline-detail">
       {row.kind === "turn" ? <TurnReceipt turn={row.id} sessionId={sessionId} facts={row.turn} /> : (
         <dl className="grid grid-cols-[5.5rem_1fr] gap-x-3 gap-y-0.5 text-caption">
           <Fact k="When">{when(row.ts)}</Fact>
