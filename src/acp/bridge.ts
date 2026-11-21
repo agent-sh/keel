@@ -410,11 +410,15 @@ export class AcpBridge {
         return {};
       }
       case "session/list": {
-        // Pages of LIST_PAGE; the cursor is the next row's offset, opaque to the editor.
+        // Pages of LIST_PAGE; the cursor is the next row's offset in the list it
+        // was given for (its cwd filter, by a hash), opaque to the editor. Under
+        // another filter the offset would point into another list: refused.
+        const filter = Bun.hash(p.cwd ? String(p.cwd) : "").toString(36);
         let from = 0;
         if (p.cursor != null) {
-          const m = /^o(\d+)$/.exec(Buffer.from(String(p.cursor), "base64url").toString());
+          const m = /^o(\d+)\.([0-9a-z]+)$/.exec(Buffer.from(String(p.cursor), "base64url").toString());
           if (!m) throw Object.assign(new Error("invalid cursor"), { code: -32602 });
+          if (m[2] !== filter) throw Object.assign(new Error("invalid cursor: it was given for a list with another cwd"), { code: -32602 });
           from = Number(m[1]);
         }
         const { sessions } = await this.daemon.get("/api/sessions");
@@ -423,7 +427,7 @@ export class AcpBridge {
         const more = from + LIST_PAGE < rows.length;
         return {
           sessions: page.map((s) => ({ sessionId: s.id, cwd: s.workspace, title: s.title || undefined, updatedAt: new Date(s.updated).toISOString() })),
-          ...(more ? { nextCursor: Buffer.from(`o${from + LIST_PAGE}`).toString("base64url") } : {}),
+          ...(more ? { nextCursor: Buffer.from(`o${from + LIST_PAGE}.${filter}`).toString("base64url") } : {}),
         };
       }
       case "session/prompt": {

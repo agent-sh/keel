@@ -90,6 +90,14 @@ test("session/list pages with a cursor and refuses a bad one", async () => {
   expect(two.nextCursor).toBeUndefined();
   expect((await call(f.bridge, f.out, "session/list", { cwd: "/B" })).result.sessions.length).toBe(2);
   expect((await call(f.bridge, f.out, "session/list", { cursor: "nope" })).error.code).toBe(-32602);
+  // A cursor belongs to the list it was given for: not to another folder's, not to the unfiltered one.
+  for (const other of [{ cwd: "/B" }, {}]) {
+    const r = await call(f.bridge, f.out, "session/list", { ...other, cursor: one.nextCursor });
+    expect(r.error).toEqual({ code: -32602, message: "invalid cursor: it was given for a list with another cwd" });
+  }
+  const all = (await call(f.bridge, f.out, "session/list", {})).result;
+  expect((await call(f.bridge, f.out, "session/list", { cwd: "/A", cursor: all.nextCursor })).error.code).toBe(-32602);
+  expect((await call(f.bridge, f.out, "session/list", { cursor: all.nextCursor })).result.sessions.map((x: any) => x.sessionId)).toEqual(["a200", "b0", "b1"]);
 });
 
 test("a prompt's live reply: missed text sent, the turn's end said as it was", async () => {
