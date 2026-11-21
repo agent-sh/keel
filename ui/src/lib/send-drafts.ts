@@ -86,8 +86,52 @@ function save(key: string) {
   }
 }
 
-// `boot`: this page has just loaded, so a request marked as out has nobody
-// waiting for its answer any more.
+// A request that is out belongs to the page that made it, and only that page
+// hears its answer. While it is out the page holds a Web Lock named after the
+// send, which the browser releases when the page goes (closed, reloaded,
+// crashed). Every other page that sees the send marked as out waits for that
+// lock: when it gets it and the stored item still says "out", nobody is
+// waiting for the answer any more, and the send is cut (`cutSend`). Without
+// Web Locks (a page not served over a secure origin) only a page that loads
+// can tell, as before.
+const LOCK = "keel.send.";
+const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+const release = new Map<string, () => void>();
+function hold(id: string) {
+  if (!locks || release.has(id)) return;
+  let done!: () => void;
+  const out = new Promise<void>((r) => (done = r));
+  release.set(id, done);
+  locks.request(LOCK + id, () => out).catch(() => {});
+}
+function free(id: string) {
+  release.get(id)?.();
+  release.delete(id);
+}
+// What a cut send becomes: a named one goes out again under its id (taken
+// once, whether or not it arrived); one without an id is the owner's to check.
+const cutSend = (key: string) =>
+  namedSends(key) ? { state: "waiting" as const, error: undefined } : { state: "unconfirmed" as const, error: "The page that sent this went away before the daemon answered." };
+// resend.ts sends what waits; it is told when a cut send starts to.
+export const onCutSend: { waiting?: () => void } = {};
+const watched = new Set<string>();
+function watch(key: string, id: string) {
+  if (!locks || own.has(id) || watched.has(id)) return;
+  watched.add(id);
+  locks.request(LOCK + id, { mode: "shared" }, () => {
+    watched.delete(id);
+    // The page that sent it wrote what became of it before it let the lock go.
+    let stored: Stored[] = [];
+    try { stored = JSON.parse(localStorage.getItem(STORE + key) ?? "[]"); } catch { /* unreadable: the storage event says */ }
+    const mine = sendDrafts(key).find((d) => d.id === id);
+    if (own.has(id) || mine?.state !== "sending" || !Array.isArray(stored) || stored.find((d) => d?.id === id)?.state !== "sending") return;
+    setSendDraft(key, id, { ...mine, ...cutSend(key) });
+    if (namedSends(key)) onCutSend.waiting?.();
+  }).catch(() => {});
+}
+
+// `boot`: this page has just loaded. Without Web Locks a request marked as
+// out then has nobody waiting for its answer; with them the lock says.
 function read(key: string, raw: string | null, boot: boolean): SendDraft[] {
   try {
     return parse(key, raw, boot);
@@ -104,9 +148,8 @@ function parse(key: string, raw: string | null, boot: boolean): SendDraft[] {
   if (!Array.isArray(list)) return [];
   const have = sendDrafts(key);
   return list.filter((s) => s && typeof s.id === "string" && Array.isArray(s.images)).map((s): SendDraft => {
-    const cut = boot && s.state === "sending";
-    // A named send the reload cut goes out again under its id: taken once, whether or not it arrived.
-    const base = { ...s, text: String(s.text ?? ""), ...(!cut ? {} : namedSends(key) ? { state: "waiting" as const, error: undefined } : { state: "unconfirmed" as const, error: "The page was reloaded before the daemon answered." }) };
+    const cut = boot && !locks && s.state === "sending";
+    const base = { ...s, text: String(s.text ?? ""), ...(cut ? cutSend(key) : {}) };
     // Attachments never change after the item is made: the copy already here is the full one.
     const mine = have.find((d) => d.id === s.id);
     if (mine) return { ...base, images: mine.images, lost: mine.lost };
@@ -129,22 +172,26 @@ for (let i = 0; i < localStorage.length; i++) {
   const key = k.slice(STORE.length);
   const list = read(key, localStorage.getItem(k), true);
   if (list.length) drafts.set(key, list);
+  for (const d of list) if (d.state === "sending") watch(key, d.id);
 }
 // Another tab changed a shelf: take its list, beside what this page is sending.
 window.addEventListener("storage", (e) => {
   if (e.storageArea !== localStorage || !e.key?.startsWith(STORE)) return;
   const key = e.key.slice(STORE.length);
   put(key, [...read(key, e.newValue, false).filter((d) => !own.has(d.id)), ...sendDrafts(key).filter((d) => own.has(d.id))]);
+  for (const d of sendDrafts(key)) if (d.state === "sending") watch(key, d.id);
 });
 
 export function setSendDraft(key: string, id: string, draft?: SendDraft) {
   // A session deleted while its send was out: there is nowhere to send it again, so nothing is kept for it.
   if (dropped.has(key)) draft = undefined;
-  if (draft && (draft.state === "sending" || draft.state === "done")) own.add(id);
-  else own.delete(id);
+  const mine = !!draft && (draft.state === "sending" || draft.state === "done");
+  // The lock is asked for before the item is stored as out, and let go after what became of it is stored.
+  if (mine) { own.add(id); hold(id); } else own.delete(id);
   const old = sendDrafts(key);
   put(key, old.some((d) => d.id === id) ? old.flatMap((d) => d.id === id ? draft ? [draft] : [] : [d]) : draft ? [...old, draft] : old);
   save(key);
+  if (!mine) free(id);
 }
 
 // An image read back from the session's draft after a reload, or `null` when
@@ -162,7 +209,7 @@ export function setSendImage(key: string, id: string, image: string, got: Attach
 const dropped = new Set<string>();
 export function dropSendDrafts(key: string) {
   dropped.add(key);
-  for (const d of sendDrafts(key)) own.delete(d.id);
+  for (const d of sendDrafts(key)) { own.delete(d.id); free(d.id); }
   if (drafts.has(key)) put(key, empty);
   try { localStorage.removeItem(STORE + key); } catch { /* nothing was stored */ }
 }

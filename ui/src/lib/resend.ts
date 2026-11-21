@@ -4,7 +4,7 @@
 // twice. This runs for the whole page: the session's message box may be gone.
 import { dropImage, fromServer } from "./drafts.ts";
 import { toBlock } from "./images.ts";
-import { daemonAway, messageRefused, setSendDraft, setSendImage, sendDrafts, unread, waitingSends, type SendDraft } from "./send-drafts.ts";
+import { daemonAway, messageRefused, onCutSend, setSendDraft, setSendImage, sendDrafts, unread, waitingSends, type SendDraft } from "./send-drafts.ts";
 import { actions, api, failed, getState, onFeature } from "./store.ts";
 
 // Requests of one message that got no answer while the socket stayed up. A
@@ -89,6 +89,9 @@ async function flush() {
 export function sendWaitingSoon() {
   if (!timer && getState().connected) timer = setTimeout(() => void flush(), (again = AGAIN_MS));
 }
+
+// A send whose page went away (another tab closed, or this page was reloaded) waits now: it goes out from here.
+onCutSend.waiting = sendWaitingSoon;
 
 onFeature({
   // Every socket open, the page's first included (a reload with a send still out).

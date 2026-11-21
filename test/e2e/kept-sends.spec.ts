@@ -110,3 +110,54 @@ test("what was kept for a deleted session is removed at the next load", async ({
   expect(await stored(`keel.sends.${open}`)).toBeNull();
   await request.delete(`/api/sessions/${archived}`);
 });
+
+// EXTRA-S14. A send whose tab is closed before the daemon answered is not
+// left hidden in the tabs still open: a session's message goes out from one
+// of them under its own id (the daemon takes it once), and a first message of
+// the New box, which has no id, shows as unconfirmed.
+test("a send whose tab was closed is taken up by a tab still open", async ({ page, context, request }) => {
+  const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Send from a closed tab" } })).json()).session.id as string;
+  const other = await context.newPage();
+  await page.goto(`/s/${a}`);
+  await other.goto(`/s/${a}`);
+  await expect(composer(other)).toBeVisible();
+  // The first tab's request is held and never reaches the daemon (held for the whole
+  // context: a page's own routes are let through when it closes).
+  const held = Promise.withResolvers<void>();
+  const seen: string[] = [];
+  await context.route(`**/api/sessions/${a}/messages`, (r) => {
+    const first = r.request().frame().page() === page;
+    seen.push(`${first ? "first" : "other"} ${r.request().postDataJSON().client_id}`);
+    return first ? held.resolve() : r.fallback();
+  });
+  await composer(page).fill("Sent from a tab that was closed.");
+  await composer(page).press("Enter");
+  await held.promise;
+  // While that tab lives its send is its own: the other tab shows nothing and sends nothing.
+  await other.evaluate(() => new Promise((r) => setTimeout(r, 500)));
+  await expect(saved(other)).toHaveCount(0);
+  await page.close();
+  // The tab still open sends it itself, under the id it was first sent with.
+  await expect.poll(() => seen.filter((x) => x.startsWith("other ")), { timeout: 20_000 }).toEqual([seen[0]!.replace("first ", "other ")]);
+  await expect(other.getByTestId("user-message").filter({ hasText: "Sent from a tab that was closed." })).toHaveCount(1, { timeout: 20_000 });
+  await expect(saved(other)).toHaveCount(0);
+  const texts = (await (await request.get(`/api/sessions/${a}`)).json()).events.filter((e: any) => e.kind === "user").map((e: any) => e.data.text);
+  expect(texts).toEqual(["Sent from a tab that was closed."]);
+
+  // The New box: its create has no id, so the tab still open says it is unconfirmed.
+  const first = await context.newPage();
+  await first.goto("/");
+  await other.goto("/");
+  const heldNew = Promise.withResolvers<void>();
+  await context.route("**/api/sessions", (r) => (r.request().method() === "POST" && r.request().frame().page() === first ? heldNew.resolve() : r.fallback()));
+  await first.getByTestId("new-composer").getByTestId("composer").fill("A first message from a tab that was closed.");
+  await first.getByTestId("new-composer").getByTestId("composer").press("Enter");
+  await heldNew.promise;
+  await first.close();
+  const kept = other.getByTestId("new-composer").getByTestId("saved-draft");
+  await expect(kept).toHaveAttribute("data-state", "unconfirmed", { timeout: 15_000 });
+  await expect(kept).toContainText("A first message from a tab that was closed.");
+  await expect(kept.getByTestId("saved-reason")).toHaveText("The page that sent this went away before the daemon answered.");
+  await kept.getByRole("button", { name: "Discard" }).click();
+  await request.delete(`/api/sessions/${a}`);
+});
