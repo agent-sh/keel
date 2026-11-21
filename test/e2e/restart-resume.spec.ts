@@ -440,3 +440,38 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     d.proc.kill("SIGKILL");
   }
 });
+
+// Feature: a loop's run goes on through a restart with its turn. The run a
+// crash or a stop cut is the run that finishes: it closes once, as the
+// continued turn ended, and the loop counts no failure and starts no other run.
+test("a loop run cut by a restart finishes as the same run", async () => {
+  const state = join(ROOT, `restart-loop-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Loop across restarts" });
+    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+    const loop = await call("/api/loops", { session_id: session.id, schedule: "daily", prompt: "script:long-tool" });
+    const history = async () => (await call(`/api/loops/${loop.id}/runs`, undefined, "GET")) as { loop: any; runs: any[] };
+    const toolCalls = async () => ((await call(`/api/sessions/${session.id}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "assistant" && e.data.blocks?.some((b: any) => b.type === "tool_use")).length;
+    for (const [n, signal] of [[1, "SIGKILL"], [2, "SIGTERM"]] as const) {
+      await call(`/api/loops/${loop.id}/run`, {});
+      await expect.poll(toolCalls, { timeout: 15_000 }).toBe(n);
+      await new Promise((r) => setTimeout(r, 1_000));
+      d.proc.kill(signal);
+      await exited(d.proc);
+      d = await daemon(state);
+      await expect.poll(async () => (await history()).runs.map((r) => r.outcome), { timeout: 60_000 }).toEqual(Array(n).fill("ok"));
+      const h = await history();
+      expect(h.runs[0].note).toContain("Continued after a daemon restart.");
+      expect(h.loop).toMatchObject({ runs: n, fails: 0, last_status: "ok", enabled: true });
+    }
+    const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
+    expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
