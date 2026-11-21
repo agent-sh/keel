@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assignArm, diffInterval, meanInterval, msprt, phi, phiInv, rng, xmr } from "./stats.ts";
+import { assignArm, diffInterval, labelBet, meanInterval, msprt, phi, phiInv, rng, xmr } from "./stats.ts";
 
 describe("arm assignment", () => {
   test("is deterministic and follows the weights", () => {
@@ -79,6 +79,27 @@ describe("guards and alerts", () => {
     const mixed = Array.from({ length: 20 }, (_, i) => i % 2);
     expect(msprt(mixed, mixed.slice().reverse(), 0.1).reject).toBe(false);
     expect(msprt([0], [1], 0.1).reject).toBe(false);
+  });
+  test("a label bet is fair at every step, whatever the values, and grows only when the labelled run higher", () => {
+    const r = rng(11);
+    const xs = Array.from({ length: 40 }, () => Math.exp(3 * r())); // skewed, no model fits it
+    for (const p of [0.5, 0.25]) {
+      // Two bettors on the same history that differ in the last label: the evidence before
+      // it is the chance-weighted mean of the two after it (a martingale, exactly).
+      for (let n = 2; n <= xs.length; n += 7) {
+        const labels = xs.slice(0, n - 1).map(() => r() < p);
+        const [yes, no] = [labelBet(p, (m) => 0.3 * m), labelBet(p, (m) => 0.3 * m)];
+        let before = 1;
+        labels.forEach((l, i) => { before = yes.add(xs[i]!, l); no.add(xs[i]!, l); });
+        expect(p * yes.add(xs[n - 1]!, true) + (1 - p) * no.add(xs[n - 1]!, false)).toBeCloseTo(before, 9);
+      }
+    }
+    // The labelled half shifted up by one deviation: evidence past 20. Shifted down: none.
+    const normal = () => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r());
+    const [up, down] = [labelBet(0.5, () => 1), labelBet(0.5, () => 1)];
+    for (let i = 0; i < 200; i++) { const l = i % 2 === 0, z = normal(); up.add(z + (l ? 1 : 0), l); down.add(z - (l ? 1 : 0), l); }
+    expect(up.evidence).toBeGreaterThan(20);
+    expect(down.evidence).toBeLessThan(1);
   });
   test("XmR limits come from the moving range and need a baseline", () => {
     expect(xmr([1, 2, 3])).toBeNull();

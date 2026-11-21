@@ -35,9 +35,11 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await expect(detail).toContainText(`Effort ${tag}`);
   await expect(detail.getByTestId("experiment-state")).toHaveText("draft");
 
+  // A short guard window (three seconds from a family's first turn), so the guards read these sessions.
+  const id = (await (await request.get("/api/experiments")).json()).experiments.find((e: any) => e.name === `Effort ${tag}`).id;
+  expect((await request.patch(`/api/experiments/${id}`, { data: { stop: { sessions_per_arm: null, window_min: 0.05 } } })).ok()).toBe(true);
   await detail.getByTestId("experiment-start").click();
   await expect(detail.getByTestId("experiment-state")).toHaveText("running");
-  const id = (await (await request.get("/api/experiments")).json()).experiments.find((e: any) => e.name === `Effort ${tag}`).id;
 
   // New sessions get arms at their first turn; the low arm's sessions run at low effort.
   // Sessions until both arms have some (the split is a hash, so a few may land on one side).
@@ -57,10 +59,23 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   const low = (await counts()).find((c) => c.arm === "low")!.n;
   const efforts = await Promise.all(made.map(async (sid) => (await (await request.get(`/api/sessions/${sid}`)).json()).session.settings.effort));
   expect(efforts.filter((x) => x === "low").length).toBe(low);
+  // Each family's guard observation is read once, when its window has closed; a reply rated
+  // down after that counts in the report and leaves the guards as they were.
+  const report = async () => (await (await request.get(`/api/experiments/${id}`)).json()).report;
+  await expect.poll(async () => (await report()).guard, { timeout: 15_000 }).toMatchObject({ fixed: made.length, pending: 0, threshold: 20, tests: 2 });
+  const read = await report();
+  const rated = (await (await request.get(`/api/sessions/${made[1]}`)).json()).events.findLast((e: any) => e.kind === "assistant");
+  expect((await request.post("/api/features/rating", { data: { event_id: rated.id, value: -1 } })).ok()).toBe(true);
+  const now = await report();
+  expect(now.arms.some((a: any) => a.metrics.thumbs_down.estimate > 0)).toBe(true);
+  expect([now.guards, now.guard]).toEqual([read.guards, read.guard]);
   await page.reload();
   await expect(detail.getByTestId("experiment-sessions")).toContainText("effort");
   await expect(detail.getByTestId("experiment-report")).toContainText("n=");
+  await expect(detail.getByTestId("experiment-guards")).toContainText(`${made.length} session families read, each once, 3 s after it started`);
   await shoot(page, "experiments-02-live-running");
+  await detail.getByTestId("experiment-sessions").scrollIntoViewIfNeeded();
+  await shoot(page, "experiments-02b-live-guards");
 
   await detail.getByTestId("experiment-stop").click();
   await expect(detail.getByTestId("experiment-state")).toHaveText("stopped");

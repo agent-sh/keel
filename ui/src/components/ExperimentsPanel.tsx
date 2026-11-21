@@ -16,7 +16,7 @@ type Arm = { name: string; weight?: number; tools_off?: string[]; settings?: Rec
 type Decision = { winner: string | null; verdict: "won" | "inconclusive" | "regression"; text: string; remove: string; ts: number };
 export type Experiment = {
   id: string; name: string; hypothesis: string; mode: "offline" | "live"; template?: string; arms: Arm[]; primary: Metric;
-  guards: { metric: Metric; mde: number; relative?: boolean }[]; stop: { sessions_per_arm?: number | null; reps?: number; tasks?: string[]; model?: string };
+  guards: { metric: Metric; mde: number; relative?: boolean }[]; stop: { sessions_per_arm?: number | null; alpha?: number; window_min?: number; reps?: number; tasks?: string[]; model?: string };
   state: "draft" | "running" | "stopped"; created_ms: number; started_ms?: number; stopped_ms?: number; stop_reason?: string; decision?: Decision;
   sessions: { arm: string; n: number }[]; runs: number;
 };
@@ -25,7 +25,9 @@ type Report = {
   unit: string;
   arms: { arm: string; units: number; clusters: number; metrics: Record<Metric, Interval> }[];
   effects: { arm: string; metric: Metric; diff: Interval & { significant: boolean; relative: number | null }; better: boolean | null }[];
-  guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean }[];
+  guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean; n: [number, number] }[];
+  // Live: the evidence the stop rule reads (the average over the tests) and the families it read.
+  guard?: { evidence: number; threshold: number; tests: number; window_min: number; fixed: number; pending: number };
   decision: Decision;
   final_ms?: number; // a stopped experiment: when its report was frozen
 };
@@ -54,6 +56,11 @@ const iv = (unit: string, i: Interval | undefined, signed = false) =>
       {i.method !== "none" && <span className="text-micro text-faint">{fmtMetric(unit, i.lo, signed)} to {fmtMetric(unit, i.hi, signed)}</span>}
     </span>
   );
+
+// Sequential evidence, as a ratio: 1 is none.
+const fmtEvidence = (v: number) => (v >= 1000 ? "over 1000" : v.toFixed(1));
+// A guard window in the largest whole unit.
+const fmtWindow = (min: number) => (min >= 60 && min % 60 === 0 ? `${min / 60} h` : min >= 1 ? `${Number(min.toFixed(1))} min` : `${Math.round(min * 60)} s`);
 
 function armDiff(a: Arm) {
   const parts: string[] = [];
@@ -184,7 +191,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
         <dl className="mt-3 grid grid-cols-[9rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-caption">
           <dt className="text-faint">Judged by</dt><dd>{metrics[e.primary]?.label} ({metrics[e.primary]?.better} is better)</dd>
           <dt className="text-faint">Guards</dt><dd>{e.guards.length ? e.guards.map((g) => `${metrics[g.metric]?.label} may not get worse by ${g.relative ? `${Math.round(g.mde * 100)}%` : metrics[g.metric]!.unit === "share" ? `${Math.round(g.mde * 100)} points` : fmtMetric(metrics[g.metric]!.unit, g.mde)}`).join("; ") : "none"}</dd>
-          <dt className="text-faint">Stop rule</dt><dd>{e.mode === "live" ? `a guard regression (sequential test at 5%)${e.stop.sessions_per_arm ? `, or ${e.stop.sessions_per_arm} sessions per arm` : ", or the owner"}` : `${e.stop.reps ?? 3} repetitions per task and arm`}</dd>
+          <dt className="text-faint">Stop rule</dt><dd>{e.mode === "live" ? `a guard regression (sequential evidence, at most 5% false stops over all guards, arms and looks)${e.stop.sessions_per_arm ? `, or ${e.stop.sessions_per_arm} sessions per arm` : ", or the owner"}` : `${e.stop.reps ?? 3} repetitions per task and arm`}</dd>
           {e.mode === "offline" && <><dt className="text-faint">Run it</dt><dd><code className="block w-fit max-w-full select-all break-all rounded-sm bg-sunken px-1.5 py-0.5 font-mono text-micro" data-testid="experiment-command">{runCmd}</code></dd></>}
           {e.stop_reason && <><dt className="text-faint">Stopped</dt><dd data-testid="experiment-stop-reason">{e.stop_reason}{e.stopped_ms ? `, ${ago(e.stopped_ms)}` : ""}</dd></>}
         </dl>
@@ -231,13 +238,19 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
           </table>
         </div>
         {!!r.guards.length && (
-          <p className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="experiment-guards">
-            Guards (sequential likelihood ratio; stops at 20): {r.guards.map((g) => `${g.arm}, ${metrics[g.metric]?.label}: ${g.lr.toFixed(1)}${g.worse ? " worse" : ""}`).join("; ")}
-          </p>
+          <div className="mt-3 flex flex-col gap-1 border-t border-line pt-3 text-caption text-muted" data-testid="experiment-guards">
+            {r.guard ? (
+              <p>
+                Guard evidence that an arm is worse: <span className="font-medium tabular-nums text-fg" data-testid="guard-evidence">{fmtEvidence(r.guard.evidence)}</span>, the average over {r.guard.tests} {r.guard.tests === 1 ? "test" : "tests"}; it stops the experiment at 20.
+                {" "}{r.guard.fixed} session {r.guard.fixed === 1 ? "family" : "families"} read, each once, {fmtWindow(r.guard.window_min)} after it started{r.guard.pending ? `; ${r.guard.pending} still inside ${r.guard.pending === 1 ? "its" : "their"} window` : ""}.
+              </p>
+            ) : <p>Guards, read once over the runs (likelihood ratio; a guard is worse at 20):</p>}
+            <p className="tabular-nums">{r.guards.map((g) => `${g.arm}, ${metrics[g.metric]?.label}: ${fmtEvidence(g.lr)}${g.worse ? " worse" : ""}`).join("; ")}</p>
+          </div>
         )}
       </Panel>
       {e.mode === "live" && (
-        <Panel title="Sessions by arm" hint="a new top-level session gets its arm at its first turn, by a hash of its id; its subagents run in the same arm and count with it as one">
+        <Panel title="Sessions by arm" hint="a new top-level session draws its arm at its first turn; its subagents share the arm and count with it as one family">
           <div className="flex flex-wrap gap-6 text-ui" data-testid="experiment-sessions">
             {e.arms.map((a) => (
               <div key={a.name} className="flex flex-col">

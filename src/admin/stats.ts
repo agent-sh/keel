@@ -7,9 +7,14 @@
 // - Units are resampled in clusters within strata: a live experiment
 //   randomizes sessions, so a session's turns move together (cluster = the
 //   session); an offline run keeps its task mix fixed (stratum = the task).
-// - Guards: mSPRT on the difference of means (Johari et al., the method
-//   behind Statsig's sequential testing), always valid, so it may be read
-//   after every turn without inflating the false positive rate.
+// - Live guards: a test martingale that bets on each new observation's arm
+//   label (labelBet). Under "the arm changes nothing" the label is a coin
+//   flip that no outcome predicts, so the bet is fair whatever the metric's
+//   distribution and sample size, and by Ville's inequality the evidence
+//   ever reaches 1/alpha with probability at most alpha, at any number of
+//   looks. No variance is assumed and none has to be estimated well.
+// - Offline guards: mSPRT on the difference of means (Johari et al.), read
+//   once over a run set of a size fixed in advance.
 // - Alerts: an individuals (XmR) control chart over daily values.
 
 export type Unit = { v: number; cluster?: string; stratum?: string };
@@ -182,11 +187,63 @@ export function diffInterval(a: Unit[], b: Unit[], o: BootOpts = {}): Interval &
   return { estimate: est, n, ...iv, significant: iv.method !== "none" && (iv.lo > 0 || iv.hi < 0), relative: ma ? est / Math.abs(ma) : null };
 }
 
+// Sequential evidence that the observations labelled `true` run higher than
+// the others: a test martingale on the labels (testing by betting; Podkopaev
+// and Ramdas 2023 bet on a predictor of the label, Ramdas et al. 2023 for
+// e-processes and Ville's inequality).
+//
+// `p` is the chance a new observation is labelled true, known from the
+// randomization. For each observation x, before its label is used, a
+// predictor says how likely the label is true given x: the posterior under
+// "the true-labelled run higher by delta", with the two groups normal about
+// the pooled mean with the pooled variance (both label-free, so the current
+// x may enter them). The stake is multiplied by predicted / prior chance of
+// the label that came. Its expectation under the null is exactly
+// p * (g / p) + (1 - p) * ((1 - g) / (1 - p)) = 1 for any g, so the normal
+// shape only decides how fast evidence grows under a real shift, never the
+// validity. The evidence is the average stake over a fixed grid of deltas
+// (a mixture, as in the mSPRT, one-sided): tau, the smallest shift of
+// concern, and its doublings up to 128 times it, so a shift near tau and a
+// breakage far beyond it both have a bettor sized for them, at a cost of at
+// most a factor of eight in evidence. `tau` may depend on the pooled mean
+// (a shift of concern stated as a share of the level).
+export const BET_SIZES = [1, 2, 4, 8, 16, 32, 64, 128];
+const BET_CAP = 1e12; // keeps the evidence a finite JSON number
+const logSigmoid = (z: number) => (z >= 0 ? -Math.log1p(Math.exp(-z)) : z - Math.log1p(Math.exp(z)));
+export function labelBet(p: number, tau: (pooledMean: number) => number) {
+  if (!(p > 0 && p < 1)) throw new Error("the label chance is strictly between 0 and 1");
+  const nodes = BET_SIZES;
+  const stakes = nodes.map(() => 0); // log of each delta's stake
+  const lp = Math.log(p), lq = Math.log(1 - p);
+  let n = 0, sum = 0, squares = 0, evidence = 1;
+  return {
+    // The evidence after this observation.
+    add(x: number, label: boolean): number {
+      n++; sum += x; squares += x * x;
+      const mu = sum / n, v = n > 1 ? (squares - n * mu * mu) / (n - 1) : 0;
+      const t = tau(mu);
+      if (!(v > 0) || !(t > 0) || !Number.isFinite(x)) return evidence;
+      const a = x - mu;
+      for (let j = 0; j < nodes.length; j++) {
+        const d = nodes[j]! * t;
+        // Log odds that the label is true: groups at mu + (1 - p) d and mu - p d.
+        const z = lp - lq + (2 * a * d + (2 * p - 1) * d * d) / (2 * v);
+        stakes[j] = stakes[j]! + (label ? logSigmoid(z) - lp : logSigmoid(-z) - lq);
+      }
+      const top = Math.max(...stakes);
+      evidence = Math.min(BET_CAP, (Math.exp(top) * stakes.reduce((acc, w) => acc + Math.exp(w - top), 0)) / nodes.length);
+      return evidence;
+    },
+    get evidence() { return evidence; },
+  };
+}
+
 // mSPRT for a difference of means (normal mixture, tau the effect of
 // concern): the likelihood ratio of "there is an effect" to "there is none".
 // The variance is the null's (both arms pooled about one mean, as a pooled
 // proportion test does), so two arms that each never vary still have one.
-// Reject at alpha when the ratio reaches 1/alpha; valid at every look.
+// Reject at alpha when the ratio reaches 1/alpha. The variance is a plug-in,
+// so its validity is asymptotic: live guards use labelBet instead.
 export function msprt(a: number[], b: number[], tau: number, alpha = 0.05) {
   if (a.length < 2 || b.length < 2 || !(tau > 0)) return { lr: 1, reject: false, diff: b.length && a.length ? mean(b) - mean(a) : NaN, v: NaN };
   const diff = mean(b) - mean(a);

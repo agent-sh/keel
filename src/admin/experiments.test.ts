@@ -8,9 +8,9 @@ import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
-import { armOf, Experiments, type Experiment } from "./experiments.ts";
+import { armOf, Experiments, liveGuards, WINDOW_MIN, type Experiment, type Obs } from "./experiments.ts";
 import type { Outcomes } from "./outcomes.ts";
-import { assignArm } from "./stats.ts";
+import { assignArm, rng } from "./stats.ts";
 import { Telemetry } from "./telemetry.ts";
 
 // A daemon's experiment wiring over a state folder, routes included; `open`
@@ -38,6 +38,8 @@ function daemon() {
   return { open, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+// A look after every family made so far has closed its guard window.
+const closed = () => Date.now() + (WINDOW_MIN + 1) * 60_000;
 let turnNo = 0;
 // One ended turn of a session, as the turn rollup records it.
 function turn(store: Store, sessionId: string, v: { cost?: number; outcome?: string; ts?: number; rating?: number } = {}) {
@@ -77,8 +79,9 @@ test("a session family is one randomized sample, whatever its subagents ran", ()
     expect([armOf(store, sub), armOf(store, subsub)]).toEqual([{ exp_id: e.id, arm: "low", root: top }, { exp_id: e.id, arm: "low", root: top }]);
 
     const seen = () => {
-      const low = x.report(x.get(e.id)!).arms.find((a) => a.arm === "low")!;
-      return { turns: low.units, families: low.clusters, counted: x.sessions(e).find((s) => s.arm === "low")!.n, guard: x.report(x.get(e.id)!).guards.find((g) => g.arm === "low")!.n };
+      const r = x.report(x.get(e.id)!, closed());
+      const low = r.arms.find((a) => a.arm === "low")!;
+      return { turns: low.units, families: low.clusters, counted: x.sessions(e).find((s) => s.arm === "low")!.n, guard: r.guards.find((g) => g.arm === "low")!.n };
     };
     // Every turn contributes; the report, the guard and the count see one family.
     expect(seen()).toEqual({ turns: 4, families: 1, counted: 1, guard: [2, 1] });
@@ -168,4 +171,92 @@ test("a stopped experiment's report is frozen with its decision", async () => {
     expect((await call("GET", `/api/experiments/${off.id}`)).body).toEqual(offFinal);
     expect(offFinal.experiment.runs).toBe(1);
   } finally { d.close(); }
+});
+
+test("a family's guard observation is read once, when its window closes, and a regression stops the experiment", () => {
+  const d = daemon();
+  try {
+    let { store, x } = d.open();
+    const e = x.start(x.create({ template: "effort", name: "fixed" }).id);
+    const families = ["default", "low", "default", "low", "default", "low"].map((arm) => root(store, x, e, arm));
+    families.forEach((s, i) => turn(store, s, { outcome: i === 1 ? "error" : "ok" }));
+    const error = (r: ReturnType<Experiments["report"]>) => r.guards.find((g) => g.metric === "error")!;
+
+    // Inside the window nothing is read: the families wait.
+    const early = x.report(e);
+    expect(early.guard).toMatchObject({ evidence: 1, threshold: 20, tests: 2, window_min: WINDOW_MIN, fixed: 0, pending: 6 });
+    expect(error(early).n).toEqual([0, 0]);
+
+    // The window closes: one observation per family, in the order they were assigned.
+    const at = closed();
+    x.check(families[0]!, at);
+    const read = x.report(e, at);
+    expect(read.guard).toMatchObject({ fixed: 6, pending: 0 });
+    expect(error(read)).toMatchObject({ n: [3, 3], diff: 1 / 3 });
+
+    // Later turns and a subagent's turns count in the report and change no guard.
+    for (const s of families) turn(store, s, { outcome: "error" });
+    turn(store, child(store, x, families[0]!), { outcome: "error" });
+    const later = x.report(e, at + 60_000);
+    expect(later.arms.map((a) => a.units)).toEqual([7, 6]);
+    expect([later.guards, later.guard]).toEqual([read.guards, read.guard]);
+    ({ store, x } = d.open());
+    const again = x.report(x.get(e.id)!, at + 120_000);
+    expect([again.guards, again.guard]).toEqual([read.guards, read.guard]);
+    expect(x.get(e.id)!.state).toBe("running");
+
+    // A sustained regression: every new low family ends in errors, no default one does.
+    let made = 0;
+    while (x.get(e.id)!.state === "running" && made < 60) {
+      for (const arm of ["default", "low"]) turn(store, root(store, x, e, arm), { outcome: arm === "low" ? "error" : "ok" });
+      made += 2;
+      x.check(families[0]!, closed());
+    }
+    const stopped = x.get(e.id)!;
+    expect(stopped).toMatchObject({ state: "stopped", stop_reason: "guard: low made ended in an error worse", decision: { verdict: "regression", winner: "default" } });
+    const final = x.report(stopped);
+    expect(final.guard!.evidence).toBeGreaterThanOrEqual(20);
+    expect(final.guards.filter((g) => g.worse).map((g) => g.metric)).toEqual(["error"]);
+    expect(made).toBeLessThanOrEqual(16);
+  } finally { d.close(); }
+});
+
+// The stop rule over a declared look schedule: a look after every fixed
+// family, from the first to the last (no schedule looks more often).
+// Seeded, so every run draws the same experiments.
+test("live guards keep the false-stop bound over every look and find a sustained regression", () => {
+  const ALPHA = 0.05, FAMILIES = 300;
+  const e = { arms: [{ name: "control", weight: 2 }, { name: "a" }, { name: "b" }], guards: [{ metric: "cost_usd", mde: 0.25, relative: true }, { metric: "error", mde: 0.1 }], stop: { alpha: ALPHA } } as Experiment;
+  const r = rng(20261121);
+  const normal = () => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r());
+  const mean = (xs: number[]) => xs.reduce((a, x) => a + x, 0) / xs.length;
+  // A family: its arm by the weights, one to eight turns, skewed costs around its own level, some turns ending in an error.
+  const family = (errorIn: (arm: string) => number): Obs => {
+    const u = r() * 4, arm = u < 2 ? "control" : u < 3 ? "a" : "b";
+    const turns = 1 + Math.floor(r() * 8), level = Math.exp(0.6 * normal());
+    return { arm, m: {
+      cost_usd: mean(Array.from({ length: turns }, () => 0.01 * level * Math.exp(0.8 * normal()))),
+      error: mean(Array.from({ length: turns }, () => (r() < errorIn(arm) ? 1 : 0))),
+    } };
+  };
+  // Runs one experiment; the look (1-based) at which it stopped, with the test named, or null.
+  const run = (errorIn: (arm: string) => number) => {
+    const obs = Array.from({ length: FAMILIES }, () => family(errorIn));
+    let at: number | null = null;
+    liveGuards(e, obs, (seen, evidence) => { if (at === null && evidence >= 1 / ALPHA) at = seen; });
+    return at === null ? null : { at, named: liveGuards(e, obs.slice(0, at)).guards.find((g) => g.worse)! };
+  };
+
+  // No arm differs: stopped experiments stay within alpha, plus three standard errors of the estimate.
+  const NULLS = 2000, tolerance = 3 * Math.sqrt((ALPHA * (1 - ALPHA)) / NULLS);
+  let falseStops = 0;
+  for (let i = 0; i < NULLS; i++) if (run(() => 0.08)) falseStops++;
+  expect(falseStops / NULLS).toBeLessThanOrEqual(ALPHA + tolerance);
+
+  // Arm a ends 35% of its turns in an error against 8%: found in at least 95% of experiments, and named.
+  const PLANTED = 400;
+  const found = Array.from({ length: PLANTED }, () => run((arm) => (arm === "a" ? 0.35 : 0.08))).filter((x) => x !== null);
+  expect(found.length / PLANTED).toBeGreaterThanOrEqual(0.95);
+  expect(found.filter((x) => x.named.arm === "a" && x.named.metric === "error").length / found.length).toBeGreaterThanOrEqual(0.95);
+  console.log(`live guards: ${falseStops}/${NULLS} null experiments stopped (bound ${ALPHA} + ${tolerance.toFixed(4)}); planted regression found in ${found.length}/${PLANTED}, median look ${found.map((x) => x.at).sort((a, b) => a - b)[found.length >> 1]} of ${FAMILIES}`);
 });
