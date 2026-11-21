@@ -47,12 +47,18 @@ export function ResourcesPanel() {
     let live = true;
     // One request at a time (a slow answer is not piled on), and none while
     // the tab is hidden; a tab that shows again reads at once. The first
-    // read asks for a fresh measurement.
+    // read asks for a fresh measurement. A request with no answer in fifteen
+    // seconds is given up, so one that never settles does not end the reads.
     let busy = false, first = true;
     const load = () => {
       if (busy || document.hidden) return;
       busy = true;
-      api<Report>(`/api/resources?history=60${first ? "&refresh=1" : ""}`).then((x) => live && setR(x)).catch(reportError).finally(() => { busy = false; });
+      const gaveUp = new AbortController();
+      const t = setTimeout(() => gaveUp.abort(), 15_000);
+      api<Report>(`/api/resources?history=60${first ? "&refresh=1" : ""}`, { signal: gaveUp.signal })
+        .then((x) => live && setR(x))
+        .catch((e) => { if (!gaveUp.signal.aborted) reportError(e); })
+        .finally(() => { clearTimeout(t); busy = false; });
       first = false;
     };
     load();

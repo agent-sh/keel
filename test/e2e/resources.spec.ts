@@ -47,8 +47,10 @@ test("the resources panel waits for a slow answer and rests while hidden", async
   let started = 0, flying = 0, most = 0;
   let hold: Promise<void> | undefined;
   let every: number | undefined; // the interval the next answers claim, to see the panel take them
+  let lost = false; // the next request gets no answer at all
   await page.route(/\/api\/resources\?/, async (route) => {
     started++;
+    if (lost) return void (lost = false);
     most = Math.max(most, ++flying);
     const answer = await route.fetch();
     await hold;
@@ -74,7 +76,7 @@ test("the resources panel waits for a slow answer and rests while hidden", async
   hold = new Promise<void>((r) => (release = r));
   await page.clock.runFor(5000);
   await expect.poll(() => started).toBe(base + 1);
-  await page.clock.runFor(16_000);
+  await page.clock.runFor(11_000);
   await page.waitForTimeout(300);
   expect([started, most]).toEqual([base + 1, 1]);
   every = 77_000;
@@ -98,5 +100,17 @@ test("the resources panel waits for a slow answer and rests while hidden", async
   await page.clock.runFor(5000);
   await expect.poll(() => started).toBe(base + 3);
   expect(most).toBe(1);
+  // A request that never gets an answer is given up after fifteen seconds: the reads go on.
+  await expect.poll(() => flying).toBe(0);
+  lost = true;
+  await page.clock.runFor(5000);
+  await expect.poll(() => started).toBe(base + 4);
+  await page.clock.runFor(10_000);
+  await page.waitForTimeout(300);
+  expect(started).toBe(base + 4);
+  every = 55_000;
+  await page.clock.runFor(10_000);
+  await expect.poll(() => started).toBeGreaterThan(base + 4);
+  await expect(panel).toContainText("every 55 s");
   await shoot(page, "resources-03-polling");
 });
