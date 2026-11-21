@@ -25,6 +25,8 @@ type Menu =
 type Option = { key: string; label: ReactNode; detail?: string; disabled?: boolean; icon: ReactNode; apply: () => void };
 
 const draftKey = (id?: string) => `keel.draft.${id ?? "new"}`;
+// A window lower than this many rem is short: the toolbar keeps to one row.
+const SHORT_REM = 28;
 
 function useSlashItems() {
   const [, force] = useState(0);
@@ -61,6 +63,9 @@ type ComposerProps = {
   autoFocus?: boolean;
   // The station that has the keys (several message boxes can be on screen): only it answers Alt+M.
   focus?: boolean;
+  // The session's cards that wait above the box (its plan and jobs, requests,
+  // held messages): they scroll with the queue and the kept messages.
+  above?: ReactNode;
 };
 
 export function Composer(props: ComposerProps) {
@@ -68,7 +73,7 @@ export function Composer(props: ComposerProps) {
 }
 
 function SessionComposer({
-  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true, hold,
+  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true, hold, above,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -221,12 +226,30 @@ function SessionComposer({
     });
   }, [seed]);
 
+  // The box grows with its text up to two fifths of the window, measured again
+  // when the window or the text size changes; the pane's height can still
+  // shrink it (see Tray).
+  const scale = useUI((s) => s.scale);
+  // A window few lines high (small, or large text): the tools take one row.
+  const low = () => innerHeight < SHORT_REM * parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const [short, setShort] = useState(low);
   useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, Math.round(innerHeight * 0.4))}px`;
-  }, [text]);
+    const fit = () => {
+      setShort(low());
+      const el = ref.current;
+      if (!el) return;
+      el.style.minHeight = "";
+      el.style.height = "auto";
+      const h = Math.min(el.scrollHeight, Math.round(innerHeight * 0.4));
+      el.style.height = `${h}px`;
+      // What the pane's height cannot take from it: two lines of a draft that has them.
+      const cs = getComputedStyle(el);
+      el.style.minHeight = `${Math.min(h, Math.ceil(2 * parseFloat(cs.lineHeight) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)))}px`;
+    };
+    fit();
+    addEventListener("resize", fit);
+    return () => removeEventListener("resize", fit);
+  }, [text, scale, short]);
 
   useEffect(() => {
     if (!notice) return;
@@ -453,13 +476,44 @@ function SessionComposer({
 
   const open = menu && options.length > 0;
   const canSend = !!text.trim() || images.length > 0;
+  // What the box says about itself; in a one-row toolbar it leads, whole, and the tools scroll after it.
+  const status = notice
+    ? <span className={cn("ml-1 text-caption text-warn animate-in", short ? "shrink-0 whitespace-nowrap" : "min-w-0 truncate")} role="status" data-testid="composer-notice">{notice}</span>
+    : !synced ? <span className={cn("ml-1 text-caption text-faint", short ? "shrink-0 whitespace-nowrap" : "truncate")} role="status" data-testid="sync-state">{connected ? "Catching up" : "Reconnecting"}</span> : null;
 
   return (
     <>
-    {sid && <QueuePanel sessionId={sid} />}
+    <Tray>
+      {above}
+      {sid && <QueuePanel sessionId={sid} />}
+      {saved.some(shown) && (
+        <div className="mb-2 flex flex-col gap-1.5" data-testid="saved-drafts">
+          {saved.filter(shown).map((d) => {
+            const waiting = d.images.some(unread);
+            return (
+              <div key={d.id} role="group" aria-label={`${heading(d)}: ${d.text.trim().slice(0, 80) || "attachments only"}`} data-testid="saved-draft" data-state={d.state} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-line bg-raised px-3 py-2 text-caption shadow-1">
+                <div className="min-w-0 flex-1 basis-48">
+                  <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-fg"}>{d.state !== "parked" && <span aria-hidden className="mr-1.5 inline-block size-1.5 rounded-full bg-warn align-middle" />}{heading(d)}</p>
+                  <p className="truncate text-fg" title={d.text}>{d.text.trim() || "Attachments only"}</p>
+                  {!!d.images.length && <p className="truncate text-muted" title={d.images.map((a) => a.name).join(", ")}>{d.images.map((a) => a.name).join(", ")}</p>}
+                  {!!d.lost?.length && <p className="break-words text-warn" data-testid="saved-lost">Not kept across the reload: {d.lost.join(", ")}</p>}
+                  {d.state !== "parked" && d.error && <p className="break-words text-muted" data-testid="saved-reason">{d.error}</p>}
+                  {d.state === "unconfirmed" && <p className="text-muted">{sid ? "It may have arrived. Check before sending again." : "The session may have been made. Check the list before sending again."}</p>}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {d.state === "refused" && <button type="button" disabled={waiting} className={cn(draftButton, "bg-accent text-accent-fg hover:bg-accent-hover")} onClick={() => retry(d.id)}>{d.queue ? "Retry queue" : "Retry send"}</button>}
+                  <button type="button" disabled={waiting} className={cn(draftButton, "border border-line text-fg hover:bg-hover")} title="Move this into the box without sending. The current draft is kept." onClick={() => restore(d.id)}>Restore draft</button>
+                  <button type="button" className={cn(draftButton, "text-muted hover:bg-hover hover:text-fg")} onClick={() => void discard(d.id)}>Discard</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Tray>
     <div
       className={cn(
-        "relative rounded-xl border bg-raised shadow-2 transition-[border-color,box-shadow] duration-150",
+        "relative flex min-h-0 flex-col rounded-xl border bg-raised shadow-2 transition-[border-color,box-shadow] duration-150",
         "border-line-strong/70 focus-within:border-line-strong focus-within:shadow-[var(--shadow-2),0_0_0_3px_var(--accent-soft)]",
         dragging && "border-accent shadow-[var(--shadow-2),0_0_0_3px_var(--accent-soft)]",
       )}
@@ -504,33 +558,8 @@ function SessionComposer({
       )}
 
       <p role="status" className="sr-only" data-testid="saved-status">{said}</p>
-      {saved.some(shown) && (
-        <div className="max-h-48 space-y-1.5 overflow-y-auto border-b border-line px-3 py-2">
-          {saved.filter(shown).map((d) => {
-            const waiting = d.images.some(unread);
-            return (
-              <div key={d.id} role="group" aria-label={`${heading(d)}: ${d.text.trim().slice(0, 80) || "attachments only"}`} data-testid="saved-draft" data-state={d.state} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md bg-sunken px-2.5 py-1.5 text-caption">
-                <div className="min-w-0 flex-1 basis-48">
-                  <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-fg"}>{d.state !== "parked" && <span aria-hidden className="mr-1.5 inline-block size-1.5 rounded-full bg-warn align-middle" />}{heading(d)}</p>
-                  <p className="truncate text-fg" title={d.text}>{d.text.trim() || "Attachments only"}</p>
-                  {!!d.images.length && <p className="truncate text-muted" title={d.images.map((a) => a.name).join(", ")}>{d.images.map((a) => a.name).join(", ")}</p>}
-                  {!!d.lost?.length && <p className="break-words text-warn" data-testid="saved-lost">Not kept across the reload: {d.lost.join(", ")}</p>}
-                  {d.state !== "parked" && d.error && <p className="break-words text-muted" data-testid="saved-reason">{d.error}</p>}
-                  {d.state === "unconfirmed" && <p className="text-muted">{sid ? "It may have arrived. Check before sending again." : "The session may have been made. Check the list before sending again."}</p>}
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {d.state === "refused" && <button type="button" disabled={waiting} className={cn(draftButton, "bg-accent text-accent-fg hover:bg-accent-hover")} onClick={() => retry(d.id)}>{d.queue ? "Retry queue" : "Retry send"}</button>}
-                  <button type="button" disabled={waiting} className={cn(draftButton, "border border-line text-fg hover:bg-hover")} title="Move this into the box without sending. The current draft is kept." onClick={() => restore(d.id)}>Restore draft</button>
-                  <button type="button" className={cn(draftButton, "text-muted hover:bg-hover hover:text-fg")} onClick={() => void discard(d.id)}>Discard</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {images.length > 0 && (
-        <div className="flex flex-wrap gap-2 px-3 pt-3" data-testid="attachments">
+        <div className="flex min-h-[4.75rem] shrink-[99] flex-wrap gap-2 overflow-y-auto px-3 pt-3" data-testid="attachments">
           {images.map((a) => (
             <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${Math.round(a.bytes / 1024)} KB`}>
               {a.file ? (
@@ -594,27 +623,33 @@ function SessionComposer({
         }}
         className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
       />
-      <div className="flex flex-wrap items-center gap-x-0.5 gap-y-1 px-2 pb-2">
-        <button
-          type="button"
-          title="Attach images or files (or paste, or drop them here)"
-          aria-label="Attach images or files"
-          data-testid="attach"
-          onClick={() => fileInput.current?.click()}
-          className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
-        >
-          <Paperclip className="size-4" />
-        </button>
-        <input ref={fileInput} type="file" multiple hidden data-testid="attach-input" onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
-        <ModelPicker value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} />
-        {sid && <EffortPicker sessionId={sid} />}
-        {sid && <SpeedPicker sessionId={sid} />}
-        {session && <FallbackChip session={session} />}
-        {model && <LimitChip model={model} />}
-        {notice && <span className="ml-1 min-w-0 truncate text-caption text-warn animate-in" role="status" data-testid="composer-notice">{notice}</span>}
-        {!synced && !notice && <span className="ml-1 truncate text-caption text-faint" role="status" data-testid="sync-state">{connected ? "Catching up" : "Reconnecting"}</span>}
+      {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
+      <div className={cn("flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap")} data-short={short || undefined} data-testid="composer-tools">
+        <div className={short ? "-my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
+          {short && status}
+          <span className={cn("flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
+            <button
+              type="button"
+              title="Attach images or files (or paste, or drop them here)"
+              aria-label="Attach images or files"
+              data-testid="attach"
+              onClick={() => fileInput.current?.click()}
+              className="grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
+            >
+              <Paperclip className="size-4" />
+            </button>
+            <input ref={fileInput} type="file" multiple hidden data-testid="attach-input" onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
+            <ModelPicker value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} />
+          </span>
+          {sid && <EffortPicker sessionId={sid} />}
+          {sid && <SpeedPicker sessionId={sid} />}
+          {session && <FallbackChip session={session} />}
+          {model && <LimitChip model={model} />}
+          {short && sid && <ContextMeter sessionId={sid} />}
+          {!short && status}
+        </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {sid && <ContextMeter sessionId={sid} />}
+          {!short && sid && <ContextMeter sessionId={sid} />}
           {working && onQueue && (
             <button
               type="button"
@@ -662,6 +697,72 @@ function SessionComposer({
   );
 }
 
+// What waits above the box: the session's cards, the queue and the messages
+// kept after a send that did not go. The pane's height is one budget: the box
+// under this keeps its place with its buttons, and this region takes what is
+// left and scrolls. It follows its end, where the cards nearest the box are,
+// until it is scrolled; a card that arrives out of view is brought into it.
+function Tray({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
+  const gauge = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  const mark = () => {
+    const el = ref.current;
+    if (!el) return;
+    const down = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stick.current = down < 4;
+    // Where cards are scrolled out of view, that edge fades (styles.css).
+    el.dataset.more = [el.scrollTop > 1 && "up", down > 1 && "down"].filter(Boolean).join(" ");
+  };
+  useLayoutEffect(() => {
+    const el = ref.current!;
+    const c = inner.current!;
+    let raf = 0;
+    const settle = () => {
+      // The cards keep as much as they need up to three tenths of the pane; a
+      // long draft gives way to them down to its two lines, then they scroll.
+      const pane = el.closest<HTMLElement>(".k-session");
+      el.style.minHeight = pane && c.offsetHeight ? `${Math.min(Math.ceil(c.offsetHeight + parseFloat(getComputedStyle(el).paddingTop)), Math.round(pane.clientHeight * 0.3))}px` : "";
+      // The scroll bar sits in the column's side padding: the cards keep the box's edges.
+      const bar = el.offsetWidth - el.clientWidth;
+      el.style.marginRight = bar ? `calc(-0.25rem - ${bar}px)` : "";
+      if (stick.current) el.scrollTop = el.scrollHeight;
+      mark();
+    };
+    // Sizes are written a frame later: a write inside the observer's own call would loop it.
+    // The region's own size is watched through a child that fills it: the transcript's
+    // observer changes this column's width from inside its call, and an observer is told
+    // of such a change in the same pass only for elements deeper than the one that made it.
+    const later = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(settle); };
+    const ro = new ResizeObserver(later);
+    ro.observe(gauge.current!);
+    ro.observe(c);
+    addEventListener("resize", later);
+    const mo = new MutationObserver((list) => {
+      if (el.contains(document.activeElement)) return; // in use: nothing moves under the hand
+      const card = list.flatMap((m) => [...m.addedNodes]).filter((n): n is HTMLElement => n instanceof HTMLElement && (n.parentElement === c || n.parentElement?.parentElement === c)).at(-1);
+      if (!card) return;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (!card.isConnected) return;
+        const r = card.getBoundingClientRect();
+        const box = el.getBoundingClientRect();
+        if (r.top >= box.top && r.bottom <= box.bottom) return;
+        el.scrollTop += r.height > box.height || r.top < box.top ? r.top - box.top : r.bottom - box.bottom;
+        mark();
+      }));
+    });
+    mo.observe(c, { childList: true, subtree: true });
+    settle();
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); removeEventListener("resize", later); };
+  }, []);
+  return (
+    <div ref={ref} data-testid="composer-tray" onScroll={mark} className="k-tray relative -mx-1 min-h-0 shrink-[99] overflow-y-auto px-1 pt-1">
+      <div ref={inner}>{children}</div>
+      <div ref={gauge} aria-hidden="true" className="pointer-events-none invisible absolute inset-0" />
+    </div>
+  );
+}
 // Retry is the main action (filled), Restore the second (outlined), Discard the quiet one.
 const draftButton = "h-7 rounded-md px-2 font-medium disabled:opacity-40";
 

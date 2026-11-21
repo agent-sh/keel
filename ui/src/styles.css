@@ -391,6 +391,11 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .th-inserted { color: var(--syn-inserted); }
 .th-operator { color: var(--muted); }
 
+/* The cards above the message box (Composer's Tray): an edge fades where more is scrolled out of view. */
+.k-tray[data-more="up"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
+.k-tray[data-more="down"] { mask-image: linear-gradient(to top, transparent, #000 1.25rem); }
+.k-tray[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem, #000 calc(100% - 1.25rem), transparent); }
+
 /* A message reached from search glows once. */
 .flash { animation: flash 1.6s var(--ease-out); }
 @keyframes flash { 0%, 30% { box-shadow: 0 0 0 6px var(--accent-soft); background: var(--accent-soft); } 100% { box-shadow: 0 0 0 6px transparent; } }

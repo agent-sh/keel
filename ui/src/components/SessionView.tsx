@@ -85,15 +85,9 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
       <div className="relative flex min-h-0 flex-1">
         <div className="k-session flex min-w-0 flex-1 flex-col" inert={covered}>
           <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
-          <div className="k-compose pr-[var(--sbw,0px)]">
-            <div className="k-compose-in mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
-              {unreached === id && <Unreached />}
-              {session.workspace_gone && <FolderGone path={session.workspace} />}
-              <LiveSourceBanner sessionId={session.id} />
-              <Suspense fallback={null}><HeldMessages sessionId={session.id} /></Suspense>
-              <Suspense fallback={null}><SessionDock sessionId={session.id} /></Suspense>
-              <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
-              <ChildApprovals parentId={session.id} />
+          {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
+          <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,0px)]">
+            <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
               <Composer
                 session={session}
                 working={session.phase === "working"}
@@ -106,6 +100,17 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                 {...(session.parent_id ? { onEscape: () => navigate({ name: "session", id: session.parent_id! }), stopLabel: "Stop this agent" } : {})}
                 focus={focus}
                 autoFocus={focus && matchMedia("(min-width: 768px)").matches}
+                above={
+                  <>
+                    {unreached === id && <Unreached />}
+                    {session.workspace_gone && <FolderGone path={session.workspace} />}
+                    <LiveSourceBanner sessionId={session.id} />
+                    <Suspense fallback={null}><HeldMessages sessionId={session.id} /></Suspense>
+                    <Suspense fallback={null}><SessionDock sessionId={session.id} /></Suspense>
+                    <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
+                    <ChildApprovals parentId={session.id} />
+                  </>
+                }
               />
             </div>
           </div>

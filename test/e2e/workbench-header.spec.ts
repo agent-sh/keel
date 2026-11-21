@@ -74,6 +74,99 @@ test("a narrow running composer keeps Stop and Send on screen", async ({ page, r
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });
 
+// Everything above the message box (the plan, requests that wait, messages
+// kept after a failed send) and the box itself share the pane's height: the
+// box and its Send and Stop stay on screen, the rest scrolls.
+test("a small window keeps the message box on screen under a full stack", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string; provider: string; context: number }[];
+  const model = models.filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0];
+  test.skip(!model, "requires a scripted scratch daemon");
+  const { session } = await (await request.post("/api/sessions", { data: { title: "Full stack", model: model!.id } })).json();
+  const id = session.id as string;
+  const idle = () => expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+  const errors = async () => ((await (await request.get("/api/errors")).json()).errors as { count?: number }[]).reduce((n, e) => n + (e.count ?? 1), 0);
+  const errorsBefore = await errors();
+  try {
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask" } });
+    // A plan with work left, then three commands that each wait for an answer.
+    const todos = ["Read the release notes", "Check the changelog against the tags", "List what changed for people who upgrade", "Write the summary", "Read it once more", "Send it for review"]
+      .map((content, i) => ({ content, activeForm: content, status: i === 0 ? "completed" : i === 1 ? "in_progress" : "pending" }));
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "TodoWrite", input: { todos } }])}` } });
+    await idle();
+    const writes = ["one", "two", "three"].map((n) => ({ name: "Bash", input: { command: `echo ${n} > ${n}.txt` } }));
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify(writes)}` } });
+    // Two messages kept in this browser after sends that did not go.
+    const kept = [
+      { id: "kept-1", text: "An earlier message the daemon refused.", images: [], queue: false, state: "refused", error: "The session was busy." },
+      { id: "kept-2", text: "A draft set aside for a restored one.", images: [], queue: false, state: "parked" },
+    ];
+    await page.addInitScript(([key, value]) => {
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("keel.textScale", "1.5");
+      localStorage.setItem(key!, value!);
+    }, [`keel.sends.${id}`, JSON.stringify(kept)]);
+    await page.setViewportSize({ width: 390, height: 600 });
+    await page.goto(`/s/${id}`);
+    const pane = page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
+    const box = pane.getByTestId("composer");
+    await expect(pane.getByTestId("approval")).toHaveCount(3);
+    await expect(pane.getByTestId("saved-draft")).toHaveCount(2);
+    await pane.getByTestId("dock-plan").click();
+    await expect(pane.getByTestId("session-dock").getByText("Send it for review")).toBeVisible();
+    const draft = Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of a long draft that wraps on a narrow screen.`).join("\n");
+    await box.fill(draft);
+
+    // On screen whole, and not under anything else.
+    const onScreen = async (el: Locator) => {
+      await expect(el).toBeInViewport({ ratio: 1 });
+      expect(await el.evaluate((e) => {
+        const r = e.getBoundingClientRect();
+        const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !!at && (e === at || e.contains(at));
+      })).toBe(true);
+    };
+    const controls = async () => {
+      for (const t of ["stop", "queue-button", "send"]) await onScreen(pane.getByTestId(t));
+      await onScreen(box);
+      // Room to read what is being typed: two lines of the draft at least.
+      expect(await box.evaluate((e) => e.clientHeight / parseFloat(getComputedStyle(e).lineHeight))).toBeGreaterThanOrEqual(2);
+    };
+    await controls();
+    await shoot(page, "composer-stack-390x600-large-text");
+    // Every card above is reached by scrolling, and the box stays where it is.
+    const cards = [pane.getByTestId("session-dock").getByText("Send it for review"), ...(await pane.getByTestId("approval").all()), ...(await pane.getByTestId("saved-draft").all())];
+    for (const card of cards) {
+      // A card taller than the room above the box is read from its first line to its last.
+      for (const edge of ["start", "end"] as const) {
+        expect(await card.evaluate((el, edge) => {
+          el.scrollIntoView({ block: edge });
+          const r = el.getBoundingClientRect();
+          const at = document.elementFromPoint(r.left + r.width / 2, edge === "start" ? r.top + 2 : r.bottom - 2);
+          return !!at && el.contains(at);
+        }, edge)).toBe(true);
+      }
+      await controls();
+    }
+    // By keyboard too: Shift Tab from the box walks back through the cards' controls.
+    await box.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(page.locator(":focus")).toBeInViewport({ ratio: 1 });
+    await controls();
+    await shoot(page, "composer-stack-390x600-scrolled");
+
+    // The draft is the same after the window grows and shrinks again.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await expect(box).toHaveValue(draft);
+    await controls();
+    await shoot(page, "composer-stack-1920");
+    await page.setViewportSize({ width: 390, height: 600 });
+    await expect(box).toHaveValue(draft);
+    await controls();
+    expect(await errors()).toBe(errorsBefore);
+  } finally { await request.delete(`/api/sessions/${id}`); }
+});
+
 // A session that fills the toolbar: it runs in a worktree, has a loop in the
 // background and a second machine to move to, beside the actions every session has.
 const SECONDARY = ["machine-chip", "background-button", "worktree-chip", "permission-menu", "snooze-button", "header-action-export", "header-action-voice"];

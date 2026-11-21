@@ -610,7 +610,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const lastEnd = [...events].reverse().find((e) => e.kind === "turn_end")?.id;
 
   return (
-    <div className="relative min-h-0 flex-1">
+    // A strip of the conversation stays above a tall stack of cards and a long
+    // draft, in a pane with room for one (none in a pane under 24rem high).
+    <div className="relative min-h-[clamp(0px,calc((100%-24rem)/2),6rem)] flex-1">
       <div
         ref={scroller}
         className="relative h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
