@@ -151,3 +151,21 @@ test("when the findings cannot be compiled the working model gets a bounded prev
   expect(text).toContain("could not be compiled");
   expect((out.shown as any).readers.compiled).toBe(false);
 });
+
+test("material is short when what would come back is: numbered lines and file headers count", async () => {
+  // 1,900 one-character lines: 3,800 characters in the file, several times that once each line has its number.
+  writeFileSync(join(DIR, "dots.txt"), "x\n".repeat(1_900));
+  writeFileSync(join(DIR, "short.txt"), rows(20, "s"));
+  let jobs = 0;
+  const ctx = ctxOf();
+  const reader: ReaderHost = { ...noCompile, ask: async () => ({ text: "Every line is an x (dots.txt:1).", usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } }) };
+  ctx.readMaterial = (items, q) => { jobs++; return readMaterial(reader, items, q, ctx.signal); };
+  const long = await AskReaders.run({ question: "what is in it?", paths: ["dots.txt"] }, ctx);
+  expect(jobs).toBe(1);
+  expect((long.content as string).length).toBeLessThan(8_000);
+  expect(long.content).toContain("Every line is an x");
+  const short = await AskReaders.run({ question: "what is in it?", paths: ["short.txt"] }, ctx);
+  expect(jobs).toBe(1);
+  expect(short.content).toContain("20\ts line 20");
+  expect(short.content).toContain("no reader was used");
+});

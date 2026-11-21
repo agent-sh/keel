@@ -170,8 +170,11 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
   if (!items.length) return fail(`Nothing to read${skipped.length ? `: ${skipped.join("; ")}` : ": name paths or urls"}.`);
   const chars = items.reduce((n, m) => n + m.text.length, 0);
   const skippedNote = skipped.length ? `\n[Not read, so not covered:\n- ${skipped.join("\n- ")}]` : "";
-  if (chars <= READ_WHOLE_CHARS) {
-    return { content: `${wholeText(items)}\n\n[Short enough to read whole (${chars} chars): no reader was used.]${skippedNote}`, shown: { readers: { question, whole: true, sources: items.length, chars, skipped } } };
+  // Short is what comes back, with its line numbers and file headers: many
+  // short lines or small files can be several times their own size.
+  const whole = chars <= READ_WHOLE_CHARS ? wholeText(items) : "";
+  if (whole && whole.length <= READ_WHOLE_CHARS) {
+    return { content: `${whole}\n\n[Short enough to read whole (${chars} chars): no reader was used.]${skippedNote}`, shown: { readers: { question, whole: true, sources: items.length, chars, skipped } } };
   }
   const o = await ctx.readMaterial(items, question, ctx.callId);
   o.unread.push(...skipped);
