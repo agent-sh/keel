@@ -674,3 +674,78 @@ test("a pane off screen is shown without a glide under reduced motion", async ({
     expect(await jump()).toEqual(["smooth"]);
   } finally { for (const id of ids) await request.delete(`/api/sessions/${id}`); }
 });
+
+// A session goes to the pane the owner picks without dragging: from its row
+// in the list (Shift Enter, or the row's button) and from a pane's header, a
+// menu of the panes; picking one places it there, and a session that has a
+// pane trades places with the one picked, also when they are not neighbours.
+// Escape leaves the layout as it was.
+test("a session placed in a chosen pane by keyboard", async ({ page, request }) => {
+  const tag = Date.now().toString(36);
+  const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: MODEL, title: `${title} ${tag}` } })).json()).session.id as string;
+  const [a, b, c, d] = [await mk("Alpha station"), await mk("Bravo station"), await mk("Charlie station"), await mk("Delta from the list")];
+  try {
+    await page.addInitScript((slots) => {
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("keel.panes", JSON.stringify({ count: 3, slots, sizes: {}, active: 0 }));
+    }, [a, b, c]);
+    await page.goto(`/s/${a}`);
+    const bridge = page.getByTestId("bridge");
+    const slots = () => bridge.locator(":scope > [data-slot]").evaluateAll((els) => els.map((el) => el.getAttribute("data-station")));
+    const helm = () => bridge.locator(":scope > [data-helm]").getAttribute("data-slot");
+    const kept = () => page.evaluate(() => { const k = JSON.parse(localStorage.getItem("keel.panes")!); return { slots: k.slots, active: k.active }; });
+    await expect.poll(slots).toEqual([a, b, c]);
+    const row = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${d}"]`);
+    const menu = page.getByTestId("pane-menu");
+
+    // From the list, by keys alone. Escape first: nothing moved, the keys are back on the row.
+    await row.focus();
+    await page.keyboard.press("Shift+Enter");
+    await expect(menu).toBeVisible();
+    await expect(menu.getByTestId("pane-menu-item")).toHaveCount(3);
+    await expect(menu.getByTestId("pane-menu-item").nth(1)).toContainText("Bravo station");
+    await expect(menu.getByTestId("pane-menu-item").first()).toBeFocused();
+    await shoot(page, "layout-07-pane-menu-from-the-list");
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    expect(await slots()).toEqual([a, b, c]);
+    expect(await helm()).toBe("0");
+    await expect(row).toBeFocused();
+    // Then the second pane: the session is there, and it is the pane worked in.
+    await page.keyboard.press("Shift+Enter");
+    await expect(menu.getByTestId("pane-menu-item").first()).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(menu.getByTestId("pane-menu-item").nth(1)).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(slots).toEqual([a, d, c]);
+    expect(await helm()).toBe("1");
+    await expect(page).toHaveURL(new RegExp(`/s/${d}$`));
+    expect(await kept()).toEqual({ slots: [a, d, c], active: 1 });
+
+    // From a pane's header: the first and the third pane trade places directly.
+    const place = bridge.locator(':scope > [data-slot="0"]').getByTestId("station-place");
+    await place.focus();
+    await page.keyboard.press("Enter");
+    await expect(menu).toBeVisible();
+    await expect(menu.getByTestId("pane-menu-item").first()).toBeDisabled();
+    await expect(menu.getByTestId("pane-menu-item").nth(2)).toContainText("trade places");
+    await shoot(page, "layout-08-pane-menu-from-a-pane");
+    await page.keyboard.press("End");
+    await expect(menu.getByTestId("pane-menu-item").nth(2)).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(slots).toEqual([c, d, a]);
+    expect(await helm()).toBe("2");
+    expect(await kept()).toEqual({ slots: [c, d, a], active: 2 });
+    // Escape from there too.
+    await bridge.locator(':scope > [data-slot="2"]').getByTestId("station-place").focus();
+    await page.keyboard.press("Enter");
+    await expect(menu).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    expect(await slots()).toEqual([c, d, a]);
+    expect(await kept()).toEqual({ slots: [c, d, a], active: 2 });
+  } finally {
+    for (const id of [a, b, c, d]) await request.delete(`/api/sessions/${id}`);
+  }
+});

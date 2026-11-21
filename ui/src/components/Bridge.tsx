@@ -8,7 +8,7 @@
 // another pane, and a session dropped on a pane's middle lands in it. The helm can be focused to the full
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
-import { ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, Pin, PinOff, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, PinOff, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
@@ -22,6 +22,7 @@ import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
+import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
 import { elapsed, folderOf, Mark, modelOf, useLive, useNow } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
@@ -42,6 +43,8 @@ registerCommand(
   { id: "station.prev", label: "Previous pane", group: "Bridge", keys: "alt+[", inInput: true, run: () => step(-1) },
   { id: "station.right", label: "Move the pane right", group: "Bridge", keys: "alt+shift+]", inInput: true, run: () => { const h = helmNow(); if (h) stations.move(h, 1); } },
   { id: "station.left", label: "Move the pane left", group: "Bridge", keys: "alt+shift+[", inInput: true, run: () => { const h = helmNow(); if (h) stations.move(h, -1); } },
+  // The session worked in goes to the pane with that number; the one there comes here.
+  ...[1, 2, 3, 4, 5, 6].map((n) => ({ id: `station.to.${n}`, label: `Move this session to pane ${n}`, group: "Bridge", words: "place swap trade put", when: () => { const h = helmNow(); const st = getStations(); return !!h && n <= st.count && st.slots.indexOf(h) !== n - 1; }, run: () => { const h = helmNow(); if (h) stations.place(h, n - 1); } })),
   { id: "station.focus", label: "Focus the pane (full width) or show all", group: "Bridge", keys: "alt+enter", inInput: true, run: () => stations.toggleFocus() },
   { id: "station.pin", label: "Pin or unpin the session in the list", group: "Bridge", keys: "alt+p", run: () => { const h = helmNow(); if (h) pinSession(h, !isPinned(getState().sessions[h])).catch(reportError); } },
   { id: "station.close", label: "Close the session in the pane", group: "Bridge", keys: "alt+w", run: () => { const h = helmNow(); if (h) closeStation(h); } },
@@ -74,6 +77,7 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
   const start = useMemo(() => events?.findLast((e) => e.kind === "turn_start")?.ts, [events]);
   const now = useNow(w === "work" && s.phase === "working");
   const focus = useStations((x) => x.focus);
+  const panes = useStations((x) => x.count);
   const agents = useAgentCount(s.id);
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}>
@@ -87,6 +91,7 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
           {s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}
         </span>
         <span className="k-station-tools">
+          {!focus && panes > 1 && <PaneMenu id={s.id} label="Move to a pane" testid="station-place" className="k-tool k-tool-move"><PanelsTopLeft /></PaneMenu>}
           {!focus && <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, -1)}><ChevronLeft /></Tool>}
           {!focus && <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(s.id, 1)}><ChevronRight /></Tool>}
           <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(s.id, !pinned).catch(reportError)}>{pinned ? <PinOff /> : <Pin />}</Tool>

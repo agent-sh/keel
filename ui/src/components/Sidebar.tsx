@@ -4,7 +4,7 @@
 // it is a column of marks, each a session's state and a short code of its
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, Fragment, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
@@ -22,6 +22,7 @@ import { useAuto } from "../lib/automation.ts";
 import { folderOf, Mark, modelOf } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { dragSession, PaneCount } from "./Panes.tsx";
+import { PaneMenu } from "./PaneMenu.tsx";
 import { Grip } from "./Grip.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
@@ -96,9 +97,13 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
   const agents = useAgentCount(s.id);
   const card = useContext(CardCtx)(s, 450);
   const shown = useStations((x) => x.shown.includes(s.id));
+  const panes = useStations((x) => x.count);
+  const [placing, setPlacing] = useState(false);
+  const row = useRef<HTMLDivElement>(null);
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
   return (
     <div
+      ref={row}
       role="link"
       tabIndex={0}
       data-testid="session-row"
@@ -112,7 +117,13 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
       onClick={(e) => { card.onClick?.(e); if (e.ctrlKey || e.metaKey) openBeside(s.id); else navigate({ name: "session", id: s.id }); }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openBeside(s.id); } }}
-      onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && ((e.ctrlKey || e.metaKey) ? openBeside(s.id) : navigate({ name: "session", id: s.id }))}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" || e.target !== e.currentTarget) return;
+        // Shift Enter: the menu of panes, to place the session in one of them.
+        if (e.shiftKey && panes > 1 && !restore && !phone()) { e.preventDefault(); return setPlacing(true); }
+        if (e.ctrlKey || e.metaKey) openBeside(s.id);
+        else navigate({ name: "session", id: s.id });
+      }}
       className="k-row group"
     >
       <Mark w={w} />
@@ -133,6 +144,11 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
         <button type="button" title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
           <Columns2 />
         </button>
+      )}
+      {!restore && panes > 1 && !phone() && (
+        <PaneMenu id={s.id} label="Place in a pane (Shift Enter)" testid="row-place" open={placing} onOpenChange={setPlacing} back={row} className="k-row-act hidden group-hover:grid group-focus-within:grid data-popup-open:grid">
+          <PanelsTopLeft />
+        </PaneMenu>
       )}
       <button
         type="button"
