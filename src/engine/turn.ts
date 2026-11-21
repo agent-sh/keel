@@ -1821,7 +1821,10 @@ export class Engine {
     this.draining = true;
     // A summary being prepared is not waited for: the next daemon prepares it again.
     for (const p of this.preparing.values()) p.abort.abort();
-    const all = [...this.running.values()].map((r) => r.done);
+    const all: Promise<unknown>[] = [...this.running.values()].map((r) => r.done);
+    for (const h of allHooks()) {
+      try { const p = h.draining?.(); if (p) all.push(p.catch(() => {})); } catch (e) { this.errors.capture("server", e, { hook: "draining" }); }
+    }
     if (all.length) await Promise.race([Promise.all(all), Bun.sleep(ms)]);
   }
 

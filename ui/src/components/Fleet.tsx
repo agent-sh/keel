@@ -28,6 +28,7 @@ type Handoff = {
   state: "running" | "done" | "failed"; carry: "git" | "none"; from: { machine: string }; to: { machine: string; cwd?: string };
   steps: { name: string; state: string; detail?: string }[]; summary?: string; error?: string; started_ms?: number;
   interrupted?: boolean; // closed by the daemon that started after the one that ran it
+  details?: string[]; // what a cut move kept: folded under the sentence
 };
 
 const STEP_LABEL: Record<string, string> = { interrupt: "Stop the turn", snapshot: "Snapshot the folder", transfer: "Send what is missing", worktree: "Put it in place", switch: "Switch" };
@@ -155,6 +156,14 @@ export function MachineChip({ session }: { session: Session }) {
                   ))}
                 </ol>
                 {(h.summary || h.error) && <p className={cn("mt-2 text-caption leading-snug", h.error ? "text-danger" : "text-muted")}>{h.error ?? h.summary}</p>}
+                {h.details && h.details.length > 0 && (
+                  <details className="mt-2 rounded-md border border-line bg-sunken" data-testid="move-details">
+                    <summary className="cursor-pointer select-none px-2.5 py-1.5 text-caption text-muted">What it kept</summary>
+                    <ul className="flex flex-col gap-1.5 border-t border-line px-2.5 py-2 text-caption leading-snug text-muted">
+                      {h.details.map((d) => <li key={d} className="break-words">{d}</li>)}
+                    </ul>
+                  </details>
+                )}
               </div>
             )}
           </Popover.Popup>

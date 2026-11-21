@@ -368,7 +368,8 @@ test("fleet move: a daemon restart in the middle leaves the session on one side,
     // One side: here, with its folder. One closed receipt, said in the transcript.
     const cut = (await api(`/api/sessions/${sid}/handoff`)).handoff;
     expect(cut).toMatchObject({ state: "failed", interrupted: true });
-    expect(cut.error).toContain(made()[0]);
+    expect(cut.error).toBe("The daemon restarted while its files were being put in place. The session stays on desk. Move it again to finish.");
+    expect(cut.details.join(" ")).toContain(made()[0]);
     const s = (await api(`/api/sessions/${sid}`)).session;
     expect(s.machine ?? null).toBeNull();
     expect(s.workspace).toBe(home);
@@ -382,7 +383,14 @@ test("fleet move: a daemon restart in the middle leaves the session on one side,
     await expect(progress).toHaveAttribute("data-interrupted", "true");
     await expect(progress).toContainText("was cut by a restart");
     await expect(progress).toContainText("Move it again to finish.");
+    // What it kept is one fold away, not in the sentence.
+    const kept = progress.getByTestId("move-details");
+    await expect(kept.locator("li").first()).toBeHidden();
     await shoot(page, "fleet-move-05-cut-by-restart");
+    await kept.locator("summary").click();
+    await expect(kept).toContainText(made()[0]!);
+    await expect(kept).toContainText(`refs/keel/handoff/${sid}`);
+    await shoot(page, "fleet-move-05b-cut-what-it-kept");
 
     // The move again, from the same picker: done, into the worktree the cut move made.
     await page.locator(`[data-testid="move-to"][data-machine="${machine}"]`).click();

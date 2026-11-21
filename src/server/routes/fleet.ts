@@ -110,6 +110,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         inst ? `\nInstructions from the owner's files on ${m.name}:\n\n${inst}` : "",
       ].join("\n");
     },
+    // A stop of the daemon waits for the moves that run, within its drain time.
+    draining: () => moves.idle(),
     beforeTool(s, call) {
       if (WORKSPACE_TOOLS.has(call.tool.name) && moves.isMoving(s.id)) return { deny: "The session is moving to another place; its tools run again when the move ends." };
       if (!s.machine || !WORKSPACE_TOOLS.has(call.tool.name)) return;

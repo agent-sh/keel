@@ -4,10 +4,13 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execArgv, outsideRoot } from "./hands.ts";
-import { remoteExec } from "./remote.ts";
-import { linkFetch, proof } from "./link.ts";
-import { sshHosts } from "./sshconfig.ts";
+
+// Its own config folder, before any Keel source is loaded: nothing here reads or writes the owner's.
+process.env.KEEL_CONFIG_DIR ??= join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-fleet-test-")), "config");
+const { execArgv, outsideRoot } = await import("./hands.ts");
+const { remoteExec } = await import("./remote.ts");
+const { linkFetch, proof } = await import("./link.ts");
+const { sshHosts } = await import("./sshconfig.ts");
 
 test("ssh hosts: concrete aliases in file order, includes followed, patterns skipped", () => {
   const home = mkdtempSync(join(tmpdir(), "keel-ssh-"));
@@ -549,35 +552,60 @@ test("keel__run_on asks the far daemon to confine its command as the session's o
 });
 
 // A move's own pieces: one machine that is a folder on this disk (the scripts a
-// move sends it run there), a session in a repository with an uncommitted
-// change, and a daemon that can go down while a call to the machine is out.
-async function moveRig() {
-  const { execFileSync } = await import("node:child_process");
-  const { readFileSync, rmSync } = await import("node:fs");
+// move sends it run there), a session in a repository (by default one file
+// with an uncommitted change), an engine that holds the queue when a turn is
+// stopped, and a daemon that can go down while a call is out.
+async function moveRig(setup?: (home: string, dir: string) => string | void) {
+  const { execFileSync, spawnSync } = await import("node:child_process");
+  const { readFileSync, readdirSync, rmSync } = await import("node:fs");
   const { Store } = await import("../core/store.ts");
   const { Bus } = await import("../core/bus.ts");
   const { Handoffs } = await import("./handoff.ts");
   const { migrate } = await import("./db.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-move-"));
-  const root = join(dir, "there"), home = join(dir, "home"), state = join(dir, "state");
-  for (const d of [root, home, state]) mkdirSync(d);
+  const root = join(dir, "there"), home0 = join(dir, "home"), state = join(dir, "state");
+  for (const d of [root, home0, state]) mkdirSync(d);
   const git = (cwd: string, ...a: string[]) => execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
-  git(home, "init", "-q");
-  writeFileSync(join(home, "a.txt"), "one\n");
-  git(home, "add", "a.txt");
-  git(home, "commit", "-qm", "init");
-  writeFileSync(join(home, "a.txt"), "one\ntwo\n");
+  // A script in a folder, as the owner would type it.
+  const sh = (cwd: string, script: string) => {
+    const p = spawnSync("bash", ["-c", `set -e\n${script}`], { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+    if (p.status !== 0) throw new Error(`${script}\n${p.stdout}${p.stderr}`);
+    return p.stdout;
+  };
+  const home = (setup ?? ((h: string) => void sh(h, "git init -q -b main; echo one > a.txt; git add a.txt; git commit -qm init; echo two >> a.txt")))(home0, dir) || home0;
+  // What the owner sees of a folder: its status, both diffs, its files and the bits set by hand.
+  const look = (d: string) => ({
+    status: git(d, "status", "--porcelain=v2", "--untracked-files=all"), staged: git(d, "diff", "--cached"), unstaged: git(d, "diff"),
+    stages: git(d, "ls-files", "-s"), bits: git(d, "ls-files", "-v").split("\n").filter((l) => l && !l.startsWith("H ")).join("\n"),
+    files: sh(d, "find . -path ./.git -prune -o -type f -print | sort | xargs -r sha1sum"),
+    merging: sh(d, "test -e \"$(git rev-parse --git-path MERGE_HEAD)\" && echo yes || echo no").trim(),
+  });
   const rig = {
-    dir, root, home, git,
+    dir, root, home, git, sh, look,
     // "after": the call is done there and its answer never arrives; "before": it never leaves.
     cut: undefined as ((path: string, script: string) => "before" | "after" | undefined) | undefined,
     reached: Promise.withResolvers<void>(),
-    released: [] as string[], held: false,
+    // The engine: a turn that runs is stopped by the move, and that stop holds the queue.
+    running: false, held: false, released: [] as string[], scripts: [] as string[],
     store: undefined as unknown as InstanceType<typeof Store>,
     moves: undefined as unknown as InstanceType<typeof Handoffs>,
     session: () => rig.store.session(sid)!,
+    latest: () => rig.moves.latest(sid)!,
+    row: () => JSON.parse(rig.store.db.query<{ data: string }, [string]>("SELECT data FROM fleet_moves WHERE session_id = ?").get(sid)?.data ?? "{}"),
     notes: () => rig.store.events(sid).filter((e) => e.kind === "note").map((e) => String((e.data as any).text)),
-    worktrees: () => { try { return execFileSync("ls", [join(root, ".keel/worktrees")], { encoding: "utf8" }).split("\n").filter(Boolean); } catch { return []; } },
+    worktrees: () => { try { return readdirSync(join(root, ".keel/worktrees")); } catch { return []; } },
+    refs: (d: string, under: string) => git(d, "for-each-ref", "--format=%(refname)", under).split("\n").filter(Boolean),
+    bundles: () => [join(root, ".keel/handoff"), join(state, "handoff")].flatMap((d) => { try { return readdirSync(d); } catch { return []; } }),
+    // A script of the move that runs on this machine is done, and the daemon is gone before the next write.
+    cutHere(match: (script: string) => boolean) {
+      const m = rig.moves as any, real = m.sh.bind(m), hung = Promise.withResolvers<void>();
+      m.sh = async (machine: unknown, cwd: string, script: string) => {
+        const r = await real(machine, cwd, script);
+        if (!machine && match(script)) { hung.resolve(); return new Promise(() => {}); }
+        return r;
+      };
+      return hung.promise;
+    },
     // The daemon starts (again): a new process holds no move.
     boot() {
       rig.store?.db.close();
@@ -586,13 +614,17 @@ async function moveRig() {
       rig.reached = Promise.withResolvers<void>();
       rig.store = new Store(state);
       migrate(rig.store);
-      const engine: any = { isRunning: () => false, interrupt: async () => {}, forgetSystem() {}, isHeld: () => rig.held, resumeQueue: (id: string) => { rig.released.push(id); } };
+      const engine: any = {
+        isRunning: () => rig.running, isHeld: () => rig.held, forgetSystem() {},
+        interrupt: async () => { rig.running = false; rig.held = true; },
+        resumeQueue: (id: string) => { rig.released.push(id); rig.held = false; },
+      };
       rig.moves = new Handoffs(rig.store, new Bus(), engine, fleet);
     },
     async moved(to: string, more: Record<string, unknown> = {}) {
       rig.moves.start(rig.session(), { machine_id: to, ...more });
-      for (let i = 0; i < 400 && rig.moves.latest(sid)!.state === "running"; i++) await Bun.sleep(25);
-      return rig.moves.latest(sid)!;
+      for (let i = 0; i < 800 && rig.latest().state === "running"; i++) await Bun.sleep(25);
+      return rig.latest();
     },
     close() { rig.store.db.close(); rmSync(dir, { recursive: true, force: true }); },
   };
@@ -602,6 +634,7 @@ async function moveRig() {
     async hands(_id: string, path: string, init: any = {}) {
       const u = new URL(path, "http://there");
       const b = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      if (b.script) rig.scripts.push(b.script);
       const when = rig.cut?.(u.pathname, String(b.script ?? ""));
       const never = () => { rig.reached.resolve(); return new Promise<Response>(() => {}); };
       if (when === "before") return never();
@@ -622,53 +655,118 @@ async function moveRig() {
   return rig;
 }
 
-test("a move cut by a restart: one side, one receipt, one worktree, and it moves again", async () => {
+// The first move to a machine makes a repository there, then sends the state.
+// Cut between the two, the next move finds a repository with no commit at the
+// place: it is the one to use. Nothing of the bundle stays on either side.
+test("a first move cut before its state arrived there is made again, and leaves no bundle", async () => {
+  for (const cut of [
+    (path: string, script: string) => path.endsWith("/exec") && script.includes("init -q"), // the new repository is made, the answer lost
+    (path: string) => path.endsWith("/put"), // the bundle is there, the answer lost
+  ]) {
+    const rig = await moveRig();
+    try {
+      const before = rig.look(rig.home);
+      rig.cut = (path, script) => (cut(path, script) ? "after" : undefined);
+      rig.moves.start(rig.session(), { machine_id: "m1" });
+      await rig.reached.promise;
+      rig.boot();
+      expect(rig.latest()).toMatchObject({ state: "failed", interrupted: true });
+      const again = await rig.moved("m1");
+      expect(again).toMatchObject({ state: "done" });
+      expect(rig.worktrees()).toHaveLength(1);
+      expect(rig.look(rig.session().workspace)).toEqual(before);
+      expect(rig.bundles()).toEqual([]);
+    } finally {
+      rig.close();
+    }
+  }
+});
+
+// A move cut after the folder took the state: the folder holds what the cut
+// move carried. The session works on where it is, and the next move replaces
+// that state as the session's own, not as someone else's change.
+test("a move cut after the folder took the state is not left stale by the next move", async () => {
   const rig = await moveRig();
   try {
-    // The worktree is made over there; the daemon goes down before it hears so.
+    await rig.moved("m1");
+    const wt = rig.session().workspace;
+    await rig.moved("local");
+
+    // There: the worktree takes "three", the answer is lost, the session writes "four" at home.
+    rig.sh(rig.home, "echo three >> a.txt");
+    rig.cut = (path, script) => (path.endsWith("/exec") && script.includes("read-tree -u -m") ? "after" : undefined);
+    rig.moves.start(rig.session(), { machine_id: "m1" });
+    await rig.reached.promise;
+    rig.boot();
+    expect(rig.latest()).toMatchObject({ state: "failed", interrupted: true });
+    expect(rig.session().workspace).toBe(rig.home);
+    expect(rig.sh(wt, "cat a.txt")).toBe("one\ntwo\nthree\n");
+    rig.sh(rig.home, "echo four >> a.txt");
+    expect(await rig.moved("m1")).toMatchObject({ state: "done", replaced: true });
+    expect(rig.sh(rig.session().workspace, "cat a.txt")).toBe("one\ntwo\nthree\nfour\n");
+
+    // Here: the same on the way back, the daemon gone right after the folder here changed.
+    rig.sh(wt, "echo five >> a.txt");
+    const applied = rig.cutHere((script) => script.includes("read-tree -u -m"));
+    rig.moves.start(rig.session(), { machine_id: "local" });
+    await applied;
+    rig.boot();
+    expect(rig.latest()).toMatchObject({ state: "failed", interrupted: true });
+    expect(rig.session()).toMatchObject({ machine: "m1", workspace: wt });
+    expect(rig.sh(rig.home, "cat a.txt")).toBe("one\ntwo\nthree\nfour\nfive\n");
+    rig.sh(wt, "echo six >> a.txt");
+    expect(await rig.moved("local")).toMatchObject({ state: "done", replaced: true });
+    expect(rig.session().workspace).toBe(rig.home);
+    expect(rig.sh(rig.home, "cat a.txt")).toBe("one\ntwo\nthree\nfour\nfive\nsix\n");
+  } finally {
+    rig.close();
+  }
+});
+
+// A move longer than the time between two restarts: what it sent stays sent
+// (an unchanged folder gives the same snapshot again), and a stop of the
+// daemon has the running moves to wait for.
+test("a move made again does not send again what arrived, and a stop can wait for a move", async () => {
+  const rig = await moveRig();
+  try {
     rig.cut = (path, script) => (path.endsWith("/exec") && script.includes("worktree add") ? "after" : undefined);
     rig.moves.start(rig.session(), { machine_id: "m1" });
     await rig.reached.promise;
-    expect(rig.worktrees()).toHaveLength(1);
+    const sent = rig.git(rig.home, "rev-parse", `refs/keel/handoff/${rig.session().id}`);
     rig.boot();
-    const cut = rig.moves.latest(rig.session().id)!;
-    expect(cut).toMatchObject({ state: "failed", interrupted: true });
-    expect(cut.steps.map((s) => s.state)).toEqual(["skipped", "done", "done", "failed", "skipped"]);
-    expect(cut.error).toContain(rig.worktrees()[0]);
-    expect(rig.session()).toMatchObject({ workspace: rig.home });
-    expect(rig.session().machine ?? null).toBeNull();
-    expect(rig.moves.isMoving(rig.session().id)).toBe(false);
-    expect(rig.notes().filter((t) => t.includes("was cut"))).toHaveLength(1);
-    // Another start finds nothing left to close.
-    rig.boot();
-    expect(rig.notes().filter((t) => t.includes("was cut"))).toHaveLength(1);
+    let ended = false;
+    rig.moves.start(rig.session(), { machine_id: "m1" });
+    const idle = rig.moves.idle().then(() => { ended = true; });
+    expect(ended).toBe(false);
+    await idle;
+    expect(rig.latest()).toMatchObject({ state: "done" });
+    expect(rig.latest().steps.find((s) => s.name === "transfer")!.state).toBe("skipped");
+    expect(rig.git(rig.home, "rev-parse", `refs/keel/handoff/${rig.session().id}`)).toBe(sent);
+  } finally {
+    rig.close();
+  }
+});
 
-    // Moved again: the same worktree, not a second one, with the folder as it is now.
-    writeFileSync(join(rig.home, "a.txt"), "one\ntwo\nthree\n");
-    const again = await rig.moved("m1");
-    expect(again).toMatchObject({ state: "done" });
-    expect(again.interrupted).toBeUndefined();
-    expect(rig.worktrees()).toHaveLength(1);
-    const wt = rig.session().workspace;
-    expect(wt).toBe(join(rig.root, ".keel/worktrees", rig.worktrees()[0]!));
-    expect(rig.session().machine).toBe("m1");
-    expect(await Bun.file(join(wt, "a.txt")).text()).toBe("one\ntwo\nthree\n");
-    expect(rig.git(wt, "status", "--short")).toContain(" M a.txt");
-    expect(rig.released).toHaveLength(1);
-
-    // Back, cut before the folder here is touched: still over there, whole.
-    writeFileSync(join(wt, "a.txt"), "one\ntwo\nthree\nfour\n");
-    rig.cut = (path) => (path.endsWith("/get") ? "after" : undefined);
-    rig.moves.start(rig.session(), { machine_id: "local" });
-    await rig.reached.promise;
-    rig.boot();
-    expect(rig.moves.latest(rig.session().id)).toMatchObject({ state: "failed", interrupted: true });
-    expect(rig.session()).toMatchObject({ machine: "m1", workspace: wt });
-    expect(await Bun.file(join(rig.home, "a.txt")).text()).toBe("one\ntwo\nthree\n");
-    expect(await rig.moved("local")).toMatchObject({ state: "done", replaced: true });
-    expect(rig.session().machine ?? null).toBeNull();
-    expect(rig.session().workspace).toBe(rig.home);
-    expect(await Bun.file(join(rig.home, "a.txt")).text()).toBe("one\ntwo\nthree\nfour\n");
+// Each landing saves the folder's own state to a ref first. Only the newest
+// few are kept, on both sides, and none outlives the session.
+test("the refs a landing saves a folder's own state to are pruned, and go with the session", async () => {
+  const rig = await moveRig();
+  try {
+    const id = rig.session().id;
+    for (let i = 0; i < 5; i++) {
+      await rig.moved("m1");
+      rig.sh(rig.session().workspace, `echo trip ${i} >> a.txt`);
+      await rig.moved("local");
+    }
+    const repo = join(rig.root, "home");
+    const before = `refs/keel/handoff-before/${id}/`;
+    expect(rig.refs(rig.home, before)).toHaveLength(3);
+    expect(rig.refs(repo, before)).toHaveLength(3);
+    rig.store.db.query("DELETE FROM sessions WHERE id = ?").run(id);
+    await rig.moves.cleanup(id);
+    expect(rig.refs(rig.home, "refs/keel")).toEqual([]);
+    expect(rig.refs(repo, "refs/keel")).toEqual([]);
+    expect(rig.worktrees()).toEqual([]);
   } finally {
     rig.close();
   }

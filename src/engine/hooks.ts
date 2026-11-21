@@ -82,6 +82,9 @@ export type TurnHooks = {
   callOutcome?: (sessionId: string, callId: string) => { denied: string } | "not_run" | "waiting" | undefined;
   // The daemon stops and parks this session's turn (before its signal aborts).
   turnParking?: (sessionId: string) => void;
+  // Work that is not a turn and that a stop should not cut (a session moving
+  // to another machine): the drain waits for it too, within its time.
+  draining?: () => Promise<unknown> | undefined;
   // Before a compaction summarises the history (a memory tool reads it whole first).
   beforeCompact?: (s: Session) => void | Promise<void>;
   // What a summary of this session keeps above all, when the owner named nothing
