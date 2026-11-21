@@ -5,7 +5,7 @@
 // adds nothing, a note for the model adds its text, an attached text file adds
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
-import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
+import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -338,4 +338,49 @@ test("another model's reply is a floor, not the count; an interrupted reply with
   // came since, not the bytes of the whole history on every call.
   const silent = [...line, ev("assistant", { blocks: [{ type: "text", text: "z".repeat(40_000) }], model: "lab:moved", stop: "end_turn", usage: { input: 0, cache_read: 0, cache_write: 0, output: 0 } }), ev("user", { text: "more" })];
   expect(contextTokens(silent, "lab:moved")).toMatchObject({ used: 2, measured: 0, estimated: 2 });
+});
+
+// A history far too long for a handful of parts: the plan is held to the
+// most parts, by shortening outputs and call inputs further and then leaving
+// the oldest steps of the work out, each run named in its place. The owner's
+// words are all in it, in order, and the newest work is whole.
+test("a transcript is planned in at most the most parts, the oldest steps left out and named", async () => {
+  const long = [...Array(600).keys()].flatMap((n) => turn(n, `OUT${n} ${"o".repeat(6_000)}`));
+  const free = transcriptParts(long, 20_000);
+  expect(free.parts.length).toBeGreaterThan(40);
+  expect(free.left_out).toEqual({ steps: 0, bytes: 0 });
+
+  const cut = transcriptParts(long, 20_000, TRANSCRIPT_PARTS_MAX);
+  expect(cut.parts.length).toBeLessThanOrEqual(TRANSCRIPT_PARTS_MAX);
+  for (const p of cut.parts) expect(utf8Bytes(p)).toBeLessThanOrEqual(20_000);
+  const joined = cut.parts.join("");
+  // Every prompt once, in order.
+  for (let n = 0; n < 600; n++) expect(joined.split(`[user]\nprompt ${n}\n`)).toHaveLength(2);
+  expect(joined.indexOf("prompt 3\n")).toBeLessThan(joined.indexOf("prompt 599\n"));
+  // The oldest steps are gone and say so; the newest are there with their call, result and reply.
+  expect(cut.left_out.steps).toBeGreaterThan(100);
+  expect(joined).not.toContain("[assistant called Bash (t0)]");
+  expect(joined).toMatch(/^\[user\]\nprompt 0\n\[\d+ steps of the work \(calls, results and replies\) from here are not in this transcript: \d+ bytes\. They stay stored and searchable\.\]\n\[user\]\nprompt 1\n/);
+  expect(joined).toContain("[assistant called Bash (t599)]");
+  expect(joined).toContain("[result of t599]\nOUT599 ");
+  expect(joined).toContain("[assistant]\ndone 599\n");
+  const named = [...joined.matchAll(/\[(\d+) steps of the work/g)].reduce((n, m) => n + Number(m[1]), 0);
+  expect(named).toBe(cut.left_out.steps);
+  // The request says the earliest work is not in it.
+  expect(partPrompt("PART", 0, 8, "", cut.clipped, undefined, cut.left_out.steps)).toContain(`${cut.left_out.steps} of the oldest steps of the work are left out`);
+
+  // Paced: the same plan, with the loop turning while it is made.
+  const big = [...Array(900).keys()].flatMap((n) => turn(n, `OUT${n} ${"o".repeat(12_000)}`));
+  let turns = 0;
+  const tick = setInterval(() => turns++, 0);
+  const paced = await transcriptPartsPaced(big, 20_000, TRANSCRIPT_PARTS_MAX);
+  clearInterval(tick);
+  expect(turns).toBeGreaterThan(3);
+  expect(paced).toEqual(transcriptParts(big, 20_000, TRANSCRIPT_PARTS_MAX));
+
+  // Words someone sent are never left out, however long: they take the parts they need.
+  const said = [...Array(40).keys()].map((n) => ({ role: "user" as const, content: [{ type: "text" as const, text: `said ${n} ${"w".repeat(9_000)}` }] }));
+  const kept = transcriptParts(said, 20_000, 4);
+  expect(kept.left_out.steps).toBe(0);
+  for (let n = 0; n < 40; n++) expect(kept.parts.join("")).toContain(`said ${n} w`);
 });

@@ -27,7 +27,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -1853,7 +1853,7 @@ export class Engine {
         this.emitSession(id);
         const summary = res.summary;
         if (!summary) return;
-        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...checkpointData(events, summary, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(events, summary, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         if (abort.signal.aborted || !this.preparationHolds(id, covered.id, data)) return;
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
@@ -1980,7 +1980,9 @@ export class Engine {
   // it, else in parts oldest first, each with the summary of the parts before
   // it. A request the provider still refuses as too long is built again smaller.
   // `transcript`: read as a transcript from the start (the single request was tried on this context and failed).
-  private async summarize(id: string, st: Step, session: Session, events: readonly StoredEvent[], signal: AbortSignal, focus?: string, transcript = false): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
+  // `planned`: told once the transcript is cut, before its first request: how
+  // many requests it takes and about how many tokens they send.
+  private async summarize(id: string, st: Step, session: Session, events: readonly StoredEvent[], signal: AbortSignal, focus?: string, transcript = false, planned?: (plan: { requests: number; done: number; input_tokens: number; cost?: number; steps_left_out?: number }) => void): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number; steps_left_out?: number }> {
     focus ??= allHooks().map((h) => h.compactFocus?.(session)).find(Boolean);
     let usage = emptyUsage();
     const one = async (ask: Message[], fit: Fit): Promise<string> => {
@@ -2028,13 +2030,20 @@ export class Engine {
     for (const share of SHRINK_STEPS) {
       // Never less than the prompt, a summary and one smallest part.
       const budget = Math.max(Math.floor(room * share), words + carry + MIN_PART_BYTES);
-      const cut = transcriptParts(messages, budget - words - carry);
-      const clipped = cut.clipped;
+      // At most TRANSCRIPT_PARTS_MAX parts: a longer history leaves its oldest steps out and says so.
+      const cut = await transcriptPartsPaced(messages, budget - words - carry, TRANSCRIPT_PARTS_MAX);
+      if (signal.aborted) throw new Error("the compaction was stopped");
+      const clipped = cut.clipped, leftOut = cut.left_out.steps;
       let parts = cut.parts;
+      // What the requests will send: each its prefix, the prompt, its part and the summary carried into it.
+      const per = bytesPerToken(st.info.id);
+      const tokens = Math.ceil(parts.reduce((n, p, k) => n + this.prefixBytes(st) + words + utf8Bytes(p) + (k ? carry : 0), 0) / per);
+      const plan = (done: number) => planned?.({ requests: parts.length, done, input_tokens: tokens, ...(st.info.price ? { cost: (tokens * st.info.price.input) / 1e6 } : {}), ...(leftOut ? { steps_left_out: leftOut } : {}) });
       try {
         let summary = "";
         for (let k = 0; k < parts.length; k++) {
-          summary = await one(text(partPrompt(parts[k]!, k, parts.length, summary, clipped, focus)), alone);
+          plan(k);
+          summary = await one(text(partPrompt(parts[k]!, k, parts.length, summary, clipped, focus, leftOut)), alone);
           if (!summary) return { summary, usage };
           if (k + 1 === parts.length) break;
           // The next request carries this summary. One that leaves no room for
@@ -2050,7 +2059,7 @@ export class Engine {
           // The rest of the transcript, cut again for the room this summary leaves.
           if (utf8Bytes(parts[k + 1]!) > left) parts = [...parts.slice(0, k + 1), ...recut(parts.slice(k + 1).join(""), left)];
         }
-        return { summary, usage, parts: parts.length, clipped };
+        return { summary, usage, parts: parts.length, clipped, ...(leftOut ? { steps_left_out: leftOut } : {}) };
       } catch (e) {
         if (signal.aborted || (e as any)?.kind !== "context") throw e;
         over = e;
@@ -2091,7 +2100,9 @@ export class Engine {
     const signal = opts.signal ?? own.signal;
     const t0 = Date.now();
     try {
-      const res = await this.summarize(id, st, session, upto, signal, opts.focus, transcript).catch((e) => { this.giveUp(id, events, st, upto.at(-1), over, e); throw e; });
+      // A history read in parts says first what it will take, and how far it is.
+      const planned = (plan: NonNullable<Extract<TurnStatus, { kind: "compacting" }>["plan"]>) => this.status(id, { kind: "compacting", auto: !!opts.auto, plan });
+      const res = await this.summarize(id, st, session, upto, signal, opts.focus, transcript, planned).catch((e) => { this.giveUp(id, events, st, upto.at(-1), over, e); throw e; });
       const u: Usage = res.usage;
       const summary = res.summary;
       if (!summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
@@ -2109,7 +2120,7 @@ export class Engine {
       }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...checkpointData(upto, summary, this.wordsBudget(st, opts.next)), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(upto, summary, this.wordsBudget(st, opts.next)), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);

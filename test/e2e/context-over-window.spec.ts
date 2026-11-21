@@ -209,3 +209,62 @@ test("a cut summary is never a checkpoint, and a long summary of earlier parts s
   expect(once.ok()).toBe(true);
   expect((await once.json()).event.data.summary).toContain("the scripted scenario ran");
 });
+
+// Feature: a history far over the window is not read through however long it
+// is. Its transcript is planned in at most eight parts: tool outputs and call
+// inputs are shortened further, then the oldest steps of the work are left
+// out and named, never the owner's words. (Two thousand imported steps took
+// one request per 120 KB of transcript before: dozens of requests.)
+test("a history far over the window is summarized in at most eight requests and says what it left out", async ({ page, request }) => {
+  const info = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === STRICT);
+  test.skip(!info, "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const h = longHistory("A history of two thousand steps", 2000);
+  expect(Buffer.byteLength(h.file)).toBeGreaterThan(9_000_000);
+  const id = (await (await request.post("/api/sessions/import", { data: h.file, headers: { "content-type": "application/x-ndjson" } })).json()).session.id;
+  const before = await counted(request, id);
+
+  // The page says what the compaction takes before its first request, and counts them as they finish.
+  await page.goto(`/s/${id}`);
+  await expect(page.getByText("Step 2000: check the service on port 9000.")).toBeVisible({ timeout: 60_000 });
+  // The line lasts as long as the requests do: every text it shows is noted as it changes.
+  await page.evaluate(() => {
+    const seen: string[] = ((window as any).__compacting = []);
+    new MutationObserver(() => {
+      const t = document.querySelector('[data-testid="compacting"]')?.textContent;
+      if (t && seen.at(-1) !== t) seen.push(t);
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+  const asked = request.post(`/api/sessions/${id}/compact`, { data: {}, timeout: 120_000 });
+  const plans: any[] = [];
+  const watch = (async () => {
+    for (let i = 0; i < 3000 && !plans.some((p) => p.done > 0); i++) {
+      const st = (await (await request.get(`/api/sessions/${id}?events=0`)).json()).status;
+      if (st?.kind === "compacting" && st.plan && !plans.some((p) => p.done === st.plan.done)) plans.push(st.plan);
+      if (st?.kind === "idle" && plans.length) break;
+    }
+  })();
+  const res = await asked;
+  await watch;
+  expect(res.ok()).toBe(true);
+  await expect(page.getByTestId("compacted")).toHaveCount(1);
+  const shown: string[] = await page.evaluate(() => (window as any).__compacting);
+  expect(shown.join("\n")).toMatch(/Compacting the context: too long for one request, read in \d requests of about [\d.]+k tokens \([\d.]+k in all, about \$[\d.]+\), the oldest [\d,]+ steps left out; 0 of \d done/);
+  const cp = (await res.json()).event;
+  // What was said first is what it took: the requests, and the tokens they sent (cached ones too) within a quarter.
+  expect(plans[0]).toMatchObject({ requests: cp.data.parts, done: 0, steps_left_out: cp.data.steps_left_out });
+  const sent = cp.data.usage.input + (cp.data.usage.cache_read ?? 0) + (cp.data.usage.cache_write ?? 0);
+  expect(Math.abs(plans[0].input_tokens - sent) / sent, `planned ${plans[0].input_tokens}, sent ${sent}`).toBeLessThan(0.25);
+  expect(cp.data.parts).toBeGreaterThan(1);
+  expect(cp.data.parts).toBeLessThanOrEqual(8);
+  expect(cp.data.outputs_shortened).toBe(2000);
+  expect(cp.data.steps_left_out).toBeGreaterThan(1000);
+  expect(cp.data.summary).toContain(`read part ${cp.data.parts} of ${cp.data.parts} of the transcript, after the summary of the parts before it`);
+  // The owner's newest words are kept word for word, as in any compaction.
+  expect(cp.data.owner_messages.at(-1)).toBe("Step 2000: check the service on port 9000.");
+  const c = await counted(request, id);
+  expect(c.refused, `requests over the window that reached the provider (${JSON.stringify(c)})`).toBe(0);
+  expect(c.requests - before.requests).toBe(cp.data.parts);
+
+  await expect(page.getByTestId("compacted")).toContainText(`read as a transcript in ${cp.data.parts} parts, 2000 long tool outputs shortened, the oldest ${cp.data.steps_left_out.toLocaleString("en-US")} steps of the work left out of the summary`);
+  await shoot(page, "context-over-window-05-oldest-left-out");
+});

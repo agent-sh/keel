@@ -330,7 +330,7 @@ function Checkpoint({ e, sid, undoable }: { e: StoredEvent; sid: string; undoabl
             <Layers className="size-3.5" />
             {e.data.label ? e.data.label : e.data.trigger === "idle" ? "Context compacted: the cache expired while the session was idle, so a summary written before it did replaces the history" : e.data.ahead ? "Context compacted with a summary prepared ahead; the newest steps stay as they were" : e.data.auto ? "Context compacted automatically" : "Context compacted"}
             {e.data.tokens_before ? `, ${fmtTokens(e.data.tokens_before)} tokens into a summary` : ""}
-            {e.data.parts ? ` (too long for one request: read as a transcript${e.data.parts > 1 ? ` in ${e.data.parts} parts` : ""}${e.data.outputs_shortened ? `, ${e.data.outputs_shortened} long tool outputs shortened` : ""})` : ""}
+            {e.data.parts ? ` (too long for one request: read as a transcript${e.data.parts > 1 ? ` in ${e.data.parts} parts` : ""}${e.data.outputs_shortened ? `, ${e.data.outputs_shortened} long tool outputs shortened` : ""}${e.data.steps_left_out ? `, the oldest ${e.data.steps_left_out.toLocaleString()} steps of the work left out of the summary` : ""})` : ""}
             {e.data.owner_messages_shortened ? `; the oldest of the owner's messages kept word for word is cut to its start and end` : ""}
             {e.data.other_messages_shortened ? `; the oldest kept report or other delivered message is cut to its start and end` : ""}
             {e.data.statements_dropped?.length ? `; ${e.data.statements_dropped.length === 1 ? "one statement" : `${e.data.statements_dropped.length} statements`} the summary did not quote word for word left out` : ""}
@@ -382,6 +382,14 @@ function ForkNote({ e }: { e: StoredEvent }) {
 }
 
 // Live, not stored: a retry wait or a compaction in progress.
+
+// A history too long for one request: what reading it in parts takes, said
+// before the first request and counted as they finish.
+function compactPlan(plan?: { requests: number; done: number; input_tokens: number; cost?: number; steps_left_out?: number }): string {
+  if (!plan || plan.requests < 2) return "";
+  return `: too long for one request, read in ${plan.requests} requests of about ${fmtTokens(Math.round(plan.input_tokens / plan.requests))} tokens (${fmtTokens(plan.input_tokens)} in all${plan.cost !== undefined ? `, about ${fmtCost(plan.cost)}` : ""})${plan.steps_left_out ? `, the oldest ${plan.steps_left_out.toLocaleString()} steps left out` : ""}; ${plan.done} of ${plan.requests} done`;
+}
+
 function Status({ sessionId }: { sessionId: string }) {
   const st = useStore((x) => x.status[sessionId]);
   const [, tick] = useState(0);
@@ -392,7 +400,7 @@ function Status({ sessionId }: { sessionId: string }) {
   }, [st]);
   if (!st || st.kind === "idle" || st.kind === "model" || st.kind === "tool") return null;
   if (st.kind === "compacting") {
-    return <div className="flex items-center gap-2 text-ui text-muted animate-pulse-dot" data-testid="compacting"><Layers className="size-3.5" /> Compacting the context</div>;
+    return <div className="flex items-center gap-2 text-ui text-muted animate-pulse-dot" data-testid="compacting"><Layers className="size-3.5 shrink-0" /> <span>Compacting the context{compactPlan(st.plan)}</span></div>;
   }
   return (
     <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-raised px-3 py-2 text-ui" data-testid="retrying">
@@ -510,7 +518,7 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
   // A question card takes the place of the working line: the region says what the turn waits on.
   else if (asking) text = "Waiting for your answer.";
   else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, attempt ${st.attempt} of ${st.max}.`;
-  else if (st?.kind === "compacting") text = "Compacting the context.";
+  else if (st?.kind === "compacting") text = `Compacting the context${compactPlan(st.plan)}.`;
   else if (working) text = "Working.";
   else if (said.current) text = "The turn ended.";
   if (said.current === null && !working && !approving && !asking) text = ""; // opening an idle session announces nothing

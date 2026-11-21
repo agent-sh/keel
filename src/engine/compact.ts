@@ -717,17 +717,22 @@ export function replyBytes(blocks: AssistantBlock[]): number {
 // What a shortened tool output keeps (its start and end), as OpenCode and pi cut them.
 export const TRANSCRIPT_CLIP = 2_000;
 
-type Piece = { text: string; output?: boolean };
+// `output`: a tool's result; `call`: a call's name and input; `said`: words
+// someone sent (the owner, a report, a reply's own text), never shortened here.
+type Piece = { text: string; output?: boolean; call?: boolean; said?: boolean };
 
 function pieces(m: Message): Piece[] {
   const out: Piece[] = [];
   const who = m.role === "assistant" ? "assistant" : "user";
   for (const b of m.content as any[]) {
-    if (b.type === "text") { if (b.text) out.push({ text: `[${who}]\n${b.text}\n` }); }
-    else if (b.type === "tool_use") out.push({ text: `[assistant called ${b.name} (${b.id})]\n${JSON.stringify(b.input ?? {})}\n` });
+    if (b.type === "text") { if (b.text) out.push({ text: `[${who}]\n${b.text}\n`, said: who === "user" }); }
+    else if (b.type === "tool_use") out.push({ text: `[assistant called ${b.name} (${b.id})]\n${JSON.stringify(b.input ?? {})}\n`, call: true });
     else if (b.type === "tool_result") {
       const body = typeof b.content === "string" ? b.content : (b.content ?? []).map((c: any) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n");
-      out.push({ text: `[result of ${b.tool_use_id}${b.is_error ? ", an error" : ""}]\n${body}\n`, output: true });
+      const head = `[result of ${b.tool_use_id}${b.is_error ? ", an error" : ""}]\n`;
+      // Put together when it is read: a history of thousands of long outputs
+      // is not copied whole to plan a transcript that keeps a line of each.
+      out.push({ get text() { return `${head}${body}\n`; }, output: true });
     } else if (b.type === "image") out.push({ text: `[${who} sent an image]\n` });
     else if (b.type === "attachment") out.push({ text: `[${who} attached the file ${b.name}]\n` });
     // thinking and other provider blocks are not part of the transcript
@@ -735,42 +740,119 @@ function pieces(m: Message): Piece[] {
   return out;
 }
 
+// The most parts a transcript is planned in. Each part is a request of up to
+// the window's compaction share, and the summary of the parts before it is
+// retold once per part: past a handful of parts the request count grows with
+// the history (a 30,000-event import took 255 requests) while the oldest
+// parts are worn down to a line each anyway. A history too long for this
+// many parts is shortened further (transcriptParts) and says what it left out.
+export const TRANSCRIPT_PARTS_MAX = 8;
+// What a tool output or a call's input keeps when the transcript is still
+// too long with every output at TRANSCRIPT_CLIP.
+export const TRANSCRIPT_CLIP_HARD = 300;
+
+export type TranscriptPlan = { parts: string[]; clipped: number; left_out: { steps: number; bytes: number } };
+
 // The conversation as transcript parts of at most `budget` UTF-8 bytes each,
 // oldest first. `clipped`: tool outputs that were shortened to fit.
-export function transcriptParts(messages: Message[], budget: number): { parts: string[]; clipped: number } {
-  const all = messages.flatMap(pieces);
-  const size = all.map((p) => utf8Bytes(p.text));
+// With `maxParts`, a transcript that needs more parts than that is shortened
+// until it does not, oldest first and never the owner's or another sender's
+// words: tool outputs and call inputs down to TRANSCRIPT_CLIP_HARD, then
+// whole steps of the work (calls, results and the replies between them) left
+// out, each run of them named in its place with its size (`left_out`). The
+// events stay stored and searchable; only this summary does not read them.
+export function transcriptParts(messages: Message[], budget: number, maxParts = Infinity): TranscriptPlan {
+  const plan = transcriptPlan(messages, budget, maxParts);
+  for (let r = plan.next(); ; r = plan.next()) if (r.done) return r.value;
+}
+
+// The same, a slice of the work at a time with the event loop turning in
+// between: a history of tens of megabytes takes seconds of string work.
+export async function transcriptPartsPaced(messages: Message[], budget: number, maxParts = Infinity): Promise<TranscriptPlan> {
+  const plan = transcriptPlan(messages, budget, maxParts);
+  for (let r = plan.next(); ; r = plan.next()) {
+    if (r.done) return r.value;
+    await new Promise<void>((ok) => setImmediate(ok));
+  }
+}
+
+// Bytes of text worked on between two turns of the loop: a few milliseconds.
+const PACE_BYTES = 1 << 20;
+
+function* transcriptPlan(messages: Message[], budget: number, maxParts: number): Generator<void, TranscriptPlan> {
+  let worked = 0;
+  const due = (n: number) => (worked += n) >= PACE_BYTES && ((worked = 0), true);
+  const all: (Piece | null)[] = [];
+  const size: number[] = [];
+  for (const m of messages) for (const p of pieces(m)) {
+    all.push(p);
+    size.push(utf8Bytes(p.text));
+    if (due(size.at(-1)!)) yield;
+  }
   let total = size.reduce((a, b) => a + b, 0);
   let clipped = 0;
-  for (let i = 0; i < all.length && total > budget; i++) {
-    if (!all[i]!.output || size[i]! <= TRANSCRIPT_CLIP) continue;
-    const cut = excerpt(all[i]!.text, TRANSCRIPT_CLIP);
-    if (cut === null) continue;
+  const clip = (i: number, to: number) => {
+    const cut = excerpt(all[i]!.text, to);
+    if (cut === null) return false;
     total -= size[i]!;
-    all[i] = { text: cut.endsWith("\n") ? cut : cut + "\n", output: true };
+    all[i] = { text: cut.endsWith("\n") ? cut : cut + "\n", output: all[i]!.output, call: all[i]!.call };
     size[i] = utf8Bytes(all[i]!.text);
     total += size[i]!;
-    clipped++;
+    return true;
+  };
+  for (let i = 0; i < all.length && total > budget; i++) {
+    if (!all[i]!.output || size[i]! <= TRANSCRIPT_CLIP) continue;
+    if (due(size[i]!)) yield;
+    if (clip(i, TRANSCRIPT_CLIP)) clipped++;
+  }
+  // Packing leaves the end of a part unused when the next piece does not fit: planned a little under.
+  const most = maxParts === Infinity ? Infinity : Math.floor(maxParts * budget * 0.95);
+  const left_out = { steps: 0, bytes: 0 };
+  if (total > most) {
+    for (let i = 0; i < all.length && total > most; i++) {
+      if (!(all[i]!.output || all[i]!.call) || size[i]! <= TRANSCRIPT_CLIP_HARD) continue;
+      if (due(size[i]!)) yield;
+      clip(i, TRANSCRIPT_CLIP_HARD);
+    }
+    // Still too long: the oldest steps of the work go, one run at a time, with a line in their place.
+    for (let i = 0; i < all.length && total > most; ) {
+      if (!all[i] || all[i]!.said) { i++; continue; }
+      let j = i, bytes = 0;
+      const note = (n: number, b: number) => `[${n} steps of the work (calls, results and replies) from here are not in this transcript: ${b} bytes. They stay stored and searchable.]\n`;
+      while (j < all.length && all[j] && !all[j]!.said && total - bytes + utf8Bytes(note(j - i, bytes)) > most) bytes += size[j++]!;
+      if (j === i) break;
+      const text = note(j - i, bytes);
+      total += utf8Bytes(text) - bytes;
+      left_out.steps += j - i;
+      left_out.bytes += bytes;
+      all[i] = { text, said: true };
+      size[i] = utf8Bytes(text);
+      for (let k = i + 1; k < j; k++) { all[k] = null; size[k] = 0; }
+      i = j;
+      yield;
+    }
   }
   const parts: string[] = [];
-  let cur = "";
+  let cur: string[] = [];
   let bytes = 0;
   const add = (text: string, n: number) => {
-    if (bytes + n > budget && cur) {
-      parts.push(cur);
-      cur = "";
+    if (bytes + n > budget && cur.length) {
+      parts.push(cur.join(""));
+      cur = [];
       bytes = 0;
     }
-    cur += text;
+    cur.push(text);
     bytes += n;
   };
   for (let i = 0; i < all.length; i++) {
+    if (!all[i]) continue;
     // One piece larger than a part (a long message) goes on in the next parts.
     if (size[i]! > budget) for (const c of chunks(all[i]!.text, budget)) add(c, utf8Bytes(c));
     else add(all[i]!.text, size[i]!);
+    if (due(size[i]!)) yield;
   }
-  if (cur) parts.push(cur);
-  return { parts, clipped };
+  if (cur.length) parts.push(cur.join(""));
+  return { parts, clipped, left_out };
 }
 
 // A text cut into pieces of at most `budget` UTF-8 bytes, on character bounds.
@@ -824,9 +906,9 @@ export function condensePrompt(summary: string, bytes: number): string {
 
 // The request for one part: the summary of the parts before it, the part, and
 // what to write. The last part asks for the summary the context continues from.
-export function partPrompt(part: string, k: number, n: number, sofar: string, clipped: number, focus?: string): string {
+export function partPrompt(part: string, k: number, n: number, sofar: string, clipped: number, focus?: string, leftOut = 0): string {
   return [
-    `[harness] The context is being compacted, and the conversation is too long to read in one request. It is given as a plain-text transcript${n > 1 ? ` in ${n} parts, oldest first; this is part ${k + 1}` : ""}.${clipped ? " Long tool outputs in it were shortened to their start and end." : ""}`,
+    `[harness] The context is being compacted, and the conversation is too long to read in one request. It is given as a plain-text transcript${n > 1 ? ` in ${n} parts, oldest first; this is part ${k + 1}` : ""}.${clipped ? " Long tool outputs in it were shortened to their start and end." : ""}${leftOut ? ` It is too long to read whole even so: ${leftOut} of the oldest steps of the work are left out, each run of them marked in its place. Say in the summary that the earliest work is known only in outline.` : ""}`,
     sofar ? `\nYour summary of the parts before this one:\n<summary>\n${sofar}\n</summary>` : "",
     `\n<transcript${n > 1 ? ` part="${k + 1}" of="${n}"` : ""}>\n${part}</transcript>\n`,
     k < n - 1

@@ -221,7 +221,10 @@ export type ErrorRecord = {
 export type TurnStatus =
   | { kind: "idle" }
   | { kind: "retry"; attempt: number; max: number; at: number; message: string }
-  | { kind: "compacting"; auto: boolean }
+  // `plan`: the history is too long for one request and is read as a
+  // transcript in that many requests, with what they are estimated to send
+  // (`cost` in dollars when the model has a price) and how many are done.
+  | { kind: "compacting"; auto: boolean; plan?: { requests: number; done: number; input_tokens: number; cost?: number; steps_left_out?: number } }
   // Waiting on the model's first output of this request (`connected`: when the
   // provider answered; bytes since then, a keep-alive say, are not output), or
   // on tools to finish.
