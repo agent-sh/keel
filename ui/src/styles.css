@@ -418,6 +418,10 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    raised surface. One that floats over the bridge adds the edge, the corner and
    the shadow. */
 .k-surface { display: flex; flex-direction: column; min-height: 0; border-top: 0.1875rem solid var(--band); background: var(--raised); }
+/* Nothing can be lifted off the raised surface: in light it is already white. What a
+   page would raise there (a card, a field, a chosen option) is set into it instead,
+   on the page's paper, so it separates by its surface and not by a hairline alone. */
+.k-surface > :not(.k-surface-head) { --raised: var(--bg); }
 .k-surface[data-float] { border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); border-radius: var(--radius-xl); box-shadow: var(--shadow-3); outline: none; }
 .k-surface-head { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; height: 3rem; padding: 0 0.5rem 0 1rem; border-bottom: 1px solid var(--line); }
 .k-surface-icon { display: grid; flex-shrink: 0; color: var(--muted); }

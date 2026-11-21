@@ -272,4 +272,26 @@ test("the light theme steps from steel to paper to white", async ({ page, reques
   expect(side.color).toBe(card.color);
   expect(step(rail, side)).toBeGreaterThanOrEqual(1.2);
   await shoot(page, "contrast-surfaces");
+
+  // A card on the raised panel separates by its surface, not by a hairline alone: the
+  // Tokens tiles are set into the panel on the page's paper.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Say one thing." } });
+  await expect.poll(async () => { const r = await (await request.get(`/api/sessions/${session.id}`)).json(); return !r.running && r.events.filter((e: any) => e.kind === "turn_end").length; }, { timeout: 60_000 }).toBe(1);
+  await openPanel(page, "usage");
+  await expect.poll(() => page.getByTestId("side-panel").locator("[class*=border-line]").count()).toBeGreaterThan(2);
+  await page.evaluate(() => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.remove("dark"); });
+  const tile = await page.getByTestId("side-panel").evaluate((panel) => {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 1;
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+    const lum = (css: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1); const d = ctx.getImageData(0, 0, 1, 1).data; if (d[3] !== 255) return null; const [r, g, b] = [d[0]!, d[1]!, d[2]!].map((v) => { const x = v / 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
+    const own = lum(getComputedStyle(panel).backgroundColor)!;
+    // The bordered boxes in the panel's body that paint a surface of their own.
+    const cards = [...panel.querySelectorAll<HTMLElement>(":scope > :not(.k-surface-head) *")].filter((el) => parseFloat(getComputedStyle(el).borderTopWidth) >= 1 && el.getBoundingClientRect().width > 80 && el.getBoundingClientRect().height > 40 && lum(getComputedStyle(el).backgroundColor) !== null);
+    return { n: cards.length, steps: cards.map((el) => { const l = lum(getComputedStyle(el).backgroundColor)!; return Math.round(((Math.max(l, own) + 0.05) / (Math.min(l, own) + 0.05)) * 1000) / 1000; }) };
+  });
+  console.log(`cards on the raised panel: ${tile.n}, steps ${[...new Set(tile.steps)].join(", ")}`);
+  expect(tile.n).toBeGreaterThan(2);
+  expect(Math.min(...tile.steps)).toBeGreaterThanOrEqual(1.06);
+  await shoot(page, "contrast-card-on-panel");
 });
