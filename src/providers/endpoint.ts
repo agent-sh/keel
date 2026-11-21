@@ -45,6 +45,8 @@ const metaCache = new Map<string, { at: number; ids: string; meta: Map<string, M
 // Gemini listings say per model whether it thinks; the stream asks for thoughts only then.
 const thinks = new Map<string, boolean>();
 const META_TTL = 10 * 60_000;
+// More pages than any listing has: a server whose pages never end is stopped here.
+const MAX_PAGES = 200;
 
 export class EndpointProvider implements Provider {
   readonly id: string;
@@ -149,24 +151,47 @@ export class EndpointProvider implements Provider {
       : `${this.base}/models`;
   }
 
+  // The listing's rows, every page of it, from its first page. Anthropic-style
+  // pages name the next one with `last_id` while `has_more`, Gemini-style ones
+  // with `nextPageToken`; the OpenAI-style listing is one page. A cursor the
+  // server gave before would read the same pages again without end: the listing
+  // fails and says so, and the pages read so far are not taken for the whole list.
+  private async rows(first: any, a: { headers: Record<string, string>; secrets: string[] }): Promise<any[]> {
+    const paged = this.wire === "anthropic_messages" ? "after_id" : this.wire === "gemini_generate_content" ? "pageToken" : "";
+    const out: any[] = [];
+    const seen = new Set<string>();
+    let d = first;
+    for (let page = 1; ; page++) {
+      out.push(...(this.wire === "gemini_generate_content" ? d.models ?? [] : d.data ?? d.models ?? []));
+      const next = !paged ? "" : this.wire === "anthropic_messages" ? (d.has_more && d.last_id ? String(d.last_id) : "") : String(d.nextPageToken ?? "");
+      if (!next) return out;
+      if (seen.has(next) || page >= MAX_PAGES) {
+        const why = seen.has(next) ? `page ${page} names a page cursor it gave before` : `it has more than ${MAX_PAGES} pages`;
+        throw new ProviderError("server", `${this.label}: the model listing does not end (${why}); ${out.length} models were read and the list is not complete`);
+      }
+      seen.add(next);
+      d = await getJson(this.label, `${this.listUrl}&${paged}=${encodeURIComponent(next)}`, a.headers, a.secrets);
+    }
+  }
+
   async list(): Promise<ListedModel[]> {
     const a = await this.auth();
-    let d: any;
+    let first: any;
     try {
-      d = await getJson(this.label, this.listUrl, a.headers, a.secrets);
+      first = await getJson(this.label, this.listUrl, a.headers, a.secrets);
     } catch (e) {
       // An endpoint with no listing offers the models its configuration names.
       if (this.cfg.models?.length) return this.cfg.models.map((model) => ({ model, family: familyOf(model), billing: this.billing }));
       throw e;
     }
+    const rows = await this.rows(first, a);
     if (this.wire === "gemini_generate_content") {
-      return (d.models ?? [])
+      return rows
         .filter((m: any) => (m.supportedGenerationMethods ?? ["generateContent"]).includes("generateContent"))
         .map((m: any) => ({ id: String(m.name ?? "").replace(/^models\//, ""), m }))
         .filter((x: any) => x.id && !notChat(x.id))
         .map(({ id, m }: any): ListedModel => (thinks.set(`${this.base} ${id}`, !!m.thinking), { model: id, name: m.displayName, context: m.inputTokenLimit, output: m.outputTokenLimit, family: familyOf(id), billing: this.billing }));
     }
-    const rows: any[] = d.data ?? d.models ?? [];
     const meta = await this.meta(rows);
     return rows
       .filter((m) => (m?.id ?? m?.name) && !notChat(String(m.id ?? m.name)))

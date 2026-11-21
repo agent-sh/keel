@@ -1,7 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { FAKE_KEY, FAKE_MODEL, FAKE_TEXT_MODEL, startFake } from "./fixtures/fake-endpoint.ts";
+import { PAGE_ONE, PAGE_TWO, startPaged } from "./fixtures/paged-endpoint.ts";
 import { shoot, choose } from "./shots.ts";
 
 // Feature: adding a provider by hand in Settings > Providers. A stand-in
@@ -174,5 +176,46 @@ test("a providers.toml endpoint moves to its own file and becomes editable", asy
     await request.delete(`/api/providers/endpoints/${id}`);
     if (before === null) rmSync(toml, { force: true }); else writeFileSync(toml, before);
     fake.server.close();
+  }
+});
+
+// An Anthropic-style and a Gemini-style endpoint whose listing has two pages:
+// the second page's model is offered in the picker and by `keel models`. A
+// listing whose pages never end fails and says so, and the pages read are
+// not taken for the whole list.
+test("a listing in pages is read to its end, and one that never ends is an error", async ({ page, request, baseURL }) => {
+  const wires = [["anthropic", "anthropic_messages"], ["gemini", "gemini_generate_content"]] as const;
+  const fakes = await Promise.all(wires.map(([w]) => startPaged(w)));
+  const loop = await startPaged("anthropic", { loop: true });
+  const ids = [...wires.map(([w]) => `lab-paged-${w}`), "lab-paged-loop"];
+  try {
+    for (const id of ids) await request.delete(`/api/providers/endpoints/${id}`);
+    for (const [i, [, wire]] of wires.entries()) {
+      const r = await request.put(`/api/providers/endpoints/${ids[i]}`, { data: { config: { label: `Lab paged ${wires[i]![0]}`, wire, base_url: fakes[i]!.url, auth: "none" } } });
+      expect((await r.json()).listing.models.map((m: any) => m.model)).toEqual([PAGE_ONE, PAGE_TWO]);
+      expect(fakes[i]!.listings.length).toBe(2);
+    }
+    await page.goto("/");
+    await page.getByTestId("model-picker").last().click();
+    await page.getByPlaceholder("Search models").fill(PAGE_TWO);
+    for (const id of ids.slice(0, 2)) await expect(page.locator(`[data-testid="model-option"][data-model="${id}:${PAGE_TWO}"]`).first()).toBeVisible();
+    await shoot(page, "add-provider-08-page-two");
+    await page.keyboard.press("Escape");
+    const cli = spawnSync("bun", [join(import.meta.dirname, "../../src/main.ts"), "models", "--url", baseURL!], { encoding: "utf8" });
+    for (const id of ids.slice(0, 2)) expect(cli.stdout).toContain(`${id}:${PAGE_TWO}`);
+
+    const r = await (await request.put(`/api/providers/endpoints/${ids[2]}`, { data: { config: { label: "Lab paged loop", wire: "anthropic_messages", base_url: loop.url, auth: "none" } } })).json();
+    expect(r.listing.state).toBe("failed");
+    expect(r.listing.error).toContain("the model listing does not end (page 2 names a page cursor it gave before)");
+    expect(r.listing.models).toEqual([]);
+    expect(loop.listings.length).toBe(2);
+    await page.goto("/settings/providers");
+    const row = page.locator(`[data-testid="provider-row"][data-provider="${ids[2]}"]`);
+    await expect(row.getByTestId("listing-error")).toContainText("does not end");
+    await row.scrollIntoViewIfNeeded();
+    await shoot(page, "add-provider-09-pages-never-end");
+  } finally {
+    for (const id of ids) await request.delete(`/api/providers/endpoints/${id}`);
+    for (const f of [...fakes, loop]) f.server.close();
   }
 });
