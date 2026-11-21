@@ -246,21 +246,18 @@ export class Resumes {
     }
   }
 
-  // What a look at the machine leaves the card to do: the copy of an original
-  // that was ended. A stop whose answer never came is settled by this look.
-  pending(machine: string, harness: string, id: string, seen: Seen): Pending | undefined {
-    const k = this.key(machine, harness, id);
-    const r = this.ends.get(k);
-    if (r?.state === "stopping" && !this.busy.has(k)) this.settled(r, seen);
-    return this.pendingOf(machine, harness, id);
-  }
-
   private key = (machine: string, harness: string, id: string) => `${machine}:${harness}:${id}`;
   private q = (harness: string, id: string) => `harness=${encodeURIComponent(harness)}&id=${encodeURIComponent(id)}`;
 
-  // Whether the original still works on something, from the helper there.
-  activity(m: MachineRow, harness: Harness, id: string): Promise<Seen> {
-    return this.fleet.handsJson<Seen>(m.id, `/api/fleet/hands/activity?${this.q(harness, id)}`, { timeout: 30_000, idempotent: true });
+  // Whether the original still works on something, from the helper there. A
+  // stop whose answer never came, with no resume working on it now, is settled
+  // by this look: the card that asked is then given the copy to finish.
+  async activity(m: MachineRow, harness: Harness, id: string): Promise<Seen> {
+    const seen = await this.fleet.handsJson<Seen>(m.id, `/api/fleet/hands/activity?${this.q(harness, id)}`, { timeout: 30_000, idempotent: true });
+    const k = this.key(m.id, harness, id);
+    const r = this.ends.get(k);
+    if (r?.state === "stopping" && !this.busy.has(k) && !this.stopped) this.settled(r, seen);
+    return seen;
   }
 
   waitOf(machine: string, harness: string, id: string): Wait | undefined {

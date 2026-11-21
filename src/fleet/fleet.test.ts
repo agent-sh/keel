@@ -1247,7 +1247,7 @@ test("a stop whose answer never came leaves the owner the copy to finish", async
     expect(failed.message).toBe("box did not answer the stop: no answer. The original may have been stopped: look again, and finish the copy if it was.");
     const seen = await rig.resumes.activity(rig.m, "claude", "c1");
     expect(seen.state).toBe("ended");
-    expect(rig.resumes.pending("s1", "claude", "c1", seen)).toMatchObject({ how: "SIGTERM", in_flight: 2 });
+    expect(rig.resumes.pendingOf("s1", "claude", "c1")).toMatchObject({ how: "SIGTERM", in_flight: 2 });
     expect(await rig.resumes.resume(rig.m, "claude", "c1", { when: "copy", jobs: "keep" })).toMatchObject({ action: "taken_over", stopped: true });
     expect([rig.stops, rig.copies]).toEqual([1, 1]);
     expect(rig.notes().filter((t) => t.includes("was ended"))).toHaveLength(1);
