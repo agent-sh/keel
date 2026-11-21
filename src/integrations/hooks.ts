@@ -163,29 +163,56 @@ export class Hooks {
     return this.store.db.query<{ sha256: string }, [string]>("SELECT sha256 FROM hook_pins WHERE root = ?").get(pinKey(root))?.sha256;
   }
 
+  // The owner's file as last read, with what named that content on disk: its
+  // inode, size and change times. Every hook event asks for the sources, and
+  // a file that did not change is not read, parsed and hashed again: one stat
+  // says so. The stat is taken before the read, so a write in between shows
+  // at the next event. Only the owner's own file is kept this way: it has no
+  // pin to check. A repository's file is read and its digest made at every
+  // event, as before: its pin is held against the content of that moment.
+  private owner?: { path: string; mark: string; source: Omit<Source, "root"> };
+
+  private ownerSource(root: string): Source | undefined {
+    const path = ownerHooksPath();
+    let mark: string;
+    try {
+      const st = statSync(path, { bigint: true });
+      mark = `${st.ino} ${st.size} ${st.mtimeNs} ${st.ctimeNs}`;
+    } catch {
+      this.owner = undefined;
+      if (!existsSync(path)) return undefined;
+      mark = "";
+    }
+    if (mark && this.owner?.path === path && this.owner.mark === mark) return { ...this.owner.source, root };
+    let text = "";
+    try { text = readFileSync(path, "utf8"); } catch (e) { this.owner = undefined; return { path, scope: "owner", root, text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }; }
+    const { groups, problems } = parseHooks(text);
+    const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
+    const source = { path, scope: "owner" as const, text: text.slice(0, 20_000), sha256: sha(text), active: true, events, problems, covers: [], groups };
+    this.owner = mark ? { path, mark, source } : undefined;
+    return { ...source, root };
+  }
+
   sources(cwd: string): Source[] {
     const out: Source[] = [];
-    const read = (path: string, scope: "owner" | "project") => {
-      if (!existsSync(path)) return;
-      let text = "";
-      try { text = readFileSync(path, "utf8"); } catch (e) { out.push({ path, scope, root: projectRoot(cwd), text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }); return; }
-      const { groups, problems } = parseHooks(text);
-      const root = projectRoot(cwd);
-      const files = scope === "project" ? coveredFiles(root, groups) : [];
-      const digest = pinDigest(text, root, files);
-      let active = true;
-      if (scope === "project") {
-        const pin = this.pinned(projectRoot(cwd));
-        if (!pin) { active = false; problems.unshift("not pinned: the owner reads the file and pins it before it runs"); }
-        else if (pin !== digest) { active = false; problems.unshift(`changed since it was pinned${files.length ? " (the file or a script it runs)" : ""}: pin it again to run it`); }
-        const out = linksOut(root, files);
-        if (out.length) { active = false; problems.unshift(`${out.map((f) => relative(root, f)).join(", ")} ${out.length > 1 ? "are links" : "is a link"} out of .keel/: the pin cannot hold what ${out.length > 1 ? "they run" : "it runs"}`); }
-      }
-      const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
-      out.push({ path, scope, root, text: text.slice(0, 20_000), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups });
-    };
-    read(ownerHooksPath(), "owner");
-    read(join(projectRoot(cwd), ".keel", "hooks.json"), "project");
+    const root = projectRoot(cwd);
+    const owner = this.ownerSource(root);
+    if (owner) out.push(owner);
+    const path = join(root, ".keel", "hooks.json");
+    if (!existsSync(path)) return out;
+    let text = "";
+    try { text = readFileSync(path, "utf8"); } catch (e) { out.push({ path, scope: "project", root, text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }); return out; }
+    const { groups, problems } = parseHooks(text);
+    const files = coveredFiles(root, groups);
+    const digest = pinDigest(text, root, files);
+    let active = true;
+    const pin = this.pinned(root);
+    if (!pin) { active = false; problems.unshift("not pinned: the owner reads the file and pins it before it runs"); }
+    else if (pin !== digest) { active = false; problems.unshift(`changed since it was pinned${files.length ? " (the file or a script it runs)" : ""}: pin it again to run it`); }
+    const links = linksOut(root, files);
+    if (links.length) { active = false; problems.unshift(`${links.map((f) => relative(root, f)).join(", ")} ${links.length > 1 ? "are links" : "is a link"} out of .keel/: the pin cannot hold what ${links.length > 1 ? "they run" : "it runs"}`); }
+    const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
+    out.push({ path, scope: "project", root, text: text.slice(0, 20_000), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups });
     return out;
   }
 

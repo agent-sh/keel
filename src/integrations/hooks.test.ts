@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
@@ -62,4 +62,48 @@ test("a hook script that is a link is pinned with its target; a link out of .kee
   symlinkSync(outside, join(repo, ".keel/hooks/run.sh"));
   h.pin(repo, project().sha256);
   expect(project().active).toBe(false);
+});
+
+// Every hook event asks for the owner's file. One that did not change on disk
+// is not read and parsed again; a change (new content, another file moved
+// into its place, the file gone) is what the next event runs.
+test("the owner's hooks file is read once and again when it changes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-hooks-owner-"));
+  const path = join(dir, "hooks.json");
+  const before = process.env.KEEL_HOOKS;
+  process.env.KEEL_HOOKS = path;
+  try {
+    const file = (say: string) => JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `echo ${say}` }] }] } });
+    const h = new Hooks(new Store(mkdtempSync(join(tmpdir(), "keel-hooks-state-"))));
+    const session = { id: "s", workspace: dir, model: "x:y" } as any;
+    const said = async () => (await h.run("UserPromptSubmit", session, { prompt: "p" })).context;
+    const owner = () => h.sources(dir).find((s) => s.scope === "owner");
+    expect(owner()).toBeUndefined();
+    expect(await said()).toEqual([]);
+    writeFileSync(path, file("one"));
+    expect(await said()).toEqual(["one"]);
+    // Unchanged: the same parsed groups serve every event.
+    const kept = owner()!.groups;
+    for (let n = 0; n < 5; n++) expect(owner()!.groups).toBe(kept);
+    // New content, of another size and of the same size.
+    writeFileSync(path, file("second"));
+    expect(await said()).toEqual(["second"]);
+    await Bun.sleep(20);
+    writeFileSync(path, file("thirds"));
+    expect(await said()).toEqual(["thirds"]);
+    expect(owner()!.sha256).toBe(new Bun.CryptoHasher("sha256").update(file("thirds")).digest("hex"));
+    // Another file moved into its place (an editor's save), then a file that is not JSON, then none.
+    writeFileSync(join(dir, "next.json"), file("moved"));
+    renameSync(join(dir, "next.json"), path);
+    expect(await said()).toEqual(["moved"]);
+    writeFileSync(path, "{ not json");
+    expect(owner()!.problems[0]).toStartWith("not JSON");
+    expect(await said()).toEqual([]);
+    rmSync(path);
+    expect(owner()).toBeUndefined();
+    writeFileSync(path, file("back"));
+    expect(await said()).toEqual(["back"]);
+  } finally {
+    if (before === undefined) delete process.env.KEEL_HOOKS; else process.env.KEEL_HOOKS = before;
+  }
 });
