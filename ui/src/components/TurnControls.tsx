@@ -135,11 +135,12 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
 function Ring({ share }: { share: number }) {
   const r = 7;
   const c = 2 * Math.PI * r;
-  const tone = share >= COMPACT_SHARE ? "text-danger" : share >= 0.6 ? "text-warn" : "text-accent";
+  // A bar, not a word: the arc takes the state's fill, not its text ink.
+  const tone = share >= COMPACT_SHARE ? "stroke-danger" : share >= 0.6 ? "stroke-warn" : "stroke-accent";
   return (
     <svg viewBox="0 0 18 18" className="size-4 -rotate-90">
       <circle cx="9" cy="9" r={r} fill="none" strokeWidth="2.25" className="stroke-line-strong" />
-      <circle cx="9" cy="9" r={r} fill="none" strokeWidth="2.25" strokeLinecap="round" stroke="currentColor"
+      <circle cx="9" cy="9" r={r} fill="none" strokeWidth="2.25" strokeLinecap="round" data-testid="context-arc"
         className={tone} strokeDasharray={`${Math.max(0.5, share * c)} ${c}`} />
     </svg>
   );

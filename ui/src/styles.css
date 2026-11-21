@@ -36,6 +36,9 @@
   --danger-soft: oklch(0.95 0.025 25);
   --ok: oklch(0.52 0.09 168);
   --warn: oklch(0.62 0.14 62);
+  /* Amber as text: the fill above is under 4.5:1 on the light surfaces, so words take
+     this ink (text-warn); dots, bars, borders, tints and icons keep the fill. */
+  --warn-ink: oklch(0.47 0.11 62);
   --code-bg: oklch(0.935 0.006 250);
   --ring: oklch(0.55 0.2 295 / 0.6);
   --overlay: oklch(0.22 0.02 255 / 0.32);
@@ -92,6 +95,7 @@
   --danger-soft: oklch(0.29 0.055 25);
   --ok: oklch(0.74 0.09 168);
   --warn: oklch(0.8 0.14 72);
+  --warn-ink: var(--warn);
   --code-bg: oklch(0.18 0.015 255);
   --ring: oklch(0.74 0.17 295 / 0.65);
   --overlay: oklch(0.08 0.01 255 / 0.55);
@@ -143,6 +147,7 @@
   --color-danger-soft: var(--danger-soft);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
+  --text-color-warn: var(--warn-ink);
   --color-code: var(--code-bg);
   --color-ring: var(--ring);
   --color-overlay: var(--overlay);
@@ -232,6 +237,8 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
 [data-line]:focus-visible { outline: none; }
+/* An icon in a state color is a mark, not a word: it keeps the fill where its words take the ink. */
+svg.text-warn { color: var(--warn); }
 button { cursor: default; }
 /* A sent image's size toggle: the pointer says which way it goes, and its ring keeps the image's corners. */
 .k-image-toggle { cursor: zoom-in; border-radius: var(--radius-lg); }
