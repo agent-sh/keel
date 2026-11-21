@@ -299,7 +299,10 @@ export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owne
       }
     }
   }
-  return patch(id, out)!;
+  const rec = patch(id, out)!;
+  // A webhook request that waited does not outlive the pause.
+  if (p.enabled === false && l.kind === "webhook") { drainWebhook(id); return get(id)!; }
+  return rec;
 }
 
 export function remove(id: string): boolean {
@@ -490,8 +493,8 @@ function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["ou
   if (outcome === "failed") failures.seen(l.session_id, "loop", l.name, why);
   if (bad) alertHook.raise?.("loop_failed", l.session_id, `Loop ${outcome === "failed" ? "failed" : "did not finish"}: ${l.name}`, `${why}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
   if (l.max_runs && next.runs >= l.max_runs && next.enabled) patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` });
-  // A webhook request that waited for this run goes now.
-  if (l.kind === "webhook") drainWebhook(l.id);
+  // A webhook request that waited for this run goes now, if the loop still takes one.
+  if (l.kind === "webhook") drainWebhook(l.id, now);
 }
 
 const STARTED = Date.now();
@@ -504,6 +507,8 @@ export function tick() {
     const due = db().query<Row, [number]>("SELECT * FROM loops WHERE enabled = 1 AND next_ms IS NOT NULL AND next_ms <= ?").all(now).map(toRec);
     for (const l of due) {
       try {
+        // A webhook loop is due when a request of its waited for its minimum interval.
+        if (l.kind === "webhook") { drainWebhook(l.id, now); continue; }
         if (l.until_ms && now >= l.until_ms) { patch(l.id, { enabled: false, next_ms: null, disabled_reason: "expired" }); continue; }
         if (l.max_runs && l.runs >= l.max_runs) { patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` }); continue; }
         const late = now - l.next_ms! > 60_000;
@@ -591,12 +596,15 @@ export function webhook(key: string, body: string, headers: Headers = new Header
   if (!l.enabled) { skip(l, now, "the loop was off when its webhook was called"); return { status: 200 }; }
   if (l.until_ms && now >= l.until_ms) { skip(l, now, "the loop had expired"); return { status: 200 }; }
   if (l.max_runs && l.runs >= l.max_runs) { skip(l, now, "the loop had run its runs"); return { status: 200 }; }
-  const gap = (r.min_interval ?? 0) * 1000 || WEBHOOK_MIN_INTERVAL;
-  const busy = openRun(l.session_id)?.loop_id === l.id || (r.last_hook_ms && now - r.last_hook_ms < gap);
-  if (busy) {
+  const open = openRun(l.session_id)?.loop_id === l.id;
+  const free = (r.last_hook_ms ?? 0) + gapOf(r);
+  if (open || now < free) {
+    // The request waits, kept with the loop: for the run before it (whose end
+    // drains it) or for the minimum interval (the scheduler takes it when the
+    // loop's next time, set here, comes). Either way it outlives a restart.
     if (r.webhook_pending) skip(l, JSON.parse(r.webhook_pending).at, "a newer request replaced it");
     db().query("UPDATE loops SET webhook_pending = ? WHERE id = ?").run(JSON.stringify({ body, at: now }), l.id);
-    if (!openRun(l.session_id)) setTimeout(() => drainWebhook(l.id), gap - (now - (r.last_hook_ms ?? 0)) + 50);
+    patch(l.id, { next_ms: open ? null : free });
     return { status: 200 };
   }
   db().query("UPDATE loops SET last_hook_ms = ? WHERE id = ?").run(now, l.id);
@@ -604,13 +612,33 @@ export function webhook(key: string, body: string, headers: Headers = new Header
   return { status: 200 };
 }
 
-function drainWebhook(id: string) {
+const gapOf = (r: Row) => (r.min_interval ?? 0) * 1000 || WEBHOOK_MIN_INTERVAL;
+
+// The request that waited starts its run, under the rules a request is taken
+// by: a loop paused, expired or out of runs meanwhile takes none (the request
+// is in the history as not run), and its run starts no sooner than the
+// minimum interval after the one before it.
+function drainWebhook(id: string, now = Date.now()) {
   const r = row(id);
-  if (!r?.webhook_pending) return;
-  db().query("UPDATE loops SET webhook_pending = NULL WHERE id = ?").run(id);
-  const p = JSON.parse(r.webhook_pending);
-  db().query("UPDATE loops SET last_hook_ms = ? WHERE id = ?").run(Date.now(), id);
-  start(toRec(r), p.at, { body: p.body, note: "Waited for the run before it." });
+  if (!r || r.kind !== "webhook") return;
+  if (!r.webhook_pending) return void (r.next_ms !== null && patch(id, { next_ms: null }));
+  const l = toRec(r);
+  const p = JSON.parse(r.webhook_pending) as { body: string; at: number };
+  const drop = (why: string) => {
+    db().query("UPDATE loops SET webhook_pending = NULL WHERE id = ?").run(id);
+    patch(id, { next_ms: null });
+    skip(l, p.at, why);
+  };
+  if (l.max_runs && l.runs >= l.max_runs) return drop("the loop had run its runs when the request's turn came");
+  if (l.until_ms && now >= l.until_ms) return drop("the loop expired while the request waited");
+  if (!l.enabled) return drop(l.disabled_reason === "paused" ? "the loop was paused while the request waited" : `the loop was off when the request's turn came${l.disabled_reason ? `: ${l.disabled_reason}` : ""}`);
+  // The run before it is still going (or waits for the session): its end drains this.
+  if (openRun(l.session_id)?.loop_id === l.id || queuedRun(l.id)) return void (r.next_ms !== null && patch(id, { next_ms: null }));
+  const free = (r.last_hook_ms ?? 0) + gapOf(r);
+  if (now < free) return void (r.next_ms !== free && patch(id, { next_ms: free }));
+  db().query("UPDATE loops SET webhook_pending = NULL, last_hook_ms = ? WHERE id = ?").run(now, id);
+  patch(id, { next_ms: null });
+  start(l, p.at, { body: p.body, note: "Waited for the run before it or the loop's minimum interval." });
 }
 
 // After a restart. A run whose turn the restart cut stays open: the engine
@@ -632,5 +660,7 @@ export function recover() {
   }
   for (const l of list()) {
     if (l.enabled && l.kind === "auto" && !l.next_ms) patch(l.id, { next_ms: Date.now() + l.min_delay * 1000 });
+    // A webhook request that waited when the daemon went down still goes, once.
+    if (l.kind === "webhook") drainWebhook(l.id, now);
   }
 }

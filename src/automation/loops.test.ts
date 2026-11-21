@@ -127,3 +127,71 @@ test("a run whose turn had ended when the daemon went down is settled with how i
   expect(loops.get(loop.id)).toMatchObject({ fails: 0, last_status: "ok" });
   sent.length = 0;
 });
+
+// --- a webhook request that waits
+
+const hook = (o: Partial<loops.CreateInput> = {}) => {
+  fresh();
+  const s = session();
+  const { loop, hook_key } = loops.create({ session_id: s.id, schedule: "webhook", prompt: "handle it", ...o });
+  return { s, loop, key: hook_key! };
+};
+
+const dropped: [string, Partial<loops.CreateInput>, (id: string, t0: number) => void, RegExp][] = [
+  ["paused", {}, (id) => void loops.update(id, { enabled: false }), /paused/],
+  ["expired", { until_ms: Date.now() + 60_000 }, (_id, t0) => at(t0 + 61_000), /expired/],
+  ["out of runs", { max_runs: 1 }, () => {}, /had run its runs/],
+];
+for (const [state, input, change, reason] of dropped) {
+  test(`a webhook request that waited behind a run is not run, on record, once the loop is ${state}`, () => {
+    const t0 = Date.now();
+    at(t0);
+    const { s, loop, key } = hook(input);
+    loops.webhook(key, '{"n":1}');
+    step(s.id, 5);
+    loops.webhook(key, '{"n":2}'); // waits behind the run
+    change(loop.id, t0);
+    end(s.id);
+    // Later, and after a restart: still nothing.
+    at(t0 + 3600_000);
+    loops.tick();
+    restart();
+    loops.tick();
+    expect(sent.map((x) => x.text)).toEqual([expect.stringContaining('n\\":1')]);
+    expect(started(loop.id)).toHaveLength(1);
+    expect(skipped(loop.id)).toEqual([expect.stringMatching(reason)]);
+    sent.length = 0;
+  });
+}
+
+test("a webhook request that waited survives a restart and runs once, no sooner than the minimum interval", () => {
+  const t0 = Date.now();
+  at(t0);
+  const { s, loop, key } = hook({ min_interval_seconds: 60 });
+  loops.webhook(key, '{"n":1}');
+  step(s.id, 5);
+  at(t0 + 5_000);
+  loops.webhook(key, '{"n":2}'); // waits behind the run
+  at(t0 + 8_000);
+  end(s.id); // the run ended 8 s after it began: the next may start at 60 s
+  expect(sent).toHaveLength(1);
+  restart();
+  at(t0 + 30_000);
+  loops.tick();
+  expect(sent).toHaveLength(1);
+  at(t0 + 60_500);
+  loops.tick();
+  expect(sent.map((x) => x.text)).toEqual([expect.stringContaining('n\\":1'), expect.stringContaining('n\\":2')]);
+  step(s.id, 5);
+  end(s.id);
+  // Once: later ticks and another restart start nothing more.
+  at(t0 + 600_000);
+  loops.tick();
+  restart();
+  loops.tick();
+  expect(sent).toHaveLength(2);
+  expect(started(loop.id)).toMatchObject([{ outcome: "ok" }, { outcome: "ok" }]);
+  expect(skipped(loop.id)).toEqual([]);
+  expect(loops.get(loop.id)).toMatchObject({ runs: 2, next_ms: null, enabled: true });
+  sent.length = 0;
+});
