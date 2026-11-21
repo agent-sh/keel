@@ -1,5 +1,5 @@
 import { ChevronRight, MessageSquarePlus, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { parsePatch, type FilePatch, type PatchLine } from "../../../src/safety/patch.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -86,11 +86,26 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
   const body = useRef<HTMLDivElement>(null);
   const st = STATUS[f.status[0]!] ?? { label: f.status, cls: "text-muted" };
   const mode = modeNote(p);
-  // The line of this file the Tab key lands on: the one last visited, else the first changed one.
-  const [visited, setVisited] = useState<string | null>(null);
+  // The line of this file the Tab key lands on: the one last visited, else the
+  // first changed one. Moving along the lines renders nothing: the stop is kept
+  // in a ref and moved between the two buttons by the table's one focus handler.
+  const visited = useRef<string | null>(null);
   const rows = p?.lines.filter((l) => l.kind !== "hunk") ?? [];
-  const stop = visited && rows.some((l) => lineKey(l) === visited) ? visited : lineKey(rows.find((l) => l.kind !== "ctx") ?? rows[0] ?? { kind: "ctx", text: "" });
+  const stop = visited.current && rows.some((l) => lineKey(l) === visited.current) ? visited.current : lineKey(rows.find((l) => l.kind !== "ctx") ?? rows[0] ?? { kind: "ctx", text: "" });
   const focusLine = (key: string) => body.current?.querySelector<HTMLElement>(`[data-line="${key}"]`)?.focus();
+  const onFocusLine = (e: FocusEvent<HTMLTableElement>) => {
+    const at = e.target as HTMLElement;
+    if (at.dataset.line === undefined) return;
+    visited.current = at.dataset.line;
+    const was = e.currentTarget.querySelector<HTMLElement>('[data-line][tabindex="0"]');
+    if (was === at) return;
+    if (was) was.tabIndex = -1;
+    at.tabIndex = 0;
+  };
+  const onClickLine = (e: MouseEvent<HTMLTableElement>) => {
+    const key = (e.target as HTMLElement).closest<HTMLElement>("[data-line]")?.dataset.line;
+    if (key !== undefined) setDrafts((d) => ({ ...d, [key]: d[key] ?? "" }));
+  };
   const onKeys = (e: KeyboardEvent<HTMLTableElement>) => {
     const at = e.target as HTMLElement;
     if (at.dataset.line === undefined || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -106,7 +121,8 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
     else if (e.key === "PageDown") to = lead(hunk(at) + 1);
     else if (e.key === "PageUp") to = lead(hunk(at) - 1);
     else return;
-    e.preventDefault();
+    // On the first or the last hunk the Page keys page the panel as usual.
+    if (to || !e.key.startsWith("Page")) e.preventDefault();
     to?.focus();
   };
 
@@ -159,7 +175,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
           ) : !p || !p.lines.length ? (
             !mode && <p className="px-3 py-2 text-faint">No text change shown.</p>
           ) : (
-            <table className="w-full border-collapse" onKeyDown={onComment ? onKeys : undefined}>
+            <table className="w-full border-collapse" onKeyDown={onComment ? onKeys : undefined} onFocus={onComment ? onFocusLine : undefined} onClick={onComment ? onClickLine : undefined}>
               <tbody>
                 {p.lines.map((l, i) => {
                   if (l.kind === "hunk") hunks++;
@@ -172,7 +188,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                   return [
                     <tr key={i} data-new={l.kind !== "del" && l.kind !== "hunk" ? l.new : undefined} data-old={l.kind === "del" ? l.old : undefined}
                       className={cn(
-                        "group/line has-focus-visible:outline has-focus-visible:outline-1 has-focus-visible:-outline-offset-1 has-focus-visible:outline-accent",
+                        "k-diff-line group/line",
                         l.kind === "add" && "bg-ok/10",
                         l.kind === "del" && "bg-danger-soft/70",
                         l.kind === "hunk" && "bg-accent-soft/40 text-faint",
@@ -190,10 +206,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                             data-changed={l.kind !== "ctx" ? "" : undefined}
                             tabIndex={key === stop ? 0 : -1}
                             aria-label={`Comment on ${lineName(f.path, l)}`}
-                            title={side === "old" ? "Comment on this removed line" : "Comment on this line"}
-                            onFocus={() => setVisited(key)}
-                            onClick={() => setDrafts((d) => ({ ...d, [key]: d[key] ?? "" }))}
-                            className="absolute -right-2 top-0 grid size-[1.2rem] place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
+                            className="absolute -right-[0.9rem] top-0 grid size-[1.2rem] place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
                           >
                             <MessageSquarePlus className="size-3" />
                           </button>

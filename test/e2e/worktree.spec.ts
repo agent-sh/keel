@@ -165,7 +165,33 @@ test("line comments on a diff by keyboard", async ({ page, request }) => {
   await expect(line("new line 4")).toBeFocused();
   await key("PageDown");
   await expect(line("new line 27 (added)")).toBeFocused();
+  // One ring, on the row: the button draws none over the line number, and no tip covers the next line.
+  const ring = (el: Element) => { const c = getComputedStyle(el); return c.outlineStyle === "none" ? "none" : `${c.outlineWidth} ${c.outlineOffset}`; };
+  expect(await line("new line 27 (added)").evaluate(ring)).toBe("none");
+  expect(await file.locator("tr:has(:focus)").evaluate(ring)).toBe("2px -2px");
+  await page.waitForTimeout(400);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  // The button sits beside the line number, not over it.
+  expect(await line("new line 27 (added)").evaluate((b) => {
+    const cell = b.parentElement!;
+    const digits = document.createRange();
+    digits.selectNodeContents(cell.firstChild!);
+    return b.getBoundingClientRect().left >= digits.getBoundingClientRect().right - 0.5;
+  })).toBe(true);
+  // Still one Tab stop after moving, and the keys are said in one line.
+  await expect(table.locator('[data-testid="comment-line"][tabindex="0"]')).toHaveCount(1);
+  const hint = page.getByTestId("review-keys");
+  expect(await hint.evaluate((el) => el.getBoundingClientRect().height < 1.9 * parseFloat(getComputedStyle(el).lineHeight))).toBe(true);
   await shoot(page, "wt-05-comment-line-by-keyboard");
+  // On the last hunk Page Down is the browser's own again (it pages the panel); Page Up on the first one too.
+  const prevented = (k: string) => page.evaluate((k) => !document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })), k);
+  expect(await prevented("PageDown")).toBe(false);
+  await expect(line("new line 27 (added)")).toBeFocused();
+  expect(await prevented("PageUp")).toBe(true);
+  await expect(line("old line 3 (removed)")).toBeFocused();
+  expect(await prevented("PageUp")).toBe(false);
+  await key("PageDown");
+  await expect(line("new line 27 (added)")).toBeFocused();
 
   // A comment on the added line: Enter opens the box, Enter adds, the focus is back on the line.
   await key("Enter");
