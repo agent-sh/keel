@@ -200,17 +200,28 @@ const send = command("send", SEND_USAGE, {
     return EXIT.ok;
   }
 
-  // A prompt carries what the draft holds, then the draft is emptied.
-  const draft = await c.get<any>(`/api/sessions/${s.id}/draft`).catch(() => ({ attachments: [] }));
+  // A prompt carries what the draft holds, and takes exactly that out of it
+  // once the prompt is accepted: text or an image written meanwhile stays.
+  const draft = await c.get<any>(`/api/sessions/${s.id}/draft`);
+  const drafted: any[] = draft.attachments ?? [];
   const held: any[] = [];
-  for (const f of draft.attachments ?? []) {
-    const r = await fetch(`${c.base}/api/sessions/${s.id}/draft/files/${f.id}`, { headers: authHeaders() });
-    if (r.ok) held.push({ type: "image", media_type: f.mime, data: Buffer.from(await r.arrayBuffer()).toString("base64") });
+  for (const f of drafted) {
+    const r = await fetch(`${c.base}/api/sessions/${s.id}/draft/files/${f.id}`, { headers: authHeaders() }).catch(() => null);
+    if (!r?.ok) {
+      console.error(`keel send: the draft's image ${line(f.name)} could not be read (${r ? `HTTP ${r.status}` : "no answer"}): nothing was sent and the draft is as it was`);
+      return EXIT.error;
+    }
+    held.push({ type: "image", media_type: f.mime, data: Buffer.from(await r.arrayBuffer()).toString("base64") });
   }
   const body = [draft.text, text].filter((t) => t?.trim()).join("\n\n") || "(see the attached files)";
   const before = await c.get<any>(`/api/cli/state/${s.id}`);
-  const r = await c.post<any>(`/api/sessions/${s.id}/messages`, { text: body, mode: v.steer ? "steer" : v.queue ? "queue" : undefined, images: [...held, ...files.images, ...files.files] });
-  if (held.length || draft.text) await c.del(`/api/sessions/${s.id}/draft`).catch(() => {});
+  const r = await c.post<any>(`/api/sessions/${s.id}/messages`, { text: body, mode: v.steer ? "steer" : v.queue ? "queue" : undefined, images: [...held, ...files.images, ...files.files] }).catch((e) => {
+    throw e instanceof ApiError ? new ApiError(`${e.message}: nothing was sent${draft.text || drafted.length ? " and the draft is as it was" : ""}`, e.status) : e;
+  });
+  const left: string[] = [];
+  if (typeof draft.text_ms === "number") await c.post(`/api/sessions/${s.id}/draft`, { text: "", taken: draft.text_ms, origin: "cli" }).catch((e) => left.push(`its text (${e.message})`));
+  for (const f of drafted) await c.del(`/api/sessions/${s.id}/draft/files/${f.id}`).catch((e) => { if (e.status !== 404) left.push(`${line(f.name)} (${e.message})`); });
+  if (left.length) console.error(`keel send: the prompt was sent, but the draft still holds ${left.join(", ")}`);
   if (r.queued) result.queued = true;
 
   if (!v.wait) {

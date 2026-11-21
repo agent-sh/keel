@@ -286,6 +286,95 @@ describe("client commands against a running daemon", () => {
   }, 60_000);
 });
 
+// A daemon of its own for a group of tests, and plain calls to its API.
+async function daemonAt(state: string) {
+  const d = Bun.spawn([BIN, "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", WS], { cwd: WS, env: ENV, stdout: "pipe", stderr: "ignore" });
+  const reader = d.stdout.getReader();
+  let seen = "";
+  while (!seen.includes("listening")) seen += new TextDecoder().decode((await reader.read()).value);
+  reader.releaseLock();
+  const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url as string;
+  const api = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    (await fetch(url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
+  const idle = async (id: string) => {
+    for (let i = 0; i < 300; i++) { const st = await api(`/api/cli/state/${id}`); if (!st.running && (st.queue === 0 || st.held)) return; await Bun.sleep(50); }
+    throw new Error(`${id} did not come to rest`);
+  };
+  return { d, url, api, idle };
+}
+
+// An address in front of the daemon: every HTTP call passes `on`, which may
+// answer itself or act before the daemon does. It opens no WebSocket, so a
+// command that follows a session through it reads the stored events only.
+function front(target: string, on: (method: string, path: string) => Promise<Response | void> | Response | void = () => {}) {
+  const s = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 60, fetch: async (req) => {
+    const u = new URL(req.url);
+    if (u.pathname === "/ws") return new Response("no socket here", { status: 404 });
+    const own = await on(req.method, u.pathname);
+    if (own) return own;
+    const r = await fetch(target + u.pathname + u.search, { method: req.method, headers: { "content-type": req.headers.get("content-type") ?? "application/json" }, body: req.method === "GET" ? undefined : await req.arrayBuffer() });
+    return new Response(await r.arrayBuffer(), { status: r.status, headers: { "content-type": r.headers.get("content-type") ?? "application/json" } });
+  } });
+  return { url: `http://127.0.0.1:${s.port}`, stop: () => s.stop(true) };
+}
+
+const DOT = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+describe("a prompt next to other work in its session", () => {
+  const state = join(SCRATCH, "state-scoped");
+  let dm: Awaited<ReturnType<typeof daemonAt>>;
+  const k = (args: string[], o: { stdin?: string; cwd?: string } = {}) => keel(args, { state, ...o });
+  beforeAll(async () => { dm = await daemonAt(state); }, 30_000);
+  afterAll(() => dm?.d.kill("SIGTERM"));
+
+  test("send takes out of the draft exactly what it sent", async () => {
+    const { api, idle, url } = dm;
+    // A session at rest whose draft holds words and an image.
+    const drafted = async (text: string, name: string) => {
+      const sid = json((await k(["send", "--new", "--json", "start", "--wait"])).out).session_id as string;
+      const put = (text: string, name: string) => api(`/api/sessions/${sid}/draft`, { text, images: [{ name, mime: "image/png", data: DOT }] });
+      await put(text, name);
+      const now = async () => {
+        const d = await api(`/api/sessions/${sid}/draft`);
+        const sent = (await api(`/api/sessions/${sid}/events`)).events.filter((e: any) => e.kind === "user").slice(1).map((e: any) => [e.data.text, e.data.images?.length ?? 0]);
+        return { sent, draft: [d.text, d.attachments.map((a: any) => a.name)] };
+      };
+      return { sid, put, now };
+    };
+    const kept = { sent: [], draft: ["first words", ["one.png"]] };
+
+    // More is written after the command read the draft and before its prompt is accepted: it stays.
+    const a = await drafted("first words", "one.png");
+    const late = front(url, async (method, path) => { if (method === "POST" && path.endsWith("/messages")) await a.put("later words", "two.png"); });
+    const sent = await k(["send", a.sid, "and this", "--url", late.url]);
+    late.stop();
+    await idle(a.sid);
+
+    // An image of the draft that cannot be read: nothing is sent, nothing is dropped.
+    const b = await drafted("first words", "one.png");
+    const broken = front(url, (method, path) => (method === "GET" && path.includes("/draft/files/") ? Response.json({ error: "disk error" }, { status: 500 }) : undefined));
+    const unread = await k(["send", b.sid, "with the image", "--url", broken.url]);
+    broken.stop();
+    await idle(b.sid);
+
+    // A prompt the daemon refuses: the draft is as it was, and the command says so.
+    const c = await drafted("first words", "one.png");
+    const closed = front(url, (method, path) => (method === "POST" && path.endsWith("/messages") ? Response.json({ error: "the daemon is stopping and takes no new work" }, { status: 503 }) : undefined));
+    const refused = await k(["send", c.sid, "not now", "--url", closed.url]);
+    closed.stop();
+
+    expect({
+      late: [sent.code, sent.err, await a.now()],
+      unread: [unread.code, unread.err, await b.now()],
+      refused: [refused.code, refused.err, await c.now()],
+    }).toEqual({
+      late: [0, "", { sent: [["first words\n\nand this", 1]], draft: ["later words", ["two.png"]] }],
+      unread: [3, expect.stringContaining("one.png could not be read (HTTP 500): nothing was sent and the draft is as it was"), kept],
+      refused: [3, expect.stringContaining("takes no new work: nothing was sent and the draft is as it was"), kept],
+    });
+  }, 60_000);
+});
+
 // A secret's value reaches the command that uses it and nothing else: not the
 // job's record, its log or the routes, before or after the daemon restarts
 // under a running job (the next daemon adopts it, with an empty vault).
