@@ -30,7 +30,9 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   );
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 150_000 });
-  await expect(page.getByTestId("plan").first()).toBeVisible();
+  // A plan update is a line in the conversation; its list opens on demand. So does an edit's diff.
+  await expect(page.locator('[data-kind="plan"]').first().getByTestId("plan-count")).toBeVisible();
+  await page.locator('[data-tool="Edit"] > .k-line').click();
   await expect(page.locator('[data-tool="Edit"] [data-testid="diff"]')).toBeVisible();
   await expect(page.locator('[data-tool="Edit"]')).toContainText("+1");
   await expect(page.locator('[data-tool="Bash"]').getByTestId("tool-background")).toBeVisible();

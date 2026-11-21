@@ -5,16 +5,19 @@
 // Pure: the same inputs give the same rows.
 import { lineage } from "../../../src/core/tree.ts";
 import type { StoredEvent, ToolResultBlock } from "../../../src/core/types.ts";
+import { addCall, addMeta, isAside, setResult, type Step } from "./work.ts";
 
-export type RowKind = "harness" | "input" | "user" | "checkpoint" | "refusal" | "assistant" | "error" | "fork" | "peer_refused" | "images" | "model" | "note" | "end";
+export type RowKind = "harness" | "input" | "user" | "checkpoint" | "refusal" | "assistant" | "work" | "error" | "fork" | "peer_refused" | "images" | "model" | "note" | "end";
 export type Row = {
-  id: string; // the event's id
+  id: string; // the event's id; a run of tool calls is named by its first event, as `w:<id>`
   kind: RowKind;
   e: StoredEvent;
   vs?: StoredEvent[]; // user: the versions of the prompt
   undoable?: boolean; // checkpoint: a clear nothing the model reads came after
   handled?: boolean; // refusal: the fallback model took the request
-  results?: (ToolResultBlock | undefined)[]; // assistant: the result of each block that is a tool call
+  prose?: number[]; // assistant: the blocks shown as the reply's own words (the rest are in the run of work after it)
+  steps?: Step[]; // work: the run's tool calls in steps (work.ts), with what was said and thought between them
+  events?: string[]; // work: the events the run holds, in order
   reply?: string[]; // end: the texts of the turn's replies, for Copy
   partial?: boolean; // end: the turn began before the events shown (its reply above is not all here)
   prompt?: StoredEvent; // end: the prompt that started the turn
@@ -41,7 +44,8 @@ export type Built = {
   // Where the fold stands after the last event.
   prompt?: StoredEvent;
   reply: string[];
-  uses: Map<string, string>; // tool call id -> the event id of its row
+  uses: Map<string, string>; // tool call id -> the id of its row
+  work: string | null; // the run of tool calls the next call joins: the newest row, while it is one
   checkpoint: string | null; // the last checkpoint row while it may still be undone
   refusal: string | null; // the refusal the previous event was
   failed: string | null; // the footer of a failed turn while its failures follow it
@@ -60,7 +64,13 @@ const sameList = <T>(a: T[] | undefined, b: T[] | undefined) => a === b || (!!a 
 const sameRow = (a: Row, b: Row) =>
   a.kind === b.kind && a.e === b.e && a.undoable === b.undoable && a.handled === b.handled && a.prompt === b.prompt &&
   a.times === b.times && a.folded === b.folded && a.after === b.after && a.partial === b.partial &&
-  sameList(a.vs, b.vs) && sameList(a.results, b.results) && sameList(a.reply, b.reply) && sameList(a.notes, b.notes) && sameList(a.failures, b.failures);
+  sameList(a.vs, b.vs) && sameList(a.prose, b.prose) && sameSteps(a.steps, b.steps) && sameList(a.events, b.events) && sameList(a.reply, b.reply) && sameList(a.notes, b.notes) && sameList(a.failures, b.failures);
+// Steps read again from the start are new objects with the same items: the row is the one it was.
+const sameSteps = (a: Step[] | undefined, b: Step[] | undefined) =>
+  a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => x === b[i] || (x.family === b[i]!.family && x.items.length === b[i]!.items.length && x.items.every((it, k) => {
+    const o = b[i]!.items[k]!;
+    return it === o || (it.t === o.t && it.id === o.id && (it.t !== "call" || (it.use === (o as typeof it).use && it.result === (o as typeof it).result)));
+  }))));
 
 // `input`: what an owner-side message is shown as when it is not a prompt
 // (a notice of the harness, a message from another session).
@@ -75,18 +85,20 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
   const append = !!prev && common === prev.events.length && (events.length > common || prev.siblings === siblings);
   const b: Built = append
     ? { ...prev!, events, siblings, blocks: prev!.blocks.slice(), reply: prev!.reply.slice(), pending: prev!.pending.slice() }
-    : { events, siblings, previewing, blocks: [], at: new Map(), pending: [], reply: [], uses: new Map(), checkpoint: null, refusal: null, failed: null, restart: null };
+    : { events, siblings, previewing, blocks: [], at: new Map(), pending: [], reply: [], uses: new Map(), work: null, checkpoint: null, refusal: null, failed: null, restart: null };
   const owned = new Set<number>(); // blocks this build made or copied
   const own = (j: number) => {
     if (!owned.has(j)) { b.blocks[j] = (b.blocks[j] ?? []).slice(); owned.add(j); }
     return b.blocks[j]!;
   };
   const push = (row: Row) => {
-    if (PROBE) rowProbe.made?.(row.id);
+    if (PROBE) rowProbe.made?.(row.e.id);
     const last = b.blocks.length - 1;
     const j = last >= 0 && blockKey(b.blocks[last]!) === row.e.seq >> BLOCK_BITS ? last : last + 1;
     own(j).push(row);
     b.at.set(row.id, j);
+    // Anything but a run of calls ends the run before it.
+    if (row.kind !== "work") b.work = null;
   };
   const patch = (id: string | null, change: (r: Row) => Partial<Row> | null) => {
     const j = id === null ? undefined : b.at.get(id);
@@ -131,22 +143,42 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
       row("refusal", { handled: false });
       b.refusal = e.id;
     } else if (e.kind === "assistant") {
-      for (const x of e.data.blocks) {
-        if (x.type === "text" && x.text.trim()) b.reply.push(x.text);
-        if (x.type === "tool_use") b.uses.set(x.id, e.id);
+      const blocks = e.data.blocks as any[];
+      for (const x of blocks) if (x.type === "text" && x.text.trim()) b.reply.push(x.text);
+      const calls = blocks.some((x) => x.type === "tool_use");
+      // A reply that calls no tool is all on the page. One that does keeps there
+      // only what it says at length; a line said in passing, a thought and the
+      // calls go to the run of work, in their order.
+      const prose = blocks.flatMap((x, k) => (calls ? x.type === "text" && x.text.trim() && !isAside(x.text) : x.type !== "tool_use") ? [k] : []);
+      if (!calls || prose.length) row("assistant", { prose });
+      if (calls) {
+        const shown = new Set(prose);
+        const was = b.work === null ? undefined : b.blocks[b.at.get(b.work)!]!.find((r) => r.id === b.work);
+        let steps = was?.steps ?? [];
+        blocks.forEach((x, k) => {
+          if (x.type === "tool_use") { steps = addCall(steps, x, e.id); b.uses.set(x.id, was?.id ?? `w:${e.id}`); }
+          else if (shown.has(k)) return;
+          else if (x.type === "text" && x.text.trim()) steps = addMeta(steps, { t: "note", id: `${e.id}:${k}`, text: x.text, event: e.id });
+          else if (x.type === "thinking" && x.thinking.trim()) steps = addMeta(steps, { t: "thought", id: `${e.id}:${k}`, text: x.thinking, event: e.id });
+        });
+        if (was) {
+          patch(was.id, (r) => ({ steps, events: [...r.events!, e.id] }));
+          b.at.set(e.id, b.at.get(was.id)!);
+        } else {
+          const id = `w:${e.id}`;
+          push({ id, kind: "work", e, steps, events: [e.id] });
+          b.at.set(e.id, b.at.get(id)!);
+          b.work = id;
+        }
       }
-      row("assistant", { results: e.data.blocks.map(() => undefined) });
     } else if (e.kind === "tool_result") {
       for (const r of e.data.results as ToolResultBlock[]) {
         // A call's `shown` (the owner's answers to a question) rides with its result, for the card only.
         const shown = e.data.shown?.[r.tool_use_id];
         const result = shown ? ({ ...r, shown } as ToolResultBlock) : r;
         patch(b.uses.get(r.tool_use_id) ?? null, (at) => {
-          const k = (at.e.data.blocks as any[]).findIndex((x) => x.type === "tool_use" && x.id === r.tool_use_id);
-          if (k < 0) return null;
-          const results = at.results!.slice();
-          results[k] = result;
-          return { results };
+          const steps = at.steps && setResult(at.steps, r.tool_use_id, result);
+          return steps ? { steps } : null;
         });
       }
     } else if (e.kind === "error") {

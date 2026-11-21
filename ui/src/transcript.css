@@ -1,0 +1,117 @@
+/* The conversation: three voices, each with its own edge.
+   The owner's words stand behind an ink rule on a tint. The model's reply is
+   plain text at the reading size, with no edge. The work between them is a
+   rail: a steel rule with a line a step, set in the interface size, where
+   the color of a step's part of the rule is its state (amber while it runs,
+   red where it failed). What Keel itself says is the quietest: a label and
+   a line. Unlayered, after the Bridge, so it wins over utilities. */
+
+/* ---------- The owner's words ---------- */
+.k-user-message { align-items: stretch; }
+/* A tint that reads on every surface in both themes: a step toward ink on paper
+   and on white, a step toward light at night (never darker than the page). */
+.k-owner-words {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.625rem 0.875rem;
+  border-left: 0.1875rem solid var(--fg); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(in oklab, var(--accent-soft) 55%, transparent);
+  font-size: var(--text-read); line-height: 1.6; color: var(--fg);
+}
+/* At night the rule is steel: not a white bar per message. */
+.dark .k-owner-words { border-left-color: var(--band); }
+/* In a preview (an imported conversation) the same block, at the interface size. */
+.k-owner-words.k-owner-small { font-size: var(--text-ui); line-height: 1.5; padding: 0.4375rem 0.625rem; }
+.k-owner-attached { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; }
+
+/* ---------- What Keel told the model ---------- */
+.k-told { font-size: var(--text-caption); line-height: 1.45; color: var(--muted); }
+.k-told, .k-told > summary { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+.k-told:is(details) { display: block; }
+.k-told > summary { cursor: default; border-radius: var(--radius-sm); }
+.k-told > summary:hover { color: var(--fg); }
+.k-told-who { flex-shrink: 0; }
+.k-told-what { min-width: 0; overflow-wrap: anywhere; }
+.k-told-chev { flex-shrink: 0; align-self: center; width: 0.75rem; height: 0.75rem; color: var(--faint); transition: transform 160ms var(--ease-out); }
+.k-told[open] .k-told-chev { transform: rotate(90deg); }
+.k-told-words {
+  display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.375rem; padding: 0.375rem 0 0.375rem 0.75rem;
+  border-left: 1px solid var(--line-strong); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow-y: auto; color: var(--muted);
+}
+
+/* What a hook of the owner's did to a call, under the call's line: always on the page, opened or not. */
+.k-line-hook { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.125rem 0.375rem 0.375rem; font-size: var(--text-caption); line-height: 1.45; color: var(--warn-ink); }
+
+/* What a language server found after an edit, under the call's line: the server and what it says, then a row a finding. */
+.k-line-diag { display: flex; flex-direction: column; padding: 0 0.375rem 0.25rem; font-size: var(--text-caption); line-height: 1.5; color: var(--muted); }
+.k-line-diag > div { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+.k-diag-name { flex-shrink: 0; font-weight: 500; white-space: nowrap; }
+.k-diag-name[data-code], .k-diag-what[data-code] { font-family: var(--font-mono); font-weight: 400; }
+.k-diag-what { min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+.k-line-diag[data-state="errors"] > div:first-child > .k-diag-what, .k-line-diag > div[data-severity="error"] > .k-diag-what { color: var(--danger-ink); }
+.k-line-diag[data-state="warnings"] > div:first-child > .k-diag-what, .k-line-diag > div[data-severity="warning"] > .k-diag-what { color: var(--warn-ink); }
+
+/* ---------- The rail of work ---------- */
+.k-work { display: flex; flex-direction: column; min-width: 0; }
+.k-step { --k-edge: var(--line-strong); min-width: 0; padding-left: 0.625rem; border-left: 0.1875rem solid var(--k-edge); transition: border-left-color 400ms var(--ease-out); }
+.k-step[data-state="running"] { --k-edge: var(--st-work); }
+.k-step[data-state="error"] { --k-edge: var(--st-fail); }
+.k-step[data-state="stopped"], .k-step[data-state="cut"] { --k-edge: var(--st-idle); }
+
+/* A line of the rail: what was done, to what, and how it went. */
+.k-line {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%; min-width: 0; min-height: var(--spacing-ctl-md); padding: 0.125rem 0.25rem 0.125rem 0.375rem;
+  border-radius: var(--radius-sm); text-align: left; font-size: var(--text-ui); line-height: 1.45; color: var(--muted);
+}
+.k-line:hover { background: var(--hover); }
+.k-line:focus-visible { outline-offset: -2px; }
+/* The verbs stand in a column, so what each was done to lines up down the rail. */
+.k-line-verb { flex-shrink: 0; min-width: 4.25rem; font-weight: 600; color: var(--fg); white-space: nowrap; }
+.k-line-count { flex-shrink: 0; white-space: nowrap; }
+.k-line-what { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-caption); }
+.k-line-what[data-words] { font-family: var(--font-sans); font-size: var(--text-ui); }
+/* Several targets on a line are told apart by a hairline, not by a mark that reads as part of a command. */
+.k-line-target:where(:not(:first-child)) { margin-left: 0.5rem; padding-left: 0.5rem; border-left: 1px solid var(--line-strong); }
+.k-line-rest { margin-left: 0.5rem; font-family: var(--font-sans); color: var(--faint); }
+.k-line-end { display: flex; flex-shrink: 0; align-items: center; gap: 0.5rem; margin-left: auto; padding-left: 0.5rem; font-size: var(--text-micro); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.k-line-chev { width: 0.875rem; height: 0.875rem; color: var(--faint); opacity: 0; transition: transform 180ms var(--ease-out), opacity 120ms; }
+.k-line:is(:hover, :focus-visible, [aria-expanded="true"]) .k-line-chev { opacity: 1; }
+.k-line[aria-expanded="true"] .k-line-chev { transform: rotate(90deg); }
+@media (hover: none) { .k-line { min-height: var(--spacing-ctl-lg); } .k-line-chev { opacity: 1; } }
+.k-line-run { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--st-work); animation: var(--animate-pulse-dot); }
+.k-delta { font-family: var(--font-mono); }
+.k-chip { padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+/* A plan's steps as marks. */
+.k-line-plan { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--muted); }
+.k-pips { display: inline-flex; gap: 2px; }
+.k-pips > i { width: 0.3125rem; height: 0.625rem; border-radius: 1px; background: var(--line-strong); }
+.k-pips > i[data-done] { background: var(--st-done); }
+/* Why a call failed, under its line while it is closed. */
+.k-line-why { padding: 0 0.375rem 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.4; color: var(--danger-ink); }
+/* What the model said on the way to a step: its own words, quiet, in the text face. */
+.k-aside { padding: 0.25rem 0.375rem; color: var(--muted); }
+.k-aside .prose-keel { font-size: var(--text-base); line-height: 1.5; }
+.k-step:where(:not(:first-child)) > .k-aside:first-child { padding-top: 0.5rem; }
+.k-step-lead { padding: 0.125rem 0.375rem; }
+/* The calls of a step, under its line: a rule of their own, a step in. */
+.k-step-calls { display: flex; flex-direction: column; margin-left: 0.375rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
+.k-step-calls .k-line-verb { font-weight: 500; color: var(--muted); }
+.k-step-calls .k-tool-call[data-state="error"] .k-line-verb { color: var(--danger-ink); }
+/* What a call holds, opened. */
+.k-tool-body { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0.25rem 0.625rem 0.375rem; min-width: 0; }
+.k-out { margin: 0; padding: 0.5rem 2.25rem 0.5rem 0.625rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--code-bg); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
+.k-terminal { border-radius: var(--radius-sm); }
+/* An output shown in part: what is shown, and the way to the whole. */
+.k-out-more { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; padding: 0.25rem 0.625rem; border-top: 1px solid var(--line); font-family: var(--font-sans); font-size: var(--text-caption); color: var(--faint); }
+.k-out-more:where(:not(:last-child)) { border-bottom: 1px solid var(--line); }
+.k-out-link { display: inline-flex; align-items: center; min-height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 500; color: var(--accent-ink); }
+.k-out-link:hover { background: var(--accent-soft); }
+.k-out-gap { display: block; margin: 0.375rem -0.625rem; padding: 0.125rem 0.625rem; border-block: 1px dashed var(--line-strong); font-family: var(--font-sans); color: var(--faint); }
+/* Steps and calls open and close at their own height (Base UI sets the variable). */
+.k-tool-panel { height: var(--collapsible-panel-height); transition: height 180ms var(--ease-out); }
+.k-tool-panel[data-starting-style], .k-tool-panel[data-ending-style] { height: 0; }
+
+/* A pane too narrow for the reading size: the rail's lines keep to one row, the counts give way first. */
+@container reading (max-width: 28rem) {
+  .k-line-count { display: none; }
+  .k-line-verb { min-width: 3.875rem; }
+  .k-owner-words { font-size: var(--text-base); }
+}

@@ -70,7 +70,8 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await send(page, "script:cut", 6);
   await expect(page.getByTestId("harness-note").last()).toContainText("cut off at the output limit");
   await expect(texts.last()).toHaveText("Part two, continued after the cut.");
-  await expect(page.getByTestId("tool-call")).toHaveCount(2);
+  // The two calls are one step of the rail: its line counts them, and it opens to both.
+  await expect(page.getByTestId("work-step").last()).toHaveAttribute("data-calls", "2");
   const results = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results);
   expect(results.find((r: any) => r.tool_use_id.startsWith("whole-")).content).toContain("first-ran");
   expect(results.find((r: any) => r.tool_use_id.startsWith("cut-")).content).toContain("Not run: this call was cut at the output limit");
@@ -197,7 +198,7 @@ test("a failure box leads with plain words, links its address and offers what fi
     // Try again says what happened (the turn failed, it was not stopped); the new failure has the buttons, the old one none.
     await box.getByTestId("try-again").click();
     await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
-    await expect(page.getByTestId("harness-note").last()).toHaveText("The previous turn failed before it finished. Try again, and continue where it left off.");
+    await expect(page.getByTestId("harness-note").last()).toHaveText("Keel to the modelThe previous turn failed before it finished. Try again, and continue where it left off.");
     await expect(box).toHaveCount(2);
     await expect(page.getByTestId("failure-actions")).toHaveCount(1);
     await expect(box.last().getByTestId("failure-actions")).toHaveCount(1);

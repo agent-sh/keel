@@ -1,9 +1,9 @@
 import { CopyButton } from "./CopyButton.tsx";
-import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage } from "../../../src/core/tree.ts";
-import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
+import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolUseBlock } from "../../../src/core/types.ts";
 import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { rowActions } from "../lib/extend.ts";
 import { blockKey, buildRows, nextLineage, nextSiblings, PROBE, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
@@ -20,21 +20,9 @@ import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { ToolCall } from "./ToolCall.tsx";
 import { InputNotice, SYSTEM_INPUT } from "./automation/TranscriptExtras.tsx";
+import { LiveWork, Thinking, Work } from "./Work.tsx";
+import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
-
-function Thinking({ text, live }: { text: string; live?: boolean }) {
-  if (!text.trim() && !live) return null;
-  return (
-    <details className="group/think text-ui text-muted" open={live}>
-      <summary className="inline-flex cursor-default list-none items-center gap-1.5 rounded-sm py-0.5 pr-1 select-none hover:text-fg">
-        <Brain className="size-3.5" />
-        <span className={live ? "animate-pulse-dot" : ""}>{live ? "Thinking" : "Thought"}</span>
-        {!live && <ChevronDown className="size-3 -rotate-90 transition-transform group-open/think:rotate-0" />}
-      </summary>
-      {text.trim() && <div className="mt-1.5 max-h-96 overflow-y-auto border-l-2 border-line pl-3.5 text-base leading-relaxed whitespace-pre-wrap">{text}</div>}
-    </details>
-  );
-}
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
@@ -113,7 +101,7 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
   const [big, setBig] = useState<number | null>(null);
   let n = 0;
   return (
-    <div className="flex flex-wrap items-end justify-end gap-2">
+    <div className="flex flex-wrap items-end gap-2">
       {blocks.map((b, i) => {
         if (b.type === "attachment") {
           const f = b as AttachmentBlock;
@@ -174,20 +162,24 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
   if (editing) return <EditPrompt e={e} sid={sid} onDone={() => setEditing(false)} />;
   return (
     <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
-      {origin === "steer" && <span className="k-label" data-testid="origin-steer">Steered into the turn</span>}
-      {e.data.edited_from === "steer" && <span className="k-label" data-testid="origin-edited-steer">An edited steer, sent as a new turn</span>}
-      {origin === "queued" && <span className="k-label" data-testid="origin-queued">From the queue</span>}
-      {e.data.images?.length > 0 && <Images blocks={e.data.images} />}
-      {text && (
-        <div className="k-user-words relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">
-          <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{text}</div>
-          {long && (
-            <button type="button" onClick={() => setFull(!full)} className="k-link mt-1 text-caption font-medium text-accent-ink hover:underline">
-              {full ? "Show less" : "Show all"}
-            </button>
-          )}
-        </div>
-      )}
+      <OwnerWords
+        className="k-user-words"
+        label={origin === "steer" ? <span className="k-label" data-testid="origin-steer">Steered into the turn</span>
+          : e.data.edited_from === "steer" ? <span className="k-label" data-testid="origin-edited-steer">An edited steer, sent as a new turn</span>
+          : origin === "queued" ? <span className="k-label" data-testid="origin-queued">From the queue</span> : undefined}
+        attached={e.data.images?.length > 0 ? <Images blocks={e.data.images} /> : undefined}
+      >
+        {text && (
+          <>
+            <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{text}</div>
+            {long && (
+              <button type="button" onClick={() => setFull(!full)} className="k-link mt-1 text-caption font-medium text-accent-ink hover:underline">
+                {full ? "Show less" : "Show all"}
+              </button>
+            )}
+          </>
+        )}
+      </OwnerWords>
       <div className="-mt-0.5 flex h-6 items-center">
         <span className="flex items-center opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 max-md:opacity-100">
           <CopyButton text={() => text} label="Copy the message" testid="copy-message" className="size-7" />
@@ -224,7 +216,7 @@ function EditPrompt({ e, sid, onDone }: { e: StoredEvent; sid: string; onDone: (
     <div className="flex justify-end animate-in" data-event-id={e.id}>
       <div className="w-[min(85%,40rem)] rounded-xl border border-line-strong bg-raised p-2 shadow-2">
         {n > 0 && (
-          <div className="mb-1.5 flex flex-col items-end gap-1.5 px-1 pt-1" data-testid="edit-attachments">
+          <div className="mb-1.5 flex flex-col gap-1.5 px-1 pt-1" data-testid="edit-attachments">
             <Images blocks={blocks} />
           </div>
         )}
@@ -411,20 +403,27 @@ function Status({ sessionId }: { sessionId: string }) {
   );
 }
 
-function AssistantBlocks({ blocks, results, sid }: { blocks: AssistantBlock[]; results: (ToolResultBlock | undefined)[]; sid: string }) {
+// What a reply says at length, and what it thought when it called no tool: the
+// rest of a reply that calls tools is in the run of work under it (rows.ts).
+function AssistantBlocks({ blocks, prose, sid }: { blocks: AssistantBlock[]; prose: number[]; sid: string }) {
   const remote = useTail((t) => !!t.session.machine);
-  const cwd = useTail((t) => t.session.workspace);
   return (
     <>
-      {blocks.map((b, i) => {
-        if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} sessionId={remote ? undefined : sid} /></div> : null;
+      {prose.map((i) => {
+        const b = blocks[i]!;
+        if (b.type === "text") return <div key={i} data-testid="assistant-text"><Markdown text={b.text} sessionId={remote ? undefined : sid} /></div>;
         // A thought may carry only opaque state for replay (an encrypted item): nothing to show.
         if (b.type === "thinking") return b.thinking.trim() ? <Thinking key={i} text={b.thinking} /> : null;
-        if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results[i]} sessionId={sid} cwd={cwd} />;
         return null;
       })}
     </>
   );
+}
+
+function WorkRow({ row, sid }: { row: Row; sid: string }) {
+  const remote = useTail((t) => !!t.session.machine);
+  const cwd = useTail((t) => t.session.workspace);
+  return <Work row={row} sid={sid} cwd={cwd} remote={remote} />;
 }
 
 function Draft({ draft }: { draft: Record<number, DraftBlock> }) {
@@ -437,7 +436,7 @@ function Draft({ draft }: { draft: Record<number, DraftBlock> }) {
         let input: any = {};
         try { input = JSON.parse(b.text); } catch {}
         const use: ToolUseBlock = { type: "tool_use", id: `draft-${i}`, name: b.name ?? "tool", input };
-        return <ToolCall key={i} use={use} live />;
+        return <LiveWork key={i}><ToolCall use={use} live /></LiveWork>;
       })}
     </>
   );
@@ -570,11 +569,11 @@ const isInput = (e: StoredEvent) => SYSTEM_INPUT.has(e.data.kind) || isPeerMessa
 // that does not change), so a reply streaming or an event added below renders
 // nothing here.
 const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid: string }) {
-  if (PROBE) rowProbe.rendered?.(row.id);
+  if (PROBE) rowProbe.rendered?.(row.e.id);
   const e = row.e;
   switch (row.kind) {
     case "harness":
-      return <p id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-md text-center text-caption text-faint" data-testid="harness-note">{String(e.data.text).replace(/^\[harness\]\s*/, "")}</p>;
+      return <ToldModel id={e.id} testid="harness-note" {...toldOf(e.data)} />;
     case "input":
       return <div id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-lg">{SYSTEM_INPUT.has(e.data.kind) ? <InputNotice e={e} /> : <PeerMessage e={e} />}</div>;
     case "user":
@@ -584,7 +583,9 @@ const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid:
     case "refusal":
       return <Refusal e={e} sid={sid} handled={row.handled} />;
     case "assistant":
-      return <div id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} results={row.results!} sid={sid} /></div>;
+      return <div id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} prose={row.prose!} sid={sid} /></div>;
+    case "work":
+      return <WorkRow row={row} sid={sid} />;
     case "error":
       return <Failure e={e} after={row.after} />;
     case "images":
@@ -599,9 +600,11 @@ const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid:
       return <Divider testid="model-note"><span>{e.data.text} <span className="text-faint">{e.data.by === "cli" ? "From keel run" : "By you"}, {at}</span></span></Divider>;
     }
     case "note": {
-      // A note for the model (a background job ended) reads short here: no tags, no log path.
-      const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
-      return <Divider testid="note"><span>{text}</span></Divider>;
+      // What Keel did, in its own words to the owner: a line across the conversation.
+      const own = e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : !e.data.model ? e.data.short ?? e.data.text : null;
+      if (own !== null) return <Divider testid="note"><span>{own}</span></Divider>;
+      // A note written for the model (a background job ended, the task list changed): said as that, the words sent behind it.
+      return <ToldModel id={e.id} testid="note" {...toldOf(e.data)} />;
     }
     case "end":
       // A restart the next restart's footer stands for.
@@ -900,11 +903,15 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // The browser's own Find reaches what is in the page, and the page holds a
   // part of a long session: on its key, a note says so and offers the search
   // that reads the whole conversation.
+  // It reaches what is in the page too, and folded work is not: a step's calls
+  // and their output are there once it is opened. The app's search reads them.
   const partial = more || !!reading?.end;
+  const folded = !!events?.some((e) => e.kind === "tool_result");
   const [findNote, setFindNote] = useState(false);
   useEffect(() => {
-    if (!partial) return setFindNote(false);
+    if (!partial && !folded) return setFindNote(false);
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return setFindNote(false);
       if (e.key.toLowerCase() !== "f" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
       // In the pane with the keys, or the only one.
       const at = document.activeElement?.closest("[data-station]");
@@ -913,7 +920,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [partial]);
+  }, [partial, folded]);
   useEffect(() => {
     if (!findNote) return;
     const t = setTimeout(() => setFindNote(false), 12_000);
@@ -931,7 +938,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       if (getUI().focusEvent !== focus) return;
       const stay = getUI().focusStay === focus;
       setUI({ focusEvent: null, focusStay: null });
-      const el = document.getElementById(`e-${focus}`);
+      // An event inside a run of work is its step there.
+      const el = document.getElementById(`e-${focus}`) ?? content.current?.querySelector<HTMLElement>(`[data-events~="${CSS.escape(focus)}"]`);
       if (!el) return; // folded into a turn's notes: the session opens at its end as usual
       stick.current = false;
       // Centered in the transcript's own scroller (scrollIntoView would also move clipped ancestors).
@@ -1135,8 +1143,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       )}
       {findNote && (
         <div role="status" data-testid="find-note" className="absolute left-1/2 top-3 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-raised px-3 py-1.5 text-caption text-muted shadow-2 animate-pop">
-          <span>Find in page reaches only the messages loaded here.</span>
-          <button type="button" data-testid="find-note-search" onClick={() => { setFindNote(false); setUI({ palette: true }); }} className="h-7 shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Search the whole conversation</button>
+          <span>{partial ? "Find in page reaches only the messages loaded here." : "Find in page does not reach inside folded steps."}</span>
+          <button type="button" data-testid="find-note-search" onClick={() => { setFindNote(false); setUI({ palette: true }); }} className="h-7 shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">{partial ? "Search the whole conversation" : "Search the conversation"}</button>
         </div>
       )}
       {(away || earlier) && (

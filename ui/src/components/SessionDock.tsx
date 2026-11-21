@@ -9,6 +9,7 @@ import { stopKind } from "../../../src/core/stops.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
+import { useUI } from "../lib/ui.ts";
 import { PlanCard } from "./ToolCall.tsx";
 
 const since = (t: number) => {
@@ -50,7 +51,10 @@ function useJobs(sessionId: string, working: boolean) {
   return jobs.filter((j) => j.background && (j.running || (j.ended ?? 0) > Date.now() - 60_000));
 }
 
-export function SessionDock({ sessionId }: { sessionId: string }) {
+// `panel`: this pane has the side panel. While its Tasks tab is open the plan
+// is read there, and the strip here gives way: the plan shows once.
+export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: boolean }) {
+  const inPanel = useUI((s) => !!panel && s.panel === "tasks");
   const events = useStore((s) => s.events[sessionId]);
   const head = useStore((s) => s.sessions[sessionId]?.head);
   const working = useStore((s) => s.sessions[sessionId]?.phase === "working");
@@ -88,7 +92,7 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
   }, [key]);
   const plan = held?.plan ?? (older?.key === key ? older.plan : null);
   const jobs = useJobs(sessionId, working);
-  const active = plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled");
+  const active = !inPanel && plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled");
   if (!active && !jobs.length) return null;
   const done = plan?.filter((p) => p.status === "completed").length ?? 0;
   const now = plan?.find((p) => p.status === "in_progress");
@@ -107,7 +111,7 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
             <ChevronRight className="size-3.5 text-faint transition-transform group-data-[open]/plan:rotate-90" />
           </Collapsible.Trigger>
           <Collapsible.Panel className="border-t border-line">
-            <PlanCard items={plan} compact />
+            <PlanCard items={plan} live />
           </Collapsible.Panel>
         </Collapsible.Root>
       )}

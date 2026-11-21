@@ -86,8 +86,10 @@ test("a rejected plan update and answered questions read right", async ({ page, 
   await page.getByTestId("composer").press("Enter");
   const card = page.getByTestId("question");
   await expect(card).toHaveAttribute("data-state", "open", { timeout: 20_000 });
-  // The rejected update is marked; the dock keeps the accepted plan.
-  await expect(page.locator('[data-testid="plan"][data-rejected]')).toHaveCount(1);
+  // The rejected update says so on its line, with the tool's reason under it; the dock keeps the accepted plan.
+  const refused = page.locator('[data-testid="tool-call"][data-kind="plan"]').filter({ hasText: "Plan update not applied" });
+  await expect(refused).toHaveCount(1);
+  await expect(refused.getByTestId("plan-rejected")).toContainText("The plan before it stays.");
   await expect(page.getByTestId("dock-plan")).toContainText("Writing the parser");
 
   await card.getByTestId("question-option").nth(0).click(); // Keep backup: Yes

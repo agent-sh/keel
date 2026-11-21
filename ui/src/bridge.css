@@ -719,7 +719,6 @@ html[data-resizing] iframe { pointer-events: none; }
 @container reading (max-width: 28rem) {
   .k-transcript { padding-inline: 0.875rem; }
   .k-transcript .prose-keel { font-size: var(--text-base); line-height: 1.6; }
-  .k-transcript .k-user-message > .k-user-words { font-size: var(--text-base); }
   .k-transcript .prose-keel :not(pre) > code { font-size: var(--text-ui); }
   .k-transcript .prose-keel h1 { font-size: var(--text-head); }
   .k-transcript .prose-keel h2 { font-size: var(--text-read); }
@@ -801,21 +800,7 @@ html[data-resizing] iframe { pointer-events: none; }
 
 /* ---------- Components in the Bridge language ---------- */
 .prose-keel { font-size: var(--text-read); line-height: 1.65; }
-/* The owner's words: an ink rule on the left, no bubble. */
-.k-user-message { align-items: stretch; }
-.k-user-message > .k-user-words { max-width: none; border-radius: 0.1875rem; background: var(--sunken); border-left: 0.1875rem solid var(--fg); padding: 0.625rem 0.875rem; font-size: var(--text-read); }
-/* Tool calls: instrument rows; the left edge is the call's state. */
-.k-tool-call { border-radius: 0.25rem; box-shadow: none; border-color: var(--line); border-left-width: 0.1875rem; }
-.k-tool-call > button { height: var(--spacing-ctl-xl); border-radius: 0; }
-.k-tool-call[data-state="running"], .k-tool-call[data-state="live"] { border-left-color: var(--st-work); }
-.k-tool-call[data-state="error"] { border-left-color: var(--st-fail); }
-.k-tool-call[data-state="ok"] { border-left-color: var(--line-strong); }
-/* Ended under the call (the owner's stop, a restart): not a failure. */
-.k-tool-call[data-state="stopped"], .k-tool-call[data-state="cut"] { border-left-color: var(--st-idle); }
-.k-tool-call > button > .k-tool-name { font-weight: 600; font-size: var(--text-caption); }
-.k-terminal, .k-diff > div { border-radius: 0.1875rem; }
 .k-turn-end, .k-session-usage { font-size: var(--text-micro); }
-.k-plan { border-radius: 0.25rem; box-shadow: none; border-left: 0.1875rem solid var(--line-strong); }
 /* Composer: a flat console field; violet ring when it has the keyboard. */
 .k-composer-box { border-radius: 0.3125rem; box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
 .k-composer-box:focus-within { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
@@ -1028,16 +1013,8 @@ html[data-resizing] iframe { pointer-events: none; }
   content: ""; display: inline-block; width: 0.5em; height: 1.05em; margin-left: 0.1875rem; vertical-align: -0.16em;
   border-radius: 1px; background: var(--st-work);
 }
-/* Tool rows open and close at their own height (Base UI sets the variable). */
-.k-tool-panel { height: var(--collapsible-panel-height); transition: height 180ms var(--ease-out); }
-.k-tool-panel[data-starting-style], .k-tool-panel[data-ending-style] { height: 0; }
-.k-tool-call > button svg:last-child { transition: transform 180ms var(--ease-out); }
-/* A tool row that just finished settles: its edge eases from amber to its result. */
-.k-tool-call { transition: border-left-color 400ms var(--ease-out); }
 
 /* ---------- Night (dark) ---------- */
-/* The owner's prompts keep their rule, in steel: not a white bar per message at 3 AM. */
-.dark .k-user-message > .k-user-words { border-left-color: var(--band); }
 /* Inside a station the band already says it works and a running tool row has its amber edge:
    the inline pulsing dots stay still (the clocks still count). One moving thing per station. */
 .k-station .animate-pulse-dot { animation: none; opacity: 0.75; }
@@ -1071,7 +1048,6 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* Plan: done steps take the done color, the one in progress the work color. */
 .k-plan [data-status="completed"] svg { color: var(--st-done); }
 .k-plan [data-status="in_progress"] svg { color: var(--st-work); }
-.k-plan .k-plan-fill { background: var(--fg); }
 /* Review: the reviewer's report is an instrument panel; each finding has an edge, one to act on is stronger. */
 .k-review, .k-reviewer { border-radius: 0.25rem; box-shadow: none; }
 .k-finding { border-radius: 0.1875rem; box-shadow: inset 3px 0 0 var(--line-strong); padding-left: 0.625rem; }

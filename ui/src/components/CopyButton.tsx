@@ -11,7 +11,8 @@ import { reportError } from "../lib/store.ts";
 import { tipNow } from "../lib/tips.ts";
 import { cn } from "../lib/utils.ts";
 
-export function CopyButton({ text, label = "Copy", testid = "copy", className }: { text: string | (() => string | Promise<string>); label?: string; testid?: string; className?: string }) {
+// `icon`: its glyph when two copy buttons stand side by side (a file's content, a file's path).
+export function CopyButton({ text, label = "Copy", testid = "copy", className, icon }: { text: string | (() => string | Promise<string>); label?: string; testid?: string; className?: string; icon?: React.ReactNode }) {
   const [state, setState] = useState<"idle" | "done" | "failed">("idle");
   const timer = useRef(0);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -42,7 +43,7 @@ export function CopyButton({ text, label = "Copy", testid = "copy", className }:
       onClick={(e) => { e.stopPropagation(); void copy(e.currentTarget); }}
       className={cn("k-copy", className)}
     >
-      {state === "done" ? <Check /> : state === "failed" ? <X /> : <Copy />}
+      {state === "done" ? <Check /> : state === "failed" ? <X /> : icon ?? <Copy />}
     </button>
   );
 }

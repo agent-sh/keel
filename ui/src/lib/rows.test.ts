@@ -63,7 +63,7 @@ test("rows built event by event are the rows built at once", () => {
   expect(rows.find((r) => r.kind === "refusal")!.handled).toBe(true);
   expect(rows.find((r) => r.kind === "checkpoint")!.undoable).toBe(false);
   expect(rows.find((r) => r.id === all.find((e) => e.data.text === "prompt 32")!.id)!.vs!.length).toBe(2);
-  expect(rows.filter((r) => r.kind === "assistant" && r.results!.some(Boolean)).length).toBe(31);
+  expect(rows.filter((r) => r.kind === "work" && r.steps!.some((st) => st.items.some((i) => i.t === "call" && i.result))).length).toBe(31);
   expect(rows.at(-1)!.notes!.length).toBe(1);
 });
 

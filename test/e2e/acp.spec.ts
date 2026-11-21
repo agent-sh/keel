@@ -317,6 +317,8 @@ test("acp client", async ({ page, request }) => {
   expect(readFileSync(note, "utf8")).toBe("hello from the e2e");
   await expect(page.getByTestId("assistant-text").last()).toContainText("The note is written.");
   await expect(page.getByTestId("tool-call").filter({ hasText: "mkdir -p build" })).toHaveAttribute("data-state", "ok");
+  // The plan update is a line of the rail; its list opens on demand.
+  await page.locator('[data-testid="tool-call"][data-kind="plan"] > .k-line').first().click();
   await expect(page.getByTestId("plan").first()).toContainText("Write the note");
   const after = (await (await request.get(`/api/sessions/${id}`)).json()).session;
   expect(after.usage.cost).toBeCloseTo(0.0125, 4);

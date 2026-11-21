@@ -105,7 +105,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
           {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
           <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
-              <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working"} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} />
+              <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working"} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} panel={panel} />
             </div>
           </div>
         </div>
@@ -119,7 +119,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
 // when one of these facts changes: the session's row changes with every
 // stored event (its head moves), and the box, its pickers and the cards have
 // nothing to say about that.
-const SessionCompose = memo(function SessionCompose({ id, parentId, working, model, workspace, folderGone, unreached, focus, back }: { id: string; parentId: string | null; working: boolean; model: string; workspace: string; folderGone: boolean; unreached: boolean; focus: boolean; back?: () => void }) {
+// `panel`: this pane has the side panel (the plan's strip gives way while its Tasks tab is open).
+const SessionCompose = memo(function SessionCompose({ id, parentId, working, model, workspace, folderGone, unreached, focus, back, panel }: { id: string; parentId: string | null; working: boolean; model: string; workspace: string; folderGone: boolean; unreached: boolean; focus: boolean; back?: () => void; panel?: boolean }) {
   const session = useMemo(() => ({ id }), [id]);
   const does = useMemo(() => ({
     model: (m: string) => switchSession(id, { model: m }).catch(reportError),
@@ -134,9 +135,9 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
       {folderGone && <FolderGone path={workspace} />}
       <LiveSourceBanner sessionId={id} />
       <Suspense fallback={null}><HeldMessages sessionId={id} /></Suspense>
-      <Suspense fallback={null}><SessionDock sessionId={id} /></Suspense>
+      <Suspense fallback={null}><SessionDock sessionId={id} panel={panel} /></Suspense>
     </>
-  ), [id, unreached, folderGone, workspace]);
+  ), [id, unreached, folderGone, workspace, panel]);
   const asks = useMemo(() => (
     <>
       <WaitingElsewhere sessionId={id} />
