@@ -128,6 +128,11 @@
 .k-rail-card[data-watch="wait"] { border-left-color: var(--st-wait); }
 .k-rail-card[data-watch="fail"] { border-left-color: var(--st-fail); }
 .k-rail-card:is([data-watch="idle"], [data-watch="stop"], [data-watch="resume"]) { border-left-color: var(--st-idle); }
+/* Beside a list row: a narrower card of what the row lacks. Nothing of the row is said again. */
+.k-rail-card[data-kind="row"] { width: 18.75rem; padding-top: 0.5rem; }
+.k-rail-card[data-kind="row"] > :first-child { margin-top: 0; }
+.k-rail-card[data-kind="row"] .k-rail-card-why { -webkit-line-clamp: 6; }
+.k-rail-card[data-kind="row"] .k-rail-card-meta:first-child { padding-top: 0; border-top: 0; }
 .k-rail-card-row { display: flex; align-items: center; gap: 0.4375rem; }
 .k-rail-card-row .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-rail-card-word { font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-done-ink); }

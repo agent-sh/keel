@@ -528,6 +528,39 @@ test("the card beside a mark says a question waits, as it says an approval waits
   }
 });
 
+test("the card beside a list row adds what the row lacks and repeats nothing of it", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  try {
+    const watcher = await start(request, "A quiet session to watch from");
+    const approval = await start(request, "Clean the build output before the release", "ask");
+    made.push(watcher, approval);
+    const command = "rm -rf dist build .cache node_modules/.vite coverage && git tag v0.9.0 && git push origin v0.9.0 --follow-tags";
+    await send(request, approval, script([{ name: "Bash", input: { command } }]));
+    await expect.poll(async () => (await stateOf(request, approval))?.watch, { timeout: 30_000 }).toBe("need");
+
+    await page.goto(`/s/${watcher}`);
+    const r = row(page, approval);
+    await expect(r.getByTestId("row-why")).toContainText("Approve Bash: rm -rf dist");
+    await r.hover();
+    const card = page.getByTestId("rail-card");
+    await expect(card).toBeVisible();
+    await expect(card).toHaveAttribute("data-kind", "row");
+    // What the row cuts: the whole command. What it has no room for: the model, the path, the exact time.
+    await expect(card.getByTestId("rail-card-why")).toHaveText(`Approve Bash: ${command}`);
+    await expect(card).toContainText("Model");
+    await expect(card).toContainText("Path");
+    // Nothing of the row again: not its state word, not its title, not the folder's name alone.
+    await expect(card).not.toContainText(/needs you/i);
+    await expect(card).not.toContainText("Clean the build output before the release");
+    await expect(card.locator(".k-mark")).toHaveCount(0);
+    await shoot(page, "session-state-11-row-card");
+  } finally {
+    await drop(request, made);
+  }
+});
+
 test("the parent's Now line says what a parked agent waits for and until when", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });

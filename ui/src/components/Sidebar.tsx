@@ -50,7 +50,8 @@ function groups(sessions: Session[], cmp: (a: Session, b: Session) => number, by
 // The card beside an entry: shown at once for a mark (it has no words of its
 // own), after a pause for a list row (its title is already there), and at
 // once for either on keyboard focus.
-type Card = { s: Session; y: number; left: number };
+// `row`: the entry is a list row, which already shows the title, the state and the folder.
+type Card = { s: Session; y: number; left: number; row: boolean };
 const CardCtx = createContext<(s: Session, wait: number) => Record<string, (e: { currentTarget: HTMLElement }) => void>>(() => ({}));
 function useCard() {
   const [card, setCard] = useState<Card | null>(null);
@@ -61,7 +62,7 @@ function useCard() {
       const r = e.currentTarget.getBoundingClientRect();
       const edge = e.currentTarget.closest(".k-rail")?.getBoundingClientRect().right ?? r.right;
       clearTimeout(timer.current);
-      const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8 });
+      const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8, row: wait > 0 });
       if (ms) timer.current = setTimeout(set, ms); else set();
     };
     return { onPointerEnter: show(wait), onPointerLeave: hide, onFocus: show(0), onBlur: hide, onClick: hide, onDragStart: hide };
@@ -278,7 +279,7 @@ function Marks({ current }: { current: string | null }) {
 
 // The card beside an entry: what the session is, where, and what it last did.
 const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
-function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }) {
+function RailCard({ s: given, y, left, row }: { s: Session; y: number; left: number; row?: boolean }) {
   const s = useStore((x) => x.sessions[given.id]) ?? given;
   const st = useSessionState(s);
   const w = st.watch;
@@ -288,6 +289,23 @@ function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }
   const line = lastLine(events, s.workspace);
   const why = whyText(st, now);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
+  // Beside a list row the card adds what the row has no room for and repeats nothing of it:
+  // the reason in full, what the session last did, its model, the whole path, the exact time.
+  if (row) {
+    const cut = (s.title || "").length > 48;
+    return (
+      <div className="k-rail-card" data-kind="row" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
+        {cut && <p className="k-rail-card-title">{s.title}</p>}
+        {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={st.why}>{why}</p>}
+        {line && line !== why && <p className="k-rail-card-line">{line}</p>}
+        <dl className="k-rail-card-meta">
+          <dt>Model</dt><dd>{modelOf(s.model)}</dd>
+          <dt>Path</dt><dd title={s.workspace}>{home(s.workspace)}{s.machine ? ` on ${machineName(s.machine)}` : ""}</dd>
+          <dt>Active</dt><dd>{when(s.updated)}</dd>
+        </dl>
+      </div>
+    );
+  }
   return (
     <div className="k-rail-card" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
       <div className="k-rail-card-row">
@@ -509,7 +527,7 @@ export function Sidebar({ open }: { open: boolean }) {
           {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" aria-label="Sessions by state" onKeyDown={stepRows}><Marks current={current} /></nav>}
         </div>
       </CardCtx.Provider>
-      {card && <RailCard s={card.s} y={card.y} left={card.left} />}
+      {card && <RailCard s={card.s} y={card.y} left={card.left} row={card.row} />}
       <div className="k-rail-foot">
         {!open && (
           <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; toggleList(true); }}>
