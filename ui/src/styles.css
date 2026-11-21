@@ -72,6 +72,8 @@
   --st-work: oklch(0.64 0.15 62);
   /* Waiting: nothing runs, a timer, a command or an agent will wake it. Steel blue, between work and rest. */
   --st-wait: oklch(0.5 0.11 240);
+  /* As words on the rail's grey, a hovered row included, the fill is under 4.5:1: text takes this ink. */
+  --st-wait-ink: oklch(0.45 0.11 240);
   --st-fail: oklch(0.55 0.2 27);
   --st-done: oklch(0.52 0.09 168);
   --st-idle: oklch(0.6 0.015 255);
@@ -137,6 +139,7 @@
   --st-need: oklch(0.74 0.17 295);
   --st-work: oklch(0.8 0.15 72);
   --st-wait: oklch(0.77 0.1 240);
+  --st-wait-ink: var(--st-wait);
   --st-fail: oklch(0.7 0.18 27);
   --st-done: oklch(0.74 0.09 168);
   --st-idle: oklch(0.55 0.015 255);

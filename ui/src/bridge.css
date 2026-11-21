@@ -101,7 +101,7 @@
 .k-marks[data-watch="need"] { background: color-mix(in oklch, var(--st-need) 9%, transparent); }
 .k-marks[data-watch="need"] .k-marks-head { color: var(--st-need-ink); }
 .k-marks[data-watch="work"] .k-marks-head { color: var(--st-work-ink); }
-.k-marks[data-watch="wait"] .k-marks-head { color: var(--st-wait); }
+.k-marks[data-watch="wait"] .k-marks-head { color: var(--st-wait-ink); }
 .k-marks[data-watch="fail"] .k-marks-head { color: var(--st-fail-ink); }
 /* A mark is the session's state and a short code of its title, so no two read alike. */
 .k-tick { position: relative; display: flex; align-items: center; gap: 0.375rem; width: 3.125rem; height: var(--spacing-ctl-md); padding-left: 0.5rem; border-radius: 0.25rem; }
@@ -147,7 +147,7 @@
 .k-rail-card-word { font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-done-ink); }
 .k-rail-card[data-watch="need"] .k-rail-card-word { color: var(--st-need-ink); }
 .k-rail-card[data-watch="work"] .k-rail-card-word { color: var(--st-work-ink); }
-.k-rail-card[data-watch="wait"] .k-rail-card-word { color: var(--st-wait); }
+.k-rail-card[data-watch="wait"] .k-rail-card-word { color: var(--st-wait-ink); }
 .k-rail-card[data-watch="fail"] .k-rail-card-word { color: var(--st-fail-ink); }
 .k-rail-card:is([data-watch="idle"], [data-watch="stop"], [data-watch="resume"]) .k-rail-card-word { color: var(--faint); }
 .k-rail-card-time { margin-left: auto; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--faint); }
@@ -158,7 +158,7 @@
 .k-rail-card-why { line-height: 1.4; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card[data-watch="need"] .k-rail-card-why { color: var(--st-need-ink); }
 .k-rail-card:is([data-watch="fail"], [data-watch="declined"]) .k-rail-card-why { color: var(--st-fail-ink); }
-.k-rail-card[data-watch="wait"] .k-rail-card-why { color: var(--st-wait); }
+.k-rail-card[data-watch="wait"] .k-rail-card-why { color: var(--st-wait-ink); }
 .k-rail-card-why[data-why="stalled"] { color: var(--st-work-ink); }
 .k-rail-card-row .k-row-class { margin-left: 0.125rem; }
 .k-rail-card-time[data-live] { color: var(--muted); font-weight: 600; }
@@ -195,7 +195,7 @@
 .k-row-state { margin-top: 1px; font-weight: 700; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-state { color: var(--st-need-ink); }
 .k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
-.k-row[data-watch="wait"] .k-row-state { color: var(--st-wait); }
+.k-row[data-watch="wait"] .k-row-state { color: var(--st-wait-ink); }
 /* A failure's class beside the word, in its colour: rate limit, billing, sign-in. */
 .k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-fail-ink); }
 /* The state line reads as one sentence on one line: the word, then why, cut at the row's edge.
@@ -219,9 +219,9 @@
 .k-row-time { flex-shrink: 0; min-width: 1.375rem; text-align: right; font-size: var(--text-micro); line-height: 1.25rem; color: var(--faint); }
 /* The time column of a live row is the state's own clock, in its ink. */
 .k-row-time[data-live] { color: var(--muted); font-weight: 600; }
-.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need); }
+.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); }
 .k-row[data-watch="work"] .k-row-time[data-live] { color: var(--st-work-ink); }
-.k-row[data-watch="wait"] .k-row-time[data-live] { color: var(--st-wait); }
+.k-row[data-watch="wait"] .k-row-time[data-live] { color: var(--st-wait-ink); }
 /* Where a session runs when that is not here (Where.tsx): a tag tinted with the
    machine's colour, its server glyph in that colour; one that does not answer
    loses the tint and says offline in the failure colour. A local session has none. */
@@ -264,7 +264,7 @@
 .k-row-sub .k-row-state { margin-top: 0; white-space: nowrap; }
 .k-row-sub .k-row-class { align-self: center; }
 /* A message that waits for the daemon to be back: it goes out by itself, so it is said in the waiting ink, not the owner's. */
-.k-row-send { flex-shrink: 0; white-space: nowrap; font-size: var(--text-micro); font-weight: 500; color: var(--st-wait); }
+.k-row-send { flex-shrink: 0; white-space: nowrap; font-size: var(--text-micro); font-weight: 500; color: var(--st-wait-ink); }
 /* Where it runs, at the line's end, when the list is not grouped by folder. */
 .k-row-sub .k-row-in { flex-shrink: 1; min-width: 2rem; max-width: 40%; margin-left: auto; }
 .k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }
@@ -367,7 +367,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-word .k-mark { width: 0.5625rem; height: 0.5625rem; }
 .k-station[data-watch="need"] .k-station-word { color: var(--st-need-ink); }
 .k-station[data-watch="work"] .k-station-word { color: var(--st-work-ink); }
-.k-station[data-watch="wait"] .k-station-word { color: var(--st-wait); }
+.k-station[data-watch="wait"] .k-station-word { color: var(--st-wait-ink); }
 /* Why the pane is in its state, beside the word: one line, cut at the pane's room. */
 .k-station-state { display: inline-flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
 .k-station-state .k-row-class { align-self: center; }
