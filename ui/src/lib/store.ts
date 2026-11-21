@@ -750,8 +750,9 @@ export function connect() {
       swept = true;
       return dropOrphans(
         (id) => !!state.sessions[id],
-        // Only the daemon's own "no such session" says it is gone: any other answer keeps what was stored.
-        (id) => fetch(apiPath(`/api/sessions/${id}/draft`)).then((r) => r.status !== 404, () => true),
+        // Only the daemon's own "no such session" says it is gone: any other answer (another
+        // daemon's or a proxy's 404 included) keeps what was stored.
+        (id) => fetch(apiPath(`/api/sessions/${id}/draft`)).then(async (r) => r.status !== 404 || (await r.json().catch(() => null))?.error !== "no such session", () => true),
       );
     }).catch((e) => reportError(e, { at: "kept sends of deleted sessions" }));
     const loads: Promise<unknown>[] = [listed];

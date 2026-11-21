@@ -71,13 +71,17 @@ test("a second tab's box gives up an image the kept send took", async ({ page, c
 test("what was kept for a deleted session is removed at the next load", async ({ page, request }) => {
   const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: HAIKU, title } })).json()).session.id as string;
   const [open, gone, archived] = [await mk("Kept keys, open"), await mk("Kept keys, deleted"), await mk("Kept keys, archived")];
+  const elsewhere = "01a1ffff-0000-7000-8000-00000000e2e0"; // a session this daemon's answer cannot be read about
   await page.goto(`/s/${open}`);
   await page.evaluate((ids) => {
     for (const id of ids) {
       localStorage.setItem(`keel.sends.${id}`, JSON.stringify([{ id: `kept-${id}`, text: "kept words", images: [], queue: false, state: "refused", error: "refused" }]));
       localStorage.setItem(`keel.draft.${id}`, "typed words");
     }
-  }, [gone, archived]);
+  }, [gone, archived, elsewhere]);
+  // A 404 that is not the daemon's own word on the session (a proxy's, or another daemon on
+  // this address that never held it) says nothing about it.
+  await page.route(`**/api/sessions/${elsewhere}/draft`, (r) => r.fulfill({ status: 404, json: { error: "not found" } }));
   // No page is open while the one is deleted and the other archived.
   await page.goto("about:blank");
   await request.delete(`/api/sessions/${gone}`);
@@ -88,6 +92,8 @@ test("what was kept for a deleted session is removed at the next load", async ({
   await expect.poll(() => stored(`keel.draft.${gone}`)).toBeNull();
   expect(await stored(`keel.sends.${archived}`)).toContain("kept words");
   expect(await stored(`keel.draft.${archived}`)).toBe("typed words");
+  expect(await stored(`keel.sends.${elsewhere}`)).toContain("kept words");
+  expect(await stored(`keel.draft.${elsewhere}`)).toBe("typed words");
 
   // A send still out when its session is deleted: its failure writes nothing back.
   const messages = `/api/sessions/${open}/messages`;
