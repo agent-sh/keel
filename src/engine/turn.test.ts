@@ -290,8 +290,8 @@ test("idle compaction prepares while warm and applies when the cache went cold",
   store.updateSession(s.id, { settings: { compact_at: 2_000 } });
   store.append(s.id, "user", { text: "read the big file" });
   store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
-  const twoHours = Date.now() - 2 * 60 * 60_000;
-  store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [twoHours, s.id]);
+  // The last cached reply was 55 minutes ago: the hour is nearly over, the summary is due.
+  store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [Date.now() - 55 * 60_000, s.id]);
   const asked: any[] = [];
   let answered!: () => void;
   const summarized = new Promise<void>((r) => (answered = r));
@@ -306,20 +306,36 @@ test("idle compaction prepares while warm and applies when the cache went cold",
   };
   const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
   const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
-  await engine.resumeIdle(); // the cache lifetime ended long ago: the timer is due at once
+  await engine.resumeIdle(); // six minutes before the cache lifetime ends have passed: the timer is due at once
   await summarized;
   await Bun.sleep(10);
   const row = store.db.query<{ data: string }, []>("SELECT data FROM prepared_summaries").get();
   expect(JSON.parse(row!.data).trigger).toBe("idle");
-  // The owner comes back after the summary call's own cache expired too.
-  store.db.run("UPDATE prepared_summaries SET data = json_set(data, '$.prepared_ms', ?)", [twoHours]);
-  engine.send(s.id, "and now?");
-  await engine.idle(s.id);
-  const turn = asked.findLast((r) => r.purpose === "turn");
-  expect(JSON.stringify(turn.messages[0])).toContain("SUMMARY-OF-IT");
-  expect(JSON.stringify(turn.messages)).not.toContain("x".repeat(8_000));
-  expect(JSON.stringify(turn.messages.at(-1))).toContain("and now?");
-  expect(store.events(s.id).find((e) => e.kind === "compaction")?.data.trigger).toBe("idle");
+  // The owner comes back two hours later: the cache has expired.
+  const { setSystemTime } = await import("bun:test");
+  setSystemTime(new Date(Date.now() + 2 * 60 * 60_000));
+  try {
+    engine.send(s.id, "and now?");
+    await engine.idle(s.id);
+    const turn = asked.findLast((r) => r.purpose === "turn");
+    expect(JSON.stringify(turn.messages[0])).toContain("SUMMARY-OF-IT");
+    expect(JSON.stringify(turn.messages)).not.toContain("x".repeat(8_000));
+    expect(JSON.stringify(turn.messages.at(-1))).toContain("and now?");
+    expect(store.events(s.id).find((e) => e.kind === "compaction")?.data.trigger).toBe("idle");
+    // A context whose cache expired long ago is not summarized while idle: that request would read all of it at the full price.
+    const old = store.createSession({ model: "p:m", workspace: dir });
+    store.updateSession(old.id, { settings: { compact_at: 2_000 } });
+    store.append(old.id, "user", { text: "read the big file" });
+    store.append(old.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
+    setSystemTime(new Date(Date.now() + 2 * 60 * 60_000));
+    const summaries = asked.filter((r) => r.purpose === "summary").length;
+    (engine as any).scheduleIdle(old.id, await (engine as any).step(store.session(old.id), "p:m"));
+    await Bun.sleep(20);
+    expect(asked.filter((r) => r.purpose === "summary")).toHaveLength(summaries);
+    expect((engine as any).idleTimers.has(old.id)).toBe(false);
+  } finally {
+    setSystemTime();
+  }
 });
 
 // The summary prepared while idle is speculative work with a lifecycle: while
@@ -336,7 +352,7 @@ test("an idle preparation made obsolete while it is written is stopped and store
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "idle-life-"));
   const store = new Store(dir);
   const bus = new Bus();
-  const twoHours = Date.now() - 2 * 60 * 60_000;
+  const { setSystemTime } = await import("bun:test");
   const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
   // Each summary request waits until the test lets it go, and honors its stop.
   const held: { session: string; signal: AbortSignal; go: () => void }[] = [];
@@ -358,13 +374,13 @@ test("an idle preparation made obsolete while it is written is stopped and store
   const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
   const failures: unknown[] = [];
   const engine = new Engine(store, bus, providers as any, { capture: (_s: string, e: unknown) => (failures.push(e), { message: String(e) }) } as any, join(dir, "spill"));
-  // A long idle context whose cache lifetime ended: its idle timer is due at once.
+  // A long idle context whose cache lifetime is nearly over: its idle timer is due at once.
   const idleSession = async () => {
     const s = store.createSession({ model: "p:m", workspace: dir });
     store.updateSession(s.id, { settings: { compact_at: 2_000 } });
     const first = store.append(s.id, "user", { text: "read the big file" });
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
-    store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [twoHours, s.id]);
+    store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [Date.now() - 55 * 60_000, s.id]);
     arrived = Promise.withResolvers<void>();
     (engine as any).scheduleIdle(s.id, await (engine as any).step(store.session(s.id), "p:m"));
     await arrived.promise;
@@ -404,21 +420,24 @@ test("an idle preparation made obsolete while it is written is stopped and store
   d.request.go();
   await settled();
   expect(rows(d.id)).toHaveLength(1);
-  store.db.run("UPDATE prepared_summaries SET data = json_set(data, '$.prepared_ms', ?) WHERE session_id = ?", [twoHours, d.id]);
-  store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [twoHours, d.id]);
-  engine.send(d.id, "and now?");
-  await engine.idle(d.id);
-  expect(store.events(d.id).find((e) => e.kind === "compaction")?.data).toMatchObject({ trigger: "idle", summary: "SUMMARY-OF-IT" });
-  expect(rows(d.id)).toEqual([]);
+  setSystemTime(new Date(Date.now() + 2 * 60 * 60_000)); // the owner is away for two hours
+  try {
+    engine.send(d.id, "and now?");
+    await engine.idle(d.id);
+    expect(store.events(d.id).find((e) => e.kind === "compaction")?.data).toMatchObject({ trigger: "idle", summary: "SUMMARY-OF-IT" });
+    expect(rows(d.id)).toEqual([]);
 
-  // The daemon drains: the held work is stopped, and a drain called off starts none by itself.
-  const e = await idleSession();
-  await engine.settle(0);
-  expect(e.request.signal.aborted).toBe(true);
-  await settled();
-  expect(rows(e.id)).toEqual([]);
-  engine.undrain();
-  expect(failures).toEqual([]);
+    // The daemon drains: the held work is stopped, and a drain called off starts none by itself.
+    const e = await idleSession();
+    await engine.settle(0);
+    expect(e.request.signal.aborted).toBe(true);
+    await settled();
+    expect(rows(e.id)).toEqual([]);
+    engine.undrain();
+    expect(failures).toEqual([]);
+  } finally {
+    setSystemTime();
+  }
 });
 
 // A threshold compaction is asked only when there is something new to

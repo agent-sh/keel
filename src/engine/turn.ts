@@ -1404,11 +1404,16 @@ export class Engine {
     const events = this.lineage(id);
     const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
     if (this.used(events, st) < idleMinTokens(limit)) return;
-    const life = retention(st.provider.wire, events, st.info.id).sure;
+    const keep = retention(st.provider.wire, events, st.info.id);
+    const life = keep.sure;
     if (life < 2 * IDLE_MARGIN_MS) return; // a five-minute cache leaves no idle time to use
     // Nothing shows this model's cache holds the context: there is no warm prefix to read it from.
     const warm = lastWarm(events, st.info.id);
     if (!warm) return;
+    // The cache has surely expired already (a turn that failed long after its
+    // last cached reply, a restart of an old session): a summary now would
+    // read the whole context at the full price, which is what this avoids.
+    if (Date.now() - warm > keep.max) return;
     const due = warm + life - IDLE_MARGIN_MS - Date.now();
     const t = setTimeout(() => {
       this.idleTimers.delete(id);

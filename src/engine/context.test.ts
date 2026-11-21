@@ -239,7 +239,7 @@ test("cache warmth follows the route and prefix a request used", async () => {
   const r = rig();
   const usage = (u: Record<string, number>) => ({ input: 10, output: 2_000, cache_read: 0, cache_write: 0, ...u });
   // A long context whose first reply wrote the cache for an hour at T0, then what `later` adds at minute 50.
-  const at = async (later?: (id: string, covered: string) => void) => {
+  const at = async (later?: (id: string, covered: string) => void, nowMin = 70) => {
     setSystemTime(new Date(T0));
     const id = r.session(BIG.id);
     r.store.updateSession(id, { settings: { compact_at: 2_000 } });
@@ -247,7 +247,7 @@ test("cache warmth follows the route and prefix a request used", async () => {
     const reply = r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(8_000) }], model: BIG.id, stop: "end_turn", usage: usage({ cache_write: 9_000, cache_write_1h: 9_000 }) });
     setSystemTime(new Date(T0 + 50 * MIN));
     later?.(id, reply.id);
-    setSystemTime(new Date(T0 + 70 * MIN));
+    setSystemTime(new Date(T0 + nowMin * MIN));
     const st = await (r.engine as any).step(r.store.session(id), BIG.id);
     // The delay the idle timer is set with (the timer itself is not left running).
     let delay: number | undefined;
@@ -263,8 +263,10 @@ test("cache warmth follows the route and prefix a request used", async () => {
     r.store.append(id, "assistant", { blocks: [{ type: "text", text: "ok" }], model, stop: "end_turn", usage: usage(u) });
   };
   try {
-    // Nothing since minute 0: at minute 70 the hour has passed, and the idle summary is overdue.
-    expect(await at()).toEqual({ cold: true, idleIn: 0 });
+    // Nothing since minute 0. At minute 56 the cache is warm and its idle summary is due at once;
+    // at minute 70 the hour has passed, and no idle summary is prepared from a cache that is gone.
+    expect(await at(undefined, 56)).toEqual({ cold: false, idleIn: 0 });
+    expect(await at()).toEqual({ cold: true, idleIn: undefined });
     // A summary prepared from a transcript sent another prefix: the cache it read is not this context's.
     expect((await at(prepared({ parts: 3, usage: usage({ cache_read: 500, cache_write: 100 }) }))).cold).toBe(true);
     // One on the session's own request that reported no cache activity read nothing either.
@@ -272,8 +274,8 @@ test("cache warmth follows the route and prefix a request used", async () => {
     // One on the session's own request that read the cache kept it alive.
     expect((await at(prepared({ usage: usage({ cache_read: 9_000, cache_write: 200 }) }))).cold).toBe(false);
     // A reply with no reported cache activity, and another model's reply, do not move the clock.
-    expect(await at(reply(BIG.id, {}))).toEqual({ cold: true, idleIn: 0 });
-    expect(await at(reply(SMALL.id, { cache_read: 9_000 }))).toEqual({ cold: true, idleIn: 0 });
+    expect(await at(reply(BIG.id, {}))).toEqual({ cold: true, idleIn: undefined });
+    expect(await at(reply(SMALL.id, { cache_read: 9_000 }))).toEqual({ cold: true, idleIn: undefined });
     // A cache hit on the same prefix does: warm until minute 110, the idle summary due 6 minutes before.
     expect(await at(reply(BIG.id, { cache_read: 9_000 }))).toEqual({ cold: false, idleIn: 34 });
   } finally {
