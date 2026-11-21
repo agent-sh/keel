@@ -117,6 +117,38 @@ test("terminal pane: commands, output, filters, stop, copy and re-run", async ({
     await expect(burst).toContainText("ERROR-AT-START");
     await expect(burst).not.toContainText("bytes skipped");
 
+    // Steady output several times what the pane keeps: what is shown stops
+    // growing, its newest lines are whole and keep their color, and the pane
+    // says the lines above are in the log, which still holds all of it.
+    const steady = "printf 'steady-start\\n'; for i in $(seq 1 24); do yes \"$(printf '\\033[32mgreen \\342\\234\\223 line of steady output, padded out a little\\033[0m')\" | head -n 1100; sleep 0.25; done; printf 'steady-end\\n'";
+    await panel.getByTestId("term-input").fill(steady);
+    await panel.getByTestId("term-run").click();
+    await expect(mine).toHaveCount(4);
+    const flow = mine.first().getByTestId("term-output");
+    await expect(flow).toContainText("steady-end", { timeout: 30_000 });
+    const kept = (await flow.textContent())!;
+    const whole = (await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs.find((j: any) => j.command.startsWith("printf 'steady-start"));
+    expect(whole.bytes).toBeGreaterThan(1_400_000);
+    expect(kept.length).toBeGreaterThan(200_000);
+    expect(kept.length).toBeLessThan(340_000);
+    await expect(mine.first().getByTestId("term-earlier")).toHaveText(/earlier output is in the log/);
+    expect(kept).not.toContain("steady-start");
+    expect(kept).not.toMatch(/\x1b|\[\d*m|\ufffd/);
+    // Every line shown is a whole green line: none lost its color or its start at the cut.
+    const lines = await flow.evaluate((el) => ({
+      plain: [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim(),
+      first: el.querySelector("span[style]")!.textContent!.split("\n")[0],
+      color: getComputedStyle(el.querySelector("span[style]")!).color,
+      base: getComputedStyle(el).color,
+    }));
+    expect(lines.plain).toBe("steady-end");
+    expect(lines.first).toBe("green \u2713 line of steady output, padded out a little");
+    expect(lines.color).not.toBe(lines.base);
+    const start = await (await request.get(`/api/sessions/${session.id}/terminal/${whole.id}/log?from=0`)).json();
+    expect(start.text.startsWith("steady-start\n")).toBe(true);
+    expect(start.size).toBe(whole.bytes);
+    await shoot(page, "terminal-04-steady-output-bounded");
+
     // The model hears of the owner's commands at its next request.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "And now?" } });
     await expect.poll(async () => {

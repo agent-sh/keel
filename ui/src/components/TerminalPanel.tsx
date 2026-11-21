@@ -8,6 +8,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
 import { Ansi } from "./Ansi.tsx";
 import type { Session } from "../../../src/core/types.ts";
+import { bounded } from "../lib/scrollback.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { Seg, tabId } from "./Seg.tsx";
@@ -38,12 +39,15 @@ function ending(e: Entry) {
 
 
 // The output of one command: what the list carried, then what a running one
-// prints from there on.
+// prints from there on, the newest part of it (lib/scrollback.ts): a command
+// that prints without end does not grow the page, and the pane says that the
+// lines above are in its log.
 function Output({ session, e }: { session: string; e: Entry }) {
   // Seeded once; a command running at the start is followed from its log,
   // and the list's later copies of its tail are not added again.
   const [own, setOwn] = useState<string | null>(live(e) && e.job_id ? e.output : null);
   const at = useRef<number>((e.output_from ?? 0) + new TextEncoder().encode(e.output).length);
+  const [cut, setCut] = useState(false);
   const follow = own !== null;
   useEffect(() => {
     if (!follow) return;
@@ -59,7 +63,14 @@ function Output({ session, e }: { session: string; e: Entry }) {
         for (let n = 0; !stop; n++) {
           let add = r.text;
           if (r.from > at.current) add = `\n[${r.from - at.current} bytes skipped: the whole output is in the log]\n${add}`;
-          if (r.to > at.current) { setOwn((m) => (m ?? "") + add); at.current = r.to; }
+          if (r.to > at.current) {
+            setOwn((m) => {
+              const kept = bounded((m ?? "") + add);
+              if (kept.cut) setCut(true);
+              return kept.text;
+            });
+            at.current = r.to;
+          }
           if (r.to >= r.size) break;
           // Far behind: jump to the last read's worth and mark the gap.
           r = await get(n >= 15 ? Math.max(r.to, r.size - 64 * 1024) : r.to);
@@ -75,7 +86,7 @@ function Output({ session, e }: { session: string; e: Entry }) {
   useEffect(() => { const p = pre.current; if (p && follow) p.scrollTop = p.scrollHeight; }, [text, follow]);
   return (
     <pre ref={pre} data-testid="term-output" className="max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-line bg-code-bg px-3 py-2 font-mono text-micro leading-relaxed text-fg">
-      {(e.output_from ?? 0) > 0 && <span className="text-faint">[earlier output is in the log]{"\n"}</span>}
+      {((e.output_from ?? 0) > 0 || cut) && <span className="text-faint" data-testid="term-earlier">[earlier output is in the log]{"\n"}</span>}
       {text ? <Ansi text={text} /> : <span className="text-faint" data-testid="term-no-output">{e.log_missing ? "Output log unavailable." : live(e) ? "No output yet." : "No output."}</span>}
     </pre>
   );
