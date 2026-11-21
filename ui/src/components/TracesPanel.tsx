@@ -1,19 +1,22 @@
 // The session's traces in the side panel: one per turn, newest first. A trace
-// opens as a waterfall of its model requests and tool calls; a span shows what
-// was sent (its shape), what the wire saw, and the failure, with "send again"
-// for a failed request, the debug bundle and "fix this".
+// opens as a waterfall of its model requests, tool calls and waits (a retry's
+// wait, an approval card open, a compaction, a prompt in the queue), with the
+// time between them said as a gap; a span shows what was sent (its shape),
+// what the wire saw, and the failure, with "send again" for a failed request,
+// the debug bundle and "fix this".
 import { ClipboardCopy, RefreshCw, Send, Wrench } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { copyBundle, fixThis, fmtMs, type Span, spanMs, traceFocus } from "../lib/observe.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
+import { type Gap, turnAccount, turnGaps, waitLabel } from "../../../src/admin/trace-rows.ts";
 
 const tone = (s: Span["status"]) => ({ ok: "bg-ok", error: "bg-danger", running: "bg-accent", interrupted: "bg-line-strong" })[s];
 const btn = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
 // The picked row of a list: set into the panel (the panel itself is the raised surface), with an ink bar at its edge. Read at a glance in both themes.
 const picked = "relative bg-sunken hover:bg-sunken before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent";
-const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Subagent turn" : "Turn"} on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
+const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Subagent turn" : "Turn"} on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.kind === "wait" ? waitLabel(s) : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
 
 export function TracesPanel({ session }: { session: Session }) {
   const [list, setList] = useState<Span[] | null>(null);
@@ -75,19 +78,27 @@ export function TracesPanel({ session }: { session: Session }) {
   );
 }
 
-// Depth first, children by start: a subagent's turn comes right under the call that started it.
-function tree(spans: Span[]): { s: Span; depth: number }[] {
+// Depth first, children by start: a subagent's turn comes right under the call
+// that started it. A turn's time that no span covers is a row too (`gap`),
+// where it falls: after the span it follows, or first under the turn.
+type Row = { s: Span; depth: number; gap?: undefined } | { gap: Gap; depth: number; s?: undefined };
+function tree(spans: Span[]): Row[] {
   const ids = new Set(spans.map((s) => s.span_id));
   const kids = new Map<string | null, Span[]>();
   for (const s of spans) {
     const p = s.parent_id && ids.has(s.parent_id) ? s.parent_id : null;
     kids.set(p, [...(kids.get(p) ?? []), s]);
   }
-  const out: { s: Span; depth: number }[] = [];
-  const walk = (p: string | null, depth: number) => {
-    for (const s of kids.get(p) ?? []) { out.push({ s, depth }); walk(s.span_id, depth + 1); }
+  const out: Row[] = [];
+  const walk = (p: string | null, depth: number, gaps: Gap[]) => {
+    for (const g of gaps.filter((x) => x.after === null)) out.push({ gap: g, depth });
+    for (const s of kids.get(p) ?? []) {
+      out.push({ s, depth });
+      walk(s.span_id, depth + 1, s.kind === "turn" ? turnGaps(spans, s.span_id) : []);
+      for (const g of gaps.filter((x) => x.after === s.span_id)) out.push({ gap: g, depth });
+    }
   };
-  walk(null, 0);
+  walk(null, 0, []);
   return out;
 }
 
@@ -155,7 +166,16 @@ function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: strin
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto" data-testid="trace-view">
       <div className="flex flex-col gap-px p-1.5" role="list" aria-label="Spans">
-        {tree(spans).map(({ s, depth }) => (
+        {tree(spans).map(({ s, gap, depth }) => (!s ? (
+          // Time no span covers: said, with what it most likely was. Not a span: nothing opens.
+          <div key={`gap-${gap.start_ms}`} role="listitem" data-testid="span-gap" className="grid grid-cols-[minmax(0,11rem)_1fr_4.5rem] items-center gap-2 px-2 py-1 text-caption text-faint">
+            <span className="truncate italic" style={{ paddingLeft: `${depth * 0.75}rem` }} title={gap.label}>{gap.label}</span>
+            <span className="relative h-2.5">
+              <span className="absolute inset-y-1 rounded-xs border-t border-dashed border-line-strong" style={{ left: `${((gap.start_ms - t0) / total) * 100}%`, width: `max(2px, ${((gap.end_ms - gap.start_ms) / total) * 100}%)` }} />
+            </span>
+            <span className="text-right tabular-nums">{fmtMs(gap.end_ms - gap.start_ms)}</span>
+          </div>
+        ) : (
           <button
             key={s.span_id}
             ref={s.span_id === span ? asked : undefined}
@@ -175,15 +195,15 @@ function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: strin
             </span>
             <span className={cn("relative h-2.5 rounded-xs", sel === s.span_id ? "bg-line" : "bg-sunken")}>
               <span
-                className={cn("absolute inset-y-0 rounded-xs", tone(s.status), s.kind === "turn" && "opacity-40")}
+                className={cn("absolute inset-y-0 rounded-xs", s.kind === "wait" && s.status === "ok" ? "bg-warn" : tone(s.status), s.kind === "turn" && "opacity-40")}
                 style={{ left: `${((s.start_ms - t0) / total) * 100}%`, width: `max(2px, ${(spanMs(s) / total) * 100}%)` }}
               />
             </span>
             <span className="text-right tabular-nums text-faint">{fmtMs(spanMs(s))}</span>
           </button>
-        ))}
+        )))}
       </div>
-      <div ref={detail}>{pick && <Detail s={pick} onReplayed={() => { load(); onReplayed(); }} onOpen={onOpen} />}</div>
+      <div ref={detail}>{pick && <Detail s={pick} spans={spans} onReplayed={() => { load(); onReplayed(); }} onOpen={onOpen} />}</div>
     </div>
   );
 }
@@ -204,7 +224,14 @@ function declined(s: Span) {
   return `Declined${d?.category ? ` (${d.category})` : ""} in ${fmtMs(spanMs(s))}${d?.explanation ? `: ${d.explanation}` : "."}`;
 }
 
-function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; onOpen: (trace: string) => void }) {
+// Where a turn's time went: its requests, tools and waits, and the rest (the gaps).
+function account(spans: Span[], turn: Span): string {
+  const a = turnAccount(spans, turn.span_id);
+  const part = (ms: number, what: string) => (ms >= 1 ? `${what} ${fmtMs(ms)}` : "");
+  return [part(a.request, "requests"), part(a.tool, "tools"), part(a.wait, "waits"), part(a.other, "between them")].filter(Boolean).join(", ");
+}
+
+function Detail({ s, spans, onReplayed, onOpen }: { s: Span; spans: Span[]; onReplayed: () => void; onOpen: (trace: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [replay, setReplay] = useState<{ ok: boolean; error?: string; text?: string; stop?: string; span: Span } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -231,8 +258,10 @@ function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; on
       <dl className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-1 text-caption">
         <Fact k="Started" v={when(s.start_ms)} />
         <Fact k="Took" v={s.end_ms === null ? `${fmtMs(spanMs(s))}, still running` : fmtMs(spanMs(s))} />
+        {s.kind === "turn" && <Fact k="Of it" v={<span data-testid="span-account">{account(spans, s)}</span>} />}
+        {s.kind === "wait" && <Fact k="Waited on" v={s.name === "approval wait" ? `the owner's answer${a.tool ? ` for ${a.tool}` : ""}${a.answer ? `: ${a.answer}${a.choice ? ` (${a.choice})` : ""}` : ""}` : s.name === "retry wait" ? `the time before the next try (retry ${a.attempt} of ${a.max})` : s.name === "compaction" ? `the context being compacted${a.auto ? " by itself" : ""}` : s.name === "queue wait" ? "the turn before it: the prompt was queued" : s.name} />}
         <Fact k="Route" v={a.route} mono />
-        <Fact k="Attempt" v={a.attempt} />
+        <Fact k="Attempt" v={s.kind === "wait" ? undefined : a.attempt} />
         <Fact k="First token" v={a.ttft_ms !== undefined ? fmtMs(a.ttft_ms) : undefined} />
         <Fact k="HTTP" v={w.status ?? a.http_status} />
         <Fact k="Endpoint" v={w.url} mono />

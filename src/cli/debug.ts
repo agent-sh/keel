@@ -9,6 +9,7 @@
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N] [--session ID]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
 import { formatLine, type LogLine } from "../admin/logs.ts";
+import { type Gap, type SpanLite, turnGaps, waitLabel } from "../admin/trace-rows.ts";
 import { chunks } from "../core/proc.ts";
 import { authHeaders, findDaemon, refusal } from "./client.ts";
 
@@ -62,10 +63,17 @@ export async function debug(argv: string[]): Promise<number> {
       if (!pos[1]) throw new Error("name the trace: keel debug trace TRACE_ID");
       const { spans } = await getJson(url, `/api/debug/traces/${pos[1]}`);
       if (v.json) return (console.log(JSON.stringify(spans, null, 2)), 0);
-      const t0 = spans[0]?.start_ms ?? 0;
-      for (const s of spans) {
+      // Spans and the gaps of each turn (time no span covers, said as what it most likely was), in time order.
+      const t0 = Math.min(...spans.map((s: SpanLite) => s.start_ms), Infinity);
+      const gaps: Gap[] = spans.filter((s: SpanLite) => s.kind === "turn").flatMap((s: SpanLite) => turnGaps(spans, s.span_id));
+      const rows = [...spans.map((s: any) => ({ at: s.start_ms, s })), ...gaps.map((g) => ({ at: g.start_ms, g }))].sort((a, b) => a.at - b.at);
+      const at = (t: number) => `+${((t - t0) / 1000).toFixed(2).padStart(7)}s`;
+      for (const r of rows) {
+        if ("g" in r) { console.log(`  ${at(r.g.start_ms)}   ${`(${r.g.label})`.padEnd(30)} ${ms(r.g.end_ms - r.g.start_ms).padStart(9)}  gap`); continue; }
+        const s = r.s;
         const d = (s.end_ms ?? Date.now()) - s.start_ms;
-        console.log(`${s.status === "error" ? "!" : " "} +${((s.start_ms - t0) / 1000).toFixed(2).padStart(7)}s ${s.parent_id ? "  " : ""}${s.name.padEnd(30)} ${ms(d).padStart(9)}  ${s.status}${s.error_type ? ` (${s.error_type})` : ""}  ${s.span_id}${s.error ? `\n      ${s.error.split("\n")[0].slice(0, 200)}` : ""}`);
+        const name = s.kind === "wait" ? waitLabel(s) : s.name;
+        console.log(`${s.status === "error" ? "!" : " "} ${at(s.start_ms)} ${s.parent_id ? "  " : ""}${name.padEnd(30)} ${ms(d).padStart(9)}  ${s.status}${s.error_type ? ` (${s.error_type})` : ""}  ${s.span_id}${s.error ? `\n      ${s.error.split("\n")[0].slice(0, 200)}` : ""}`);
       }
       return 0;
     }

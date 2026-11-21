@@ -19,7 +19,9 @@ import { errorClass } from "./classes.ts";
 import { wentDownAt } from "./life.ts";
 import { newestTurn } from "./marks.ts";
 
-export type SpanKind = "turn" | "request" | "tool";
+// `wait`: time of a turn that is no request and no tool run (a retry's wait,
+// an approval card open, a compaction, a prompt in the queue). Its name says which.
+export type SpanKind = "turn" | "request" | "tool" | "wait";
 export type SpanStatus = "running" | "ok" | "error" | "interrupted";
 export type Span = {
   span_id: string;
@@ -61,6 +63,8 @@ CREATE INDEX IF NOT EXISTS spans_start ON spans(start_ms);
 `;
 
 export const SPAN_DAYS = 14;
+// A prompt that waited in the queue this long has that wait in its turn's trace; a shorter one is no wait to speak of.
+const QUEUE_WAIT_MS = 1000;
 // How many traces a list returns: when the caller names no number, and at most.
 export const TRACE_LIST = 50;
 export const TRACE_LIST_MAX = 200;
@@ -205,6 +209,10 @@ export class Tracer {
   private kept = new WeakMap<ProviderRequest, string>();
   // Each span as it ends (the OTLP exporter listens).
   private ended = new Set<(s: Span) => void>();
+  // The waits open now, by what they wait on: a session's retry or compaction, an approval card.
+  private waits = new Map<string, string>();
+  // When each queued prompt joined its queue, from the queue's own frames, until its turn starts.
+  private queued = new Map<string, number>();
 
   constructor(private store: Store, bus: Bus, private isRunning: (id: string) => boolean) {
     store.migrate(SCHEMA);
@@ -220,6 +228,28 @@ export class Tracer {
     // The error row a failed span became: linked both ways.
     bus.on((f) => {
       if (f.t === "error" && f.error.span_id) store.db.run("UPDATE spans SET error_id = ? WHERE span_id = ?", [f.error.id, f.error.span_id]);
+    });
+    // What a turn waits on between its requests and tools, from the daemon's
+    // own frames: the wait before a retry, a compaction, an approval card.
+    bus.on((f) => {
+      try {
+        if (f.t === "queue") {
+          for (const q of f.queue) if (!this.queued.has(q.id)) this.queued.set(q.id, q.created);
+          if (this.queued.size > 2000) this.queued.clear();
+        } else if (f.t === "status") {
+          const key = `step:${f.session_id}`;
+          this.endWait(key);
+          if (f.status.kind === "retry") this.wait(f.session_id, key, "retry wait", { attempt: f.status.attempt, max: f.status.max });
+          else if (f.status.kind === "compacting") this.wait(f.session_id, key, "compaction", { auto: f.status.auto });
+        } else if (f.t === "feature" && f.name === "approval" && f.data?.id) {
+          const a = f.data as { id: string; session_id: string; state: string; tool?: string; risk?: string; call_id?: string; choice?: string };
+          const key = `approval:${a.id}`;
+          if (a.state === "pending") this.wait(a.session_id, key, "approval wait", { tool: a.tool, risk: a.risk, call_id: a.call_id, approval_id: a.id });
+          else this.endWait(key, { answer: a.state, ...(a.choice ? { choice: a.choice } : {}) });
+        }
+      } catch {
+        // A wait that could not be recorded is a gap in a trace, never a failure of the turn.
+      }
     });
     registerHooks({
       requestSent: (s, req) => this.sent(s, req),
@@ -271,11 +301,47 @@ export class Tracer {
 
   private ensureTurn(s: Session, turn: Turn) {
     const p = this.place(s.id, turn);
-    this.store.db.run(
+    const made = this.store.db.run(
       "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'turn', 'invoke_agent', ?, 'running', ?)",
       [p.span, p.trace, p.parent, s.id, turn.ts, JSON.stringify({ turn_event: turn.id, model: s.model, ...(s.parent_id ? { parent_session: s.parent_id } : {}), ...(p.links.length ? { links: p.links } : {}) })],
     );
+    // A prompt that waited in the queue: that wait is the turn's too, before its first step.
+    if (made.changes) {
+      const qid = this.store.db.query<{ id: string | null }, [string]>(
+        "SELECT u.data ->> '$.queue_id' AS id FROM events t JOIN events u ON u.id = t.parent WHERE t.id = ? AND u.kind = 'user'").get(turn.id)?.id;
+      const queued = qid ? this.queued.get(qid) : undefined;
+      if (qid) this.queued.delete(qid);
+      if (queued !== undefined && turn.ts - queued >= QUEUE_WAIT_MS) {
+        this.store.db.run(
+          "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', 'queue wait', ?, ?, 'ok', ?)",
+          [newSpanId(), p.trace, p.span, s.id, queued, turn.ts, JSON.stringify({ turn_event: turn.id })],
+        );
+      }
+    }
     return { trace: p.trace, span: p.span };
+  }
+
+  // A wait of the session's running turn begins. Outside a turn (the owner's
+  // own compaction, a card of a call no turn runs) nothing is recorded.
+  private wait(sessionId: string, key: string, name: string, attrs: Record<string, unknown>) {
+    if (this.waits.has(key) || !this.isRunning(sessionId)) return;
+    const s = this.store.session(sessionId);
+    const turn = s && this.lastTurn(sessionId);
+    if (!s || !turn) return;
+    const parent = this.ensureTurn(s, turn);
+    const span = newSpanId();
+    this.store.db.run(
+      "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', ?, ?, 'running', ?)",
+      [span, parent.trace, parent.span, sessionId, name, Date.now(), JSON.stringify({ ...attrs, turn_event: turn.id })],
+    );
+    this.waits.set(key, span);
+  }
+
+  private endWait(key: string, attrs?: Record<string, unknown>, status: SpanStatus = "ok") {
+    const span = this.waits.get(key);
+    if (!span) return;
+    this.waits.delete(key);
+    this.finish(span, { status, attrs });
   }
 
   private sent(s: Session, req: ProviderRequest) {
@@ -369,6 +435,11 @@ export class Tracer {
     const turn = this.lastTurn(s.id);
     if (!turn) return;
     const { span } = this.ensureTurn(s, turn);
+    // What the turn still waited on when it ended was cut with it (a card left open, a retry stopped).
+    this.endWait(`step:${s.id}`, undefined, "interrupted");
+    for (const [key, id] of this.waits) {
+      if (key.startsWith("approval:") && this.store.db.query("SELECT 1 FROM spans WHERE span_id = ? AND parent_id = ?").get(id, span)) this.endWait(key, undefined, "interrupted");
+    }
     // A turn the model declined did not do its work: failed, as its declined request is.
     const declined = reason === "refusal";
     const status: SpanStatus = reason === "error" || declined ? "error" : reason === "interrupted" || reason === "restart" ? "interrupted" : "ok";

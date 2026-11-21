@@ -9,7 +9,7 @@ export type Span = {
   trace_id: string;
   parent_id: string | null;
   session_id: string;
-  kind: "turn" | "request" | "tool";
+  kind: "turn" | "request" | "tool" | "wait"; // wait: time of a turn that is no request and no tool run
   name: string;
   start_ms: number;
   end_ms: number | null;

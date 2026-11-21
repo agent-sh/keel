@@ -121,7 +121,10 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
       const a = x.attrs;
       const extra = x.kind === "request"
         ? [a.route, `attempt ${a.attempt}`, a.ttft_ms !== undefined ? `first token ${dur(a.ttft_ms)}` : "", a.wire?.status ? `HTTP ${a.wire.status}` : "", a.result ? `${a.result.stop}, in ${a.result.usage?.input ?? 0}+${a.result.usage?.cache_read ?? 0} cached, out ${a.result.usage?.output ?? 0}` : ""]
-        : x.kind === "tool" ? [`call ${a.call_id}`, `${a.result_bytes} bytes out`] : [a.reason ? `ended: ${a.reason}` : ""];
+        : x.kind === "tool" ? [`call ${a.call_id}`, `${a.result_bytes} bytes out`]
+        // A wait: what the turn waited on (a retry's wait, an approval card, a compaction, the queue).
+        : x.kind === "wait" ? [a.tool ? `for ${a.tool}` : "", a.answer ? `answer: ${a.answer}` : "", a.attempt ? `retry ${a.attempt} of ${a.max}` : ""]
+        : [a.reason ? `ended: ${a.reason}` : ""];
       return `${mark} +${((x.start_ms - t0) / 1000).toFixed(2).padStart(7)}s ${indent}${x.name.padEnd(28)} ${dur(x.end_ms === null ? null : x.end_ms - x.start_ms).padStart(9)}  ${x.status}${x.error_type ? ` (${x.error_type})` : ""}  ${extra.filter(Boolean).join(", ")}  [span ${x.span_id}]`;
     });
     out.push(fence(lines.join("\n")), "");

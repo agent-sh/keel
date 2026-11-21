@@ -292,18 +292,21 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   const view = page.getByTestId("trace-view");
   const picked = view.locator('[data-testid="span-row"][aria-current="true"]');
   const detail = page.getByTestId("span-detail");
-  await expect(view.getByTestId("span-row")).toHaveCount(4);
+  // The turn, its three attempts, and the wait before each retry.
+  await expect(view.getByTestId("span-row")).toHaveCount(6);
+  await expect(view.locator('[data-testid="span-row"][data-kind="wait"]')).toHaveText([/Retry wait before attempt 2/, /Retry wait before attempt 3/]);
   await expect(detail).toContainText(attempts[1].span_id);
   await expect(detail).not.toContainText(attempts[0].span_id);
   await expect(detail).toBeInViewport();
-  // One row is picked, the third, and it says which attempt it is. It stands
-  // off the panel: no other row has its background, and the panel does not either.
+  // One row is picked, the second attempt's (after the turn, the first attempt
+  // and its retry wait), and it says which attempt it is. It stands off the
+  // panel: no other row has its background, and the panel does not either.
   await expect(picked).toHaveCount(1);
   await expect(picked).toContainText("attempt 2");
   await expect(view.getByTestId("span-attempt")).toHaveText(["attempt 1", "attempt 2", "attempt 3"]);
   await page.mouse.move(0, 0);
   const grounds = await view.getByTestId("span-row").evaluateAll((rows) => rows.map((r) => getComputedStyle(r).backgroundColor));
-  expect(grounds.findIndex((g) => g !== grounds[0])).toBe(2);
+  expect(grounds.findIndex((g) => g !== grounds[0])).toBe(3);
   expect(new Set(grounds).size).toBe(2);
   const [ground, under] = await picked.evaluate((r) => {
     const clear = (c: string) => c === "transparent" || /, 0\)$/.test(c) || / \/ 0\)$/.test(c);
@@ -373,4 +376,84 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   await shoot(page, "observe-11-trace-gone");
   await page.unroute(`**/api/debug/traces/${turnTrace}`);
   expect(await client()).toBe(before);
+});
+
+// Feature: a trace accounts for the whole turn. Besides its requests and tool
+// calls it has the waits between them as spans of their own (the wait before
+// a retry, an approval card open, a prompt in the queue, a compaction), and
+// any other stretch no span covers is a row that says what it most likely was.
+test("a trace shows a retry's wait, an approval wait and a queued prompt's wait as spans", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const open = async (title: string, mode: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode } });
+    return session.id as string;
+  };
+  const traces = async (id: string) => (await (await request.get(`/api/debug/traces?session_id=${id}`)).json()).traces as any[];
+  const spansOf = async (trace: string) => (await (await request.get(`/api/debug/traces/${trace}`)).json()).spans as any[];
+  const took = (s: any) => s.end_ms - s.start_ms;
+
+  // A rate limit: the request fails, the turn waits four seconds, the second try answers.
+  // A prompt queued meanwhile waits for that turn to end.
+  const limited = await open("Waits out a rate limit", "full-auto");
+  await request.post(`/api/sessions/${limited}/messages`, { data: { text: "script:rate-limit" } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${limited}?events=0`)).json()).status.kind, { timeout: 15_000 }).toBe("retry");
+  await request.post(`/api/sessions/${limited}/messages`, { data: { text: "and then this", mode: "queue" } });
+  await expect.poll(async () => (await traces(limited)).filter((t) => t.kind === "turn" && t.status === "ok").length, { timeout: 30_000 }).toBe(2);
+  const [second, first] = await traces(limited);
+  const one = await spansOf(first.trace_id);
+  expect(one.map((s) => [s.kind, s.kind === "wait" ? s.name : s.status])).toEqual([["turn", "ok"], ["request", "error"], ["wait", "retry wait"], ["request", "ok"]]);
+  const wait = one[2];
+  expect(wait).toMatchObject({ status: "ok", parent_id: one[0].span_id, attrs: { attempt: 1, turn_event: one[0].attrs.turn_event } });
+  expect(took(wait)).toBeGreaterThan(3_500);
+  expect(took(wait)).toBeLessThan(6_000);
+  // It fills the time between the two tries: what is left of the turn is small.
+  expect(wait.start_ms - one[1].end_ms).toBeLessThan(250);
+  expect(one[3].start_ms - wait.end_ms).toBeLessThan(250);
+  const two = await spansOf(second.trace_id);
+  const queued = two.find((s) => s.kind === "wait");
+  expect(queued).toMatchObject({ name: "queue wait", status: "ok", parent_id: two.find((s) => s.kind === "turn").span_id });
+  expect(took(queued)).toBeGreaterThan(2_500);
+  expect(queued.end_ms).toBe(two.find((s) => s.kind === "turn").start_ms);
+
+  // An approval: the card is open for a while, then allowed.
+  const asked = await open("Waits for an approval", "ask");
+  await request.post(`/api/sessions/${asked}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo allowed-after-a-wait >> waited.txt" } }])}` } });
+  const card = async () => ((await (await request.get(`/api/sessions/${asked}/approvals`)).json()).approvals as any[])[0];
+  await expect.poll(async () => (await card())?.state, { timeout: 15_000 }).toBe("pending");
+  const cardId = (await card()).id;
+  await page.waitForTimeout(1_500);
+  await request.post(`/api/sessions/${asked}/approvals/${cardId}`, { data: { choice: "once" } });
+  await expect.poll(async () => (await traces(asked))[0]?.status, { timeout: 20_000 }).toBe("ok");
+  const three = await spansOf((await traces(asked))[0].trace_id);
+  const approval = three.find((s) => s.name === "approval wait");
+  expect(approval).toMatchObject({ kind: "wait", status: "ok", attrs: { tool: "Bash", approval_id: cardId, answer: "allowed", choice: "once" } });
+  expect(took(approval)).toBeGreaterThan(1_400);
+  const tool = three.find((s) => s.kind === "tool");
+  expect(tool.start_ms).toBeGreaterThanOrEqual(approval.end_ms);
+  // Nothing of the command or the answer's words is in it.
+  expect(JSON.stringify(approval)).not.toContain("allowed-after-a-wait");
+
+  // The page: the waits are rows of the waterfall, and the turn says where its time went.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${limited}`);
+  await openPanel(page, "traces");
+  await page.getByTestId("trace-row").last().click();
+  const view = page.getByTestId("trace-view");
+  const row = view.locator('[data-testid="span-row"][data-kind="wait"]');
+  await expect(row).toHaveText(/Retry wait before attempt 2\s*4\.\d+ ?s/);
+  await view.locator('[data-testid="span-row"][data-kind="turn"]').click();
+  await expect(page.getByTestId("span-account")).toHaveText(/requests .*waits 4\.\d+ ?s/);
+  await row.click();
+  await expect(page.getByTestId("span-detail")).toContainText("the time before the next try (retry 1 of");
+  await shoot(page, "observe-14-trace-retry-wait");
+  await page.goto(`/s/${asked}`);
+  await openPanel(page, "traces");
+  await page.getByTestId("trace-row").first().click();
+  const approvalRow = page.getByTestId("trace-view").locator('[data-testid="span-row"][data-kind="wait"]');
+  await expect(approvalRow).toContainText("Approval wait for Bash");
+  await approvalRow.click();
+  await expect(page.getByTestId("span-detail")).toContainText("the owner's answer for Bash: allowed (once)");
+  await shoot(page, "observe-15-trace-approval-wait");
 });
