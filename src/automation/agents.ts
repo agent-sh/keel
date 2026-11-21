@@ -129,7 +129,7 @@ CREATE INDEX IF NOT EXISTS agents_parent ON agents(parent_id);
 CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
 }
@@ -140,10 +140,11 @@ let wtsCache: Worktrees | undefined;
 const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir, "worktrees")));
 
 // `restarts`: a column from when a restart count decided an agent's end; unused.
-type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number };
+// `park_told`: the task (its first_seq) whose park the parent has been told of.
+type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, restarts, ...rest } = r;
-  void def; void schema_tries; void restarts;
+  const { def, output_schema, schema_tries, restarts, park_told, ...rest } = r;
+  void def; void schema_tries; void restarts; void park_told;
   return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema };
 };
 
@@ -617,8 +618,9 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     signal?.addEventListener("abort", onAbort, { once: true });
     const r = await waitFor(id, { parked: true, signal });
     signal?.removeEventListener("abort", onAbort);
-    // A blocking agent that parked on a wait goes on in the background.
-    if (r?.status === "waiting") update(id, { background: true });
+    // A blocking agent that parked on a wait goes on in the background; the
+    // call's result tells the parent of the park.
+    if (r?.status === "waiting") { update(id, { background: true }); parkTold(get(id)!); }
     return get(id)!;
   }
   return rec;
@@ -773,8 +775,47 @@ function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, 
 
 // A park is a live status, not a report. If the parent was still busy when
 // the child resumed or ended, do not tell it the child is waiting anymore.
+const isParkOf = (a: AgentRecord) => (m: Record<string, unknown>) => m.kind === "harness" && m.agent_id === a.id && m.status === "waiting";
 function withdrawParked(a: AgentRecord) {
-  withdraw(a.parent_id, (m) => m.kind === "harness" && m.agent_id === a.id && m.status === "waiting");
+  withdraw(a.parent_id, isParkOf(a));
+}
+
+// The parent was told that the agent parked in its current task. An agent
+// that goes on parking (a timer, its wake, a timer) would start a turn of the
+// parent each time for nothing the parent can act on: only the first park of
+// a task does. A later one rides the parent's next input.
+const parkTold = (a: AgentRecord) => void D().store.db.query("UPDATE agents SET park_told = ? WHERE id = ?").run(a.first_seq, a.id);
+const toldOfPark = (a: AgentRecord) => D().store.db.query<{ park_told: number | null }, [string]>("SELECT park_told FROM agents WHERE id = ?").get(a.id)?.park_told === a.first_seq;
+
+// The park as it stands when it is sent: the latest thing the agent waits on,
+// or nothing once it went on or ended.
+function parkNow(a: AgentRecord): { text: string; meta: Record<string, unknown> } | undefined {
+  const child = D().store.session(a.session_id);
+  if (!child || child.archived || get(a.id)?.status !== "waiting" || D().engine.isRunning(a.session_id)) return undefined;
+  const on = waits.describeActive(a.session_id);
+  if (!on) return undefined;
+  return {
+    text: `[harness] Agent ${a.id} parked on ${on}. It has not finished; its report will arrive after it finishes.`,
+    meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on },
+  };
+}
+
+// `wake`: the notice starts a turn of the parent. Not for a park the parent
+// was told of in this task, and not in a parent held after the owner's Stop:
+// then it is one line of the parent's next input.
+function tellPark(a: AgentRecord, wake: boolean) {
+  if (isPending(a.parent_id, isParkOf(a))) return; // on its way: it is read again when it is sent
+  const first = parkNow(a);
+  if (!first) return;
+  deliver(a.parent_id, first.text, first.meta, {
+    ride: !wake,
+    refresh: () => {
+      // The owner stopped the parent since: the notice rides instead of starting a turn.
+      if (wake && D().engine.isHeld(a.parent_id)) return void tellPark(a, false);
+      return parkNow(a);
+    },
+    onSent: () => parkTold(a),
+  });
 }
 
 const stopping = new Map<string, StopBy>();
@@ -798,19 +839,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
     wake(a.id);
     // A blocking spawn returns the park in its tool result. Reviewers and
     // other silent agents stay quiet. Recovery does not replay this notice.
-    if (a.background && !isSilent(a.id)) {
-      const park = (on: string) => ({
-        text: `[harness] Agent ${a.id} parked on ${on}. It has not finished; its report will arrive after it finishes.`,
-        meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on },
-      });
-      const input = park(waitingOn);
-      deliver(a.parent_id, input.text, input.meta, { refresh: () => {
-        const child = D().store.session(sessionId);
-        if (!child || child.archived || get(a.id)?.status !== "waiting" || engine.isRunning(sessionId)) return;
-        const on = waits.describeActive(sessionId);
-        if (on) return park(on);
-      } });
-    }
+    if (a.background && !isSilent(a.id)) tellPark(a, !toldOfPark(a) && !engine.isHeld(a.parent_id));
     return;
   }
   // A turn of the child stopped from its own page is the owner's stop.

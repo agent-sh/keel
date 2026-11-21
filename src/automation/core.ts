@@ -56,15 +56,17 @@ export function cursor(before: string | null | undefined): { ts: number; id: str
 // is busy. Inputs waiting together arrive as one message.
 type Input = { text: string; meta: Record<string, unknown> };
 // `hold`: the input waits for the session's next turn to end (a turn the engine is about to continue).
+// `ride`: the input starts no turn and is not counted as lined up: it goes with whatever is sent next.
 // refresh: the part as it is when sent (its text, and what sending it settles), or nothing when it no
 // longer holds. `parts`: the meta of everything lined up with it, itself included.
 type Parts = Record<string, unknown>[];
-type Delivery = { coalesceMs?: number; hold?: boolean; onSent?: (e: StoredEvent) => void; refresh?: (parts: Parts) => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
-export type Pending = Input & Omit<Delivery, "coalesceMs">;
+type Delivery = { coalesceMs?: number; hold?: boolean; ride?: boolean; onSent?: (e: StoredEvent) => void; refresh?: (parts: Parts) => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
+export type Pending = Input & Omit<Delivery, "coalesceMs" | "ride">;
 // A part that never starts a turn of its own and goes with whatever is sent
 // next (the failure notice). `parts`: the meta of what is being sent.
 export const rider: { get?: (sessionId: string, parts: Parts) => Pending | undefined } = {};
 const pending = new Map<string, Pending[]>();
+const riding = new Map<string, Pending[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function hasPending(sessionId: string) {
@@ -74,10 +76,11 @@ export function hasPending(sessionId: string) {
 export function deliver(sessionId: string, text: string, meta: Record<string, unknown>, opts: Delivery = {}): boolean {
   const s = D().store.session(sessionId);
   if (!s || s.archived) return false;
-  const list = pending.get(sessionId) ?? [];
+  const lists = opts.ride ? riding : pending;
+  const list = lists.get(sessionId) ?? [];
   list.push({ text, meta, onSent: opts.onSent, refresh: opts.refresh });
-  pending.set(sessionId, list);
-  if (D().engine.isRunning(sessionId) || opts.hold) return true; // flushed by the turn-end hook
+  lists.set(sessionId, list);
+  if (D().engine.isRunning(sessionId) || opts.hold || opts.ride) return true; // flushed by the turn-end hook, or with the next input
   if (opts.coalesceMs) {
     if (!timers.has(sessionId)) timers.set(sessionId, setTimeout(() => { timers.delete(sessionId); flush(sessionId); }, opts.coalesceMs));
   } else flush(sessionId);
@@ -86,20 +89,27 @@ export function deliver(sessionId: string, text: string, meta: Record<string, un
 
 export function dropPending(sessionId: string) {
   pending.delete(sessionId);
+  riding.delete(sessionId);
 }
 
 // Takes back inputs not sent yet (a report a wait already returned, the prompt
 // of a loop that was deleted); the rest still goes. Returns how many went.
 export function withdraw(sessionId: string, which: (meta: Record<string, unknown>) => boolean): number {
-  const list = pending.get(sessionId);
-  if (!list) return 0;
-  const keep = list.filter((p) => !which(p.meta));
-  if (keep.length) pending.set(sessionId, keep);
-  else pending.delete(sessionId);
-  return list.length - keep.length;
+  let went = 0;
+  for (const lists of [pending, riding]) {
+    const list = lists.get(sessionId);
+    if (!list) continue;
+    const keep = list.filter((p) => !which(p.meta));
+    if (keep.length) lists.set(sessionId, keep);
+    else lists.delete(sessionId);
+    went += list.length - keep.length;
+  }
+  return went;
 }
 
-export const isPending = (sessionId: string, which: (meta: Record<string, unknown>) => boolean) => !!pending.get(sessionId)?.some((p) => which(p.meta));
+// Lined up to be sent, or riding with what is sent next.
+export const isPending = (sessionId: string, which: (meta: Record<string, unknown>) => boolean) =>
+  [pending, riding].some((lists) => lists.get(sessionId)?.some((p) => which(p.meta)));
 
 export function flush(sessionId: string) {
   const list = pending.get(sessionId);
@@ -108,17 +118,21 @@ export function flush(sessionId: string) {
   if (D().engine.isRunning(sessionId) || D().engine.isDraining?.()) return;
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
-  if (!s || s.archived) return;
+  if (!s || s.archived) return void riding.delete(sessionId);
   try {
     // Live statuses can change while the recipient is busy. Recheck them
     // before grouping the parts; a withdrawn status must not start a turn.
     const lined = list.map((p) => p.meta);
-    const current = list.flatMap((p) => {
+    const fresh = (p: Pending) => {
       if (!p.refresh) return [p];
       const next = p.refresh(lined);
       return next ? [{ ...p, ...next }] : [];
-    });
+    };
+    const current = list.flatMap(fresh);
     if (!current.length) return;
+    // What rides goes now, read as it is now; one that no longer holds is dropped.
+    current.push(...(riding.get(sessionId) ?? []).flatMap(fresh));
+    riding.delete(sessionId);
     const extra = rider.get?.(sessionId, current.map((p) => p.meta));
     if (extra) current.push(extra);
     // The failure notice reads last, after the reports and wakes it comes with

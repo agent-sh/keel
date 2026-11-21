@@ -586,3 +586,66 @@ test("a report does not restart a parent held after the owner's Stop", async () 
   expect([got.split("report held A").length - 1, got.split("report held B").length - 1]).toEqual([1, 1]);
   expect([agents.get(a.id)!.handback, agents.get(b.id)!.handback]).toEqual([false, false]);
 });
+
+// An agent that parks again and again (a timer, its wake, a timer) wakes its
+// parent for the first park of a task only. A later one is a line of the
+// parent's next input, with the latest thing it waits on; its report still
+// wakes the parent.
+test("repeat parks of one agent wake the parent once and then ride its next input", async () => {
+  const p = parentOf("parks");
+  const a = await p.start();
+  const park = (of = a) => {
+    const w = waits.create(of.session_id, waits.normalize({ kind: "timer", seconds: 60 }, dir));
+    store.append(of.session_id, "turn_end", { reason: "end_turn" });
+    agents.onTurnEnd(of.session_id, "end_turn");
+    return w;
+  };
+  const resume = (w: waits.WaitRecord) => { waits.cancel(w.id); agents.onTurnStart(a.session_id); };
+  const w1 = park();
+  expect(p.to()).toHaveLength(1);
+  expect(p.to()[0]).toContain(`Agent ${a.id} parked on timer wait ${w1.id}`);
+  resume(w1);
+  resume(park());
+  const w3 = park();
+  expect(p.to()).toHaveLength(1); // no turn for the second and the third
+  expect(agents.get(a.id)!.status).toBe("waiting");
+  // Another agent's report starts the parent's next turn: the park is one line of it.
+  const b = await p.start();
+  end(b, "end_turn", "report of B");
+  await settled();
+  flush(p.id);
+  expect(p.to()).toHaveLength(2);
+  expect(p.to()[1]).toContain("report of B");
+  expect(p.to()[1]!.split("parked on").length - 1).toBe(1);
+  expect(p.to()[1]).toContain(`Agent ${a.id} parked on timer wait ${w3.id}`);
+  // It parks again, then finishes: only the report goes, and it starts a turn.
+  resume(w3);
+  resume(park());
+  expect(p.to()).toHaveLength(2);
+  end(a, "end_turn", "final of A");
+  await settled();
+  flush(p.id);
+  expect(p.to()).toHaveLength(3);
+  expect(p.to()[2]).toContain("final of A");
+  expect(p.to()[2]).not.toContain("parked on");
+  // A new task is a new run: its first park wakes the parent again.
+  await agents.send(a.id, "task two");
+  const w5 = park();
+  expect(p.to()).toHaveLength(4);
+  expect(p.to()[3]).toContain(`parked on timer wait ${w5.id}`);
+  // A parent held after the owner's Stop is not woken by a first park: it rides too.
+  const c = await p.start();
+  held.add(p.id);
+  const w6 = park(c);
+  flush(p.id);
+  expect(p.to()).toHaveLength(4);
+  held.delete(p.id);
+  resume(w5);
+  end(a, "end_turn", "second of A");
+  await settled();
+  flush(p.id);
+  expect(p.to()).toHaveLength(5);
+  expect(p.to()[4]).toContain("second of A");
+  expect(p.to()[4]).toContain(`Agent ${c.id} parked on timer wait ${w6.id}`);
+  waits.cancel(w6.id);
+});
