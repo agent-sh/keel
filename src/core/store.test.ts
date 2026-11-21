@@ -417,3 +417,11 @@ test("a version of a prompt appended while the session's events are out of the c
   expect(store.versions(s.id, null).map((e) => e.id)).toEqual([first.id, second.id]);
   store.db.close();
 });
+
+// An append changes more pages than SQLite keeps in memory for a statement's
+// undo by default; in a file, each append would create, write and remove one.
+test("a statement's undo pages are kept in memory, not in a temporary file", () => {
+  const store = new Store(scratch());
+  expect(store.db.query<{ temp_store: number }, []>("PRAGMA temp_store").get()!.temp_store).toBe(2);
+  store.db.close();
+});

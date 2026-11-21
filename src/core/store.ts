@@ -10,6 +10,11 @@ const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
+-- A statement inside a transaction that changes many pages keeps their old
+-- content until it ends (an event's row, its indexes and its search entry
+-- pass the 64 KB at which SQLite moves that to a file): kept in memory, an
+-- append creates, writes and removes no temporary file.
+PRAGMA temp_store = MEMORY;
 -- The write-ahead log is checkpointed at 1,000 pages (4.1 MB) and grows past
 -- that only while a long read holds it (the read thread, a backup). This
 -- gives the file back to that size at the first write after such a read.
