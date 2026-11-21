@@ -353,6 +353,8 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
     if (fromId !== "local" && to !== "local") throw new MoveError(409, "a session on another machine comes back here before it goes to a third");
     const src = fromId === "local" ? null : this.fleet.row(fromId) ?? null;
     if (fromId !== "local" && !src) throw new MoveError(409, "the machine the session is on was removed");
+    // What the last move still owes the queue is done first: the hold it left is not read as the owner's.
+    this.settle(s.id);
 
     const h: Handoff = {
       session_id: s.id, state: "running", carry,
