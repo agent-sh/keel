@@ -93,3 +93,39 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await request.patch("/api/settings", { data: { archive: { delete_archived_days: null } } });
   for (const id of [old2.id, w.id]) await request.delete(`/api/sessions/${id}`);
 });
+
+// On a phone the head keeps the total, its measured-at note and Measure again
+// apart, and every kind's size stays inside the card: the name and the size
+// share a line and the bar runs under both.
+test("the storage head and sizes fit a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/settings/storage");
+  const panel = page.getByTestId("storage-panel");
+  await expect(panel.getByTestId("storage-total")).not.toBeEmpty();
+  const box = async (l: ReturnType<typeof panel.getByTestId>) => (await l.boundingBox())!;
+  const apart = (a: { x: number; y: number; width: number; height: number }, b: typeof a) => a.x + a.width <= b.x + 0.5 || b.x + b.width <= a.x + 0.5 || a.y + a.height <= b.y + 0.5 || b.y + b.height <= a.y + 0.5;
+  // The words of the total, not its box: the box is as wide as its column.
+  const total = await panel.getByTestId("storage-total").evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const b = r.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height }; });
+  const note = (await panel.getByText(/^measured /).boundingBox())!, again = (await panel.getByRole("button", { name: "Measure again" }).boundingBox())!;
+  expect(apart(total, note)).toBe(true);
+  expect(apart(total, again)).toBe(true);
+  expect(apart(note, again)).toBe(true);
+  for (const b of [total, note, again]) { expect(b.x).toBeGreaterThanOrEqual(0); expect(b.x + b.width).toBeLessThanOrEqual(320); }
+  // Each size is whole inside the list of kinds, with its bar under the name.
+  const kinds = await box(panel.getByTestId("storage-kinds"));
+  const sizes = await panel.getByTestId("storage-kinds").locator(":scope > div > span:last-child").all();
+  expect(sizes.length).toBe(6);
+  for (const s of sizes) { const b = (await s.boundingBox())!; expect(b.x + b.width).toBeLessThanOrEqual(kinds.x + kinds.width + 0.5); expect(b.x).toBeGreaterThanOrEqual(kinds.x); }
+  const bar = (await panel.getByTestId("storage-kinds").locator(":scope > div > div").first().boundingBox())!;
+  expect(bar.width).toBeGreaterThan(kinds.width * 0.9);
+  expect(await page.getByTestId("settings-scroll").evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await shoot(page, "storage-06-phone");
+  // With room the three columns stand as before: the bar between the name and the size.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const row = panel.getByTestId("storage-kinds").locator(":scope > div").first();
+  const [name, track, size] = await Promise.all([row.locator("span").first(), row.locator("div").first(), row.locator("span").last()].map(async (l) => (await l.boundingBox())!));
+  expect(track!.x).toBeGreaterThanOrEqual(name!.x + name!.width);
+  expect(size!.x).toBeGreaterThanOrEqual(track!.x + track!.width);
+  expect(Math.abs(track!.y + track!.height / 2 - (size!.y + size!.height / 2))).toBeLessThan(4);
+  await shoot(page, "storage-07-wide");
+});

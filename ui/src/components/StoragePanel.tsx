@@ -84,12 +84,13 @@ function Bars({ rows }: { rows: { label: string; bytes: number; hint?: string }[
   return (
     <div className="flex flex-col gap-2.5 py-4" data-testid="storage-kinds">
       {rows.map((r) => (
-        <div key={r.label} className="grid grid-cols-[9rem_1fr_5.5rem] items-center gap-3 text-ui">
+        // Three columns with room; on a narrow page the name and the size share a line and the bar runs under both.
+        <div key={r.label} className="grid grid-cols-[9rem_1fr_5.5rem] items-center gap-x-3 gap-y-1.5 text-ui @max-[30rem]/settings:grid-cols-[minmax(0,1fr)_auto]">
           <span className="truncate" title={r.hint}>{r.label}</span>
-          <div className="h-2 rounded-full bg-sunken">
+          <div className="h-2 rounded-full bg-sunken @max-[30rem]/settings:col-span-2 @max-[30rem]/settings:row-start-2">
             <div className="h-2 rounded-full bg-series-1" style={{ width: `${Math.max(r.bytes ? 1 : 0, (r.bytes / max) * 100)}%` }} />
           </div>
-          <span className="text-right tabular-nums text-muted">{fmtBytes(r.bytes)}</span>
+          <span className="text-right tabular-nums text-muted @max-[30rem]/settings:col-start-2 @max-[30rem]/settings:row-start-1">{fmtBytes(r.bytes)}</span>
         </div>
       ))}
     </div>
@@ -152,13 +153,14 @@ export function StoragePanel() {
     <div className="flex flex-col gap-4" data-testid="storage-panel">
       {unreadable !== undefined && <UnreadableSettings why={unreadable} onReset={resetSettings} />}
       <Card>
-        <div className="flex items-center gap-3 border-b border-line py-4">
-          <div className="min-w-0 flex-1">
+        {/* The total keeps a width of its own: when the note and the button do not fit beside it they go under it. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line py-4">
+          <div className="min-w-[min(100%,12rem)] flex-1">
             <div className="text-title font-semibold tabular-nums tracking-[-0.01em]" data-testid="storage-total">{fmtBytes(r.total_bytes)}</div>
             <div className="truncate font-mono text-caption text-faint" title={r.state_dir}>{r.state_dir}</div>
           </div>
           <span className="text-caption text-faint" title={when(r.measured_ms)}>measured {ago(r.measured_ms) === "now" ? "just now" : `${ago(r.measured_ms)} ago`}</span>
-          <button type="button" className={btn} disabled={busy} onClick={() => load(true)}>{busy ? "Measuring" : "Measure again"}</button>
+          <button type="button" className={cn(btn, "ml-auto")} disabled={busy} onClick={() => load(true)}>{busy ? "Measuring" : "Measure again"}</button>
         </div>
         <Bars rows={[
           { label: "Conversations", bytes: r.database_bytes, hint: `${r.sessions.count} sessions, ${r.archived_sessions.count} archived, ${r.subagent_sessions.count} subagents; ${fmtBytes(r.attachments_bytes)} of attachments` },
