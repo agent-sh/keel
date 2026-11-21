@@ -298,3 +298,11 @@ test("fixed context is carried unchanged through compactions", () => {
   expect(text).toContain(nested("two"));
   expect(text).toContain("Review steps.");
 });
+
+// The byte count is the encoder's: a lone surrogate is the replacement
+// character (three bytes) and does not swallow the unit after it.
+test("utf8Bytes counts what UTF-8 encoding writes, also for malformed UTF-16", () => {
+  for (const s of ["plain text", "caf\u00e9 \u05e9\u05dc\u05d5\u05dd \u65e5\u672c", "ok \ud83d\ude00 done", "\ud83dA", "\ud83d\ud83d", "\ud83d\ud83d\ude00", "\ude00x", "end \ud83d", ""]) {
+    expect([s, utf8Bytes(s)]).toEqual([s, Buffer.byteLength(s)]);
+  }
+});

@@ -610,14 +610,17 @@ function jsonBytes(v: unknown, per = BYTES_PER_TOKEN): number {
   return utf8Bytes(text ?? "") + images;
 }
 
-// UTF-8 bytes of a string (what "bytes" means wherever it is reported).
+// UTF-8 bytes of a string (what "bytes" means wherever it is reported), as an
+// encoder writes it: a surrogate pair is one character of four bytes, and a
+// surrogate with no partner (a high one before anything but a low one, a low
+// one alone) is written as the replacement character, three bytes.
 export const utf8Bytes = (s: string) => {
   let n = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (c < 0x80) n += 1;
     else if (c < 0x800) n += 2;
-    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) { n += 4; i++; }
+    else if (c >= 0xd800 && c <= 0xdbff && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { n += 4; i++; }
     else n += 3;
   }
   return n;
