@@ -15,6 +15,23 @@ Providers are found from the environment: `ANTHROPIC_API_KEY` for the Anthropic
 API; `AWS_BEARER_TOKEN_BEDROCK`, AWS keys or `ANTHROPIC_BEDROCK_BASE_URL` for
 Amazon Bedrock. Models come from each provider's own listing.
 
+## Auto and Full auto
+
+**Auto** lets safe reads, in-scope edits, confined commands and standing grants
+through. The configured judge reviews other ordinary calls and flagged
+high-risk calls. A refusal or unavailable judge does not open an approval
+card. Actions requiring explicit owner consent still ask. **Full auto** runs
+ordinary work without review and retains its extra high-risk checks.
+**Auto edits** still asks about ordinary work outside its safe defaults.
+
+[Claude Code](https://code.claude.com/docs/en/permission-modes) separates
+classifier-backed `auto` from `acceptEdits` and `bypassPermissions`. Keel
+imports those as Auto, Auto edits and Full auto, respectively.
+[Codex](https://developers.openai.com/codex/agent-approvals-security) treats
+sandboxing separately from approvals and can review eligible approvals
+automatically. [OpenCode](https://opencode.ai/docs/permissions/) uses
+`allow`, `ask` and `deny` rules scoped by action and resource.
+
 ## Refresh the frontend without restarting
 
 Build the page from the daemon's source revision, with only the UI changes

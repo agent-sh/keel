@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { childMode, classify, decide, type Facts, type Mode, type Rule } from "./policy.ts";
+import { asksLess, childMode, classify, decide, type Facts, type Mode, type Rule } from "./policy.ts";
 
 const ws = "/w/repo";
 const rule = (kind: Rule["kind"], pattern: string): Rule => ({ id: pattern, kind, pattern, scope: ws, lifetime: "always", created: 0 });
@@ -49,9 +49,22 @@ test("modes", () => {
 
 test("leaving the sandbox asks once in every mode", () => {
   const esc = { kind: "shell" as const, command: "npm test", escalate: true };
-  expect(kind(decide(esc, facts("full-auto", { sandboxed: true })))).toBe("ask-high");
+  for (const mode of ["auto", "full-auto"] as const)
+    expect(decide(esc, facts(mode, { sandboxed: true }))).toMatchObject({ ask: { risk: "high", ownerOnly: true } });
   expect(kind(decide(esc, facts("read-only", { sandboxed: true })))).toBe("deny");
   expect(kind(decide(esc, facts("full-auto", { sandboxed: false })))).toBe("allow");
+});
+
+test("Auto allows confined work and grants, but neither covers flagged or owner-only actions", () => {
+  const auto = facts("auto", { sandboxed: true, rules: [rule("shell", "git *"), rule("edit", ws)] });
+  expect(decide({ kind: "shell", command: "npm test" }, auto)).toEqual({ allow: true, why: "sandboxed" });
+  expect(decide({ kind: "shell", command: "git add scratch.txt" }, { ...auto, sandboxed: false })).toEqual({ allow: true });
+  expect(decide({ kind: "shell", command: "git clean -fn" }, auto)).toMatchObject({ ask: { risk: "high", suggest: [] } });
+  expect(decide({ kind: "edit", paths: [`${ws}/.envrc`] }, auto)).toMatchObject({ ask: { ownerOnly: true } });
+  const read = (path: string) => classify(tool("Read", undefined, true, { properties: { file_path: { type: "string" } } }), { file_path: path }, ws);
+  expect(decide(read("scratch.txt"), auto)).toEqual({ allow: true });
+  expect(decide(read("../scratch.txt"), auto)).toMatchObject({ ask: { risk: "low" } });
+  expect(decide(read("../scratch.txt"), { ...auto, mode: "full-auto" })).toEqual({ allow: true });
 });
 
 test("control calls run in every mode", () => {
@@ -68,5 +81,10 @@ test("a child never runs in a mode that asks less than its parent's", () => {
   expect(childMode("full-auto", "plan")).toBe("plan");
   expect(childMode("full-auto", "reviewer")).toBe("reviewer");
   expect(childMode("auto-edits", undefined)).toBe("auto-edits");
+  expect(childMode("auto-edits", "auto")).toBe("auto-edits");
+  expect(childMode("auto", "full-auto")).toBe("auto");
+  expect(childMode("full-auto", "auto")).toBe("auto");
+  expect(asksLess("auto", "auto-edits")).toBe(true); // remote presence check
+  expect(asksLess("full-auto", "auto")).toBe(true);
   expect(childMode("ask", "nonsense")).toBe("ask");
 });

@@ -84,6 +84,15 @@ export class ScriptedProvider implements Provider {
       return { blocks: [{ type: "text", text }, ...extra], usage, stop, model: req.model };
     };
 
+    // Permission fixture: decide from the proposed action, not other actions
+    // named in the owner message. The real judge path still parses the reply.
+    if (req.sessionKey?.startsWith("judge-")) {
+      const action = lastText.split("\n\nThe action:").at(-1) ?? "";
+      if (action.includes("judge-allow.txt")) return reply('{"decision":"allow","risk":"low","reason":"The scratch marker is in scope."}');
+      if (action.includes("judge-deny.txt") || action.includes("git clean -fn")) return reply('{"decision":"deny","risk":"high","reason":"The fixture refuses this action."}');
+      if (action.includes("judge-unavailable.txt")) return reply('{"decision":"allow"}');
+    }
+
     // A history read as a transcript in parts: the summary names the part it reached.
     const part = lastText.match(/^\[harness\] The context is being compacted, .* in (\d+) parts, oldest first; this is part (\d+)\./);
     if (part) return reply(`Goal: the owner is checking a history longer than the window. State: read part ${part[2]} of ${part[1]} of the transcript${lastText.includes("<summary>") ? ", after the summary of the parts before it" : ""}.`);

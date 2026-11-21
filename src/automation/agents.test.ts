@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -19,6 +19,16 @@ test("an agent in a mode that writes nothing gets no worktree", () => {
   expect(agents.wantsWorktree({}, { isolation: "worktree" }, "plan")).toBe(false);
   expect(agents.wantsWorktree({ readOnly: true }, {}, "full-auto")).toBe(false);
   expect(agents.wantsWorktree({}, { isolation: "none" }, "full-auto")).toBe(false);
+});
+
+test("Claude Code agents keep auto, acceptEdits and bypassPermissions distinct", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "keel-agent-modes-"));
+  const folder = join(cwd, ".claude", "agents");
+  mkdirSync(folder, { recursive: true });
+  for (const mode of ["auto", "acceptEdits", "bypassPermissions"])
+    writeFileSync(join(folder, `fixture-${mode}.md`), `---\npermissionMode: ${mode}\n---\nScratch agent.`);
+  const modes = agents.definitions(cwd).filter((d) => d.file?.startsWith(folder)).map((d) => [d.name, d.permissionMode]);
+  expect(Object.fromEntries(modes)).toEqual({ "fixture-auto": "auto", "fixture-acceptEdits": "auto-edits", "fixture-bypassPermissions": "full-auto" });
 });
 
 // The parent's side of its agents, with a stand-in engine: a child's turn

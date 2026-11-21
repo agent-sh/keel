@@ -26,7 +26,7 @@ export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is ke
   -C, --cwd DIR               directory of a new session (default: here)
   -m, --model M               a model id, its provider's name for it, or its listed name
       --provider P            the provider of --model
-      --permission-mode, --mode MODE   ask, auto-edits, full-auto, read-only or reviewer
+      --permission-mode, --mode MODE   ask, auto-edits, auto, full-auto, read-only, plan or reviewer
       --steer, --queue        to a busy session: join the running turn at its next model
                               call (the default), or run after it (as keel send takes them)
       --effort E              one of the model's listed efforts

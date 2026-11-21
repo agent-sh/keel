@@ -65,8 +65,8 @@ const commandText = (t: string) => {
 const modelOf = (r: any): string | undefined => (r?.type === "assistant" && typeof r.message?.model === "string" && r.message.model !== "<synthetic>" ? r.message.model : undefined);
 
 // Claude Code's permission modes as Keel's (recorded on each prompt).
-const PERM: Record<string, Found["perm_mode"]> = { default: "ask", acceptEdits: "auto-edits", bypassPermissions: "full-auto", plan: "plan" };
-const permOf = (r: any): Found["perm_mode"] => (r?.type === "user" && typeof r.permissionMode === "string" ? PERM[r.permissionMode] : undefined);
+const PERM = new Map<string, Found["perm_mode"]>([["default", "ask"], ["acceptEdits", "auto-edits"], ["auto", "auto"], ["bypassPermissions", "full-auto"], ["plan", "plan"]]);
+const permOf = (r: any): Found["perm_mode"] => (r?.type === "user" && typeof r.permissionMode === "string" ? PERM.get(r.permissionMode) : undefined);
 
 export function claudeFound(path: string, size: number, mtime: number): Found | null {
   const { head, tail } = headTail(path, 48 * 1024);

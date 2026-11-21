@@ -192,7 +192,7 @@ function frontMatter(text: string): { meta: Record<string, string | string[]>; b
 // Claude Code's names map to Keel's modes: plan and dontAsk are the narrow ones.
 function modeName(v: string | string[] | undefined): string | undefined {
   const m = String(v ?? "").toLowerCase().replace(/[-_\s]/g, "");
-  return ({ readonly: "read-only", plan: "read-only", dontask: "read-only", ask: "ask", default: "ask", acceptedits: "auto-edits", autoedits: "auto-edits", fullauto: "full-auto", bypasspermissions: "full-auto", auto: "full-auto" } as Record<string, string>)[m];
+  return ({ readonly: "read-only", plan: "read-only", dontask: "read-only", ask: "ask", default: "ask", acceptedits: "auto-edits", autoedits: "auto-edits", auto: "auto", fullauto: "full-auto", bypasspermissions: "full-auto" } as Record<string, string>)[m];
 }
 
 const listOf = (v: string | string[] | undefined) =>

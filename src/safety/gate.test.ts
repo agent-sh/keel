@@ -50,14 +50,56 @@ test("confinement follows the class the gate judged, not an input field", async 
   // A shell tool that offers no escalation runs confined whatever its input says.
   const plain = await g.beforeTool(session, call(bash, { command: "npm test", sandbox_permissions: "require_escalated" }));
   expect(plain && "ctx" in plain && typeof plain.ctx?.wrapSpawn).toBe("function");
-  // A program that asks to leave the sandbox goes to the judge in full auto,
-  // never to a card: with no judge to answer it is refused at once.
-  const asked = await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }));
-  expect(g.approvals({ session: "s1", pending: true })).toEqual([]);
-  expect(asked).toHaveProperty("deny");
-  // The judge allows it: it runs outside the sandbox.
-  g.judge = async () => ({ allow: true, risk: "high", reason: "the owner asked for it", model: "m" });
-  expect(await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }))).toBeUndefined();
+  // Leaving an enabled sandbox is owner-only even in automatic modes.
+  let judged = 0;
+  g.judge = async () => (judged++, { allow: true, risk: "high", reason: "fixture", model: "m" });
+  const asked = g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }));
+  await Bun.sleep(0);
+  const [card] = g.approvals({ session: "s1", pending: true });
+  expect(card).toMatchObject({ risk: "high", once: true, suggest: [] });
+  g.setPerm("s1", { mode: "auto" });
+  expect(g.approval(card!.id)?.state).toBe("pending");
+  expect(g.resolve(card!.id, "s1", { choice: "always" })).toHaveProperty("error");
+  expect(g.resolve(card!.id, "s1", { choice: "once" })).toEqual({ ok: true });
+  expect(await asked).toBeUndefined();
+  expect(judged).toBe(0);
+});
+
+test("an automatic verdict cannot survive a policy or target change during review", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm("s1", { mode: "auto", sandbox: "off" });
+  let nowOwnerOnly = false;
+  const drive: Tool = { ...bash, name: "fixture_send", target: async (input) => ({
+    name: "fixture_send", readOnly: false, input, cls: {
+      kind: "drive", target: "t", resource: "fixture_send:t", shown: "scratch note", owner: nowOwnerOnly ? "fixture now requires the owner" : undefined,
+    },
+  }) };
+  const run = async (change: () => void) => {
+    const started = Promise.withResolvers<void>();
+    const reply = Promise.withResolvers<Awaited<ReturnType<typeof g.judge>>>();
+    g.judge = () => { started.resolve(); return reply.promise; };
+    const pending = g.beforeTool(session, call(drive, {}));
+    await started.promise;
+    change();
+    reply.resolve({ allow: true, risk: "low", reason: "fixture", model: "m" });
+    const result = await pending;
+    expect(result && "deny" in result ? result.deny : "").toContain("authorization changed");
+    expect(g.approvals({ session: "s1" })).toEqual([]);
+  };
+  await run(() => {
+    g.setPerm("s1", { mode: "read-only" });
+    g.setPerm("s1", { mode: "auto" }); // even if changed back before the judge returned
+  });
+  await run(() => { nowOwnerOnly = true; });
+  let judged = false;
+  g.judge = async () => (judged = true, { allow: true, risk: "low", reason: "fixture", model: "m" });
+  const owner = g.beforeTool(session, call(drive, {}));
+  await Bun.sleep(0);
+  const [card] = g.approvals({ session: "s1", pending: true });
+  expect(card).toMatchObject({ risk: "high", once: true });
+  g.resolve(card!.id, "s1", { choice: "deny" });
+  expect(await owner).toHaveProperty("deny");
+  expect(judged).toBe(false);
 });
 
 test("full auto: a refused call is refused again without review, and a run of refusals stops the judging", async () => {

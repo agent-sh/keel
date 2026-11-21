@@ -1,108 +1,85 @@
-import { expect, test, type APIRequestContext } from "./isolate.ts";
+import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { choose, HAIKU, shoot } from "./shots.ts";
+import { shoot } from "./shots.ts";
 
-// Feature: full auto never waits on the owner. A high-risk call the rules can
-// settle runs at once; one that goes to the judge runs or is refused at once,
-// with the reason in the transcript and in the list above the composer; the
-// owner lets one retry through; no approval card ever opens.
 const MODEL = "scripted:stand-in";
-const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8" }).trim();
+const shell = (command: string) => ({ name: "Bash", input: { command } });
+const write = (file_path: string, content: string) => ({ name: "Write", input: { file_path, content } });
 
-function repo() {
-  const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `full-auto-${Date.now()}`);
-  mkdirSync(root, { recursive: true });
-  git(root, "init", "-q", "--bare", "-b", "main", "remote.git");
-  git(root, "init", "-q", "-b", "main", "seed");
-  const seed = join(root, "seed");
-  writeFileSync(join(seed, "notes.md"), "first\n");
-  git(seed, "add", "-A");
-  git(seed, "commit", "-qm", "first");
-  git(seed, "remote", "add", "origin", join(root, "remote.git"));
-  git(seed, "push", "-q", "origin", "main");
-  git(seed, "checkout", "-q", "-b", "old-topic");
-  git(seed, "commit", "-q", "--allow-empty", "-m", "an abandoned try");
-  git(seed, "push", "-q", "origin", "old-topic");
-  git(root, "clone", "-q", join(root, "remote.git"), "work");
-  const work = join(root, "work");
-  git(work, "checkout", "-q", "-b", "topic");
-  git(work, "commit", "-q", "--allow-empty", "-m", "topic work");
-  git(work, "push", "-q", "-u", "origin", "topic");
-  return { remote: join(root, "remote.git"), work };
-}
-
-const calls = (list: string[]) => `script:calls ${JSON.stringify(list.map((command) => ({ name: "Bash", input: { command } })))}`;
-
-test("full auto settles high-risk calls without the owner", async ({ page, request }) => {
-  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
-  const { remote, work } = repo();
-  // The judge: a real model, kept short; the working model is scripted.
-  await request.put("/api/permissions/settings", { data: { reviewer_model: HAIKU } });
-  const { session } = await (await request.post("/api/sessions", { data: { workspace: work, model: MODEL, title: `Full auto ${Date.now()}` } })).json();
-  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
-  const noCards = async () => expect((await (await request.get(`/api/sessions/${session.id}/approvals?all`)).json()).approvals).toEqual([]);
+test("Auto reviews uncovered work while Full auto reviews only flagged calls", async ({ page, request }) => {
+  const scratch = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws");
+  mkdirSync(scratch, { recursive: true });
+  const work = mkdtempSync(join(scratch, "permission-review-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: work });
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: work, model: MODEL, title: "Automatic permission review" } })).json();
+  const base = `/api/sessions/${session.id}`;
+  const cards = async () => (await (await request.get(`${base}/approvals?all`)).json()).approvals;
+  const blocked = async () => (await (await request.get(`${base}/blocked`)).json()).blocked;
   const turnsDone = (n: number) => expect.poll(async () => {
-    const r = await (await request.get(`/api/sessions/${session.id}`)).json();
+    const r = await (await request.get(base)).json();
     return !r.running && r.events.filter((e: any) => e.kind === "turn_end").length;
-  }, { timeout: 120_000 }).toBe(n);
+  }).toBe(n);
+  const send = async (...calls: ReturnType<typeof shell | typeof write>[]) => {
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify(calls)}`);
+    await page.getByTestId("composer").press("Enter");
+  };
+  const choose = async (name: string, label: string) => {
+    await page.getByTestId("permission-menu").click();
+    await page.getByTestId(`mode-${name}`).click();
+    await expect(page.getByTestId("permission-mode")).toHaveText(label);
+    await page.keyboard.press("Escape");
+  };
+  const clean = "git clean -fn"; // dry run; even an allowed call cannot delete files
+  const denied = "printf marker > judge-deny.txt";
 
-  // Settings say what full auto does with a high-risk call.
-  await page.goto("/settings/safety");
-  await choose(page.getByTestId("default-mode"), { label: "Full auto" });
-  await expect(page.getByText("goes to the judge model")).toBeVisible();
-  await shoot(page, "full-auto-01-settings");
-
+  expect((await request.put(`${base}/permissions`, { data: { mode: "ask", sandbox: "off" } })).ok()).toBe(true);
   await page.goto(`/s/${session.id}`);
-  await expect(page.getByTestId("permission-mode")).toHaveText("Full auto");
-  const before = git(remote, "rev-parse", "main");
-  await page.getByTestId("composer").fill([
-    "Amend the topic commit and force-push topic. Delete the remote branch old-topic, I abandoned it. Leave main alone.",
-    calls([
-      "git commit -q --amend --allow-empty -m 'topic work, amended' && git push -q -f origin topic",
-      "git push -q origin --delete old-topic",
-      "git push -q -f origin topic:main",
-    ]),
-  ].join("\n"));
-  await page.keyboard.press("Enter");
+  await choose("full-auto", "Full auto");
+  await send(shell(clean));
   await turnsDone(1);
-  await noCards();
-
-  // The force-push of the session's own branch ran by a rule, and the delete the owner asked for by the judge.
-  expect(git(remote, "rev-parse", "topic")).toBe(git(work, "rev-parse", "topic"));
-  expect(git(remote, "branch", "--list", "old-topic")).toBe("");
-  // The force-push over main was refused at once: main is as it was, and the refusal is listed with its reason.
-  expect(git(remote, "rev-parse", "main")).toBe(before);
-  const refused = page.locator('[data-testid="tool-call"][data-state="refused"]');
-  await expect(refused).toHaveCount(1);
-  await expect(refused.getByTestId("tool-refusal")).toContainText("The judge refused a call");
-  await expect(page.locator('[data-testid="tool-call"][data-state="ok"]')).toHaveCount(2);
-  const card = page.getByTestId("blocked");
-  await expect(card).toBeVisible();
-  await expect(card.getByTestId("blocked-reason")).not.toBeEmpty();
-  const { blocked } = await (await request.get(`/api/sessions/${session.id}/blocked`)).json();
-  expect(blocked).toHaveLength(1);
-  expect(blocked[0]).toMatchObject({ by: "judge", summary: "git push -q -f origin topic:main" });
-  // The activity list keeps how each high-risk call was settled.
   const { items } = await (await request.get(`/api/activity?kind=approval&session_id=${session.id}&limit=50`)).json();
-  const mine = (items as any[]).map((a) => a.sub);
-  expect(mine).toEqual(expect.arrayContaining(["allowed by a rule", "allowed by the judge", "refused"]));
-  await refused.scrollIntoViewIfNeeded();
-  await shoot(page, "full-auto-02-refused");
+  expect(items.map((a: any) => a.sub)).toContain("allowed by a rule");
+  expect(await blocked()).toEqual([]);
+  expect(await cards()).toEqual([]);
 
-  // The owner lets one retry through from the transcript: the same call runs once.
-  await refused.getByTestId("tool-retry").click();
-  await expect(refused.getByTestId("tool-retry-allowed")).toBeVisible();
-  await expect(card).toHaveCount(0);
+  await choose("auto", "Auto");
+  await page.getByTestId("permission-menu").click();
+  await expect(page.getByText("Ordinary calls run without review.", { exact: false })).toBeVisible();
+  await shoot(page, "permission-review-01-modes");
+  await page.keyboard.press("Escape");
+
+  await send(shell(clean), write("workspace.txt", "in scope"), shell("printf marker > judge-allow.txt"), shell(denied), shell("printf marker > judge-unavailable.txt"));
   await turnsDone(2);
-  await page.getByTestId("composer").fill(calls(["git push -q -f origin topic:main"]));
-  await page.keyboard.press("Enter");
-  await turnsDone(3);
-  expect(git(remote, "rev-parse", "main")).toBe(git(work, "rev-parse", "topic"));
-  await noCards();
-  await shoot(page, "full-auto-03-retried");
+  expect(readFileSync(join(work, "workspace.txt"), "utf8")).toBe("in scope");
+  expect(readFileSync(join(work, "judge-allow.txt"), "utf8")).toBe("marker");
+  expect(existsSync(join(work, "judge-deny.txt"))).toBe(false);
+  expect(existsSync(join(work, "judge-unavailable.txt"))).toBe(false);
+  expect(await blocked()).toMatchObject([
+    { by: "unavailable", summary: "printf marker > judge-unavailable.txt" },
+    { by: "judge", summary: denied },
+    { by: "judge", summary: clean },
+  ]);
+  expect(await cards()).toEqual([]);
+  await expect(page.getByTestId("blocked")).toHaveCount(3);
+  await shoot(page, "permission-review-02-auto-refused");
 
-  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
-  expect(errorsAfter).toBe(errorsBefore);
+  // The same ordinary command is not judged in Full auto, even after Auto refused it.
+  await choose("full-auto", "Full auto");
+  await send(shell(denied));
+  await turnsDone(3);
+  expect(readFileSync(join(work, "judge-deny.txt"), "utf8")).toBe("marker");
+
+  await choose("auto", "Auto");
+  await send(write(".envrc", "# Inert approval fixture\n"));
+  const card = page.getByTestId("approval");
+  await expect(card.getByTestId("approval-summary")).toContainText(".envrc");
+  await expect(card.getByTestId("allow-always")).toHaveCount(0);
+  expect(existsSync(join(work, ".envrc"))).toBe(false);
+  await shoot(page, "permission-review-03-owner-only");
+  await card.getByTestId("allow-once").click();
+  await turnsDone(4);
+  expect(readFileSync(join(work, ".envrc"), "utf8")).toBe("# Inert approval fixture\n");
+  expect(await cards()).toMatchObject([{ risk: "high", once: true, state: "allowed" }]);
 });

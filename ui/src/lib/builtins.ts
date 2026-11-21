@@ -138,7 +138,7 @@ slash.add(
   {
     id: "permissions",
     label: "Change what runs without asking",
-    hint: "[ask | auto-edits | full-auto | read-only]",
+    hint: "[ask | auto-edits | auto | full-auto | read-only | plan | reviewer]",
     when: ({ session }) => !!session,
     run: async (arg, { session }) => {
       if (!arg) return setUI({ permMenu: getUI().permMenu + 1 });

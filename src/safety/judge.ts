@@ -1,7 +1,7 @@
 // The judge: one short request to a model, without tools, that decides a call
-// in the owner's place. Reviewer mode sends it what the rules would put to the
-// owner; full auto sends it the high-risk calls, with the facts of where they
-// land (the repository, its branches and remotes, uncommitted work). It sees
+// in the owner's place. Reviewer sends it ordinary calls that would ask; Auto
+// also sends flagged calls, with the repository facts where relevant. Full
+// auto sends only high-risk calls that its rules did not settle. It sees
 // the action and the owner's own recent words (the only evidence of what the
 // owner asked for); model output and tool results are not authorization.
 // The model is the owner's judge setting, else their small models best first,
@@ -73,7 +73,7 @@ export type JudgeText = { system: string; text: string };
 
 // What the judge is sent for one call (the evaluation builds the same text).
 export function judgePrompt(a: ReviewAsk, asked: { owner: string[]; task?: string }, policy?: string): JudgeText {
-  const base = a.high ? SYSTEM_HIGH : SYSTEM;
+  const base = a.high ? (a.mode === "auto" ? `${SYSTEM}\nThe rules flagged this action as high risk: require the owner's clear request for exactly this action, and deny if the scope or effects are unclear.` : SYSTEM_HIGH) : SYSTEM;
   const system = policy?.trim() ? `${base}\n\nThe owner's own policy, which wins over the guidance above:\n${policy.trim()}` : base;
   const text = [
     `Session folder: ${a.session.workspace}`,
@@ -83,7 +83,7 @@ export function judgePrompt(a: ReviewAsk, asked: { owner: string[]; task?: strin
     a.high ? `Why the rules flagged it: ${a.high.why}` : "",
     a.high?.facts ? `Facts:\n${a.high.facts}` : "",
     `The action: tool ${a.tool} (${a.kind})\n${a.summary.slice(0, 4000)}`,
-    a.kind === "other" ? `Its input: ${JSON.stringify(a.input).slice(0, 2000)}` : "",
+    a.kind === "other" || (a.mode === "auto" && a.kind !== "shell") ? `Its input: ${JSON.stringify(a.input ?? {}).slice(0, 2000)}` : "",
   ].filter(Boolean).join("\n\n");
   return { system, text };
 }
@@ -118,6 +118,10 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
         store.addUsage(a.session.id, r.usage);
         if (!r.v) { tried.push(`${r.info.name} gave no allow or deny`); continue; }
         const risk = ["low", "medium", "high", "critical"].includes(r.v.risk) ? r.v.risk : "unknown";
+        if (a.mode === "auto" && (risk === "unknown" || typeof r.v.reason !== "string" || !r.v.reason.trim())) {
+          tried.push(`${r.info.name} gave an incomplete verdict`);
+          continue;
+        }
         return { allow: r.v.decision === "allow" && risk !== "critical", risk, reason: String(r.v.reason ?? "").slice(0, 400) || "no reason given", model: r.info.id, ms: Date.now() - t0 };
       } catch (e) {
         tried.push((e as Error).name === "TimeoutError" ? `${id} did not answer within ${Math.round(JUDGE_TIMEOUT_MS / 1000)} seconds` : `${id}: ${(e as Error).message.slice(0, 200)}`);

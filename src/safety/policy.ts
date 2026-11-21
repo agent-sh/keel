@@ -10,7 +10,8 @@ import type { ToolKind } from "../tools/types.ts";
 export const MODES = [
   { id: "ask", name: "Ask", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
   { id: "auto-edits", name: "Auto edits", description: "Edits inside the workspace run. Commands ask, except read-only ones and sandboxed ones." },
-  { id: "full-auto", name: "Full auto", description: "Everything runs and nothing waits for you. A high-risk call (a force push, a remote branch delete, a hard reset, sudo, a wide delete) goes to the judge model: what it allows runs, what it refuses comes back to the model with the reason and is listed for you to let one retry through. Destroying home or system data and sending credentials out are always refused." },
+  { id: "auto", name: "Auto", description: "In-scope file reads and edits, safe commands and standing grants run. Other calls go to the judge model and are refused if it cannot approve them. Actions only you can allow still ask." },
+  { id: "full-auto", name: "Full auto", description: "Ordinary calls run without review. A flagged high-risk call goes to the safety rules and the judge model. Refusals are listed for you to let one retry through. Actions only you can allow still ask." },
   { id: "read-only", name: "Read only", description: "Reads and read-only commands run. Everything else is refused." },
   { id: "plan", name: "Plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
   { id: "reviewer", name: "Reviewer", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
@@ -20,7 +21,7 @@ export const isMode = (m: unknown): m is Mode => MODES.some((x) => x.id === m);
 
 // How much a mode lets run without asking the owner, one ranking for every
 // place that compares modes (a remote device loosening one, a child agent).
-const LOOSENESS: Record<Mode, number> = { "read-only": 0, plan: 0, ask: 1, reviewer: 2, "auto-edits": 3, "full-auto": 4 };
+const LOOSENESS: Record<Mode, number> = { "read-only": 0, plan: 0, ask: 1, reviewer: 2, "auto-edits": 3, auto: 4, "full-auto": 5 };
 export const asksLess = (mode: string, than: string) => (isMode(mode) ? LOOSENESS[mode] : 0) > (isMode(than) ? LOOSENESS[than] : 0);
 // A child runs in the mode it wants unless that asks less than its parent's.
 export const childMode = (parent: Mode, want?: string): Mode => (isMode(want) && !asksLess(want, parent) ? want : parent);
@@ -34,7 +35,7 @@ export type Rule = { id: string; kind: RuleKind; pattern: string; scope: string;
 export type Suggest = { kind: RuleKind; pattern: string; bind?: string };
 
 export type CallClass =
-  | { kind: "read" }
+  | { kind: "read"; paths?: string[] }
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
   | { kind: "edit"; paths: string[] }
@@ -48,16 +49,24 @@ export type CallClass =
   // A call its tool refused before it was judged (the reason is the result).
   | { kind: "refused"; why: string };
 
+export type Ask = { risk: "high" | "low"; why?: string; suggest: Suggest[]; ownerOnly?: true };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
-  | { ask: { risk: "high" | "low"; why?: string; suggest: Suggest[] } };
+  | { ask: Ask };
+
+const onlyOwner = (why: string): Decision => ({ ask: { risk: "high", why, suggest: [], ownerOnly: true } });
 
 // What a call does. The tool's own definition says which kind of call it is
 // (its read flag and its kind); the input only supplies the command or the
 // paths of that kind, so no key a model puts in a call changes how it is judged.
 export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any }, input: any, cwd: string): CallClass {
-  if (tool.readOnly) return { kind: "read" };
+  if (tool.readOnly) {
+    // Only the local file tools declare these path fields; an arbitrary input
+    // field must not change how a call is judged.
+    const path = ["file_path", "dir_path", "path"].find((k) => tool.input_schema?.properties?.[k]?.type === "string");
+    return path ? { kind: "read", paths: [resolve(cwd, typeof input?.[path] === "string" ? input[path] : ".")] } : { kind: "read" };
+  }
   switch (tool.kind) {
     case "control":
       return { kind: "control" };
@@ -98,7 +107,11 @@ export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mc
 export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string };
 
 export function decide(c: CallClass, f: Facts): Decision {
-  if (c.kind === "read" || c.kind === "control") return { allow: true };
+  if (c.kind === "control") return { allow: true };
+  if (c.kind === "read") {
+    if (f.mode !== "auto" || !c.paths?.some((p) => !contains(f.workspace, p) && !f.scratch?.some((d) => contains(d, p)))) return { allow: true };
+    return toolGrant(f, f.tool, "the read is outside the workspace");
+  }
   // Plan mode holds like read-only, and says how to go on.
   if (f.mode === "plan") {
     const d = decide(c, { ...f, mode: "read-only" });
@@ -109,8 +122,9 @@ export function decide(c: CallClass, f: Facts): Decision {
     if (c.escalate && f.sandboxed) {
       if (f.mode === "read-only") return { deny: "This session is read-only: commands cannot leave the sandbox." };
       const inner = decideShell(c.command, f, c.cwd);
+      if ("deny" in inner) return inner;
       const why = ["the command asks to run outside the sandbox", "ask" in inner ? inner.ask.why : undefined].filter(Boolean).join("; and ");
-      return { ask: { risk: "high", why, suggest: [] } };
+      return onlyOwner(why);
     }
     return decideShell(c.command, f, c.cwd);
   }
@@ -122,31 +136,33 @@ export function decide(c: CallClass, f: Facts): Decision {
     // A file the repository runs or reads its configuration from later (git
     // hooks, direnv, the project's hook and MCP files): the owner's call, one at a time.
     const runs = c.paths.find((p) => RUNS_LATER.test(relative(f.workspace, p)));
-    if (runs) return { ask: { risk: "high", why: `it changes ${relative(f.workspace, runs)}, which runs or configures things outside the sandbox later`, suggest: [] } };
+    if (runs) return onlyOwner(`it changes ${relative(f.workspace, runs)}, which runs or configures things outside the sandbox later`);
     const editRules = f.rules.filter((r) => r.kind === "edit");
     const covered = (p: string) => editRules.some((r) => contains(r.pattern, p));
-    // The repository's own metadata never edits itself in auto-edits mode.
+    // The repository's own metadata is not an in-scope edit.
     const protectedPath = (p: string) => /(^|\/)\.git(\/|$)/.test(relative(f.workspace, p));
     const mine = (p: string) => (contains(f.workspace, p) && !protectedPath(p)) || !!f.scratch?.some((d) => contains(d, p));
-    const open = c.paths.filter((p) => !covered(p) && !(f.mode === "auto-edits" && mine(p)));
+    const open = c.paths.filter((p) => !covered(p) && !((f.mode === "auto-edits" || f.mode === "auto") && mine(p)));
     if (!open.length) return { allow: true };
     const dirs = [...new Set(open.map((p) => (contains(f.workspace, p) && !protectedPath(p) ? f.workspace : dirname(p))))];
     return { ask: { risk: "low", suggest: dirs.map((d) => ({ kind: "edit", pattern: d })) } };
   }
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
-  const grant = (c.kind === "other" && c.grant) || f.tool;
-  if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
-  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
+  return toolGrant(f, (c.kind === "other" && c.grant) || f.tool);
 }
 
-// Never allowed on its own: in the modes where nobody is asked (full auto,
-// reviewer) it is refused, whatever a judge would say; where the owner is
-// asked, it is the owner's call, one at a time.
+function toolGrant(f: Facts, grant: string, why?: string): Decision {
+  if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
+  return { ask: { risk: "low", ...(why ? { why } : {}), suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
+}
+
+// Never allowed on its own: in modes with a judge it is refused, whatever a
+// judge would say; elsewhere it is the owner's call, one at a time.
 const never = (why: string, f: Facts): Decision =>
-  f.mode === "full-auto" || f.mode === "reviewer"
+  f.mode === "auto" || f.mode === "full-auto" || f.mode === "reviewer"
     ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
-    : { ask: { risk: "high", why: `the command ${why}`, suggest: [] } };
+    : onlyOwner(`the command ${why}`);
 
 function decideShell(command: string, f: Facts, cwd = f.workspace): Decision {
   const parts = splitCommand(command);
@@ -168,7 +184,7 @@ function decideShell(command: string, f: Facts, cwd = f.workspace): Decision {
   const open = parts.filter((p) => !isReadOnly(p) && !shellRules.some((r) => matchRule(r.pattern, p)));
   if (!open.length) return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: only read-only commands run, and \`${open[0]!.text}\` is not one.` };
-  if (f.mode === "auto-edits" && f.sandboxed) return { allow: true, why: "sandboxed" };
+  if ((f.mode === "auto-edits" || f.mode === "auto") && f.sandboxed) return { allow: true, why: "sandboxed" };
   return { ask: { risk: "low", suggest: [...new Set(open.map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern })) } };
 }
 
@@ -183,7 +199,7 @@ function decideDrive(c: Extract<CallClass, { kind: "drive" }>, f: Facts): Decisi
   if (c.owner) {
     const tool = c.resource.slice(0, c.resource.indexOf(":"));
     if (tools.includes(c.resource) || tools.includes(`${tool}:*`)) return { allow: true };
-    return { ask: { risk: "high", why: `only the owner allows this: ${c.owner}`, suggest: [] } };
+    return onlyOwner(`only the owner allows this: ${c.owner}`);
   }
   if (f.mode === "full-auto") return { allow: true };
   if (tools.includes(`drive:${c.target}`) || tools.includes("drive:*")) return { allow: true };

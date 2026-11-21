@@ -27,7 +27,7 @@ export type Message = {
 };
 
 // Width of what a session may do: a message from a narrower sender waits.
-const MODE_WIDTH: Record<string, number> = { "read-only": 0, ask: 1, "auto-edits": 2, "full-auto": 3 };
+const MODE_WIDTH: Record<string, number> = { "read-only": 0, ask: 1, "auto-edits": 2, auto: 3, "full-auto": 4 };
 const SANDBOX_WIDTH: Record<string, number> = { off: 3, "workspace-write": 2, "read-only": 0 };
 
 export class HttpError extends Error {

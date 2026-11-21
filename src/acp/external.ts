@@ -334,7 +334,7 @@ export class AcpRunner {
       case "fs/read_text_file": {
         const path = String(p.path ?? "");
         if (!isAbsolute(path)) throw Object.assign(new Error("path must be absolute"), { code: -32602 });
-        const v = await this.judge(s, { id: crypto.randomUUID(), name: "Read", cls: { kind: "read" }, input: { file_path: path }, signal });
+        const v = await this.judge(s, { id: crypto.randomUUID(), name: "Read", cls: { kind: "read", paths: [path] }, input: { file_path: path }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
         let text = readFileSync(path, "utf8");
         if (p.line || p.limit) {

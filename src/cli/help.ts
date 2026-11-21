@@ -88,7 +88,7 @@ _keel() {
     --cwd|-C|--workspace|--state-dir|--path|--file|--exec) COMPREPLY=( $(compgen -d -- "$cur") ); return ;;
     --attach) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
     --output-format) COMPREPLY=( $(compgen -W "text json stream-json" -- "$cur") ); return ;;
-    --permission-mode|--mode) COMPREPLY=( $(compgen -W "ask auto-edits full-auto read-only reviewer new update open" -- "$cur") ); return ;;
+    --permission-mode|--mode) COMPREPLY=( $(compgen -W "ask auto-edits auto full-auto read-only plan reviewer new update open" -- "$cur") ); return ;;
     --on-ask) COMPREPLY=( $(compgen -W "exit deny wait" -- "$cur") ); return ;;
     --choice) COMPREPLY=( $(compgen -W "once session always deny" -- "$cur") ); return ;;
     --format) COMPREPLY=( $(compgen -W "claude_code codex" -- "$cur") ); return ;;

@@ -8,6 +8,7 @@ import { Select } from "./Select.tsx";
 const MODES = [
   { id: "ask", label: "Ask" },
   { id: "auto-edits", label: "Auto edits" },
+  { id: "auto", label: "Auto" },
   { id: "reviewer", label: "Reviewer" },
   { id: "full-auto", label: "Full auto" },
 ];

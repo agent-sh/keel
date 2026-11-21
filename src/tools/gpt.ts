@@ -179,6 +179,7 @@ const request_user_input: Tool = {
 const view_image: Tool = {
   name: "view_image",
   readOnly: true,
+  cwdOf: shellCwd,
   description: "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
   input_schema: obj({ path: { type: "string", description: "Local filesystem path to an image file." } }, ["path"]),
   async run(input, ctx) {

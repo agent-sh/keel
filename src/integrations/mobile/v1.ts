@@ -36,7 +36,7 @@ type Signed = (req: Req, dev: Device, body: Uint8Array, srv: Server<unknown>) =>
 
 // Modes where a tool call may run without asking. A phone without a screen lock
 // may be in anyone's hand: it cannot prompt a session in one of them.
-const UNASKED = new Set(["auto-edits", "full-auto"]);
+const UNASKED = new Set(["auto-edits", "auto", "full-auto"]);
 
 export type MobileCtx = Deps & { mobile: MobileStore; gate: () => Gate | undefined; changed: () => void };
 

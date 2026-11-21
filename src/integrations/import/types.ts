@@ -18,8 +18,8 @@ export type Found = {
   size_bytes: number;
   model?: string;
   // The permission mode the source session last ran in, as a Keel mode (a
-  // Claude Code session in bypassPermissions is full-auto): the copy goes on in it.
-  perm_mode?: "ask" | "auto-edits" | "full-auto" | "plan";
+  // Claude Code session in auto is Auto, bypassPermissions is Full auto).
+  perm_mode?: "ask" | "auto-edits" | "auto" | "full-auto" | "plan";
   kind: Kind;
   parent_id?: string;
   archived?: boolean;   // the source keeps it archived
