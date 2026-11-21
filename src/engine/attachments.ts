@@ -25,8 +25,12 @@ export const setAttachmentsRoot = (dir: string) => void (root = join(dir, "attac
 export const hasAttachmentsRoot = () => !!root;
 
 // The name the owner sees and the model reads: the file's own name in any
-// script, without path parts, control characters or quotes.
-const shownName = (n: string) => basename(n.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f"<>]/g, "_").trim().slice(0, 120) || "file";
+// script, without path parts, control characters or quotes. A name that is
+// only dots names a folder, not a file: it is `file`.
+const shownName = (n: string) => {
+  const name = basename(n.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f"<>]/g, "_").trim().slice(0, 120);
+  return /^\.*$/.test(name) ? "file" : name;
+};
 // On disk: the name when it is plain ASCII, else `file` plus its extension,
 // so the path stays safe everywhere and the extension still gives the type.
 const diskName = (n: string) => (/^[\w.\- ()+]+$/.test(n) ? n : `file${/\.[A-Za-z0-9]{1,10}$/.exec(n)?.[0]?.toLowerCase() ?? ""}`);

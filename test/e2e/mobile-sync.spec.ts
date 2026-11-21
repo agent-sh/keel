@@ -1,4 +1,6 @@
 import { expect, test } from "./isolate.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Phone } from "./fixtures/phone-app.ts";
 
 // Feature: a phone that loses its connection. A stand-in phone app pairs and
@@ -34,6 +36,30 @@ test("a phone's send, sent again after a lost answer, is one prompt", async ({ r
   // The same words on purpose are a second prompt.
   expect((await phone.call("POST", path, { text: "say ok", mode: "send", client_id: "send-2" })).status()).toBe(200);
   await expect.poll(async () => (await userPrompts(request, session.id)).length).toBe(2);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running).toBe(false);
+
+  // While a turn runs, a steer and a queued prompt are each one prompt however often they are sent.
+  const dir = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `phone-hold-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  const gate = join(dir, "go");
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:hold ${gate}` } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running).toBe(true);
+  const waiting = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).queue.length;
+  for (const [mode, kind] of [["steer", "steer"], ["queue", "queued"]] as const) {
+    const before = await waiting();
+    const one = await (await phone.call("POST", path, { text: `${mode} it`, mode, client_id: `send-${mode}` })).json();
+    expect(one.message.kind).toBe(kind);
+    const two = await (await phone.call("POST", path, { text: `${mode} it`, mode, client_id: `send-${mode}` })).json();
+    expect([two.replayed, two.message.id, await waiting()]).toEqual([true, one.message.id, before + 1]);
+  }
+  // Other words under a used id are refused, not taken for the first send.
+  expect((await phone.call("POST", path, { text: "something else", client_id: "send-queue" })).status()).toBe(409);
+  writeFileSync(gate, "");
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running, { timeout: 30_000 }).toBe(false);
+  expect((await userPrompts(request, session.id)).map((e: any) => e.data.text).filter((t: string) => t.endsWith(" it")).sort()).toEqual(["queue it", "steer it"]);
+  // After the queue ran, the retry says what the queued prompt became: the stored message, under the same id.
+  const became = await (await phone.call("POST", path, { text: "queue it", mode: "queue", client_id: "send-queue" })).json();
+  expect([became.replayed, became.message.kind, became.message.content]).toEqual([true, "text", "queue it"]);
   await request.delete(`/api/mobile/devices/${phone.id}`);
 });
 
@@ -105,6 +131,13 @@ test("the phone's transcript follows the branch shown on the desktop", async ({ 
   const live = st.frames.filter((f) => f.type === "chat_reset").at(-1);
   expect(shown(live.messages)).toEqual(["version one"]);
   expect(live.messages.some((m: any) => m.kind === "deleted")).toBe(true);
+  // Rewound to the prompt, then its reply shown again: the reply was stored before the rewind, so it is
+  // no new message. Each move replaces the transcript.
+  const below = (await events()).filter((e: any) => e.parent === one.id)[0];
+  expect((await request.post(`/api/sessions/${session.id}/head`, { data: { head_event_id: one.id, leaf: false } })).status()).toBe(200);
+  await expect.poll(() => st.frames.filter((f) => f.type === "chat_reset").length).toBe(3);
+  expect((await request.post(`/api/sessions/${session.id}/head`, { data: { head_event_id: below.id, leaf: false } })).status()).toBe(200);
+  await expect.poll(() => st.frames.filter((f) => f.type === "chat_reset").length).toBe(4);
   const cursor = Math.max(...st.frames.map((f) => f.cursor ?? 0));
   st.close();
 
@@ -143,6 +176,11 @@ test("a photo from the phone goes with its caption and shows when the chat is op
   const sent = await phone.call("POST", path, { text: "look at this", client_id: "p-1", attachments: [{ id: up.id, mime: up.mime, file_name: up.file_name }] });
   expect(sent.status()).toBe(200);
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running).toBe(false);
+
+  // An image is what its bytes are, whatever the upload calls it: text named a JPEG is a file, a PNG named text is an image.
+  const fake = await (await phone.upload("/v1/upload?name=holiday.jpg&mime=image/jpeg", new TextEncoder().encode("not a photo at all"), "image/jpeg")).json();
+  const real = await (await phone.upload("/v1/upload?name=notes.txt&mime=text/plain", png, "text/plain")).json();
+  expect([fake.kind, fake.mime, real.kind, real.mime]).toEqual(["file", "application/octet-stream", "image", "image/png"]);
 
   // Opened again: the prompt names its photo, and the daemon serves the same bytes.
   const page = await (await phone.call("GET", `${path}?paged=1&limit=150`)).json();

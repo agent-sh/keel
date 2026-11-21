@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename } from "node:path";
 import { ATTACHMENT_MAX, attachmentPath, saveAttachment } from "../../engine/attachments.ts";
+import { TEXT_MEDIA } from "../../engine/compact.ts";
 import { imageType } from "../../engine/images.ts";
 import type { Server } from "bun";
 import type { Session, StoredEvent } from "../../core/types.ts";
@@ -153,7 +154,22 @@ const PROMPT_IMAGE = /^img-(\d+)-(.+)$/;
 // The image types a model reads inline. A file that claims one of them and is
 // not one by its bytes is stored as plain bytes.
 const INLINE_IMAGES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const IMAGE_CLAIM = /^image\/(png|jpeg|gif|webp)$/;
+// The type a phone's file is stored under. What the daemon acts on is decided
+// by the bytes: an image the model sees, a PDF it may read as a document. A
+// claim is kept only when it is a well-formed type of text (the file is then
+// tried as text); anything else, a claim with control characters or a type
+// nothing here acts on included, is plain bytes.
+const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/;
+export function uploadType(bytes: Uint8Array, claim: string): string {
+  const image = imageType(bytes);
+  if (image) return image;
+  if (bytes.length >= 5 && String.fromCharCode(...bytes.subarray(0, 5)) === "%PDF-") return "application/pdf";
+  const type = claim.split(";")[0]!.trim().toLowerCase();
+  return MIME.test(type) && type !== "application/pdf" && !type.startsWith("image/") && TEXT_MEDIA.test(type) ? type : "application/octet-stream";
+}
+// A send id of the phone's own making: at most this long. A longer one is
+// refused, never cut (two that differ later would be one).
+const CLIENT_ID_MAX = 200;
 function promptFiles(e: StoredEvent) {
   return ((e.data.images ?? []) as any[]).map((b, i) => b.type === "image"
     ? { kind: "image", media: `img-${i}-${e.id}`, mime: b.media_type }
@@ -254,6 +270,12 @@ export function mobileApi(ctx: MobileCtx) {
   // The newest messages of a chat's shown branch, walking back from its head:
   // what a phone starting from nothing gets per chat. The rest comes by paging.
   const FIRST_PAGE = 40;
+  // The whole state is as large as what the phone shows, not as the store: a
+  // chat's row is what its list shows, and the app reads a chat's page when it
+  // is opened. Messages go only as a head start for the chats the owner opens
+  // first, the most recently updated ones that are not archived: ten, about
+  // one screen of the phone's list.
+  const FIRST_CHATS = 10;
   const RESET_PAGE = new URLSearchParams({ paged: "1", limit: String(FIRST_PAGE) });
   // The words each running turn has streamed since its last stored step, for
   // a phone that connects (or recovers) in the middle of a reply.
@@ -574,6 +596,9 @@ export function mobileApi(ctx: MobileCtx) {
           // Between two bus frames every stored event has had its frame: a
           // stream that dropped none is level with the store.
           beat = setInterval(() => {
+            // A head move whose frame never came (none does that today) is told
+            // here, before the cursor passes its place.
+            for (const sid of mobile.branchesAfter(base)) branch(sid);
             if (!lagged) sent = Math.max(sent, mobile.globalSeq());
             send({ type: "seq", seq: mobile.globalSeq(), cursor: sent, working: working() });
           }, 15_000);
@@ -647,7 +672,8 @@ export function mobileApi(ctx: MobileCtx) {
   }
 
   // What a phone at cursor `since` needs to be level with the daemon.
-  // From nothing: every chat with its newest page, at the current cursor.
+  // From nothing: every chat's row at the current cursor, and the newest page
+  // of the FIRST_CHATS chats at the top of the phone's list.
   // After a cursor: the events the app shows that were stored since (so a run
   // of tool rounds and notes costs nothing), and for each chat whose shown
   // branch changed since (`reset`), its newest page in place of them: the app
@@ -677,7 +703,7 @@ export function mobileApi(ctx: MobileCtx) {
       complete: true,
       ...(reload ? { reload } : {}),
       chats: all.map((s) => chatFull(s, u)),
-      messages: whole ? all.flatMap(recent) : [...page.filter((e) => !reset.has(e.session_id)).flatMap((e) => msgsOf(e, e.gseq)), ...moved.flatMap((m) => m.page.messages)],
+      messages: whole ? store.sessions().sort((a, b) => b.updated - a.updated).slice(0, FIRST_CHATS).flatMap(recent) : [...page.filter((e) => !reset.has(e.session_id)).flatMap((e) => msgsOf(e, e.gseq)), ...moved.flatMap((m) => m.page.messages)],
       ...(moved.length ? { reset: moved.map((m) => ({ chat_id: m.id, older: m.page.older ?? null })) } : {}),
       approvals: [...pendingApprovals(), ...closedCards(from)],
       working: working(),
@@ -781,7 +807,8 @@ export function mobileApi(ctx: MobileCtx) {
         // What the phone uploaded goes with the words, or nothing is sent.
         const refs: any[] = Array.isArray(b.attachments) ? b.attachments : [];
         const ids = refs.map((r) => String(r?.id ?? r?.media ?? ""));
-        const clientId = typeof b.client_id === "string" ? b.client_id.trim().slice(0, 200) : "";
+        const clientId = typeof b.client_id === "string" ? b.client_id.trim() : "";
+        if (clientId.length > CLIENT_ID_MAX) return err(`the send id is longer than ${CLIENT_ID_MAX} characters`, 400);
         const fingerprint = sha256Hex(JSON.stringify([req.params.cid, text, ids]));
         const prior = clientId ? mobile.sendOf(dev.id, clientId) : undefined;
         if (prior) {
@@ -798,10 +825,9 @@ export function mobileApi(ctx: MobileCtx) {
           // An image is what its bytes are, not what the request calls it: a
           // file that only claims to be one goes as a file, never as an image
           // block a provider would refuse the whole request for.
-          const image = imageType(bytes);
-          const mime = image ?? String(r?.mime ?? Bun.file(path).type ?? "").split(";")[0]!.trim();
-          images.push(image ? { type: "image", media_type: image, data: bytes.toString("base64") }
-            : saveAttachment(bytes, String(r?.file_name ?? r?.name ?? basename(path)), IMAGE_CLAIM.test(mime) ? "application/octet-stream" : mime));
+          const mime = uploadType(bytes, String(r?.mime ?? Bun.file(path).type ?? ""));
+          images.push(mime.startsWith("image/") ? { type: "image", media_type: mime, data: bytes.toString("base64") }
+            : saveAttachment(bytes, String(r?.file_name ?? r?.name ?? basename(path)), mime));
         }
         if (!text && !images.length) return err("empty", 400);
         const s = chat(req.params.cid!);
@@ -872,16 +898,15 @@ export function mobileApi(ctx: MobileCtx) {
     // that names it (attachments: [{ id }]). At most ATTACHMENT_MAX bytes
     // (`/v1/me` says it). `kind` says how the model gets it: "image" for a
     // PNG, JPEG, GIF or WebP by its bytes (the model sees it), "file" for
-    // anything else (text inline, the rest by its saved path), a photo in
-    // another format included.
+    // anything else (text inline, a PDF as a document where the model reads
+    // them, the rest by its saved path), a photo in another format included.
+    // The stored type is uploadType's: by the bytes, the claim only for text.
     "/v1/upload": {
       POST: signed((req, _d, body) => {
         if (!body.length) return err("the file is empty", 400);
         const q = new URL(req.url).searchParams;
-        const image = imageType(body);
-        const claimed = (q.get("mime") || req.headers.get("content-type") || "application/octet-stream").split(";")[0]!.trim();
-        const a = saveAttachment(body, q.get("name") || "file", image ?? (IMAGE_CLAIM.test(claimed) ? "application/octet-stream" : claimed));
-        return json({ id: a.id, media: a.id, kind: image ? "image" : "file", mime: a.media_type, file_name: a.name, size: a.size });
+        const a = saveAttachment(body, q.get("name") || "file", uploadType(body, q.get("mime") || req.headers.get("content-type") || ""));
+        return json({ id: a.id, media: a.id, kind: a.media_type.startsWith("image/") ? "image" : "file", mime: a.media_type, file_name: a.name, size: a.size });
       }, ATTACHMENT_MAX),
     },
     "/v1/media/:id": {

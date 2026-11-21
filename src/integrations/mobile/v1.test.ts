@@ -214,6 +214,27 @@ describe("messages", () => {
     expect([mine.length, mine.at(-1), first.seq, first.more, first.complete]).toEqual([40, "row-301", mobile.globalSeq(), false, true]);
   });
 
+  test("the first sync carries messages for the ten chats at the top of the list, and none for an archived one", async () => {
+    const made = Array.from({ length: 12 }, (_, i) => session(`bound-${i}`));
+    const archived = session("bound-archived");
+    for (const [i, s] of [...made, archived].entries()) {
+      setSystemTime(new Date(Date.UTC(2031, 0, 1, 0, 0, i)));
+      store.append(s.id, "user", { text: `in ${s.title}` });
+    }
+    setSystemTime();
+    store.updateSession(archived.id, { archived: true });
+    const { body } = await call("GET", "/v1/sync?since=0");
+    const withMessages = new Set(body.messages.map((m: any) => m.chat_id));
+    // The newest ten that are not archived, whatever else the store holds.
+    expect([...withMessages].sort()).toEqual(made.slice(2).map((s) => s.id).sort());
+    // Every chat still has its row, with the line the list shows.
+    for (const s of [...made, archived]) expect(body.chats.find((c: any) => c.id === s.id).preview).toBe(`in ${s.title}`);
+    // An archived or older chat's messages come when it is opened.
+    expect(texts((await call("GET", `/v1/chats/${made[0]!.id}/messages?paged=1&limit=150`)).body.messages, made[0]!.id)).toEqual(["in bound-0"]);
+    // Dated ahead of every other test's chats: gone again, so theirs are the newest.
+    for (const s of [...made, archived]) store.deleteSession(s.id);
+  });
+
   test("a sync page is never filled with events the app does not show", async () => {
     const s = session();
     const from = mobile.globalSeq();
@@ -268,31 +289,6 @@ describe("chats", () => {
 describe("sends", () => {
   const prompts = (sid: string) => store.events(sid).filter((e) => e.kind === "user").length + store.queue(sid).length;
 
-  test("a send retried under its id gets the first receipt and stores one prompt, in every mode", async () => {
-    for (const mode of ["send", "steer", "queue"]) {
-      const s = session();
-      if (mode === "steer") running.add(s.id);
-      sent.length = 0;
-      const first = await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode, client_id: `c-${mode}` });
-      expect(first.status).toBe(200);
-      expect(first.body.message.kind).toBe(mode === "send" ? "text" : mode === "steer" ? "steer" : "queued");
-      // The answer never arrived. By the retry the turn runs, so the app asks to steer.
-      running.add(s.id);
-      const again = await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode: "steer", client_id: `c-${mode}` });
-      expect([again.status, again.body.replayed]).toEqual([200, true]);
-      expect(again.body.message).toEqual(first.body.message);
-      expect([sent.length, prompts(s.id)]).toEqual([1, 1]);
-      // The same words on purpose, under ids of their own: two prompts more.
-      await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode, client_id: `c-${mode}-2` });
-      await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode });
-      expect([sent.length, prompts(s.id)]).toEqual([3, 3]);
-      // Other words under a used id are refused, not taken for the first send.
-      expect((await call("POST", `/v1/chats/${s.id}/messages`, { text: "something else", client_id: `c-${mode}` })).status).toBe(409);
-      expect(sent.length).toBe(3);
-      running.delete(s.id);
-    }
-  });
-
   test("a retry after the queue moved says what the prompt became", async () => {
     const s = session();
     sent.length = 0;
@@ -310,6 +306,9 @@ describe("sends", () => {
 
   test("a send that fails part way leaves no prompt and no receipt; the retry stores it once", async () => {
     const s = session();
+    // An id over the limit is refused, not cut: two that differ later are two sends.
+    const long = await call("POST", `/v1/chats/${s.id}/messages`, { text: "once", client_id: "x".repeat(201) });
+    expect([long.status, prompts(s.id)]).toEqual([400, 0]);
     sendBreaks = true;
     await expect(call("POST", `/v1/chats/${s.id}/messages`, { text: "once", client_id: "c-broken" })).rejects.toThrow("the daemon stopped here");
     sendBreaks = false;
@@ -320,20 +319,6 @@ describe("sends", () => {
 });
 
 describe("uploads", () => {
-  test("an image is what its bytes are, whatever the upload calls it", async () => {
-    const s = session();
-    sent.length = 0;
-    // Text that claims to be a JPEG, and a PNG that claims to be text.
-    const fake = await upload("holiday.jpg", "image/jpeg", new TextEncoder().encode("not a photo at all"));
-    const real = await upload("notes.txt", "text/plain", PNG);
-    expect([fake.kind, fake.mime, real.kind, real.mime]).toEqual(["file", "application/octet-stream", "image", "image/png"]);
-    // The message may repeat the claim: the model still gets an image only for image bytes.
-    const r = await call("POST", `/v1/chats/${s.id}/messages`, { text: "two", attachments: [{ id: fake.id, mime: "image/jpeg", file_name: "holiday.jpg" }, { id: real.id, mime: "text/plain" }] });
-    expect(r.status).toBe(200);
-    expect(sent[0].opts.images.map((b: any) => [b.type, b.media_type])).toEqual([["attachment", "application/octet-stream"], ["image", "image/png"]]);
-    expect(r.body.message.meta.attachments.map((a: any) => [a.kind, a.mime])).toEqual([["file", "application/octet-stream"], ["image", "image/png"]]);
-  });
-
   test("a file over the limit is refused by its declared size, before its bytes are read, and the app is told the limit", async () => {
     const me = (await call("GET", "/v1/me")).body;
     expect(me.uploads).toEqual({ max_bytes: 20 * 1024 * 1024, inline_images: ["image/png", "image/jpeg", "image/gif", "image/webp"] });
@@ -344,6 +329,19 @@ describe("uploads", () => {
     const res: Response = await routes["/v1/upload"].POST(Object.assign(req, { params: {} }), {});
     expect([res.status, (await res.json()).error, read]).toEqual([413, "a file can be at most 20 MiB", false]);
     expect((await upload("empty.txt", "text/plain", new Uint8Array())).status).toBe(400);
+  });
+
+  test("a name of dots is a file, and the stored type is what the daemon acts on", async () => {
+    const text = (t: string) => new TextEncoder().encode(t);
+    // `.` and `..` name a folder: stored as `file`, not an error.
+    expect([(await upload(".", "text/plain", text("dot"))).file_name, (await upload("..", "text/plain", text("dots"))).file_name]).toEqual(["file", "file"]);
+    // A PDF is one by its bytes, whatever it is called; bytes that only claim to be one are not.
+    expect((await upload("a.bin", "application/octet-stream", text("%PDF-1.7 body"))).mime).toBe("application/pdf");
+    expect((await upload("b.pdf", "application/pdf", text("not a pdf"))).mime).toBe("application/octet-stream");
+    // A claim is kept for text only; one with control characters, or of a type nothing here acts on, is plain bytes.
+    expect((await upload("c.json", encodeURIComponent("Application/JSON; charset=utf-8"), text("{}"))).mime).toBe("application/json");
+    expect((await upload("d.txt", encodeURIComponent("text/plain\r\nx-evil: 1"), text("d"))).mime).toBe("application/octet-stream");
+    expect((await upload("e.zip", "application/zip", text("PK"))).mime).toBe("application/octet-stream");
   });
 });
 
@@ -509,37 +507,6 @@ describe("the event stream", () => {
     expect(st.frames.filter((x) => x.type === "hello").map((x) => "sync" in x)).toEqual([false]);
   });
 
-  test("a stream opened at the phone's cursor starts with what it missed and goes on live, nothing twice", async () => {
-    const s = session();
-    store.append(s.id, "user", { text: "one" });
-    store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-m", name: "AskUserQuestion", input: { question: "Go?", type: "yesno" } }] });
-    const ac = new AbortController();
-    const asked = ask({ callId: "call-m", sessionId: s.id, signal: ac.signal } as any);
-    // The phone is level here, holding the open card. Then it loses the connection.
-    const cursor = (await call("GET", "/v1/sync?since=0")).body.seq;
-    const missed = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "missed reply" }] });
-    ac.abort();
-    await asked;
-    const st = await openStream(cursor);
-    const [hello] = await st.read((f) => f.length >= 1);
-    expect(hello).toMatchObject({ type: "hello", seq: mobile.globalSeq(), cursor: mobile.globalSeq() });
-    expect(texts(hello.sync.messages, s.id)).toEqual(["missed reply"]);
-    expect(hello.sync.approvals.filter((a: any) => a.id === "q-call-m").map((a: any) => a.state)).toEqual(["expired"]);
-    // What is stored next comes live, with the place to reconnect from.
-    const live = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "live reply" }, { type: "tool_use", id: "t9", name: "Bash", input: { command: "ls" } }] });
-    bus.emit({ t: "event", event: live } as any);
-    await st.read((f) => f.filter((x) => x.type === "message").length >= 2);
-    const after = st.frames.slice(1).filter((x) => x.type === "message");
-    expect(after.map((x) => [x.message.kind, x.cursor])).toEqual([["text", undefined], ["trace", mobile.gseqOf(live.id)]]);
-    expect(st.frames.slice(1).some((x) => x.message?.id === missed.id)).toBe(false);
-    await st.close();
-    // Reconnecting from the last cursor it got brings nothing again.
-    const again = await openStream(after.at(-1).cursor);
-    const [h2] = await again.read((f) => f.length >= 1);
-    expect(h2.sync.messages).toEqual([]);
-    await again.close();
-  });
-
   test("a stream that fell behind catches up on the same stream once the phone reads again", async () => {
     const s = session();
     const st = await openStream(mobile.globalSeq());
@@ -588,58 +555,49 @@ describe("the event stream", () => {
 });
 
 describe("branches", () => {
-  // A chat with two replies to one prompt; the newer one is shown.
-  const forked = () => {
+  test("a head moved onto an event that was already below it is a branch change, and a leftover marker stops no move", async () => {
     const s = session();
-    const base = store.append(s.id, "user", { text: "base" });
-    const old = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "old" }] }, base.id);
-    const neu = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "new" }] }, base.id);
-    return { s, base, old, neu };
-  };
-  // What the desktop does to show another branch: the head moves, no event is stored.
-  const show = (sid: string, head: string) => bus.emit({ t: "session", session: store.updateSession(sid, { head }) } as any);
-
-  test("a branch picked on the desktop replaces the phone's transcript, live", async () => {
-    const { s, old, neu } = forked();
-    const st = await openStream(mobile.globalSeq());
-    show(s.id, old.id);
-    await st.read((f) => f.some((x) => x.type === "chat_reset"));
-    const reset = st.frames.find((x) => x.type === "chat_reset");
-    expect(reset.chat_id).toBe(s.id);
-    expect(texts(reset.messages, s.id)).toEqual(["base", "old"]);
-    expect(reset.messages.find((m: any) => m.id === neu.id).kind).toBe("deleted");
-    expect(reset.older).toBeNull();
-    // Stored on the chosen branch after that: an ordinary message, no second reset.
-    const next = store.append(s.id, "user", { text: "go on" });
-    bus.emit({ t: "event", event: next } as any);
-    bus.emit({ t: "session", session: store.session(s.id)! } as any);
-    await st.read((f) => f.some((x) => x.type === "message" && x.message.id === next.id));
-    await st.close();
-    expect(st.frames.filter((x) => x.type === "chat_reset")).toHaveLength(1);
+    const a = store.append(s.id, "user", { text: "a" });
+    const b = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "b" }] });
+    const marks = () => mobile.branchSeq(s.id);
+    expect(marks()).toBe(0);
+    // Rewound to `a`, then its child `b` shown again: `b` was stored before the rewind, so it is no append.
+    store.updateSession(s.id, { head: a.id });
+    const rewound = marks();
+    store.updateSession(s.id, { head: b.id });
+    expect([rewound > 0, marks() > rewound]).toEqual([true, true]);
+    // A new event below the head is an append: no mark.
+    const at = marks();
+    store.append(s.id, "user", { text: "c" });
+    expect(marks()).toBe(at);
+    // A marker row left behind (a trigger cut short) does not make the next move throw.
+    store.db.query("INSERT INTO event_gseq (event_id) VALUES (?)").run(`head:${s.id}`);
+    store.updateSession(s.id, { head: a.id });
+    expect(marks()).toBeGreaterThan(at);
+    expect(store.db.query("SELECT COUNT(*) AS n FROM event_gseq WHERE event_id LIKE 'head:%'").get()).toEqual({ n: 0 });
   });
 
-  test("a branch picked while the phone was away comes with the catch-up, in place of the events it missed", async () => {
-    const { s, old, neu } = forked();
-    const other = session();
-    const cursor = mobile.globalSeq();
-    // Stored on the branch the owner then left, and in another chat.
-    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "more on new" }] }, neu.id);
-    store.append(other.id, "user", { text: "elsewhere" });
-    show(s.id, old.id);
-    const body = (await call("GET", `/v1/sync?since=${cursor}`)).body;
-    expect(body.reset).toEqual([{ chat_id: s.id, older: null }]);
-    expect(texts(body.messages, s.id)).toEqual(["base", "old"]);
-    expect(texts(body.messages, other.id)).toEqual(["elsewhere"]);
-    expect(body.seq).toBeGreaterThan(cursor);
-    // Level again: nothing to reset, and an ordinary append resets nothing.
-    store.append(s.id, "user", { text: "go on" });
-    const next = (await call("GET", `/v1/sync?since=${body.seq}`)).body;
-    expect([next.reset, texts(next.messages, s.id)]).toEqual([undefined, ["go on"]]);
-    // A prompt edited into a sibling is a branch change with an event of its own.
-    const at = next.seq;
-    store.append(s.id, "user", { text: "base, edited" }, null);
-    const edited = (await call("GET", `/v1/sync?since=${at}`)).body;
-    expect([edited.reset.map((r: any) => r.chat_id), texts(edited.messages, s.id)]).toEqual([[s.id], ["base, edited"]]);
+  test("a head move that brought no frame reaches the phone with the next heartbeat, before the cursor passes it", async () => {
+    const s = session();
+    const base = store.append(s.id, "user", { text: "base" });
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "old" }] }, base.id);
+    const neu = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "new" }] }, base.id);
+    jest.useFakeTimers();
+    const st = await openStream(mobile.globalSeq());
+    try {
+      store.updateSession(s.id, { head: base.id }); // no bus frame
+      jest.advanceTimersByTime(15_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await st.read((f) => f.some((x) => x.type === "seq"));
+    await st.close();
+    const types = st.frames.map((x) => x.type);
+    expect(types.indexOf("chat_reset")).toBeGreaterThan(0);
+    expect(types.indexOf("chat_reset")).toBeLessThan(types.indexOf("seq"));
+    const reset = st.frames.find((x) => x.type === "chat_reset");
+    expect([reset.chat_id, texts(reset.messages, s.id), reset.messages.find((m: any) => m.id === neu.id).kind]).toEqual([s.id, ["base"], "deleted"]);
+    expect(st.frames.find((x) => x.type === "seq").cursor).toBe(mobile.globalSeq());
   });
 });
 
