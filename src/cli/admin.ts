@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { unitTemplate } from "../admin/unit.ts";
 import { claimState, lockHolder } from "../admin/daemon.ts";
+import { parseBind } from "../core/bind.ts";
 import { restore as restoreBackup } from "../admin/storage.ts";
 import { authHeaders, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir } from "../core/paths.ts";
@@ -197,6 +198,8 @@ const service = wrap("keel service install [--bind HOST:PORT] [--print] [--exec 
   { bind: { type: "string", default: "127.0.0.1:47960" }, print: { type: "boolean" }, exec: { type: "string" } },
   async (v, pos) => {
     if (pos[0] !== "install") throw new Error("keel service install");
+    const bind = parseBind(v.bind);
+    if ("error" in bind) throw new Error(bind.error);
     // A compiled binary is its own ExecStart; under bun it is bun and the script.
     const compiled = process.argv[1]?.startsWith("/$bunfs/");
     const exec = v.exec ?? (compiled ? process.execPath : `${process.execPath} ${resolve(process.argv[1]!)}`);

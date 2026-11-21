@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import { commands } from "./cli/index.ts";
 import { topHelp, unknownCommand } from "./cli/help.ts";
+import { parseBind } from "./core/bind.ts";
 import { startDaemon } from "./server/start.ts";
 
 const SERVE_USAGE = "keel serve [--bind HOST:PORT] [--state-dir DIR] [--workspace DIR] [--dev]\n  Runs the daemon: the agent loop, the HTTP API and the workbench (default bind 127.0.0.1:47960).";
@@ -36,6 +37,12 @@ try {
 }
 const { values } = parsed;
 if (values.help) process.exit((console.log(SERVE_USAGE), 0));
+// Checked here, before a state folder is made or claimed.
+const bind = parseBind(values.bind!);
+if ("error" in bind) {
+  console.error(`keel serve: ${bind.error}\n${SERVE_USAGE}`);
+  process.exit(3);
+}
 
 const d = await startDaemon({ stateDir: values["state-dir"], bind: values.bind!, workspace: values.workspace, dev: values.dev });
 // Running turns get this long to end by themselves when the daemon stops; the

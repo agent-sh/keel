@@ -68,6 +68,16 @@ describe("help, usage and completion", () => {
     expect(bad.code).toBe(3);
     expect(bad.err).toContain("keel run [PROMPT]");
 
+    // A --bind with no port a daemon can listen on is a usage error, said before a state folder is made.
+    const unbound = join(SCRATCH, "state-bind");
+    for (const b of ["127.0.0.1", "127.0.0.1:http", "127.0.0.1:65536"]) {
+      const r = await keel(["serve", "--bind", b, "--state-dir", unbound], { state });
+      expect(r.code).toBe(3);
+      expect(r.err).toContain(`--bind is HOST:PORT with a port from 0 to 65535, not "${b}"`);
+      expect(r.err).toContain("keel serve [--bind HOST:PORT]");
+    }
+    expect(existsSync(unbound)).toBe(false);
+
     const script = await keel(["completion", "bash"], { state });
     expect(script.code).toBe(0);
     writeFileSync(join(SCRATCH, "completion.bash"), script.out);

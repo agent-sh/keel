@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { defaultStateDir } from "../core/paths.ts";
 import { acquireLock, recordUrl } from "../admin/daemon.ts";
 import { undoCutRestore } from "../admin/storage.ts";
+import { parseBind } from "../core/bind.ts";
 import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { runMode } from "../core/runmode.ts";
@@ -23,12 +24,14 @@ export type Started = { url: string; stateDir: string; engine: Engine; stop: (dr
 export async function startDaemon(opts: { stateDir?: string; bind: string; workspace?: string; dev?: boolean; client?: boolean }): Promise<Started> {
   runMode.client = !!opts.client;
   const stateDir = resolve(opts.stateDir ?? defaultStateDir());
-  const [hostname, portStr] = opts.bind.split(/:(?=\d+$)/);
+  const bind = parseBind(opts.bind);
+  if ("error" in bind) throw new Error(bind.error);
+  const { hostname, port } = bind;
   // Once per process (a hot reload serves the same port again): a port that
   // something already answers on is refused, after a restart's old daemon is gone.
-  if (!(globalThis as { __keelEngine?: unknown }).__keelEngine && Number(portStr) !== 0) {
+  if (!(globalThis as { __keelEngine?: unknown }).__keelEngine && port !== 0) {
     waitForPredecessor();
-    const holder = await portHolder(hostname!, Number(portStr));
+    const holder = await portHolder(hostname, port);
     if (holder) {
       console.error(`keel: ${opts.bind} is already in use by ${holder}; pick another --bind or stop it first`);
       process.exit(1);
@@ -61,7 +64,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   process.on("exit", () => providers.plugins.killAll());
   const server = serve(
     { store, bus, engine, providers, errors, workspace: resolve(opts.workspace ?? process.cwd()) },
-    { hostname: hostname!, port: Number(portStr), development: opts.dev },
+    { hostname, port, development: opts.dev },
     routeModules,
   );
   const url = server.url.href.replace(/\/+$/, "");
