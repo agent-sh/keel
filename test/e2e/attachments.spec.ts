@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { crc32, deflateSync } from "node:zlib";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, tabInto } from "./shots.ts";
 
 // A one-page PDF with one line of text, offsets computed so readers accept it.
 function pdf(line: string): Buffer {
@@ -20,17 +20,17 @@ function pdf(line: string): Buffer {
   return Buffer.from(out, "latin1");
 }
 
-// A solid 32x32 PNG of one color.
-function png(r: number, g: number, b: number): Buffer {
+// A solid square PNG of one color, 32 pixels a side unless told.
+function png(r: number, g: number, b: number, side = 32): Buffer {
   const chunk = (type: string, data: Buffer) => {
     const t = Buffer.from(type, "latin1");
     const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
     const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([t, data])) >>> 0);
     return Buffer.concat([len, t, data, crc]);
   };
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(32, 0); ihdr.writeUInt32BE(32, 4); ihdr[8] = 8; ihdr[9] = 2;
-  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: 32 }, () => [r, g, b]).flat())]);
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.concat(Array(32).fill(row)))), chunk("IEND", Buffer.alloc(0))]);
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(side, 0); ihdr.writeUInt32BE(side, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: side }, () => [r, g, b]).flat())]);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.concat(Array(side).fill(row)))), chunk("IEND", Buffer.alloc(0))]);
 }
 
 // Feature: files other than images attach to a prompt: a text file goes
@@ -130,7 +130,7 @@ test("mixed attachments keep their order and need no caption", async ({ page, re
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
   await page.goto(`/s/${session.id}`);
   await page.getByTestId("attach-input").setInputFiles([
-    { name: "a.png", mimeType: "image/png", buffer: png(200, 40, 40) },
+    { name: "a.png", mimeType: "image/png", buffer: png(200, 40, 40, 400) },
     { name: "b.txt", mimeType: "text/plain", buffer: Buffer.from("file b\n") },
     { name: "c.png", mimeType: "image/png", buffer: png(40, 40, 200) },
     { name: "d.txt", mimeType: "text/plain", buffer: Buffer.from("file d\n") },
@@ -145,6 +145,25 @@ test("mixed attachments keep their order and need no caption", async ({ page, re
   const row = page.getByTestId("user-message").first();
   const shown = await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/\d+ KB$/, "").trim())));
   expect(shown).toEqual(stored);
+  // A sent image is a control of its own: Tab reaches it by name, Enter and
+  // Space change its size and say so, the focus stays, the order is the same.
+  const preview = row.getByRole("button", { name: "Attached image 1" });
+  const height = async () => (await preview.locator("img").boundingBox())!.height;
+  await expect(preview).toBeVisible();
+  await tabInto(page, preview);
+  await expect(preview).toBeFocused();
+  await expect(preview).toHaveAttribute("aria-expanded", "false");
+  const small = await height();
+  await page.keyboard.press("Enter");
+  await expect(preview).toHaveAttribute("aria-expanded", "true");
+  await expect(preview).toBeFocused();
+  await expect.poll(height).toBeGreaterThan(small + 200);
+  await shoot(page, "attach-06-image-larger-by-keyboard");
+  await page.keyboard.press("Space");
+  await expect(preview).toHaveAttribute("aria-expanded", "false");
+  await expect(preview).toBeFocused();
+  await expect.poll(height).toBe(small);
+  expect(await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/\d+ KB$/, "").trim())))).toEqual(stored);
   // No caption, no bubble; a caption that reads like a placeholder is the owner's and shows.
   await expect(row.locator(".bg-accent-soft")).toHaveCount(0);
   await page.getByTestId("attach-input").setInputFiles([{ name: "e.png", mimeType: "image/png", buffer: png(40, 200, 40) }]);

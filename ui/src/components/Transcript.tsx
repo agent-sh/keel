@@ -72,14 +72,23 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
         const im = b as ImageBlock;
         n++;
         return (
-          <img
+          // A control of its own: Tab reaches it, Enter and Space change its size.
+          <button
             key={i}
-            src={`data:${im.media_type};base64,${im.data}`}
-            alt={`Attached image ${n}`}
-            data-testid="message-image"
+            type="button"
+            data-testid="message-image-toggle"
+            aria-expanded={big === i}
+            title={big === i ? "Show it smaller" : "Show it larger"}
             onClick={() => setBig(big === i ? null : i)}
-            className={cn("rounded-lg border border-line object-cover shadow-1", big === i ? "max-h-[70vh] max-w-full" : "max-h-40 max-w-60")}
-          />
+            className={cn("k-ring-in block max-w-full rounded-lg", big === i ? "cursor-zoom-out" : "cursor-zoom-in")}
+          >
+            <img
+              src={`data:${im.media_type};base64,${im.data}`}
+              alt={`Attached image ${n}`}
+              data-testid="message-image"
+              className={cn("block rounded-lg border border-line object-cover shadow-1", big === i ? "max-h-[70vh] max-w-full" : "max-h-40 max-w-60")}
+            />
+          </button>
         );
       })}
     </div>
