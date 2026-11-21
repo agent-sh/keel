@@ -976,31 +976,48 @@ export async function send(id: string, message: string, interrupt = false): Prom
   if (!a) throw new Error(`no agent ${id}`);
   const { engine, store } = D();
   if (!store.session(a.session_id)) throw new Error("the agent's session is gone");
-  if (isEnded(a)) needSlot(a.parent_id);
-  // A finished work agent whose empty worktree went gets a fresh one at the same place.
-  if (a.machine && remote) await remote.revive(a);
-  const w = a.worktree && !a.machine ? wts().get(a.session_id) : undefined;
-  const parent = store.session(a.parent_id);
-  if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title)).wt);
-  const text = `Message from the session that started you:\n${message}`;
-  // Its turn ended and its report is being settled: it is finished, not
-  // running. Steering it now would start a turn its record says is done.
-  const ending = settling.get(id);
-  if (ending) { await ending; return send(id, message, interrupt); }
-  a = get(id); // placement may have yielded while this agent finished
-  if (!a) throw new Error(`no agent ${id}`);
-  if (!isEnded(a)) {
-    if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
-    deliver(a.session_id, text, { kind: "steer", agent_id: id });
-    return update(id, { status: "running" })!;
+  // A finished agent that goes on takes a slot again. It is reserved before
+  // anything yields (its place on another machine, its worktree made again),
+  // with no await between the check and the reservation: a spawn in that time
+  // is refused, instead of taking the slot and leaving the worktree made for nothing.
+  let release: (() => void) | undefined;
+  if (isEnded(a)) {
+    needSlot(a.parent_id);
+    release = reserve(a.parent_id);
   }
-  needSlot(a.parent_id);
-  cutCalls.delete(id); // new work, in the background: nothing holds its report
-  const last = store.events(a.session_id).at(-1)?.seq ?? 0;
-  update(id, { status: "running", ended: null, first_seq: last, handback: false, background: true, stopped_by: null, end_reason: null });
-  sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
-  deliver(a.session_id, text, { kind: "steer", agent_id: id });
-  return get(id)!;
+  try {
+    // A finished work agent whose empty worktree went gets a fresh one at the same place.
+    if (a.machine && remote) await remote.revive(a);
+    const w = a.worktree && !a.machine ? wts().get(a.session_id) : undefined;
+    const parent = store.session(a.parent_id);
+    if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title)).wt);
+    const text = `Message from the session that started you:\n${message}`;
+    // Its turn ended and its report is being settled: it is finished, not
+    // running. Steering it now would start a turn its record says is done.
+    const ending = settling.get(id);
+    if (ending) {
+      release?.();
+      await ending;
+      return send(id, message, interrupt);
+    }
+    a = get(id); // placement may have yielded while this agent finished
+    if (!a) throw new Error(`no agent ${id}`);
+    if (!isEnded(a)) {
+      if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
+      deliver(a.session_id, text, { kind: "steer", agent_id: id });
+      return update(id, { status: "running" })!;
+    }
+    if (!release) needSlot(a.parent_id); // it ended while its place was made ready
+    cutCalls.delete(id); // new work, in the background: nothing holds its report
+    const last = store.events(a.session_id).at(-1)?.seq ?? 0;
+    update(id, { status: "running", ended: null, first_seq: last, handback: false, background: true, stopped_by: null, end_reason: null });
+    release?.(); // the running row now occupies the slot
+    sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
+    deliver(a.session_id, text, { kind: "steer", agent_id: id });
+    return get(id)!;
+  } finally {
+    release?.();
+  }
 }
 
 // Returns as soon as one of the agents has a final status (with every other

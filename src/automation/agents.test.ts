@@ -685,3 +685,30 @@ test("an agent whose start was staggered starts once with its whole assignment a
   await agents.send(c!.id, "go on");
   expect(to(c!).map((t) => t.split("\n").at(-1))).toEqual(["the stopped one", "go on"]);
 });
+
+// A finished work agent whose empty worktree went is given more work: the
+// worktree is made again (git runs, the call yields) before it runs. Its slot
+// is held from the start, so a spawn in that time is refused instead of
+// taking the slot and leaving the worktree made for nothing.
+test("a message that restarts a finished agent holds its slot while its worktree is made again", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "keel-agents-slot-"));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
+  Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start"], { cwd: repo });
+  const p = store.createSession({ model: "m:x", workspace: repo, title: "slot parent" });
+  store.append(p.id, "assistant", { blocks: [] });
+  agents.setLimit(p.id, 1);
+  const a = await agents.spawn(p.id, { prompt: "do it", isolation: "worktree", background: true });
+  end(a, "end_turn", "nothing to change");
+  for (let i = 0; i < 100 && agents.get(a.id)!.status !== "completed"; i++) await Bun.sleep(20);
+  expect(agents.get(a.id)!.result).toContain("its worktree was removed");
+  const again = agents.send(a.id, "one more thing");
+  const rival = agents.spawn(p.id, { prompt: "rival", isolation: "none", background: true });
+  const [sent, spawned] = await Promise.allSettled([again, rival]);
+  expect(spawned).toMatchObject({ status: "rejected" });
+  expect(String((spawned as PromiseRejectedResult).reason)).toContain("AGENT_LIMIT");
+  expect(sent).toMatchObject({ status: "fulfilled", value: { id: a.id, status: "running" } });
+  expect(agents.list(p.id).filter((x) => !agents.isEnded(x)).map((x) => x.id)).toEqual([a.id]);
+  // The slot is the running agent's now, not held twice: at a limit of two there is room for one more.
+  agents.setLimit(p.id, 2);
+  expect((await agents.spawn(p.id, { prompt: "second", isolation: "none", background: true })).status).toBe("running");
+});
