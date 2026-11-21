@@ -7,7 +7,7 @@ import { cn } from "../lib/utils.ts";
 const ModelMenu = lazy(() => import("./ModelMenu.tsx").then((m) => ({ default: m.ModelMenu })));
 
 export const triggerClass = (compact?: boolean) =>
-  cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-ui text-muted transition-colors hover:bg-hover hover:text-fg", compact && "px-1.5");
+  cn("k-model-pick inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-ui text-muted transition-colors hover:bg-hover hover:text-fg", compact && "px-1.5");
 
 // A saved model the listing does not have is still named, by its full id,
 // and said to be missing once the listing is in (a listing still on its way
@@ -20,7 +20,7 @@ export function TriggerLabel({ label, any, value, placeholder }: { label?: strin
   const text = label ?? (value ? value : placeholder ?? (any ? "Choose a model" : loaded ? "No models" : "Loading models"));
   return (
     <>
-      <span className="max-w-40 truncate sm:max-w-56" title={missing ? `${value} is not in the current listing` : undefined}>{text}</span>
+      <span className="k-model-name max-w-40 truncate sm:max-w-56" title={missing ? `${value} is not in the current listing` : undefined}>{text}</span>
       {missing && <span className="shrink-0 text-micro text-warn" data-testid="model-unlisted">not in current listing</span>}
       <ChevronsUpDown className="size-3.5 opacity-60" />
     </>

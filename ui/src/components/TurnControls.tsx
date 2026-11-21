@@ -188,7 +188,8 @@ const ZONE: Record<string, string> = {
 };
 
 // Tokens the next request carries against the model's listed window.
-export function ContextMeter({ sessionId }: { sessionId: string }) {
+// `above`: shown only once the context is that full (a phone's resting box keeps it out of the way until it matters).
+export function ContextMeter({ sessionId, above }: { sessionId: string; above?: number }) {
   const all = useStore((s) => s.events[sessionId]);
   const session = useStore((s) => s.sessions[sessionId]);
   const models = useStore((s) => s.models);
@@ -260,6 +261,7 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
       setBusy("");
     }
   };
+  if (above !== undefined && fill < above && !open) return null;
   return (
     <Popover.Root onOpenChange={setOpen}>
       <Popover.Trigger

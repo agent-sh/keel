@@ -82,10 +82,11 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
   const done = plan?.filter((p) => p.status === "completed").length ?? 0;
   const now = plan?.find((p) => p.status === "in_progress");
   return (
-    <div className="mb-2 flex flex-col gap-1.5" data-testid="session-dock">
+    <div className="mb-2 flex flex-col gap-1.5 max-md:mb-1" data-testid="session-dock">
       {active && plan && (
-        <Collapsible.Root className="group/plan rounded-lg border border-line bg-raised shadow-1">
-          <Collapsible.Trigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-caption outline-none" data-testid="dock-plan">
+        // On a phone the plan is one slim line over the box, not a card of its own.
+        <Collapsible.Root className="group/plan rounded-lg border border-line bg-raised shadow-1 max-md:rounded-none max-md:border-x-0 max-md:border-b-0 max-md:bg-transparent max-md:shadow-none max-md:data-[open]:border-b">
+          <Collapsible.Trigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-caption outline-none max-md:px-1 max-md:py-1" data-testid="dock-plan">
             <ListChecks className="size-3.5 text-muted" />
             <span className="font-medium">{done}/{plan.length}</span>
             <span className="min-w-0 truncate text-muted">{now ? (now.active ?? now.text) : "Plan"}</span>

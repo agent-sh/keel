@@ -1,4 +1,4 @@
-import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, Square, X } from "lucide-react";
+import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
@@ -34,6 +34,10 @@ let queueKeySaid = false;
 const DESK = matchMedia("(min-width: 768px)");
 // A window lower than this many rem is short: the toolbar keeps to one row.
 const SHORT_REM = 28;
+// How full the context must be for a phone's resting box to show its ring.
+const REST_RING = 0.8;
+// A finger, not a pointer and keys: hints name what is tapped.
+const TOUCH = matchMedia("(hover: none) and (pointer: coarse)");
 
 function useSlashItems() {
   const [, force] = useState(0);
@@ -46,7 +50,7 @@ const reading = new Set<string>();
 const MAX_FILES = 20;
 const heading = (d: SendDraft) => (d.state === "waiting" ? "Waiting for Keel" : d.state === "refused" ? (d.queue ? "Not queued" : "Not sent") : d.state === "unconfirmed" ? "Delivery unconfirmed" : "Saved draft");
 
-const OFF_BRANCH = "You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.";
+const OFF_BRANCH = "You are reading another branch. Choose Reply from this branch to reply there, or Back to the current one.";
 
 type ComposerProps = {
   session?: Session;
@@ -245,8 +249,34 @@ function SessionComposer({
   // shrink it (see Tray).
   const scale = useUI((s) => s.scale);
   // A window few lines high (small, or large text): the tools take one row.
-  const low = () => innerHeight < SHORT_REM * parseFloat(getComputedStyle(document.documentElement).fontSize);
+  // A phone's box keeps its tools to one row too: the conversation has the screen.
+  const low = () => innerHeight < SHORT_REM * parseFloat(getComputedStyle(document.documentElement).fontSize) || !DESK.matches;
   const [short, setShort] = useState(low);
+  // On a phone, in a conversation, the box rests as one line: its tools show
+  // once it is tapped (or holds a draft, a file, a note to read, a running
+  // turn's Stop) and go when the next tap lands outside it. A tap in a menu
+  // the box opened (the model list) is inside.
+  const boxEl = useRef<HTMLDivElement>(null);
+  const [tapped, setTapped] = useState(false);
+  const [narrow, setNarrow] = useState(!DESK.matches);
+  useEffect(() => {
+    const on = () => setNarrow(!DESK.matches);
+    DESK.addEventListener("change", on);
+    return () => DESK.removeEventListener("change", on);
+  }, []);
+  useEffect(() => {
+    if (!tapped) return;
+    const away = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      // A tap beside a menu the box opened (the model list's sheet) closes that menu: it is not a
+      // tap away from the box. The tools stay, with the control the menu hangs from.
+      if (boxEl.current?.querySelector('[aria-expanded="true"]')) return;
+      if (t && !boxEl.current?.contains(t) && !t.closest?.('[role="listbox"], [role="menu"], [role="dialog"], [data-base-ui-portal]')) setTapped(false);
+    };
+    document.addEventListener("pointerdown", away, true);
+    return () => document.removeEventListener("pointerdown", away, true);
+  }, [tapped]);
+  const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
   useEffect(() => {
     const fit = () => {
       setShort(low());
@@ -264,13 +294,14 @@ function SessionComposer({
       el.style.minHeight = `${least}px`;
       const box = el.parentElement!;
       let under = 0;
-      for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) under += x.offsetHeight;
+      // (What lies over the box, like the resting box's tools button, takes no room under the text.)
+      for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) if (getComputedStyle(x).position !== "absolute") under += x.offsetHeight;
       box.style.minHeight = `${el.offsetTop + least + under + box.offsetHeight - box.clientHeight}px`;
     };
     fit();
     addEventListener("resize", fit);
     return () => removeEventListener("resize", fit);
-  }, [text, scale, short, images.length, notice, synced, info, working]);
+  }, [text, scale, short, images.length, notice, synced, info, working, rest]);
 
   useEffect(() => {
     if (!notice) return;
@@ -568,6 +599,13 @@ function SessionComposer({
         dragging && "border-accent shadow-[var(--shadow-2),0_0_0_3px_var(--accent-soft)]",
       )}
       data-testid="composer-box"
+      data-rest={rest || undefined}
+      ref={boxEl}
+      onFocus={() => setTapped(true)}
+      // A tap in a box that kept the focus while it went to rest (a scroll drag outside) brings no
+      // focus event. The tools open once the tap is over, on its click: opened when the finger
+      // goes down, they would move under it and take the tap.
+      onClick={() => setTapped(true)}
       onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragging(true); } }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
@@ -654,7 +692,7 @@ function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={working ? `Enter steers, ${queueKeys} queues` : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
+        placeholder={working ? (TOUCH.matches ? (onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
@@ -690,13 +728,22 @@ function SessionComposer({
           }
           if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); (onEscape ?? onStop)?.(); }
         }}
-        className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
+        className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 text-read leading-relaxed outline-none placeholder:text-faint", rest ? "pb-3 pr-12" : "pb-1.5")}
       />
+      {/* At rest a context that is nearly full still shows its ring: it is the one tool that warns. */}
+      {rest && sid && <span className="absolute right-11 top-1/2 -translate-y-1/2" data-testid="rest-meter"><ContextMeter sessionId={sid} above={REST_RING} /></span>}
+      {/* At rest the tools are one tap away without raising the keyboard. */}
+      {rest && (
+        <button type="button" data-testid="composer-open" aria-label="Show the model and tools" onClick={() => setTapped(true)}
+          className="absolute right-1.5 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
+          <SlidersHorizontal className="size-4" />
+        </button>
+      )}
       {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
       {short && status}
-      <div className={cn("flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap")} data-short={short || undefined} data-testid="composer-tools">
+      <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && working) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
         <div className={short ? "-my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
-          <span className={cn("flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
+          <span className={cn("k-compose-lead flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
             <button
               type="button"
               title="Attach images or files (or paste, or drop them here)"
@@ -714,11 +761,12 @@ function SessionComposer({
           {sid && <SpeedPicker sessionId={sid} />}
           {session && <FallbackChip session={session} />}
           {model && <LimitChip model={model} />}
-          {short && sid && <ContextMeter sessionId={sid} />}
+          {short && !narrow && sid && <ContextMeter sessionId={sid} />}
           {!short && status}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {!short && sid && <ContextMeter sessionId={sid} />}
+          {/* On a phone the ring stands with Send, out of what scrolls. */}
+          {(!short || narrow) && sid && <ContextMeter sessionId={sid} />}
           {working && onQueue && (
             <button
               ref={queueButton}

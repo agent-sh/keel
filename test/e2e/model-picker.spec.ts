@@ -274,7 +274,7 @@ test.describe("on a small phone", () => {
         };
         requestAnimationFrame(frame);
       });
-      await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
+      await openPicker(page, session.id);
       await expect(popup).toBeVisible();
       await fits();
       await expect.poll(() => popup.evaluate((el) => getComputedStyle(el).scale)).toBe("none");
@@ -341,7 +341,7 @@ test.describe("on a small phone", () => {
       // At the smallest text size an action is still a finger wide.
       await page.evaluate(() => localStorage.setItem("keel.textScale", "0.9"));
       await page.reload();
-      await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
+      await openPicker(page, session.id);
       // (Read once the sheet has finished opening: it grows into place.)
       await expect.poll(async () => { const b = (await popup.getByTestId("pin-model").first().boundingBox())!; return Math.min(b.width, b.height); }).toBeGreaterThanOrEqual(44);
       // A tap beside the sheet closes it.
@@ -350,7 +350,7 @@ test.describe("on a small phone", () => {
 
       // A wider phone or a small tablet: the sheet stands in the middle of the window.
       await page.setViewportSize({ width: 700, height: 600 });
-      await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
+      await openPicker(page, session.id);
       await expect(popup).toBeVisible();
       await expect.poll(async () => { const b = (await popup.boundingBox())!; return Math.abs(b.x + b.width / 2 - 350); }).toBeLessThan(2);
       expect((await popup.boundingBox())!.width).toBeLessThan(600);
@@ -359,3 +359,13 @@ test.describe("on a small phone", () => {
     await request.delete(`/api/sessions/${session.id}`);
   });
 });
+
+// On a phone a conversation's message box rests as one line: its tools (the
+// model among them) show once the box's tools button is tapped.
+async function openPicker(page: import("@playwright/test").Page, id: string) {
+  const pane = page.locator(`[data-station="${id}"]`);
+  await pane.getByTestId("composer").waitFor();
+  const tools = pane.getByTestId("composer-open");
+  if (await tools.isVisible()) await tools.tap();
+  await pane.getByTestId("model-picker").tap();
+}
