@@ -9,6 +9,7 @@ import * as activity from "./activity.ts";
 import * as consult from "./consult.ts";
 import * as goals from "./goals.ts";
 import * as taskOut from "./task-out.ts";
+import * as taskRenames from "./task-renames.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
@@ -67,8 +68,11 @@ function init(deps: Deps) {
   registerHooks(failures.hooks);
   registerHooks({
     // The owner's task-list edits since the last request, as one note.
-    beforeRequest: (s, req) =>
-      req.purpose === "turn" && goals.tellModel(s.id) ? { ...req, messages: toMessages(lineage(deps.store.events(s.id), deps.store.session(s.id)?.head ?? null)) } : req,
+    beforeRequest: (s, req) => {
+      if (req.purpose !== "turn" || !goals.tellModel(s.id)) return req;
+      taskRenames.told(s.id);
+      return { ...req, messages: toMessages(lineage(deps.store.events(s.id), deps.store.session(s.id)?.head ?? null)) };
+    },
     system: (s) => {
       const custom = agents.definitions(s.workspace).filter((d) => d.source !== "built-in");
       return custom.length ? `Agent types you can start besides the built-ins:\n${custom.map((d) => `- ${d.name}: ${d.description}`).join("\n")}` : "";
@@ -88,7 +92,7 @@ function init(deps: Deps) {
     },
     afterTool: (s, call, result) => {
       // A plan the tool refused is not the plan: the saved list stays as it was.
-      if (goals.isPlanTool(call.tool.name) && !result.is_error) goals.fromPlanTool(s.id, call.tool.name, call.input);
+      if (goals.isPlanTool(call.tool.name) && !result.is_error) taskRenames.fromPlan(s.id, call.tool.name, call.input);
       if (QUESTION_TOOLS.has(call.tool.name)) {
         alerts.readWhere("call_id", call.id);
         // The answer to a question is the owner's word: it ends a snooze.
@@ -495,7 +499,7 @@ export const automationRoutes: RouteModule = (deps) => {
       }),
     },
     "/api/sessions/:id/tasks/:tid": {
-      PATCH: (req: any) => attempt(async () => json({ task: goals.editTask(req.params.id, req.params.tid, await body(req)) })),
+      PATCH: (req: any) => attempt(async () => json({ task: taskRenames.edit(req.params.id, req.params.tid, await body(req)) })),
       DELETE: (req: any) => (goals.removeTask(req.params.id, req.params.tid) ? json({ ok: true }) : bad("no such task", 404)),
     },
     // A task taken out into a session of its own (task-out.ts).
