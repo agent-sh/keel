@@ -821,7 +821,7 @@ export function mobileApi(ctx: MobileCtx) {
           const r: any = engine.send(s.id, text, { mode, images: fit });
           const message = r.event
             ? toMsg(r.event, mobile.gseqOf(r.event.id))
-            : { id: r.queued.id, chat_id: s.id, role: "user", kind: r.steer ? "steer" : "queued", content: text, meta: {}, ts: secs(Date.now()), seq: 0 };
+            : { id: r.queued.id, chat_id: s.id, role: "user", kind: r.steer ? "steer" : "queued", content: r.queued.text ?? text, meta: {}, ts: secs(Date.now()), seq: 0 };
           if (clientId) mobile.recordSend(dev.id, clientId, { session_id: s.id, fingerprint, event_id: r.event?.id ?? null, queue_id: r.queued?.id ?? null, receipt: JSON.stringify(message) });
           return message;
         }));
