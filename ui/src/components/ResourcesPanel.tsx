@@ -45,10 +45,20 @@ export function ResourcesPanel() {
   const sessions = useStore((s) => s.sessions);
   useEffect(() => {
     let live = true;
-    const load = (refresh = false) => api<Report>(`/api/resources?history=60${refresh ? "&refresh=1" : ""}`).then((x) => live && setR(x)).catch(reportError);
-    load(true);
-    const iv = setInterval(() => load(), 5000);
-    return () => { live = false; clearInterval(iv); };
+    // One request at a time (a slow answer is not piled on), and none while
+    // the tab is hidden; a tab that shows again reads at once. The first
+    // read asks for a fresh measurement.
+    let busy = false, first = true;
+    const load = () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      api<Report>(`/api/resources?history=60${first ? "&refresh=1" : ""}`).then((x) => live && setR(x)).catch(reportError).finally(() => { busy = false; });
+      first = false;
+    };
+    load();
+    const iv = setInterval(load, 5000);
+    document.addEventListener("visibilitychange", load);
+    return () => { live = false; clearInterval(iv); document.removeEventListener("visibilitychange", load); };
   }, []);
   if (!r) return <div className="text-ui text-faint">Measuring.</div>;
   const d = r.daemon;

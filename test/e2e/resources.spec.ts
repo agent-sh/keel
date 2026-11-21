@@ -39,3 +39,64 @@ test("resources view", async ({ page, request }) => {
   await expect.poll(async () => (await (await request.get("/api/resources?refresh=1")).json()).processes.some((p: any) => p.command.includes(cmd) || p.command === orphan)).toBe(false);
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
 });
+
+// The panel reads the daemon every five seconds. With a slow answer and a
+// hidden tab: one request at a time, none while hidden, and one at once when
+// the tab shows again. The page's clock is driven by the test.
+test("the resources panel waits for a slow answer and rests while hidden", async ({ page }) => {
+  let started = 0, flying = 0, most = 0;
+  let hold: Promise<void> | undefined;
+  let every: number | undefined; // the interval the next answers claim, to see the panel take them
+  await page.route(/\/api\/resources\?/, async (route) => {
+    started++;
+    most = Math.max(most, ++flying);
+    const answer = await route.fetch();
+    await hold;
+    flying--;
+    if (every === undefined) return route.fulfill({ response: answer });
+    await route.fulfill({ response: answer, json: { ...(await answer.json()), interval_ms: every } });
+  });
+  const visibility = (state: "hidden" | "visible") => page.evaluate((s) => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => s });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => s === "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, state);
+  await page.clock.install();
+  await page.goto("/settings/resources");
+  const panel = page.getByTestId("resources-panel");
+  await expect(panel.getByTestId("tile-memory")).not.toContainText("none");
+  await page.clock.pauseAt(new Date(Date.now() + 1000));
+  await expect.poll(() => flying).toBe(0);
+  const base = started;
+
+  // The next answer is slow: the ticks that pass meanwhile start nothing more.
+  let release!: () => void;
+  hold = new Promise<void>((r) => (release = r));
+  await page.clock.runFor(5000);
+  await expect.poll(() => started).toBe(base + 1);
+  await page.clock.runFor(16_000);
+  await page.waitForTimeout(300);
+  expect([started, most]).toEqual([base + 1, 1]);
+  every = 77_000;
+  release();
+  hold = undefined;
+  await expect(panel).toContainText("every 77 s");
+  await expect.poll(() => flying).toBe(0);
+
+  // Hidden: twenty seconds of ticks ask for nothing.
+  await visibility("hidden");
+  await page.clock.runFor(20_000);
+  await page.waitForTimeout(300);
+  expect(started).toBe(base + 1);
+  // Shown again: read at once, with no tick, and the panel takes the answer.
+  every = 33_000;
+  await visibility("visible");
+  await expect.poll(() => started).toBe(base + 2);
+  await expect(panel).toContainText("every 33 s");
+  // And the five-second reads go on.
+  await expect.poll(() => flying).toBe(0);
+  await page.clock.runFor(5000);
+  await expect.poll(() => started).toBe(base + 3);
+  expect(most).toBe(1);
+  await shoot(page, "resources-03-polling");
+});
