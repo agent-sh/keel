@@ -198,16 +198,17 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="loops-panel"
+          data-float
           className={cn(
-            "fixed left-1/2 top-1/2 z-50 flex h-[min(44rem,calc(100vh-4rem))] w-[min(60rem,calc(100vw-4rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-line bg-raised shadow-3 outline-none",
+            "k-surface fixed left-1/2 top-1/2 z-50 h-[min(44rem,calc(100vh-4rem))] w-[min(60rem,calc(100vw-4rem))] -translate-x-1/2 -translate-y-1/2",
             "transition-[scale,opacity] duration-200 data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:scale-[0.98] data-ending-style:opacity-0",
           )}
         >
-          <div className="flex items-center border-b border-line px-4 py-3">
-            <Repeat className="mr-2 size-4 text-accent" />
-            <Dialog.Title className="font-semibold">Loops</Dialog.Title>
-            <span className="ml-2 text-caption text-faint">prompts that run again by themselves; no tokens between runs</span>
-            <Dialog.Close className="ml-auto grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>
+          <div className="k-surface-head">
+            <Repeat className="k-surface-icon" />
+            <Dialog.Title className="k-surface-title">Loops</Dialog.Title>
+            <span className="k-surface-note">prompts that run again by themselves; no tokens between runs</span>
+            <Dialog.Close className="k-surface-close" aria-label="Close"><X /></Dialog.Close>
           </div>
           <div className="flex min-h-0 flex-1">
             <div className="flex w-80 shrink-0 flex-col border-r border-line">

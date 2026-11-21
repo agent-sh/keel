@@ -65,11 +65,11 @@ function Body({ p }: { p: Project }) {
     // The page is the container its parts measure: beside the session list or at a
     // large text size it is narrower than the window, and lays out as that.
     <div className="@container/page flex min-h-0 flex-1 flex-col" data-testid="project-page" data-project={p.id}>
-      <header className="k-page-head flex h-12 shrink-0 items-center gap-2 border-b border-line px-3 md:px-5">
+      <header className="k-page-head k-surface-head">
         <button type="button" onClick={() => (history.length > 1 ? history.back() : navigate({ name: "new" }))} className="flex h-8 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
           <ArrowLeft className="size-4" /> Back
         </button>
-        <span className="hidden text-ui text-faint @sm/page:inline">Project</span>
+        <span className="k-surface-title hidden @sm/page:inline">Project</span>
         <div className="ml-auto flex items-center gap-2">
           <button type="button" className={button} data-testid="project-new-session" onClick={() => newInProject(p)}><Plus className="size-4" />New session</button>
           <button

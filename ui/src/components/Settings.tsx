@@ -201,7 +201,7 @@ export function Settings({ section }: { section: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="settings">
-      <header className="k-page-head flex h-12 shrink-0 items-center gap-2 border-b border-line px-3 md:px-5">
+      <header className="k-page-head k-surface-head">
         {!sidebar && (
           <button type="button" aria-label="Show the sidebar" onClick={() => savePref("sidebar", true)} className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg md:hidden">
             <Menu className="size-4" />
@@ -210,7 +210,7 @@ export function Settings({ section }: { section: string }) {
         <button type="button" onClick={() => history.length > 1 ? history.back() : navigate({ name: "new" })} aria-label="Back" className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
           <ArrowLeft className="size-4" /><span className="k-settings-back-word">Back</span>
         </button>
-        <h1 className="min-w-0 truncate text-base font-semibold">Settings</h1>
+        <h1 className="k-surface-title min-w-0 truncate">Settings</h1>
       </header>
       <div className="k-settings-main">
         <nav className="k-settings-rail" aria-label="Settings sections" data-open={open || undefined} onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}>

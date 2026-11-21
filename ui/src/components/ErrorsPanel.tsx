@@ -1,5 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Activity, Check, CheckCheck, ChevronRight, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
+import { Activity, Bug, Check, CheckCheck, ChevronRight, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
 import type { ErrorRecord } from "../../../src/core/types.ts";
@@ -160,16 +160,18 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="errors-panel"
+          data-float
           className={cn(
-            "fixed right-3 top-3 bottom-3 z-50 flex w-[min(36rem,calc(100vw-1.5rem))] flex-col rounded-xl border border-line bg-raised shadow-3",
+            "k-surface fixed right-3 top-3 bottom-3 z-50 w-[min(36rem,calc(100vw-1.5rem))]",
             "transition-[transform,opacity] duration-200 data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0",
           )}
         >
-          <div className="flex items-center border-b border-line px-4 py-3">
-            <Dialog.Title className="font-semibold">Errors</Dialog.Title>
-            <span className="ml-2 text-caption text-faint">from the daemon, the page, providers and tools</span>
-            <Dialog.Close className="ml-auto grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
-              <X className="size-4" />
+          <div className="k-surface-head">
+            <Bug className="k-surface-icon" />
+            <Dialog.Title className="k-surface-title">Errors</Dialog.Title>
+            <span className="k-surface-note">from the daemon, the page, providers and tools</span>
+            <Dialog.Close className="k-surface-close" aria-label="Close">
+              <X />
             </Dialog.Close>
           </div>
           <div className="flex items-center gap-2 border-b border-line px-3 py-2">

@@ -1,6 +1,6 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Tabs } from "@base-ui/react/tabs";
-import { CheckCheck, Dot, Settings2, X } from "lucide-react";
+import { Bell, CheckCheck, Dot, Settings2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { alertTarget, auto, focusApproval, openSession, placeName, useAuto, type Alert, type Target } from "../../lib/automation.ts";
 import { navigate, setUI } from "../../lib/ui.ts";
@@ -194,19 +194,21 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="inbox-panel"
+          data-float
           className={cn(
-            "fixed left-[17rem] top-4 bottom-4 z-50 flex w-[min(30rem,calc(100vw-2rem))] flex-col rounded-xl border border-line bg-raised shadow-3 outline-none",
+            "k-surface fixed left-[17rem] top-3 bottom-3 z-50 w-[min(32rem,calc(100vw-2rem))]",
             "transition-[transform,opacity] duration-200 data-starting-style:-translate-x-3 data-starting-style:opacity-0 data-ending-style:-translate-x-3 data-ending-style:opacity-0",
           )}
         >
           <Tabs.Root value={tab} onValueChange={(v) => setTab(String(v))} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex items-center gap-1 border-b border-line px-3 py-2.5">
-            <Dialog.Title className="sr-only">Inbox</Dialog.Title>
+          <div className="k-surface-head">
+            <Bell className="k-surface-icon" />
+            <Dialog.Title className="k-surface-title">Inbox</Dialog.Title>
             <Tabs.List className="k-seg">
-              <Tabs.Tab value="inbox" data-testid="tab-inbox">Inbox</Tabs.Tab>
+              <Tabs.Tab value="inbox" data-testid="tab-inbox">Alerts</Tabs.Tab>
               <Tabs.Tab value="activity" data-testid="tab-activity">Activity</Tabs.Tab>
             </Tabs.List>
-            <span className="ml-auto" />
+            <span className="k-surface-end">
             <GlobalSnoozeButton />
             <button
               type="button"
@@ -216,9 +218,10 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
             >
               <Settings2 className="size-3.5" /> Routes
             </button>
-            <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
-              <X className="size-4" />
+            <Dialog.Close className="k-surface-close" aria-label="Close">
+              <X />
             </Dialog.Close>
+            </span>
           </div>
           <Tabs.Panel value="inbox" className="flex min-h-0 flex-1 flex-col"><Inbox onClose={() => onOpenChange(false)} /></Tabs.Panel>
           <Tabs.Panel value="activity" className="flex min-h-0 flex-1 flex-col"><ActivityList onClose={() => onOpenChange(false)} /></Tabs.Panel>

@@ -202,15 +202,16 @@ export function SidePanel({ session }: { session: Session }) {
     openPanel(null);
   };
   return (
-    <aside data-testid="side-panel" data-panel={cur.id} data-mode={beside ? "beside" : "sheet"} onKeyDown={leave} className="k-side flex min-h-0 flex-col bg-panel animate-in">
-      <div className="k-side-head">
-        <span className="k-side-icon">{cur.icon}</span>
-        <h2 className="k-side-title">{cur.label}</h2>
-        <span className="ml-auto" />
-        <Picker list={list} open={open} label testid="panel-switch" />
-        <button type="button" aria-label="Close the panel" title="Close the panel (Ctrl \)" onClick={() => openPanel(null)} className={iconButton}>
-          <X className="size-4" />
-        </button>
+    <aside data-testid="side-panel" data-panel={cur.id} data-mode={beside ? "beside" : "sheet"} onKeyDown={leave} className="k-side k-surface animate-in">
+      <div className="k-surface-head">
+        <span className="k-surface-icon">{cur.icon}</span>
+        <h2 className="k-surface-title">{cur.label}</h2>
+        <span className="k-surface-end">
+          <Picker list={list} open={open} label testid="panel-switch" />
+          <button type="button" aria-label="Close the panel" title="Close the panel (Ctrl \)" onClick={() => openPanel(null)} className="k-surface-close">
+            <X />
+          </button>
+        </span>
       </div>
       <div className="min-h-0 flex-1">
         <Suspense fallback={null}>
