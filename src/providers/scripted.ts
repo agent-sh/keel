@@ -312,6 +312,14 @@ export class ScriptedProvider implements Provider {
         usage.output = tokens(halves.join(""));
         return { blocks: [{ type: "text", text: halves.join("") }], usage, stop: "end_turn", model: req.model };
       }
+      case "block": {
+        // `script:block <ms>`: holds the daemon's event loop that long without
+        // yielding, as code that reads too much in one go does. Nothing else
+        // is answered meanwhile.
+        const until = performance.now() + Math.min(Number(owner.match(/script:block\s+(\d+)/)?.[1] ?? 1500), 30_000);
+        while (performance.now() < until);
+        return reply("Answered after holding the daemon.");
+      }
       case "slow":
         await Bun.sleep(3_000); // no bytes for a while
         return reply("Answered after a slow start.");

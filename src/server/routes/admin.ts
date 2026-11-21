@@ -56,8 +56,11 @@ export const adminRoutes: RouteModule = (deps) => {
   loadSettings(store.stateDir, (e) => errors.capture("server", e, { at: "settings" }));
   const prev = G.__keelAdmin;
   prev?.awake.stopAll();
+  prev?.stalls?.stop();
   clearInterval(prev?.daily);
   const daemon = new Daemon(deps);
+  // A command's own short-lived daemon answers nobody else: only a served one is watched.
+  const stalls = runMode.client ? undefined : daemon.watchStalls();
   const storage = new Storage(store, deps.engine, bus, errors, configDir());
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   daemon.onExit(() => awake.stopAll());
@@ -75,7 +78,7 @@ export const adminRoutes: RouteModule = (deps) => {
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));
   const daily = setInterval(policy, 86_400_000);
   (daily as any).unref?.();
-  G.__keelAdmin = { awake, daily, daemon };
+  G.__keelAdmin = { awake, daily, daemon, stalls };
 
   // Once per process start: the archive policy. (SIGINT and SIGTERM drain in main.ts.)
   if (!prev && !runMode.client) queueMicrotask(policy);

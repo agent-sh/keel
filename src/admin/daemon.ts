@@ -9,6 +9,7 @@ import type { Deps } from "../server/app.ts";
 import { flushAll } from "../automation/core.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { addAdmission } from "../server/admission.ts";
+import { describeStall, StallMonitor, TurnWatch } from "./stall.ts";
 
 export { claimState };
 
@@ -175,6 +176,24 @@ export class Daemon {
 
   runningSessions(): string[] {
     return this.deps.store.db.query<{ id: string }, []>("SELECT id FROM sessions").all().map((r) => r.id).filter((id) => this.deps.engine.isRunning(id));
+  }
+
+  // The daemon's own unresponsiveness (src/admin/stall.ts): each stall is one
+  // error row and, through the capture, one log line. The error names no
+  // stack: the code that held the loop is not on it any more.
+  watchStalls(): StallMonitor {
+    const watch = new TurnWatch();
+    this.deps.bus.on((f) => watch.frame(f as any));
+    const monitor = new StallMonitor({
+      turns: (began) => watch.at(began),
+      report: (stall) => {
+        const d = describeStall(stall);
+        this.deps.errors.capture("server", Object.assign(new Error(d.message), { stack: undefined }), d.context);
+      },
+      note: (stall) => console.warn(`[daemon] ${describeStall(stall).message}`),
+    });
+    monitor.start();
+    return monitor;
   }
 
   status() {

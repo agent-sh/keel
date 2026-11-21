@@ -17,6 +17,7 @@ import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
 import { fitted } from "../engine/image-fit.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
+import { inFlight, timed } from "../admin/stall.ts";
 
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
@@ -99,10 +100,14 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       // the idle timeout comes back for the keep-alive wait after it answers.
       let slow = false;
       const timer = setTimeout(() => { slow = true; srv.timeout(req, 0); }, SLOW_MS);
+      // What the daemon was answering, should it stop responding meanwhile (src/admin/stall.ts).
+      const label = () => `${req.method} ${new URL(req.url).pathname}`;
+      const answered = inFlight(req, label);
       try {
         const refused = admit(req, srv);
         if (refused) return refused;
-        return await compressJson(req, await h(req, srv));
+        const res = await timed(label, () => h(req, srv));
+        return await timed(label, () => compressJson(req, res));
       } catch (e) {
         const st = (e as any)?.status;
         // `code`: a machine-readable reason, when the refusal has one (off_branch).
@@ -110,6 +115,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
         return json({ error: rec.message, error_id: rec.id }, 500);
       } finally {
+        answered();
         clearTimeout(timer);
         if (slow) srv.timeout(req, IDLE_S);
       }
@@ -353,7 +359,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
 
     websocket: {
       open(ws) { const h = socketKind(ws); if (h) h.open?.(ws); else live.open(ws); },
-      message(ws, m) { const h = socketKind(ws); if (h) h.message?.(ws, m); else live.message(ws, m); },
+      message(ws, m) { const h = socketKind(ws); timed(() => "a page's socket message", () => (h ? h.message?.(ws, m) : live.message(ws, m))); },
       close(ws, code, reason) { socketKind(ws)?.close?.(ws, code, reason); },
       // Pings while quiet; a client silent for 40 s is gone. One that stops
       // reading is closed instead of buffered without end: a page resumes on reconnect.
