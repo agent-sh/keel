@@ -140,6 +140,8 @@ scripts/dev.sh <port>          # dev daemon with hot reload on Bedrock, scratch 
                                #  brought back, follows a daemon that restarted itself, and stopping it stops the daemon)
 bunx tsc --noEmit -p .          # typecheck
 KEEL_URL=http://127.0.0.1:<port> bunx playwright test   # e2e against that dev daemon (required)
+scripts/smoke.sh [SPEC...]       # browser specs with no credentials and no network: a daemon of its own on the
+                               # scripted provider in a throwaway folder and network namespace (default: chat.spec.ts)
 bun test ./test/cli              # the command line e2e (builds the binary, scripted model)
 bun test ./scripts               # the dev launcher's decisions (scripts/dev-watch.ts)
 bun scripts/build.ts            # dist/keel, one binary (and dist/keel-ui.tar.gz, its page as a bundle)

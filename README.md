@@ -453,6 +453,25 @@ Keel never restarts the daemon for a UI install. Idle pages reload, and a page
 with a draft offers a reload and keeps the draft. `keel ui rollback` switches
 back to the previous bundle, or to the embedded page.
 
+## Browser check without credentials
+
+```bash
+scripts/smoke.sh                               # the smoke case: a chat with a tool call
+scripts/smoke.sh test/e2e/copy.spec.ts         # other specs the same way
+```
+
+The command starts a daemon of its own on the scripted stand-in provider, runs
+the Playwright specs against it and stops it. Nothing of the caller reaches the
+run: the daemon and the browser get a clean environment and a throwaway folder
+for their home, state, config, workspace, screenshots and traces, so no key is
+read and `KEEL_URL` cannot point the specs at another daemon. They run in a
+network namespace with only a loopback interface, so no request leaves the
+machine. The folder is removed after a green run and kept, with its path
+printed, after a failed one or with `--keep`. Linux with unprivileged user
+namespaces is needed for the namespace; `--allow-network` runs without it
+(still no credentials, traffic not blocked). Dependencies are installed before
+the network is cut.
+
 ## Automatic diagnostic notices
 
 Off by default. To opt in, open a dedicated coordinator session, copy its ID
