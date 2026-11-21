@@ -535,6 +535,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-settings-jump-hint { flex-shrink: 0; font-size: 0.8125rem; color: var(--muted); }
 .k-settings-jump-mark { flex-shrink: 0; width: 1rem; height: 1rem; color: var(--muted); transition: transform 160ms var(--ease-out); }
 .k-settings-jump[aria-expanded="true"] .k-settings-jump-mark { transform: rotate(180deg); }
+/* A page too narrow for the head's words keeps the title whole: Back is its arrow. */
+@container settings (max-width: 16rem) { .k-settings-back-word { display: none; } }
 /* The bar's words give way to the section's name when both do not fit. */
 @container settings (max-width: 22rem) { .k-settings-jump-hint { display: none; } }
 .k-settings-sections { display: none; flex-direction: column; flex: 1; min-height: 0; border-top: 1px solid var(--line); }

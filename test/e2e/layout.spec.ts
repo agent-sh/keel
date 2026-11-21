@@ -497,3 +497,34 @@ test("settings sections on a narrow page", async ({ page }) => {
   await expect(row("about")).toBeVisible();
   await expect.poll(() => inView(row("about"))).toBe(true);
 });
+
+// The Settings head on a small phone at the largest text size: the title is
+// whole and Back is still there, as its arrow.
+test("the settings head fits a small phone at the largest text size", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/settings/general");
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.reload();
+  expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))).toBeCloseTo(25.5, 1);
+  const head = page.getByTestId("settings").locator("header");
+  const title = head.getByRole("heading", { name: "Settings" });
+  await expect(title).toBeVisible();
+  expect(await title.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const t = (await title.boundingBox())!;
+  expect(t.x + t.width).toBeLessThanOrEqual(320);
+  const back = head.getByRole("button", { name: "Back", exact: true });
+  await expect(back).toBeVisible();
+  const b = (await back.boundingBox())!;
+  expect(b.x).toBeGreaterThanOrEqual(0);
+  expect(b.x + b.width).toBeLessThanOrEqual(t.x + 0.5);
+  expect(await head.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await shoot(page, "layout-18-settings-head-phone-150");
+  // At the default size the word is back beside its arrow.
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+  await page.reload();
+  await expect(back).toHaveText("Back");
+  await expect(back.getByText("Back")).toBeVisible();
+  expect(await title.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await back.click();
+  await expect(page).not.toHaveURL(/\/settings\//);
+});

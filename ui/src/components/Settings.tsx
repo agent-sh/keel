@@ -208,8 +208,8 @@ export function Settings({ section }: { section: string }) {
             <Menu className="size-4" />
           </button>
         )}
-        <button type="button" onClick={() => history.length > 1 ? history.back() : navigate({ name: "new" })} className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
-          <ArrowLeft className="size-4" /> Back
+        <button type="button" onClick={() => history.length > 1 ? history.back() : navigate({ name: "new" })} aria-label="Back" className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
+          <ArrowLeft className="size-4" /><span className="k-settings-back-word">Back</span>
         </button>
         <h1 className="min-w-0 truncate text-base font-semibold">Settings</h1>
       </header>
