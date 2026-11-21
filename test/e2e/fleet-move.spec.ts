@@ -153,6 +153,62 @@ test("fleet move: from another machine a session only comes back here, and the p
   }
 });
 
+// A queue the owner stopped stays stopped: the move changes where the tools
+// run, not whether the prompts that wait may start. Place only, scripted model.
+test("fleet move: a queue the owner held stays held after the move", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; context: number; id: string }[])
+    .filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0]?.id;
+  test.skip(!model, "the daemon runs without the scripted provider");
+  mkdirSync(ROOT, { recursive: true });
+  const { machines } = await (await request.get("/api/fleet/machines")).json();
+  let first = machines.find((m: any) => m.daemon_url === PEER);
+  if (!first) {
+    const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
+    first = r.machines.find((m: any) => m.id === r.id);
+  }
+  const s = (await (await request.post("/api/sessions", { data: { title: "Held, then moved", model } })).json()).session;
+  const queue = async () => (await (await request.get(`/api/sessions/${s.id}/queue`)).json()) as { queue: { id: string; text: string }[]; held: boolean };
+  const starts = async () => ((await (await request.get(`/api/sessions/${s.id}`)).json()).events as any[]).filter((e) => e.kind === "turn_start").length;
+  try {
+    // A turn runs, two prompts wait behind it, the owner stops it: the queue is held.
+    await request.post(`/api/sessions/${s.id}/messages`, { data: { text: "script:slow" } });
+    for (const text of ["alpha", "bravo"]) await request.post(`/api/sessions/${s.id}/messages`, { data: { text, mode: "queue" } });
+    await request.post(`/api/sessions/${s.id}/interrupt`, { data: { by: "owner" } });
+    const before = await queue();
+    expect(before.held).toBe(true);
+    expect(before.queue.map((q) => q.text)).toEqual(["alpha", "bravo"]);
+    const started = await starts();
+
+    await page.goto(`/s/${s.id}`);
+    await expect(page.getByTestId("queue-held")).toBeVisible();
+    await page.getByTestId("machine-chip").click();
+    await page.getByRole("radio", { name: "place only" }).click();
+    await page.locator(`[data-testid="move-to"][data-machine="${first.id}"]`).click();
+    await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("machine-chip")).toContainText(first.name);
+
+    // Moved: the same prompts wait, still held, and none of them started.
+    await page.waitForTimeout(1500);
+    const after = await queue();
+    expect(after.held).toBe(true);
+    expect(after.queue.map((q) => q.id)).toEqual(before.queue.map((q) => q.id));
+    expect(await starts()).toBe(started);
+    await expect(page.getByTestId("queue-held")).toBeVisible();
+
+    // The owner lets it go on: the first one runs.
+    await request.post(`/api/sessions/${s.id}/queue/resume`, { data: {} });
+    await expect.poll(starts, { timeout: 30_000 }).toBeGreaterThan(started);
+    await expect.poll(async () => (await queue()).queue.length, { timeout: 60_000 }).toBe(0);
+  } finally {
+    await page.goto("about:blank");
+    await request.post(`/api/sessions/${s.id}/interrupt`, { data: {} });
+    await request.delete(`/api/sessions/${s.id}`);
+  }
+});
+
 // A daemon that goes down in the middle of a move. Its own daemon here (the
 // spec kills it), reaching the peer through a way that keeps back the answer
 // to one call: the worktree is made over there and this daemon never hears

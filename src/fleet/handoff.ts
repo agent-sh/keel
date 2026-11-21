@@ -37,6 +37,8 @@ export type Handoff = {
   interrupted?: boolean;
   // The switch is stored; the session's queue is still to be let go on.
   settle?: boolean;
+  // The owner held the session's queue before the move: it stays held after it.
+  held?: boolean;
 };
 // `away`: the worktree the session has on a machine. `making`: one about to be
 // made there, written before the call that makes it, so a move cut in between
@@ -93,7 +95,7 @@ export class Handoffs {
       h.to.cwd = s.workspace;
       h.away = Object.keys(m.away).length ? m.away : undefined;
       h.summary = `Moved from ${h.from.machine} to ${h.to.machine}: now in ${s.workspace}. The daemon restarted as the move ended.`;
-      h.settle = true;
+      if (!h.held) h.settle = true;
     } else {
       for (const st of h.steps) {
         if (st.state === "running") { st.state = "failed"; st.detail = "cut by a daemon restart"; }
@@ -122,7 +124,8 @@ export class Handoffs {
 
   // The last thing a finished move does: the queue it stopped goes on. Its own
   // step, marked on the receipt, so a daemon that went down after the switch
-  // was stored still does it.
+  // was stored still does it. Never for a queue the owner held before the
+  // move: that one waits for the owner as it did.
   private settle(id: string) {
     const m = this.moves(id);
     if (!m.last?.settle) return;
@@ -252,6 +255,7 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
       to: { machine_id: to, machine: dest?.name ?? this.fleet.name },
       steps: (["interrupt", "snapshot", "transfer", "worktree", "switch"] as StepName[]).map((name) => ({ name, state: "pending" })),
       started_ms: Date.now(),
+      ...(this.engine.isHeld(s.id) ? { held: true } : {}),
     };
     this.moving.add(s.id);
     this.record(h);
@@ -386,7 +390,7 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
         if (!this.store.session(sid)) throw new Error("the session was deleted while it moved");
         this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(dest ? dest.id : null, sid);
         this.store.updateSession(sid, { workspace: target });
-        const done: Handoff = { ...h, steps: h.steps.map((x) => (x === sw ? { ...x, state: "done" } : x)), to: { ...h.to, cwd: target }, away: Object.keys(moves.away).length ? moves.away : undefined, state: "done", ended_ms: Date.now(), summary, settle: true };
+        const done: Handoff = { ...h, steps: h.steps.map((x) => (x === sw ? { ...x, state: "done" } : x)), to: { ...h.to, cwd: target }, away: Object.keys(moves.away).length ? moves.away : undefined, state: "done", ended_ms: Date.now(), summary, ...(h.held ? {} : { settle: true }) };
         this.saveMoves(sid, { ...moves, last: done });
         return this.store.append(sid, "note", { kind: "handoff", text: summary });
       });
