@@ -387,6 +387,54 @@ describe("client commands against a running daemon", () => {
     const badMode = await k(["rules", "check", "ls", "--mode", "yolo"]);
     expect(badMode.code).toBe(3);
   }, 60_000);
+
+  // keel attach, typed into: an approval card refused, a question answered by
+  // its choice's number and one by a text of the owner's own (each shown once,
+  // the same turn going on after each), then /detach, which stops nothing.
+  test("attach: a card, a question answered by number and by text, detach", async () => {
+    const ask = await k(["run", "--wait", "--json", "--permission-mode", "ask", "script:long-tool"]);
+    expect(ask.code).toBe(2);
+    const sid = json(ask.out).session_id;
+    const p = Bun.spawn([BIN, "attach", sid], { cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    let seen = "";
+    void (async () => { const dec = new TextDecoder(); for await (const c of p.stdout) seen += dec.decode(c, { stream: true }); })();
+    const count = (text: string) => seen.split(text).length - 1;
+    const until = async (what: string, n = 1, ms = 20_000) => {
+      for (const t0 = Date.now(); count(what) < n; await Bun.sleep(50)) if (Date.now() - t0 > ms) throw new Error(`"${what}" was not printed ${n} time(s):\n${seen}`);
+    };
+    const type = (l: string) => { p.stdin.write(l + "\n"); p.stdin.flush(); };
+    try {
+      await until("?? approval: Bash");
+      type("/deny not now");
+      await until("-- turn ended");
+
+      const q = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber", description: "warm" }], multiSelect: false }] } };
+      type(`script:calls ${JSON.stringify([q, q])}`);
+      await until("?? question (Color): Which color should I use?");
+      expect(seen).toContain("   1. Teal\n   2. Amber  warm\n   (/answer N, or /answer TEXT for an answer of your own)");
+      await Bun.sleep(3500); // two more reads of what is open: the question is not shown again
+      expect(count("?? question")).toBe(1);
+      type("/answer 2");
+      // The same turn goes on: its next step asks again, and that card is a new one.
+      await until("?? question (Color)", 2);
+      expect(count("-- turn ended")).toBe(1);
+      type("/answer plain grey");
+      await until("Done with 2 calls.");
+      await until("-- turn ended", 2);
+      expect(count("?? question")).toBe(2);
+      const { events } = await (await fetch(`${json(readFileSync(join(state, "daemon.lock"), "utf8")).url}/api/sessions/${sid}/events`)).json() as any;
+      const results = events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).map((r: any) => JSON.stringify(r.content));
+      expect(results.at(-2)).toContain("Amber");
+      expect(results.at(-1)).toContain("plain grey");
+
+      type("/detach");
+      expect(await p.exited).toBe(0);
+      expect(await new Response(p.stderr).text()).toContain("-- detached; the session goes on");
+      expect((await k(["show", sid])).out).toContain("Done with 2 calls.");
+    } finally {
+      p.kill();
+    }
+  }, 90_000);
 });
 
 // A daemon of its own for a group of tests, and plain calls to its API.

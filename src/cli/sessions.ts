@@ -4,6 +4,7 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
+import { questions as askedOf, type UiQuestion } from "../../ui/src/lib/tools.ts";
 import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
 import { exitOf, heldNote, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watch, worktreeArg } from "./run.ts";
@@ -316,8 +317,35 @@ const approve = command("approve", APPROVE_USAGE, {
 
 const ATTACH_USAGE = `keel attach ID [--thoughts]
   Follows a session in this terminal. A typed line is a prompt; commands:
-  /steer TEXT, /queue TEXT, /approve [once|session|always], /deny [REASON], /stop, /detach.
+  /steer TEXT, /queue TEXT, /approve [once|session|always], /deny [REASON],
+  /answer N|TEXT (a question's choice by its number, several as 1,3, or an answer of your own),
+  /stop, /detach.
   Leaving (/detach, Ctrl-D or Ctrl-C) does not stop the session.`;
+
+type Answer = { picked: string[]; other?: string };
+
+// What `/answer ARG` means for one question: its choices by number (several
+// when the question takes several), a choice by its label, else the text as
+// the owner's own answer.
+export function answerOf(q: UiQuestion, arg: string): Answer {
+  const nums = arg.split(/[\s,]+/).filter(Boolean);
+  const byNumber = nums.length > 0 && nums.every((n) => /^\d+$/.test(n) && Number(n) >= 1 && Number(n) <= q.options.length);
+  if (byNumber && (q.multi || nums.length === 1)) return { picked: [...new Set(nums.map((n) => q.options[Number(n) - 1]!.label))] };
+  const label = q.options.find((o) => o.label.toLowerCase() === arg.toLowerCase());
+  return label ? { picked: [label.label] } : { picked: [], other: arg };
+}
+
+// A question card as the terminal shows it, once: each question with its choices numbered.
+function questionLines(qs: UiQuestion[], from: string): string[] {
+  const out: string[] = [];
+  qs.forEach((q, i) => {
+    out.push(`?? question${qs.length > 1 ? ` ${i + 1} of ${qs.length}` : ""}${q.header ? ` (${line(q.header)})` : ""}: ${line(q.question)}${from}`);
+    q.options.forEach((o, k) => out.push(`   ${k + 1}. ${line(o.label)}${o.description ? `  ${line(o.description)}` : ""}`));
+  });
+  const first = qs[0];
+  out.push(`   (/answer ${first?.options.length ? (first.multi ? "N or N,N" : "N") + ", or /answer TEXT for an answer of your own" : "TEXT"}${qs.length > 1 ? "; one /answer for each question, in order" : ""})`);
+  return out;
+}
 
 export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boolean }): Promise<number> {
   const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${sessionId}/events`);
@@ -325,19 +353,38 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
   const s = await c.resolve(sessionId);
   console.error(`-- attached to ${sessionId} (${line(s.title) || "untitled"}); /detach leaves`);
   let seenCards = new Set<string>();
+  // The open question cards, each shown once: its questions, and the answers given so far.
+  const asked = new Map<string, Promise<{ session_id: string; call_id: string; qs: UiQuestion[]; answers: Record<string, Answer> }>>();
+  // What is open now: a card or a question not shown yet is printed, one that closed is forgotten.
+  const sync = async () => {
+    const st = await c.get<any>(`/api/cli/state/${sessionId}`).catch(() => null);
+    if (!st) return null;
+    for (const a of st.approvals) {
+      if (seenCards.has(a.id)) continue;
+      seenCards.add(a.id);
+      console.log(`?? approval: ${clean(a.tool)}: ${line(a.summary)}   (/approve or /deny)`);
+    }
+    seenCards = new Set([...seenCards].filter((id) => st.approvals.some((a: any) => a.id === id)));
+    for (const q of st.questions) {
+      if (asked.has(q.call_id)) continue;
+      asked.set(q.call_id, (async () => {
+        const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);
+        const use = events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks ?? [] : [])).find((b: any) => b.type === "tool_use" && b.id === q.call_id);
+        const qs = askedOf(use?.name ?? "", use?.input);
+        for (const l of questionLines(qs, q.session_id !== sessionId ? `  (subagent ${q.session_id})` : "")) console.log(l);
+        return { session_id: q.session_id, call_id: q.call_id, qs, answers: {} };
+      })());
+    }
+    for (const id of [...asked.keys()]) if (!st.questions.some((q: any) => q.call_id === id)) asked.delete(id);
+    return st;
+  };
   const f = new Follower(c, sessionId, events.at(-1)?.seq ?? 0, (e) => { for (const l of textLines(e, v)) console.log(l); });
   await f.connect();
   process.on("SIGINT", () => (f.close(), process.exit(EXIT.ok)));
   const loop = (async () => {
     while (!f.closed) {
       await f.read().catch((e) => console.error(`keel attach: ${e.message}`));
-      const st = await c.get<any>(`/api/cli/state/${sessionId}`).catch(() => null);
-      for (const a of st?.approvals ?? []) {
-        if (seenCards.has(a.id)) continue;
-        seenCards.add(a.id);
-        console.log(`?? approval: ${clean(a.tool)}: ${line(a.summary)}   (/approve or /deny)`);
-      }
-      seenCards = new Set([...seenCards].filter((id) => (st?.approvals ?? []).some((a: any) => a.id === id)));
+      await sync().catch((e) => console.error(`keel attach: ${e.message}`));
       await f.pause(1500);
     }
   })();
@@ -355,7 +402,25 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
         const a = await card();
         if (!a) console.error("nothing is open");
         else await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, cmd === "/deny" ? { choice: "deny", reason: arg || undefined } : { choice: ["session", "always"].includes(arg) ? arg : "once" });
-      } else if (cmd!.startsWith("/") && !cmd!.startsWith("//")) console.error(`unknown command ${cmd}; /steer, /queue, /approve, /deny, /stop, /detach`);
+      } else if (cmd === "/answer") {
+        // The oldest open question (shown first when this is the first the terminal hears of it).
+        const st = await sync();
+        const q = await asked.get(st?.questions[0]?.call_id);
+        const next = q?.qs.find((x) => !q.answers[x.id]);
+        if (!q) console.error("no question is open");
+        else if (!arg) console.error("give the choice's number, or your own answer: /answer N or /answer TEXT");
+        else if (next) {
+          q.answers[next.id] = answerOf(next, arg);
+          const left = q.qs.filter((x) => !q.answers[x.id]);
+          if (left.length) console.error(`-- ${left.length} more to answer: ${line(left[0]!.question)}`);
+          else {
+            // A card that did not take the answers is asked again from its first question.
+            const answers = q.answers;
+            q.answers = {};
+            await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, { answers });
+          }
+        } else console.error("this question has nothing to choose: answer it in the workbench");
+      } else if (cmd!.startsWith("/") && !cmd!.startsWith("//")) console.error(`unknown command ${cmd}; /steer, /queue, /approve, /deny, /answer, /stop, /detach`);
       else await c.post(`/api/sessions/${sessionId}/messages`, { text: text.replace(/^\/\//, "/") });
     } catch (e) {
       console.error(`keel attach: ${(e as Error).message}`);
