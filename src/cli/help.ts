@@ -11,6 +11,7 @@ const GROUPS: [string, [string, string][]][] = [
   ]],
   ["Sessions", [
     ["sessions", "list or search sessions (also: ls)"],
+    ["stuck", "the turns, tools and agents that made no progress for too long"],
     ["show", "a session and its transcript"],
     ["logs", "a session's events; -f follows them"],
     ["open", "open the workbench on a directory's session"],

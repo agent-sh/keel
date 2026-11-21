@@ -8,7 +8,13 @@
 //   every session that is not archived, agents' sessions included.
 // Frame: { t: "feature", name: "state", session_id, data: SessionState | null }
 //   (null: the session is gone).
+// GET /api/stuck?after=SECONDS&format=text -> { as_of, after, items }
+//   "is anything stuck": the running turns whose step has made no progress
+//   for too long (src/core/stuck.ts), agents' included, longest first.
+//   `after` sets the limit for a model and a tool alike; format=text is the
+//   same answer a line an item.
 import type { Frame } from "../../core/types.ts";
+import { STUCK_AFTER, stuckOf, stuckText, type After, type StuckItem } from "../../core/stuck.ts";
 import type { SessionState } from "../../core/watch.ts";
 import { lens, sessionState, type Lens } from "../../automation/state.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -45,6 +51,20 @@ export class StateBoard {
       this.last.set(s.id, JSON.stringify(st));
     }
     return out;
+  }
+
+  // The steps that have made no progress for too long, the longest first.
+  stuck(after: After = STUCK_AFTER, now = Date.now()): StuckItem[] {
+    const l = lens(this.from());
+    const out: StuckItem[] = [];
+    for (const s of this.deps.store.sessions()) {
+      if (!this.deps.engine.isRunning(s.id)) continue;
+      const hit = stuckOf(this.read(s.id, l) ?? undefined, now, after);
+      if (!hit) continue;
+      const parent = s.parent_id ? this.deps.store.session(s.parent_id) : undefined;
+      out.push({ ...hit, session_id: s.id, title: s.title, agent: !!s.parent_id, ...(parent ? { parent_id: parent.id, parent_title: parent.title } : {}), elapsed_ms: now - hit.since });
+    }
+    return out.sort((a, b) => b.elapsed_ms - a.elapsed_ms);
   }
 
   // The session and the sessions above it: an agent's card is its parent's too.
@@ -116,5 +136,18 @@ export const stateRoutes: RouteModule = (deps) => {
   g.__keelStateSweep.unref?.();
   return {
     "/api/state": { GET: () => Response.json({ states: b.all(), rev: deps.bus.rev() }) },
+    "/api/stuck": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const given = q.get("after");
+        const secs = given === null ? undefined : Number(given);
+        if (secs !== undefined && !(secs > 0)) return Response.json({ error: "after is a number of seconds above 0" }, { status: 400 });
+        const after = secs === undefined ? STUCK_AFTER : { model: secs * 1000, tool: secs * 1000 };
+        const now = Date.now();
+        const items = b.stuck(after, now);
+        if (q.get("format") === "text") return new Response(`${stuckText(items, after)}\n`, { headers: { "content-type": "text/plain; charset=utf-8" } });
+        return Response.json({ as_of: now, after, items });
+      },
+    },
   };
 };

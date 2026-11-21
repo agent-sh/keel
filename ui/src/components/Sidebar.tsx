@@ -31,6 +31,7 @@ import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
 import { Seg, tabId } from "./Seg.tsx";
+import { StuckStrip } from "./Stuck.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -514,6 +515,7 @@ export function Sidebar({ open }: { open: boolean }) {
           <Sparkles /><span className="k-act-label">Helper</span>{open && <Kbd keys="mod+j" className="ml-auto" />}
         </button>
       </div>
+      <StuckStrip open={open} />
       <CardCtx.Provider value={bind}>
         <div id="k-sessions" className="k-rail-body">
           {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" aria-label="Sessions by state" onKeyDown={stepRows}><Marks current={current} /></nav>}

@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { shoot } from "./shots.ts";
 
@@ -148,6 +149,68 @@ test("a stream that stopped producing output says so, with the time since its la
     writeFileSync(gate, "");
     await expect(r).toHaveAttribute("data-watch", "done", { timeout: 30_000 });
   } finally {
+    await drop(request, made);
+  }
+});
+
+test("is anything stuck: a held stream, a hung tool and a stalled agent are listed in one answer", async ({ page, request, baseURL }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.setTimeout(240_000);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const tag = Date.now().toString(36);
+  const gates = { stream: `${WS}/stuck-${tag}-stream.go`, tool: `${WS}/stuck-${tag}-tool.go`, agent: `${WS}/stuck-${tag}-agent.go` };
+  try {
+    const stream = await start(request, "Draft the release notes");
+    const tool = await start(request, "Run the migration against staging");
+    const parent = await start(request, "Audit the three services");
+    made.push(stream, tool, parent);
+    await send(request, stream, `script:hold ${gates.stream}`);
+    await send(request, tool, script([{ name: "Bash", input: { command: `until [ -f ${gates.tool} ]; do sleep 0.2; done; echo released` } }]));
+    await send(request, parent, script([{ name: "spawn_agent", input: { message: `Read the billing service\nscript:hold ${gates.agent}`, isolation: "none" } }]));
+    const child = async () => ((await (await request.get(`/api/sessions/${parent}/agents`)).json()).agents as { session_id: string; status: string }[])[0]?.session_id;
+    await expect.poll(child, { timeout: 30_000 }).toBeTruthy();
+    const agent = (await child())!;
+
+    // By the daemon's own limits nothing has been silent long enough yet.
+    expect((await (await request.get("/api/stuck")).json()).items).toEqual([]);
+    expect(await (await request.get("/api/stuck?format=text")).text()).toMatch(/^Nothing is stuck/);
+    // With a limit of a few seconds: the three, each with what it is stuck on and for how long.
+    type Item = { session_id: string; what: string; agent: boolean; parent_id?: string; elapsed_ms: number };
+    const stuck = async () => ((await (await request.get("/api/stuck?after=5")).json()).items as Item[]).filter((i) => [stream, tool, agent].includes(i.session_id));
+    await expect.poll(async () => (await stuck()).map((i) => i.session_id).sort(), { timeout: 60_000 }).toEqual([stream, tool, agent].sort());
+    const items = await stuck();
+    expect(items.find((i) => i.session_id === stream)).toMatchObject({ what: "stream", agent: false });
+    expect(items.find((i) => i.session_id === tool)).toMatchObject({ what: "tool", agent: false });
+    expect(items.find((i) => i.session_id === agent)).toMatchObject({ what: "stream", agent: true, parent_id: parent });
+    for (const i of items) expect(i.elapsed_ms).toBeGreaterThanOrEqual(5000);
+    // The text form, from the route and from the command line.
+    const text = await (await request.get("/api/stuck?after=5&format=text")).text();
+    expect(text).toMatch(/stuck \(no progress for 5 s\), longest first:/);
+    expect(text).toMatch(new RegExp(`${stream}  Draft the release notes: the model is answering, no output for \\d+s`));
+    expect(text).toMatch(new RegExp(`${tool}  Run the migration against staging: running Bash, for \\d+s`));
+    expect(text).toMatch(new RegExp(`${agent}  agent .+ of Audit the three services: the model is answering, no output for \\d+s`));
+    const cli = execFileSync("bun", ["src/main.ts", "stuck", "--after", "5", "--url", baseURL!], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: process.env.KEEL_CONFIG_DIR ?? `${WS}/config` } });
+    for (const id of [stream, tool, agent]) expect(cli).toContain(id);
+
+    // The page: the same answer above the session list, once the page's own limits pass.
+    await page.goto(`/s/${parent}`);
+    await expect(row(page, stream)).toHaveAttribute("data-watch", "work");
+    await expect(page.getByTestId("stuck")).toHaveCount(0);
+    await page.clock.install();
+    await page.clock.fastForward("11:00");
+    const strip = page.getByTestId("stuck");
+    await expect(strip).toBeVisible({ timeout: 15_000 });
+    await expect(strip.getByTestId("stuck-item")).toHaveCount(3);
+    await expect(strip.locator(`[data-session="${stream}"]`)).toContainText("no output");
+    await expect(strip.locator(`[data-session="${tool}"]`)).toContainText("Running Bash");
+    await expect(strip.locator(`[data-session="${agent}"]`)).toContainText("agent of Audit the three services");
+    await shoot(page, "session-state-04-stuck");
+    await strip.locator(`[data-session="${tool}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`/s/${tool}$`));
+  } finally {
+    mkdirSync(WS, { recursive: true });
+    for (const g of Object.values(gates)) writeFileSync(g, "");
     await drop(request, made);
   }
 });

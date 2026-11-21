@@ -4,6 +4,7 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
+import { stuckText, type After, type StuckItem } from "../core/stuck.ts";
 import { questions as askedOf, type UiQuestion } from "../../ui/src/lib/tools.ts";
 import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
@@ -549,9 +550,28 @@ const models = command("models", MODELS_USAGE, { provider: { type: "string" }, r
   return EXIT.ok;
 });
 
+// ---- keel stuck
+
+const STUCK_USAGE = `keel stuck [options]
+  Is anything stuck: the running turns, tools and agents that made no progress for too long,
+  across every session, longest first. A model counts after 2 minutes without output, a
+  tool after 10 minutes without returning.
+
+      --after SECONDS   count anything without progress for this long instead
+      --json            the answer as JSON`;
+
+const stuck = command("stuck", STUCK_USAGE, { after: { type: "string" } }, async (v, _pos, c) => {
+  const after = v.after === undefined ? undefined : Number(v.after);
+  if (after !== undefined && !(after > 0)) return usageError("stuck", "--after is a number of seconds above 0", STUCK_USAGE);
+  const r = await c.get<{ after: After; items: StuckItem[] }>(`/api/stuck${after ? `?after=${after}` : ""}`);
+  if (v.json) printJson(r); else console.log(stuckText(r.items, r.after));
+  return EXIT.ok;
+});
+
 export const sessionCommands = {
   sessions,
   ls: sessions,
+  stuck,
   show: logsOf("show", SHOW_USAGE),
   logs: logsOf("logs", LOGS_USAGE),
   stop,
