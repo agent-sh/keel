@@ -119,6 +119,12 @@ export function SessionBadges({ sessionId }: { sessionId: string }) {
 export function AutomationFooter() {
   const [inbox, setInbox] = useState(() => new URLSearchParams(location.search).has("inbox"));
   const [loops, setLoops] = useState(false);
+  // The desktop shell opens the inbox on a click that names no session (ui/src/features/shell.ts).
+  useEffect(() => {
+    const open = () => setInbox(true);
+    addEventListener("keel-open-inbox", open);
+    return () => removeEventListener("keel-open-inbox", open);
+  }, []);
   const [seen, setSeen] = useState({ inbox: false, loops: false });
   if ((inbox && !seen.inbox) || (loops && !seen.loops)) setSeen({ inbox: seen.inbox || inbox, loops: seen.loops || loops });
   // The "Open the inbox" command (a key, the palette): the same press closes it again.

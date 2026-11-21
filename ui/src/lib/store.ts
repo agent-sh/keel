@@ -909,8 +909,19 @@ export function connect() {
     drops++;
     if (opened) downAt ??= Date.now();
     set({ connected: false, synced: false });
-    setTimeout(connect, (retry = Math.min(retry * 2, 8000)));
+    again = setTimeout(connect, (retry = Math.min(retry * 2, 8000)));
   };
+}
+
+// The wait before the next try, when one is pending.
+let again: ReturnType<typeof setTimeout> | undefined;
+// Tries the daemon now instead of when the wait ends: for a host that knows
+// the daemon is back (the desktop shell follows it by itself).
+export function reconnectNow() {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  clearTimeout(again);
+  retry = 500;
+  connect();
 }
 
 // The affected composer claims the notice if it is still on screen.

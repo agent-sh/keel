@@ -968,3 +968,6 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
     linear-gradient(to left, color-mix(in oklch, var(--fg) 16%, transparent), transparent) right / 0.75rem 100% no-repeat scroll;
 }
 .k-scroll-x[data-on="sunken"] { --k-scroll-bg: var(--sunken); }
+
+/* A session's own window of the desktop shell: that session alone, no list beside it. */
+[data-shell="session"] .k-rail { display: none; }

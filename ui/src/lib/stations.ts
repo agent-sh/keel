@@ -10,6 +10,7 @@
 import { useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { WATCH_RANK, type Watch } from "./watch.ts";
+import { soloWindow } from "./shell.ts";
 
 export const MAX_PANES = 6;
 
@@ -41,19 +42,23 @@ export function restore(kept: Partial<Kept> | null): Kept {
   const active = Math.max(0, slots.indexOf(all[at] ?? all.slice(0, at).findLast((x) => x) ?? slots[0]!));
   return { count: slots.length, slots, sizes: kept?.sizes ?? {}, active };
 }
-const kept = load<Partial<Kept> | null>("keel.panes", null);
+// A session's own window of the desktop shell shows that session alone: it
+// neither reads nor writes the layout the main window keeps.
+const kept = soloWindow ? null : load<Partial<Kept> | null>("keel.panes", null);
 const first = restore(kept);
 let state: State = {
   seeded: !!kept,
   ...first,
-  focus: load("keel.focus", false),
+  focus: soloWindow || load("keel.focus", false),
   shown: [],
 };
 const subs = new Set<() => void>();
 function set(patch: Partial<State>) {
   state = { ...state, ...patch };
-  if (state.seeded) localStorage.setItem("keel.panes", JSON.stringify({ count: state.count, slots: state.slots, sizes: state.sizes, active: state.active } satisfies Kept));
-  localStorage.setItem("keel.focus", JSON.stringify(state.focus));
+  if (!soloWindow) {
+    if (state.seeded) localStorage.setItem("keel.panes", JSON.stringify({ count: state.count, slots: state.slots, sizes: state.sizes, active: state.active } satisfies Kept));
+    localStorage.setItem("keel.focus", JSON.stringify(state.focus));
+  }
   subs.forEach((f) => f());
 }
 export const getStations = () => state;

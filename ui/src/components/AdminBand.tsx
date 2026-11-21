@@ -4,6 +4,7 @@
 // reloading, so nothing typed is lost).
 import { RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { shell } from "../lib/shell.ts";
 import { api, downSince, onFeature, readAtOpen, useStore } from "../lib/store.ts";
 import { clock } from "../lib/utils.ts";
 
@@ -41,7 +42,8 @@ export function AdminBand() {
     const t = setTimeout(() => setAway(since), Math.max(0, since + AWAY_AFTER_MS - Date.now()));
     return () => clearTimeout(t);
   }, [connected]);
-  if (away !== null && !updated) {
+  // In the desktop shell the title bar says the daemon is away, with the button that starts it: one place, not two.
+  if (away !== null && !updated && !shell?.can.titlebar) {
     return (
       <div role="status" data-testid="daemon-away" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-warn/40 bg-brass-soft px-4 text-ui animate-in">
         <Unplug className="size-3.5 shrink-0 text-warn" />
