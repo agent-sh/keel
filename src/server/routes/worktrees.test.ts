@@ -60,3 +60,25 @@ test("park refuses while a background command runs in the worktree, and stops it
   expect((await shared.json()).sessions.map((x: any) => x.id)).toEqual([sharer.id]);
   expect(existsSync(s2.workspace)).toBe(true);
 });
+
+// The first message of a session made in a worktree goes with its images, and
+// a message of images alone is still sent.
+test("a worktree create sends the first message with its images", async () => {
+  const repo = join(root, "repo-send");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "a.txt"), "a\n");
+  git(repo, "add", ".");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a");
+  const store = new Store(join(root, "state-send"));
+  store.db.run("CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT)");
+  const bus = new Bus();
+  const sent: unknown[][] = [];
+  const providers = { defaultModel: async () => "m", resolve: async () => ({}) };
+  const routes = worktreeRoutes({ store, bus, errors: new ErrorTracker(store, bus), providers, workspace: repo, engine: { isRunning: () => false, send: (...a: unknown[]) => void sent.push(a) } } as any) as any;
+  const make = async (body: unknown) => (await (await routes["/api/worktrees"].POST(new Request("http://x/api/worktrees", { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }))).json()).session.id as string;
+  const image = { type: "image", media_type: "image/png", data: "AAAA" };
+  const both = await make({ workspace: repo, text: " look at this ", images: [image] });
+  const alone = await make({ workspace: repo, title: "image only", images: [image] });
+  expect(sent).toEqual([[both, "look at this", { images: [image] }], [alone, "", { images: [image] }]]);
+});

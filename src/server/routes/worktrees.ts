@@ -62,7 +62,8 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
           sweep().catch((e) => deps.errors.capture("server", e, { at: "worktree prune" }));
           const next = store.updateSession(s.id, { workspace: cwd });
           bus.emit({ t: "session", session: next });
-          if (b.text) engine.send(s.id, b.text, b.images ?? []);
+          // Images alone are a message too, as in the plain create.
+          if (b.text || b.images?.length) engine.send(s.id, String(b.text ?? "").trim(), { images: b.images ?? [] });
           return json({ session: store.session(s.id), worktree: await wts.status(wts.get(s.id)!) }, 201);
         } catch (e) {
           store.deleteSession(s.id);

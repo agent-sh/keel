@@ -265,6 +265,17 @@ test("a refused create comes back to the New session box", async ({ page, reques
   for (const id of made) await request.delete(`/api/sessions/${id}`);
 });
 
+// A first message of images alone is still a message: a create that places
+// the session (here or on a machine of the fleet) sends it like the plain one.
+test("a placed create sends a first message of images alone", async ({ request }) => {
+  const r = await request.post("/api/fleet/sessions", { data: { machine: "auto", model: HAIKU, title: "Image only", images: [{ type: "image", media_type: "image/png", data: PNG }] } });
+  expect(r.status()).toBe(201);
+  const { session } = await r.json();
+  const users = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "user");
+  expect(users.map((e: any) => e.data.images?.[0]?.data)).toEqual([PNG]);
+  await request.delete(`/api/sessions/${session.id}`);
+});
+
 // The page's "taken" names the write it took: a newer write that lands while
 // that acknowledgment is on its way stays, and is added to the box once.
 // A draft image removed elsewhere while it loads is not added as its error.
