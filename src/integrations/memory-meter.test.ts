@@ -1,6 +1,6 @@
 // The pure rules of what memory adds to a turn and how its use is counted.
 import { expect, test } from "bun:test";
-import { asksMemory, factOf, usedBy } from "./memory-meter.ts";
+import { asksMemory, factOf, handlesOf, usedBy } from "./memory-meter.ts";
 import { fitMemory, memoryBlock, shownLines } from "./tacit.ts";
 
 test("a block adds the lines the context lacks, whole, within its cap; what does not fit is owed, never dropped", () => {
@@ -87,4 +87,21 @@ test("a fact counts as used when the output names it or repeats three of its wor
   expect(usedBy(f, "Deploying now. No problems on the way.")).toBe(false);
   expect(usedBy({ names: ["person.dana-levi", "dana"], text: "Dana is the accountant" }, "I sent it to Dana.")).toBe(true);
   expect(usedBy({ names: ["ab"], text: "Short one" }, "ab is here")).toBe(false); // a name too short to tell
+});
+
+test("three common words in a row say nothing; a tool call that touches what a fact names does", () => {
+  const f = factOf("- gateway-place: The gateway is in the west region and it is at the end of the list");
+  // "is in the", "at the end": any two texts share them.
+  expect(usedBy(f, "It is in the kitchen, at the end of the day, and it is fine.")).toBe(false);
+  expect(usedBy(f, "I checked: the gateway is in the west region.")).toBe(true);
+  const g = factOf("- own-file: Edit the config only through src/core/ownfile.ts, with `bun test ./test/cli` after, never --no-verify");
+  expect(handlesOf(g.text).sort()).toEqual(["--no-verify", "./test/cli", "bun test ./test/cli", "ownfile.ts", "src/core/ownfile.ts"]);
+  expect(usedBy(g, "Done.")).toBe(false);
+  // Only what a tool call held counts as acted on: the reply's own words do not.
+  expect(usedBy(g, "Done.", "sed -n 1,20p src/core/ownfile.ts")).toBe(true);
+  expect(usedBy(g, "Done.", "git commit --no-verify -m x")).toBe(true);
+  expect(usedBy(g, "Done.", "ls src/core")).toBe(false);
+  // Two common words with a slash between them are no path.
+  expect(handlesOf("Version 1.2 is out, e.g. today. Use it and/or wait, his/her call.")).toEqual([]);
+  expect(handlesOf("It lives under src/core and in docs/api.")).toEqual(["src/core", "docs/api"]);
 });

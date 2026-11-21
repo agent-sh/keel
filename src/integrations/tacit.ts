@@ -754,7 +754,9 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
 
   // One block as the turn gets it, and its row in the measurements: the lines
   // the context lacks, within a block's cap; what did not fit is owed.
-  private admit(id: string, hook: OwedHook, r: HookResult, shown: Set<string>, waitMs: number): string | null {
+  // `by`: what the block answers (the prompt's event, the tool and its call),
+  // kept with each fact's name for the list of what the session was given.
+  private admit(id: string, hook: OwedHook, r: HookResult, shown: Set<string>, waitMs: number, by: { hook?: string; call?: string; ref?: string } = {}): string | null {
     const path = PATH_OF[hook];
     if (!r.text) {
       this.meter.record(id, path, { outcome: r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", waitMs });
@@ -768,7 +770,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     this.owe(id, hook, fit.owed);
     for (const l of fit.lines) shown.add(l);
     const block = memoryBlock(hook, fit.text);
-    this.meter.record(id, path, { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length, waitMs });
+    this.meter.record(id, path, { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length, waitMs, by: { hook, ...by } });
     return block;
   }
 
@@ -816,7 +818,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         const block = memoryBlock(hook, fit.text);
         out.push({ hook, block });
         if (!own) { room -= block.length; shared++; }
-        this.meter.record(id, "store_owed", { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length });
+        this.meter.record(id, "store_owed", { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length, by: { hook } });
       }
       if (!own && fit.owed.length) full = true;
     }
@@ -954,7 +956,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         const shown = t.shownIn(s.id, events);
         // What earlier steps owe comes first: it was given first.
         for (const p of t.payOwed(s.id, shown)) add(p.hook, p.block);
-        const settle = (hook: "session-start" | "prompt", c: Running | null, waitMs: number) => {
+        const settle = (hook: "session-start" | "prompt", c: Running | null, waitMs: number, by?: { hook?: string; ref?: string }) => {
           if (!c) return;
           // Not made: one of this session's calls of this hook is still out. The store was not asked.
           if (c === SKIPPED || c.got?.outcome === "skipped") return void t.meter.record(s.id, PATH_OF[hook], { outcome: "skipped" });
@@ -970,10 +972,11 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
             return;
           }
           t.tell(s.id, "ask", c.got.outcome);
-          add(hook, t.admit(s.id, hook, c.got, shown, waitMs));
+          add(hook, t.admit(s.id, hook, c.got, shown, waitMs, by));
         };
-        settle("session-start", again ?? start, prompt ? 0 : waited);
-        settle("prompt", prompt, waited);
+        // A start block that came again says why: the context was summarized, or cleared.
+        settle("session-start", again ?? start, prompt ? 0 : waited, again ? { hook: `session-start:${checkpoint?.data.mode === "clear" ? "clear" : "compact"}` } : undefined);
+        settle("prompt", prompt, waited, fresh ? { ref: last.id } : undefined);
         if (!blocks.length) return req;
         const ev = t.store.append(s.id, "note", { text: blocks.join("\n\n"), model: true, memory: { source: "tacit", hooks } });
         t.bus.emit({ t: "event", event: ev });
@@ -1044,7 +1047,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         if (slow(got)) t.miss("tool", "pre-tool", s.id);
         t.tell(s.id, "tool", got.outcome);
         const shown = got.text ? t.shownIn(s.id, t.lineage(s.id)) : new Set<string>();
-        const block = t.admit(s.id, "pre-tool", got, shown, performance.now() - began);
+        const block = t.admit(s.id, "pre-tool", got, shown, performance.now() - began, { call: call.tool.name, ref: call.id });
         if (!block) return;
         if (typeof result.content === "string") result.content = `${result.content}\n\n${block}`;
         else result.content = [...result.content, { type: "text", text: block }];

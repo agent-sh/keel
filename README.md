@@ -704,6 +704,41 @@ and under `store`, the kinds of call the store is not answering in time or
 answers slowly right now. Counts, tokens and times only. Settings, then Usage, shows it as the Memory
 panel.
 
+The Memory panel also shows the facts themselves (Settings, then Usage, the
+Memory view; `/memory` in a session, or the memory chip of a turn, opens it on
+that session). Given: what a session was told to remember, moment by moment
+(its start, a prompt, a tool call, a compaction), with the facts each moment
+handed over, what they cost and whether the turn named them afterwards
+(`GET /api/memory/given?session_id=&before=`, forty rows a part). Keel keeps
+the names and ids only, and only names of the store's own shape; the rows go
+with their session, a part at a time. A fact's text is read from the store
+when it is opened
+(`GET /api/memory/fact?name=`). Search: the store's own search, in its order,
+with its score (`GET /api/memory/search?q=`). Never named: per fact, how often
+it was given and whether the turn named it afterwards, the never named first,
+with the tokens memory added per session and per day and the share of the
+store's calls that came late or with nothing
+(`GET /api/memory/efficiency?since_ms=&session_id=`). Named afterwards is a
+rough signal that reads low: the fact's name, three of its words in a row
+that are not all common ones, or a path, file, flag or quoted command it
+names, in the model's later text or tool input of that turn.
+
+Every change goes through the store's own commands. A correction is sent as
+the store takes one, a newer note for its curator (`tacit add`), in two
+requests to `POST /api/memory/correct`: the first sends nothing and answers
+with the command and a one-time id; the second names the id and runs that
+command as it was shown, once, within two minutes. The dialog that asks
+opens on Cancel and shows the command and the writer the store will record
+the note under (the store has no writer for Keel: Settings, Memory and
+supervisor, names one of the store's own; `TACIT_HARNESS` overrides it). A
+sent correction is
+listed in the session's activity by the fact's name and the note's path,
+never its words. The store keeps editing a fact in place and retiring one
+to its own page for the owner (`tacit review --fact NAME`): Keel shows that
+command and runs nothing. A store that is missing, slow or failing is said
+in the panel; a read of it is waited for eight seconds at most and never
+holds a turn.
+
 `bun scripts/bench/memory.ts` measures the same on generated data, with a
 stand-in store and a scripted model: tokens added per turn, facts used,
 repeats, facts the store gave that never reached a request (this must be 0),

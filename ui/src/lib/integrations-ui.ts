@@ -5,7 +5,7 @@ import { createElement, Fragment, lazy } from "react";
 import { headerActions, settingsSections, slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
 import { reportError } from "./store.ts";
-import { navigate } from "./ui.ts";
+import { getUI, navigate } from "./ui.ts";
 
 settingsSections.add({
   id: "integrations",
@@ -36,13 +36,27 @@ settingsSections.add({
 
 registerCommand({ id: "integrations", label: "Memory and supervisor", group: "General", words: "tacit momentum", run: () => navigate({ name: "settings", section: "integrations" }) });
 
+// The Memory panel (Settings > Usage, Memory), on what one session was given
+// when a session is named. With that page already open nothing mounts again:
+// it is told by an event (the name is UsagePanel's USAGE_LINK).
+export function openMemory(session?: string) {
+  history.pushState(null, "", `/settings/usage?view=memory${session ? `&session=${session}` : ""}`);
+  navigate({ name: "settings", section: "usage" });
+  dispatchEvent(new Event("keel-usage-link"));
+}
+registerCommand({
+  id: "memory-panel", label: "Memory: what was given, search, correct", group: "View", words: "tacit facts given unused search correct wrong",
+  run: () => { const r = getUI().route; openMemory(r.name === "session" ? r.id : undefined); },
+});
+
 slash.add({
   id: "memory",
   label: "Memory for this session",
-  hint: "on | off | feed on | feed off",
+  hint: "on | off | feed on | feed off; alone: what it was given",
   when: (c) => !!c.session,
   async run(arg, c) {
     const a = arg.trim().toLowerCase();
+    if (!a && c.session) return openMemory(c.session.id);
     const body = a === "off" ? { use_memory: false } : a === "on" ? { use_memory: true } : a === "feed off" ? { feed_memory: false } : a === "feed on" ? { feed_memory: true } : null;
     if (!body || !c.session) return;
     const r = await fetch(`/api/sessions/${c.session.id}/memory`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });

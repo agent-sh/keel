@@ -3,6 +3,7 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { Popover } from "@base-ui/react/popover";
 import { Brain, ChevronRight, RotateCw, Webhook } from "lucide-react";
 import type { StoredEvent } from "../../../src/core/types.ts";
+import { openMemory } from "../lib/integrations-ui.ts";
 
 export function MemoryNote({ text, hooks, label = "Memory from tacit" }: { text: string; hooks: string[]; label?: string }) {
   const body = text
@@ -62,6 +63,11 @@ export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: b
                   <Popover.Popup className="k-note-pop">
                     <p className="k-note-pop-head k-label">{from}{hooks.length ? `, ${hooks.join(", ")}` : ""}</p>
                     <pre className="whitespace-pre-wrap break-words font-mono text-micro leading-relaxed text-muted" data-testid="memory-text">{body}</pre>
+                    {!hook && !mine && (
+                      <button type="button" data-testid="memory-open" onClick={() => openMemory(e.session_id)} className="mt-2 rounded-sm text-caption text-accent underline decoration-accent/40 underline-offset-4 hover:decoration-accent">
+                        Open in Memory: every fact this session was given
+                      </button>
+                    )}
                   </Popover.Popup>
                 </Popover.Positioner>
               </Popover.Portal>

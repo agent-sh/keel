@@ -788,6 +788,29 @@ test("after a summary or a clear the store is told, and what it gave before come
   }
 }), 30_000);
 
+test("what a session was given is kept by name, only for names the store gives a fact, and goes with the session", () => inWorld("given", async (w) => {
+  const s = w.session();
+  await w.say(s, "first kw1");
+  const rows = () => w.store.db.query<{ name: string; hook: string; path: string }, [string]>("SELECT name, hook, path FROM memory_given WHERE session_id = ? ORDER BY id").all(s);
+  expect(rows()).toEqual([{ name: "start-rule", hook: "session-start", path: "store_start" }, { name: "fact-kw1", hook: "prompt", path: "store_prompt" }]);
+  expect(w.store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM memory_given WHERE session_id = ? AND used IS NULL").get(s)!.n).toBe(0);
+  // A line of another shape has its text where a name would be: it gets no row.
+  const { memoryMeter, factOf } = await import("./memory-meter.ts");
+  const meter = memoryMeter(w.store);
+  meter.record(s, "store_prompt", { outcome: "added", text: "x", facts: [factOf("- The deploy token X lives in the vault at corp: never paste it"), factOf("- Has_Upper.dot: text"), factOf("- good-name: text")], by: { hook: "prompt" } });
+  expect(rows().map((r) => r.name)).toEqual(["start-rule", "fact-kw1", "good-name"]);
+  expect(meter.openGiven(s).size).toBe(1);
+  // The rows go with their session, a part at a time between other work (never one statement over all of them
+  // on the loop), and a block recorded for a session that is gone writes none and throws nothing.
+  const many = w.store.db.query("INSERT INTO memory_given (session_id, ts, recall, path, hook, name, tokens) VALUES (?, 1, 1, 'store_prompt', 'prompt', 'filler', 1)");
+  w.store.db.transaction(() => { for (let i = 0; i < 1200; i++) many.run(s); })();
+  w.store.deleteSession(s);
+  expect(rows().length).toBe(1203); // nothing went with the delete itself
+  await until(() => rows().length === 0);
+  meter.record(s, "store_owed", { outcome: "added", text: "x", facts: [factOf("- good-name: text")], by: { hook: "prompt" } });
+  expect(rows()).toEqual([]);
+}), 30_000);
+
 test("a deleted session's transcript file goes with it, and one left behind is removed at the next start", () => inWorld("files", async (w, st, dir) => {
   const a = w.session(), b = w.session();
   await w.say(a, "one kw1");

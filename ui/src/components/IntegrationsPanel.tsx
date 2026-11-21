@@ -1,13 +1,15 @@
 // Settings: the owner's own tools Keel works with. tacit's memory hooks, and
 // momentum's report with the control socket it uses.
 import { useEffect, useState } from "react";
+import { composing } from "../lib/keys.ts";
 import { reportError } from "../lib/store.ts";
 import { clock, cn } from "../lib/utils.ts";
+import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type Item = { id: string; title: string; detail?: string; at?: string };
 type Report = { available: boolean; report?: { generated_at: string; counts: Record<string, number>; needs_you: Item[]; problems: Item[]; running: Item[] } };
-type Info = { tacit: { available: boolean; bin: string | null }; momentum: { available: boolean; socket: string | null } };
+type Info = { tacit: { available: boolean; bin: string | null; writer: string; writer_from: "TACIT_HARNESS" | "settings" }; momentum: { available: boolean; socket: string | null } };
 
 const get = <T,>(p: string) => fetch(p).then((r) => r.json() as Promise<T>);
 
@@ -39,6 +41,41 @@ function Items({ label, items, tone }: { label: string; items: Item[]; tone: str
   );
 }
 
+// The writer of the store a correction sent from the Memory panel is recorded
+// under. The store's own writers are offered when it names them; when it
+// does not, the name is typed, saved when the field is left or Enter is
+// pressed, and one the daemon refuses is said and the field goes back.
+function Writer({ info, onSaved }: { info: Info["tacit"]; onSaved: (w: string) => void }) {
+  const [text, setText] = useState(info.writer);
+  const [why, setWhy] = useState("");
+  const [known, setKnown] = useState<string[] | null>(null);
+  const fixed = info.writer_from === "TACIT_HARNESS";
+  useEffect(() => { get<{ writers: string[] | null }>("/api/memory/writers").then((x) => setKnown(x.writers)).catch(reportError); }, []);
+  const save = (w: string) => {
+    if (fixed || w === info.writer) return;
+    fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ memory: { writer: w } }) })
+      .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`); setWhy(""); setText(w); onSaved(w); })
+      .catch((e) => { setWhy((e as Error).message); setText(info.writer); });
+  };
+  const lacks = known && !known.includes(info.writer);
+  return (
+    <span className="flex flex-col gap-1 sm:items-end">
+      {known ? (
+        <Select aria-label="Writer of corrections" data-testid="memory-writer" value={info.writer} disabled={fixed} onChange={(e) => save(e.target.value)} className="h-8 w-40 rounded-md border border-line-strong bg-raised px-2 font-mono text-caption text-fg">
+          {lacks && <option value={info.writer}>{info.writer}</option>}
+          {known.map((w) => <option key={w} value={w}>{w}</option>)}
+        </Select>
+      ) : (
+        <input aria-label="Writer of corrections" data-testid="memory-writer" value={text} disabled={fixed} maxLength={32} onChange={(e) => setText(e.target.value)} onBlur={() => save(text.trim())} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) e.currentTarget.blur(); }}
+          className="h-8 w-40 rounded-md border border-line-strong bg-raised px-2.5 font-mono text-caption text-fg outline-none focus-visible:border-accent disabled:opacity-60" />
+      )}
+      {fixed && <span className="text-caption text-faint">set by TACIT_HARNESS</span>}
+      {lacks && <span className="max-w-[20rem] text-caption text-danger sm:text-right" role="status" data-testid="memory-writer-lacks">The store has no writer named {info.writer}: a correction would be refused. Pick one of its own.</span>}
+      {why && <span className="max-w-[20rem] text-caption text-danger sm:text-right" role="status">{why}</span>}
+    </span>
+  );
+}
+
 export function IntegrationsSettings() {
   const [info, setInfo] = useState<Info | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -58,6 +95,11 @@ export function IntegrationsSettings() {
         </SettingRow>
         {info?.tacit.bin && (
           <SettingRow label="Binary"><span className="block max-w-[26rem] truncate font-mono text-caption text-muted" title={info.tacit.bin}>{info.tacit.bin}</span></SettingRow>
+        )}
+        {info?.tacit.available && (
+          <SettingRow label="Corrections are written as" hint="A correction sent from the Memory panel is a note in the store. The store has no writer for Keel, so the note is recorded under one of the store's own writers, named here; its first sentence says it came from Keel.">
+            <Writer info={info.tacit} onSaved={(w) => setInfo({ ...info, tacit: { ...info.tacit, writer: w } })} />
+          </SettingRow>
         )}
       </Card>
       <Card>

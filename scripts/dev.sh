@@ -34,6 +34,7 @@ export KEEL_MCP_REGISTRY="${KEEL_MCP_REGISTRY:-file://$DEV/registry.json}"
 # provider for the paths a real model cannot be made to take. The owner hooks
 # file lives in the scratch config folder.
 export TACIT_BIN="${TACIT_BIN:-$(cd "$(dirname "$0")/.." && pwd)/test/e2e/fixtures/tacit-standin.sh}"
+export TACIT_STANDIN_STORE="${TACIT_STANDIN_STORE:-$DEV/tacit-store}"
 export KEEL_SCRIPTED_PROVIDER="${KEEL_SCRIPTED_PROVIDER:-1}"
 # The helper's mail is a stand-in folder beside the state, never the owner's mailbox.
 export KEEL_MAIL_STANDIN="${KEEL_MAIL_STANDIN:-$DEV/mail}"

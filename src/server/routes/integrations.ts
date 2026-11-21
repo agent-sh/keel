@@ -5,9 +5,23 @@ import { draftPresent } from "./drafts.ts";
 import { deliver } from "../../automation/core.ts";
 import { momentumReport, momentumSocketPath, startMomentumSocket } from "../../integrations/momentum.ts";
 import { memoryMeter } from "../../integrations/memory-meter.ts";
+import { isWriter, MemoryStore } from "../../integrations/memory-store.ts";
+import { registerSettings, settings } from "../../admin/settings.ts";
+import { readsOf } from "../reads.ts";
+import { memoryRoutes } from "./memory.ts";
 import { findBin, Tacit } from "../../integrations/tacit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+
+// The writer of the memory store a correction sent from Keel is recorded
+// under. The store has no writer for Keel: it runs the store's hooks the way
+// Claude Code does and feeds it transcripts in that format, so its notes go
+// to that writer's inbox until the owner names another (here, or TACIT_HARNESS).
+registerSettings("memory", { writer: "claude" }, (v) => (isWriter(v.writer) ? undefined : "writer is one of the store's writers: lower-case letters, digits and dashes"));
+const writer = (): string => {
+  const env = process.env.TACIT_HARNESS?.trim();
+  return isWriter(env) ? env : String(settings().memory?.writer ?? "claude");
+};
 const bad = (error: string, status = 400) => json({ error }, status);
 
 export const integrationRoutes: RouteModule = (deps) => {
@@ -44,8 +58,9 @@ export const integrationRoutes: RouteModule = (deps) => {
   });
 
   return {
+    ...memoryRoutes(deps, new MemoryStore(() => tacit.bin, store.stateDir, writer), memoryMeter(store)),
     "/api/integrations": {
-      GET: () => json({ tacit: { available: !!tacit.bin, bin: tacit.bin }, momentum: { available: !!findBin("MOMENTUM_BIN", "momentum"), socket } }),
+      GET: () => json({ tacit: { available: !!tacit.bin, bin: tacit.bin, writer: writer(), writer_from: isWriter(process.env.TACIT_HARNESS?.trim()) ? "TACIT_HARNESS" : "settings" }, momentum: { available: !!findBin("MOMENTUM_BIN", "momentum"), socket } }),
     },
     "/api/integrations/tacit/stats": {
       GET: () => Response.json(tacit.stats(), { headers: { "cache-control": "no-store" } }),
@@ -53,8 +68,9 @@ export const integrationRoutes: RouteModule = (deps) => {
     // GET /api/telemetry/memory?since_ms=&until_ms=&session_id=: what memory added to
     // the turns and whether they used it, per recall path and in total. Counts,
     // tokens and times only: no fact, name or prompt is kept or returned.
+    // Summed on the read thread: the table has a row per prompt and tool call.
     "/api/telemetry/memory": {
-      GET: (req: Request) => {
+      GET: async (req: Request) => {
         const q = new URL(req.url).searchParams;
         const num = (k: string) => (q.get(k) ? Number(q.get(k)) : undefined);
         const since = num("since_ms"), until = num("until_ms");
@@ -63,7 +79,7 @@ export const integrationRoutes: RouteModule = (deps) => {
         if (session && !store.session(session)) return bad("no such session", 404);
         // `store`: how the memory store answers right now (the kinds of call that are out, or often late).
         const { out, degraded } = tacit.stats();
-        return Response.json({ ...memoryMeter(store).report({ since, until, session }), store: { out, degraded } }, { headers: { "cache-control": "no-store" } });
+        return Response.json({ ...(await memoryMeter(store).reportOn(readsOf(store), { since, until, session })), store: { out, degraded } }, { headers: { "cache-control": "no-store" } });
       },
     },
     "/api/momentum": { GET: async () => json(await momentumReport()) },

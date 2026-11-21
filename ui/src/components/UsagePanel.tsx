@@ -10,7 +10,7 @@ import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, clock, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
-import { MemoryUsage } from "./MemoryUsage.tsx";
+import { MemoryUsage, type MemoryTab } from "./MemoryUsage.tsx";
 import { Seg } from "./Seg.tsx";
 import { Segmented } from "./Settings.tsx";
 import { PART, Split, Stat, Stats } from "./Stat.tsx";
@@ -172,9 +172,22 @@ type View = "overview" | "calls" | "tokens" | "errors" | "compactions" | "memory
 // The sections of Settings > Usage. The overview is what a person opens the page to learn: what
 // was spent, what drove it, where it went, and whether anything is wrong. Each further question
 // has a view of its own (how fast calls and tools were, token zones, errors, compactions, memory).
+// A link may name the view to open (?view=memory, with the session it is about); one followed while
+// this page is already open is told by an event (USAGE_LINK), since nothing mounts again.
+export const USAGE_LINK = "keel-usage-link";
+const linked = () => { const q = new URLSearchParams(location.search); return { memory: q.get("view") === "memory", session: q.get("session") ?? "" }; };
 export function UsagePanel() {
-  const [view, setView] = useState<View>("overview");
+  const [link, setLink] = useState(() => ({ ...linked(), n: 0 }));
+  const [view, setView] = useState<View>(link.memory ? "memory" : "overview");
   const [range, setRange] = useState<Range>("week");
+  // The range sums what the Memory view's Usage and Never named show; Given and Search do not read it.
+  const [memoryTab, setMemoryTab] = useState<MemoryTab>(link.memory ? "given" : "usage");
+  useEffect(() => {
+    const follow = () => { const l = linked(); if (!l.memory) return; setLink((was) => ({ ...l, n: was.n + 1 })); setMemoryTab("given"); setView("memory"); };
+    addEventListener(USAGE_LINK, follow);
+    return () => removeEventListener(USAGE_LINK, follow);
+  }, []);
+  const ranged = view !== "compare" && !(view === "memory" && (memoryTab === "given" || memoryTab === "search"));
   return (
     <div className="flex flex-col gap-4" data-testid="usage-panel">
       <div className="flex flex-wrap items-center gap-3">
@@ -183,11 +196,11 @@ export function UsagePanel() {
           { value: "overview", label: "Overview" }, { value: "calls", label: "Speed and tools" }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
           { value: "compactions", label: "Compactions" }, { value: "memory", label: "Memory" }, { value: "compare", label: "Compare" },
         ]} />
-        {view !== "compare" && <Segmented<Range> label="Range" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />}
+        {ranged && <Segmented<Range> label="Range" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />}
         <span className="text-caption text-faint">Measured on this machine. Nothing is sent anywhere.</span>
       </div>
       {view === "overview" ? <Overview range={range} go={setView} /> : view === "calls" ? <CallsView range={range} /> : view === "tokens" ? <TokensView range={range} />
-        : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "memory" ? <MemoryView range={range} /> : <CompareView />}
+        : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "memory" ? <MemoryView key={link.n} range={range} session={link.session} given={link.memory} onTab={setMemoryTab} /> : <CompareView />}
     </div>
   );
 }
@@ -467,8 +480,10 @@ function CallsView({ range }: { range: Range }) {
   );
 }
 
-// What recall added to turns, over the range.
-function MemoryView({ range }: { range: Range }) {
+// What the agent was told to remember and what it cost. Opened from the page it starts on what
+// recall added over the range; opened by a link (a session's memory chip, /memory, the palette) it
+// starts on what that session was given.
+function MemoryView({ range, session, given, onTab }: { range: Range; session: string; given: boolean; onTab: (t: MemoryTab) => void }) {
   const since = useMemo(() => Date.now() - RANGES[range], [range]);
-  return <MemoryUsage since={since} />;
+  return <MemoryUsage since={since} session={session} tab={given ? "given" : "usage"} onTab={onTab} />;
 }

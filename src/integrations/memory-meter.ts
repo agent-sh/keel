@@ -6,13 +6,27 @@
 // the turn is over, how many of the facts the turn's output named.
 //
 // "Used" is a proxy: a fact counts when the reply or a tool call of its turn
-// holds one of its names as a word, or three of its words in a row. The names
-// and words are held in memory until the turn ends and are never stored.
+// holds one of its names as a word, or three of its words in a row that are
+// not all common ones, or when a tool call of the turn touches a path, a
+// file, a flag or a quoted command the fact names. The words are held in
+// memory until the turn ends and are never stored.
+//
+// What the store gave is also kept per fact (memory_given): its name, when,
+// by which hook and for which call, the tokens of its line and, once the
+// turn is over, whether the turn named it. Names and ids only: a fact's text
+// is read from the store when the owner opens it (memory-store.ts), and a
+// line whose name is not one the store gives a fact gets no row, so a line of
+// another shape never puts its text there. The rows go with their session:
+// in parts, between other work, so deleting a session that was given
+// thousands of facts does not hold the loop for all of them at once.
 import { ownerPrompt } from "../core/owner.ts";
 import type { Store } from "../core/store.ts";
 import { lineage } from "../core/tree.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { SessionMap } from "../core/session-map.ts";
+import { readsOf, type Reads } from "../server/reads.ts";
+import { isFactName } from "./memory-store.ts";
 
 // Which inputs the store is asked about. Everything that asks for work is:
 // the owner's words, an agent's or a verifier's task, a parent's steer, a
@@ -60,20 +74,70 @@ export function factOf(line: string): Fact {
 }
 export const factLines = (text: string) => text.split("\n").filter((l) => /^\s*-\s/.test(l));
 
-// The proxy: does this output name the fact, or repeat three of its words in a row?
-export function usedBy(f: Fact, output: string): boolean {
+// Words any two texts share: three of them in a row say nothing about a fact
+// ("is in the", "at the end", "when it is"). A word of three letters or
+// fewer, or one of these.
+const COMMON = new Set(("that this with from have been were will would should could must when then than them they their there these those what which while where "
+  + "into onto over under after before about above below also only just more most much many some such each every other same very even still never always "
+  + "does done make made take took uses used using need needs want wants keep kept stay left right here your ours mine its").split(" "));
+const plain = (w: string) => w.length <= 3 || COMMON.has(w);
+
+// What a fact names that a tool call can touch: a path, a file with its
+// extension, a flag, a quoted command or word. Lower case, as written.
+export function handlesOf(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/`([^`\n]{3,80})`/g)) out.add(m[1]!.trim().toLowerCase());
+  // A path: not two common words with a slash between them ("and/or", "his/her").
+  for (const m of text.matchAll(/(?:~|\.{1,2})?\/?[\w.@-]+(?:\/[\w.@-]+)+\/?/g)) {
+    const path = m[0].toLowerCase().replace(/[.,;:]+$/, ""); // a sentence's own stop is not the path's
+    if (path.length >= 5 && !path.split("/").every((w) => !w || plain(w))) out.add(path);
+  }
+  for (const m of text.matchAll(/(?<![\w.-])[\w-]{2,}\.[a-z]{1,5}(?![\w-])/g)) if (m[0].length >= 5 && !/^\d+\.\d+$/.test(m[0])) out.add(m[0].toLowerCase());
+  for (const m of text.matchAll(/(?<![\w-])--[a-z][\w-]{2,}/g)) out.add(m[0].toLowerCase());
+  return [...out].filter((h) => h.length >= 3);
+}
+
+// The proxy: does this output name the fact, or repeat three of its words in
+// a row (at least two of them not common ones)? `acted`: the text of the
+// turn's tool calls; a fact also counts when one of them holds a path, a
+// file, a flag or a quoted command the fact names.
+export function usedBy(f: Fact, output: string, acted = ""): boolean {
   const out = ` ${wordsOf(output).join(" ")} `;
   for (const n of f.names) {
     const name = wordsOf(n).join(" ");
     if (name.length >= 3 && out.includes(` ${name} `)) return true;
   }
   const w = wordsOf(f.text);
-  if (w.length < 3) return false;
-  for (let i = 0; i + 3 <= w.length; i++) if (out.includes(` ${w.slice(i, i + 3).join(" ")} `)) return true;
+  for (let i = 0; i + 3 <= w.length; i++) {
+    const three = w.slice(i, i + 3);
+    if (three.filter((x) => !plain(x)).length >= 2 && out.includes(` ${three.join(" ")} `)) return true;
+  }
+  if (acted) {
+    const low = acted.toLowerCase();
+    for (const h of handlesOf(f.text)) if (low.includes(h)) return true;
+  }
   return false;
 }
 
-type Open = { row: number; facts: Fact[]; ts: number };
+// The words of a tool call's input, as they were given: every string in it, a
+// line each (its JSON would glue an "n" onto the first word of a later line).
+function stringsOf(v: unknown, out: string[] = []): string[] {
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) for (const x of v) stringsOf(x, out);
+  else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { out.push(k); stringsOf(x, out); }
+  return out;
+}
+
+// `given`: the memory_given row of each fact, in the facts' order (0: a line with no name, not listed).
+// A deleted session's given rows deleted in one statement: a few milliseconds of the loop.
+const DROP_PART = 500;
+const ORPHANS_AFTER_MS = 30_000;
+type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms", number>;
+type Open = { row: number; facts: Fact[]; ts: number; given: number[] };
+// Where a block came from, for the list of what a session was given: the
+// store's hook, the tool it was asked about (a tool's name) and what it
+// answers (the prompt's event, the tool call).
+export type GivenBy = { hook: string; call?: string; ref?: string };
 export type MemoryFilter = { since?: number; until?: number; session?: string };
 
 export class MemoryMeter {
@@ -85,9 +149,50 @@ export class MemoryMeter {
   id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, path TEXT NOT NULL, outcome TEXT NOT NULL,
   facts INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, used INTEGER, repeats INTEGER NOT NULL DEFAULT 0, cut INTEGER NOT NULL DEFAULT 0, wait_ms INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS telemetry_memory_ts ON telemetry_memory(ts);
-CREATE INDEX IF NOT EXISTS telemetry_memory_session ON telemetry_memory(session_id);`);
+CREATE INDEX IF NOT EXISTS telemetry_memory_session ON telemetry_memory(session_id);
+CREATE TABLE IF NOT EXISTS memory_given (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, recall INTEGER NOT NULL, path TEXT NOT NULL, hook TEXT NOT NULL,
+  name TEXT NOT NULL, call TEXT, ref TEXT, tokens INTEGER NOT NULL DEFAULT 0, used INTEGER);
+CREATE INDEX IF NOT EXISTS memory_given_session ON memory_given(session_id, id);
+CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     this.prune();
+    void this.gone;
     registerHooks({ turnEnd: (s) => this.settle(s.id) });
+    // Rows a deletion left behind (the daemon ended before they were all gone): found off the loop, a while after start.
+    const late = setTimeout(() => {
+      readsOf(store).sql<{ session_id: string }>("SELECT DISTINCT g.session_id FROM memory_given g WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = g.session_id)")
+        .then((rows) => { for (const r of rows) this.drop(r.session_id); }, () => {});
+    }, ORPHANS_AFTER_MS);
+    (late as { unref?: () => void }).unref?.();
+  }
+
+  // The store drops a deleted session out of every SessionMap, whatever
+  // deleted it: this one takes the session's given rows with it.
+  private gone = new (class extends SessionMap<true> {
+    constructor(private left: (id: string) => void) { super(1); }
+    override delete(id: string) { this.left(id); return super.delete(id); }
+  })((id) => this.drop(id));
+  private dropping: string[] = [];
+  private dropTimer: ReturnType<typeof setTimeout> | null = null;
+  // A deleted session's given rows go a part at a time, the loop free between
+  // parts: one statement over tens of thousands of rows would hold every stream.
+  private drop(sessionId: string) {
+    this.open.delete(sessionId);
+    if (!this.dropping.includes(sessionId)) this.dropping.push(sessionId);
+    if (this.dropTimer) return;
+    const part = () => {
+      this.dropTimer = null;
+      const id = this.dropping[0];
+      if (id === undefined) return;
+      try {
+        const n = this.store.db.query("DELETE FROM memory_given WHERE id IN (SELECT id FROM memory_given WHERE session_id = ? LIMIT ?)").run(id, DROP_PART).changes;
+        if (n < DROP_PART) this.dropping.shift();
+      } catch {
+        this.dropping.shift(); // a store that was closed: nothing left to do here
+      }
+      if (this.dropping.length) this.dropTimer = setTimeout(part, 0);
+    };
+    this.dropTimer = setTimeout(part, 0);
   }
 
   // Rows past their keep time go: at start, then once a day as rows are written.
@@ -96,29 +201,44 @@ CREATE INDEX IF NOT EXISTS telemetry_memory_session ON telemetry_memory(session_
     if (now - this.pruned < 86_400_000) return;
     this.pruned = now;
     this.store.db.query("DELETE FROM telemetry_memory WHERE ts < ?").run(now - KEEP_MS);
+    this.store.db.query("DELETE FROM memory_given WHERE ts < ?").run(now - KEEP_MS);
   }
 
   // One recall. `text`: what was added to the turn (nothing for the other
   // outcomes); `facts`: its lines, for the check at the turn's end; `repeats`
   // and `cut`: lines left out as already in the context, and as over the budget.
   // `row`: an earlier row of the same ask (a block that came late), written
-  // over with how it ended.
-  record(sessionId: string, path: MemoryPath, r: { outcome: MemoryOutcome; text?: string; facts?: Fact[]; repeats?: number; cut?: number; waitMs?: number }, row?: number): number {
+  // over with how it ended. `by`: where the block came from; with it each
+  // named fact gets its own row in memory_given, in the same commit.
+  record(sessionId: string, path: MemoryPath, r: { outcome: MemoryOutcome; text?: string; facts?: Fact[]; repeats?: number; cut?: number; waitMs?: number; by?: GivenBy }, row?: number): number {
     this.prune();
-    const model = this.store.session(sessionId)?.model;
-    const tokens = r.text ? Math.round(Buffer.byteLength(r.text) / bytesPerToken(model)) : 0;
+    const per = bytesPerToken(this.store.session(sessionId)?.model);
+    const tokens = r.text ? Math.round(Buffer.byteLength(r.text) / per) : 0;
     const ts = Date.now();
     const values = [r.outcome, r.facts?.length ?? 0, tokens, r.repeats ?? 0, r.cut ?? 0] as const;
-    if (row !== undefined) this.store.db.query("UPDATE telemetry_memory SET outcome = ?, facts = ?, tokens = ?, repeats = ?, cut = ? WHERE id = ?").run(...values, row);
-    else row = this.store.db
-      .query("INSERT INTO telemetry_memory (session_id, ts, path, outcome, facts, tokens, repeats, cut, wait_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(sessionId, ts, path, ...values, Math.round(r.waitMs ?? 0)).lastInsertRowid as number;
+    const db = this.store.db;
+    const given: number[] = [];
+    db.transaction(() => {
+      if (row !== undefined) db.query("UPDATE telemetry_memory SET outcome = ?, facts = ?, tokens = ?, repeats = ?, cut = ? WHERE id = ?").run(...values, row);
+      else row = db
+        .query("INSERT INTO telemetry_memory (session_id, ts, path, outcome, facts, tokens, repeats, cut, wait_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sessionId, ts, path, ...values, Math.round(r.waitMs ?? 0)).lastInsertRowid as number;
+      // No row for a session that is gone (the rows go with their session).
+      if (!r.by || !this.store.session(sessionId)) return;
+      const q = db.query("INSERT INTO memory_given (session_id, ts, recall, path, hook, name, call, ref, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      for (const f of r.facts ?? []) {
+        const name = f.names[0];
+        // Only a name the store gives a fact: a line of another shape has its text where a name would be.
+        // The tokens are of the line as the block held it: "- name: text".
+        given.push(isFactName(name) ? Number(q.run(sessionId, ts, row!, path, r.by.hook, name, r.by.call ?? null, r.by.ref ?? null, Math.round((Buffer.byteLength(name) + Buffer.byteLength(f.text) + 4) / per)).lastInsertRowid) : 0);
+      }
+    })();
     if (r.facts?.length) {
       const list = this.open.get(sessionId) ?? [];
-      list.push({ row, facts: r.facts, ts });
+      list.push({ row: row!, facts: r.facts, ts, given });
       this.open.set(sessionId, list);
     }
-    return row;
+    return row!;
   }
 
   // The turn ended: each recall of it gets the count of its facts that the
@@ -129,20 +249,33 @@ CREATE INDEX IF NOT EXISTS telemetry_memory_session ON telemetry_memory(session_
     this.open.delete(sessionId);
     const events = lineage(this.store.events(sessionId), this.store.session(sessionId)?.head ?? null);
     const from = events.findLastIndex((e) => e.kind === "turn_start");
-    const said = events.slice(Math.max(0, from)).filter((e) => e.kind === "assistant").map((e) => ({
-      ts: e.ts,
-      text: (e.data.blocks ?? []).map((b: any) => (b.type === "text" ? b.text : b.type === "tool_use" ? JSON.stringify(b.input ?? "") : "")).join("\n"),
-    }));
+    const said = events.slice(Math.max(0, from)).filter((e) => e.kind === "assistant").map((e) => {
+      const calls = (e.data.blocks ?? []).filter((b: any) => b.type === "tool_use").map((b: any) => stringsOf(b.input).join("\n")).join("\n");
+      return { ts: e.ts, calls, text: `${(e.data.blocks ?? []).map((b: any) => (b.type === "text" ? b.text : "")).join("\n")}\n${calls}` };
+    });
     const q = this.store.db.query("UPDATE telemetry_memory SET used = ? WHERE id = ?");
-    for (const o of list) {
-      // A reply is stored when it ends: one stored at or after the recall could read it.
-      const output = said.filter((a) => a.ts >= o.ts).map((a) => a.text).join("\n");
-      q.run(o.facts.filter((f) => usedBy(f, output)).length, o.row);
-    }
+    const one = this.store.db.query("UPDATE memory_given SET used = ? WHERE id = ?");
+    // One commit for the whole turn's recalls.
+    this.store.db.transaction(() => {
+      for (const o of list) {
+        // A reply is stored when it ends: one stored at or after the recall could read it.
+        const after = said.filter((a) => a.ts >= o.ts);
+        const output = after.map((a) => a.text).join("\n"), acted = after.map((a) => a.calls).join("\n");
+        const used = o.facts.map((f) => usedBy(f, output, acted));
+        q.run(used.filter(Boolean).length, o.row);
+        used.forEach((u, i) => { if (o.given[i]) one.run(u ? 1 : 0, o.given[i]!); });
+      }
+    })();
   }
 
   forget(sessionId: string) {
     this.open.delete(sessionId);
+  }
+
+  // The given rows whose turn has not ended yet: their check is still to come.
+  // A row left unchecked that is not among them was cut with its turn.
+  openGiven(sessionId: string): Set<number> {
+    return new Set((this.open.get(sessionId) ?? []).flatMap((o) => o.given).filter(Boolean));
   }
 
   // Per path and in total: how often it was asked and how that ended, what it
@@ -150,7 +283,9 @@ CREATE INDEX IF NOT EXISTS telemetry_memory_session ON telemetry_memory(session_
   // `used` is over the recalls whose turn ended (`facts_checked` of `facts`).
   // `cut`: lines a block had no room for, carried to a later request.
   // Summed in the database: the table has a row per prompt and tool call.
-  report(f: MemoryFilter = {}) {
+  // `reportOn` sums on the read thread (the panel's route: the table grows
+  // with every prompt and tool call of every session); `report` here.
+  private reportSql(f: MemoryFilter) {
     const where = ["1 = 1"];
     const args: (string | number)[] = [];
     if (f.session) { where.push("session_id = ?"); args.push(f.session); }
@@ -164,13 +299,22 @@ CREATE INDEX IF NOT EXISTS telemetry_memory_session ON telemetry_memory(session_
       ${added("1", checked)} AS recalls_checked, ${added("1", " AND used > 0")} AS recalls_used,
       COALESCE(SUM(repeats), 0) AS repeats, COALESCE(SUM(cut), 0) AS cut, COALESCE(SUM(wait_ms), 0) AS wait_ms, COALESCE(MAX(wait_ms), 0) AS wait_max_ms`;
     const from = `FROM telemetry_memory WHERE ${where.join(" AND ")}`;
-    type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms", number>;
-    const total = this.store.db.query<Sum, any[]>(`SELECT ${cols} ${from}`).get(...args)!;
-    const paths = this.store.db.query<Sum & { path: MemoryPath }, any[]>(`SELECT path, ${cols} ${from} GROUP BY path`).all(...args);
+    return { total: `SELECT ${cols} ${from}`, paths: `SELECT path, ${cols} ${from} GROUP BY path`, args };
+  }
+  private reportOf(f: MemoryFilter, total: Sum, paths: (Sum & { path: MemoryPath })[]) {
     return {
       since_ms: f.since ?? null, until_ms: f.until ?? Date.now(), estimate: true, total,
       paths: MEMORY_PATHS.flatMap((path) => paths.filter((p) => p.path === path)),
     };
+  }
+  report(f: MemoryFilter = {}) {
+    const q = this.reportSql(f);
+    return this.reportOf(f, this.store.db.query<Sum, any[]>(q.total).get(...q.args)!, this.store.db.query<Sum & { path: MemoryPath }, any[]>(q.paths).all(...q.args));
+  }
+  async reportOn(reads: Reads, f: MemoryFilter = {}) {
+    const q = this.reportSql(f);
+    const [total, paths] = await Promise.all([reads.sql<Sum>(q.total, q.args), reads.sql<Sum & { path: MemoryPath }>(q.paths, q.args)]);
+    return this.reportOf(f, total[0]!, paths);
   }
 }
 

@@ -1,11 +1,25 @@
-// Settings > Usage, overview: what memory costs the turns and whether they use
-// it. One row per recall path (the memory store's blocks at a session's start,
-// with a prompt and with a tool call; the helper's records), from the daemon's
-// own measurement (/api/telemetry/memory). Counts, tokens and times only: no
-// fact, name or prompt is kept there.
-import { useEffect, useState, type ReactNode } from "react";
+// Settings > Usage, Memory: what the agent was told to remember, and what
+// that cost. Four views of one thing.
+// - Usage: what memory costs the turns and whether they use it, one row per
+//   recall path (the memory store's blocks at a session's start, with a prompt
+//   and with a tool call; the helper's records), from the daemon's own
+//   measurement (/api/telemetry/memory). Counts, tokens and times only.
+// - Given: what one session was told, moment by moment (/api/memory/given:
+//   names and ids, no text).
+// - Search: the store's own search, in its order.
+// - Never named: per fact, how often it was given and whether a turn named it
+//   afterwards (a rough signal), the never named first; tokens per session
+//   and per day.
+// A fact opens beside the list at a desk, where it stays in view while the
+// list scrolls, and under its own row on a phone. It comes after its row in
+// the page, takes the keyboard when it opens without moving the page, and
+// gives it back to the row it was opened from, which is brought back into
+// view when the list has settled.
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { api, reportError } from "../lib/store.ts";
 import { fmtTokens } from "../lib/utils.ts";
+import { FactReader, GivenView, SearchView, UnusedView, type MemorySession, type OpenFact } from "./MemoryFacts.tsx";
+import { Seg, tabId } from "./Seg.tsx";
 import { fmtMs, fmtPct, Panel, Table } from "./UsagePanel.tsx";
 
 type Row = {
@@ -16,6 +30,7 @@ type Row = {
 // `store`: how the memory store answers right now (the kinds of call that are out, or often late).
 type Kinds = { ask: boolean; tool: boolean };
 type Report = { total: Row; paths: (Row & { path: string })[]; store?: { out: Kinds; degraded: Kinds } };
+export type MemoryTab = "usage" | "given" | "search" | "unused";
 
 const PATH: Record<string, string> = {
   store_start: "Memory store, session start",
@@ -24,19 +39,32 @@ const PATH: Record<string, string> = {
   store_owed: "Memory store, carried to a later step",
   helper: "Helper records",
 };
+const HINT: Record<MemoryTab, string> = {
+  usage: "what recall added to turns, and an estimate of whether they used it; counts only, no content",
+  given: "what a session was told to remember, moment by moment, and what each fact cost",
+  search: "the store's own search; a fact opens with its source and date",
+  unused: "facts given and never named afterwards (a rough signal), and what memory costs",
+};
+const PANEL = "memory-view";
+const PHONE = "(max-width: 767px)";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// Whether a media query holds now.
+const useMedia = (query: string): boolean => useSyncExternalStore(
+  (f) => { const m = matchMedia(query); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },
+  () => matchMedia(query).matches,
+);
 
-export function MemoryUsage({ since }: { since: number }) {
+// What recall added to turns: the report of the range. The other views do not wait for it.
+function UsageTable({ since }: { since: number }) {
   const [r, setR] = useState<Report | null>(null);
   useEffect(() => {
     let live = true;
-    // `since` is the overview report's own start: it moves with each of its polls, and this reads again.
+    // `since` is the range's own start: it moves when the range does, and this reads again.
     api<Report>(`/api/telemetry/memory?since_ms=${since}`).then((x) => live && setR(x)).catch(reportError);
     return () => { live = false; };
   }, [since]);
-  if (!r) return null;
-
+  if (!r) return <p className="text-caption text-faint" data-testid="memory-usage-loading">Reading what memory added in this range</p>;
   const cells = (label: ReactNode, x: Row): ReactNode[] => {
     const why = [x.skipped && `${x.skipped} not asked`, x.empty && `${x.empty} with nothing to add`, x.repeat && `${x.repeat} already in the context`, x.late && `${x.late} not waited for`, x.timeouts && `${x.timeouts} timed out`, x.failures && `${x.failures} failed`].filter(Boolean).join(", ");
     return [
@@ -53,23 +81,91 @@ export function MemoryUsage({ since }: { since: number }) {
   const out = r.total.timeouts + r.total.failures;
   const kinds = (k?: Kinds) => [k?.ask && "prompts", k?.tool && "tool calls"].filter(Boolean).join(" and ");
   const slow = kinds(r.store?.degraded), down = kinds(r.store?.out);
+  if (!r.paths.length) return <p className="k-empty">No memory was recalled in this range.</p>;
+  return (
+    <>
+      <Table
+        head={["Path", "Recalls", "Tokens added", "Named in reply (estimate)", "Not added again", "Time added"]}
+        rows={[...r.paths.map((p) => cells(PATH[p.path] ?? p.path, p)), ...(r.paths.length > 1 ? [cells(<span className="font-medium">All memory</span>, r.total)] : [])]}
+      />
+      <p className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="memory-notes">
+        Named in reply is an estimate: a recall counts when the reply or a tool call of its turn spells the name of one of its facts, or three of its words in a row. It reads low: a fact can shape a reply without being named, and standing rules rarely are. A fact the context already holds is not added again; one its block has no room for follows with the next step.
+        {out > 0 && <span className="text-danger" data-testid="memory-out"> The store did not answer {plural(out, "time")} ({r.total.timeouts} timed out, {r.total.failures} failed): those turns went on without it.</span>}
+        {down && <span className="text-danger" data-testid="memory-down"> Right now it is not answering {down} in time.</span>}
+        {slow && !down && <span className="text-warn" data-testid="memory-slow"> Right now it answers {slow} slowly: a quarter or more of its last 20 answers came later than a turn waits.</span>}
+      </p>
+    </>
+  );
+}
+
+// `session`: the session the panel was opened for; `tab`: the view to start
+// on; `onTab`: told which view shows (the range above applies to two of them).
+export function MemoryUsage({ since, session: from = "", tab: first = "usage", onTab }: { since: number; session?: string; tab?: MemoryTab; onTab?: (t: MemoryTab) => void }) {
+  const [tab, setTab] = useState<MemoryTab>(first);
+  const [session, setSession] = useState(from);
+  const [sessions, setSessions] = useState<MemorySession[]>([]);
+  // The open fact, and the row it was opened from (`key`: a fact can stand in several rows).
+  const [open, setOpen] = useState<{ name: string; key: string } | null>(null);
+  // The session the panel was opened for is gone: said once, and the views go on over all sessions.
+  const [deleted, setDeleted] = useState(false);
+  // Search keeps its query and its results while another view shows.
+  const [searched, setSearched] = useState(first === "search");
+  const phone = useMedia(PHONE);
+  const opener = useRef<HTMLElement | null>(null);
+  const openFact: OpenFact = (name, el, key) => { opener.current = el; setOpen({ name, key }); };
+  const lost = () => { setDeleted(true); setSession(""); setOpen(null); opener.current = null; };
+  useEffect(() => { onTab?.(tab); if (tab === "search") setSearched(true); }, [tab]);
+  // After the list took its new shape (the fact opened beside it or under its
+  // row, or closed): the row it was opened from is in view again. On a phone
+  // an opened fact stands under its row, and the row goes to the top of the
+  // view so the fact is read from its start. Closed, the row has the keyboard.
+  useLayoutEffect(() => {
+    const el = opener.current;
+    if (!el?.isConnected) return;
+    if (open && phone) (el.closest("[data-row]") ?? el).scrollIntoView({ block: "start" });
+    else el.scrollIntoView({ block: "nearest" });
+    if (!open) { el.focus({ preventScroll: true }); opener.current = null; }
+  }, [open, phone]);
+  useEffect(() => {
+    if (tab === "usage" || tab === "search") return;
+    let live = true;
+    api<{ sessions: MemorySession[]; gone: boolean }>(`/api/memory/sessions${session ? `?with=${session}` : ""}`).then((x) => {
+      if (!live) return;
+      setSessions(x.sessions);
+      if (x.gone) lost();
+    }).catch(reportError);
+    return () => { live = false; };
+  }, [tab, session]);
+  // What one session was given needs a session: the one the panel was opened for, else the latest.
+  const one = session || sessions[0]?.session_id || "";
+
+  // Under its row the fact grows when its text arrives: the row goes back to the top of the view.
+  const settle = () => { if (phone && opener.current?.isConnected) (opener.current.closest("[data-row]") ?? opener.current).scrollIntoView({ block: "start" }); };
+  const reader = open && <FactReader name={open.name} session={tab === "given" ? one : session} onClose={() => setOpen(null)} onOpen={(n) => setOpen({ name: n, key: open.key })} onRead={settle} />;
+  // On a phone the open fact stands under its own row, inside the list.
+  const under = (key: string) => (phone && open?.key === key ? <li className="list-none py-2" data-testid="memory-fact-under">{reader}</li> : null);
+  const pick = (id: string) => { setDeleted(false); setSession(id); };
+  const view = tab === "usage" ? <UsageTable since={since} />
+    : tab === "given" ? <GivenView session={one} sessions={sessions} onSession={pick} onOpen={openFact} onGone={lost} under={under} />
+    : tab === "search" ? null
+    : <UnusedView since={since} session={session} sessions={sessions} onSession={pick} onOpen={openFact} onGone={lost} under={under} />;
+  const beside = !!open && !phone && tab !== "usage";
 
   return (
-    <Panel plain title="Memory" hint="what recall added to turns, and an estimate of whether they used it; counts only, no content" testid="usage-memory">
-      {r.paths.length ? (
-        <>
-          <Table
-            head={["Path", "Recalls", "Tokens added", "Named in reply (estimate)", "Not added again", "Time added"]}
-            rows={[...r.paths.map((p) => cells(PATH[p.path] ?? p.path, p)), ...(r.paths.length > 1 ? [cells(<span className="font-medium">All memory</span>, r.total)] : [])]}
-          />
-          <p className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="memory-notes">
-            Named in reply is an estimate: a recall counts when the reply or a tool call of its turn spells the name of one of its facts, or three of its words in a row. It reads low: a fact can shape a reply without being named, and standing rules rarely are. A fact the context already holds is not added again; one its block has no room for follows with the next step.
-            {out > 0 && <span className="text-danger" data-testid="memory-out"> The store did not answer {plural(out, "time")} ({r.total.timeouts} timed out, {r.total.failures} failed): those turns went on without it.</span>}
-            {down && <span className="text-danger" data-testid="memory-down"> Right now it is not answering {down} in time.</span>}
-            {slow && !down && <span className="text-warn" data-testid="memory-slow"> Right now it answers {slow} slowly: a quarter or more of its last 20 answers came later than a turn waits.</span>}
-          </p>
-        </>
-      ) : <p className="k-empty">No memory was recalled in this range.</p>}
+    <Panel plain title="Memory" hint={HINT[tab]} testid="usage-memory"
+      aside={<Seg<MemoryTab> wrap label="Memory view" kind="tabs" panel={PANEL} testid="memory-tabs" value={tab} onChange={(t) => { setTab(t); setOpen(null); opener.current = null; }} options={[
+        { value: "usage", label: "Usage", testid: "memory-tab-usage" }, { value: "given", label: "Given", testid: "memory-tab-given" },
+        { value: "search", label: "Search", testid: "memory-tab-search" }, { value: "unused", label: "Never named", testid: "memory-tab-unused" },
+      ]} />}>
+      <div id={PANEL} role="tabpanel" aria-labelledby={tabId(PANEL, tab)} className={beside ? "grid items-start gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]" : undefined}>
+        <div className="min-w-0">
+          {deleted && tab !== "usage" && <p className="mb-3 rounded-md border border-line bg-sunken px-3 py-2 text-caption text-muted" role="status" data-testid="memory-session-gone">The session this was opened for was deleted, and what it was given went with it. Showing {tab === "given" ? "the latest session memory was given to" : "all sessions"}.</p>}
+          {view}
+          {searched && <div hidden={tab !== "search"}><SearchView session={session} onOpen={openFact} under={under} /></div>}
+        </div>
+        {/* Beside the list the fact stays in view while the list scrolls; one taller than the window scrolls in itself. */}
+        {beside && <div className="min-w-0 md:sticky md:top-4 md:max-h-[calc(100dvh-2rem)] md:overflow-y-auto" data-testid="memory-fact-beside">{reader}</div>}
+      </div>
     </Panel>
   );
 }

@@ -1,4 +1,4 @@
-import { Bell, Bot, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, Workflow } from "lucide-react";
+import { Bell, Bot, Brain, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, Workflow } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { activityTarget, auto, openSession, placeName, useAuto, type Activity, type Alert } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
@@ -18,6 +18,7 @@ const KIND: Record<Activity["kind"], { label: string; icon: typeof Bell }> = {
   awake: { label: "Awake", icon: Coffee },
   snooze: { label: "Snooze", icon: Moon },
   daemon: { label: "Daemon", icon: Power },
+  memory: { label: "Memory", icon: Brain },
 };
 const KINDS = Object.keys(KIND) as Activity["kind"][];
 
