@@ -13,7 +13,7 @@ import { bytesPerToken } from "./compact.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { OUTPUT_CAP } from "../tools/spill.ts";
 import {
-  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, type Checked, type Finding, findingsPreview, fitsOne, groupFindings, holds,
+  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, coversShort, type Checked, type Finding, findingsPreview, fitsOne, groupFindings, holds,
   materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, readersAtOnce, readerChoices, readRate, type Chunk, type Material,
 } from "./reader.ts";
 
@@ -169,7 +169,8 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   await sideBySide(chunks.length, (i) => readOne(chunks[i]!, i));
   found.sort((a, b) => a.k - b.k);
   // In part order, whichever failed first, and before the material past the cap, which follows every part.
-  unread.unshift(...parts.filter((p) => p.state === "unread").map((p) => `${p.covers} (every reader failed; last: ${p.error})`));
+  // A part of many small files is named by its first and last source and how many it holds, not by every one.
+  unread.unshift(...parts.filter((p) => p.state === "unread").map((p) => `${coversShort(p.covers)} (every reader failed; last: ${p.error})`));
 
   // The findings compiled into one answer.
   const compile = async (): Promise<{ text: string } | { error: string }> => {

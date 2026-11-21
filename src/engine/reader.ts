@@ -225,7 +225,7 @@ export function partPrompt(chunk: Chunk, question: string, k: number, n: number)
 
 export type Finding = { covers: string; text: string };
 // What a part covers, short: past two sources, the first, the last and how many.
-const coversShort = (covers: string) => {
+export const coversShort = (covers: string) => {
   const refs = covers.split(", ");
   return refs.length <= 2 ? covers : `${refs[0]} to ${refs.at(-1)}, ${refs.length} sources`;
 };

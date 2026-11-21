@@ -106,7 +106,7 @@ export type Fetched = { text: string; error?: boolean; cut?: boolean; took?: num
 
 // The most markup read for one page when a budget is given: the fetch CLI's
 // own hard cap for a response (10 MB), which the built-in path stands in for.
-const MARKUP_MAX = 10 * 1024 * 1024;
+export const MARKUP_MAX = 10 * 1024 * 1024;
 
 // A body as text. With a budget each chunk takes from it as it comes and the
 // reading stops when it is spent, so a long body is never held whole.

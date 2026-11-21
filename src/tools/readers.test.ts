@@ -257,3 +257,92 @@ test("a whole page keeps the text after a self-closed svg or script; only a cut 
   expect(htmlToText("<p>kept</p><script>var a = 1; var b =", true)).toBe("kept");
   expect(htmlToText('<p>kept</p><a href="/long', true)).toBe("kept");
 });
+
+// What the note says about what was not read, for the reasons a page or a part
+// can be left out: each names the bound that applied, shortly.
+test("a page cut by the markup bound names that bound; one the budget never reached is named, not kept as a status line", async () => {
+  // A page of markup longer than the bound on one page's markup, under a budget far larger than its text.
+  const para = `<p>${"word ".repeat(40)}</p>\n`;
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(req) {
+      if (new URL(req.url).pathname === "/plain") return new Response(rows(30, "plain"), { headers: { "content-type": "text/plain" } });
+      let sent = 0;
+      const block = new TextEncoder().encode(para.repeat(5_000));
+      return new Response(new ReadableStream({ pull(c) { if (sent > 12 * 1024 * 1024) return c.close(); sent += block.length; c.enqueue(block); } }), { headers: { "content-type": "text/html" } });
+    },
+  });
+  const url = (p: string) => `http://127.0.0.1:${server.port}${p}`;
+  try {
+    const big = await gather({ urls: [url("/markup")] }, ctxOf(), { budget: 50_000_000, fetch: local });
+    expect(big.items).toHaveLength(1);
+    expect(big.skipped).toEqual([expect.stringMatching(/\/markup after line \d+ \(past the 10 MB of markup read for one page\)$/)]);
+    // The budget cuts the same page first: then the budget is the reason.
+    const tight = await gather({ urls: [url("/markup")] }, ctxOf(), { budget: 20_000, fetch: local });
+    expect(tight.skipped).toEqual([expect.stringMatching(/\/markup after line \d+ \(past what one job reads, 20000 characters\)$/)]);
+    // A text page fetched when another took the last of the budget: no item of ten characters, the page is named.
+    const spent: typeof local = async (u, o, signal) => { if (u.endsWith("/plain")) o.budget.left = 0; return local(u, o, signal); };
+    const none = await gather({ urls: [url("/plain")] }, ctxOf(), { budget: 5_000, fetch: spent });
+    expect(none.items).toEqual([]);
+    expect(none.skipped).toEqual([`${url("/plain")} (past what one job reads, 5000 characters)`]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("failed parts of many files are named shortly, the card's count is of sources, and the list file is concealed and its call's own", async () => {
+  const { setConcealer } = await import("../core/conceal.ts");
+  const root = join(DIR, "many");
+  for (let d = 1; d <= 6; d++) {
+    mkdirSync(join(root, `dir-${d}`), { recursive: true });
+    for (let f = 1; f <= 40; f++) writeFileSync(join(root, `dir-${d}`, `hunter2-${String(f).padStart(2, "0")}.txt`), rows(12, `d${d}f${f}`));
+  }
+  const ctx = ctxOf();
+  ctx.callId = "toolu_call/one";
+  ctx.readBudget = async () => 120_000;
+  // Every reader fails on every part.
+  const failing: ReaderHost = { ...noCompile, ask: async () => { throw new Error("throttled"); } };
+  ctx.readMaterial = (items, q) => readMaterial(failing, items, q, ctx.signal);
+  setConcealer({ text: (s: string) => s.replaceAll("hunter2", "[secret]"), pairs: () => [] } as any);
+  try {
+    const out = await AskReaders.run({ question: "what stands out?", paths: ["many"] }, ctx);
+    const text = out.content as string;
+    const shown = (out.shown as any).readers;
+    // A failed part names its first and last source and how many it holds.
+    const failed = (shown.unread as string[]).filter((l) => l.includes("every reader failed"));
+    expect(failed.length).toBeGreaterThan(0);
+    for (const l of failed) expect(l).toMatch(/^many\/dir-\d\/\S+ to many\/dir-\d\/\S+, \d+ sources \(every reader failed; last: .*throttled\)$/);
+    expect(failed.join("\n").length).toBeLessThan(failed.length * 200);
+    // The card's count is of sources: the failed parts and every file past the budget, not the few lines that name them.
+    const past = Number(/(\d+) sources \(past what one job reads/.exec(text)![1]);
+    expect(past).toBeGreaterThan(100);
+    expect(shown.unread.length).toBeLessThan(12);
+    const inFailed = failed.reduce((n, l) => n + Number(/, (\d+) sources \(/.exec(l)![1]), 0);
+    const tails = (shown.unread as string[]).filter((l) => / after line \d+ \(past/.test(l)).length;
+    expect(shown.unread_sources).toBe(past + inFailed + tails); // every file past the budget, one it cut, and those of the failed parts
+    expect(inFailed).toBe(shown.sources);
+    expect(past).toBe(240 - shown.sources);
+    // The list file: this call's, and without the secret the names held.
+    const path = /All of them are listed in (\S+\.txt)/.exec(text)![1]!;
+    expect(path).toContain("-toolu_call_one-not-read-");
+    const listed = readFileSync(path, "utf8");
+    expect(listed.trim().split("\n")).toHaveLength(past);
+    expect(listed).not.toContain("hunter2");
+    expect(listed).toContain("[secret]-");
+    // The same call again in the same millisecond, as another call: another file.
+    const now = Date.now;
+    Date.now = () => 1_700_000_000_000;
+    try {
+      const paths = [];
+      for (const id of ["call-a", "call-b"]) {
+        ctx.callId = id;
+        paths.push(/All of them are listed in (\S+\.txt)/.exec((await AskReaders.run({ question: "what stands out?", paths: ["many"] }, ctx)).content as string)![1]);
+      }
+      expect(new Set(paths).size).toBe(2);
+    } finally {
+      Date.now = now;
+    }
+  } finally {
+    setConcealer(undefined as any);
+  }
+});

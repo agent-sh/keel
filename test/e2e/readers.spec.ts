@@ -80,7 +80,9 @@ test("readers: a folder of logs is read in parts and compiled into one answer", 
 
 // The job's budget comes from the model listing. On the scripted stand-in (no
 // paid model) a log several times that budget is gathered only up to it:
-// its tail and the file after it are named in the answer, never read first.
+// its tail and the files after it are named in the answer, never read first.
+// Many files past the budget are one line of the note, and the card counts
+// the files, not the lines.
 test("readers: material past the job's budget is named, not gathered", async ({ page, request }) => {
   const ids = ((await (await request.get("/api/models")).json()).models as any[]).map((m) => m.id);
   test.skip(!ids.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
@@ -93,6 +95,7 @@ test("readers: material past the job's budget is named, not gathered", async ({ 
   writeFileSync(join(dir, "a.log"), rows(60, "api"));
   writeFileSync(join(dir, "big.log"), rows(BIG_ROWS, "worker"));
   writeFileSync(join(dir, "c.log"), rows(60, "cron"));
+  for (let i = 1; i <= 24; i++) writeFileSync(join(dir, `d-${String(i).padStart(2, "0")}.log`), rows(20, `job${i}`));
   const whole = rows(60, "api").length + rows(BIG_ROWS, "worker").length + rows(60, "cron").length;
 
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
@@ -116,13 +119,15 @@ test("readers: material past the job's budget is named, not gathered", async ({ 
   expect(job.sources).toBe(2);
   expect(job.chars).toBeLessThanOrEqual(budget);
   expect(text).toMatch(new RegExp(`big\\.log after line \\d+ \\(past what one job reads, ${budget} characters\\)`));
-  expect(text).toContain(`c.log (past what one job reads, ${budget} characters)`);
+  // The 25 files after it are one line that counts them, with their names in a file.
+  expect(text).toMatch(new RegExp(`25 sources \\(past what one job reads, ${budget} characters\\): 25 in \\S+/\\. All of them are listed in \\S+-not-read-\\d+\\.txt`));
   expect(job.unread).toHaveLength(2);
+  expect(job.unread_sources).toBe(26);
 
   await page.goto(`/s/${session.id}`);
   const card = page.locator('[data-tool="ask_readers"]').first();
   await card.getByRole("button").first().click();
-  await expect(card).toContainText("2 unread");
+  await expect(card.getByTestId("readers-unread")).toHaveText("26 unread");
   await expect(card.getByTestId("readers-notes")).toContainText("big.log after line");
   // The card leads with the count the note leads with: quotes at the lines cited, not quotes found anywhere.
   // Each part's reader gave two quotes, one of them four lines off: half are at the lines cited.

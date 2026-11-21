@@ -13,7 +13,7 @@ import { conceal } from "../core/conceal.ts";
 import { readText } from "../core/proc.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
-import { webFetch, type Fetched, type FetchOpts } from "./web.ts";
+import { MARKUP_MAX, webFetch, type Fetched, type FetchOpts } from "./web.ts";
 
 // What one job gathers into memory at most (characters), whatever the model
 // listing allows: a bound on the daemon's memory. The job's own budget is what
@@ -151,6 +151,8 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
         stop();
         // A page that failed is not kept: what its body took goes back, and no more.
         if (r.error) { pool.left += r.took ?? 0; notes[i] = `${url} (${r.text.slice(0, 200)})`; continue; }
+        // The budget was spent before its first byte: there is no page to read, only its status line.
+        if (r.cut && r.took === 0) { notes[i] = `${url} (${past})`; continue; }
         // For now the page takes what it did not take while it streamed, so no
         // page is started once the budget is spent.
         pool.left -= r.text.length - (r.took ?? 0);
@@ -169,7 +171,10 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
       if (r.cut || keep < text.length) {
         const w = wholeLines(text.slice(0, keep));
         text = w.text;
-        skipped.push(`${url} after ${w.after} (${past})`);
+        // A page of markup is cut by the bound on one page's markup, whatever the budget has left (it has no
+        // count of its own, `took`): named as that, so the reason is the one that applied.
+        const markup = r.cut && r.took === undefined && keep === r.text.length;
+        skipped.push(`${url} after ${w.after} (${markup ? `past the ${MARKUP_MAX / 1024 / 1024} MB of markup read for one page` : past})`);
       }
       const path = join(saved, `${Date.now()}-${i}-${Bun.hash(url).toString(36)}.md`);
       await Bun.write(path, text);
@@ -190,7 +195,7 @@ const folderOf = (name: string) => { try { if (/^https?:/.test(name)) return new
 // sources; a reason many whole sources share (a folder past the budget, a
 // folder of images) is one line, so the result stays short however much the
 // call named.
-async function unreadLines(list: string[], spillDir: string): Promise<string[]> {
+async function unreadLines(list: string[], spillDir: string, callId?: string): Promise<string[]> {
   const byReason = new Map<string, string[]>();
   const order: (string | { why: string })[] = [];
   for (const line of list) {
@@ -210,32 +215,41 @@ async function unreadLines(list: string[], spillDir: string): Promise<string[]> 
     const top = folders.slice(0, FOLDERS).map(([f, n]) => `${n} in ${f}`);
     const rest = folders.slice(FOLDERS);
     if (rest.length) top.push(`${rest.reduce((n, f) => n + f[1], 0)} in ${rest.length} other folder${rest.length === 1 ? "" : "s"}`);
-    const path = join(spillDir, "readers", `${Date.now()}-not-read-${lines.length}.txt`);
+    // Named by its call, so two calls in one millisecond write two files; a secret in a name stays out of it.
+    const path = join(spillDir, "readers", `${Date.now()}-${(callId ?? Bun.randomUUIDv7()).replace(/[^\w.-]/g, "_").slice(-40)}-not-read-${lines.length}.txt`);
     mkdirSync(join(spillDir, "readers"), { recursive: true });
-    await Bun.write(path, names.join("\n") + "\n");
+    await Bun.write(path, conceal(names.join("\n") + "\n"));
     lines.push(`${names.length} sources (${x.why}): ${top.join(", ")}. All of them are listed in ${path}`);
   }
   return lines;
 }
+
+// The sources a job's own not-read line names: a part every reader failed on holds one, two or "N sources".
+const sourcesIn = (line: string) => {
+  const part = /^(.*) \(every reader failed/.exec(line)?.[1];
+  return !part ? 1 : Number(/, (\d+) sources$/.exec(part)?.[1] ?? part.split(", ").length);
+};
 
 async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
   const question = String(input?.question ?? "").trim();
   if (!question) return fail("Give the question: what to find or answer in the material. The readers see only it and the material.");
   if (!ctx.readMaterial) return fail("Readers are not available for this call: read the material with your own tools.");
   const { items, skipped, saved } = await gather(input ?? {}, ctx);
-  if (!items.length) return fail(`Nothing to read${skipped.length ? `: ${(await unreadLines(skipped, ctx.spillDir)).join("; ")}` : ": name paths or urls"}.`);
+  if (!items.length) return fail(`Nothing to read${skipped.length ? `: ${(await unreadLines(skipped, ctx.spillDir, ctx.callId)).join("; ")}` : ": name paths or urls"}.`);
   const chars = items.reduce((n, m) => n + m.text.length, 0);
   // Short is what comes back, with its line numbers and file headers: many
   // short lines or small files can be several times their own size.
   const whole = chars <= READ_WHOLE_CHARS ? wholeText(items) : "";
   if (whole && whole.length <= READ_WHOLE_CHARS) {
-    const not = await unreadLines(skipped, ctx.spillDir);
+    const not = await unreadLines(skipped, ctx.spillDir, ctx.callId);
     const skippedNote = not.length ? `\n[Not read, so not covered:\n- ${not.join("\n- ")}]` : "";
-    return { content: `${whole}\n\n[Short enough to read whole (${chars} chars): no reader was used.]${skippedNote}`, shown: { readers: { question, whole: true, sources: items.length, chars, skipped: not } } };
+    return { content: `${whole}\n\n[Short enough to read whole (${chars} chars): no reader was used.]${skippedNote}`, shown: { readers: { question, whole: true, sources: items.length, chars, skipped: not, unread_sources: skipped.length } } };
   }
   const o = await ctx.readMaterial(items, question, ctx.callId);
-  o.unread = await unreadLines([...o.unread, ...skipped], ctx.spillDir);
-  const shown = { readers: { question, sources: items.length, chars: o.chars, parts: o.parts, models: o.models, usage: o.usage, cost: o.cost, plan: o.plan, working: o.working, unread: o.unread, compiled: o.compiled, checked: o.checked } };
+  // What the card counts: the sources not read (or not read whole), not the lines that name them.
+  const unreadSources = o.unread.reduce((n, l) => n + sourcesIn(l), 0) + skipped.length;
+  o.unread = await unreadLines([...o.unread, ...skipped], ctx.spillDir, ctx.callId);
+  const shown = { readers: { question, sources: items.length, chars: o.chars, parts: o.parts, models: o.models, usage: o.usage, cost: o.cost, plan: o.plan, working: o.working, unread: o.unread, unread_sources: unreadSources, compiled: o.compiled, checked: o.checked } };
   if (!o.text) {
     // No reader read anything: the material as a long output, saved whole.
     const spilled = await spill(wholeText(items), ctx.spillDir, "readers");
