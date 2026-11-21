@@ -223,6 +223,21 @@ test("model picker: long names are shown whole", async ({ page, request }) => {
     expect(await whole(popup.getByTestId("model-group-label"))).toBe(true);
     await expect(popup.getByTestId("model-option").first()).toContainText(`${LAB_MODELS[0]}`);
     await shoot(page, "picker-04-long-names");
+
+    // Under Recent a row names its provider beside the model: a long label
+    // gives way on one line, whole in its title, before the name loses room.
+    await page.keyboard.press("Escape");
+    await page.evaluate((id) => localStorage.setItem("keel.recentModels", JSON.stringify([id])), `lab-east:${LAB_MODELS[0]}`);
+    await page.reload();
+    await page.getByTestId("model-picker").click();
+    const recent = popup.locator(`[data-group="recent"] [data-model="lab-east:${LAB_MODELS[0]}"]`);
+    const label = recent.getByTestId("model-provider");
+    await expect(label).toHaveAttribute("title", "Laboratory inference cluster east");
+    expect(await label.evaluate((el) => el.scrollWidth > el.clientWidth && el.getBoundingClientRect().height < 2 * parseFloat(getComputedStyle(el).lineHeight))).toBe(true);
+    expect(await whole(recent.getByTestId("model-name"))).toBe(true);
+    expect(await recent.getByTestId("model-name").evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)))).toBeLessThanOrEqual(2);
+    await shoot(page, "picker-08-long-provider-label");
+    await page.evaluate(() => localStorage.removeItem("keel.recentModels"));
   });
 });
 
@@ -232,7 +247,7 @@ test("model picker: long names are shown whole", async ({ page, request }) => {
 test.describe("on a small phone", () => {
   test.use({ viewport: { width: 320, height: 480 }, hasTouch: true, isMobile: true });
   test("model picker: fits, scrolls its results only, acts by touch", async ({ page, request }) => {
-    await page.addInitScript(() => localStorage.setItem("keel.textScale", "1.5"));
+    await page.addInitScript(() => { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("keel.textScale", "1.5"); } });
     const { session } = await (await request.post("/api/sessions", { data: { title: "Chooser on a phone" } })).json();
     await withLab(request, async () => {
       await page.goto(`/s/${session.id}`);
@@ -251,6 +266,8 @@ test.describe("on a small phone", () => {
       await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
       await expect(popup).toBeVisible();
       await fits();
+      // A full list takes the sheet down to the window's bottom edge.
+      await expect.poll(async () => { const b = (await popup.boundingBox())!; return b.y + b.height; }).toBeGreaterThanOrEqual(479);
       await shoot(page, "picker-05-phone");
 
       // The results have at least half of the window, and only they scroll: the popup itself has nothing more below.
@@ -259,6 +276,12 @@ test.describe("on a small phone", () => {
       expect(await list.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
       await list.evaluate((el) => (el.scrollTop = el.scrollHeight));
       await fits();
+      // A group label held at the top of the results sits on their edge: no row shows above it.
+      expect(await list.evaluate((el) => {
+        const top = el.getBoundingClientRect().top;
+        const held = [...el.querySelectorAll('[data-testid="model-group"]')].map((g) => g.firstElementChild!.getBoundingClientRect()).filter((r) => r.top < top + 8 && r.bottom > top);
+        return held.length === 1 && Math.abs(held[0]!.top - top) < 1;
+      })).toBe(true);
 
       // Alike names from alike providers, whole.
       await search.fill("preview-quantized");
@@ -277,7 +300,7 @@ test.describe("on a small phone", () => {
         await expect(action).toBeInViewport({ ratio: 1 });
         await expect(action).toHaveCSS("opacity", "1");
         const box = (await action.boundingBox())!;
-        expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(24);
+        expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(44);
         await fits();
       };
       await reach(last.getByTestId("pin-model"));
@@ -301,6 +324,24 @@ test.describe("on a small phone", () => {
       await expect(hidden).toHaveCount(0);
       await expect(popup.locator(`[data-model="${id}"]`).first()).toBeVisible();
       expect((await (await request.get("/api/models")).json()).models.find((m: any) => m.id === id && m.provider === provider).hidden).toBeFalsy();
+
+      // At the smallest text size an action is still a finger wide.
+      await page.evaluate(() => localStorage.setItem("keel.textScale", "0.9"));
+      await page.reload();
+      await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
+      // (Read once the sheet has finished opening: it grows into place.)
+      await expect.poll(async () => { const b = (await popup.getByTestId("pin-model").first().boundingBox())!; return Math.min(b.width, b.height); }).toBeGreaterThanOrEqual(44);
+      // A tap beside the sheet closes it.
+      await page.touchscreen.tap(4, 200);
+      await expect(popup).toBeHidden();
+
+      // A wider phone or a small tablet: the sheet stands in the middle of the window.
+      await page.setViewportSize({ width: 700, height: 600 });
+      await page.locator(`[data-station="${session.id}"]`).getByTestId("model-picker").tap();
+      await expect(popup).toBeVisible();
+      await expect.poll(async () => { const b = (await popup.boundingBox())!; return Math.abs(b.x + b.width / 2 - 350); }).toBeLessThan(2);
+      expect((await popup.boundingBox())!.width).toBeLessThan(600);
+      await shoot(page, "picker-09-sheet-700");
     });
     await request.delete(`/api/sessions/${session.id}`);
   });

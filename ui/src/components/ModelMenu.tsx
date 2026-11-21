@@ -176,7 +176,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
             <Combobox.Empty>
               <div className="px-3 py-4 text-ui text-muted">No model matches.</div>
             </Combobox.Empty>
-            <Combobox.List className="min-h-0 overflow-y-auto overscroll-contain p-1 scroll-py-8">
+            <Combobox.List className="min-h-0 overflow-y-auto overscroll-contain px-1 pb-1 scroll-py-8">
               {(group: Group) => (
                 <Combobox.Group key={group.value} items={group.items} className="pb-1 last:pb-0" data-testid="model-group" data-group={group.value}>
                   <Combobox.GroupLabel className="group/head sticky top-0 z-10 flex min-h-7 items-center gap-1.5 bg-raised px-2 text-micro font-medium text-faint">
@@ -226,7 +226,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         <span className={cn("col-start-2 flex min-w-0 items-center gap-1.5", NARROW.apart)}>
                           <span className={cn("min-w-0 text-balance [overflow-wrap:anywhere]", item.hidden && "max-w-[55%]", NARROW.name)} data-testid="model-name">{item.label}</span>
                           {item.value === def && <span data-testid="model-default" className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
-                          {!group.provider && !item.hidden && <span className={cn("shrink-0 truncate text-micro text-faint", NARROW.wrap)} data-testid="model-provider">{item.providerLabel}</span>}
+                          {!group.provider && !item.hidden && <span className={cn("min-w-16 shrink-[8] truncate text-micro text-faint", NARROW.wrap)} title={item.providerLabel} data-testid="model-provider">{item.providerLabel}</span>}
                           {item.hidden && <span className={cn("min-w-0 truncate text-micro text-faint", NARROW.wrap)} title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>
                         <span className={cn("col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint", NARROW.tail)}>
@@ -294,9 +294,10 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
 // On a phone the chooser is a sheet hung from the top of the window, not a
 // popup beside its trigger (the trigger sits low, with room for one row under
 // it): the search field stays at the top, clear of an on-screen keyboard, and
-// the results get the rest of the window. A tap beside the sheet still closes it.
+// the results get the rest of the window, down to its bottom edge. On a wider
+// phone it stands in the middle. A tap beside the sheet still closes it.
 const SHEET = {
-  place: "max-md:fixed! max-md:inset-3! max-md:flex max-md:transform-none! max-md:flex-col max-md:pointer-events-none",
+  place: "max-md:fixed! max-md:inset-3! max-md:bottom-0! max-md:flex max-md:transform-none! max-md:flex-col max-md:items-center max-md:pointer-events-none",
   popup: "max-md:pointer-events-auto max-md:max-h-full",
 };
 
@@ -311,13 +312,17 @@ const NARROW = {
   apart: "picker-narrow:contents",
   tail: "picker-narrow:min-h-7 picker-narrow:flex-[1_0_auto]",
   name: "picker-narrow:max-w-none picker-narrow:basis-full",
-  wrap: "picker-narrow:shrink picker-narrow:whitespace-normal picker-narrow:[overflow-wrap:anywhere]",
+  wrap: "picker-narrow:min-w-0 picker-narrow:shrink picker-narrow:whitespace-normal picker-narrow:[overflow-wrap:anywhere]",
   facts: "picker-narrow:order-first picker-narrow:flex picker-narrow:items-center picker-narrow:gap-1",
   window: "picker-narrow:w-auto",
   actions: "picker-narrow:ml-auto picker-narrow:flex picker-narrow:flex-wrap picker-narrow:items-center picker-narrow:justify-end picker-narrow:gap-1",
   count: "picker-narrow:order-last picker-narrow:basis-full picker-narrow:px-3 picker-narrow:pb-1.5",
   gone: "picker-narrow:hidden",
 };
+
+// Under a finger an action is the platforms' touch size: 2.9rem is 44px at
+// the smallest text size and more at the others.
+const FINGER = "pointer-coarse:size-[2.9rem] pointer-coarse:[&>svg]:size-4";
 
 // A small button inside an option that acts without choosing the option.
 function RowAction({ label, on, testid, onPress, children }: { label: string; on: boolean; testid: string; onPress: () => void; children: React.ReactNode }) {
@@ -331,7 +336,7 @@ function RowAction({ label, on, testid, onPress, children }: { label: string; on
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
       className={cn(
-        "grid size-5 shrink-0 place-items-center rounded-xs hover:bg-line hover:text-fg pointer-coarse:size-7",
+        "grid size-5 shrink-0 place-items-center rounded-xs hover:bg-line hover:text-fg", FINGER,
         on ? "opacity-100" : "opacity-0 group-hover/row:opacity-100 group-data-highlighted/row:opacity-100 pointer-coarse:opacity-100",
       )}
     >
@@ -350,7 +355,7 @@ function TextAction({ label, title, testid, onPress }: { label: string; title?: 
       data-testid={testid}
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
-      className="shrink-0 rounded-xs px-1.5 py-0.5 text-micro text-accent-ink hover:bg-line pointer-coarse:px-2 pointer-coarse:py-1.5"
+      className="shrink-0 rounded-xs px-1.5 py-0.5 text-micro text-accent-ink hover:bg-line pointer-coarse:inline-flex pointer-coarse:min-h-[2.9rem] pointer-coarse:items-center pointer-coarse:px-3"
     >
       {label}
     </span>
