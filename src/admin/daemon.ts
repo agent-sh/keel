@@ -2,15 +2,16 @@
 // work away while the engine lets running turns finish and parks the rest,
 // and a restart that starts the same binary again. Continuing parked and
 // crash-cut turns is the engine's (Engine.recover, from main.ts).
-import { Database } from "bun:sqlite";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Deps } from "../server/app.ts";
+import { claimState, hasClaim } from "../core/claim.ts";
 import { addAdmission } from "../server/admission.ts";
 
+export { claimState };
+
 const LOCK = "daemon.lock";
-const CLAIM = "daemon.claim";
 
 // The daemon a service manager runs (KEEL_SUPERVISED) is the machine's own,
 // whatever state folder its unit names: it leaves a note in the user's runtime
@@ -54,47 +55,28 @@ export async function portHolder(host: string, port: number): Promise<string | n
   return "another program";
 }
 
-// The claim on a state folder: an exclusive lock on an empty SQLite file of
-// its own (never keel.db), held by the kernel for the process. Two starts at
-// once cannot both get it, and it ends with the process however it dies, so
-// there is no stale claim to take over. Kept per process: a hot reload has it.
-const claims: Map<string, Database> = ((globalThis as any).__keelClaims ??= new Map());
-
-export function claimState(stateDir: string): { release: () => void } | null {
-  if (claims.has(stateDir)) return { release: () => {} };
-  mkdirSync(stateDir, { recursive: true });
-  const db = new Database(join(stateDir, CLAIM), { create: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE");
-  } catch (e) {
-    db.close();
-    if (/^SQLITE_(BUSY|LOCKED)/.test((e as { code?: string }).code ?? "")) return null;
-    throw e;
-  }
-  claims.set(stateDir, db);
-  return { release: () => { claims.delete(stateDir); db.close(); } };
-}
-
 // Refuses a second daemon on the same state folder, before anything of the
 // state is opened. A restart passes the old pid: wait for it to exit. The
 // lock file says who holds the folder and where it answers; one left by a
 // daemon that died is written over.
 export function acquireLock(stateDir: string) {
-  if (claims.has(stateDir)) return;
+  if (hasClaim(stateDir)) return;
   const path = join(stateDir, LOCK);
   waitForPredecessor();
   const held = () => {
-    try { return JSON.parse(readFileSync(path, "utf8") || "{}") as { pid?: number; url?: string; claim?: boolean }; } catch { return {}; }
+    try { return JSON.parse(readFileSync(path, "utf8") || "{}") as { pid?: number; url?: string }; } catch { return {}; }
   };
   const refuse = (h: { pid?: number; url?: string }) => {
     console.error(`keel: another daemon${h.pid && alive(h.pid) ? ` (pid ${h.pid}${h.url ? `, ${h.url}` : ""})` : ""} uses ${stateDir}`);
     process.exit(1);
   };
   if (!claimState(stateDir)) refuse(held());
-  // A daemon from before the claim holds only the lock file: its pid decides.
+  // A live daemon named in the lock file holds the folder whatever the claim
+  // says: a daemon from before the claim has none, and a claim can be lost
+  // (the kernel drops it when its holder closes any handle of the file).
   const h = held();
-  if (!h.claim && h.pid && h.pid !== process.pid && alive(h.pid)) refuse(h);
-  writeFileSync(path, JSON.stringify({ pid: process.pid, started_ms: Date.now(), argv: process.argv.slice(1), claim: true }), { mode: 0o600 });
+  if (h.pid && h.pid !== process.pid && alive(h.pid)) refuse(h);
+  writeFileSync(path, JSON.stringify({ pid: process.pid, started_ms: Date.now(), argv: process.argv.slice(1) }), { mode: 0o600 });
   process.on("exit", () => {
     try { if (JSON.parse(readFileSync(path, "utf8")).pid === process.pid) rmSync(path); } catch {}
   });

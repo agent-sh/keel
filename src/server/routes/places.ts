@@ -5,6 +5,7 @@
 import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { claimNote, isClaimFile } from "../../core/claim.ts";
 import { contains } from "../../core/paths.ts";
 import type { Session } from "../../core/types.ts";
 import { instructionFilter } from "../../engine/turn.ts";
@@ -263,6 +264,7 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
         const u = new URL(req.url);
         const real = fileOf(s, u.searchParams.get("path"));
         if (real instanceof Response) return real;
+        if (isClaimFile(real)) return bad(claimNote(real), 403);
         const f = Bun.file(real);
         const kind = imageKind(new Uint8Array(await f.slice(0, 16).arrayBuffer()));
         if (u.searchParams.get("raw") === "1") {

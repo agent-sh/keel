@@ -5,6 +5,7 @@ import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { RouteModule } from "../app.ts";
+import { claimNote, isClaimFile } from "../../core/claim.ts";
 import { contains } from "../../core/paths.ts";
 import { readText } from "../../core/proc.ts";
 
@@ -117,6 +118,7 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
         if (!contains(root, p)) return bad("outside the folder", 403);
         const st = statSync(p);
         if (!st.isFile()) return bad("not a file", 400);
+        if (isClaimFile(p)) return bad(claimNote(p), 403);
         const f = Bun.file(p);
         const head = new Uint8Array(await f.slice(0, 8000).arrayBuffer());
         if (head.includes(0)) return json({ path: relative(root, p), size: st.size, binary: true });

@@ -1,6 +1,7 @@
 // The tool profile Gemini models are trained on: Gemini CLI's names and
 // shapes (packages/core/src/tools/definitions/model-family-sets/gemini-3.ts).
 import { readdirSync, statSync } from "node:fs";
+import { claimNote, isClaimFile } from "../core/claim.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
@@ -65,6 +66,7 @@ const read_file: Tool = {
     const e = Number(input.end_line) || undefined;
     if (s || e) {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
+      if (isClaimFile(p)) return fail(claimNote(p));
       const { text } = decodeText(new Uint8Array(await Bun.file(p).arrayBuffer()));
       ctx.seen.set(p, mtime(p));
       const r = numbered(text, s ?? 1, e ? e - (s ?? 1) + 1 : undefined, false);
