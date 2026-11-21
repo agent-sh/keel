@@ -576,3 +576,54 @@ test("End follows the end of the active pane only", async ({ page, request }) =>
     await shoot(page, "layout-19-end-active-pane");
   } finally { await drop(); }
 });
+
+// Going to a pane that is off screen brings it into view: with a glide, or at
+// once for someone who asked their system for reduced motion.
+test("a pane off screen is shown without a glide under reduced motion", async ({ page, request }) => {
+  const tag = Date.now().toString(36);
+  const ids: string[] = [];
+  for (const name of ["First", "Second", "Third"]) ids.push((await (await request.post("/api/sessions", { data: { model: MODEL, title: `${name} pane ${tag}` } })).json()).session.id);
+  const pane = (i: number) => page.getByTestId("station").and(page.locator(`[data-station="${ids[i]}"]`));
+  try {
+    // Three panes kept from a wider window: this one holds two, the third is off screen.
+    await page.setViewportSize({ width: 1150, height: 980 });
+    await page.addInitScript((slots) => {
+      const scrolls: { station?: string; behavior?: string }[] = ((window as any).scrolls = []);
+      const real = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (arg?: boolean | ScrollIntoViewOptions) {
+        scrolls.push({ station: (this as HTMLElement).dataset.station, behavior: typeof arg === "object" ? arg.behavior : undefined });
+        return real.call(this, arg);
+      };
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("keel.panes", JSON.stringify({ count: 3, slots, sizes: {}, active: 0 }));
+    }, ids);
+    const asked = (i: number) => page.evaluate((id) => ((window as any).scrolls as { station?: string; behavior?: string }[]).filter((s) => s.station === id).map((s) => s.behavior), ids[i]!);
+    const clear = () => page.evaluate(() => { (window as any).scrolls.length = 0; });
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto(`/s/${ids[0]}`);
+    await expect(pane(0)).toHaveAttribute("data-helm", "true");
+    await expect(pane(2)).toBeAttached();
+    await expect(pane(2)).not.toBeInViewport({ ratio: 0.9 });
+    await clear();
+    // Next pane, twice, by keyboard: the third pane is the one worked in and is on screen at once.
+    await page.keyboard.press("Alt+]");
+    await page.keyboard.press("Alt+]");
+    await expect(pane(2)).toHaveAttribute("data-helm", "true");
+    await expect(pane(2)).toBeInViewport({ ratio: 0.99 });
+    const reduced = await asked(2);
+    expect(reduced.length).toBeGreaterThan(0);
+    expect(reduced).not.toContain("smooth");
+    await shoot(page, "layout-14-offscreen-pane-reduced-motion");
+
+    // Without that preference the same move glides.
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await expect(pane(0)).not.toBeInViewport({ ratio: 0.9 });
+    await clear();
+    await page.keyboard.press("Alt+]");
+    await expect(pane(0)).toHaveAttribute("data-helm", "true");
+    await expect(pane(0)).toBeInViewport({ ratio: 0.99 });
+    expect(await asked(0)).toEqual(["smooth"]);
+  } finally { for (const id of ids) await request.delete(`/api/sessions/${id}`); }
+});

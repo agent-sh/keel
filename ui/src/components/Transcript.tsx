@@ -9,7 +9,7 @@ import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
-import { cn, fmtCost, fmtTokens, fmtWait } from "../lib/utils.ts";
+import { cn, fmtCost, fmtTokens, fmtWait, scrollMotion } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
@@ -522,7 +522,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (!el) return;
     stick.current = true;
     setAway(false);
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "instant" });
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? scrollMotion() : "instant" });
   };
 
   // Follow the end while it grows (streaming, a tool row opening), unless the reader scrolled up.

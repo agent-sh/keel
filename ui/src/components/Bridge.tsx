@@ -16,7 +16,7 @@ import { paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { byAttention, getStations, opened, shares, stations, target, useStations } from "../lib/stations.ts";
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
-import { ago, when } from "../lib/utils.ts";
+import { ago, scrollMotion, when } from "../lib/utils.ts";
 import { lastLine, useAgentCount, useAgentCounts, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
@@ -156,7 +156,7 @@ function Station({ s, helm, slot, grow }: { s: Session; helm: boolean; slot?: nu
   const ref = useRef<HTMLElement>(null);
   const drop = useDrop(slot);
   // The helm scrolls into view when it changes (keyboard moves, the rail).
-  useEffect(() => { if (helm) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" }); }, [helm]);
+  useEffect(() => { if (helm) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: scrollMotion() }); }, [helm]);
   return (
     <section
       ref={ref}

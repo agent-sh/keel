@@ -62,3 +62,8 @@ export function folderNames(paths: Iterable<string>): Map<string, string> {
   }
   return new Map(all.map((p) => [p, label(p)]));
 }
+
+// How a scroll the page starts by itself moves: a glide, or at once for
+// someone whose system asks for reduced motion (the CSS rule for it covers
+// animations and transitions, not scrolls asked for from script).
+export const scrollMotion = (): ScrollBehavior => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth");
