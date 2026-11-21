@@ -272,3 +272,64 @@ test("a calendar loop whose saved schedule the parser now refuses is turned off 
   const rows = store.db.query<{ text: string }, [string]>("SELECT text FROM activity WHERE session_id = ? AND kind = 'loop'").all(s.id);
   expect(rows.map((r) => r.text)).toEqual([expect.stringContaining("turned off")]);
 });
+
+// A time that passed while nothing ticked (the daemon was down, or the
+// machine slept under it) is run once when ticks come back, and the run says
+// it is a catch-up: for which time, how late, and how many later times it
+// stands for. The times in between start no runs of their own.
+test("a time missed while the daemon was down or the machine slept runs once, marked as catch-up", () => {
+  const t0 = Date.UTC(2026, 0, 5, 8, 0, 0);
+  at(t0);
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1h", prompt: "tick" });
+  expect(loops.get(loop.id)!.next_ms).toBe(t0 + 3_600_000);
+
+  // Down over the 9:00, 10:00, 11:00 and 12:00 times; back at 12:10.
+  at(t0 + 4 * 3_600_000 + 600_000);
+  restart();
+  loops.tick();
+  loops.tick();
+  expect(sent).toHaveLength(1);
+  const [run] = started(loop.id);
+  expect(run).toMatchObject({ due_ms: t0 + 3_600_000 });
+  expect(run!.note).toMatch(/^Catch-up for .+, 190 min late \(.+\)\. The 3 later times it missed are not run separately\.$/);
+  // An interval counts on from the run, not from the times it missed.
+  const second = t0 + 5 * 3_600_000 + 600_000;
+  expect(loops.get(loop.id)!.next_ms).toBe(second);
+  step(s.id, 5);
+  end(s.id);
+  expect(activity.list({ session_id: s.id }).items.map((a) => a.text).filter((t) => t.includes("started a run"))).toEqual([expect.stringContaining("(Catch-up for")]);
+
+  // The machine sleeps over that time only, with the daemon up: one run, and no later time to name.
+  at(second + 20 * 60_000);
+  loops.tick();
+  expect(sent).toHaveLength(2);
+  expect(started(loop.id).find((r) => r.due_ms === second)!.note).toMatch(/^Catch-up for .+, 20 min late \(.+\)\.$/);
+  step(s.id, 5);
+  end(s.id);
+
+  // A run on time is no catch-up, and nothing else started meanwhile.
+  const third = loops.get(loop.id)!.next_ms!;
+  expect(third).toBe(second + 20 * 60_000 + 3_600_000);
+  at(third + 500);
+  loops.tick();
+  expect(sent).toHaveLength(3);
+  expect(started(loop.id).find((r) => r.due_ms === third)!.note).toBeNull();
+  expect(loops.runs(loop.id)).toHaveLength(3);
+  step(s.id, 5);
+  end(s.id);
+
+  // A calendar loop: every day at 9:00 UTC, missed on three days. One run for
+  // the first, and the two later ones named.
+  const daily = loops.create({ session_id: session().id, schedule: "0 9 * * *", tz: "UTC", prompt: "daily" }).loop;
+  const first = loops.get(daily.id)!.next_ms!;
+  at(first + 2 * 86_400_000 + 30 * 60_000);
+  restart();
+  loops.tick();
+  loops.tick();
+  const runs = started(daily.id);
+  expect(runs).toHaveLength(1);
+  expect(runs[0]!.note).toMatch(/^Catch-up for .+, 2910 min late \(.+\)\. The 2 later times it missed are not run separately\.$/);
+  expect(loops.get(daily.id)!.next_ms).toBe(first + 3 * 86_400_000);
+});

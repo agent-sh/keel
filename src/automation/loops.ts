@@ -540,6 +540,23 @@ function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["ou
   if (l.kind === "webhook") drainWebhook(l.id, now);
 }
 
+// The times of a loop's schedule that passed after the one it is late for,
+// up to now. A calendar schedule is walked time by time inside the tick, so
+// the walk stops here and the note says "more than".
+const MISSED_COUNTED = 100;
+function missedAfter(l: LoopRecord, now: number): number {
+  if (l.kind === "interval") {
+    const step = nextDue(l, 0)!;
+    return step > 0 ? Math.floor((now - l.next_ms!) / step) : 0;
+  }
+  if (l.kind !== "cron") return 0;
+  let n = 0;
+  try {
+    for (let t = nextDue(l, l.next_ms!); t !== null && t <= now && n <= MISSED_COUNTED; t = nextDue(l, t)) n++;
+  } catch { return 0; } // a schedule that no longer reads is turned off below
+  return n;
+}
+
 const STARTED = Date.now();
 let ticking = false;
 export function tick() {
@@ -558,7 +575,11 @@ export function tick() {
         // Why it is late, only as far as the daemon knows it: it was not running
         // at the due time, or it was (then the machine slept or the tick was held).
         const why = l.next_ms! < STARTED ? "the daemon was not running then" : "the daemon was running, so the machine likely slept";
-        const note = late ? `Catch-up for ${new Date(l.next_ms!).toLocaleString()}, ${Math.round((now - l.next_ms!) / 60_000)} min late (${why}); times missed meanwhile were not run.` : undefined;
+        // One run stands for every time that passed meanwhile: it says how many.
+        const more = late ? missedAfter(l, now) : 0;
+        const note = late
+          ? `Catch-up for ${new Date(l.next_ms!).toLocaleString()}, ${Math.round((now - l.next_ms!) / 60_000)} min late (${why}).${more ? ` The ${more > MISSED_COUNTED ? `more than ${MISSED_COUNTED}` : more} later time${more === 1 ? "" : "s"} it missed ${more === 1 ? "is" : "are"} not run separately.` : ""}`
+          : undefined;
         // Next slot from now: a run longer than the interval skips the slots it
         // covered. The new next time and the slot's run row commit together, so a
         // crash between them cannot lose a slot without a trace.
