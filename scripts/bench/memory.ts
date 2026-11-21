@@ -19,7 +19,11 @@
 //   helper records                  the <remembered> block of a helper prompt
 // A fact counts as used when the reply of the turn that got it names it;
 // as repeated when the same line was already added earlier in the session
-// and is still in the context.
+// and is still in the context; as lost when the store gave it to the session
+// (a store that gives a fact once will not give it again) and no request of
+// the session ever carried it. Lost must be 0: saving tokens never costs a
+// fact. For the helper's records, a relevance check asks about a known
+// record by words of its text and counts how often that record is recalled.
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -42,7 +46,7 @@ const meterOf: ((store: unknown) => { report(f?: { session?: string }): any }) |
 function metered(store: unknown, sessionId: string) {
   const r = meterOf?.(store).report({ session: sessionId });
   if (!r) return;
-  console.log("  as the daemon measured it (Settings > Usage): " + r.paths.map((p: any) => `${p.path} asked ${p.asked}, added ${p.recalls} (${p.facts} facts, ${p.tokens} tokens), used ${p.used} of ${p.facts_checked}, not added again ${p.repeats}, over budget ${p.cut}, not asked ${p.skipped}, waited ${Math.round(p.wait_ms)} ms`).join("; "));
+  console.log("  as the daemon measured it (Settings > Usage): " + r.paths.map((p: any) => `${p.path} asked ${p.asked}, added ${p.recalls} (${p.facts} facts, ${p.tokens} tokens), named in reply ${p.used} of ${p.facts_checked}, not added again ${p.repeats}, carried to a later step ${p.cut}, not asked ${p.skipped}, waited ${Math.round(p.wait_ms)} ms`).join("; "));
   return r;
 }
 
@@ -210,6 +214,7 @@ function world(name: string, storeBin: string | null) {
 type Added = { path: string; turn: number; who: Input["who"]; bytes: number; entries: string[] };
 const PATHS = ["external store, session start", "external store, per prompt", "external store, per tool call", "helper records"];
 const entriesOf = (text: string) => text.split("\n").filter((l) => l.startsWith("- "));
+const nameOf = (line: string) => line.replace(/^- (RULE )?/, "").split(":")[0]!.replace(/\s+\([^)]*\)$/, "").trim();
 
 function addedBy(store: any, sessionId: string, inputs: Input[]): { added: Added[]; replies: string[] } {
   const events = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null);
@@ -242,7 +247,7 @@ function rows(added: Added[], replies: string[], turns: number): Row[] {
   const marks = added.map((a) => a.entries.map((line) => {
     const again = seen.has(line);
     seen.add(line);
-    const name = line.replace(/^- (RULE )?/, "").split(":")[0]!.replace(/\s+\([^)]*\)$/, "").trim();
+    const name = nameOf(line);
     return { again, used: !again && (replies[a.turn] ?? "").includes(name) };
   }));
   for (const path of PATHS) {
@@ -304,6 +309,14 @@ for (const once of [false, true]) {
   table(`External store that ${once ? "gives a session each fact once" : "answers every call alone"}`, r);
   const p = prefix(w.sent, s.id);
   console.log(`  cache prefix: ${p.requests} turn requests, ${p.changed} changed bytes of an earlier message, the system prompt changed ${p.system} times (memory is in the messages, after the prompt)`);
+  // What the store marked as given to the session against what a request carried.
+  let lost: number | null = null;
+  if (once) {
+    const given = readFileSync(join(root, "store-once", `seen-${s.id}`), "utf8").trim().split("\n").filter(Boolean);
+    const reached = new Set(added.flatMap((a) => a.entries.map(nameOf)));
+    lost = given.filter((g) => !reached.has(g)).length;
+    console.log(`  facts the store gave this session: ${given.length}; never in a request (lost): ${lost}`);
+  }
   // The same inputs with memory off: what the hooks add before a turn's first request.
   seed = 99;
   const off = w.store.createSession({ model: MODEL, workspace: join(w.dir, "ws") });
@@ -314,7 +327,7 @@ for (const once of [false, true]) {
   console.log(`  before a turn's first request: ${ms(pct(waits, 0.5))} ms median with memory, ${ms(pct(base, 0.5))} ms without (max ${ms(pct(waits, 1))} / ${ms(pct(base, 1))})`);
   console.log(`  store calls: ${Object.entries(st.hooks).map(([h, x]: [string, any]) => `${h} ${Object.values(x.outcomes as Record<string, number>).reduce((a, b) => a + b, 0)}`).join(", ")}; transcript written whole ${t.rebuilt} times, appended to ${t.appended ?? 0} times, ${ms(t.duration_ms.total)} ms and ${Math.round(t.bytes.total / 1024)} KB in all`);
   const m = metered(w.store, s.id);
-  result[once ? "external_once" : "external_plain"] = { metered: m, rows: r, prefix: p, first_request_ms: { with_p50: pct(waits, 0.5), without_p50: pct(base, 0.5), with_max: pct(waits, 1) }, calls: st.hooks, transcript: t, errors: w.failures.length };
+  result[once ? "external_once" : "external_plain"] = { metered: m, rows: r, prefix: p, lost, first_request_ms: { with_p50: pct(waits, 0.5), without_p50: pct(base, 0.5), with_max: pct(waits, 1) }, calls: st.hooks, transcript: t, errors: w.failures.length };
   w.close();
 }
 
@@ -337,20 +350,21 @@ for (const once of [false, true]) {
   w.close();
 }
 
-// 2b. A store that returns far more than a turn should carry: 120 facts a prompt, 60 a tool call, new ones each time.
+// 2b. A store that returns more than a block holds: 300 new facts a prompt, 60 a tool call, each given once.
 {
   const dir = join(root, "store-verbose");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "n"), "0");
-  writeFileSync(join(dir, "facts.tsv"), Array.from({ length: 4000 }, (_, i) => `v${i}-${word()}\tThe ${word()} ${common()} is kept with the ${word()} ${common()} for ${word()}`).join("\n") + "\n");
+  writeFileSync(join(dir, "given"), "");
+  writeFileSync(join(dir, "facts.tsv"), Array.from({ length: 6000 }, (_, i) => `v${i}-${word()}\tThe ${word()} ${common()} is kept with the ${word()} ${common()} for ${word()}`).join("\n") + "\n");
   const bin = join(dir, "store.sh");
   writeFileSync(bin, `#!/bin/sh
 dir=${JSON.stringify(dir)}
 cat > /dev/null
 n=$(cat "$dir/n")
 case "$2" in
-  prompt) echo $((n + 120)) > "$dir/n"; echo "# store: facts matching this request"; awk -F '\\t' -v a="$n" 'NR > a && NR <= a + 120 { print "- " $1 ": " $2 }' "$dir/facts.tsv" ;;
-  pre-tool) echo $((n + 60)) > "$dir/n"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# store: before this step'; awk -F '\\t' -v a="$n" 'NR > a && NR <= a + 60 { printf "\\\\n- %s: %s", $1, $2 }' "$dir/facts.tsv"; printf '"}}\\n' ;;
+  prompt) echo $((n + 300)) > "$dir/n"; echo "# store: facts matching this request"; awk -F '\\t' -v a="$n" -v g="$dir/given" 'NR > a && NR <= a + 300 { print "- " $1 ": " $2; print $1 >> g }' "$dir/facts.tsv" ;;
+  pre-tool) echo $((n + 60)) > "$dir/n"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# store: before this step'; awk -F '\\t' -v a="$n" -v g="$dir/given" 'NR > a && NR <= a + 60 { printf "\\\\n- %s: %s", $1, $2; print $1 >> g }' "$dir/facts.tsv"; printf '"}}\\n' ;;
 esac
 exit 0
 `);
@@ -361,12 +375,18 @@ exit 0
   const inputs = sessionInputs(4, (f) => f.words.join(" ")).map((i) => ({ ...i, who: "owner" as const, tools: [`echo ${common()}`, `echo ${common()}`, `echo ${common()}`] }));
   await w.run(s.id, inputs);
   const { added } = addedBy(w.store, s.id, inputs);
+  const given = readFileSync(join(dir, "given"), "utf8").trim().split("\n").filter(Boolean);
+  const reached = new Set(added.flatMap((a) => a.entries.map(nameOf)));
+  const lost = given.filter((g) => !reached.has(g)).length;
   const perTurn = inputs.map((_, t) => added.filter((a) => a.turn === t).reduce((n, a) => n + a.bytes, 0));
+  const largest = Math.max(0, ...added.map((a) => a.bytes));
   const halves = added.filter((a) => a.entries.some((l) => !/: The \S+ \S+ is kept with the \S+ \S+ for \S+$/.test(l))).length;
-  console.log(`\nStore that returns 120 facts a prompt and 60 a tool call: 4 prompts with 3 tool calls each`);
-  console.log(`  memory added per turn: ${perTurn.map((b) => Math.round(b / bytesPerToken(MODEL))).join(", ")} tokens (${perTurn.map((b) => b).join(", ")} bytes); blocks ending in half a fact: ${halves} of ${added.length}`);
+  const owed = (w.tacit as any).owed ? (w.tacit as any).owed(s.id) : null;
+  console.log(`\nStore that returns 300 new facts a prompt and 60 a tool call, each once: 4 prompts with 3 tool calls each`);
+  console.log(`  facts the store gave: ${given.length}; never in a request (lost): ${lost}${owed === null ? "" : `; still owed in the state at the end: ${owed} lines`}`);
+  console.log(`  memory added per turn: ${perTurn.map((b) => Math.round(b / bytesPerToken(MODEL))).join(", ")} tokens; largest block ${largest} bytes; blocks ending in half a fact: ${halves} of ${added.length}`);
   const m = metered(w.store, s.id);
-  result.verbose = { metered: m, per_turn_bytes: perTurn, half_facts: halves, blocks: added.length };
+  result.verbose = { metered: m, given: given.length, lost, owed, per_turn_bytes: perTurn, largest_block_bytes: largest, half_facts: halves, blocks: added.length };
   w.close();
 }
 
@@ -387,8 +407,9 @@ for (const mode of ["slow", "down"]) {
   const calls = readFileSync(join(store, "calls"), "utf8").trim().split("\n").length;
   console.log(`\nStore that ${mode === "slow" ? "does not answer (8 s a call)" : "fails every call"}: 4 prompts with 2 tool calls each`);
   console.log(`  before the first request: ${waits.map(ms).join(", ")} ms; the 4 turns took ${ms(total)} ms in all and ended ${[...new Set(ends)].join(", ")}`);
-  console.log(`  store calls started ${calls}; the session was told ${told} time${told === 1 ? "" : "s"}; errors recorded ${w.failures.length}`);
-  result[`store_${mode}`] = { first_request_ms: waits, total_ms: total, ends, told, calls, errors: w.failures.length };
+  const procs = (w.tacit.stats() as any).processes;
+  console.log(`  store calls started ${calls}; the session was told ${told} time${told === 1 ? "" : "s"}; errors recorded ${w.failures.length}${procs ? `; hook processes at once: ${procs.max} at most (limit ${procs.limit}), calls not made while one was out: ${procs.not_started}, probes: ${procs.probes}` : ""}`);
+  result[`store_${mode}`] = { first_request_ms: waits, total_ms: total, ends, told, calls, errors: w.failures.length, processes: procs ?? null };
   w.close();
 }
 
@@ -434,6 +455,41 @@ for (const mode of ["slow", "down"]) {
   const m = metered(w.store, s.id);
   result.helper = { metered: m, rows: r, prefix: p, first_request_p50_ms: pct(waits, 0.5), errors: w.failures.length };
   w.close();
+}
+
+// 5. Helper recall, relevance: is the record a prompt is about recalled? Records
+// whose words follow a skewed spread (a few words in most records, most words
+// in few), and prompts made of three words of one record's text and two
+// other words. Never by the record's name: that is a hash lookup either way.
+{
+  const { RecordIndex } = await import(src("helper/records.ts"));
+  const { RECALL_CHARS } = await import(src("helper/helper.ts"));
+  seed = 77;
+  const vocab = Array.from({ length: 600 }, () => word());
+  // Word i is drawn about 1/(i+1) as often as the first.
+  const weights = vocab.map((_, i) => 1 / (i + 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  const draw = () => { let x = (rnd(1_000_000) / 1_000_000) * total; for (let i = 0; i < vocab.length; i++) if ((x -= weights[i]!) <= 0) return vocab[i]!; return vocab.at(-1)!; };
+  const some = (n: number) => { const out = new Set<string>(); while (out.size < n) out.add(draw()); return [...out]; };
+  const recs = Array.from({ length: 1500 }, (_, i) => ({ key: `note.${word()}-${i}`, value: some(8).join(" "), kind: "fact", aliases: [], topics: [], source: "helper", ts: 0, updated: i, used: 0 }));
+  const ix = new RecordIndex(recs);
+  const N = 300;
+  let right = 0, count = 0, chars = 0, first = 0;
+  for (let q = 0; q < N; q++) {
+    const r = recs[rnd(recs.length)]!;
+    const words = r.value.split(" ");
+    const picked = new Set<string>();
+    while (picked.size < 3) picked.add(words[rnd(words.length)]!);
+    const text = `What about ${[...picked, ...some(2)].join(" ")}?`;
+    const got = ix.recall(text, new Set(), RECALL_CHARS).records as { key: string; value: string }[];
+    if (got.some((x) => x.key === r.key)) right++;
+    if (got[0]?.key === r.key) first++;
+    count += got.length;
+    chars += got.reduce((n, x) => n + x.key.length + x.value.length + 4, 0);
+  }
+  console.log(`\nHelper recall, relevance: ${N} prompts of three words from one record's text among ${recs.length} records`);
+  console.log(`  the record asked about is recalled: ${right} of ${N} (${Math.round((100 * right) / N)}%), first in ${first}; records recalled a prompt: ${(count / N).toFixed(1)}; tokens a prompt: ${Math.round(chars / N / bytesPerToken(MODEL))}`);
+  result.relevance = { prompts: N, records: recs.length, right, first, records_per_prompt: count / N, tokens_per_prompt: chars / N / bytesPerToken(MODEL) };
 }
 
 const out = Bun.argv.indexOf("--json");
