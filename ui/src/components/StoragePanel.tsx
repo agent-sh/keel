@@ -1,6 +1,7 @@
 // Settings > Storage: what Keel keeps on disk, deleting old archived sessions
 // (a list first, then the delete), leftovers of deleted sessions, the archive
-// policy and the backups.
+// policy, how long spilled output and usage records are kept (with what is
+// past it now, and when the daily cleanup next runs) and the backups.
 import { useCallback, useEffect, useState } from "react";
 import { composing } from "../lib/keys.ts";
 import { api, reportError } from "../lib/store.ts";
@@ -22,8 +23,10 @@ type Report = {
 };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; kind?: "full" | "delta"; base?: string; base_missing?: true };
+type Due = { spill: { before_ms: number | null; files: number; bytes: number; sessions: number; busy_sessions: number }; usage: { before_ms: number | null; calls: number; tools: number }; next_ms: number };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number; family_updated_ms: number; subagents: { id: string; title: string }[] };
 
+const count = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
 
 export const useSettings = () => {
@@ -111,6 +114,10 @@ export function StoragePanel() {
   const [backups, setBackups] = useState<Backup[] | null>(null);
   const [backupsFailed, setBackupsFailed] = useState(false);
   const [settings, patch, unreadable, resetSettings] = useSettings();
+  const [due, setDue] = useState<Due | null>(null);
+  const [kept, setKept] = useState<string | null>(null);
+  const loadDue = useCallback(() => api<{ due: Due }>("/api/storage/retention").then((x) => setDue(x.due)).catch(reportError), []);
+  useEffect(() => { loadDue(); }, [loadDue]);
 
   const load = useCallback((refresh = false) => {
     setBusy(true);
@@ -146,6 +153,22 @@ export function StoragePanel() {
     if (!ok) return;
     const x = await api<{ removed_checkpoints: number; freed_bytes: number }>("/api/storage/checkpoints", { method: "POST", body: JSON.stringify(what) });
     setCpDone(`Dropped ${x.removed_checkpoints} checkpoints; ${fmtBytes(x.freed_bytes)} freed.`);
+    load(true);
+  };
+
+  // What is past the retention goes only after it was listed here, up to the instants of that listing.
+  const records = due ? due.usage.calls + due.usage.tools : 0;
+  const removeDue = async () => {
+    if (!due) return;
+    const parts = [
+      due.spill.files ? `${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) last written before ${when(due.spill.before_ms!)}` : "",
+      records ? `${count(records, "usage record")} from before ${when(due.usage.before_ms!)}` : "",
+    ].filter(Boolean);
+    const ok = await confirmAction({ title: "Remove what is past these times?", body: `${parts.join(", and ")}. A session that reads a removed output again is told the file is gone and can run its command again. This cannot be undone.`, action: "Remove", danger: true });
+    if (!ok) return;
+    const x = await api<{ removed: { spill_files: number; spill_bytes: number; usage_calls: number; usage_tools: number }; due: Due }>("/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms }) });
+    setDue(x.due);
+    setKept(`Removed ${count(x.removed.spill_files, "file")} (${fmtBytes(x.removed.spill_bytes)}) and ${count(x.removed.usage_calls + x.removed.usage_tools, "usage record")}.`);
     load(true);
   };
 
@@ -226,6 +249,28 @@ export function StoragePanel() {
           <SettingRow label="Delete archived sessions" hint="An archived session is deleted this long after it was archived. Empty is never.">
             <DaysField label="Delete archived sessions after days" testid="archive-delete" value={settings.archive.delete_archived_days} onSave={(v) => patch({ archive: { delete_archived_days: v } })} />
           </SettingRow>
+        </Card>
+      )}
+
+      {settings && (
+        <Card>
+          <SettingRow label="Keep spilled output" hint="Long tool output, command logs and fetched pages that nothing wrote to for this long are removed. Empty is never.">
+            <DaysField label="Keep spilled output for days" testid="retention-spill" value={settings.retention.spill_days || null} onSave={(v) => patch({ retention: { spill_days: v ?? 0 } }).then(loadDue)} />
+          </SettingRow>
+          <SettingRow label="Keep usage records" hint="One record per model call and tool call: cost by day, latency, cache. Each session keeps its own totals. Empty is never.">
+            <DaysField label="Keep usage records for days" testid="retention-usage" value={settings.retention.usage_days || null} onSave={(v) => patch({ retention: { usage_days: v ?? 0 } }).then(loadDue)} />
+          </SettingRow>
+          {due && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-4">
+              <div className="min-w-[min(100%,16rem)] flex-1 text-ui text-muted" data-testid="retention-due">
+                {due.spill.files + records === 0 ? "Nothing is past these now." : `Past these now: ${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) in ${count(due.spill.sessions, "session")}, ${count(records, "usage record")}.`}
+                {due.spill.busy_sessions > 0 && ` ${count(due.spill.busy_sessions, "working session")} left alone.`}
+                {" "}The daily cleanup next runs {when(due.next_ms)}.
+                {kept && <span className="text-faint" data-testid="retention-done"> {kept}</span>}
+              </div>
+              <button type="button" className={btn} data-testid="retention-remove" disabled={due.spill.files + records === 0} onClick={() => removeDue().catch(reportError)}>Remove now</button>
+            </div>
+          )}
         </Card>
       )}
 

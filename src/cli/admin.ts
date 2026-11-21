@@ -151,10 +151,21 @@ const storage = wrap("keel storage [--refresh] [--url URL] [--json]", { refresh:
   return 0;
 });
 
-const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--url URL]\n  Lists archived sessions archived at least DAYS ago; --yes deletes them. --leftovers removes what deleted sessions left behind.",
-  { "older-than": { type: "string" }, yes: { type: "boolean" }, leftovers: { type: "boolean" } },
+const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--retention] [--url URL]\n  Lists archived sessions archived at least DAYS ago; --yes deletes them. --leftovers removes what deleted sessions left behind.\n  --retention lists the spilled output and usage records past the retention set in Settings, Storage; with --yes it removes them now.",
+  { "older-than": { type: "string" }, yes: { type: "boolean" }, leftovers: { type: "boolean" }, retention: { type: "boolean" } },
   async (v) => {
     const url = urlOf(v.url);
+    if (v.retention) {
+      const { settings: s, due } = await call(url, "/api/storage/retention");
+      const never = (d: number | null) => (d ? `kept ${d} days` : "kept for good");
+      console.log(`spilled output (${never(s.spill_days)}): ${due.spill.files} files, ${mb(due.spill.bytes)}, of ${due.spill.sessions} sessions are past it${due.spill.busy_sessions ? `; ${due.spill.busy_sessions} working sessions are left alone` : ""}`);
+      console.log(`usage records (${never(s.usage_days)}): ${due.usage.calls} model calls and ${due.usage.tools} tool calls are past it`);
+      const any = due.spill.files + due.usage.calls + due.usage.tools > 0;
+      if (!v.yes || !any) return (console.log(any ? `the daily cleanup removes them at ${time(due.next_ms)}; run again with --yes to remove them now` : "nothing to remove"), 0);
+      const r = await call(url, "/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms }) });
+      console.log(`removed ${r.removed.spill_files} files (${mb(r.removed.spill_bytes)}), ${r.removed.usage_calls} model calls and ${r.removed.usage_tools} tool calls`);
+      return 0;
+    }
     if (v.leftovers) {
       const r = await call(url, "/api/storage/cleanup", { method: "POST", body: JSON.stringify({ leftovers: true }) });
       console.log(`removed ${r.removed} leftover folders`);

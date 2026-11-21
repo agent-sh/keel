@@ -28,7 +28,7 @@ settingsSections.add(
   {
     id: "storage",
     label: "Storage",
-    words: "storage disk size cleanup delete archived old sessions backup restore archive policy leftovers",
+    words: "storage disk size cleanup delete archived old sessions backup restore archive policy leftovers retention keep spilled output usage records",
     icon: createElement(HardDrive, { className: "size-4" }),
     order: 32,
     component: lazy(() => import("../components/StoragePanel.tsx").then((m) => ({ default: m.StoragePanel }))),

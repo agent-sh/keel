@@ -88,6 +88,9 @@ export class Storage {
 
   get dir() { return this.store.stateDir; }
 
+  // Something outside this class changed what is on disk: the next report is measured.
+  stale() { this.last = undefined; }
+
   report(refresh = false): Promise<StorageReport> {
     if (this.last && !refresh && Date.now() - this.last.measured_ms < REPORT_MAX_AGE_MS) return Promise.resolve(this.last);
     return (this.measuring ??= this.measure().then((r) => (this.last = r)).finally(() => (this.measuring = undefined)));

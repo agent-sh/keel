@@ -1,13 +1,13 @@
 import { expect, test } from "./isolate.ts";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: Settings > Storage measures what is on disk, lists archived
 // sessions archived long ago and deletes them only after the list is
-// confirmed (one changed in between is skipped), saves the archive policy and
-// makes a checked backup.
+// confirmed (one changed in between is skipped), saves the archive policy,
+// makes a checked backup, and lists what is past the retention before it goes.
 test("storage, cleanup and backups", async ({ page, request }) => {
   const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: HAIKU, title } })).json()).session;
   const old1 = await mk("Old archived one");
@@ -70,6 +70,47 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await panel.getByTestId("backup-unreadable").scrollIntoViewIfNeeded();
   await shoot(page, "storage-03b-backup-unreadable");
   rmSync(damaged.path, { recursive: true, force: true });
+
+  // Spilled output and usage records past the owner's retention are listed
+  // before any of it goes: an output file nothing wrote to for forty days, and
+  // three usage records from over a year ago. A young file stays.
+  const kept = await mk("Has old output");
+  const spill = join(state_dir, "spill", kept.id);
+  mkdirSync(spill, { recursive: true });
+  const oldOut = join(spill, "1-bash-old.txt"), newOut = join(spill, "2-bash-new.txt");
+  writeFileSync(oldOut, "x".repeat(50_000));
+  writeFileSync(newOut, "y".repeat(100));
+  utimesSync(oldOut, past / 1000, past / 1000);
+  const ledger = new DatabaseSync(join(state_dir, "keel.db"));
+  ledger.exec("PRAGMA busy_timeout = 5000");
+  for (let i = 0; i < 3; i++) ledger.prepare("INSERT INTO telemetry_calls (session_id, ts, model, outcome) VALUES (?, ?, 'p:m', 'ok')").run(kept.id, Date.now() - 400 * 86_400_000 - i);
+  ledger.close();
+  await page.reload();
+  const dueNow = panel.getByTestId("retention-due");
+  await expect(dueNow).toContainText("1 file of spilled output");
+  await expect(dueNow).toContainText("3 usage records");
+  await expect(dueNow).toContainText("The daily cleanup next runs");
+  await dueNow.scrollIntoViewIfNeeded();
+  await shoot(page, "storage-03c-retention-due");
+  // A retention is saved as typed, and empty is never.
+  await panel.getByTestId("retention-usage").fill("300");
+  await panel.getByTestId("retention-usage").press("Enter");
+  await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.retention.usage_days).toBe(300);
+  await panel.getByTestId("retention-usage").fill("");
+  await panel.getByTestId("retention-usage").press("Enter");
+  await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.retention.usage_days).toBe(0);
+  await expect(dueNow).toContainText("0 usage records");
+  await request.patch("/api/settings", { data: { retention: { usage_days: null } } });
+  await page.reload();
+  await expect(dueNow).toContainText("3 usage records");
+  await panel.getByTestId("retention-remove").click();
+  await expect(page.getByTestId("confirm")).toContainText("1 file of spilled output");
+  await page.getByTestId("confirm").getByRole("button", { name: "Remove" }).click();
+  await expect(panel.getByTestId("retention-done")).toContainText("Removed 1 file");
+  await expect(dueNow).toContainText("Nothing is past these now.");
+  expect([existsSync(oldOut), existsSync(newOut)]).toEqual([false, true]);
+  await dueNow.scrollIntoViewIfNeeded();
+  await shoot(page, "storage-03d-retention-removed");
 
   // A session that wrote a file has checkpoints: its share is shown and dropping them frees the rewind data.
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;

@@ -8,6 +8,8 @@
 // POST  /api/settings/reset                moves an unreadable settings.json aside -> { moved_to, settings }
 // GET   /api/storage?refresh=1             sizes by kind and by session
 // POST  /api/storage/cleanup               { older_than_days, sessions? } | { leftovers: true }
+// GET   /api/storage/retention             { settings, due }: spilled output and usage records past the owner's retention
+// POST  /api/storage/retention             { spill_before_ms?, usage_before_ms? } from a listing -> { removed, due }
 // GET   /api/backups                       { backups }
 // POST  /api/backups                       a backup now -> { backup }
 // GET   /api/daemon                        status: pid, uptime, running turns, draining, restart_failed
@@ -24,6 +26,7 @@ import { restartNeedsEye, restartSummary, restartTurnLine } from "../../admin/li
 import * as activity from "../../automation/activity.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
+import { Retention } from "../../admin/retention.ts";
 import { configDir } from "../../providers/config.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
@@ -59,12 +62,15 @@ export const adminRoutes: RouteModule = (deps) => {
   loadSettings(store.stateDir, (e) => errors.capture("server", e, { at: "settings" }));
   const prev = G.__keelAdmin;
   prev?.awake.stopAll();
+  prev?.retention?.stop();
   clearInterval(prev?.daily);
+  clearInterval(prev?.hourly);
   const daemon = new Daemon(deps);
   // A command's own short-lived daemon answers nobody else: only a served one is watched.
   if (!runMode.client) daemon.watchStalls();
   const storage = new Storage(store, deps.engine, bus, errors, configDir());
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
+  const retention = new Retention(store, deps.engine, errors);
   daemon.onExit(() => awake.stopAll());
   // The backup before a restart is made once the running turns had their
   // time and before the rest are parked (a backup that fails calls the
@@ -82,7 +88,13 @@ export const adminRoutes: RouteModule = (deps) => {
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));
   const daily = setInterval(policy, 86_400_000);
   (daily as any).unref?.();
-  G.__keelAdmin = { awake, daily, daemon };
+  // What is past the owner's retention goes once a day, at the time the page
+  // names (Retention.next): looked at on start and every hour, since a daemon
+  // that restarts several times a day never reaches a daily timer.
+  const keep = () => retention.tick().then((r) => { if (r) storage.stale(); }, (e) => errors.capture("server", e, { at: "retention" }));
+  const hourly = setInterval(keep, 3_600_000);
+  (hourly as any).unref?.();
+  G.__keelAdmin = { awake, daily, hourly, daemon, retention };
   // The record of this start (src/admin/life.ts): the page follows it as the
   // cut turns are decided, and when it is whole it is the log's account of the
   // restart, and one Activity row when the owner has something to look at (the
@@ -98,7 +110,7 @@ export const adminRoutes: RouteModule = (deps) => {
   }
 
   // Once per process start: the archive policy. (SIGINT and SIGTERM drain in main.ts.)
-  if (!prev && !runMode.client) queueMicrotask(policy);
+  if (!prev && !runMode.client) queueMicrotask(() => { policy(); keep(); });
   // A stop by signal drains in main.ts; new work is turned away meanwhile.
   if (!G.__keelAdminSignals) {
     G.__keelAdminSignals = true;
@@ -154,6 +166,21 @@ export const adminRoutes: RouteModule = (deps) => {
         }
         const r = await storage.cleanup(days, b.sessions);
         return json({ sessions: storage.candidates(days), ...r });
+      },
+    },
+
+    // What is past the retention the owner set, counted (GET), and removed up
+    // to the instants a listing named (POST): never anything younger than the
+    // settings allow.
+    "/api/storage/retention": {
+      GET: async () => json({ settings: settings().retention, due: await retention.due() }),
+      POST: async (req: Request) => {
+        const b = (await body(req)) ?? {};
+        const ms = (v: unknown) => v === undefined || v === null || (typeof v === "number" && Number.isFinite(v));
+        if (typeof b !== "object" || !ms(b.spill_before_ms) || !ms(b.usage_before_ms)) return json({ error: "the body is { spill_before_ms?, usage_before_ms? } from the listing" }, 400);
+        const removed = await retention.remove({ spill_before_ms: b.spill_before_ms, usage_before_ms: b.usage_before_ms });
+        storage.stale();
+        return json({ removed, due: await retention.due() });
       },
     },
 
