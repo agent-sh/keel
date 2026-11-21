@@ -77,6 +77,9 @@ test("a narrow running composer keeps Stop and Send on screen", async ({ page, r
 // A session that fills the toolbar: it runs in a worktree, has a loop in the
 // background and a second machine to move to, beside the actions every session has.
 const SECONDARY = ["machine-chip", "background-button", "worktree-chip", "permission-menu", "snooze-button", "header-action-export", "header-action-voice"];
+// The same tools, the one that stays in the row longest first, and what each opens.
+const RANKED = ["permission-menu", "worktree-chip", "machine-chip", "background-button", "snooze-button", "header-action-export", "header-action-voice"];
+const OPENS: Record<string, string> = { "permission-menu": "mode-full-auto", "worktree-chip": "worktree-popup", "machine-chip": "move-popup", "background-button": "background-popup", "snooze-button": "snooze-menu" };
 async function crowded(request: import("@playwright/test").APIRequestContext, model: string) {
   const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `toolbar-${Date.now()}`);
   mkdirSync(repo, { recursive: true });
@@ -108,6 +111,8 @@ async function reachable(page: Page, station: Locator) {
   const inRow: string[] = [], inMenu: string[] = [];
   for (const id of SECONDARY) ((await header.getByTestId(id).count()) ? inRow : inMenu).push(id);
   for (const id of inRow) await expect(header.getByTestId(id)).toBeInViewport({ ratio: 1 });
+  // The row keeps the highest ranks: nothing folded outranks a tool that stayed.
+  expect([...inRow].sort((x, y) => RANKED.indexOf(x) - RANKED.indexOf(y))).toEqual(RANKED.slice(0, inRow.length));
   return { inRow, inMenu };
 }
 
@@ -133,20 +138,38 @@ test.describe("a crowded toolbar", () => {
       expect(phone.inMenu.length).toBeGreaterThan(0);
       await expect(more).toBeInViewport({ ratio: 1 });
       await shoot(page, "workbench-toolbar-390");
+      // The button says how many it holds, and that folded background work is running.
+      await expect(more).toHaveAccessibleName(/^\d+ more actions$/);
+      await expect(more.getByTestId("more-live")).toBeVisible();
       await more.tap();
       await expect(menu).toBeVisible();
       for (const t of phone.inMenu) await expect(menu.getByTestId(t)).toBeInViewport({ ratio: 1 });
+      await expect(menu.getByRole("group", { name: "Worktree" }).getByTestId("worktree-chip")).toBeVisible();
       await shoot(page, "workbench-toolbar-390-more");
       // A control in the menu works as it does in the row, and its whole row is the target:
-      // a tap on the name opens it.
-      const rows = [["worktree-chip", "Worktree", "worktree-popup"], ["background-button", "Background work", "background-popup"], ["machine-chip", "Runs on", "move-popup"]] as const;
-      const row = rows.find(([t]) => phone.inMenu.includes(t))!;
-      await menu.getByText(row[1], { exact: true }).tap();
-      await expect(page.getByTestId(row[2])).toBeVisible();
+      // a tap on the name opens it, and its own popup is then used like any other.
+      await menu.getByText("Worktree", { exact: true }).tap();
+      const worktree = page.getByTestId("worktree-popup");
+      await expect(worktree).toBeVisible();
+      await page.getByTestId("pr-open").tap();
+      await expect(page.getByTestId("pr-title")).toBeVisible();
+      await page.getByTestId("pr-title").tap();
+      await page.getByTestId("pr-title").fill("Toolbar");
+      await expect(page.getByTestId("pr-title")).toHaveValue("Toolbar");
+      await worktree.click({ position: { x: 3, y: 3 } });
+      await expect(worktree).toBeVisible();
+      await shoot(page, "workbench-toolbar-390-nested");
       await page.keyboard.press("Escape");
-      await expect(page.getByTestId(row[2])).toBeHidden();
+      await expect(worktree).toBeHidden();
       await expect(menu).toBeVisible();
       await page.keyboard.press("Escape");
+      await expect(menu).toBeHidden();
+      // A press outside closes the control's popup and the menu together, and both stay closed.
+      await more.tap();
+      await menu.getByTestId("worktree-chip").tap();
+      await expect(worktree).toBeVisible();
+      await station.getByTestId("station-word").tap();
+      await expect(worktree).toBeHidden();
       await expect(menu).toBeHidden();
       // The permission modes open from wherever the control is.
       if (phone.inMenu.includes("permission-menu")) await more.tap();
@@ -156,6 +179,34 @@ test.describe("a crowded toolbar", () => {
       await expect(page.getByTestId("mode-full-auto")).toBeHidden();
       if (phone.inMenu.includes("permission-menu")) await page.keyboard.press("Escape");
       await expect(menu).toBeHidden();
+
+      // Larger text folds Permissions too: its row says the mode, a pick keeps its popup open,
+      // and /permissions opens it in the menu, not detached from it.
+      await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+      await page.reload();
+      await expect(more).toBeVisible();
+      const large = await reachable(page, station);
+      expect(large.inMenu).toContain("permission-menu");
+      await station.getByTestId("composer").fill("/permissions");
+      await page.keyboard.press("Enter");
+      await expect(menu).toBeVisible();
+      await expect(menu.getByTestId("permission-mode")).toBeInViewport({ ratio: 1 });
+      const modes = page.getByTestId("mode-ask");
+      await expect(modes).toBeInViewport({ ratio: 1 });
+      expect((await modes.boundingBox())!.y).toBeGreaterThan((await menu.getByTestId("permission-menu").boundingBox())!.y);
+      await page.getByTestId("mode-auto-edits").tap();
+      await expect(modes).toBeVisible();
+      await expect(menu.getByTestId("permission-mode")).toHaveText("Auto edits");
+      await page.getByTestId("mode-ask").tap();
+      await expect(modes).toBeVisible();
+      await shoot(page, "workbench-toolbar-390-large-text");
+      await page.keyboard.press("Escape");
+      await expect(modes).toBeHidden();
+      await page.keyboard.press("Escape");
+      await expect(menu).toBeHidden();
+      await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+      await page.reload();
+      await expect(station.getByTestId("composer")).toBeVisible();
 
       // A narrow desktop pane, by keyboard.
       await page.setViewportSize({ width: 900, height: 1040 });
@@ -167,16 +218,15 @@ test.describe("a crowded toolbar", () => {
       for (const t of narrow.inMenu) await expect(menu.getByTestId(t)).toBeVisible();
       await shoot(page, "workbench-toolbar-900-more");
       // Tab walks the menu's controls; Enter opens the one it stops on.
-      const last = narrow.inMenu.find((t) => t === "snooze-button") ?? narrow.inMenu[0]!;
-      const target = menu.getByTestId(last);
-      for (let i = 0; i < 12 && !(await target.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press("Tab");
-      await expect(target).toBeFocused();
-      if (last === "snooze-button") {
-        await page.keyboard.press("Enter");
-        await expect(page.getByTestId("snooze-menu")).toBeVisible();
-        await page.keyboard.press("Escape");
-        await expect(page.getByTestId("snooze-menu")).toBeHidden();
-      }
+      const focused = () => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
+      for (let i = 0; i < 6 && !OPENS[await focused()]; i++) await page.keyboard.press("Tab");
+      const stop = await focused();
+      expect(narrow.inMenu).toContain(stop);
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId(OPENS[stop]!)).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId(OPENS[stop]!)).toBeHidden();
+      await expect(menu).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(menu).toBeHidden();
       await expect(more).toBeFocused();
@@ -190,6 +240,16 @@ test.describe("a crowded toolbar", () => {
       await expect(station.locator(".k-station-line")).toBeHidden();
       expect(await station.getByTestId("session-title").evaluate((el) => getComputedStyle(el).clipPath)).toBe("inset(50%)");
       await shoot(page, "workbench-toolbar-1920");
+      // A row that just got narrower and is not measured again yet clips its foldable tools, not the two that stay.
+      const past = await station.getByTestId("session-header").evaluate((el) => {
+        const h = el as HTMLElement;
+        h.style.width = "30rem";
+        const edge = h.getBoundingClientRect().right;
+        const over = Math.max(...["session-menu", "panel-menu"].map((t) => h.querySelector(`[data-testid="${t}"]`)!.getBoundingClientRect().right - edge));
+        h.style.width = "";
+        return over;
+      });
+      expect(past).toBeLessThanOrEqual(0);
       expect(await errors()).toBe(errorsBefore);
     } finally { await drop(); }
   });

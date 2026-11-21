@@ -68,7 +68,7 @@ export function WorktreeChip({ session }: { session: Session }) {
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner align="end" sideOffset={6} className="z-50">
-          <Popover.Popup className={cn(popupClass, "w-[24rem] p-3")} data-testid="worktree-popup">
+          <Popover.Popup className={cn(popupClass, "w-[min(24rem,calc(100vw-1rem))] p-3")} data-testid="worktree-popup">
             <Popover.Title className="flex items-center gap-2 text-ui font-medium">
               <GitBranch className="size-4 text-accent" />
               <span className="truncate font-mono">{wt.branch}</span>

@@ -81,7 +81,7 @@ export function MachineChip({ session }: { session: Session }) {
       <Popover.Trigger data-testid="machine-chip" title={`Its tools run on ${name}, in ${session.workspace}${where?.reach === "offline" ? `; ${name} does not answer now` : ""}`} className={cn(cls, "hover:text-fg data-popup-open:border-line-strong")} {...tag}>{chip}</Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="end" className="z-50">
-          <Popover.Popup className={cn(popupClass, "w-96 p-0")} data-testid="move-popup">
+          <Popover.Popup className={cn(popupClass, "w-[min(24rem,calc(100vw-1rem))] p-0")} data-testid="move-popup">
             <div className="border-b border-line px-3.5 py-3">
               <div className="text-ui font-medium">Runs on {name}</div>
               <div className="truncate font-mono text-micro text-faint" title={session.workspace}>{session.workspace}</div>

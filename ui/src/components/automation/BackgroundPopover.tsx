@@ -41,16 +41,23 @@ function LoopRow({ l }: { l: LoopRecord }) {
   );
 }
 
-// The session's background work: agents, waits and monitors, loops.
-export function BackgroundButton({ sessionId }: { sessionId: string }) {
+// A session's background work, and how much of it runs now.
+function useBackground(sessionId: string) {
   const allAgents = useAuto((s) => s.agents);
   const allWaits = useAuto((s) => s.waits);
   const allLoops = useAuto((s) => s.loops);
-  const sessions = useStore((s) => s.sessions);
   const agents = useMemo(() => Object.values(allAgents).filter((a) => a.parent_id === sessionId).sort((a, b) => b.created - a.created), [allAgents, sessionId]);
   const waits = useMemo(() => Object.values(allWaits).filter((w) => w.session_id === sessionId && w.status === "active"), [allWaits, sessionId]);
   const loops = useMemo(() => Object.values(allLoops).filter((l) => l.session_id === sessionId), [allLoops, sessionId]);
-  const live = agents.filter(isLive).length + waits.length + loops.filter((l) => l.enabled).length;
+  return { agents, waits, loops, live: agents.filter(isLive).length + waits.length + loops.filter((l) => l.enabled).length };
+}
+// How much runs in the background now: the header says it when the button itself is folded away.
+export const useBackgroundLive = (sessionId: string) => useBackground(sessionId).live;
+
+// The session's background work: agents, waits and monitors, loops.
+export function BackgroundButton({ sessionId }: { sessionId: string }) {
+  const { agents, waits, loops, live } = useBackground(sessionId);
+  const sessions = useStore((s) => s.sessions);
   if (!agents.length && !waits.length && !loops.length) return null;
 
   return (
@@ -70,7 +77,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
           <Popover.Popup
             data-testid="background-popup"
             className={cn(
-              "w-[26rem] max-h-[70vh] overflow-y-auto rounded-lg border border-line bg-raised pb-2 shadow-3 outline-none",
+              "w-[min(26rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-lg border border-line bg-raised pb-2 shadow-3 outline-none",
               "origin-[var(--transform-origin)] transition-[scale,opacity] duration-150 data-starting-style:scale-[0.97] data-starting-style:opacity-0 data-ending-style:scale-[0.97] data-ending-style:opacity-0",
             )}
           >

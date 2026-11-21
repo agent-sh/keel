@@ -10,7 +10,7 @@ import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive } from "../lib/sessops.ts";
-import { BackgroundButton } from "./automation/BackgroundPopover.tsx";
+import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { PanelHand, PanelsButton } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
@@ -42,7 +42,11 @@ const TITLE_ROOM = 11; // rem the title's field keeps while it is renamed
 
 function useFit(tools: Tool[], reserve: number) {
   const head = useRef<HTMLElement>(null);
+  const list = useRef<HTMLElement | null>(null); // the More menu's rows, while it has any
   const widths = useRef<Record<string, number>>({});
+  // A folded tool is measured in the list, where it may be styled a little
+  // differently: its row width is the one it folded at, moved by what it gained or lost since.
+  const folded = useRef<Record<string, { row: number; list: number }>>({});
   const more = useRef(0);
   const [out, setOut] = useState<string[]>([]);
   const fit = useRef(() => {});
@@ -54,73 +58,105 @@ function useFit(tools: Tool[], reserve: number) {
     const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     let room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - reserve * root + gap;
     // What stays whatever happens, and what each tool in the row measures now.
-    for (const c of el.children as Iterable<HTMLElement>) {
+    const measure = (c: HTMLElement) => {
       const w = Math.ceil(c.getBoundingClientRect().width);
-      if (c.dataset.tool) widths.current[c.dataset.tool] = w;
+      if (c.dataset.tool) { widths.current[c.dataset.tool] = w; delete folded.current[c.dataset.tool]; }
+      else if (c.dataset.tools !== undefined) { room -= gap; for (const t of c.children as Iterable<HTMLElement>) measure(t); }
       else if (c.dataset.more !== undefined) more.current = w || more.current;
       else if (c.dataset.flex !== undefined) room -= gap + Math.ceil(parseFloat(getComputedStyle(c).paddingLeft) + parseFloat(getComputedStyle(c).paddingRight));
       else if (w && getComputedStyle(c).position !== "absolute") room -= w + gap;
+    };
+    for (const c of el.children as Iterable<HTMLElement>) measure(c);
+    // The folded ones: a closed menu is laid out for the reading and put back before anything paints.
+    const empty = new Set<string>();
+    const pos = list.current?.closest<HTMLElement>("[data-stow]");
+    if (list.current && pos) {
+      const shut = pos.hidden, style = pos.style.cssText;
+      if (shut) { pos.hidden = false; pos.style.cssText = `${style};position:fixed;visibility:hidden`; }
+      for (const r of list.current.querySelectorAll<HTMLElement>(".k-stow-row")) {
+        // The control is the widest thing in its slot (an open popup adds focus guards beside it).
+        const id = r.dataset.tool!, parts = [...r.querySelectorAll<HTMLElement>(".k-stow-slot > *")];
+        if (!parts.length) { empty.add(id); continue; }
+        const w = Math.max(...parts.map((c) => c.offsetWidth));
+        if (!w) continue;
+        const at = (folded.current[id] ??= { row: widths.current[id] || w, list: w });
+        widths.current[id] = Math.max(1, at.row + w - at.list);
+      }
+      if (shut) { pos.hidden = true; pos.style.cssText = style; }
     }
-    const cost = (id: string) => { const w = widths.current[id] ?? 0; return w ? w + gap : 0; };
+    const cost = (id: string) => { const w = empty.has(id) ? 0 : widths.current[id] ?? 0; return w ? w + gap : 0; };
     const sum = (ids: string[]) => ids.reduce((n, id) => n + cost(id), 0);
     const ranked = [...tools].sort((a, b) => b.rank - a.rank).map((t) => t.id);
     const next: string[] = [];
     for (let i = 0; i <= GIVE_WAY.length && sum([...GIVE_WAY.slice(i), ...ranked]) > room; i++) {
       if (i < GIVE_WAY.length) { next.push(GIVE_WAY[i]!); continue; }
-      // Still too many: the highest ranks that fit beside the More button stay.
+      // Still too many: the row keeps the highest ranks beside the More button
+      // and stops at the first that does not fit, so nothing folded outranks one that stayed.
+      // A folded tool with nothing to show stays where it is and costs nothing.
       let left = room - (more.current || 5 * root) - gap;
-      for (const id of ranked) { const c = cost(id); if (!c || c <= left) left -= c; else next.push(id); }
+      let full = false;
+      for (const id of ranked) {
+        const c = cost(id);
+        if (empty.has(id) || (c && (full || c > left))) { full ||= !empty.has(id); next.push(id); } else left -= c;
+      }
     }
     setOut((prev) => (prev.join() === next.join() ? prev : next));
   };
-  // Every render measures before paint. A resize of the row or of a tool
-  // measures again on the next frame (not inside the observer's own delivery,
-  // which may not change what it observes).
+  // Every render measures before paint. A resize of the row or of a tool, or a
+  // change in a folded one, measures again on the next frame (not inside the
+  // observer's own delivery, which may not change what it observes).
   const ro = useRef<ResizeObserver | null>(null);
-  useLayoutEffect(() => {
-    fit.current();
-    if (head.current && ro.current) for (const c of [head.current, ...head.current.children]) ro.current.observe(c);
-  });
+  const frame = useRef(0);
+  const later = useRef(() => { cancelAnimationFrame(frame.current); frame.current = requestAnimationFrame(() => fit.current()); }).current;
+  const watch = () => {
+    if (head.current && ro.current) for (const c of [head.current, ...head.current.children, ...head.current.querySelectorAll("[data-tools] > *")]) ro.current.observe(c);
+  };
+  useLayoutEffect(() => { fit.current(); watch(); });
   useEffect(() => {
-    let frame = 0;
-    const o = (ro.current = new ResizeObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => fit.current()); }));
-    if (head.current) for (const c of [head.current, ...head.current.children]) o.observe(c);
-    return () => { cancelAnimationFrame(frame); o.disconnect(); };
+    ro.current = new ResizeObserver(later);
+    watch();
+    return () => { cancelAnimationFrame(frame.current); ro.current?.disconnect(); };
   }, []);
-  return { head, out };
+  return { head, list, out, later };
 }
 
 // The tools the row has no room for, as a labeled list behind one button.
 // They stay mounted while it is closed, so the button knows how many of them
 // the session has now (a tool with nothing to show takes no row).
-function MoreTools({ tools }: { tools: Tool[] }) {
+function MoreTools({ tools, live, list, changed }: { tools: Tool[]; live: boolean; list: { current: HTMLElement | null }; changed: () => void }) {
   const [open, setOpen] = useState(false);
-  const [list, setList] = useState<HTMLDivElement | null>(null);
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
   const [n, setN] = useState(tools.length);
   useEffect(() => {
-    if (!list) return;
-    const count = () => setN(list.querySelectorAll(".k-stow-slot:not(:empty), .k-stow-item").length);
-    count();
-    const mo = new MutationObserver(count);
-    mo.observe(list, { childList: true, subtree: true });
-    return () => mo.disconnect();
-  }, [list]);
-  // A press anywhere on a row reaches its control.
+    list.current = el;
+    if (!el) return;
+    const read = () => { setN(el.querySelectorAll(".k-stow-slot:not(:empty), .k-stow-item").length); changed(); };
+    read();
+    const mo = new MutationObserver((recs) => {
+      // A folded control opened from elsewhere (a command, a shortcut) shows in its place: the menu opens with it.
+      if (recs.some((r) => r.type === "attributes" && (r.target as Element).hasAttribute("data-popup-open") && (r.target as Element).closest(".k-stow-slot"))) setOpen(true);
+      read();
+    });
+    mo.observe(el, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-popup-open"] });
+    return () => { mo.disconnect(); list.current = null; };
+  }, [el]);
+  // A press anywhere on a row reaches its control. A press inside the control,
+  // or in a popup it opened (React hands those up through the portal), is the control's own.
   const reach = (e: MouseEvent<HTMLElement>) => {
-    if ((e.target as HTMLElement).closest(".k-stow-slot")) return;
+    if (!e.currentTarget.contains(e.target as Node) || (e.target as HTMLElement).closest(".k-stow-slot")) return;
     e.currentTarget.querySelector<HTMLElement>(".k-stow-slot button")?.click();
   };
   return (
     <Popover.Root open={open && n > 0} onOpenChange={setOpen}>
-      <Popover.Trigger data-more="" hidden={!n} aria-label="More actions" title="More actions" data-testid="header-more-button" className="k-head-more">
-        {n} more<ChevronDown />
+      <Popover.Trigger data-more="" hidden={!n} aria-label={`${n} more actions`} title="More actions" data-testid="header-more-button" className="k-head-more">
+        {live && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" data-testid="more-live" />}{n} more<ChevronDown />
       </Popover.Trigger>
       <Popover.Portal keepMounted>
-        <Popover.Positioner sideOffset={6} align="end" className="z-50 outline-none">
+        <Popover.Positioner data-stow="" sideOffset={6} align="end" className="z-50 outline-none">
           <Popover.Popup className="k-stow" data-testid="header-more" aria-label="More actions">
-            <div ref={setList}>
+            <div ref={setEl}>
               {tools.map((t) => t.item ? <div key={t.id} className="k-stow-act">{t.item(() => setOpen(false))}</div> : (
-                <div key={t.id} className="k-stow-row" onClick={reach}>
+                <div key={t.id} className="k-stow-row" role="group" aria-label={t.label} data-tool={t.id} onClick={reach}>
                   <span className="k-stow-label">{t.label}</span>
                   <span className="k-stow-slot">{t.node}</span>
                 </div>
@@ -155,7 +191,7 @@ export function SessionHeader({ session }: { session: Session }) {
   // In the row's order; the rank says which stays longest when the row is short.
   const tools: Tool[] = [
     { id: "machine", label: "Runs on", rank: 4, node: <MachineChip session={session} /> },
-    { id: "background", label: "Background work", rank: 3, node: <BackgroundButton sessionId={session.id} /> },
+    { id: "background", label: "Background", rank: 3, node: <BackgroundButton sessionId={session.id} /> },
     { id: "worktree", label: "Worktree", rank: 5, node: <Suspense fallback={null}><WorktreeChip session={session} /></Suspense> },
     { id: "permissions", label: "Permissions", rank: 6, node: <Suspense fallback={null}><PermissionMenu sessionId={session.id} /></Suspense> },
     ...(session.parent_id ? [] : [{ id: "snooze", label: "Snooze", rank: 2, node: <SessionSnoozeButton sessionId={session.id} /> }]),
@@ -164,11 +200,12 @@ export function SessionHeader({ session }: { session: Session }) {
       label: a.label,
       rank: 1,
       node: <button type="button" title={a.label} aria-label={a.label} data-testid={`header-action-${a.id}`} onClick={() => a.run(session)} className={iconButton}>{a.icon}</button>,
-      item: (close: () => void) => <button type="button" data-testid={`header-action-${a.id}`} onClick={() => { close(); a.run(session); }} className="k-stow-item">{a.icon}<span>{a.label}</span></button>,
+      item: (close: () => void) => <button type="button" data-testid={`header-action-${a.id}`} onClick={() => { close(); a.run(session); }} className="k-stow-item">{a.label}</button>,
     })),
   ];
-  const { head, out } = useFit(tools, editing ? TITLE_ROOM : 0);
+  const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0);
   const folded = tools.filter((t) => out.includes(t.id));
+  const live = useBackgroundLive(session.id) > 0 && out.includes("background");
 
   return (
     <header ref={head} className="relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line bg-bg/85 px-2 backdrop-blur-md md:px-4" data-testid="session-header">
@@ -206,6 +243,7 @@ export function SessionHeader({ session }: { session: Session }) {
           </button>
         )}
       </div>
+      <div data-tools="" className="k-head-tools">
       {input_ + u.output > 0 && !out.includes("usage") && <span
         data-tool="usage"
         className="hidden shrink-0 px-2 text-caption tabular-nums text-faint md:inline"
@@ -215,7 +253,8 @@ export function SessionHeader({ session }: { session: Session }) {
         {fmtTokens(input_)} in <span className="text-line-strong">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">${u.cost.toFixed(u.cost < 1 ? 4 : 2)}</span> : null}
       </span>}
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
-      {folded.length > 0 && <MoreTools tools={folded} />}
+      </div>
+      {folded.length > 0 && <MoreTools tools={folded} live={live} list={list} changed={later} />}
       {!out.includes("hand") && <span data-tool="hand" className="k-head-tool"><PanelHand session={session} /></span>}
       <PanelsButton session={session} />
       <Menu.Root>

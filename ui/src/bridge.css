@@ -350,14 +350,21 @@ html[data-resizing] iframe { pointer-events: none; }
    never scrolls: SessionHeader keeps in it what fits and lists the rest behind More. */
 .k-station [data-testid="session-header"] { overflow: hidden; }
 .k-station [data-testid="session-header"] > * { flex-shrink: 0; }
+/* The tools that can fold sit in one group that may shrink: on the frame before
+   a narrower row is measured again, it clips at its left end and the controls
+   that never fold keep their place. The padding keeps focus rings whole. */
+.k-station [data-testid="session-header"] > .k-head-tools { flex: 0 1 auto; min-width: 0; }
+.k-head-tools { display: flex; align-items: center; justify-content: flex-end; gap: 0.375rem; overflow: hidden; padding: 0.25rem; margin: -0.25rem; }
+.k-head-tools > * { flex-shrink: 0; }
 .k-station [data-testid="session-header"] { container-type: inline-size; }
 @container (max-width: 36rem) { [data-testid="session-usage"] { display: none !important; } }
 /* A tool's place in the row; one with nothing to show takes no room. */
 .k-head-tool { display: flex; align-items: center; gap: 0.375rem; }
 .k-head-tool:empty { display: none; }
+/* The panel shortcuts are a group of their own, set off from the session's tools. */
+.k-head-tool[data-tool="hand"] { padding-left: 0.75rem; }
 /* More: how many tools are behind it, in the instrument face. */
-.k-head-more { display: inline-flex; align-items: center; gap: 0.3125rem; height: 1.75rem; padding: 0 0.4375rem 0 0.5625rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line); font-family: var(--font-inst); font-stretch: 75%; font-weight: 600; font-size: 0.8125rem; letter-spacing: 0.02em; white-space: nowrap; color: var(--muted); }
-.k-head-more[hidden] { display: none; }
+.k-head-more { display: inline-flex; align-items: center; gap: 0.3125rem; height: 1.75rem; padding: 0 0.4375rem 0 0.5625rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line); font-family: var(--font-inst); font-stretch: 75%; font-weight: 500; font-size: 0.8125rem; letter-spacing: 0.02em; white-space: nowrap; color: var(--muted); }
 .k-head-more:hover, .k-head-more[data-popup-open] { background: var(--hover); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-head-more svg { width: 0.75rem; height: 0.75rem; opacity: 0.7; transition: transform 150ms var(--ease-out); }
 .k-head-more[data-popup-open] svg { transform: rotate(180deg); }
@@ -366,11 +373,17 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-stow[data-starting-style], .k-stow[data-ending-style] { scale: 0.97; opacity: 0; }
 .k-stow-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 2.5rem; padding: 0 0.375rem 0 0.625rem; border-radius: 0.25rem; cursor: default; }
 .k-stow-row:has(> .k-stow-slot:empty) { display: none; }
-.k-stow-row:hover, .k-stow-row:focus-within, .k-stow-item:hover, .k-stow-item:focus-visible { background: var(--hover); }
+/* Only a row whose control can be pressed lights up. */
+.k-stow-row:has(> .k-stow-slot button):hover, .k-stow-row:focus-within, .k-stow-item:hover, .k-stow-item:focus-visible { background: var(--hover); }
 .k-stow-label { flex-shrink: 0; font-size: 0.9062rem; color: var(--fg); }
-.k-stow-slot { display: flex; min-width: 0; justify-content: flex-end; }
-.k-stow-item { display: flex; width: 100%; align-items: center; gap: 0.625rem; min-height: 2.5rem; padding: 0 0.625rem; border-radius: 0.25rem; text-align: left; font-size: 0.9062rem; color: var(--fg); outline: none; }
-.k-stow-item svg { flex-shrink: 0; color: var(--muted); }
+/* A control too wide to share the line with its name (large text on a phone) takes the next one, still at the right edge. */
+.k-stow-row { flex-wrap: wrap; row-gap: 0.125rem; padding-block: 0.25rem; }
+.k-stow-slot { display: flex; min-width: 0; max-width: 100%; margin-left: auto; justify-content: flex-end; }
+.k-stow-slot > * { min-width: 0; max-width: 100%; white-space: nowrap; }
+.k-stow-item { display: flex; width: 100%; align-items: center; min-height: 2.5rem; padding: 0 0.625rem; border-radius: 0.25rem; text-align: left; font-size: 0.9062rem; color: var(--fg); outline: none; }
+/* One right edge: the bare branch name ends where the pills do. The list has room for the mode's name at any width. */
+.k-stow-slot [data-testid="worktree-chip"] { padding-right: 0; }
+.k-stow-slot [data-testid="permission-mode"] { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; white-space: nowrap; }
 /* Plain actions follow the controls, under a rule. */
 .k-stow-row + .k-stow-act { margin-top: 0.25rem; padding-top: 0.25rem; border-top: 1px solid var(--line); }
 
@@ -499,7 +512,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-side[data-mode="sheet"] { position: absolute; inset: 0; z-index: 20; }
 /* A phone gives the sheet the whole screen. */
 @media (max-width: 767px) { .k-side[data-mode="sheet"] { position: fixed; z-index: 40; } }
-.k-panels-btn { display: inline-flex; align-items: center; white-space: nowrap; }
+.k-panels-btn { display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
 
 /* ---------- Settings: a station of its own ---------- */
 [data-testid="settings"] { background: var(--bg); }
