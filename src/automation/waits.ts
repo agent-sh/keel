@@ -269,6 +269,7 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   if (spec.kind === "monitor") startMonitor(rec);
   if (spec.kind === "websocket") startSocket(rec);
   emit("wait", get(rec.id));
+  activity.record("wait", "set", sessionId, `Wait ${rec.kind}${rec.note ? ` "${rec.note}"` : ""} set`, { wait_id: rec.id });
   return get(rec.id)!;
 }
 

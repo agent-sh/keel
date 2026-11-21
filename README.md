@@ -28,6 +28,34 @@ messages, or wire data. An `end` of `null` means no terminal event was
 recorded. A null span ID means the span is not available, not that the tool
 was necessarily skipped.
 
+## Session timeline
+
+`GET /api/sessions/<id>/timeline` is a session's story from one place: its
+turns (who started each: the owner, a queued prompt, a steer, a loop run, a
+wait wake, an agent report, another session, the harness, a daemon restart;
+how it ended; how long it took; its steps, tool calls and failed tool calls;
+tokens and cost), the agents it started and how each ended, waits set and
+fired, loop runs, compactions, model switches, daemon restarts, approvals
+asked and settled, and its errors. Rows are newest first, `limit` at a time
+(50 by default, at most 200); `next` is the cursor of the following page
+(`before`). `only` is `failures`, `turns` or `agents`; `since` is a span back
+from now (`90s`, `30m`, `1h`, `2d`), epoch milliseconds or an ISO time. `now`
+says what the session is doing: the running turn's step and tool, what waits
+on the owner, the waits and agents still out, what is queued.
+
+Each row carries the IDs that open its detail: `turn_event` (the turn's
+receipt and trace), `refs.child_session` (an agent's session), `refs.error_id`.
+Like the receipt it holds metadata only: IDs, kinds, counts, classes,
+durations and session titles, never a prompt, a tool's input or output, a
+wait's note or an error's message. Turns, compactions and restarts come from
+the session's events and are kept as long as the session; agents, waits, loops
+and approvals come from the activity list, which keeps 30 days. An activity
+row keeps the turn it happened in (`turn_event`).
+
+`format=text` gives the same story as plain text, a line a row, for a model:
+`keel debug timeline SESSION --since 1h` prints it. The Timeline side panel
+shows it live.
+
 ## Auto and Full auto
 
 **Auto** keeps Keel's existing read permissions. In-scope edits, read-only

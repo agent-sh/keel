@@ -98,6 +98,8 @@ function init(deps: Deps) {
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
     turnEnd: (s, reason) => {
+      // Named now: by the time the row is written the turn is over.
+      const turn = deps.engine.turnOf(s.id);
       afterTurn(s.id, () => {
         const loopRun = loops.runOpenIn(s.id);
         failures.onTurnEnd(s.id, reason);
@@ -109,7 +111,7 @@ function init(deps: Deps) {
         // for their reports (they start its next turn, whose end tells).
         const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || liveAgents(s.id) > 0;
         const child = !!deps.store.session(s.id)?.parent_id;
-        if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`);
+        if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`, undefined, turn);
         alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more });
         if (!child) goals.afterTurn(s.id, reason, { judge: !more }).catch((e) => capture(e, { at: "goal" }));
       });

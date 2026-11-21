@@ -4,6 +4,7 @@
 //   keel debug --session ID [--turn EVENT]   the bundle of a session's turn (its last by default)
 //   keel debug errors [--all]        the open errors (every one with --all), newest first
 //   keel debug trace TRACE_ID        one trace's spans as a waterfall
+//   keel debug timeline SESSION      what happened in a session and what it is doing now, a line a row
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
 import { chunks } from "../core/proc.ts";
@@ -12,6 +13,8 @@ import { authHeaders, findDaemon, refusal } from "./client.ts";
 const USAGE = `keel debug [ERROR_ID] | --session ID [--turn EVENT]   the debug bundle, as Markdown
 keel debug errors [--all] [--json]                    the open errors, newest first
 keel debug trace TRACE_ID [--json]                    one trace's spans
+keel debug timeline SESSION [--since 1h] [--only failures|turns|agents] [--limit N] [--before CURSOR] [--json]
+                                                      what happened in a session, newest first, and what it does now
 keel debug log [-f] [--level debug|info|warn|error] [--grep TEXT] [--lines N]
   Every form takes --url URL (else KEEL_URL, else the daemon of the state folder).`;
 
@@ -36,6 +39,7 @@ export async function debug(argv: string[]): Promise<number> {
     options: {
       url: { type: "string" }, json: { type: "boolean" }, help: { type: "boolean" }, session: { type: "string" }, turn: { type: "string" },
       all: { type: "boolean" }, follow: { type: "boolean", short: "f" }, level: { type: "string" }, grep: { type: "string" }, lines: { type: "string" },
+      since: { type: "string" }, only: { type: "string" }, limit: { type: "string" }, before: { type: "string" },
     },
   });
   if (v.help) return (console.log(USAGE), 0);
@@ -57,6 +61,14 @@ export async function debug(argv: string[]): Promise<number> {
         const d = (s.end_ms ?? Date.now()) - s.start_ms;
         console.log(`${s.status === "error" ? "!" : " "} +${((s.start_ms - t0) / 1000).toFixed(2).padStart(7)}s ${s.parent_id ? "  " : ""}${s.name.padEnd(30)} ${ms(d).padStart(9)}  ${s.status}${s.error_type ? ` (${s.error_type})` : ""}  ${s.span_id}${s.error ? `\n      ${s.error.split("\n")[0].slice(0, 200)}` : ""}`);
       }
+      return 0;
+    }
+    if (pos[0] === "timeline") {
+      const id = pos[1] ?? v.session;
+      if (!id) throw new Error("name the session: keel debug timeline SESSION");
+      const q = new URLSearchParams(Object.entries({ since: v.since, only: v.only, limit: v.limit, before: v.before, format: v.json ? undefined : "text" }).filter(([, x]) => x) as [string, string][]);
+      const r = await get(url, `/api/sessions/${encodeURIComponent(id)}/timeline?${q}`);
+      process.stdout.write(v.json ? JSON.stringify(await r.json(), null, 2) + "\n" : await r.text());
       return 0;
     }
     if (pos[0] === "log") return await log(url, v);

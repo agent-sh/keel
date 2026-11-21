@@ -1,7 +1,8 @@
-import { Bell, Bot, Coffee, Hand, Moon, Repeat, Search, Timer, Workflow } from "lucide-react";
+import { Bell, Bot, Coffee, Hand, Moon, ReceiptText, Repeat, Search, Timer, Workflow } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { activityTarget, auto, openSession, placeName, useAuto, type Activity } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
+import { openReceipt } from "../../lib/timeline.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { Empty } from "./bits.tsx";
 import { Select } from "../Select.tsx";
@@ -152,9 +153,24 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           return (
             <li key={a.id} data-testid="activity-item" data-kind={a.kind} data-activity={a.id}>
               {a.session_id ? (
-                <button type="button" onClick={() => void open(a)} className="flex w-full gap-2.5 rounded-lg px-2.5 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
-                  {body}
-                </button>
+                <div className="flex items-start gap-0.5">
+                  <button type="button" onClick={() => void open(a)} className="flex min-w-0 flex-1 gap-2.5 rounded-lg px-2.5 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
+                    {body}
+                  </button>
+                  {/* The turn it happened in, kept with the row: later turns never change it. */}
+                  {a.turn_event && (
+                    <button
+                      type="button"
+                      onClick={() => { openReceipt(a.session_id!, a.turn_event!); onClose(); }}
+                      aria-label="The receipt of the turn it happened in"
+                      title="The receipt of the turn it happened in"
+                      data-testid="activity-receipt"
+                      className="mt-1 grid size-6 shrink-0 place-items-center rounded-md text-faint outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <ReceiptText className="size-3.5" />
+                    </button>
+                  )}
+                </div>
               ) : (
                 <div className="flex gap-2.5 px-2.5 py-1.5">{body}</div>
               )}

@@ -53,6 +53,7 @@ import { remoteRoutes } from "./remote.ts";
 import { acpRoutes } from "./acp.ts";
 import { helperRoutes } from "./helper.ts";
 import { experimentRoutes } from "./experiments.ts";
+import { timelineRoutes } from "./timeline.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -110,4 +111,5 @@ export const routeModules: RouteModule[] = [
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
   telemetryRoutes, // its tool timing starts after every gate
   experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote
+  timelineRoutes, // reads what the others record: events, activity, errors, telemetry
 ];

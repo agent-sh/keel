@@ -343,7 +343,7 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, channels, delivery, rev, kept) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)")
       .run(a.id, a.ts, kind, sid, a.title, a.body, a.read ? 1 : 0, stored ? JSON.stringify(stored) : null, JSON.stringify(sendTo), delivery ? JSON.stringify(delivery) : null, a.rev);
     emit("alert", a);
-    activity.record("alert", kind, sessionId, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags });
+    activity.record("alert", kind, sessionId, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags, ...(key && decision ? { [key]: String(decision) } : {}) });
     deliverTo(a, sendTo);
     return a;
   } catch (e) {

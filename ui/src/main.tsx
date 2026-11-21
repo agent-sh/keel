@@ -17,6 +17,7 @@ import "./features/profile.tsx";
 import "./features/sessops.tsx";
 import "./features/terminal.tsx";
 import "./features/observe.tsx";
+import "./features/timeline.tsx";
 import "./features/projects.tsx";
 import "./features/artifacts.tsx";
 import "./features/helper.tsx";

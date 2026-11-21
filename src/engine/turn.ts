@@ -248,6 +248,8 @@ const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortE
 
 export class Engine {
   private running = new Map<string, Running>();
+  // The turn_start event of each running turn, from its first event to its end.
+  private turns = new Map<string, string>();
   // Sessions whose queue a stop holds: stored, so the hold (and its Resume)
   // outlives a daemon restart; only an action that releases it clears it.
   private held: Set<string>;
@@ -371,6 +373,11 @@ export class Engine {
 
   isRunning(id: string) {
     return this.running.has(id);
+  }
+
+  // The turn_start event of the turn running in the session now.
+  turnOf(id: string): string | undefined {
+    return this.turns.get(id);
   }
 
   isHeld(id: string) {
@@ -584,6 +591,7 @@ export class Engine {
   // captured as this turn's (src/core/errors.ts).
   private openTurn(id: string, data: unknown) {
     const ev = this.append(id, "turn_start", data);
+    this.turns.set(id, ev.id);
     const scope = errorScope.getStore();
     if (scope?.session === id) scope.turn = ev.id;
     return ev;
@@ -608,6 +616,7 @@ export class Engine {
       .finally(() => {
         // The turn is over: what it left running no longer fails in it.
         if (scope) scope.turn = undefined;
+        this.turns.delete(id);
         this.running.delete(id);
         this.status(id, { kind: "idle" });
         if (this.store.session(id)) this.setPhase(id, "idle");
@@ -930,6 +939,9 @@ export class Engine {
     let compactedForFit = false;
     let summaryFailed = false;
     let steps = 0;
+    // What the turn's end says it took: its tool results, and those that were errors.
+    let toolResults = 0;
+    let toolErrors = 0;
     const partial = new Map<number, { kind: string; text: string }>();
     // Each result is stored as it settles, not when the whole batch has:
     // a crash while one call still runs keeps what the others returned
@@ -938,6 +950,8 @@ export class Engine {
     // parks gets none: the next daemon asks on that card again.
     const settle = (u: ToolUseBlock) => (r: ToolResultBlock) => {
       if (this.parking.has(id) && outcomeOf(id, u.id) === "waiting") return;
+      toolResults++;
+      if (r.is_error) toolErrors++;
       const shown = this.shown.get(r.tool_use_id);
       this.shown.delete(r.tool_use_id);
       this.store.db.transaction(() => {
@@ -1085,7 +1099,7 @@ export class Engine {
     } finally {
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
-      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
+      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps, tools: toolResults, tool_errors: toolErrors, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
       // Between turns, a context past the preparing share gets its summary ready.
       if (!signal.aborted) {
         const events = this.lineage(id);

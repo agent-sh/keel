@@ -8,7 +8,9 @@ import { D, capture, clip, cursor, emit } from "./core.ts";
 
 export type ActivityKind = "alert" | "turn" | "agent" | "loop" | "wait" | "approval" | "awake" | "snooze";
 export const ACTIVITY_KINDS: ActivityKind[] = ["alert", "turn", "agent", "loop", "wait", "approval", "awake", "snooze"];
-export type Activity = { id: string; ts: number; kind: ActivityKind; sub: string; session_id: string | null; text: string; data?: any };
+// `turn_event`: the turn_start event of the turn it happened in, in the session
+// it is listed under (absent between turns), so the row opens that turn's receipt.
+export type Activity = { id: string; ts: number; kind: ActivityKind; sub: string; session_id: string | null; text: string; data?: any; turn_event?: string | null };
 
 export const KEEP_MS = 30 * 86400_000;
 export const prune = () => D().store.db.query("DELETE FROM activity WHERE ts < ?").run(Date.now() - KEEP_MS);
@@ -26,21 +28,28 @@ CREATE TABLE IF NOT EXISTS activity (
 );
 CREATE INDEX IF NOT EXISTS activity_ts ON activity(ts DESC);
 CREATE INDEX IF NOT EXISTS activity_session ON activity(session_id, ts DESC);`);
+  if (!D().store.columnExists("activity", "turn_event")) D().store.migrate("ALTER TABLE activity ADD COLUMN turn_event TEXT");
   prune();
   const g = globalThis as { __keelActivitySweep?: ReturnType<typeof setInterval> };
   clearInterval(g.__keelActivitySweep);
   g.__keelActivitySweep = setInterval(() => { try { prune(); } catch (e) { capture(e, { at: "activity sweep" }); } }, 3600_000);
 }
 
-export function record(kind: ActivityKind, sub: string, sessionId: string | null, text: string, data?: unknown) {
+// `turn`: the turn it belongs to when the caller knows (a turn's own end, told
+// after the turn is over); otherwise the turn running now in the session the
+// row is listed under. A later turn never changes it.
+export function record(kind: ActivityKind, sub: string, sessionId: string | null, text: string, data?: unknown, turn?: string) {
   try {
     // A subagent's happenings are listed under its parent, with the child named.
     const s = sessionId ? D().store.session(sessionId) : undefined;
     const sid = s?.parent_id ?? sessionId;
-    const extra = s?.parent_id ? { ...(data as object), child_session: sessionId, child_title: s.title || undefined } : data;
-    const a: Activity = { id: Bun.randomUUIDv7(), ts: Date.now(), kind, sub, session_id: sid, text: clip(text, 500), data: extra };
-    D().store.db.query("INSERT INTO activity (id, ts, kind, sub, session_id, text, data) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(a.id, a.ts, kind, sub, sid, a.text, extra === undefined ? null : JSON.stringify(extra));
+    const running = (id: string | null) => (id ? D().engine?.turnOf?.(id) : undefined);
+    const childTurn = s?.parent_id ? turn ?? running(sessionId) : undefined;
+    const extra = s?.parent_id ? { ...(data as object), child_session: sessionId, child_title: s.title || undefined, ...(childTurn ? { child_turn: childTurn } : {}) } : data;
+    const turnEvent = (s?.parent_id ? running(sid) : turn ?? running(sid)) ?? null;
+    const a: Activity = { id: Bun.randomUUIDv7(), ts: Date.now(), kind, sub, session_id: sid, text: clip(text, 500), data: extra, turn_event: turnEvent };
+    D().store.db.query("INSERT INTO activity (id, ts, kind, sub, session_id, text, data, turn_event) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(a.id, a.ts, kind, sub, sid, a.text, extra === undefined ? null : JSON.stringify(extra), turnEvent);
     emit("activity", a);
   } catch (e) {
     capture(e, { at: "activity", kind });
