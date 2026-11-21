@@ -14,7 +14,7 @@ import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
 import * as waits from "./waits.ts";
 
-const store = new Store(mkdtempSync(join(tmpdir(), "keel-goals-")));
+let store!: Store;
 let running = false;
 // The scripted judge: each request waits for its answer; `verdict` answers the newest.
 const asked: ((text: string) => void)[] = [];
@@ -30,11 +30,16 @@ const engine = {
   },
   ask: () => new Promise((res) => asked.push((verdict = (text) => res({ blocks: [{ type: "text", text }], usage: { input: 1, output: 1 }, model_id: "m" })))),
 };
-setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { resolve: async (id: string) => ({ info: { id } }) } } as any);
-activity.migrate();
-agents.migrate();
-waits.migrate();
-goals.migrate();
+// A daemon on a state folder; called again on the same folder, the daemon after a restart.
+function boot(dir: string) {
+  store = new Store(dir);
+  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { resolve: async (id: string) => ({ info: { id } }) } } as any);
+  activity.migrate();
+  agents.migrate();
+  waits.migrate();
+  goals.migrate();
+}
+boot(mkdtempSync(join(tmpdir(), "keel-goals-")));
 const session = () => store.createSession({ model: "m", workspace: "/", title: "t" });
 const usage = (n: number) => ({ input: n, output: 0, cache_read: 0, cache_write: 0 });
 const turn = (id: string, tokens: number) => {
@@ -171,4 +176,68 @@ test("a paused goal is not resumed in an archived session", async () => {
   store.updateSession(s.id, { archived: true });
   await expect(goals.patch(s.id, { status: "pursuing" })).rejects.toThrow(/archived/);
   expect(goals.get(s.id)!.status).toBe("paused");
+});
+
+// The restart cases reopen the same state folder: what the next daemon reads is what was saved.
+test("a goal whose turn ended as the daemon went down gets its verdict after the restart, the turn counted once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-goals-restart-"));
+  boot(dir);
+  const judged = session(), unseen = session();
+  await goals.set(judged.id, { objective: "make it pass" });
+  await goals.set(unseen.id, { objective: "make it build" });
+  turn(judged.id, 40);
+  void goals.afterTurn(judged.id, "end_turn"); // the judge is asked, and the daemon stops before it answers
+  turn(unseen.id, 30); // the daemon stops before the turn-end hook runs
+  store.db.close();
+
+  boot(dir);
+  let before = asked.length;
+  goals.recover();
+  await until(() => asked.length === before + 2);
+  for (const answer of asked.slice(before)) answer('{"verdict": "not_met", "reason": "no test run yet"}');
+  await until(() => said(judged.id, "continue").length && said(unseen.id, "continue").length);
+  expect(goals.get(judged.id)).toMatchObject({ status: "pursuing", turns: 1, tokens_used: 42, last_verdict: "not_met" });
+  expect(goals.get(unseen.id)).toMatchObject({ status: "pursuing", turns: 1, tokens_used: 32, last_verdict: "not_met" });
+  store.db.close();
+
+  // Restarted again with the continuation sent: nothing is asked, sent or counted again.
+  boot(dir);
+  before = asked.length;
+  goals.recover();
+  await Bun.sleep(20);
+  expect(asked.length).toBe(before);
+  for (const id of [judged.id, unseen.id]) {
+    expect(said(id, "start")).toHaveLength(1);
+    expect(said(id, "continue")).toHaveLength(1);
+    expect(goals.get(id)!.turns).toBe(1);
+  }
+});
+
+test("a turn parked for a restart is not judged: its continuation is, and a held one pauses the goal", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "make it pass" });
+  store.append(s.id, "turn_start", {});
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }], usage: usage(10) });
+  store.append(s.id, "turn_end", { reason: "restart", usage: usage(10) });
+  const before = asked.length;
+  await goals.afterTurn(s.id, "restart");
+  expect(asked.length).toBe(before);
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 0, tokens_used: 10 });
+  store.db.close();
+
+  boot(store.stateDir);
+  goals.recover(); // the engine continues the cut turn: no check is owed for it
+  await Bun.sleep(20);
+  expect(asked.length).toBe(before);
+  store.append(s.id, "user", { text: "continue", origin: "restart" });
+  turn(s.id, 5);
+  const check = goals.afterTurn(s.id, "end_turn");
+  verdict('{"verdict": "not_met", "reason": "one test fails"}');
+  await check;
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 1, tokens_used: 17 });
+
+  const held = session();
+  await goals.set(held.id, { objective: "ship it" });
+  goals.onCutTurnHeld(held.id);
+  expect(goals.get(held.id)).toMatchObject({ status: "paused", status_reason: expect.stringContaining("restart") });
 });

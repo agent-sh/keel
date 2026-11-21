@@ -1,8 +1,11 @@
+import { lineage } from "../core/tree.ts";
 import * as activity from "./activity.ts";
-import { D, capture, deliver, emit } from "./core.ts";
+import { D, capture, deliver, emit, hasPending } from "./core.ts";
 import { check, extractJson } from "./schema.ts";
+import { liveAgents } from "./state.ts";
 import { verify } from "./verify.ts";
 import * as agents from "./agents.ts";
+import * as waits from "./waits.ts";
 
 // Goals and the shared task list.
 //
@@ -29,6 +32,9 @@ export type Goal = {
   verifier_model?: string | null; // the verifier's model when not the judge's (another family is a second opinion)
   id?: string; // this goal's own id: a goal cleared and set again is another goal
   rev?: number; // a changed objective: a check of the old one never decides this one
+  // The turn end counted last (its event id), saved before the judge is asked:
+  // a restart while it judges, or a second look at the same turn, counts it once.
+  counted?: string | null;
   // The independent check of a "met" (verify.ts): its child session, while it
   // runs and after; what it saw; met only once it agreed.
   verifier_session?: string | null; verifying?: boolean; evidence?: string[] | null; verified?: boolean;
@@ -112,12 +118,15 @@ export async function set(sessionId: string, input: { objective: string; token_b
   dropVerifier(cur);
   const g = save({
     id: Bun.randomUUIDv7(), session_id: sessionId, objective, status: "pursuing", token_budget: checkBudget(input.token_budget, "token_budget"), max_turns: checkBudget(input.max_turns, "max_turns"),
-    tokens_used: 0, turns: 0, idle_turns: 0, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, verifier_model: input.verifier_model ?? null, rev: (cur?.rev ?? 0) + 1,
+    tokens_used: 0, turns: 0, idle_turns: 0, counted: null, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, verifier_model: input.verifier_model ?? null, rev: (cur?.rev ?? 0) + 1,
   });
   activity.record("turn", "goal", sessionId, `Goal set: ${objective.slice(0, 200)}`);
-  deliver(sessionId, `${objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation, and before it counts as met an independent verifier checks the files and reruns what proves it, so leave evidence it can check: run the test, print the file.)`, { kind: "goal", goal: "start" });
+  kickoff(g);
   return g;
 }
+
+const kickoff = (g: Goal) =>
+  deliver(g.session_id, `${g.objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation, and before it counts as met an independent verifier checks the files and reruns what proves it, so leave evidence it can check: run the test, print the file.)`, { kind: "goal", goal: "start" });
 
 export async function patch(sessionId: string, p: { status?: "paused" | "pursuing"; objective?: string; token_budget?: number | null; max_turns?: number | null; verifier_model?: string | null }): Promise<Goal> {
   const g = get(sessionId);
@@ -183,7 +192,7 @@ const sum = (u: any = {}) => (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ??
 // What the turn that just ended spent (its turn-end receipt) and whether it
 // used a tool, over the whole turn: a message the owner steered in mid-turn
 // is part of it, not its start.
-function turnFacts(sessionId: string): { tokens: number; tools: boolean } {
+function turnFacts(sessionId: string): { id?: string; tokens: number; tools: boolean } {
   const evs = D().store.events(sessionId);
   const end = evs.findLastIndex((e) => e.kind === "turn_end");
   if (end < 0) return { tokens: 0, tools: false };
@@ -192,45 +201,91 @@ function turnFacts(sessionId: string): { tokens: number; tools: boolean } {
     const e = evs[i]!;
     if (e.kind === "assistant" && (e.data.blocks as any[]).some((b) => b.type === "tool_use")) tools = true;
   }
-  return { tokens: sum(evs[end]!.data.usage), tools };
+  return { id: evs[end]!.id, tokens: sum(evs[end]!.data.usage), tools };
 }
 
 // The checks under way, each by its session and goal instance: a check of a
 // goal that was cleared or replaced never holds back the check of the goal there now.
 const judging = new Set<string>();
 
-// After a restart: a verification the daemon was waiting on has no waiter any
-// more; the last turn is checked again (judge, then a new verifier), not counted again.
+// After a restart, what an active goal is owed. A verification the daemon was
+// waiting on has no waiter any more: its verifier stops and the turn is checked
+// again. A turn that ended with its check not done (the judge was out when the
+// daemon went down, or the turn-end hook never ran, or the continuation was
+// not sent) is checked now, and counted only if it was not. A turn the restart
+// cut is the engine's to continue: its end is checked like any other.
 export function recover() {
+  judging.clear(); // a new daemon: no check is under way
   for (const r of db().query<{ data: string }, []>("SELECT data FROM goals").all()) {
-    const g = JSON.parse(r.data) as Goal;
-    if (!g.verifying) continue;
-    const old = g.verifier_session ? agents.byChild(g.verifier_session) : undefined;
-    if (old && !agents.isEnded(old)) agents.stop(old.id, "parent"); // its answer has no one to go to
-    save({ ...g, verifying: false });
-    if (active(g) && !D().engine.isRunning(g.session_id)) afterTurn(g.session_id, "end_turn", { recheck: true }).catch((e) => capture(e, { at: "goal recheck" }));
+    let g = JSON.parse(r.data) as Goal;
+    if (g.verifying) {
+      const old = g.verifier_session ? agents.byChild(g.verifier_session) : undefined;
+      if (old && !agents.isEnded(old)) agents.stop(old.id, "parent"); // its answer has no one to go to
+      g = save({ ...g, verifying: false });
+    }
+    const s = D().store.session(g.session_id);
+    if (!active(g) || !s || s.archived) continue;
+    // The judge's model may still be starting (a plugin): waited for, as the engine waits for a cut turn's.
+    ready(g.judge_model ?? s.model).catch(() => {}).then(() => owed(g.session_id)).catch((e) => capture(e, { at: "goal recheck", session: g.session_id }));
   }
+}
+
+async function ready(model: string) {
+  for (let i = 0; ; i++) {
+    try { await D().providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
+    await Bun.sleep(5_000);
+  }
+}
+
+async function owed(sessionId: string) {
+  const g = get(sessionId);
+  const s = D().store.session(sessionId);
+  if (!active(g) || !s || s.archived) return;
+  // Work still lined up (a wake, an agent's report, a turn under way) ends in a turn of its own, checked then.
+  if (D().engine.isRunning(sessionId) || hasPending(sessionId) || waits.activeFor(sessionId) > 0 || liveAgents(sessionId) > 0) return;
+  const last = lineage(D().store.events(sessionId), s.head ?? null).findLast((e) => e.kind === "user" || e.kind === "turn_start" || e.kind === "turn_end");
+  if (last && (last.kind !== "turn_end" || last.data.reason === "restart")) return;
+  // No turn since the goal was set: its first prompt never went (the daemon was on its way down).
+  if (!last || last.ts < g!.started_ms) return void kickoff(g!);
+  // A goal saved before turns were marked as counted had this one counted by the daemon that ran it.
+  await afterTurn(sessionId, String(last.data.reason), { recheck: g!.counted === undefined });
+}
+
+// The engine did not continue the cut turn of a session with an active goal:
+// nothing runs toward it, so it pauses with the way on.
+export function onCutTurnHeld(sessionId: string) {
+  const g = get(sessionId);
+  if (active(g)) save({ ...g!, status: "paused", status_reason: "its turn was cut by a daemon restart and not continued: resume to go on" });
 }
 
 // After each turn of a session with an active goal: the turn is counted and a
 // stop pauses the goal at once; the check waits (`judge` false) while more
 // work is lined up (an agent's report, a wait), as Claude Code defers it.
+// The count is saved before the judge is asked, so a daemon that stops while
+// it judges leaves the turn counted once and the check owed (recover).
 export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean; recheck?: boolean } = {}) {
   const g = get(sessionId);
   if (!active(g)) return;
   const mine = instance(g);
   const ours = (x?: Goal) => !!x && instance(x) === mine;
   const key = `${sessionId} ${mine}`;
-  if (judging.has(key)) return;
-  if (!opts.recheck) {
-    const facts = turnFacts(sessionId);
-    g!.turns++;
+  const facts = turnFacts(sessionId);
+  if (!opts.recheck && facts.id && g!.counted !== facts.id) {
+    g!.counted = facts.id;
     g!.tokens_used += facts.tokens;
-    g!.idle_turns = facts.tools ? 0 : g!.idle_turns + 1;
+    // A turn parked for a restart is continued by the engine: what it spent
+    // counts, and the continuation is the turn that is counted and checked.
+    if (reason !== "restart") {
+      g!.turns++;
+      g!.idle_turns = facts.tools ? 0 : g!.idle_turns + 1;
+    } else if (facts.tools) g!.idle_turns = 0;
   }
+  if (reason === "restart") return void save(g!);
   if (reason === "error" || reason === "max_tokens") return void save({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
   if (reason === "interrupted") return void save({ ...g!, status: "paused", status_reason: "the turn was stopped" });
-  if (opts.judge === false) return void save(g!);
+  // A check of this goal already under way decides: this turn is counted, not judged twice.
+  if (opts.judge === false || judging.has(key)) return void save(g!);
+  save(g!);
   judging.add(key);
   try {
     const s = D().store.session(sessionId);
@@ -244,7 +299,7 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     if (!active(now) || !ours(now)) return; // paused, cleared or replaced while it judged
     const u = res.usage as any;
     const judgeTokens = (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
-    let next: Goal = { ...now!, turns: g!.turns, tokens_used: g!.tokens_used + judgeTokens, idle_turns: g!.idle_turns, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id, evidence: null };
+    let next: Goal = { ...now!, tokens_used: now!.tokens_used + judgeTokens, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id, evidence: null };
     activity.record("turn", "goal", sessionId, `Goal check: ${v.verdict.replace("_", " ")}. ${v.reason}`.slice(0, 400));
     if (v.verdict === "met") {
       // Met by the judge: the verifier checks the work before it counts.

@@ -94,7 +94,7 @@ function init(deps: Deps) {
     },
     turnStart: (s) => agents.onTurnStart(s.id),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
-    cutTurnHeld: (s, why) => agents.onCutTurnHeld(s.id, why),
+    cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); goals.onCutTurnHeld(s.id); },
     turnEnd: (s, reason) => {
       afterTurn(s.id, () => {
         const loopRun = loops.runOpenIn(s.id);
