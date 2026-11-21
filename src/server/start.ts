@@ -3,7 +3,7 @@
 import { endStreams } from "./streams.ts";
 import { join, resolve } from "node:path";
 import { defaultStateDir } from "../core/paths.ts";
-import { recordUrl } from "../admin/daemon.ts";
+import { acquireLock, recordUrl } from "../admin/daemon.ts";
 import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { runMode } from "../core/runmode.ts";
@@ -33,6 +33,9 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
       process.exit(1);
     }
   }
+  // The state folder is claimed before anything of it is opened: a second
+  // daemon on it stops here, with the database untouched.
+  acquireLock(stateDir);
   const store = new Store(stateDir);
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);

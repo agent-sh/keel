@@ -19,7 +19,7 @@ import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
-import { acquireLock, Daemon } from "../../admin/daemon.ts";
+import { Daemon } from "../../admin/daemon.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
 import type { RouteModule } from "../app.ts";
@@ -57,7 +57,6 @@ export function buildId(): string {
 
 export const adminRoutes: RouteModule = (deps) => {
   const { store, errors, bus, providers } = deps;
-  if (!G.__keelAdmin) acquireLock(store.stateDir);
   loadSettings(store.stateDir, (e) => errors.capture("server", e, { at: "settings" }));
   const prev = G.__keelAdmin;
   prev?.awake.stopAll();
