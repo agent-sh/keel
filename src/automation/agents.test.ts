@@ -795,7 +795,7 @@ test("a message that restarts a finished agent holds its slot while its worktree
   expect(sends.filter((x) => x.id === b.session_id).map((x) => x.text.split("\n").at(-1))).toEqual(["first message", "second message"]);
 });
 
-test("a report is said once: an earlier round the final one repeats is left out, and words before a tool call stay short", async () => {
+test("a report is said once: an earlier round a later one repeats is left out, and findings written before a cut reach the parent whole", async () => {
   const round = (a: agents.AgentRecord, text: string, tool = false) => {
     store.append(a.session_id, "assistant", { blocks: [{ type: "text", text }, ...(tool ? [{ type: "tool_use", id: "t", name: "Bash", input: {} }] : [])] });
     if (tool) store.append(a.session_id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] });
@@ -817,9 +817,24 @@ test("a report is said once: an earlier round the final one repeats is left out,
   expect(got.startsWith("Checked again after the restart.")).toBe(true);
   expect(count(got, report)).toBe(1);
   expect(count(got, "Earlier reports, oldest first:")).toBe(1);
-  const note = got.slice(got.indexOf("(No final answer. Before its last tool call it wrote:)\n"));
-  expect(note.length).toBeLessThanOrEqual(55 + 400);
-  expect(note.endsWith("…")).toBe(true);
+  // What it wrote before the tool call the restart cut is in no later round: it is all there.
+  expect(got.endsWith(`Earlier reports, oldest first:\n\n(No final answer. Before its last tool call it wrote:)\n${thinking}`)).toBe(true);
+
+  // Findings written before a tool call (save the report), the turn cut, and a short last word: the findings are whole.
+  const findings = `Findings:\n${Array.from({ length: 40 }, (_, i) => `${i + 1}. parse.ts:${i * 7 + 3} drops the token after a quote`).join("\n")}`;
+  expect(findings.length).toBeGreaterThan(1500);
+  const f = await spawn();
+  round(f, findings, true);
+  end(f, "end_turn", "Confirmed.");
+  expect(await result(f)).toBe(`Confirmed.\n\nEarlier reports, oldest first:\n\n(No final answer. Before its last tool call it wrote:)\n${findings}`);
+  // The same words said again by a later round, not the last one, are said once.
+  const h = await spawn();
+  round(h, findings, true);
+  round(h, `${findings}\n\nSaved to report.md.`);
+  end(h, "end_turn", "Confirmed.");
+  const twice = await result(h);
+  expect(count(twice, findings)).toBe(1);
+  expect(twice).toBe(`Confirmed.\n\nEarlier reports, oldest first:\n\n${findings}\n\nSaved to report.md.`);
 
   // The same report twice is the report, with no tail.
   const b = await spawn();
