@@ -197,7 +197,7 @@ test("an open trace follows its turn to the end", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Live trace check" } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 8 && echo held" } }])}`);
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 24 && echo held" } }])}`);
   await page.getByTestId("composer").press("Enter");
   // The first request has answered and the command is running.
   await expect.poll(async () => (await (await request.get(`/api/debug/traces?session_id=${session.id}`)).json()).traces[0]?.status, { timeout: 15_000 }).toBe("running");
@@ -210,9 +210,40 @@ test("an open trace follows its turn to the end", async ({ page, request }) => {
   await expect(detail).toContainText("still running");
   await shoot(page, "observe-12-trace-running");
 
-  // The command ends and the turn with it: the open view has the call, the
+  // While the turn runs the view reads the trace again every two seconds:
+  // one read at a time, none from a hidden tab, none once the trace is gone.
+  const traceId = (await (await request.get(`/api/debug/traces?session_id=${session.id}`)).json()).traces[0].trace_id;
+  const url = `**/api/debug/traces/${traceId}`;
+  let asks = 0;
+  page.on("request", (r) => { if (r.url().endsWith(`/api/debug/traces/${traceId}`)) asks++; });
+  let release = () => {}, passed = () => {};
+  const held = new Promise<void>((r) => (release = r)), through = new Promise<void>((r) => (passed = r));
+  await page.route(url, async (r) => { await held; await r.continue(); passed(); });
+  let from = asks;
+  await expect.poll(() => asks, { timeout: 6000 }).toBe(from + 1);
+  await page.waitForTimeout(3000); // a tick passes with that read still out
+  expect(asks).toBe(from + 1);
+  await page.evaluate(() => Object.defineProperty(document, "hidden", { configurable: true, get: () => true }));
+  release();
+  await through;
+  await page.unroute(url);
+  await page.waitForTimeout(1000); // the read asked for meanwhile comes back
+  from = asks;
+  await page.waitForTimeout(3000);
+  expect(asks).toBe(from);
+  // Shown again: read at once.
+  await page.evaluate(() => { delete (document as any).hidden; document.dispatchEvent(new Event("visibilitychange")); });
+  await expect.poll(() => asks, { timeout: 3000 }).toBeGreaterThan(from);
+  await page.route(url, (r) => r.fulfill({ status: 404, json: { error: "no such trace" } }));
+  await expect(page.getByTestId("trace-gone")).toBeVisible({ timeout: 6000 });
+  from = asks;
+  await page.waitForTimeout(3000);
+  expect(asks).toBe(from);
+  await page.unroute(url);
+
+  // The command ends and the turn with it: the view is back with the call, the
   // second request and the turn's end, and the row in the list above too.
-  await expect(view.getByTestId("span-row")).toHaveCount(4, { timeout: 30_000 });
+  await expect(view.getByTestId("span-row")).toHaveCount(4, { timeout: 45_000 });
   await expect(turn).toHaveAttribute("data-status", "ok", { timeout: 15_000 });
   await expect(view.locator('[data-testid="span-row"][data-kind="tool"]')).toContainText("Bash");
   await expect(detail).toContainText("invoke_agent");

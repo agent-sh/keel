@@ -103,20 +103,38 @@ function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: strin
   const [gone, setGone] = useState(false);
   const asked = useRef<HTMLButtonElement>(null);
   const detail = useRef<HTMLDivElement>(null);
+  // One read at a time: answers then arrive in the order they were asked, and
+  // a read asked for meanwhile runs once the one in flight is back.
+  const busy = useRef(false);
+  const again = useRef(false);
   const load = useCallback(() => {
+    if (busy.current) return void (again.current = true);
+    busy.current = true;
     api<{ spans: Span[] }>(`/api/debug/traces/${id}`).then((r) => {
+      setGone(false);
       setSpans(r.spans);
       setSel((s) => (s && r.spans.some((x) => x.span_id === s) ? s : (r.spans.find((x) => x.status === "error" && x.kind !== "turn") ?? r.spans[0])?.span_id ?? null));
-    }).catch((e) => (e?.status === 404 ? setGone(true) : reportError(e, { at: "trace" })));
+    }).catch((e) => {
+      if (e?.status !== 404) return reportError(e, { at: "trace" });
+      // Gone: nothing is left to follow.
+      setGone(true);
+      setSpans(null);
+    }).finally(() => {
+      busy.current = false;
+      if (again.current) { again.current = false; load(); }
+    });
   }, [id]);
   useEffect(load, [load, ends]);
   // A span still running: looked at again every two seconds, so the calls a
   // turn makes show as they end, and a turn whose end was missed is caught up.
+  // Not while the tab is hidden: it is read once when the tab shows again.
   const running = !!spans?.some((s) => s.status === "running");
   useEffect(() => {
     if (!running) return;
-    const t = setInterval(load, 2000);
-    return () => clearInterval(t);
+    const look = () => { if (!document.hidden) load(); };
+    const t = setInterval(look, 2000);
+    document.addEventListener("visibilitychange", look);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", look); };
   }, [running, load]);
   // In a long trace the span that was asked for may sit below the fold, and
   // its detail under every row: the row first, then the detail, which wins
