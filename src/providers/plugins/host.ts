@@ -111,9 +111,11 @@ export class PluginProcess {
     this.stopping = false;
     this.state = "starting";
     this.reason = undefined;
+    // A failed start is one failure, reported once. When the process ended
+    // (its output closed, it exited), crashed() already said so, and that is
+    // also what failed the call this start was waiting on.
     this.ready = this.boot().catch((e) => {
-      this.capture(e, { plugin: this.entry.id, at: "start" });
-      if (this.state !== "stopped") this.crashed(`start failed: ${(e as Error).message}`);
+      if (this.state === "starting") this.crashed(`start failed: ${(e as Error).message}`);
     });
   }
 
@@ -417,7 +419,9 @@ export class PluginProcess {
   }
 
   private crashed(why: string) {
-    if (this.stopping) return;
+    // Already on its way to a restart: a second cause of the same end starts no second one.
+    if (this.stopping || this.state === "restarting") return;
+    const at = this.state === "starting" ? "start" : undefined;
     for (const [, p] of this.pending) { clearTimeout(p.t); p.rej(new ProviderError("network", `plugin ${this.entry.id} ${why}`)); }
     this.pending.clear();
     for (const [, ch] of this.requests) ch.fail(new ProviderError("network", `plugin ${this.entry.id} ${why}`));
@@ -428,7 +432,7 @@ export class PluginProcess {
     this.state = "restarting";
     this.reason = why;
     this.restartAt = Date.now() + this.delay;
-    this.capture(new Error(`plugin ${this.entry.id} ${why}`), { plugin: this.entry.id, stderr: this.stderrTail.slice(-600) });
+    this.capture(new Error(`plugin ${this.entry.id} ${why}`), { plugin: this.entry.id, ...(at ? { at } : {}), stderr: this.stderrTail.slice(-600) });
     this.restartTimer = setTimeout(() => { this.restartTimer = null; this.start(); }, this.delay);
     this.delay = Math.min(this.delay * 2, 60_000);
     this.onChange?.();
