@@ -192,7 +192,7 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
               // Fix is the owner's own action: after a Stop it releases the held
               // queue, as a prompt they type does. A prompt queued on another
               // branch still waits for them to say where it goes.
-              const first = store.queue(s.id)[0];
+              const first = engine.queued(s.id)[0];
               if (engine.isHeld(s.id) && !(first && engine.offBranch(first))) engine.resumeQueue(s.id);
             }
           } catch (e) {

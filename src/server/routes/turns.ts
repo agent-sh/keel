@@ -50,7 +50,7 @@ export const turnRoutes: RouteModule = (deps) => {
         if (text === "" && !q.images?.length) return bad("text cannot be empty");
         let pos: number | undefined;
         if (b.position !== undefined) {
-          const others = store.queue(q.session_id).filter((x) => x.id !== q.id && x.steer === (b.steer ?? q.steer));
+          const others = engine.queued(q.session_id).filter((x) => x.id !== q.id && x.steer === (b.steer ?? q.steer));
           const i = Math.max(0, Math.min(Number(b.position) || 0, others.length));
           const before = others[i - 1]?.pos ?? (others[0] ? others[0].pos - 2 : 0);
           const after = others[i]?.pos ?? before + 2;
@@ -210,7 +210,7 @@ export const turnRoutes: RouteModule = (deps) => {
         const f = store.createSession({ title, model: s.model, workspace: s.workspace, settings });
         store.copyEvents(f.id, copy);
         // Queued prompts are the source's work, not history: they stay there, and the fork says so.
-        const left = store.queue(s.id).length;
+        const left = engine.queued(s.id).length;
         store.append(f.id, "note", { kind: "fork", from_session: s.id, from_title: s.title, queue_left: left || undefined, text: `Forked from ${s.title || "a session"}.${left ? ` ${left === 1 ? "One queued message stays" : `${left} queued messages stay`} there.` : ""}` });
         const session = store.session(f.id)!;
         bus.emit({ t: "session", session });

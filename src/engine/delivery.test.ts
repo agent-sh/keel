@@ -76,10 +76,13 @@ async function killedDaemon(dir: string, scenario: string, point: string): Promi
 }
 
 const kills: [string, string][] = [
-  ["dequeue", "claimed"], ["dequeue", "stored"],
-  ["steer", "claimed"], ["steer", "stored"],
-  ["send-now", "stopping"], ["send-now", "claimed"], ["send-now", "stored"],
+  ["dequeue", "claimed"], ["dequeue", "stored"], ["dequeue", "delivered"],
+  ["steer", "claimed"], ["steer", "stored"], ["steer", "delivered"],
+  ["send-now", "stopping"], ["send-now", "claimed"], ["send-now", "stored"], ["send-now", "delivered"],
 ];
+// Which side of the move each kill lands on: inside the one write the row is
+// still queued, after it the prompt is stored.
+const lands: Record<string, string> = { stopping: "1 queued, 0 stored", claimed: "1 queued, 0 stored", stored: "1 queued, 0 stored", delivered: "0 queued, 1 stored" };
 for (const [scenario, point] of kills) {
   test(`a daemon killed during ${scenario} (${point}) neither loses nor doubles the queued prompt`, async () => {
     const dir = scratch(`kill-${scenario}-${point}`);
@@ -89,7 +92,7 @@ for (const [scenario, point] of kills) {
     const { store, engine, requests } = rig(dir);
     const pending = store.queue(sid).filter((q) => q.id === qid);
     const stored = promptsOf(store, sid, qid);
-    expect([pending.length, stored.length].join(" queued, ") + " stored").toBeOneOf(["1 queued, 0 stored", "0 queued, 1 stored"]);
+    expect([pending.length, stored.length].join(" queued, ") + " stored").toBe(lands[point]!);
     for (const x of [...pending, ...stored.map((e) => e.data)]) expect([x.text, x.images]).toEqual([QUEUED.text, QUEUED.images]);
 
     // It goes on from there: the cut turn continues, and a prompt still queued
@@ -106,6 +109,37 @@ for (const [scenario, point] of kills) {
     expect(requests.at(-1)!.filter((t) => t === QUEUED.text).length).toBe(1);
   }, 30_000);
 }
+
+// Send now that cannot store its prompt (the write fails) leaves everything as
+// it was and says so: the row is queued again in the open pages, and the
+// queue is still paused in memory as it is in the table.
+test("a Send now whose write fails puts the row back in the queue the pages show", async () => {
+  let queued!: () => void;
+  const waiting = new Promise<void>((r) => (queued = r));
+  const { store, bus, engine, session } = rig(scratch("send-now-fails"), {
+    request: async (req) => {
+      engine.send(s.id, QUEUED.text, { mode: "queue" });
+      queued();
+      await untilStopped(req);
+    },
+  });
+  const s = session();
+  const shown: string[][] = [];
+  bus.on((f) => { if (f.t === "queue" && f.session_id === s.id) shown.push(f.queue.map((q) => q.text)); });
+  engine.send(s.id, "first");
+  await waiting;
+  const [q] = store.queue(s.id);
+  const append = store.append.bind(store);
+  store.append = (sid, kind, data, parent) => {
+    if (kind === "user" && (data as any)?.queue_id) throw new Error("the disk is full");
+    return append(sid, kind, data, parent);
+  };
+  await expect(engine.sendNow(s.id, q!.id)).rejects.toThrow("the disk is full");
+  expect(store.queue(s.id).map((x) => x.text)).toEqual([QUEUED.text]);
+  expect(promptsOf(store, s.id, q!.id)).toEqual([]);
+  const inTable = !!store.db.query("SELECT 1 FROM queue_holds WHERE session_id = ?").get(s.id);
+  expect({ shown: shown.at(-1), held: engine.isHeld(s.id), inTable }).toEqual({ shown: [QUEUED.text], held: true, inTable: true });
+});
 
 // A prompt is accepted (the owner is told it was sent, or it left the queue)
 // and the daemon is killed before the turn has started, while the turn

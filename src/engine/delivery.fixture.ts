@@ -44,11 +44,12 @@ export function rig(stateDir: string, hooks: RigHooks = {}) {
   };
   const providers = { resolve: async () => { await hooks.setup?.(); return { provider, info }; }, models: async () => [info], current: () => [info] };
   const errors = { capture: (_source: string, e: unknown) => ({ id: "captured", message: String((e as Error)?.message ?? e) }) };
-  const engine = new Engine(store, new Bus(), providers as any, errors as any, join(stateDir, "spill"));
+  const bus = new Bus();
+  const engine = new Engine(store, bus, providers as any, errors as any, join(stateDir, "spill"));
   // The system prompt is not what these tests are about: no files are read for it.
   (engine as any).systemOf = async () => ({ text: "A stand-in system prompt.", split: 0 });
   const session = () => store.createSession({ model: info.id, workspace: stateDir });
-  return { store, engine, requests, session };
+  return { store, bus, engine, requests, session };
 }
 
 // The stored prompts a queued row became, by the row's id.

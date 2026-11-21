@@ -9,7 +9,8 @@
 // start on a state folder an earlier case left).
 // Kill points: `stopping` (Send now has asked the running turn to stop),
 // `claimed` (the row was just removed from the queue), `stored` (its prompt
-// was just written), `setup` (the prompt is stored and its turn is resolving
+// was just written), `delivered` (the engine has finished moving the row and
+// tells the pages the queue changed), `setup` (the prompt is stored and its turn is resolving
 // its provider: the turn has not started), and at a start `boot` (the store
 // is open, nothing recovered yet) and `waiting` (recovery waits for the
 // session's model). All are calls the engine makes on the store, the
@@ -80,6 +81,14 @@ if (scenario === "recover") {
   survived();
 }
 
+// The engine sends a queue frame once a row has left the queue for good.
+let watched: string | undefined;
+const emitQueue = engine.emitQueue.bind(engine);
+engine.emitQueue = (id) => {
+  emitQueue(id);
+  if (watched && !store.queueItem(watched)) at("delivered");
+};
+
 const s = session();
 if (scenario === "send") {
   armed = true;
@@ -95,6 +104,7 @@ await open;
 const sent = engine.send(s.id, QUEUED.text, { mode: scenario === "steer" ? "steer" : "queue", images: QUEUED.images });
 // From here the owner has been told the prompt is queued.
 say({ session: s.id, queued: sent.queued!.id });
+watched = sent.queued!.id;
 armed = true;
 if (scenario === "send-now") await engine.sendNow(s.id, sent.queued!.id);
 else letGo();

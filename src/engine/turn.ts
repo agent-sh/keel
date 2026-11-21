@@ -336,11 +336,13 @@ export class Engine {
     if (!q) return undefined;
     const ev = this.store.atomic(q.session_id, () => {
       if (!this.store.dequeue(q.id)) return undefined;
-      if (opts.release) this.release(q.session_id);
+      if (opts.release) this.store.db.run("DELETE FROM queue_holds WHERE session_id = ?", [q.session_id]);
       if (opts.turn) this.store.updateSession(q.session_id, { phase: "working" });
       return this.store.append(q.session_id, "user", { text: q.text, images: q.images, origin, queue_id: q.id, ...q.meta });
     });
     if (!ev) return undefined;
+    // Only once the write is stored: a write that failed leaves the hold as the table has it.
+    if (opts.release) this.held.delete(q.session_id);
     if (opts.turn) this.emitSession(q.session_id);
     this.emitEvent(ev);
     return ev;
@@ -502,16 +504,17 @@ export class Engine {
       await this.interrupt(id);
       if (!this.deliver(qid, "queued", { release: true, turn: true })) throw gone();
       this.start(id);
-      this.emitQueue(id);
     } finally {
       this.sending.delete(qid);
+      // Also when it failed: the row is queued again, and open pages show it again.
+      this.emitQueue(id);
     }
   }
 
   // `here`: the next prompt goes on the branch shown now even when it was
   // queued on another one.
   resumeQueue(id: string, here = false) {
-    const first = this.store.queue(id)[0];
+    const first = this.queued(id)[0];
     if (first && this.offBranch(first)) {
       if (!here) throw this.offBranchError();
       this.store.updateQueueItem(first.id, { anchor: this.store.session(id)?.head ?? null });
