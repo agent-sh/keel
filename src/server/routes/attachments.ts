@@ -1,7 +1,6 @@
 // Files the owner attaches to a prompt: stored once by content, sent per model
 // (src/engine/attachments.ts). Not tied to a session, so a new session's first
 // prompt can carry them too.
-import { readFileSync } from "node:fs";
 import { ATTACHMENT_MAX, attachmentPath, saveAttachment, servedType, setAttachmentsRoot } from "../../engine/attachments.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -34,7 +33,10 @@ export const attachmentRoutes: RouteModule = ({ store }) => {
         const name = (q.get("name") || path.split("/").pop()!).replace(/[\u0000-\u001f\u007f"\\/]/g, "_").slice(0, 120);
         const type = servedType(path, name, q.get("type") ?? undefined);
         const ascii = name.replace(/[^\x20-\x7e]/g, "_");
-        return new Response(readFileSync(path), {
+        // The file is the body: it is sent from the disk as the client reads it,
+        // not read whole first (a slice, since a whole Bun.file adds a
+        // content-disposition with its name on disk). A range is answered too.
+        return new Response(Bun.file(path).slice(), {
           headers: {
             "content-type": type,
             "x-content-type-options": "nosniff",

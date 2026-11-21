@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { createHash } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
 import { HAIKU, shoot, tabInto } from "./shots.ts";
 
@@ -209,4 +210,34 @@ test("attachment names and types survive upload and download", async ({ request 
   expect((await dl(runbook)).headers()["content-type"]).toBe("text/plain;charset=utf-8");
   const blob = await up(`blob${stamp}`, "\u0000\u0001binary", "application/octet-stream");
   expect((await dl(blob)).headers()["content-type"]).toBe("application/octet-stream");
+
+  // A large file whose name gives its type comes back byte for byte, with the
+  // same headers as a small one, sent from the disk: a range of it is answered
+  // with that range alone (only a file-backed answer is).
+  const bytes = Buffer.alloc(12 * 1024 * 1024);
+  for (let i = 0; i < bytes.length; i += 4) bytes.writeUInt32LE((i * 2654435761 + stamp.length) >>> 0, i);
+  const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+  const big = await (await request.post(`/api/attachments?name=${encodeURIComponent(`scan ${stamp}.pdf`)}`, { headers: { "content-type": "application/pdf" }, data: bytes })).json();
+  expect([big.id, big.size]).toEqual([sha(bytes), bytes.length]);
+  const whole = await dl(big);
+  expect(whole.status()).toBe(200);
+  expect(sha(await whole.body())).toBe(big.id);
+  const { date: _, ...headers } = whole.headers();
+  expect(headers).toEqual({
+    "content-type": "application/pdf",
+    "content-length": String(bytes.length),
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox; default-src 'none'",
+    "content-disposition": `attachment; filename="scan ${stamp}.pdf"; filename*=UTF-8''${encodeURIComponent(`scan ${stamp}.pdf`)}`,
+  });
+  const part = await request.get(`/api/attachments/${big.id}?name=x.pdf`, { headers: { range: "bytes=5000000-5000099" } });
+  expect(part.status()).toBe(206);
+  expect(part.headers()["content-range"]).toBe(`bytes 5000000-5000099/${bytes.length}`);
+  expect((await part.body()).equals(bytes.subarray(5_000_000, 5_000_100))).toBe(true);
+  // An image is shown in place: no download name, as before.
+  const pic = await (await request.post(`/api/attachments?name=${encodeURIComponent(`dot ${stamp}.png`)}`, { headers: { "content-type": "image/png" }, data: png(1, 2, 3) })).json();
+  const shown = await dl(pic);
+  expect(shown.headers()["content-type"]).toBe("image/png");
+  expect(shown.headers()["content-disposition"]).toBeUndefined();
+  expect((await shown.body()).equals(png(1, 2, 3))).toBe(true);
 });
