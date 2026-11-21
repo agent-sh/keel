@@ -86,6 +86,15 @@ export class Outcomes {
         const row = this.recordTurn(s, reason);
         if (row) this.experiments?.check(s.id);
       },
+      // A turn the daemon went down under had no end of its own: the next
+      // start closed it, and no turnEnd ran. It is a cut turn like one a stop
+      // parked, counted from the branch as that start left it.
+      turnCut: (s, cut) => {
+        if (!cut.crashed) return;
+        const line = lineage(this.store.events(s.id), this.store.session(s.id)?.head ?? null);
+        const at = line.findIndex((e) => e.id === cut.end_event);
+        if (at >= 0) this.recordTurn(s, "restart", line.slice(0, at + 1));
+      },
       // A readers job's result carries what the working model would have paid.
       resultStored: (s, results) => {
         if (!results.some((r) => r.tool_use_id)) return;

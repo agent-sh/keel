@@ -100,6 +100,121 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
   }
 });
 
+// Feature: after a restart one place says what happened. The daemon keeps a
+// sign of life; the next start reads when the last one went down and how
+// (killed, or stopped by itself), records each turn that cut with the step or
+// tool it was at, and what became of it (continued, held). `keel status`,
+// Settings > Daemon and one Activity row tell the same record; the cut turns
+// are counted like any turn's end, and each one's duration is how long it ran,
+// not how long the daemon was away.
+test("after a kill one place says when the daemon went down, which turns it cut and what became of each", async ({ page }) => {
+  const state = join(ROOT, `restart-record-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const gate = join(state, "let-go");
+    // Four turns, each cut at another place: a command running, the model answering, an approval card open, two commands at once.
+    const sleep = (n: number) => ({ name: "Bash", input: { command: `sleep ${n}; echo slept` } });
+    const turns = [
+      { title: "Cut during a command", mode: "full-auto", text: "script:long-tool" },
+      { title: "Cut while the model answered", mode: "full-auto", text: `script:hold ${gate}` },
+      { title: "Cut at an approval", mode: "ask", text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: `echo asked >> ${join(state, "asked.txt")}` } }])}` },
+      { title: "Cut during two commands", mode: "full-auto", text: `script:batch ${JSON.stringify([sleep(40), sleep(41)])}` },
+    ];
+    const ids: string[] = [];
+    for (const t of turns) {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: t.title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: t.mode }, "PUT");
+      ids.push(session.id);
+    }
+    const t0 = Date.now();
+    for (const [i, t] of turns.entries()) await call(`/api/sessions/${ids[i]}/messages`, { text: t.text });
+    // Each is where it will be cut: the commands run, the card is open, the reply streams.
+    const at = async (id: string) => { const v = await call(`/api/sessions/${id}`, undefined, "GET"); return v.status.kind === "tool" ? "tool" : v.running && v.events.some((e: any) => e.kind === "turn_start") ? "model" : "not yet"; };
+    await expect.poll(async () => Promise.all(ids.map(at)), { timeout: 20_000 }).toEqual(["tool", "model", "tool", "tool"]);
+    await expect.poll(async () => (await call(`/api/sessions/${ids[2]}/approvals`, undefined, "GET")).approvals?.filter((a: any) => a.state === "pending").length, { timeout: 15_000 }).toBe(1);
+    await page.waitForTimeout(Math.max(0, 2_000 - (Date.now() - t0)));
+    const killed = Date.now();
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    // Away for a while: longer than any of the turns ran.
+    await page.waitForTimeout(8_000);
+    d = await daemon(state);
+    const up = Date.now();
+
+    // The record, once every turn is decided.
+    const record = async () => (await call("/api/daemon", undefined, "GET")).last_start;
+    await expect.poll(async () => (await record())?.settled_ms ?? 0, { timeout: 60_000 }).toBeGreaterThan(0);
+    const r = await record();
+    expect(r.before.how).toBe("killed");
+    // Its last sign of life is at most a second old when it is killed.
+    expect(Math.abs(r.before.down_ms - killed)).toBeLessThan(2_500);
+    expect(r.up_ms).toBeGreaterThan(killed + 7_500);
+    const by = (id: string) => r.turns.find((t: any) => t.session_id === id);
+    expect(r.turns).toHaveLength(4);
+    expect(by(ids[0]!)).toMatchObject({ title: turns[0]!.title, crashed: true, step: 1, tools: ["Bash"], waiting: 0, state: "continued" });
+    expect(by(ids[1]!)).toMatchObject({ title: turns[1]!.title, crashed: true, step: 1, tools: [], waiting: 0, state: "continued" });
+    expect(by(ids[2]!)).toMatchObject({ title: turns[2]!.title, crashed: true, step: 1, tools: [], waiting: 1, state: "continued" });
+    expect(by(ids[3]!)).toMatchObject({ title: turns[3]!.title, crashed: true, step: 1, tools: ["Bash", "Bash"], waiting: 0, state: "continued" });
+    // Each ran from its start until the kill, about two seconds: not the ten until the daemon was back.
+    for (const t of r.turns) {
+      expect(t.ran_ms, t.title).toBeGreaterThan(500);
+      expect(t.ran_ms, t.title).toBeLessThan(killed - t0 + 1_500);
+    }
+    const timeline = await call(`/api/sessions/${ids[0]}/timeline`, undefined, "GET");
+    const cutRow = timeline.rows.find((x: any) => x.kind === "turn" && x.sub === "cut");
+    expect(cutRow.text).toBe("Owner prompt, cut when the daemon went down after 1 step");
+    expect(cutRow.ms).toBeLessThan(killed - t0 + 1_500);
+    expect(cutRow.ms).toBeLessThan(up - killed);
+
+    // The command says it, with a line a turn.
+    const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
+    expect(said.status, said.stderr).toBe(0);
+    expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed or crashed\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down ([89]|1\d) s\); 4 turns were cut: 4 continued\./);
+    expect(said.stdout).toContain(`"Cut during a command" cut at step 1, during Bash, after`);
+    expect(said.stdout).toContain(`"Cut while the model answered" cut at step 1, waiting for the model, after`);
+    expect(said.stdout).toContain(`"Cut at an approval" cut at step 1, waiting for an approval, after`);
+    expect(said.stdout).toContain(`"Cut during two commands" cut at step 1, during Bash, Bash, after`);
+
+    // One Activity row, with all four.
+    const rows = (await call("/api/activity?kind=daemon", undefined, "GET")).items as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "daemon", sub: "killed", session_id: null });
+    expect(rows[0].data.restart.turns.map((t: any) => t.session_id).sort()).toEqual([...ids].sort());
+    for (const t of turns) expect(rows[0].text).toContain(t.title);
+
+    // The four cut turns are counted like a turn a stop parked.
+    const report = await call("/api/features?period=day", undefined, "GET");
+    expect(report.outcomes.cut).toBe(4);
+
+    // The page: Settings > Daemon, then the Activity row.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${d.url}/settings/daemon`);
+    const panel = page.getByTestId("daemon-panel");
+    await expect(panel.getByTestId("daemon-last-how")).toHaveText("Went down");
+    await expect(panel.getByTestId("daemon-last-start")).toContainText("4 turns were cut: 4 continued");
+    await expect(panel.getByTestId("daemon-cut-turn")).toHaveCount(4);
+    await expect(panel.getByTestId("daemon-cut-turn").filter({ hasText: "Cut at an approval" })).toContainText("waiting for an approval");
+    await shoot(page, "restart-07-daemon-last-start");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await shoot(page, "restart-07-daemon-last-start-narrow");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await panel.getByTestId("daemon-cut-turn").filter({ hasText: "Cut during a command" }).click();
+    await expect(page).toHaveURL(new RegExp(`/s/${ids[0]}$`));
+    await page.getByTestId("inbox-button").click();
+    await page.getByTestId("tab-activity").click();
+    const row = page.getByTestId("activity-item").filter({ has: page.locator('[data-testid="activity-cut-turn"]') });
+    await expect(row).toHaveCount(1);
+    await expect(row.getByTestId("activity-cut-turn")).toHaveCount(4);
+    await shoot(page, "restart-08-activity-row");
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
 // Many cut sessions continue a few at a time: with one slot, the second starts
 // only after the first continued turn ended.
 test("continued turns after a restart take turns", async () => {
@@ -169,6 +284,11 @@ test("an owner session continues through restarts until its turn stops moving", 
     const note = async () => ((await view()).events as any[]).findLast((e) => e.kind === "note" && e.data.kind === "restart")?.data.text;
     await expect.poll(note, { timeout: 60_000 }).toContain("3 times in a row");
     expect([(await view()).running, await holds()]).toEqual([false, 4]);
+    // The daemon's own record of the start says the same: killed, and this turn held, with the reason.
+    const record = async () => (await call("/api/daemon", undefined, "GET")).last_start;
+    await expect.poll(async () => (await record())?.settled_ms ?? 0, { timeout: 30_000 }).toBeGreaterThan(0);
+    expect((await record()).before.how).toBe("killed");
+    expect((await record()).turns).toEqual([expect.objectContaining({ session_id: session.id, state: "held", crashed: true, tools: ["Bash"], why: expect.stringContaining("3 times in a row") })]);
     await page.goto(`${d.url}/s/${session.id}`);
     await page.getByTestId("note").last().scrollIntoViewIfNeeded();
     await expect(page.getByTestId("note").last()).toContainText("was not continued again");

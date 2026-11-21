@@ -9,6 +9,7 @@ import type { Deps } from "../server/app.ts";
 import { flushAll } from "../automation/core.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { addAdmission } from "../server/admission.ts";
+import { endLife, restarts } from "./life.ts";
 import { describeStall, StallMonitor, TurnWatch } from "./stall.ts";
 
 export { claimState };
@@ -208,10 +209,12 @@ export class Daemon {
       running: this.runningSessions(),
       draining: this.draining,
       restart_failed: this.restartFailed,
+      // The last start: when the daemon before it went down, how, and what became of the turns that cut.
+      last_start: restarts()?.last() ?? null,
     };
   }
 
-  private emit() {
+  emit() {
     this.deps.bus.emit({ t: "feature", name: "daemon", data: this.status() });
   }
 
@@ -256,6 +259,7 @@ export class Daemon {
       await this.deps.engine.park();
       for (const f of this.beforeExit) await (async () => f())().catch((e) => this.deps.errors.capture("server", e, { at: "shutdown" }));
       this.deps.providers.shutdown();
+      endLife(this.draining!.restart ? "restart" : "stop");
       if (this.draining!.restart) this.relaunch();
       // Let the last frames and the HTTP answer go out. Under systemd a
       // restart exits 75 (EX_TEMPFAIL): Restart=on-failure starts it again.

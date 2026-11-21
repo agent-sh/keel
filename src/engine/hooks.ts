@@ -26,6 +26,23 @@ export type ToolGate = void | { deny: string } | { input?: any; ctx?: Partial<To
 // build's own words.
 export type SystemBlock = { name: string; text: string; data: string };
 
+// A turn a daemon stop or kill cut, as the next start found it.
+export type CutTurn = {
+  turn_event: string;  // its turn_start event
+  end_event: string;   // the turn_end that closed it
+  started_ms: number;
+  ran_ms: number;      // how long it ran before it was cut
+  down_ms: number;     // when it was cut: when the daemon went down, as far as that is known
+  crashed: boolean;    // the daemon went down under it; false: a stop parked it
+  unstarted: boolean;  // the prompt was accepted and its turn never began
+  step: number;        // the step it was on
+  tools: string[];     // the calls that were running
+  waiting: number;     // calls whose approval card was open
+};
+// What became of it: continued by itself, held for the owner (with the reason),
+// or the session went on by other means before it was continued.
+export type CutState = "continued" | "held" | "moved";
+
 // Points where feature modules join the turn loop without editing it.
 export type TurnHooks = {
   // Extra text for the system prompt; called once per session (the prompt is
@@ -83,6 +100,10 @@ export type TurnHooks = {
   // A cut turn was not continued, for the reason given (a hook's, the engine's
   // rule, or a model that did not come back).
   cutTurnHeld?: (s: Session, why: string) => void;
+  // For the record only: each turn the last daemon's stop or kill cut, once
+  // this start has every module up, and then what became of it.
+  turnCut?: (s: Session, cut: CutTurn) => void;
+  turnCutSettled?: (s: Session, cut: CutTurn, state: CutState, why?: string) => void;
   // A call a restart cut, with no stored result: what its approval recorded.
   // `denied`: the text the model gets (the owner's reason in it); `not_run`:
   // nothing answered it, so it never ran; `waiting`: its card is still open (or

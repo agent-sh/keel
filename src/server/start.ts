@@ -16,6 +16,8 @@ import { serve } from "./app.ts";
 import { routeModules } from "./routes/index.ts";
 import { portHolder, waitForPredecessor } from "../admin/daemon.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
+import { beginLife, Restarts } from "../admin/life.ts";
+import { newestTurn } from "../admin/marks.ts";
 
 export { defaultStateDir };
 
@@ -43,12 +45,17 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   const cut = undoCutRestore(stateDir);
   if (cut === "undone") console.error(`keel: a restore of a backup into ${stateDir} was cut part way. It was undone: the state is the one before it.`);
   if (cut === "unreadable") console.error(`keel: restore.pending in ${stateDir} could not be read, so nothing was undone: the state is as it was found. The file is now restore.pending.unreadable, and what a restore moved aside is in the before-restore folders.`);
+  // How the daemon before this one ended, read before this one leaves its own
+  // sign of life. A command's own daemon is not the machine's: it keeps none.
+  const life = opts.client ? undefined : beginLife(stateDir);
   const store = new Store(stateDir);
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);
   errors.installGlobal();
   const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
+  // Before any module: the turns this start finds cut are recorded whoever closes them.
+  const restarts = life ? new Restarts(store, life) : undefined;
   const g = globalThis as { __keelEngine?: Engine; __keelStopDiagnostics?: () => void };
   // A hot reload builds a new engine in the same process: the old one parks its turns first.
   // It is replaced first, so a turn the old one would start meanwhile starts here.
@@ -83,7 +90,10 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
         try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
         await Bun.sleep(5_000);
       }
-    }).catch((e) => errors.capture("server", e, { at: "recover" }));
+    }).catch((e) => errors.capture("server", e, { at: "recover" }))
+      // Every cut turn is decided: one that nobody settled went on by other means when its session has a newer turn.
+      .then(() => restarts?.finish((id, cut) => engine.isRunning(id) || newestTurn(store, id)?.id !== cut.turn_event))
+      .catch((e) => errors.capture("server", e, { at: "restart record" }));
     void providers.models().then(() => engine.resumeIdle()).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
   }
   const stop = async (drainMs = 0) => {

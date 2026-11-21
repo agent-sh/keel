@@ -19,6 +19,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
 import { Daemon } from "../../admin/daemon.ts";
+import { restarts } from "../../admin/life.ts";
+import { restartSummary, restartTurnLine } from "../../admin/life-rows.ts";
+import * as activity from "../../automation/activity.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
 import { configDir } from "../../providers/config.ts";
@@ -79,6 +82,19 @@ export const adminRoutes: RouteModule = (deps) => {
   const daily = setInterval(policy, 86_400_000);
   (daily as any).unref?.();
   G.__keelAdmin = { awake, daily, daemon, stalls };
+  // The record of this start (src/admin/life.ts): the page follows it as the
+  // cut turns are decided, and when it is whole it is one Activity row and
+  // the log's account of the restart.
+  const starts = restarts();
+  if (starts) {
+    starts.changed = () => daemon.emit();
+    starts.whole = (r) => {
+      const lines = r.turns.map(restartTurnLine);
+      console.log(`[daemon] ${restartSummary(r)}`);
+      for (const l of lines) console.log(`[daemon]   ${l}`);
+      activity.record("daemon", r.before.how, null, [restartSummary(r), ...lines].join(" "), { restart: r });
+    };
+  }
 
   // Once per process start: the archive policy. (SIGINT and SIGTERM drain in main.ts.)
   if (!prev && !runMode.client) queueMicrotask(policy);

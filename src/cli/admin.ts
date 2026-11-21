@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { unitTemplate } from "../admin/unit.ts";
 import { claimState, lockHolder } from "../admin/daemon.ts";
+import { restartSummary, restartTurnLine, type RestartTurn } from "../admin/life-rows.ts";
 import { parseBind } from "../core/bind.ts";
 import { backupConfig, restore as restoreBackup } from "../admin/storage.ts";
 import { configDir } from "../providers/config.ts";
@@ -93,6 +94,8 @@ const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, away: { type:
     `state    ${d.state_dir}`,
     `turns    ${d.running.length} running${d.draining ? `; draining${d.draining.restart ? " for a restart" : ""} since ${time(d.draining.since_ms)}` : ""}`,
     d.restart_failed ? `restart  called off at ${time(d.restart_failed.ts_ms)}. ${d.restart_failed.error}` : "",
+    // The last start: when the daemon before it went down, how, and each turn that cut.
+    ...(d.last_start ? [`start    ${restartSummary(d.last_start)}`, ...d.last_start.turns.map((t: RestartTurn) => `           ${restartTurnLine(t)}${t.state === "held" && t.why ? `\n             ${t.why}` : ""}`)] : []),
     a ? `awake    ${a.held ? `held (${a.reason})` : a.available ? "not held" : `not available${a.refused ? `: ${a.refused}` : ""}`}, mode ${a.mode}${a.on_battery ? ", on battery" : ""}` : "",
   ].filter(Boolean).join("\n"));
   return 0;

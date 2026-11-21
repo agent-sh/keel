@@ -16,6 +16,7 @@ import { errorText } from "../engine/retry.ts";
 import type { ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { redactHeaders, type Wire, wireOf } from "../providers/wiretap.ts";
 import { errorClass } from "./classes.ts";
+import { wentDownAt } from "./life.ts";
 import { newestTurn } from "./marks.ts";
 
 export type SpanKind = "turn" | "request" | "tool";
@@ -207,8 +208,9 @@ export class Tracer {
 
   constructor(private store: Store, bus: Bus, private isRunning: (id: string) => boolean) {
     store.migrate(SCHEMA);
-    // A span still running when the daemon stopped did not end on its own.
-    store.db.run("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, start_ms) WHERE status = 'running'");
+    // A span still running when the daemon stopped did not end on its own: it
+    // ran until the daemon went down, when that is known (src/admin/life.ts).
+    store.db.run("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, MAX(start_ms, ?)) WHERE status = 'running'", [wentDownAt() ?? 0]);
     this.prune();
     // Failure text an older build kept as it was: anything that reads as a secret becomes a placeholder.
     for (const r of store.db.query<{ span_id: string; error: string }, []>("SELECT span_id, error FROM spans WHERE error IS NOT NULL").all()) {

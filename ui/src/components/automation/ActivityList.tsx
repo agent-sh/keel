@@ -1,9 +1,10 @@
-import { Bell, Bot, Coffee, Hand, Moon, ReceiptText, Repeat, Search, Timer, Workflow } from "lucide-react";
+import { Bell, Bot, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, Workflow } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { activityTarget, auto, openSession, placeName, useAuto, type Activity } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { openReceipt } from "../../lib/timeline.ts";
 import { ago, cn, when } from "../../lib/utils.ts";
+import { type Restart, restartSummary, restartTurnLine } from "../../../../src/admin/life-rows.ts";
 import { Empty } from "./bits.tsx";
 import { Select } from "../Select.tsx";
 
@@ -16,10 +17,11 @@ const KIND: Record<Activity["kind"], { label: string; icon: typeof Bell }> = {
   approval: { label: "Approvals", icon: Hand },
   awake: { label: "Awake", icon: Coffee },
   snooze: { label: "Snooze", icon: Moon },
+  daemon: { label: "Daemon", icon: Power },
 };
 const KINDS = Object.keys(KIND) as Activity["kind"][];
 
-const bad = (a: Activity) => /fail|error|refused/.test(a.sub) || a.sub === "denied";
+const bad = (a: Activity) => /fail|error|refused/.test(a.sub) || a.sub === "denied" || (a.kind === "daemon" && a.sub === "killed");
 
 // Everything that happened, across sessions, newest first: filter by kind,
 // session and words; a row opens its session (or the agent inside it).
@@ -139,11 +141,24 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
         {items.map((a) => {
           const Icon = KIND[a.kind]?.icon ?? Bell;
           const place = a.session_id ? placeName(sessions, a.session_id, a.data?.child_session, { child_title: a.data?.child_title }) : "";
+          // A daemon restart: the sentence in this page's own time zone, then a line for each turn it cut, which opens its session.
+          const restart = a.kind === "daemon" ? (a.data?.restart as Restart | undefined) : undefined;
           const body = (
             <>
               <Icon className={cn("mt-0.5 size-3.5 shrink-0", bad(a) ? "text-danger" : "text-faint")} aria-hidden />
               <span className="min-w-0 flex-1">
-                <span className="block text-caption leading-snug">{a.text}</span>
+                <span className="block text-caption leading-snug">{restart ? restartSummary(restart) : a.text}</span>
+                {restart?.turns.map((t) => (
+                  <button
+                    key={t.end_event}
+                    type="button"
+                    data-testid="activity-cut-turn"
+                    onClick={() => { openSession(t.session_id); onClose(); }}
+                    className={cn("-mx-1 mt-0.5 block w-full rounded-md px-1 py-0.5 text-left text-micro leading-snug outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring", t.state === "held" ? "text-warn" : "text-muted")}
+                  >
+                    {restartTurnLine(t)}
+                  </button>
+                ))}
                 {place && <span className="block truncate text-micro text-faint" data-testid="activity-place">{place}</span>}
               </span>
               <span className="shrink-0 text-micro text-faint tabular-nums" title={when(a.ts)}>{ago(a.ts)}</span>
