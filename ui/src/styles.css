@@ -355,6 +355,15 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
   textarea, input { font-size: max(16px, 1rem) !important; }
 }
 
+/* ---------- Nothing to show: one pattern ----------
+   Quiet words where the content would begin, at its left edge, saying what
+   will show there or what to do next. When a whole surface is empty they have
+   its name above them, and the one thing to do is a button under them. No
+   icon, and never centered in a box. The place gives the padding. */
+.k-empty { font-size: var(--text-ui); line-height: 1.5; text-align: left; text-wrap: pretty; overflow-wrap: anywhere; color: var(--faint); }
+.k-empty > b { display: block; margin-bottom: 0.125rem; font-weight: 600; color: var(--muted); }
+.k-empty-act { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+
 /* ---------- Secondary surfaces: one container grammar ----------
    A side panel, a drawer, a floating panel, a dialog and a page are one thing at
    different sizes. The ink band across the top; a head that says what it is in

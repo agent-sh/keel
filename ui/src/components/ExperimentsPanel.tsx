@@ -105,7 +105,7 @@ export function ExperimentsPanel() {
       {showForm && <Create templates={list.templates} metrics={list.metrics} onMade={(e) => { setOpen(e.id); setCreating(false); void load(); }} />}
       <div className="grid grid-cols-[18rem_minmax(0,1fr)] gap-4">
         <nav className="flex flex-col gap-1" aria-label="Experiments" data-testid="experiment-list">
-          {!list.experiments.length && <p className="px-2 py-3 text-caption text-faint">No experiments yet. Start from a template above.</p>}
+          {!list.experiments.length && <p className="k-empty px-2 py-3">No experiments yet. Start from a template above.</p>}
           {list.experiments.map((e) => (
             <button key={e.id} type="button" onClick={() => setOpen(e.id)} data-testid="experiment-item"
               className={cn("flex flex-col gap-1 rounded-md border px-3 py-2 text-left", current?.id === e.id ? "border-line-strong bg-raised shadow-1" : "border-transparent hover:bg-hover")}>

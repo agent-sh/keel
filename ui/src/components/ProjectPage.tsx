@@ -126,7 +126,7 @@ function Body({ p }: { p: Project }) {
                     <button type="button" aria-label={`Remove ${f}`} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" onClick={() => save({ folders: p.folders.filter((x) => x !== f) })}><X className="size-3.5" /></button>
                   </li>
                 ))}
-                {!p.folders.length && <li className="text-ui text-faint">No folder yet: only sessions moved here are in the project.</li>}
+                {!p.folders.length && <li className="k-empty">No folder yet: only sessions moved here are in the project.</li>}
               </ul>
               <div className="flex items-center gap-2 text-ui text-muted" data-testid="project-add-folder">
                 <span>Add</span>

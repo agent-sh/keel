@@ -109,7 +109,7 @@ function WorktreesCard() {
           />
         </SettingRow>
         <div className="py-3">
-          {live.length === 0 ? <p className="text-caption text-faint">No managed worktrees.</p> : (
+          {live.length === 0 ? <p className="k-empty">No managed worktrees.</p> : (
             <ul className="flex flex-col gap-1" data-testid="worktree-list">
               {live.map((w) => {
                 const s = sessions[w.session_id];
@@ -254,7 +254,7 @@ function RemoteAccessCard() {
             <code className="min-w-0 flex-1 truncate rounded bg-code px-2 py-1 font-mono text-caption text-fg" data-testid="remote-access-link">{full.replace(/token=[^&]+/, "token=\u2026")}</code>
             <button data-testid="remote-access-copy" onClick={(e) => copyOrSay(full, e.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })} className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">{copied ? "Copied" : "Copy link"}</button>
           </div>
-          {!link.hosts.length && <p className="mt-2 text-caption text-faint">No tunnel host is set: start the daemon with KEEL_ALLOWED_HOSTS naming it.</p>}
+          {!link.hosts.length && <p className="k-empty mt-2">No tunnel host is set: start the daemon with KEEL_ALLOWED_HOSTS naming it.</p>}
         </div>
       </Card>
     </div>

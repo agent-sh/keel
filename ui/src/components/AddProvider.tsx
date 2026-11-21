@@ -5,7 +5,7 @@
 // its models for a word is a second action of its own: it costs tokens. A typed
 // key goes to the system keyring; the endpoint file only names it.
 import { Dialog } from "@base-ui/react/dialog";
-import { Check, CircleAlert, KeyRound, Loader2, Plus, Radar, Search, Server, Sparkles, Trash2, X } from "lucide-react";
+import { Check, CircleAlert, KeyRound, Loader2, Plus, Radar, Search, Server, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { actions, api, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
@@ -145,7 +145,7 @@ function Starts({ setup, pick, chosen }: { setup: Setup | null; pick: (t: Templa
       <button type="button" data-testid="provider-scan" onClick={runScan} disabled={scan.busy} className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-ui text-accent-ink hover:bg-hover disabled:opacity-60">
         {scan.busy ? <Loader2 className="size-3.5 animate-spin" /> : <Radar className="size-3.5" />} Find running servers
       </button>
-      {scan.found && !scan.found.length && <div className="px-2.5 py-1 text-caption text-faint">Nothing answers at the usual ports.</div>}
+      {scan.found && !scan.found.length && <div className="k-empty px-2.5 py-1">Nothing answers at the usual ports.</div>}
       {scan.found?.map((f) => {
         const t = setup?.local.find((x) => x.id === f.template);
         return t ? row({ ...t, base_url: f.base_url }, `${f.models.length} model${f.models.length === 1 ? "" : "s"} running`, { configured: f.configured }) : null;
@@ -279,9 +279,9 @@ function AddProvider({ edit }: { edit?: string }) {
         {!edit && <Starts setup={setup} pick={pick} chosen={chosen} />}
         <div className="min-h-0 overflow-y-auto px-6 pt-5">
           {!form && (
-            <div className="grid h-full place-items-center text-center text-ui text-faint">
+            <div className="k-empty p-6">
               <div>
-                <Sparkles className="mx-auto mb-2 size-5" />
+                <b>No provider chosen</b>
                 Pick a starting point. Every field stays editable; the models come from the endpoint's own listing.
               </div>
             </div>

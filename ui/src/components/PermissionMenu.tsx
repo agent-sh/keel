@@ -154,7 +154,7 @@ export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
                 <button className="font-medium text-accent hover:underline" onClick={() => safety.restore(undo.id).then(() => setUndo(null)).catch(reportError)}>Undo</button>
               </div>
             )}
-            {grants.length === 0 && <p className="px-3 py-8 text-center text-ui text-faint">No grants yet. "Always allow" on an approval adds one.</p>}
+            {grants.length === 0 && <p className="k-empty px-3 py-4">No grants yet. "Always allow" on an approval adds one.</p>}
             {byScope.map(([scope, list]) => (
               <section key={scope} className="mb-2">
                 <h3 className="truncate px-3 pt-2 pb-1 font-mono text-micro text-faint" title={scope}>{scope}</h3>

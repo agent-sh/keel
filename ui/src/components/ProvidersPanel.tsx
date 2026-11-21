@@ -185,7 +185,7 @@ export function ProvidersSettings() {
           </button>
         </SettingRow>
       </Card>
-      {!report && <p className="py-8 text-center text-ui text-faint">Reading the providers.</p>}
+      {!report && <p className="k-empty py-4">Reading the providers.</p>}
       {ready.length > 0 && heading("Set up")}
       {ready.length > 0 && <Card>{ready.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
       {idle.length > 0 && heading("Not set up")}

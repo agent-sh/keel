@@ -137,7 +137,7 @@ export function FilesPanel({ session }: { session: Session }) {
             )}
           </div>
         ))}
-        {hits.length === 0 && <p className="px-2 py-6 text-center text-ui text-faint">No file matches.</p>}
+        {hits.length === 0 && <p className="k-empty px-2 py-4">No file matches.</p>}
       </div>
       <div className="border-t border-line px-3 py-1.5 text-micro text-faint">{total.toLocaleString()} files</div>
     </div>

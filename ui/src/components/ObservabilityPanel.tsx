@@ -82,7 +82,7 @@ export function ObservabilityPanel() {
       </Panel>
 
       <Panel title="Savings against the counterfactual" hint="where a feature prices what it replaced" testid="obs-savings">
-        {!r.savings.length ? <p className="text-caption text-faint">No readers job in this range. A readers job prices the working model reading the same material; others are measured by experiments.</p> : (
+        {!r.savings.length ? <p className="k-empty">No readers job in this range. A readers job prices the working model reading the same material; others are measured by experiments.</p> : (
           <>
             <Table head={["Feature", "Jobs", "Cost", "Counterfactual", "Saved", "Saved per job", "Tokens read"]} rows={r.savings.map((s) => [
               s.feature, `${s.calls}${s.priced < s.calls ? ` (${s.priced} priced)` : ""}`, fmtUsd(s.cost_usd), fmtUsd(s.counterfactual_usd),
@@ -98,7 +98,7 @@ export function ObservabilityPanel() {
         <div className="mb-3">
           <Segmented label="Feature" value={d.id} onChange={setDim} options={r.dimensions.map((x) => ({ value: x.id, label: x.label }))} />
         </div>
-        {!d.groups.length ? <p className="text-caption text-faint">No turns recorded this.</p> : (
+        {!d.groups.length ? <p className="k-empty">No turns recorded this.</p> : (
           <Table head={["Value", "Turns", "Sessions", "Ended normally", "Errors", "Cost per turn, 95%", "Cache read", "Median time", "Tool failures", "Ratings"]}
             rows={d.groups.map((g) => [
               <span data-testid="obs-group">{g.value}</span>, g.turns, g.sessions, fmtPct(g.ok_rate), fmtPct(g.error_rate), cost(g.cost_per_turn),

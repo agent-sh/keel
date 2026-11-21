@@ -88,7 +88,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
                   </button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-1">
-                  {browse.dirs.length === 0 && <p className="px-3 py-5 text-center text-ui text-faint">No folders inside.</p>}
+                  {browse.dirs.length === 0 && <p className="k-empty px-3 py-4">No folders inside.</p>}
                   {browse.dirs.map((d) => (
                     <button key={d.path} type="button" onClick={() => go(d.path)} onDoubleClick={() => pick(d.path)} className="flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-ui hover:bg-hover">
                       {d.is_git ? <FolderGit2 className="size-4 shrink-0 text-accent" /> : <Folder className="size-4 shrink-0 text-faint" />}

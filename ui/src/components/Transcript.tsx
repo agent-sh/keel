@@ -730,7 +730,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               <button type="button" data-testid="preview-back" onClick={() => setUI({ preview: null })} className="h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">Back to the current one</button>
             </div>
           )}
-          {events.length === 0 && session.phase !== "working" && <p className="py-10 text-center text-ui text-faint">No messages yet.</p>}
+          {events.length === 0 && session.phase !== "working" && <p className="k-empty py-4">No messages yet.</p>}
           {events.slice(from).map((e, i) => {
             const idx = from + i;
             if (e.kind === "user") {

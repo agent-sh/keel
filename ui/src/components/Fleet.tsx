@@ -339,7 +339,7 @@ export function RemoteFolderPicker({ machine, value, onChange }: { machine: stri
         <Popover.Positioner sideOffset={6} align="start" className="z-50">
           <Popover.Popup className={cn(popupClass, "w-[min(26rem,calc(100vw-1.5rem))] p-0")} data-testid="remote-folder-popup">
             {!browse && !recent.length ? (
-              !err && <p className="px-3 py-5 text-center text-ui text-faint" data-testid="remote-reading">Reading the folders on {m?.name}.</p>
+              !err && <p className="k-empty px-3 py-4" data-testid="remote-reading">Reading the folders on {m?.name}.</p>
             ) : !browse ? (
               <div className="p-1">
                 <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-micro font-medium text-faint"><History className="size-3" /> Recent on {m?.name}</div>
@@ -360,7 +360,7 @@ export function RemoteFolderPicker({ machine, value, onChange }: { machine: stri
                   <button type="button" data-testid="remote-use-folder" onClick={() => pick(browse.path)} className="h-7 shrink-0 rounded-sm bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover">Use this folder</button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-1">
-                  {browse.dirs.length === 0 && <p className="px-3 py-5 text-center text-ui text-faint">No folders inside.</p>}
+                  {browse.dirs.length === 0 && <p className="k-empty px-3 py-4">No folders inside.</p>}
                   {browse.dirs.map((d) => (
                     <button key={d.path} type="button" data-testid="remote-dir" onClick={() => go(d.path)} onDoubleClick={() => pick(d.path)} className="flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-ui hover:bg-hover">
                       {d.is_git ? <FolderGit2 className="size-4 shrink-0 text-accent" /> : <Folder className="size-4 shrink-0 text-faint" />}

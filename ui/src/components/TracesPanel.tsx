@@ -51,7 +51,7 @@ export function TracesPanel({ session }: { session: Session }) {
           <RefreshCw className="size-3.5" />
         </button>
       </div>
-      {list.length === 0 && <p className="px-4 py-10 text-center text-ui text-faint">No turn has run in this session yet.</p>}
+      {list.length === 0 && <p className="k-empty px-4 py-4">No turn has run in this session yet.</p>}
       <div className="max-h-[38%] shrink-0 overflow-y-auto border-b border-line p-1.5">
         {list.map((t) => (
           <button
@@ -145,7 +145,7 @@ function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: strin
     asked.current.scrollIntoView({ block: "nearest" });
     detail.current?.scrollIntoView({ block: "nearest" });
   }, [loaded]);
-  if (gone) return <p className="px-4 py-10 text-center text-ui text-faint" data-testid="trace-gone">This trace is no longer kept.</p>;
+  if (gone) return <p className="k-empty px-4 py-4" data-testid="trace-gone">This trace is no longer kept.</p>;
   if (!spans) return null;
   // A retried request: every request row then says which attempt it is.
   const retried = spans.some((s) => s.kind === "request" && s.attrs.attempt > 1);

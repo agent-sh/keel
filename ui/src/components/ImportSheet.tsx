@@ -497,7 +497,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                     {ssh && <OriginalStrip target={{ machine: from, harness: r.harness, id: r.id }} tool={TOOL[r.harness] ?? r.harness} onPick={(i) => { setSel(r); setIntent(i); }} onOpen={(id) => { onOpenChange(false); navigate({ name: "session", id }); }} />}
                   </div>
                 ))}
-                {rows?.length === 0 && <p className="px-3 py-6 text-center text-ui text-faint">No sessions match.</p>}
+                {rows?.length === 0 && <p className="k-empty px-3 py-4">No sessions match.</p>}
                 {next !== undefined && (
                   <button type="button" onClick={() => load(next)} className="w-full py-2 text-caption text-accent hover:bg-hover">More</button>
                 )}

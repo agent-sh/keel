@@ -189,7 +189,7 @@ export function Palette() {
             />
           </div>
           <div ref={list} id="palette-list" className="flex-1 overflow-y-auto overscroll-contain p-1.5" role="listbox" aria-label="Results" aria-busy={searching || undefined}>
-            {entries.length === 0 && !searching && !searchFailed && <p className="px-3 py-8 text-center text-ui text-faint">Nothing matches "{q}".</p>}
+            {entries.length === 0 && !searching && !searchFailed && <p className="k-empty px-3 py-4">Nothing matches "{q}".</p>}
             {entries.map((e, i) => (
               <div key={e.key}>
                 {(i === 0 || entries[i - 1]!.group !== e.group) && (

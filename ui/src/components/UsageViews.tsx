@@ -139,7 +139,7 @@ export function TokensView({ range }: { range: Range }) {
 
       {session && (
         <Panel title="Per turn" hint="each request of the last 30 turns, on one scale" testid="zones-turns">
-          {!r.turns.length ? <p className="text-ui text-faint">No measured turns in this range.</p> : (
+          {!r.turns.length ? <p className="k-empty">No measured turns in this range.</p> : (
             <ol className="flex flex-col gap-2">
               {r.turns.map((t) => {
                 const sum = sumZones(t.zones);
@@ -212,7 +212,7 @@ export function ErrorsView({ range }: { range: Range }) {
             data={r.series.map((p) => ({ t: p.t_ms, values: [...shown.map((c) => p.classes[c] ?? 0), ...(top.length > 3 ? [top.slice(3).reduce((n, c) => n + (p.classes[c] ?? 0), 0)] : [])] }))}
             series={series} bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={(v) => String(Math.round(v))}
           />
-        ) : <p className="text-ui text-faint">No request failed in this range.</p>}
+        ) : <p className="k-empty">No request failed in this range.</p>}
       </Panel>
       <Panel title="By provider and model" hint="share is of that model's requests" testid="errors-classes">
         {r.error_classes.length ? (
@@ -225,7 +225,7 @@ export function ErrorsView({ range }: { range: Range }) {
               <span className="font-mono text-caption text-muted" title={e.last_error ?? ""}>{e.last_error ?? ""}</span>,
             ])}
           />
-        ) : <p className="text-ui text-faint">No failures by any model in this range.</p>}
+        ) : <p className="k-empty">No failures by any model in this range.</p>}
       </Panel>
     </div>
   );
@@ -278,7 +278,7 @@ export function CompactionsView({ range }: { range: Range }) {
               fmtMs(c.duration_ms), c.mode === "clear" ? "none" : c.priced && c.cost_usd != null ? fmtUsd(c.cost_usd) : "unknown", hits(c),
             ])}
           />
-        ) : <p className="text-ui text-faint">No compaction in this range.</p>}
+        ) : <p className="k-empty">No compaction in this range.</p>}
       </Panel>
     </div>
   );

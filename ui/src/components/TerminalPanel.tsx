@@ -4,7 +4,7 @@
 // command line at the foot runs the owner's own command in the session's folder.
 import { copyOrSay } from "../lib/copy.ts";
 import { Tabs } from "@base-ui/react/tabs";
-import { Check, ChevronRight, Copy, Play, RotateCw, Square, SquareTerminal } from "lucide-react";
+import { Check, ChevronRight, Copy, Play, RotateCw, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
 import { Ansi } from "./Ansi.tsx";
@@ -191,8 +191,7 @@ export function TerminalPanel({ session }: { session: Session }) {
       <Tabs.Panel value={filter} tabIndex={-1} className="min-h-0 flex-1 overflow-auto outline-none">
       <ul data-testid="term-list">
         {list && !shown.length && (
-          <li className="flex flex-col items-center gap-2 px-6 py-10 text-center text-ui text-faint">
-            <SquareTerminal className="size-5" />
+          <li className="k-empty px-3 py-4">
             {filter === "running" ? "Nothing is running." : filter === "failed" ? "No command failed." : "No command ran in this session yet."}
           </li>
         )}

@@ -278,7 +278,7 @@ function Placement({ machines }: { machines: Machine[] }) {
   return (
     <Card>
       <div className="py-1" data-testid="placement">
-        {rules.length === 0 && <p className="py-3.5 text-caption text-faint">No rules: new work stays on this machine unless you pick one.</p>}
+        {rules.length === 0 && <p className="k-empty py-3.5">No rules: new work stays on this machine unless you pick one.</p>}
         {rules.map((r, i) => (
           <div key={i} className="flex items-center gap-3 border-b border-line py-2.5" data-testid="placement-rule">
             <span className="grid size-5 shrink-0 place-items-center rounded-full bg-sunken text-micro tabular-nums text-muted">{i + 1}</span>

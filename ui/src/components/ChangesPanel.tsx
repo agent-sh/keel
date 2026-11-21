@@ -190,7 +190,7 @@ export function ChangesPanel({ session }: { session: Session }) {
           )}
         </Tabs.Panel>
         <Tabs.Panel value="turns" className="min-h-0 flex-1 overflow-y-auto p-4">
-          {turns.length === 0 && <p className="py-10 text-center text-ui text-faint">No turn has changed files yet.</p>}
+          {turns.length === 0 && <p className="k-empty py-4">No turn has changed files yet.</p>}
           <ol className="flex flex-col gap-2">
             {[...turns].reverse().map((t) => (
               <li key={t.turn} className="rounded-xl border border-line bg-raised" data-testid="turn-checkpoint">

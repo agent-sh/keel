@@ -206,7 +206,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
             )}
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {list.length === 0 && <p className="px-3 py-10 text-center text-ui text-faint">{tab === "open" ? (unreadOnly && openList.length ? "Everything open is read." : "Nothing open has failed.") : "Nothing is marked resolved."}</p>}
+            {list.length === 0 && <p className="k-empty px-3 py-4">{tab === "open" ? (unreadOnly && openList.length ? "Everything open is read." : "Nothing open has failed.") : "Nothing is marked resolved."}</p>}
             {list.map((e) => <Row key={e.id} e={e} />)}
           </div>
         </Dialog.Popup>

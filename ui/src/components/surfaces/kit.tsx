@@ -66,7 +66,7 @@ export function Ledger({ groups, selected, onSelect, add, children, testid, empt
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Find among ${total}`} data-testid="ledger-find" />
           </label>
         )}
-        {!shown.length && <p className="k-ledger-empty">{empty ?? "Nothing here yet."}</p>}
+        {!shown.length && <p className="k-empty p-4">{empty ?? "Nothing here yet."}</p>}
         {shown.map((g) => (
           <div key={g.id} data-testid="toolkit-group" data-group={g.id}>
             <div className="k-src"><b>{g.title}</b>{g.path && <code title={g.path}>{tail(g.path)}</code>}<i>{g.entries.length}</i></div>
@@ -118,7 +118,7 @@ export function ReaderHead({ title, desc, path, facts, right, children }: { titl
   );
 }
 
-export const Blank = ({ title, children }: { title: string; children?: ReactNode }) => <div className="k-blank"><b>{title}</b>{children}</div>;
+export const Blank = ({ title, children }: { title: string; children?: ReactNode }) => <div className="k-empty p-6"><b>{title}</b>{children}</div>;
 
 export function Toggle({ on, onChange, label, testid }: { on: boolean; onChange: (on: boolean) => void; label: string; testid?: string }) {
   return (

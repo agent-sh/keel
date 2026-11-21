@@ -161,7 +161,7 @@ function LiveLog() {
           </button>
         </div>
         <div ref={box} className="h-[26rem] overflow-auto rounded-md border border-line bg-code p-2 font-mono text-micro leading-relaxed" data-testid="log-lines">
-          {shown.length === 0 && <p className="p-3 text-faint">No lines at this level{q ? " with that text" : ""}.</p>}
+          {shown.length === 0 && <p className="k-empty p-3">No lines at this level{q ? " with that text" : ""}.</p>}
           {shown.map((l, i) => (
             <div key={`${l.ts}-${i}`} className="flex gap-3 whitespace-pre-wrap break-all" data-level={l.level}>
               <span className="shrink-0 tabular-nums text-faint">{new Date(l.ts).toLocaleTimeString("en-GB", { hourCycle: "h23" })}</span>

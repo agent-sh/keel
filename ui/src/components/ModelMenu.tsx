@@ -174,7 +174,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
               </div>
             )}
             <Combobox.Empty>
-              <div className="px-3 py-4 text-ui text-muted">No model matches.</div>
+              <div className="k-empty px-3 py-4">No model matches.</div>
             </Combobox.Empty>
             <Combobox.List className="min-h-0 overflow-y-auto overscroll-contain px-1 pb-1 scroll-py-8">
               {(group: Group) => (

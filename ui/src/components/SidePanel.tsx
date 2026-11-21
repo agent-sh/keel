@@ -128,7 +128,7 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
                   </section>
                 );
               })}
-              {!shown.length && <p className="k-picker-empty">No panel matches.</p>}
+              {!shown.length && <p className="k-empty px-2.5 py-3">No panel matches.</p>}
             </div>
           </Popover.Popup>
         </Popover.Positioner>

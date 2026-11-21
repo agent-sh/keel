@@ -216,7 +216,7 @@ export function PhoneSettings() {
           )}
         </div>
         <Card>
-          {devices && !active.length && <div className="py-6 text-center text-ui text-faint">No phone is paired.</div>}
+          {devices && !active.length && <div className="k-empty py-4">No phone is paired.</div>}
           {active.map((d) => <DeviceRow key={d.id} d={d} canPush={!!settings?.push.configured} reload={load} />)}
         </Card>
         {settings && !settings.push.configured && (

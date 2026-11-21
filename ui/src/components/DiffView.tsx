@@ -53,7 +53,7 @@ export function DiffView({
   const parsed = useMemo(() => new Map(parsePatch(patch).map((p) => [p.path, p])), [patch]);
   const [whole, setWhole] = useState<Record<string, FilePatch>>({});
   useEffect(() => setWhole({}), [patch]);
-  if (!files.length) return <p className="px-3 py-10 text-center text-ui text-faint">{empty ?? "No changes."}</p>;
+  if (!files.length) return <p className="k-empty px-3 py-4">{empty ?? "No changes."}</p>;
   const load = loadFile && (async (path: string) => {
     const p = parsePatch(await loadFile(path)).find((x) => x.path === path);
     if (p) setWhole((m) => ({ ...m, [path]: p }));
@@ -178,7 +178,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
           ) : p?.binary ? (
             <p className="px-3 py-2 text-faint">Binary file</p>
           ) : !p || !p.lines.length ? (
-            !mode && <p className="px-3 py-2 text-faint">No text change shown.</p>
+            !mode && <p className="k-empty px-3 py-2">No text change shown.</p>
           ) : (
             <table className="w-full border-collapse" data-marks={onComment ? "" : undefined} style={{ "--k-diff-digits": digits } as CSSProperties} onKeyDown={onComment ? onKeys : undefined} onFocus={onComment ? onFocusLine : undefined} onClick={onComment ? onClickLine : undefined}>
               <tbody>

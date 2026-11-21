@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowLeft, ArrowUp, CircleAlert, Cpu, RefreshCw, TerminalSquare } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, ArrowUp, CircleAlert, Cpu, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReadPrompt, Row } from "../../../src/drive/drive.ts";
 import type { Turn } from "../../../src/drive/transcript.ts";
@@ -78,10 +78,12 @@ export function ElsewherePanel() {
   if (!list) return <div className="p-6 text-ui text-faint">Reading the agent view…</div>;
   if (!list.configured) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center" data-testid="elsewhere-unset">
-        <AppIcon />
-        <p className="max-w-sm text-ui text-muted">Keel lists your Claude Code, Codex and agy sessions through your agent view. Name its program to see them here.</p>
-        <button onClick={() => navigate({ name: "settings", section: "elsewhere" })} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover">Set the agent view</button>
+      <div className="k-empty p-6" data-testid="elsewhere-unset">
+        <b>No agent view set</b>
+        <p className="max-w-md">Keel lists your Claude Code, Codex and agy sessions through your agent view. Name its program to see them here.</p>
+        <div className="k-empty-act">
+          <button onClick={() => navigate({ name: "settings", section: "elsewhere" })} className="h-ctl-lg rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover">Set the agent view</button>
+        </div>
       </div>
     );
   }
@@ -111,17 +113,9 @@ export function ElsewherePanel() {
             </section>
           );
         })}
-        {!list.sessions.length && !list.not_listed && <p className="p-6 text-center text-ui text-faint">The agent view lists no sessions.</p>}
+        {!list.sessions.length && !list.not_listed && <p className="k-empty p-4">The agent view lists no sessions.</p>}
       </div>
     </div>
-  );
-}
-
-function AppIcon() {
-  return (
-    <span className="grid size-10 place-items-center rounded-xl bg-accent-soft text-accent">
-      <TerminalSquare className="size-5" />
-    </span>
   );
 }
 
@@ -280,7 +274,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
         {r?.lines && (
           <pre className="rounded-lg bg-code px-3 py-2 font-mono text-caption leading-relaxed whitespace-pre-wrap break-words text-fg" data-testid="elsewhere-screen">{r.lines.join("\n") || " "}</pre>
         )}
-        {r && !r.turns?.length && !r.lines?.length && <p className="text-ui text-faint">Nothing to show yet.</p>}
+        {r && !r.turns?.length && !r.lines?.length && <p className="k-empty">Nothing to show yet.</p>}
         <div ref={end} />
       </div>
       {r?.prompt && s && <PromptCard p={r.prompt} kind={s.kind} busy={sending} answer={(choice) => act({ action: "answer", request: r.prompt!.id, hash: r.prompt!.hash, choice })} />}

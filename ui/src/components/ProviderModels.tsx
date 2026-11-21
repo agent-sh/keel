@@ -105,7 +105,7 @@ export function ProviderModels({ provider, editable }: { provider: string; edita
     } catch (e) { setNotes((n) => ({ ...n, [m.id]: failed(e, { at: "probe" }) })); } finally { setProbing((p) => ({ ...p, [m.id]: false })); }
   };
 
-  if (!mine.length) return <div className="py-2 text-caption text-faint">No models listed yet.</div>;
+  if (!mine.length) return <div className="k-empty py-2">No models listed yet.</div>;
   return (
     <div className="mt-2" data-testid="provider-models">
       {mine.length > 12 && (

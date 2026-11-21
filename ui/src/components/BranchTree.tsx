@@ -182,7 +182,7 @@ export function BranchTree({ session }: { session: Session }) {
         {editing && extra.every((l) => l.event_id !== editing) && !data.nodes.some((n) => n.event_id === editing) && (
           <div className="mb-3 flex items-center gap-2 px-3"><Bookmark className="size-3.5 text-brass" /><LabelInput sid={session.id} eventId={editing} value="" /></div>
         )}
-        {data.nodes.length === 0 ? <p className="px-3 py-8 text-center text-ui text-faint">No prompts yet.</p> : (
+        {data.nodes.length === 0 ? <p className="k-empty px-3 py-4">No prompts yet.</p> : (
           <div role="tree" aria-label="Branches" onKeyDown={onKey}>{chain(kids.get(null) ?? [], 0)}</div>
         )}
       </div>

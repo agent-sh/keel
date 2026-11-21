@@ -69,7 +69,7 @@ export function StopIcon() {
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="px-3 py-6 text-center text-ui text-faint">{children}</p>;
+  return <p className="k-empty px-3 py-4">{children}</p>;
 }
 
 export function SectionTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {

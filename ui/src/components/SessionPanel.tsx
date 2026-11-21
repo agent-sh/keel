@@ -63,7 +63,7 @@ function Tags({ s }: { s: Session }) {
   return (
     <div className="flex flex-col gap-2 py-2">
       <div className="flex flex-wrap gap-1" data-testid="session-tags">
-        {tags.length === 0 && <span className="text-caption text-faint">No tags. Tags group sessions in the list and filter it.</span>}
+        {tags.length === 0 && <span className="k-empty">No tags. Tags group sessions in the list and filter it.</span>}
         {tags.map((t) => (
           <span key={t} className="inline-flex items-center gap-1 rounded-xs bg-sunken px-1.5 py-0.5 text-caption text-muted" data-testid="session-tag">
             {t}

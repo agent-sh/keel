@@ -53,7 +53,7 @@ export function Failures({ tool, session, since, until, count }: { tool?: string
     return () => { live = false; };
   }, [tool, session, since, until, count]);
   if (!list) return null;
-  if (!list.length) return <p className="py-2 text-caption text-faint">No failed calls.</p>;
+  if (!list.length) return <p className="k-empty py-2">No failed calls.</p>;
   return (
     <div className="flex flex-col" data-testid="tool-failures">
       {list.map((e, i) => (
@@ -298,7 +298,7 @@ function Overview({ range }: { range: Range }) {
               ];
             })}
           />
-        ) : <p className="text-ui text-faint">No model calls in this range.</p>}
+        ) : <p className="k-empty">No model calls in this range.</p>}
       </Panel>
 
       <Panel title="Tools" hint="calls that ran, after any approval" testid="usage-tools">
@@ -314,7 +314,7 @@ function Overview({ range }: { range: Range }) {
               x.total_ms == null ? <span className="text-faint">not measured</span> : x.timed < x.tool_calls ? <span title={`${x.tool_calls - x.timed} calls have no duration`}>{fmtMs(x.total_ms)} <span className="text-faint">({x.timed} of {x.tool_calls})</span></span> : fmtMs(x.total_ms),
             ])}
           />
-        ) : <p className="text-ui text-faint">No tool calls in this range.</p>}
+        ) : <p className="k-empty">No tool calls in this range.</p>}
       </Panel>
 
       {usage && usage.by_purpose.length > 1 && (

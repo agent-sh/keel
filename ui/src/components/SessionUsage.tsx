@@ -107,7 +107,7 @@ export function SessionUsage({ session }: { session: Session }) {
         <span className="flex items-center gap-1"><i className="size-2 rounded-full bg-brass" /> written</span>
         <span className="flex items-center gap-1"><i className="size-2 rounded-full bg-danger" /> full price</span>
       </div>
-      {!turns.length && <p className="text-ui text-muted">No turns yet.</p>}
+      {!turns.length && <p className="k-empty">No turns yet.</p>}
       <ol className="flex flex-col gap-1.5">
         {turns.map((t) => {
           const s = sent(t.total);

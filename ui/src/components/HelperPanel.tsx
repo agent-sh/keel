@@ -153,7 +153,7 @@ export function HelperPanel(_: { session: Session }) {
               </li>
             ))}
           </ul>
-        ) : <p className="mt-2 text-caption text-faint">Nothing since the helper started.</p>}
+        ) : <p className="k-empty mt-2">Nothing since the helper started.</p>}
       </section>
 
       <section aria-labelledby="helper-mail" className="mt-auto border-t border-line pt-3">

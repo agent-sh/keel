@@ -114,8 +114,8 @@ export function ArtifactBrowser({ list, testid, withSession }: { list: Listed[] 
           );
         })}
       </div>
-      {list && !list.length && <p className="px-4 py-10 text-center text-ui text-faint" data-testid="artifacts-empty">Nothing made yet. Files this session writes, and what it puts in its artifacts folder, show up here as it works.</p>}
-      {list && list.length > 0 && !shown.length && <p className="px-4 py-10 text-center text-ui text-faint">None of this kind yet.</p>}
+      {list && !list.length && <p className="k-empty px-4 py-4" data-testid="artifacts-empty">Nothing made yet. Files this session writes, and what it puts in its artifacts folder, show up here as it works.</p>}
+      {list && list.length > 0 && !shown.length && <p className="k-empty px-4 py-4">None of this kind yet.</p>}
       <div className={cn("flex min-h-0 flex-1", layout === "beside" ? "flex-row" : "flex-col")}>
         {shown.length > 0 && (
           <ul

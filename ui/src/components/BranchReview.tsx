@@ -91,14 +91,14 @@ export function BranchReview({ session }: { session: Session }) {
   );
   if (!b) {
     return (
-      <div className="flex flex-col items-center gap-2 px-3 py-10 text-center text-ui text-faint">
+      <div className="k-empty px-3 py-4">
         <p data-testid="branch-load-error">{loadErr || "Loading…"}</p>
-        {loadErr && refresh}
+        {loadErr && <div className="k-empty-act">{refresh}</div>}
       </div>
     );
   }
-  if (b.missing) return <p className="px-3 py-10 text-center text-ui text-faint">The worktree is parked: its folder is off disk. Restore it from the branch menu in the header.</p>;
-  if (!b.is_git) return <p className="px-3 py-10 text-center text-ui text-faint">The session's folder is not in a git repository.</p>;
+  if (b.missing) return <p className="k-empty px-3 py-4">The worktree is parked: its folder is off disk. Restore it from the branch menu in the header.</p>;
+  if (!b.is_git) return <p className="k-empty px-3 py-4">The session's folder is not in a git repository.</p>;
 
   // What was sent is cleared once acknowledged; anything written since stays.
   const send = async () => {

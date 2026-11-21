@@ -310,9 +310,9 @@ function Panel({ session }: { session: Session }) {
       </div>
       <div ref={scroller} tabIndex={-1} onScroll={(e) => { view.current.top = e.currentTarget.scrollTop; }} className="min-h-0 flex-1 overflow-y-auto pb-3 outline-none" data-testid="timeline-scroll">
         {apart && <Apart turn={apart} sessionId={id} onClose={closeApart} />}
-        {!list && <p className="px-4 py-10 text-center text-ui text-muted">Reading the timeline.</p>}
+        {!list && <p className="k-empty px-4 py-4">Reading the timeline.</p>}
         {list && rows.length === 0 && (
-          <p className="px-6 py-10 text-center text-ui text-muted" data-testid="timeline-empty">
+          <p className="k-empty px-6 py-4" data-testid="timeline-empty">
             {bounded ? `No ${only === "failures" ? "failure" : "row"} in the newest ${list.scanned} rows.` : EMPTY[only]}
           </p>
         )}
@@ -368,7 +368,7 @@ function Panel({ session }: { session: Session }) {
           </button>
         )}
         {list && !list.next && rows.length > 0 && (
-          <p className="px-3 pt-4 text-center text-caption text-muted" data-testid="timeline-end">
+          <p className="k-empty px-3 pt-4" data-testid="timeline-end">
             {only ? "That is all of them." : `The session began ${when(session.created)}.`}
             {!only && session.created < today - 30 * DAY ? " Agents, waits, loops and approvals are kept for 30 days." : ""}
           </p>

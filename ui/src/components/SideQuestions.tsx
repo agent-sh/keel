@@ -1,7 +1,7 @@
 // Side questions (/btw) in the side panel: asked from the conversation as it
 // stands, answered without tools, never added to it. Follow-ups continue the
 // thread; a new thread starts clean.
-import { MessageCircleQuestion, Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { composing } from "../lib/keys.ts";
@@ -46,10 +46,10 @@ export function SideQuestions({ session }: { session: Session }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {!shown.length && !pending && (
-          <div className="flex flex-col items-center gap-2 py-12 text-center text-ui text-faint">
-            <MessageCircleQuestion className="size-6" />
+          <div className="k-empty py-4">
+            <b>No side question yet</b>
             <p>Ask about what this session already knows: a file it read, a decision it made.</p>
-            <p className="text-caption">Type <span className="font-mono text-muted">/btw</span> and a question in the message box, or ask below.</p>
+            <p>Type <span className="font-mono text-muted">/btw</span> and a question in the message box, or ask below.</p>
           </div>
         )}
         {shown.map((t) => (

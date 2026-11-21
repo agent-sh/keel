@@ -178,7 +178,7 @@ function ReviewCard({ r, sessionId, lit }: { r: Review; sessionId: string; lit: 
           </ol>
         </details>
       )}
-      {r.state === "done" && !r.findings.length && <p className="px-3 py-2 text-caption text-muted">No findings.</p>}
+      {r.state === "done" && !r.findings.length && <p className="k-empty px-3 py-2">No findings.</p>}
       {(!!r.rejected || !!r.omitted) && (
         <p className="px-3 pt-2 text-caption text-warn" data-testid="review-rejected">
           {r.rejected ? `${r.rejected} finding${r.rejected === 1 ? "" : "s"} in the answer could not be read (${(r.rejected_why ?? []).join(", ")}).` : ""}

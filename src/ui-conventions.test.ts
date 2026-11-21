@@ -78,3 +78,12 @@ test("steel is the frame and nothing else", () => {
   expect(found(components, /\bbg-panel\b/)).toEqual([]);
   expect(found(sheets, /^.*var\(--panel\).*$/, (line) => /^\s*(\.k-rail |\.k-where-pip|--color-panel:|background: var\(--panel\); border-top)/.test(line))).toEqual([]);
 });
+
+test("nothing to show is said one way", () => {
+  // The empty line is k-empty (styles.css): no surface centers quiet text of its own in a box,
+  // and no other stylesheet rule draws an empty state.
+  expect(found(components, /className="[^"]*\btext-center text-(ui|caption) text-(faint|muted)\b[^"]*"/, (_, file) => file === "components/Transcript.tsx")).toEqual([]);
+  // (A chart says it inside its plot.)
+  expect(found(components, /<(p|div|li) className="(?![^"]*\bk-empty\b)[^"]*"[^>]*>(No|Nothing) [a-z]/, (_, file) => file === "components/Chart.tsx")).toEqual([]);
+  expect(found(sheets, /^\.k-(blank|picker-empty|ledger-empty)\b/)).toEqual([]);
+});

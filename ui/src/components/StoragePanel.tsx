@@ -187,7 +187,7 @@ export function StoragePanel() {
           </div>
           {found && (
             <div className="mt-3 rounded-md border border-line" data-testid="cleanup-list">
-              {found.sessions.length === 0 && <p className="px-3 py-3 text-ui text-faint">No archived session is that old.</p>}
+              {found.sessions.length === 0 && <p className="k-empty px-3 py-3">No archived session is that old.</p>}
               {found.sessions.slice(0, 12).map((s) => (
                 <div key={s.id} className="flex h-9 items-center gap-3 border-b border-line/60 px-3 text-ui last:border-0">
                   <span className="min-w-0 flex-1 truncate">{s.title || "Untitled"}</span>
@@ -233,7 +233,7 @@ export function StoragePanel() {
           <button type="button" className={btn} data-testid="backup-now" onClick={() => api("/api/backups", { method: "POST" }).then(() => load(true)).catch(reportError)}>Back up now</button>
         </div>
         {backupsFailed && <p className="py-4 text-ui text-danger" data-testid="backups-failed">The list of backups could not be read.</p>}
-        {!backupsFailed && backups?.length === 0 && <p className="py-4 text-ui text-faint">No backups yet.</p>}
+        {!backupsFailed && backups?.length === 0 && <p className="k-empty py-4">No backups yet.</p>}
         {backups?.map((b) => (
           <div key={b.name} className="flex h-10 items-center gap-3 border-b border-line/60 text-ui last:border-0" data-testid="backup-row">
             <span className="tabular-nums">{b.created_ms ? when(b.created_ms) : b.name}</span>
@@ -263,7 +263,7 @@ export function StoragePanel() {
           ) : null}
         </div>
         {cpDone && <p className="pt-3 text-ui text-muted" data-testid="checkpoints-done">{cpDone}</p>}
-        {r.checkpoint_folders.length === 0 && <p className="py-4 text-ui text-faint">No checkpoints yet.</p>}
+        {r.checkpoint_folders.length === 0 && <p className="k-empty py-4">No checkpoints yet.</p>}
         {r.checkpoint_folders.map((f) => (
           <div key={f.workspace} className="border-b border-line/60 last:border-0" data-testid="checkpoint-folder">
             <button

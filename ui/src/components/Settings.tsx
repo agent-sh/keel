@@ -247,7 +247,7 @@ export function Settings({ section }: { section: string }) {
                   </button>
                 </Fragment>
               ))}
-              {shown.length === 0 && <p className="px-2.5 py-3 text-ui text-faint" data-testid="settings-none">No section matches. Try another word.</p>}
+              {shown.length === 0 && <p className="k-empty px-2.5 py-3" data-testid="settings-none">No section matches. Try another word.</p>}
             </div>
           </div>
         </nav>

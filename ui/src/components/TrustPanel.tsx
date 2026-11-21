@@ -36,7 +36,7 @@ export function TrustPanel({ session }: { session: Session }) {
   }, [load]);
   useEffect(() => { if (session.phase === "idle") load(); }, [session.phase]);
 
-  if (!view) return <p className="px-3 py-10 text-center text-ui text-faint">{err || "Loading…"}</p>;
+  if (!view) return <p className="k-empty px-3 py-4">{err || "Loading…"}</p>;
   const held = view.files.filter((f) => f.state !== "trusted");
   const trusted = view.files.filter((f) => f.state === "trusted");
   const live = batches.filter((b) => b.state === "held");
@@ -58,7 +58,7 @@ export function TrustPanel({ session }: { session: Session }) {
               {held.map((f) => <HeldFile key={f.path} f={f} cwd={session.workspace} onDone={load} />)}
             </>
           ) : (
-            <p className="px-1 text-caption text-muted" data-testid="trust-clear">Nothing is held: every file loads as you trusted it.</p>
+            <p className="k-empty px-1" data-testid="trust-clear">Nothing is held: every file loads as you trusted it.</p>
           )}
           {trusted.length > 0 && (
             <ul className="flex flex-col rounded-xl border border-line bg-raised py-1" data-testid="trusted-files">
@@ -79,7 +79,7 @@ export function TrustPanel({ session }: { session: Session }) {
 
       <section className="flex flex-col gap-2">
         <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><Webhook className="size-4 text-accent" /> Hooks</h3>
-        {hooks.length === 0 ? <p className="px-1 text-caption text-faint">No hook files: yours would be in the Keel config folder as hooks.json, a repository's in .keel/hooks.json.</p> : (
+        {hooks.length === 0 ? <p className="k-empty px-1">No hook files: yours would be in the Keel config folder as hooks.json, a repository's in .keel/hooks.json.</p> : (
           <ul className="flex flex-col gap-1.5" data-testid="hook-sources">
             {hooks.map((h) => (
               <li key={h.path} className="rounded-xl border border-line bg-raised px-3 py-2 text-caption" data-testid="hook-source" data-active={h.active}>
@@ -108,7 +108,7 @@ export function TrustPanel({ session }: { session: Session }) {
       <section className="flex flex-col gap-2">
         <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><FileWarning className="size-4 text-accent" /> Quarantine</h3>
         {live.length === 0 ? (
-          <p className="px-1 text-caption text-faint">Nothing in quarantine. A call you did not answer on a card that creates or changes a git hook, .envrc, the project's hook or MCP file or an editor task moves it here.</p>
+          <p className="k-empty px-1">Nothing in quarantine. A call you did not answer on a card that creates or changes a git hook, .envrc, the project's hook or MCP file or an editor task moves it here.</p>
         ) : live.map((b) => <BatchCard key={b.id} b={b} onDone={load} />)}
       </section>
     </div>
