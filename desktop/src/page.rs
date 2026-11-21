@@ -1,53 +1,26 @@
-//! What the shell puts beside the page: the capability object a page reads to
-//! know it runs in the shell, the style of the title bar, and the calm page
-//! shown while the daemon is away.
+//! What the app puts beside the page, whatever engine draws it: the
+//! capability object a page reads to know it runs in the app, and the calm
+//! page shown while the daemon is away. An engine gives its own way for a
+//! page to post a message to the app: `post`, a JavaScript expression over
+//! the string `s`.
 use crate::daemon::Link;
 use crate::prefs::Look;
 
 /// Injected before the page's own scripts. The page reads `window.keelShell`
 /// (ui/src/lib/shell.ts); it is never told by its user agent. `post` is the
-/// page's way to the shell; the shell answers with `keel-shell` events.
-pub fn bridge(window: &str, tray: bool) -> String {
+/// page's way to the app; the app answers with `keel-shell` events.
+pub fn bridge(engine: &str, window: &str, tray: bool, post: &str) -> String {
     format!(
         r#"(() => {{
   if (window.top !== window || window.keelShell) return;
-  const post = (m) => {{ try {{ window.webkit.messageHandlers.keel.postMessage(JSON.stringify(m)); }} catch (e) {{}} }};
+  const post = (m) => {{ try {{ const s = JSON.stringify(m); {post}; }} catch (e) {{}} }};
   Object.defineProperty(window, "keelShell", {{ value: Object.freeze({{
-    name: "keel-desktop", version: "{version}", engine: "webkit", platform: "linux", window: "{window}",
+    name: "keel-desktop", version: "{version}", engine: "{engine}", platform: "{platform}", window: "{window}",
     can: Object.freeze({{ titlebar: true, windows: true, links: true, notifications: true, tray: {tray} }}), post,
   }}) }});
 }})();"#,
         version = env!("CARGO_PKG_VERSION"),
-    )
-}
-
-/// The style of the shell's own widgets, in the page's colors. Every color is
-/// a checked hex value (prefs::hex), so nothing a page says can add a rule.
-pub fn style(l: &Look) -> String {
-    let px = |n: f64| format!("{:.0}px", (n * l.scale).round());
-    format!(
-        r#"
-window.keel {{ background: {bg}; }}
-window.keel .titlebar {{ min-height: 0; padding: 0; margin: 0; border: none; background: transparent; box-shadow: none; }}
-.keel-bar {{ background: {panel}; color: {muted}; min-height: {h}; padding: 0 {pad}; border-bottom: 1px solid {line}; box-shadow: none; }}
-.keel-bar .keel-title {{ font-size: {font}; font-weight: 500; color: {muted}; }}
-.keel-bar windowcontrols {{ border-spacing: {gap}; }}
-.keel-bar windowcontrols button {{ min-width: {btn}; min-height: {btn}; padding: 0; margin: 0; border: none; border-radius: {radius}; background: transparent; color: {muted}; box-shadow: none; outline-offset: -2px; transition: background 120ms ease, color 120ms ease; }}
-.keel-bar windowcontrols button image {{ background: transparent; box-shadow: none; padding: 0; -gtk-icon-size: {icon}; }}
-.keel-bar windowcontrols button:hover {{ background: alpha({fg}, 0.09); color: {fg}; }}
-.keel-bar windowcontrols button:active {{ background: alpha({fg}, 0.16); }}
-.keel-bar windowcontrols button.close:hover {{ background: #d9434b; color: #ffffff; }}
-.keel-bar:backdrop .keel-title, .keel-bar:backdrop windowcontrols button {{ color: alpha({muted}, 0.6); }}
-.keel-pill {{ font-size: {small}; color: {muted}; padding: {pill_y} {pill_x}; border-radius: 999px; background: alpha({fg}, 0.06); border-spacing: {gap}; }}
-.keel-pill .keel-dot {{ min-width: {dot}; min-height: {dot}; border-radius: 999px; background: {need}; animation: keel-pulse 1.8s ease-in-out infinite; }}
-.keel-start {{ font-size: {small}; font-weight: 600; min-height: 0; min-width: 0; padding: {start_y} {pill_x}; margin: 0; border: none; border-radius: 999px; background: {fg}; color: {bg}; box-shadow: none; outline-offset: 2px; transition: background 120ms ease; }}
-.keel-start:hover {{ background: alpha({fg}, 0.85); }}
-.keel-start:active {{ background: alpha({fg}, 0.7); }}
-@keyframes keel-pulse {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}
-"#,
-        bg = l.bg, panel = l.panel, fg = l.fg, muted = l.muted, line = l.line, need = l.need,
-        h = px(34.0), pad = px(6.0), font = px(13.0), small = px(12.0), btn = px(26.0), radius = px(7.0), icon = px(16.0),
-        gap = px(4.0), dot = px(6.0), pill_y = px(2.0), pill_x = px(10.0), start_y = px(3.0),
+        platform = std::env::consts::OS,
     )
 }
 
@@ -68,7 +41,7 @@ pub fn words(link: &Link, starting: bool) -> (&'static str, &'static str, bool) 
 /// The page shown while the daemon is away: the product's mark, what is
 /// happening in one line, and one button. `setState` moves it between its
 /// states without a reload, so nothing flashes.
-pub fn away(l: &Look, link: &Link, starting: bool, url: &str, note: &str) -> String {
+pub fn away(l: &Look, link: &Link, starting: bool, url: &str, note: &str, post: &str) -> String {
     let (head, line, button) = words(link, starting);
     format!(
         r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Keel</title><style>
@@ -98,7 +71,7 @@ button:focus-visible {{ outline: 2px solid {need}; outline-offset: 2px; }}
 <div class="where" id="where">{url}</div>
 </main><script>
 const $ = (id) => document.getElementById(id);
-const post = (m) => window.webkit.messageHandlers.keel.postMessage(JSON.stringify(m));
+const post = (m) => {{ const s = JSON.stringify(m); {post}; }};
 $("start").addEventListener("click", () => post({{ t: "start" }}));
 window.setState = (s) => {{
   $("head").textContent = s.head; $("line").textContent = s.line;
@@ -116,7 +89,7 @@ if (!$("start").hidden) $("start").focus();
         hide_button = if button { "" } else { "hidden" },
         hide_bar = if button { "hidden" } else { "" },
         hide_note = if note.is_empty() { "hidden" } else { "" },
-        note = esc(note), url = esc(url),
+        note = esc(note), url = esc(url), post = post,
     )
 }
 
@@ -140,7 +113,8 @@ mod tests {
 
     #[test]
     fn what_is_shown_is_text_not_markup() {
-        let html = away(&Look::of(true), &Link::Down, false, "http://127.0.0.1:1/<b>", "could not start: <script>alert(1)</script>");
+        let html = away(&Look::of(true), &Link::Down, false, "http://127.0.0.1:1/<b>", "could not start: <script>alert(1)</script>", "send(s)");
+        assert!(html.contains("send(s)"));
         assert!(!html.contains("<script>alert(1)"));
         assert!(html.contains("&lt;script&gt;alert(1)"));
         assert!(html.contains("http://127.0.0.1:1/&lt;b&gt;"));
@@ -148,17 +122,8 @@ mod tests {
     }
 
     #[test]
-    fn the_style_scales_with_the_text_size() {
-        let mut l = Look::of(false);
-        assert!(style(&l).contains("min-height: 34px"));
-        l.scale = 1.5;
-        assert!(style(&l).contains("min-height: 51px"));
-        assert!(style(&l).contains(&l.panel));
-    }
-
-    #[test]
     fn the_bridge_names_the_shell() {
-        let b = bridge("main", true);
-        assert!(b.contains(r#"window: "main""#) && b.contains("tray: true") && b.contains("keelShell"));
+        let b = bridge("webkit", "main", true, "send(s)");
+        assert!(b.contains(r#"window: "main""#) && b.contains("tray: true") && b.contains("keelShell") && b.contains(r#"engine: "webkit""#) && b.contains("send(s)"));
     }
 }

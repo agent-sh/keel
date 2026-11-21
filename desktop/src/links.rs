@@ -58,6 +58,23 @@ pub fn web_url(u: &str) -> Option<&str> {
     ((lower.starts_with("http://") || lower.starts_with("https://")) && u.len() < 4000 && !u.chars().any(|c| c.is_control() || c == ' ')).then_some(u)
 }
 
+/// Where a file is saved in a folder: under its own name, or the next free
+/// one (`name (2).ext`). `taken` says whether a path is already used.
+pub fn free_name(folder: &std::path::Path, suggested: &str, taken: impl Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
+    let name = std::path::Path::new(suggested).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty() && n != "." && n != "..").unwrap_or_else(|| "download".into());
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.clone(), String::new()),
+    };
+    let mut path = folder.join(&name);
+    let mut n = 1;
+    while taken(&path) {
+        n += 1;
+        path = folder.join(format!("{stem} ({n}){ext}"));
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +116,18 @@ mod tests {
         for bad in ["", "s/abc", "//evil.example/", "/api/drain", "/s/", "/s/a/b", "/settings/a/b", "/s/a?x=javascript:alert(1)", "/ws", "/s/a?q=a b"] {
             assert!(page_path(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_saved_file_never_replaces_another_or_leaves_the_folder() {
+        let folder = std::path::Path::new("/d");
+        assert_eq!(free_name(folder, "notes.md", |_| false), folder.join("notes.md"));
+        assert_eq!(free_name(folder, "notes.md", |p| p.ends_with("notes.md")), folder.join("notes (2).md"));
+        assert_eq!(free_name(folder, "archive.tar.gz", |p| !p.to_string_lossy().contains("(3)")), folder.join("archive.tar (3).gz"));
+        assert_eq!(free_name(folder, "../../etc/passwd", |_| false), folder.join("passwd"));
+        assert_eq!(free_name(folder, "", |_| false), folder.join("download"));
+        assert_eq!(free_name(folder, "..", |_| false), folder.join("download"));
+        assert_eq!(free_name(folder, ".bashrc", |_| false), folder.join(".bashrc"));
     }
 
     #[test]

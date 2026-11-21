@@ -73,6 +73,52 @@ starts it: the `keel` program beside the app, `KEEL_BIN`, or the one on the
   the app its colors, goes where the app asks without a reload, and can open
   a session in a window of its own. In a browser tab nothing changes.
 
+## The engine is a seam
+
+Everything that is not the web view itself names no engine: finding or
+starting the daemon and following it (`daemon.rs`, `http.rs`), the tray mark
+(`tray.rs`), notifications and their click (`notify.rs`), one instance and
+`keel://` links (`instance.rs`, `links.rs`), what is remembered (`prefs.rs`),
+the capability object and the away page (`page.rs`), and the decisions between
+them (`main.rs`). The engine sits behind two traits in `view.rs`, implemented
+today by `window.rs` (GTK 4 and WebKitGTK 6).
+
+A second engine implements `Engine` and `View` and is named in one line of
+`main.rs`. What that takes:
+
+- **A window per `Opening`**: the app's window or a session's own, at the
+  given size, zoom and look, with the app id `io.github.agent_sh.Keel` so the
+  desktop shows the app's icon. `present(token)` raises it with the desktop's
+  activation token when one is given (xdg-activation on Wayland).
+- **The page's object**: run `page::bridge(engine, window, tray, post)` before
+  any script of every top-level page. `post` is the engine's own way for a
+  page to send a string to the app.
+- **What the page says** (JSON through `post`), turned into an `Ask`:
+  `{t:"look", dark, bg, panel, fg, muted, line, need, scale}`,
+  `{t:"window", path}`, `{t:"start"}`. Colors are checked hex values.
+- **What the app says to the page**: `go(path)` and `daemon_back()` dispatch a
+  `keel-shell` event on the window with `{open: path}` or `{daemon: "up"}`.
+- **The away page**: `page::away(...)` as the content when the daemon is not
+  there, moved between its states with `page::away_state(...)`, never by a
+  reload; a failed load of the daemon's page becomes `Ask::Lost`.
+- **Where a navigation goes**: a place of the page asked for in a new window
+  becomes `Ask::Window`; any other address, in a new window or by a clicked
+  link out of the daemon's origin, becomes `Ask::External`; nothing else
+  leaves the daemon's origin in the app's window.
+- **Around the page**: the daemon's state beside the window controls
+  (`link`), the page's title as the window's, zoom with Ctrl plus, minus and
+  zero (`Ask::Zoom`), a file the page offers saved to the downloads folder
+  under a free name (`links::free_name`), the clipboard allowed and every
+  other permission refused, no browser navigation in the context menu, and
+  `Ask::Close` when the owner closes the window (the app decides between
+  hiding and quitting).
+- **Storage of the page's own** (local storage, cookies) under the app's
+  folder, so the theme, the text size and the panes survive a restart.
+
+The daemon's side (`/api/shell/events`, `/api/shell/click`) and the page's
+side (`ui/src/lib/shell.ts`, `ui/src/features/shell.ts`) do not change with
+the engine.
+
 ## Check
 
 ```bash
@@ -100,7 +146,9 @@ inside the app; what it posts to `webkit.messageHandlers.probe` is printed.
   the faster window.
 - On NVIDIA drivers WebKitGTK can show a blank window; start the app with
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` there.
-- macOS and Windows are not built. The parts that are Linux's (the tray over
-  StatusNotifierItem, notifications over D-Bus, the GTK window) sit behind
-  `tray.rs`, `notify.rs`, `instance.rs` and `window.rs`; the daemon's side
-  and the page's side are the same everywhere.
+- macOS and Windows are not built. The parts that are Linux's are the tray
+  over StatusNotifierItem (`tray.rs`), notifications over D-Bus (`notify.rs`),
+  the hand-over between launches (`instance.rs`) and the engine (`window.rs`);
+  the daemon's side and the page's side are the same everywhere.
+- A link to something the daemon serves that is not a place of the page (a
+  file to look at in a new tab) opens in the browser: the app has no tabs.

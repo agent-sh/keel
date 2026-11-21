@@ -1,10 +1,12 @@
-//! A window of the shell: the page in a web view under a title bar the shell
-//! owns. The title bar is the platform's (drag, double click, the window menu
-//! and the controls the desktop is set to show) in the page's colors.
+//! The engine side of the seam (view.rs) on GTK 4 and WebKitGTK 6: a window
+//! with the page in a web view under a title bar the app owns. The title bar
+//! is the platform's (drag, double click, the window menu and the controls
+//! the desktop is set to show) in the page's colors.
 use crate::daemon::Link;
 use crate::links;
 use crate::page;
 use crate::prefs::Look;
+use crate::view::{Ask, Asked, Engine, Opening, Showing, View};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use serde_json::Value;
@@ -12,34 +14,97 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit::prelude::*;
 
-/// What a window asks of the application.
-#[derive(Debug)]
-pub enum Ask {
-    Start,
-    External(String),
-    Window(String),
-    Look(Look),
-    Zoom(f64),
-    /// The owner closed the window.
-    Close,
-    /// A load of the page failed: the daemon went away under it.
-    Lost,
+/// How a page of this engine posts the string `s` to the app.
+const POST: &str = "window.webkit.messageHandlers.keel.postMessage(s)";
+
+/// The style of the shell's own widgets, in the page's colors. Every color is
+/// a checked hex value (prefs::hex), so nothing a page says can add a rule.
+fn style(l: &Look) -> String {
+    let px = |n: f64| format!("{:.0}px", (n * l.scale).round());
+    format!(
+        r#"
+window.keel {{ background: {bg}; }}
+window.keel .titlebar {{ min-height: 0; padding: 0; margin: 0; border: none; background: transparent; box-shadow: none; }}
+.keel-bar {{ background: {panel}; color: {muted}; min-height: {h}; padding: 0 {pad}; border-bottom: 1px solid {line}; box-shadow: none; }}
+.keel-bar .keel-title {{ font-size: {font}; font-weight: 500; color: {muted}; }}
+.keel-bar windowcontrols {{ border-spacing: {gap}; }}
+.keel-bar windowcontrols button {{ min-width: {btn}; min-height: {btn}; padding: 0; margin: 0; border: none; border-radius: {radius}; background: transparent; color: {muted}; box-shadow: none; outline-offset: -2px; transition: background 120ms ease, color 120ms ease; }}
+.keel-bar windowcontrols button image {{ background: transparent; box-shadow: none; padding: 0; -gtk-icon-size: {icon}; }}
+.keel-bar windowcontrols button:hover {{ background: alpha({fg}, 0.09); color: {fg}; }}
+.keel-bar windowcontrols button:active {{ background: alpha({fg}, 0.16); }}
+.keel-bar windowcontrols button.close:hover {{ background: #d9434b; color: #ffffff; }}
+.keel-bar:backdrop .keel-title, .keel-bar:backdrop windowcontrols button {{ color: alpha({muted}, 0.6); }}
+.keel-pill {{ font-size: {small}; color: {muted}; padding: {pill_y} {pill_x}; border-radius: 999px; background: alpha({fg}, 0.06); border-spacing: {gap}; }}
+.keel-pill .keel-dot {{ min-width: {dot}; min-height: {dot}; border-radius: 999px; background: {need}; animation: keel-pulse 1.8s ease-in-out infinite; }}
+.keel-start {{ font-size: {small}; font-weight: 600; min-height: 0; min-width: 0; padding: {start_y} {pill_x}; margin: 0; border: none; border-radius: 999px; background: {fg}; color: {bg}; box-shadow: none; outline-offset: 2px; transition: background 120ms ease; }}
+.keel-start:hover {{ background: alpha({fg}, 0.85); }}
+.keel-start:active {{ background: alpha({fg}, 0.7); }}
+@keyframes keel-pulse {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}
+"#,
+        bg = l.bg, panel = l.panel, fg = l.fg, muted = l.muted, line = l.line, need = l.need,
+        h = px(34.0), pad = px(6.0), font = px(13.0), small = px(12.0), btn = px(26.0), radius = px(7.0), icon = px(16.0),
+        gap = px(4.0), dot = px(6.0), pill_y = px(2.0), pill_x = px(10.0), start_y = px(3.0),
+    )
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Showing {
-    Nothing,
-    App,
-    Away,
+/// GTK 4 and the system web view.
+pub struct WebKit {
+    app: gtk::Application,
+    session: webkit::NetworkSession,
+    css: gtk::CssProvider,
+    next: Cell<u32>,
 }
 
-pub struct Win {
-    pub window: gtk::ApplicationWindow,
-    pub view: webkit::WebView,
-    pub main: bool,
-    pub showing: Cell<Showing>,
+impl WebKit {
+    /// `dir` holds the page's own storage; `on_download(path)` is told where a file the page offered was saved.
+    pub fn new(app: &gtk::Application, dir: &std::path::Path, on_download: impl Fn(&std::path::Path) + 'static) -> Self {
+        let css = gtk::CssProvider::new();
+        if let Some(d) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&d, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+        let session = webkit::NetworkSession::new(dir.join("web").to_str(), dir.join("web-cache").to_str());
+        // A file the page offers is saved where the owner's downloads go, under the name it suggests.
+        let on_download = Rc::new(on_download);
+        session.connect_download_started(move |_, download| {
+            let on_download = on_download.clone();
+            download.connect_decide_destination(move |d, suggested| {
+                let folder = glib::user_special_dir(glib::UserDirectory::Downloads).unwrap_or_else(glib::home_dir);
+                let path = crate::links::free_name(&folder, suggested, |p| p.exists());
+                d.set_destination(&path.to_string_lossy());
+                on_download(&path);
+                true
+            });
+        });
+        Self { app: app.clone(), session, css, next: Cell::new(1) }
+    }
+}
+
+impl Engine for WebKit {
+    fn name(&self) -> &'static str {
+        "webkit"
+    }
+
+    fn open(&self, opening: Opening, ask: Asked) -> Rc<dyn View> {
+        let id = self.next.replace(self.next.get() + 1);
+        Win::new(&self.app, &self.session, id, opening, ask)
+    }
+
+    fn look(&self, look: &Look) {
+        self.css.load_from_string(&style(look));
+        if let Some(s) = gtk::Settings::default() {
+            s.set_gtk_application_prefer_dark_theme(look.dark);
+        }
+    }
+}
+
+struct Win {
+    id: u32,
+    window: gtk::ApplicationWindow,
+    view: webkit::WebView,
+    main: bool,
+    showing: Cell<Showing>,
     /// The path to open once the daemon answers.
-    pub wanted: RefCell<String>,
+    wanted: RefCell<String>,
     pill: gtk::Box,
     pill_text: gtk::Label,
     pill_start: gtk::Button,
@@ -51,10 +116,15 @@ fn rgba(hex: &str) -> gdk::RGBA {
 }
 
 impl Win {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(app: &gtk::Application, session: &webkit::NetworkSession, main: bool, size: (i32, i32), maximized: bool, zoom: f64, look: &Look, tray: bool, devtools: bool, ask: Rc<dyn Fn(&Rc<Win>, Ask)>) -> Rc<Self> {
+    fn new(app: &gtk::Application, session: &webkit::NetworkSession, id: u32, opening: Opening, ask: Asked) -> Rc<dyn View> {
+        let Opening { main, size, maximized, zoom, look, tray, devtools } = opening;
+        // What a closure of the window asks goes out as the view it is.
+        let ask: Rc<dyn Fn(&Rc<Win>, Ask)> = Rc::new(move |win, what| {
+            let view: Rc<dyn View> = win.clone();
+            ask(&view, what)
+        });
         let ucm = webkit::UserContentManager::new();
-        ucm.add_script(&webkit::UserScript::new(&page::bridge(if main { "main" } else { "session" }, tray), webkit::UserContentInjectedFrames::TopFrame, webkit::UserScriptInjectionTime::Start, &[], &[]));
+        ucm.add_script(&webkit::UserScript::new(&page::bridge("webkit", if main { "main" } else { "session" }, tray, POST), webkit::UserContentInjectedFrames::TopFrame, webkit::UserScriptInjectionTime::Start, &[], &[]));
         ucm.register_script_message_handler("keel", None);
         // For measuring the page inside the shell: a script of the measurer's, whose reports go to standard output.
         if let Some(src) = std::env::var_os("KEEL_DESKTOP_PROBE").and_then(|p| std::fs::read_to_string(p).ok()) {
@@ -96,7 +166,7 @@ impl Win {
         window.set_titlebar(Some(&handle));
         window.set_child(Some(&view));
 
-        let win = Rc::new(Self { window, view, main, showing: Cell::new(Showing::Nothing), wanted: RefCell::new("/".into()), pill, pill_text, pill_start, dot });
+        let win = Rc::new(Self { id, window, view, main, showing: Cell::new(Showing::Nothing), wanted: RefCell::new("/".into()), pill, pill_text, pill_start, dot });
 
         // The page's title is the window's.
         let (w, t) = (win.window.clone(), title.clone());
@@ -147,11 +217,11 @@ impl Win {
             let new_window = kind == webkit::PolicyDecisionType::NewWindowAction;
             if new_window {
                 decision.ignore();
-                if inside {
-                    let path = uri.strip_prefix(&origin(&here)).unwrap_or("/").to_string();
-                    a(&win, Ask::Window(path));
-                } else {
-                    a(&win, Ask::External(uri));
+                // A place of the page gets a window of the app. Anything else the daemon serves
+                // (a file to look at, an export) has no place in the app: the browser shows it.
+                match uri.strip_prefix(&origin(&here)).filter(|_| inside).and_then(links::page_path) {
+                    Some(path) => a(&win, Ask::Window(path)),
+                    None => a(&win, Ask::External(uri)),
                 }
                 return true;
             }
@@ -243,34 +313,60 @@ impl Win {
         win
     }
 
-    /// Loads the page at a path.
-    pub fn load(&self, base: &str, path: &str) {
+    fn tell(&self, detail: &Value) {
+        let js = format!("window.dispatchEvent(new CustomEvent('keel-shell', {{ detail: {detail} }}))");
+        self.view.evaluate_javascript(&js, None, None, gio::Cancellable::NONE, |_| {});
+    }
+}
+
+impl View for Win {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn is_main(&self) -> bool {
+        self.main
+    }
+
+    fn showing(&self) -> Showing {
+        self.showing.get()
+    }
+
+    fn forget(&self) {
+        self.showing.set(Showing::Nothing);
+    }
+
+    fn wanted(&self) -> String {
+        self.wanted.borrow().clone()
+    }
+
+    fn want(&self, path: &str) {
+        *self.wanted.borrow_mut() = path.to_string();
+    }
+
+    fn load(&self, base: &str, path: &str) {
         self.showing.set(Showing::App);
         self.view.load_uri(&format!("{base}{}", links::page_path(path).unwrap_or_else(|| "/".into())));
     }
 
-    /// Tells the loaded page to go to a path, without a reload.
-    pub fn go(&self, path: &str) {
+    fn go(&self, path: &str) {
         self.tell(&serde_json::json!({ "open": path }));
     }
 
-    pub fn tell(&self, detail: &Value) {
-        let js = format!("window.dispatchEvent(new CustomEvent('keel-shell', {{ detail: {detail} }}))");
-        self.view.evaluate_javascript(&js, None, None, gio::Cancellable::NONE, |_| {});
+    fn daemon_back(&self) {
+        self.tell(&serde_json::json!({ "daemon": "up" }));
     }
 
-    /// The calm page for a daemon that is away. A page already showing it changes its words in place.
-    pub fn away(&self, look: &Look, link: &Link, starting: bool, url: &str, note: &str) {
+    fn away(&self, look: &Look, link: &Link, starting: bool, url: &str, note: &str) {
         if self.showing.get() == Showing::Away {
             self.view.evaluate_javascript(&page::away_state(link, starting, url, note), None, None, gio::Cancellable::NONE, |_| {});
         } else {
             self.showing.set(Showing::Away);
-            self.view.load_html(&page::away(look, link, starting, url, note), Some("about:blank"));
+            self.view.load_html(&page::away(look, link, starting, url, note, POST), Some("about:blank"));
         }
     }
 
-    /// The daemon's state beside the controls, shown only while the page is up without its daemon.
-    pub fn link(&self, link: &Link) {
+    fn link(&self, link: &Link) {
         let over_page = self.showing.get() == Showing::App;
         self.pill.set_visible(over_page && *link != Link::Up);
         self.pill_start.set_visible(over_page && *link == Link::Down);
@@ -283,14 +379,15 @@ impl Win {
         });
     }
 
-    pub fn look(&self, look: &Look) {
+    fn look(&self, look: &Look) {
         self.view.set_background_color(&rgba(&look.bg));
     }
 
-    /// Raises the window. With the desktop's activation token of the request (a
-    /// notification's click, a launch from the dock) it takes the focus; without
-    /// one the desktop decides, and may only mark the window as wanting attention.
-    pub fn present(&self, token: Option<&str>) {
+    fn zoom(&self, zoom: f64) {
+        self.view.set_zoom_level(zoom);
+    }
+
+    fn present(&self, token: Option<&str>) {
         if let Some(t) = token {
             self.window.set_startup_id(t);
         }
@@ -298,7 +395,29 @@ impl Win {
         self.window.present();
     }
 
-    pub fn size(&self) -> (i32, i32, bool) {
+    fn hide(&self) {
+        self.window.set_visible(false);
+    }
+
+    fn close(&self) {
+        self.window.destroy();
+    }
+
+    fn size(&self) -> (i32, i32, bool) {
         (self.window.default_width(), self.window.default_height(), self.window.is_maximized())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_style_scales_with_the_text_size() {
+        let mut l = Look::of(false);
+        assert!(style(&l).contains("min-height: 34px"));
+        l.scale = 1.5;
+        assert!(style(&l).contains("min-height: 51px"));
+        assert!(style(&l).contains(&l.panel));
     }
 }

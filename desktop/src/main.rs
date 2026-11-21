@@ -13,11 +13,12 @@ mod page;
 mod prefs;
 mod shortcut;
 mod tray;
+mod view;
 mod window;
 
 use daemon::{Event, Link, Where};
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gio, glib};
 use prefs::Prefs;
 use std::cell::{Cell, RefCell};
 use std::io::Write;
@@ -25,8 +26,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tray::{Pick, Shown, Tray};
-use webkit::prelude::*;
-use window::{Ask, Showing, Win};
+use view::{Ask, Engine, Opening, Showing, View};
 
 /// The application's id: its name on the session bus, its window's app id and the name of its desktop file.
 pub const APP_ID: &str = "io.github.agent_sh.Keel";
@@ -75,12 +75,12 @@ struct Shell {
     app: gtk::Application,
     place: Where,
     prefs: RefCell<Prefs>,
-    css: gtk::CssProvider,
-    session: webkit::NetworkSession,
+    /// What draws the page: the only part that names an engine (view.rs).
+    engine: Box<dyn Engine>,
     link: RefCell<Link>,
     url: RefCell<String>,
-    main: RefCell<Option<Rc<Win>>>,
-    others: RefCell<Vec<Rc<Win>>>,
+    main: RefCell<Option<Rc<dyn View>>>,
+    others: RefCell<Vec<Rc<dyn View>>>,
     tray: RefCell<Option<Tray>>,
     notifier: RefCell<Option<notify::Notifier>>,
     needs: Cell<u32>,
@@ -103,7 +103,7 @@ impl Shell {
         }
     }
 
-    fn windows(&self) -> Vec<Rc<Win>> {
+    fn windows(&self) -> Vec<Rc<dyn View>> {
         self.main.borrow().iter().cloned().chain(self.others.borrow().iter().cloned()).collect()
     }
 
@@ -124,31 +124,28 @@ impl Shell {
 
     fn apply_look(&self) {
         let look = self.prefs.borrow().look.clone();
-        self.css.load_from_string(&page::style(&look));
-        if let Some(s) = gtk::Settings::default() {
-            s.set_gtk_application_prefer_dark_theme(look.dark);
-        }
+        self.engine.look(&look);
         for w in self.windows() {
             w.look(&look);
         }
     }
 
-    fn new_window(self: &Rc<Self>, main: bool) -> Rc<Win> {
+    fn new_window(self: &Rc<Self>, main: bool) -> Rc<dyn View> {
         let p = self.prefs.borrow().clone();
-        let ask: Rc<dyn Fn(&Rc<Win>, Ask)> = Rc::new(|win, ask| with_shell(|s| s.asked(win, ask)));
         let size = if main { (p.width, p.height) } else { ((p.width * 2 / 3).max(720), (p.height * 9 / 10).max(560)) };
-        Win::new(&self.app, &self.session, main, size, main && p.maximized, p.zoom, &p.look, self.tray_available(), self.devtools, ask)
+        let opening = Opening { main, size, maximized: main && p.maximized, zoom: p.zoom, look: p.look, tray: self.tray_available(), devtools: self.devtools };
+        self.engine.open(opening, Rc::new(|win, ask| with_shell(|s| s.asked(win, ask))))
     }
 
     /// Puts a window on what the daemon's state allows: the page, or the calm page while it is away.
-    fn fill(&self, win: &Win) {
+    fn fill(&self, win: &Rc<dyn View>) {
         let (link, url) = (self.link.borrow().clone(), self.url.borrow().clone());
         if link == Link::Up {
-            if win.showing.get() != Showing::App {
-                win.load(&url, &win.wanted.borrow());
-                self.note_done("load", serde_json::json!({ "window": if win.main { "main" } else { "session" }, "path": *win.wanted.borrow() }));
+            if win.showing() != Showing::App {
+                win.load(&url, &win.wanted());
+                self.note_done("load", serde_json::json!({ "window": if win.is_main() { "main" } else { "session" }, "path": win.wanted() }));
             }
-        } else if win.showing.get() != Showing::App {
+        } else if win.showing() != Showing::App {
             win.away(&self.prefs.borrow().look, &link, self.starting.get(), &url, &self.note.borrow());
         }
         win.link(&link);
@@ -175,10 +172,10 @@ impl Shell {
             w
         });
         if let Some(p) = path.and_then(links::page_path) {
-            if win.showing.get() == Showing::App && *self.link.borrow() == Link::Up {
+            if win.showing() == Showing::App && *self.link.borrow() == Link::Up {
                 win.go(&p);
             } else {
-                *win.wanted.borrow_mut() = p;
+                win.want(&p);
             }
         }
         self.fill(&win);
@@ -190,7 +187,7 @@ impl Shell {
     fn open_window(self: &Rc<Self>, path: &str) {
         let Some(p) = links::page_path(path) else { return };
         let win = self.new_window(false);
-        *win.wanted.borrow_mut() = p.clone();
+        win.want(&p);
         self.others.borrow_mut().push(win.clone());
         self.fill(&win);
         win.present(self.token.take().as_deref());
@@ -258,7 +255,7 @@ impl Shell {
         self.app.quit();
     }
 
-    fn asked(self: &Rc<Self>, win: &Rc<Win>, ask: Ask) {
+    fn asked(self: &Rc<Self>, win: &Rc<dyn View>, ask: Ask) {
         match ask {
             Ask::Start => self.start_daemon(),
             Ask::External(url) => self.external(&url),
@@ -278,23 +275,23 @@ impl Shell {
                 p.save();
                 drop(p);
                 for w in self.windows() {
-                    w.view.set_zoom_level(z);
+                    w.zoom(z);
                 }
             }
             Ask::Lost => self.fill(win),
-            Ask::Close if win.main => {
+            Ask::Close if win.is_main() => {
                 self.save_size();
                 if self.tray_available() {
                     // The mark in the tray brings it back; the page stays as it is, drafts and all.
-                    win.window.set_visible(false);
+                    win.hide();
                     self.note_done("hidden", serde_json::json!({}));
                 } else {
                     self.quit();
                 }
             }
             Ask::Close => {
-                self.others.borrow_mut().retain(|w| !Rc::ptr_eq(w, win));
-                win.window.destroy();
+                self.others.borrow_mut().retain(|w| w.id() != win.id());
+                win.close();
             }
         }
     }
@@ -311,8 +308,8 @@ impl Shell {
                     // A daemon that came back at another address: the page is loaded from there.
                     if moved {
                         for w in self.windows() {
-                            if w.showing.get() == Showing::App {
-                                w.showing.set(Showing::Nothing);
+                            if w.showing() == Showing::App {
+                                w.forget();
                             }
                         }
                     }
@@ -322,8 +319,8 @@ impl Shell {
                 if link == Link::Up {
                     // The page waits ever longer between its own tries: it is told the daemon is back.
                     for w in self.windows() {
-                        if w.showing.get() == Showing::App {
-                            w.tell(&serde_json::json!({ "daemon": "up" }));
+                        if w.showing() == Showing::App {
+                            w.daemon_back();
                         }
                     }
                 }
@@ -445,39 +442,13 @@ fn main() -> glib::ExitCode {
 
     app.connect_startup(move |app| {
         let prefs = Prefs::load();
-        let css = gtk::CssProvider::new();
-        if let Some(d) = gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(&d, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-        }
-        let dir = prefs::dir();
-        let session = webkit::NetworkSession::new(dir.join("web").to_str(), dir.join("web-cache").to_str());
-        // A file the page offers is saved where the owner's downloads go, under the name it suggests.
-        session.connect_download_started(|_, download| {
-            download.connect_decide_destination(|d, suggested| {
-                let folder = glib::user_special_dir(glib::UserDirectory::Downloads).unwrap_or_else(glib::home_dir);
-                let name = std::path::Path::new(suggested).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| "download".into());
-                let (stem, ext) = match name.rsplit_once('.') {
-                    Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
-                    _ => (name.clone(), String::new()),
-                };
-                let mut path = folder.join(&name);
-                let mut n = 1;
-                while path.exists() {
-                    n += 1;
-                    path = folder.join(format!("{stem} ({n}){ext}"));
-                }
-                d.set_destination(&path.to_string_lossy());
-                with_shell(|s| s.note_done("download", serde_json::json!({ "to": path })));
-                true
-            });
-        });
-
+        // The one place an engine is named.
+        let engine = window::WebKit::new(app, &prefs::dir(), |path| with_shell(|s| s.note_done("download", serde_json::json!({ "to": path }))));
         let shell = Rc::new(Shell {
             app: app.clone(),
             place: place.clone(),
             prefs: RefCell::new(prefs),
-            css,
-            session,
+            engine: Box::new(engine),
             link: RefCell::new(Link::Down),
             url: RefCell::new(daemon::find(&place)),
             main: RefCell::new(None),
@@ -517,7 +488,7 @@ fn main() -> glib::ExitCode {
         }
         // The app lives on with its windows closed while the tray shows its mark.
         std::mem::forget(app.hold());
-        daemon::watch(place.clone(), "webkit", |e| on_main(move |s| s.told(e)));
+        daemon::watch(place.clone(), shell.engine.name(), |e| on_main(move |s| s.told(e)));
     });
 
     let first = Cell::new(true);
