@@ -27,6 +27,8 @@ type Option = { key: string; label: ReactNode; detail?: string; disabled?: boole
 const draftKey = (id?: string) => `keel.draft.${id ?? "new"}`;
 // The key that queues a message for after the running turn, as this platform names it.
 const queueKeys = keyLabel(QUEUE_KEYS).join(" ");
+// Said once in a page's life, the first time Tab goes from a draft to the queue button.
+let queueKeySaid = false;
 // A desk-sized window: focus may go to the message box by itself there.
 const DESK = matchMedia("(min-width: 768px)");
 // A window lower than this many rem is short: the toolbar keeps to one row.
@@ -50,7 +52,8 @@ type ComposerProps = {
   onSend: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
   // While a turn runs, Enter steers (the text joins the turn at its next model
   // call) and Ctrl Shift Enter (QUEUE_KEYS) or the queue button queues it for
-  // after the turn. Tab is the browser's: it moves on to the next control.
+  // after the turn. Tab queues nothing: with a draft it goes to the queue
+  // button, so Tab then Enter queues.
   onQueue?: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
   onStop?: () => void;
   // What Escape does when no menu is open (default: stop a working turn).
@@ -103,6 +106,7 @@ function SessionComposer({
   const [dragging, setDragging] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const queueButton = useRef<HTMLButtonElement>(null);
   const enterSends = useUI((s) => s.enterSends);
   // Reading another branch from search: a reply would go to the session's own branch, so ask first.
   const previewEvent = useUI((s) => (session && s.preview?.session === session.id ? s.preview.event : null));
@@ -639,7 +643,7 @@ function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={working ? `Enter steers the running turn, ${queueKeys} queues for after it` : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
+        placeholder={working ? `Enter steers, ${queueKeys} queues` : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
@@ -656,13 +660,22 @@ function SessionComposer({
             if (e.key === "Escape") { e.preventDefault(); closed.current = `${menu.kind} ${menu.start}`; setMenu(null); return; }
           }
           const mod = e.metaKey || e.ctrlKey;
-          // Ctrl Shift Enter queues for after the running turn, whichever key sends.
-          if (e.key === "Enter" && mod && e.shiftKey && !e.altKey && working && onQueue) {
+          // Ctrl Shift Enter queues for after the running turn, whichever key sends; with no
+          // turn running it sends (the turn may have ended a moment before the press).
+          if (e.key === "Enter" && mod && e.shiftKey && !e.altKey) {
             e.preventDefault();
-            if (!e.repeat) submit(true);
-          } else if (e.key === "Enter" && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod))) {
+            if (!e.repeat) submit(!!working && !!onQueue);
+          // Alt Enter is the pane's (focus it, or show all): not a send.
+          } else if (e.key === "Enter" && !e.altKey && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod))) {
             e.preventDefault();
             submit();
+          }
+          // Tab with a draft while a turn runs goes to the queue button (Enter there queues),
+          // and the key that queues from the box is said, once.
+          if (e.key === "Tab" && !e.shiftKey && !mod && !e.altKey && working && onQueue && canSend && queueButton.current) {
+            e.preventDefault();
+            queueButton.current.focus();
+            if (!queueKeySaid) { queueKeySaid = true; setNotice(`${queueKeys} queues`); }
           }
           if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); (onEscape ?? onStop)?.(); }
         }}
@@ -697,6 +710,7 @@ function SessionComposer({
           {!short && sid && <ContextMeter sessionId={sid} />}
           {working && onQueue && (
             <button
+              ref={queueButton}
               type="button"
               data-testid="queue-button"
               onClick={() => submit(true)}

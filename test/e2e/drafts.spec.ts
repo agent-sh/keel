@@ -59,8 +59,8 @@ test("session draft", async ({ page, request }) => {
 
   // 5. Queue an image while a turn runs: it waits with its prompt and reaches the model.
   await page.getByTestId("composer").fill(HAIKU.startsWith("scripted:")
-    ? 'script:calls [{"name":"Bash","input":{"command":"sleep 8"}}]'
-    : "Run the Bash command `sleep 8` and then reply with the word slept.");
+    ? 'script:calls [{"name":"Bash","input":{"command":"sleep 12"}}]'
+    : "Run the Bash command `sleep 12` and then reply with the word slept.");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("tool-call").last()).toBeVisible({ timeout: 60_000 });
   await request.post(`/api/sessions/${a}/draft`, { data: { images: [{ name: "second.png", mime: "image/png", data: PNG }], origin: "capture" } });
@@ -69,30 +69,36 @@ test("session draft", async ({ page, request }) => {
   await box.fill("And this one, in three words?");
   const posts: string[] = [];
   page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith(`/api/sessions/${a}/messages`)) posts.push(r.postData() ?? ""); });
-  // Tab is the browser's key: it moves on to the next control, and the words,
-  // the image and the queue stay as they were.
+  // Tab queues nothing: it goes to the queue button, and the words, the image and the queue
+  // stay as they were. The key that queues from the box is said, once.
   await box.focus();
   await page.keyboard.press("Tab");
-  await expect(page.getByTestId("attach")).toBeFocused();
+  await expect(page.getByTestId("queue-button")).toBeFocused();
   await expect(box).toHaveValue("And this one, in three words?");
   await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
   await expect(page.getByTestId("queue-item")).toHaveCount(0);
   expect(posts).toHaveLength(0);
-  // The key the box, the button and the shortcut sheet name queues it, once.
-  await expect(box).toHaveAttribute("placeholder", /Ctrl Shift Enter queues/);
-  await expect(page.getByTestId("queue-button")).toHaveAttribute("title", "Queue for after this turn (Ctrl Shift Enter)");
-  await page.keyboard.press("Shift+Tab");
-  await expect(box).toBeFocused();
-  await page.keyboard.press("Control+Shift+Enter");
+  await expect(page.getByTestId("composer-notice")).toHaveText("Ctrl Shift Enter queues");
+  // (Its title is shown as a tip while the keyboard is on it.)
+  expect(await page.getByTestId("queue-button").evaluate((el) => el.getAttribute("title") ?? el.getAttribute("data-tip"))).toBe("Queue for after this turn (Ctrl Shift Enter)");
+  await shoot(page, "draft-02a-tab-to-queue");
+  // Enter on the button queues it, once.
+  await page.keyboard.press("Enter");
   await expect(page.getByTestId("queue-item")).toHaveCount(1);
   await expect(page.getByTestId("queue-images")).toHaveText("1 image");
   await expect(box).toHaveValue("");
   await expect(page.getByTestId("attachments")).toHaveCount(0);
   expect(posts).toHaveLength(1);
   await shoot(page, "draft-02-queued-image");
-  // The button queues one more.
+  // The key queues one more from the box, and its hint names it. Tab says nothing a second time.
+  await expect(box).toHaveAttribute("placeholder", "Enter steers, Ctrl Shift Enter queues");
   await box.fill("And a second thing for after.");
-  await page.getByTestId("queue-button").click();
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("queue-button")).toBeFocused();
+  await expect(page.getByTestId("composer-notice")).toHaveCount(0);
+  await page.keyboard.press("Shift+Tab");
+  await box.focus();
+  await page.keyboard.press("Control+Shift+Enter");
   await expect(page.getByTestId("queue-item")).toHaveCount(2);
   expect(posts).toHaveLength(2);
   await page.keyboard.press("Control+/");
@@ -104,6 +110,20 @@ test("session draft", async ({ page, request }) => {
   const users = (await (await request.get(`/api/sessions/${a}`)).json()).events.filter((e: any) => e.kind === "user");
   expect(users.at(-2).data.images?.[0]?.data).toBe(PNG);
   expect(users.at(-1).data.text).toBe("And a second thing for after.");
+  // No turn runs now. Alt Enter is the pane's key (it shows all panes, or one): the draft is not sent.
+  await box.fill("Sent with the queue key, with nothing running.");
+  const all = await page.getByTestId("bridge").getAttribute("data-focus");
+  await page.keyboard.press("Alt+Enter");
+  await expect(page.getByTestId("bridge")).not.toHaveAttribute("data-focus", all ?? "none");
+  await expect(box).toHaveValue("Sent with the queue key, with nothing running.");
+  expect(posts).toHaveLength(2);
+  await page.keyboard.press("Alt+Enter");
+  // The queue key sends when there is nothing to queue behind.
+  await page.keyboard.press("Control+Shift+Enter");
+  await expect(box).toHaveValue("");
+  await expect(page.getByTestId("turn-end")).toHaveCount(5, { timeout: 60_000 });
+  expect(posts).toHaveLength(3);
+  expect(JSON.parse(posts[2]!).mode ?? "send").toBe("send");
 
   // Bad input is refused with a reason.
   expect((await request.post(`/api/sessions/${a}/draft`, { data: { images: [{ mime: "application/pdf", data: PNG }] } })).status()).toBe(400);
