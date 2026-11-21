@@ -442,6 +442,19 @@ html[data-resizing] iframe { pointer-events: none; }
 /* What waits, over a list of requests: a state word (its face is the state role's, styles.css). */
 .k-ask-count { font-weight: 700; font-size: var(--text-micro); line-height: 1.25rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-need); }
 .k-allow-all { border-radius: 0.25rem; }
+/* A list's bar stays at the top of the region while the list scrolls under it, where a whole row
+   still shows under it (the list says so): it is opaque, and no fade lies over it. */
+.k-ask-bar { background: var(--bg); }
+.k-station[data-helm] .k-ask-bar { background: var(--raised); }
+.k-ask-list[data-bar-stays] > .k-ask-bar { position: sticky; top: 0; z-index: 1; }
+.k-tray:has(.k-ask-list[data-bar-stays])[data-more="up"] { mask-image: none; }
+.k-tray:has(.k-ask-list[data-bar-stays])[data-more="up down"] { mask-image: linear-gradient(to top, transparent, #000 1.25rem); }
+/* A press that did nothing yet: a ring in the working color closes on the control and stays for a moment.
+   The control itself does not move: a move would start its wait again. */
+:is(.k-allow, .k-allow-all, .k-grant)[data-nudge] { outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge 320ms var(--ease-out); }
+@keyframes k-nudge { from { outline-offset: 0.4375rem; outline-color: transparent; } }
+/* Rows brought into view stop under their list's bar, not behind it (its height is set by the list). */
+.k-ask-list > .k-approval, .k-ask-list > .k-approval * { scroll-margin-top: var(--k-ask-bar, 0px); }
 .k-question { border-radius: 0.3125rem; box-shadow: none; }
 .k-turn-error { border-radius: 0.25rem; border-left: 0.1875rem solid var(--st-fail); }
 /* Popups and dialogs: an ink band on top, like a station. */

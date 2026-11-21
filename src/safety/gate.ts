@@ -16,6 +16,7 @@ import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
 import { splitCommand } from "./shell.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
+import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { classify, decide, isMode, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
 // An edit is judged by where it sits (its folders' links resolved) and by
@@ -420,7 +421,7 @@ export class Gate {
       const input = shell ? shell.options : target ? target.input : call.input;
       if ((!d.ask.ownerOnly || checkShell) && (summary.length > REVIEW_SUMMARY_LIMIT || JSON.stringify(input ?? {}).length > REVIEW_INPUT_LIMIT))
         return { deny: "Refused: the complete action does not fit in Auto review. Break it into smaller actions or use Ask for owner approval." };
-      return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, invocation);
+      return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, invocation, cut);
     }
     // Full auto: nothing waits on the owner. What would ask is high risk; it
     // goes to the rules, then the judge, and is run or refused at once.
@@ -473,7 +474,7 @@ export class Gate {
     return { authorization, before };
   }
 
-  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask, input: unknown, invocation?: AutoShell): Promise<CheckResult> {
+  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask, input: unknown, invocation?: AutoShell, cut?: true): Promise<CheckResult> {
     const { authorization, before } = this.autoAuthorization(session, call, target, cls, !ask.ownerOnly, invocation);
     const valid = async () => {
       await authorization.refresh?.(call);
@@ -481,7 +482,7 @@ export class Gate {
     };
     if (ask.ownerOnly) {
       const shown = invocation ? `${summary}\n\nStarting directory: ${invocation.path}\nInterpreter: ${invocation.interpreter}` : summary;
-      const deny = await this.card(session, call, name, cls, shown, { ...ask, bind: target?.source, autoOwner: true });
+      const deny = await this.card(session, call, name, cls, shown, { ...ask, bind: target?.source, autoOwner: true, cut });
       return deny ?? (await valid() ? { cls, authorization } : changedReview);
     }
     // Auto refusals and one-off retries are separate from Full auto's
@@ -669,18 +670,25 @@ export class Gate {
   // whose summary is only the start of its input, a refused call. A list that
   // names such a card is refused whole and nothing is allowed (the page left
   // it in by mistake). A card that is no longer open is passed over and the
-  // rest are answered; the reply says how each one went.
-  resolveMany(sessionId: string, ids: string[]): { results: BatchResult[] } | { error: string; status: number; alone: string[] } {
+  // rest are answered; the reply says how each one went, also when answering
+  // one of them threw (`caught` records it): the ones before it stay allowed
+  // and the page is told which.
+  resolveMany(sessionId: string, ids: string[], caught?: (e: unknown, id: string) => void): { results: BatchResult[] } | { error: string; status: number; alone: string[] } {
     const list = [...new Set(ids)];
     const alone = list.filter((id) => {
       const a = this.approval(id);
-      return !!a && a.session_id === sessionId && a.state === "pending" && (a.risk === "high" || !!a.cut || !!a.once || a.kind === "refused");
+      return !!a && a.session_id === sessionId && a.state === "pending" && (a.risk === "high" || shownInPart(a) || !!a.once || a.kind === "refused");
     });
     if (alone.length) return { error: "these are answered one at a time: a high-risk request, or one shown only in part", status: 400, alone };
     return {
       results: list.map((id) => {
-        const r = this.resolve(id, sessionId, { choice: "once" });
-        return "error" in r ? { id, error: r.error, status: r.status, state: r.approval?.state } : { id, ok: true as const };
+        try {
+          const r = this.resolve(id, sessionId, { choice: "once" });
+          return "error" in r ? { id, error: r.error, status: r.status, state: r.approval?.state } : { id, ok: true as const };
+        } catch (e) {
+          caught?.(e, id);
+          return { id, error: e instanceof Error ? e.message : String(e), status: 500, state: this.approval(id)?.state };
+        }
       }),
     };
   }
@@ -750,7 +758,6 @@ function inShort(cls: CallClass, input: unknown): { summary: string; cut?: true 
   const whole = JSON.stringify(input ?? {});
   return whole.length > SUMMARY_LIMIT ? { summary: whole.slice(0, SUMMARY_LIMIT), cut: true } : { summary: whole };
 }
-const SUMMARY_LIMIT = 400;
 
 function clip(v: any): any {
   const s = JSON.stringify(v ?? {});

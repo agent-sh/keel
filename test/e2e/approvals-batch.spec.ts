@@ -64,24 +64,40 @@ async function holdFrames(page: Page, words: string[]) {
   return held;
 }
 
-// Presses whatever is at a point at the instant the page has `rows` requests, as a click
-// already on its way does: in the page, in the same task that sees the row drawn, so no
-// machine is too slow for it. Says what it pressed: the control and its request.
-const pressAtArrival = (page: Page, rows: number, x: number, y: number) => page.evaluate(([rows, x, y]) => new Promise<[string, string]>((done) => {
-  const go = () => {
-    if (document.querySelectorAll('[data-testid="approval"]').length !== rows) return false;
-    const el = document.elementFromPoint(x!, y!) as HTMLElement | null;
-    const hit: [string, string] = [el?.closest("[data-testid]")?.getAttribute("data-testid") ?? "", el?.closest<HTMLElement>('[data-testid="approval"]')?.dataset.approvalId ?? ""];
-    // The press of a pointer: down, then the click.
-    el?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
-    el?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
-    done(hit);
-    return true;
+// Once the page has `rows` requests, presses every Allow once that now lies where another
+// row's Allow once was: what a pointer resting there, or a press already on its way, would
+// hit. In the page, in the first frame in which a row has changed place (the region takes a
+// frame to fit a list that grew or shrank), so no machine is too slow for it. A whole press:
+// pointer down, mouse down, click. Says for each one which row was there, which row it hit,
+// and whether the mouse down was kept from taking the keyboard. Empty when no row changed
+// place within ten frames (a request that landed where it moves nothing).
+const pressWhereRowsChanged = (page: Page, rows: number) => page.evaluate((rows) => new Promise<{ from: string; to: string; kept: boolean }[]>((done) => {
+  const idOf = (el: Element) => el.closest<HTMLElement>('[data-testid="approval"]')!.dataset.approvalId!;
+  const was = [...document.querySelectorAll('[data-testid="allow-once"]')].map((b) => { const r = b.getBoundingClientRect(); return { id: idOf(b), x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  const press = () => {
+    const out: { from: string; to: string; kept: boolean }[] = [];
+    for (const p of was) {
+      const b = document.elementFromPoint(p.x, p.y)?.closest('[data-testid="allow-once"]');
+      if (!b || idOf(b) === p.id) continue;
+      const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      b.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+      b.dispatchEvent(down);
+      b.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+      out.push({ from: p.id, to: idOf(b), kept: down.defaultPrevented });
+    }
+    return out;
   };
-  if (go()) return;
-  const mo = new MutationObserver(() => { if (go()) mo.disconnect(); });
+  let frames = 0;
+  const frame = () => {
+    const out = press();
+    if (out.length || ++frames > 10) done(out);
+    else requestAnimationFrame(frame);
+  };
+  const changed = () => document.querySelectorAll('[data-testid="approval"]').length === rows;
+  if (changed()) return frame();
+  const mo = new MutationObserver(() => { if (changed()) { mo.disconnect(); frame(); } });
   mo.observe(document.body, { childList: true, subtree: true });
-}), [rows, x, y] as const);
+}), rows);
 
 test("several requests are answered one by one from the keys, or all of a tool at once", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
@@ -324,6 +340,13 @@ test("on a phone the action covers the rows in view, not the ones under the fold
     await expect(card).toHaveCount(8);
     await expect(pane.getByTestId("approvals-count")).toHaveText("8 Bash commands wait");
     await expect(all).toBeEnabled();
+    // The action stays in reach while the list is scrolled to its end, and back.
+    const tray = pane.getByTestId("composer-tray");
+    await tray.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    await expect(card.last()).toBeInViewport();
+    await expect(all).toBeInViewport({ ratio: 1 });
+    await tray.evaluate((el) => { el.scrollTop = 0; });
+    await expect(all).toBeEnabled();
     // The rows whose command shows whole in the region above the message box.
     const inView = () => card.evaluateAll((els) => {
       const tray = els[0]!.closest('[data-testid="composer-tray"]')!.getBoundingClientRect();
@@ -337,10 +360,14 @@ test("on a phone the action covers the rows in view, not the ones under the fold
     const n = Number(said![1]);
     expect(n).toBeGreaterThan(1);
     expect(n).toBeLessThanOrEqual(shown.length);
+    // Where a finger is used nothing points at the action before it is pressed: the rows it covers are framed all the time.
+    const framedIds = await card.and(page.locator("[data-hot]")).evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.approvalId!));
+    expect(framedIds).toHaveLength(n);
     await shoot(page, "approvals-batch-390x844-eight");
     const sent = batchPosts(page);
     await all.click();
     await expect(card).toHaveCount(8 - n);
+    expect(sent[0]).toEqual(framedIds);
     // What was answered is what was said, and every one of them was in view.
     expect(sent).toHaveLength(1);
     expect(sent[0]).toHaveLength(n);
@@ -467,6 +494,8 @@ test("a high-risk request and one shown in part are left out, by the page and by
     const refusedCut = await many([aa, cut]);
     expect([refusedCut.status(), (await refusedCut.json()).alone]).toEqual([400, [cut]]);
     expect((await many([aa], "always")).status()).toBe(400);
+    // A list longer than a page can show to be read is not one the owner answered.
+    expect((await many([aa, ...Array.from({ length: 100 }, (_, i) => `no-such-${i}`)])).status()).toBe(400);
     expect((await cards()).map((c) => c.state)).toEqual(["pending", "pending", "pending", "pending"]);
 
     // The action answers the two it names.
@@ -563,6 +592,11 @@ test("Enter as a request appears allows nothing", async ({ page, request }) => {
     held["solo.txt"]!();
     // It was marked disabled when it was pressed, and the keyboard was still in the message box.
     expect(await pressed).toBe("true composer");
+    // The press is not dropped with no sign: the control is marked, and the reason is said once.
+    await expect(once).toHaveAttribute("data-nudge", "true");
+    await expect(card.getByTestId("approval-refused").filter({ hasText: "Not yet: it has only just arrived" })).toHaveCount(1);
+    // The card does not say that Enter allows it while its Allow waits.
+    await expect(card.getByTestId("approval-hint")).toBeHidden();
     await page.keyboard.press("Enter");
     await page.waitForTimeout(300);
     expect((await cards()).map((c) => c.state)).toEqual(["pending"]);
@@ -571,6 +605,8 @@ test("Enter as a request appears allows nothing", async ({ page, request }) => {
     // Stood for a second, the card takes the keyboard from the empty box. Words typed now are the box's.
     await expect(once).toBeFocused();
     await expect(once).not.toHaveAttribute("aria-disabled");
+    await expect(card.getByTestId("approval-hint")).toBeVisible();
+    await expect(once).not.toHaveAttribute("data-nudge");
     await page.keyboard.type("ok");
     await expect(box).toBeFocused();
     await expect(box).toHaveValue("ok");
@@ -586,9 +622,11 @@ test("Enter as a request appears allows nothing", async ({ page, request }) => {
   } finally { await request.delete(`/api/sessions/${id}`); }
 });
 
-// A list that grows moves its rows. A click where the pointer already was lands on another
-// row's Allow: on the new request, or on an older one that slid there. Neither is allowed.
-test("a click where a row has just arrived or moved allows nothing", async ({ page, request }) => {
+// A list that changes moves its rows. A press where the pointer already was lands on another
+// row's Allow: a new request's, or an older one's that slid there. Neither is allowed, the
+// press shows on the control, and it does not take the keyboard. Requests made in the same
+// instant are listed in no order of their own, so where a new one lands is read, not assumed.
+test("a press where a row has just arrived or moved allows nothing", async ({ page, request }) => {
   const { id, ws, cards, send } = await start(request, "Under the pointer", [bash("one"), bash("two"), bash("late"), bash("more")], { later: true });
   try {
     const held = await holdFrames(page, ["late.txt", "more.txt"]);
@@ -599,49 +637,146 @@ test("a click where a row has just arrived or moved allows nothing", async ({ pa
     const card = pane.getByTestId("approval");
     await expect(card).toHaveCount(2);
     await expect.poll(() => Object.keys(held).length).toBe(2);
-    // Nothing is answered: every request the daemon holds still waits (the page has not been shown them all yet).
-    const answered = async () => (await cards()).filter((c) => c.state !== "pending").map((c) => c.summary);
-    const under = (x: number, y: number) => page.evaluate(([px, py]) => {
-      const el = document.elementFromPoint(px!, py!);
-      return [el?.closest("[data-testid]")?.getAttribute("data-testid") ?? "", el?.closest<HTMLElement>('[data-testid="approval"]')?.dataset.approvalId ?? ""];
-    }, [x, y]);
-    const centre = async (l: Locator) => { const b = (await l.boundingBox())!; return [b.x + b.width / 2, b.y + b.height / 2] as const; };
+    const allowed = async () => (await cards()).filter((c) => c.state === "allowed").map((c) => c.summary);
+    const stood = async (n: number) => { await expect(card).toHaveCount(n); await expect(card.and(page.locator("[data-live]"))).toHaveCount(n); };
 
-    // The pointer rests on the last row's Allow once; a third request arrives and the list grows.
-    await expect(card.last()).toHaveAttribute("data-live", "true");
-    const lastId = (await card.last().getAttribute("data-approval-id"))!;
-    const [x, y] = await centre(card.last().getByTestId("allow-once"));
-    await page.mouse.move(x, y);
-    expect(await under(x, y)).toEqual(["allow-once", lastId]);
-    const third = pressAtArrival(page, 3, x, y);
+    // A third request arrives, then a fourth: wherever each lands, every Allow that is now where
+    // another row's was is pressed at that instant.
+    await stood(2);
+    const third = pressWhereRowsChanged(page, 3);
     held["late.txt"]!();
-    const [what, whose] = await third;
-    // An Allow once was pressed, and not the one the pointer was on.
-    expect(what).toBe("allow-once");
-    expect(whose).not.toBe(lastId);
-    await page.waitForTimeout(500);
-    expect(await answered()).toEqual([]);
-    await expect(card).toHaveCount(3);
-
-    // The pointer on the first row's Allow once; a fourth arrives: an older row slides under it.
-    await expect(card.first()).toHaveAttribute("data-live", "true");
-    const firstId = (await card.first().getAttribute("data-approval-id"))!;
-    const [x2, y2] = await centre(card.first().getByTestId("allow-once"));
-    await page.mouse.move(x2, y2);
-    const fourth = pressAtArrival(page, 4, x2, y2);
+    const a = await third;
+    await stood(3);
+    const fourth = pressWhereRowsChanged(page, 4);
     held["more.txt"]!();
-    const [what2, whose2] = await fourth;
-    expect(what2).toBe("allow-once");
-    expect(whose2).not.toBe(firstId);
+    const b = await fourth;
     await page.waitForTimeout(500);
-    expect(await answered()).toEqual([]);
-    await expect(card).toHaveCount(4);
+    expect([...a, ...b].filter((x) => !x.kept)).toEqual([]);
+    expect(await allowed()).toEqual([]);
+
+    // The last row is denied from elsewhere: the rows over it slide down, and the row before it
+    // is now where its Allow was. That one is always there to press.
+    await stood(4);
+    const order = await card.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.approvalId!));
+    const gone = pressWhereRowsChanged(page, 3);
+    expect((await request.post(`/api/sessions/${id}/approvals/${order[3]}`, { data: { choice: "deny", reason: "from elsewhere" } })).ok()).toBe(true);
+    const c = await gone;
+    expect(c).toContainEqual({ from: order[3], to: order[2], kept: true });
+    // The press shows on the control and is said once; it took no keyboard and allowed nothing.
+    const slid = card.and(page.locator(`[data-approval-id="${order[2]}"]`));
+    await expect(slid.getByTestId("allow-once")).toHaveAttribute("data-nudge", "true");
+    await expect(slid.getByTestId("approval-refused").filter({ hasText: "Not yet: it moved a moment ago" })).toHaveCount(1);
+    await expect(slid.getByTestId("allow-once")).not.toBeFocused();
+    await page.waitForTimeout(500);
+    expect(await allowed()).toEqual([]);
     expect(["one.txt", "two.txt", "late.txt", "more.txt"].some((f) => existsSync(join(ws, f)))).toBe(false);
 
-    // Once the row under the pointer has stood for a second, the same click allows it, and only it.
-    await expect(card.and(page.locator(`[data-approval-id="${whose2}"]`))).toHaveAttribute("data-live", "true");
-    await page.mouse.click(x2, y2);
-    await expect(card).toHaveCount(3);
-    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([whose2]);
+    // Once it has stood for a second, a click on it allows it, and only it.
+    await stood(3);
+    await expect(slid.getByTestId("allow-once")).not.toHaveAttribute("data-nudge");
+    await slid.getByTestId("allow-once").click();
+    await expect(card).toHaveCount(2);
+    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([order[2]]);
+  } finally { await request.delete(`/api/sessions/${id}`); }
+});
+
+// What the note says after an answer for several: the daemon's refusal as a refusal, and a
+// reply that never came as that, with what still waits read again. Never "none allowed" for
+// requests that were allowed.
+test("a refused list and a lost reply are told apart", async ({ page, request }) => {
+  const { id, ws, cards } = await start(request, "Lost reply", [bash("aa"), bash("bb"), bash("cc"), { name: "Write", input: { file_path: "note.md", content: "a note\n" } }]);
+  try {
+    let how: "refuse" | "lose" = "refuse";
+    await page.route(/\/approvals$/, async (r) => {
+      if (r.request().method() !== "POST") return r.continue();
+      if (how === "refuse") return r.fulfill({ status: 400, json: { error: "these are answered one at a time", alone: [] } });
+      await r.fetch(); // the daemon answers
+      await r.abort("failed"); // its reply does not arrive
+    });
+    await page.goto(`/s/${id}`);
+    const pane = paneOf(page, id);
+    const card = pane.getByTestId("approval");
+    const all = pane.getByTestId("allow-all");
+    const note = pane.getByTestId("approvals-error");
+    await expect(card).toHaveCount(4);
+    await expect(all).toBeEnabled();
+    await all.click();
+    await expect(note).toHaveText("None allowed: these are answered one at a time");
+    expect((await cards()).map((c) => c.state)).toEqual(["pending", "pending", "pending", "pending"]);
+
+    how = "lose";
+    await expect(all).toBeEnabled();
+    await all.click();
+    await expect(note).toContainText("The answer may not have arrived");
+    await expect(note).toContainText("What still waits is shown.");
+    await expect(note).not.toContainText("None allowed");
+    // The three were allowed all the same, and the page shows the one that still waits.
+    await expect(card).toHaveCount(1);
+    await expect(card).toContainText("note.md");
+    await expect.poll(() => ["aa.txt", "bb.txt", "cc.txt"].every((f) => existsSync(join(ws, f)))).toBe(true);
+    await shoot(page, "approvals-batch-1920-reply-lost");
+  } finally { await request.delete(`/api/sessions/${id}`); }
+});
+
+// The owner's own scroll moves the rows too, and it is theirs: a row they scrolled to acts
+// as the scroll ends, without the second a row waits when it comes under the hand by itself.
+// A list that changes while they scroll is not their move: its rows wait.
+test("a row the owner scrolled to acts as the scroll ends, a list that changed meanwhile does not", async ({ page, request }) => {
+  const names = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+  const { id, cards, send } = await start(request, "Own scroll", [...names.map(bash), bash("late")], { later: true });
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const held = await holdFrames(page, ["late.txt"]);
+    await page.goto(`/s/${id}`);
+    const pane = paneOf(page, id);
+    await expect(pane.getByTestId("composer")).toBeVisible();
+    await send();
+    const card = pane.getByTestId("approval");
+    const tray = pane.getByTestId("composer-tray");
+    await expect(card).toHaveCount(8);
+    await expect.poll(() => !!held["late.txt"]).toBe(true);
+    await expect(card.first()).toHaveAttribute("data-live", "true");
+    await page.waitForTimeout(1100); // every card has been on the page for a second
+    // In the page: when the region last scrolled, and when each Allow once could first be pressed after that.
+    await page.evaluate(() => {
+      const w = window as unknown as { scrolled: number; could: Record<string, number> };
+      w.scrolled = 0;
+      w.could = {};
+      const tray = document.querySelector('[data-testid="composer-tray"]')!;
+      tray.addEventListener("scroll", () => { w.scrolled = performance.now(); w.could = {}; }, { passive: true });
+      new MutationObserver(() => {
+        for (const el of document.querySelectorAll<HTMLElement>('[data-testid="approval"][data-live]')) w.could[el.dataset.approvalId!] ??= performance.now();
+      }).observe(tray, { subtree: true, attributes: true, attributeFilter: ["data-live"] });
+    });
+    const whole = () => card.evaluateAll((els) => {
+      const t = els[0]!.closest('[data-testid="composer-tray"]')!.getBoundingClientRect();
+      return els.filter((el) => { const r = el.querySelector('[data-testid="allow-once"]')!.getBoundingClientRect(); return r.top >= t.top && r.bottom <= t.bottom; }).map((el) => (el as HTMLElement).dataset.approvalId!);
+    });
+    const before = await whole();
+    const box = (await tray.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 320);
+    // The scroll has ended when the region has stood for a moment.
+    await expect.poll(() => page.evaluate(() => { const w = window as unknown as { scrolled: number }; return w.scrolled > 0 && performance.now() - w.scrolled > 250; })).toBe(true);
+    const reached = (await whole()).filter((x) => !before.includes(x));
+    expect(reached.length).toBeGreaterThan(0);
+    // A row that came into view by that scroll can be pressed well inside the second it would wait otherwise.
+    await expect(card.and(page.locator(`[data-approval-id="${reached[0]}"]`))).toHaveAttribute("data-live", "true");
+    const waited = await page.evaluate((x) => { const w = window as unknown as { scrolled: number; could: Record<string, number> }; return w.could[x!]! - w.scrolled; }, reached[0]);
+    expect(waited).toBeLessThan(600);
+    await card.and(page.locator(`[data-approval-id="${reached[0]}"]`)).getByTestId("allow-once").click();
+    await expect(card).toHaveCount(7);
+    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([reached[0]]);
+
+    // The owner's wheel turns again, and in the same moment a request arrives: every Allow that
+    // is now where another row's was is pressed at that instant. None is allowed.
+    await expect(card.and(page.locator("[data-live]")).first()).toBeVisible();
+    const changed = pressWhereRowsChanged(page, 8);
+    await page.mouse.wheel(0, -40);
+    held["late.txt"]!();
+    const pressed = await changed;
+    await page.waitForTimeout(500);
+    expect(pressed.filter((x) => !x.kept)).toEqual([]);
+    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([reached[0]]);
   } finally { await request.delete(`/api/sessions/${id}`); }
 });

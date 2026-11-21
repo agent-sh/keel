@@ -3,12 +3,16 @@
 // rule behind all of it: an approval is never given for something the owner
 // could not have read, or for a control that came under the hand a moment ago.
 import type { Approval } from "../../../src/safety/gate.ts";
+import { shownInPart } from "../../../src/safety/summary.ts";
 
 // How long something must stand whole on screen, unmoved, before it counts:
 // a request before it joins "allow all", an Allow before it acts, a changed
 // "allow all" before it acts again. The time a browser's permission prompt
 // holds its button for.
 export const SETTLE_MS = 1000;
+// How often the cards are read when nothing tells that they moved (a scroll,
+// a resize and a change of the list each read at once, and so does a press).
+export const READ_MS = 100;
 
 // Where a thing stands on screen, and since when it has stood there whole.
 export type Stand = { x: number; y: number; whole: boolean; since: number };
@@ -23,7 +27,34 @@ export const settled = (s: Stand | undefined, now: number): boolean => !!s && s.
 
 // A request that is only ever answered on its own: high risk, a call the
 // harness refused, one only the owner answers, one the daemon shows the start of.
-export const alone = (a: Approval): boolean => a.risk !== "low" || a.kind === "refused" || !!a.once || !!a.cut;
+export const alone = (a: Approval): boolean => a.risk !== "low" || a.kind === "refused" || !!a.once || shownInPart(a);
+
+// One control of a card (its Allow once, its Always allow) between two readings.
+// - `view`: where it stands on screen, whole or not.
+// - `place`: where it stands in the list, whatever the list is scrolled to. It
+//   starts again when the control's place in the list changes, and when the
+//   list's own frame or length does (the caller passes no `prev.place` then).
+// - `own`: its last move on screen was the owner's own scroll, with nothing
+//   in the list changed.
+export type Hold = { view: Stand; place: Stand; own: boolean };
+
+// `gesture`: the owner is scrolling (a wheel, a finger, a key, the scroll bar).
+// `listChanged`: the list's frame or length differs from the last reading.
+export function hold(prev: Hold | undefined, at: { x: number; y: number; whole: boolean }, placed: { x: number; y: number }, gesture: boolean, listChanged: boolean, now: number): Hold {
+  const view = stand(prev?.view, at, now);
+  const place = stand(listChanged ? undefined : prev?.place, { ...placed, whole: true }, now);
+  const moved = view !== prev?.view;
+  return { view, place, own: moved ? !!prev && gesture && place === prev.place : !!prev?.own };
+}
+
+// May the control be pressed. The hazard is a control that came under the
+// hand by something other than the hand: a card that has just arrived, a row
+// that slid because the list changed, a scroll the page made. Each waits the
+// settle time, whole on screen. A row that only moved with the owner's own
+// scroll is theirs to press as soon as the scroll has ended, when the card is
+// not new (`ripe`) and nothing in the list changed for the settle time.
+export const pressable = (h: Hold | undefined, ripe: boolean, scrolling: boolean, now: number): boolean =>
+  !!h && h.view.whole && (settled(h.view, now) || (h.own && ripe && !scrolling && settled(h.place, now)));
 
 export type Batch = {
   tool: string;
@@ -57,6 +88,7 @@ export type Action = {
   covered: string[];       // what it names and would answer
   frozen: string[] | null; // while the pointer or the keyboard is on it and it can be pressed: what it covered then
   hold: number;            // it does not act before this time
+  grown?: boolean;         // that hold is for a count that grew (another one that joins meanwhile starts it again)
   live: boolean;           // it can be pressed
 };
 
@@ -75,16 +107,24 @@ export function nextAction(prev: Action | undefined, ready: string[], hot: boole
   const was = prev ?? { covered: [], frozen: null, hold: 0, live: false };
   let frozen = hot ? was.frozen : null;
   let hold = was.hold;
+  let grown = !!was.grown && now < was.hold;
   if (frozen && !frozen.some((id) => open.has(id))) {
     frozen = null;
     hold = now + SETTLE_MS;
+    grown = false;
   }
   const covered = frozen ? ready.filter((id) => frozen!.includes(id)) : ready;
   const grew = covered.some((id) => !was.covered.includes(id));
-  if (!frozen && grew && (was.live || now < was.hold)) hold = now + SETTLE_MS;
+  // Only a count that grew where it could be pressed is held again. After the
+  // action answered, the next rows stand for the settle time as they come
+  // into view: that wait is the one hold, not a second one after it.
+  if (!frozen && grew && (was.live || grown)) {
+    hold = now + SETTLE_MS;
+    grown = true;
+  }
   const live = covered.length > 1 && now >= hold;
   if (hot && live && !frozen) frozen = covered;
-  return { covered, frozen, hold, live };
+  return { covered, frozen, hold, grown, live };
 }
 // The action has just answered: it does not act again for the settle time, wherever the rows stand.
 export const spentAction = (now: number): Action => ({ covered: [], frozen: null, hold: now + SETTLE_MS, live: false });

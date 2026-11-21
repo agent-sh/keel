@@ -12,6 +12,8 @@ import type { Deps, RouteModule } from "../app.ts";
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 const PROFILES = ["off", "workspace-write", "read-only"];
+// The longest list of cards one answer may name.
+const MANY = 100;
 
 export let gate: Gate | undefined;
 export let presence: Presence | undefined;
@@ -131,7 +133,9 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         const b = await body(req);
         if (b.choice !== "once") return bad("several requests are answered together only with choice once");
         if (!Array.isArray(b.ids) || !b.ids.length || !b.ids.every((x: unknown) => typeof x === "string")) return bad("ids is a list of approval ids");
-        const r = g.resolveMany(s.id, b.ids);
+        // More than a page can show to be read at once is not a list the owner answered.
+        if (b.ids.length > MANY) return bad(`at most ${MANY} requests are answered together`);
+        const r = g.resolveMany(s.id, b.ids, (e, id) => deps.errors.capture("server", e, { at: "approvals answered together", approval: id }));
         return "error" in r ? json({ error: r.error, alone: r.alone }, r.status) : json(r);
       },
     },

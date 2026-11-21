@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Approval } from "../../../src/safety/gate.ts";
-import { batches, batchName, coverName, nextAction, settled, spentAction, stand, SETTLE_MS, type Action } from "./approvals.ts";
+import { batches, batchName, coverName, hold, nextAction, pressable, settled, spentAction, stand, SETTLE_MS, type Action, type Hold } from "./approvals.ts";
 
 const card = (id: string, over: Partial<Approval> = {}): Approval => ({
   id, session_id: "s", call_id: `c-${id}`, tool: "Bash", kind: "shell", summary: `echo ${id}`, input: {}, risk: "low", suggest: [], state: "pending", created: 1, ...over,
@@ -99,6 +99,63 @@ test("the action covers what was ready when the hand came to it, and grows only 
   t += SETTLE_MS;
   c = step(c, ["d", "late"]);
   expect(c.live).toBe(true);
+
+  // After it answered, the next rows come to stand just before that hold ends: it is the one wait, not a second one.
+  const spent = spentAction(t);
+  t += SETTLE_MS - 20;
+  let d = step(step(spent, []), ["d", "late"]);
+  expect(d).toMatchObject({ covered: ["d", "late"], live: false, hold: spent.hold });
+  t += 20;
+  d = step(d, ["d", "late"]);
+  expect(d.live).toBe(true);
+});
+
+test("an Allow acts when it has stood, or as the owner's own scroll ends", () => {
+  let t = 10_000;
+  const at = (y: number, whole = true) => ({ x: 400, y, whole });
+  const read = (prev: Hold | undefined, y: number, placeY: number, o: { gesture?: boolean; listChanged?: boolean; whole?: boolean } = {}) =>
+    hold(prev, at(y, o.whole ?? true), { x: 400, y: placeY }, !!o.gesture, !!o.listChanged, t);
+  // A new card: its Allow waits the settle time whole on screen, ripe or not.
+  let h = read(undefined, 300, 300);
+  expect(pressable(h, false, false, t + SETTLE_MS - 1)).toBe(false);
+  expect(pressable(h, true, false, t + SETTLE_MS)).toBe(true);
+  t += 5000;
+
+  // The owner scrolls: the row moves on screen, not in the list. While the scroll goes on it waits; as it ends it acts.
+  h = read(h, 220, 300, { gesture: true });
+  expect(h.own).toBe(true);
+  expect(pressable(h, true, true, t)).toBe(false);
+  t += 80;
+  h = read(h, 140, 300, { gesture: true });
+  expect(pressable(h, true, true, t)).toBe(false);
+  expect(pressable(h, true, false, t)).toBe(true);
+  // A card that is still new does not act that way, and one cut by the edge of the list never does.
+  expect(pressable(h, false, false, t)).toBe(false);
+  expect(pressable(read(h, -20, 300, { gesture: true, whole: false }), true, false, t)).toBe(false);
+
+  // The same move with no hand behind it (the page scrolled, the frame moved): the whole settle time.
+  t += 5000;
+  let p = read(h, 60, 300);
+  expect(p.own).toBe(false);
+  expect(pressable(p, true, false, t + SETTLE_MS - 1)).toBe(false);
+  expect(pressable(p, true, false, t + SETTLE_MS)).toBe(true);
+
+  // The list changed while the owner scrolled (a row arrived, one left, one grew): the row's place
+  // in the list moved, or the list's frame did. It is not the owner's move: the whole settle time.
+  t += 5000;
+  let c = read(h, 200, 356, { gesture: true });
+  expect(c.own).toBe(false);
+  expect(pressable(c, true, false, t + SETTLE_MS - 1)).toBe(false);
+  c = read(h, 200, 300, { gesture: true, listChanged: true });
+  expect(c.own).toBe(false);
+  expect(pressable(c, true, false, t + SETTLE_MS - 1)).toBe(false);
+  // And a list that changed a moment before the owner's scroll: the scroll does not shorten that wait.
+  const changed = read(h, 140, 300, { listChanged: true }); // the frame changed, the row did not move on screen
+  t += 300;
+  const scrolled = read(changed, 100, 300, { gesture: true });
+  expect(scrolled.own).toBe(true);
+  expect(pressable(scrolled, true, false, t)).toBe(false);
+  expect(pressable(scrolled, true, false, t + SETTLE_MS - 300)).toBe(true);
 });
 
 test("the action says what it covers", () => {

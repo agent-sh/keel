@@ -339,6 +339,28 @@ test("one answer for several cards covers none that must be read alone", async (
   ] });
   expect(open().map((a) => a.id)).toEqual([short.id]);
   expect(g.approval(right.id)).toMatchObject({ state: "allowed", choice: "once" });
-  g.resolve(short.id, "s1", { choice: "deny" });
-  await Promise.all(asked);
+
+  // A card written before cards were marked has no flag: a summary exactly as long as the cut counts as cut.
+  const old = { ...short, id: "written-before", call_id: "old-call", summary: "y".repeat(400), cut: undefined };
+  (g as any).store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?)").run(old.id, "s1", "pending", JSON.stringify(old), old.created);
+  expect(g.resolveMany("s1", [short.id, old.id])).toMatchObject({ status: 400, alone: [old.id] });
+  expect(g.approval(short.id)!.state).toBe("pending");
+
+  // Answering one of a list throws: the reply still says how each went, the ones before it stay
+  // allowed, the ones after it are answered, and the failure is handed on to be recorded.
+  const more = [g.beforeTool(session, call(bash, { command: "npm install is-odd" })), g.beforeTool(session, call(bash, { command: "npm install is-even" }))];
+  await Bun.sleep(5);
+  const [odd, even] = ["npm install is-odd", "npm install is-even"].map(find) as [Approval, Approval];
+  const resolve = g.resolve.bind(g);
+  g.resolve = (id, ...rest) => { if (id === even.id) throw new Error("the store would not take it"); return resolve(id, ...rest); };
+  const recorded: string[] = [];
+  expect(g.resolveMany("s1", [odd.id, even.id, short.id], (e, id) => recorded.push(`${id}: ${(e as Error).message}`))).toEqual({ results: [
+    { id: odd.id, ok: true },
+    { id: even.id, error: "the store would not take it", status: 500, state: "pending" },
+    { id: short.id, ok: true },
+  ] });
+  expect(recorded).toEqual([`${even.id}: the store would not take it`]);
+  g.resolve = resolve;
+  g.resolve(even.id, "s1", { choice: "deny" });
+  await Promise.all([...asked, ...more]);
 });
