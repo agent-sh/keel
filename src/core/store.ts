@@ -143,16 +143,16 @@ export class Store {
     // transaction: a start that fails part way leaves the database as it was,
     // and the next start does all of it.
     this.db.transaction(() => {
-      const before = !this.columnExists("sessions", "head");
       if (!this.columnExists("events", "parent")) this.db.exec("ALTER TABLE events ADD COLUMN parent TEXT");
-      if (before) this.db.exec("ALTER TABLE sessions ADD COLUMN head TEXT");
-      // A start that was cut after the columns were added, when the two were
-      // separate steps, left them empty: nothing has a parent or a head.
-      const empty = () => !!this.db.query<{ n: number }, []>("SELECT EXISTS(SELECT 1 FROM events) AND NOT EXISTS(SELECT 1 FROM events WHERE parent IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM sessions WHERE head IS NOT NULL) AS n").get()!.n;
-      if (!before && !empty()) return;
-      // A session from before the tree is one line: each event follows the one before.
-      this.db.exec(`UPDATE events SET parent = (SELECT e2.id FROM events e2 WHERE e2.session_id = events.session_id AND e2.seq < events.seq ORDER BY e2.seq DESC LIMIT 1)`);
-      this.db.exec(`UPDATE sessions SET head = (SELECT id FROM events WHERE session_id = sessions.id ORDER BY seq DESC LIMIT 1)`);
+      if (!this.columnExists("sessions", "head")) this.db.exec("ALTER TABLE sessions ADD COLUMN head TEXT");
+      // A session from before the tree is one line: each event follows the one
+      // before, and the last is its head. Each half is filled when it is
+      // empty in the whole database (the columns were just added, or an older
+      // start, which did these as separate steps, was cut before one of them):
+      // a database the tree has been used in always has a parent and a head.
+      const none = (where: string) => !!this.db.query<{ n: number }, []>(`SELECT EXISTS(SELECT 1 FROM events) AND NOT EXISTS(${where}) AS n`).get()!.n;
+      if (none("SELECT 1 FROM events WHERE parent IS NOT NULL")) this.db.exec(`UPDATE events SET parent = (SELECT e2.id FROM events e2 WHERE e2.session_id = events.session_id AND e2.seq < events.seq ORDER BY e2.seq DESC LIMIT 1)`);
+      if (none("SELECT 1 FROM sessions WHERE head IS NOT NULL")) this.db.exec(`UPDATE sessions SET head = (SELECT id FROM events WHERE session_id = sessions.id ORDER BY seq DESC LIMIT 1)`);
     }).immediate();
     // Images of a queued or steered prompt (JSON), so a queued screenshot is not lost.
     if (!this.columnExists("queue", "images")) this.db.exec("ALTER TABLE queue ADD COLUMN images TEXT");

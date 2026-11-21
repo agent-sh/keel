@@ -164,11 +164,19 @@ test("the event tree migration that fails part way is done whole by the next sta
   expect(tree(dir)).toEqual({ events: [...LINES.events.slice(0, 4), { id: fork.id, session_id: "a", seq: 5, parent: "a2" }, ...LINES.events.slice(4)], heads: [{ id: "a", head: fork.id }, { id: "b", head: "b3" }] });
 });
 
-test("a database whose tree columns were added and never filled gets its lines", () => {
-  const dir = scratch();
-  const db = beforeTheTree(dir);
-  db.exec("ALTER TABLE events ADD COLUMN parent TEXT; ALTER TABLE sessions ADD COLUMN head TEXT");
-  db.close();
-  new Store(dir).db.close();
-  expect(tree(dir)).toEqual(LINES);
+test("a database whose tree columns were added and not filled, or half filled, gets its lines", () => {
+  const backfill = [
+    "UPDATE events SET parent = (SELECT e2.id FROM events e2 WHERE e2.session_id = events.session_id AND e2.seq < events.seq ORDER BY e2.seq DESC LIMIT 1)",
+    "UPDATE sessions SET head = (SELECT id FROM events WHERE session_id = sessions.id ORDER BY seq DESC LIMIT 1)",
+  ];
+  // An older start cut after the columns, after the parents, or (the other half alone) with only the heads.
+  for (const done of [[], [backfill[0]!], [backfill[1]!]]) {
+    const dir = scratch();
+    const db = beforeTheTree(dir);
+    db.exec("ALTER TABLE events ADD COLUMN parent TEXT; ALTER TABLE sessions ADD COLUMN head TEXT");
+    for (const sql of done) db.exec(sql);
+    db.close();
+    new Store(dir).db.close();
+    expect(tree(dir)).toEqual(LINES);
+  }
 });
