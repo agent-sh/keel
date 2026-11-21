@@ -28,7 +28,7 @@ const engine = {
     return { event };
   },
 };
-setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine } as any);
+setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { current: () => [] } } as any);
 waits.migrate();
 activity.migrate();
 const s = store.createSession({ model: "m", workspace: dir, title: "t" });

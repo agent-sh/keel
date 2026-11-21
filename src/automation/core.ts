@@ -1,4 +1,5 @@
 import type { StoredEvent } from "../core/types.ts";
+import { bytesPerToken, utf8Bytes } from "../engine/compact.ts";
 import type { Deps } from "../server/app.ts";
 
 // The daemon's parts, set once when the automation routes are built (before any
@@ -122,6 +123,17 @@ export function takeRiding(sessionId: string, which: (meta: Record<string, unkno
   return took.map((p) => p.meta);
 }
 
+// One input holds at most this share of the model's window; the parts over it
+// wait for the next input. A quarter: when the context is compacted the next
+// request is the system prompt and the tools, the summary (itself up to a
+// quarter of the window) and this input whole, and the turn still needs room
+// to work in. An input longer than the window cannot be sent at all.
+const INPUT_SHARE = 0.25;
+function inputRoom(model: string): number {
+  const window = D().providers.current().find((m) => m.id === model)?.context;
+  return window ? Math.floor(window * INPUT_SHARE * bytesPerToken(model)) : Infinity;
+}
+
 export function flush(sessionId: string) {
   const list = pending.get(sessionId);
   if (!list?.length) return;
@@ -130,32 +142,61 @@ export function flush(sessionId: string) {
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
   if (!s || s.archived) return void riding.delete(sessionId);
+  let rest: Pending[] = [];
   try {
+    // What fits one input, in order: the first part always goes, and so does
+    // the first that rides, so every input moves what waits forward.
+    const rides = riding.get(sessionId) ?? [];
+    const room = list.length + rides.length > 1 ? inputRoom(s.model) : Infinity;
+    let size = 0;
+    const fits = (parts: Pending[]) => {
+      const over = parts.findIndex((p, i) => {
+        const bytes = utf8Bytes(p.text);
+        if (i > 0 && size + bytes > room) return true;
+        size += bytes;
+        return false;
+      });
+      return over < 0 ? parts.length : over;
+    };
+    const cut = fits(list);
+    rest = list.slice(cut);
+    const taken = new Set(rides.slice(0, fits(rides)));
     // Live statuses can change while the recipient is busy. Recheck them
     // before grouping the parts; a withdrawn status must not start a turn.
-    const lined = [...list, ...(riding.get(sessionId) ?? [])].map((p) => p.meta);
+    const lined = [...list.slice(0, cut), ...taken].map((p) => p.meta);
     const fresh = (p: Pending) => {
       if (!p.refresh) return [p];
       const next = p.refresh(lined);
       return next ? [{ ...p, ...next }] : [];
     };
-    const current = list.flatMap(fresh);
-    if (!current.length) return;
-    // What rides goes now, read as it is now; one that no longer holds is dropped.
-    current.push(...(riding.get(sessionId) ?? []).flatMap(fresh));
-    riding.delete(sessionId);
-    const extra = rider.get?.(sessionId, current.map((p) => p.meta));
-    if (extra) current.push(extra);
-    // The failure notice reads last, after the reports and wakes it comes with
-    // (what shows it finds it there, whatever a report quotes).
-    current.sort((a, b) => Number(a.meta.kind === "failures") - Number(b.meta.kind === "failures"));
-    const kinds = [...new Set(current.map((p) => p.meta.kind))];
-    const meta = current.length === 1 ? current[0]!.meta : { kind: kinds.length === 1 ? kinds[0] : "wake", parts: current.map((p) => p.meta) };
-    const r = D().engine.send(sessionId, current.map((p) => p.text).join("\n\n"), { meta });
-    if (r.event) for (const p of current) p.onSent?.(r.event);
+    const current = list.slice(0, cut).flatMap(fresh);
+    if (current.length) {
+      // What rides goes now, read as it is now; one that no longer holds is
+      // dropped. A part that became a rider in this pass (a report whose
+      // parent the owner stopped since) goes too. The rest keeps riding.
+      const all = riding.get(sessionId) ?? [];
+      const stay = all.filter((p) => rides.includes(p) && !taken.has(p));
+      current.push(...all.filter((p) => !stay.includes(p)).flatMap(fresh));
+      if (stay.length) riding.set(sessionId, stay);
+      else riding.delete(sessionId);
+      const extra = rider.get?.(sessionId, current.map((p) => p.meta));
+      if (extra) current.push(extra);
+      // The failure notice reads last, after the reports and wakes it comes with
+      // (what shows it finds it there, whatever a report quotes).
+      current.sort((a, b) => Number(a.meta.kind === "failures") - Number(b.meta.kind === "failures"));
+      const kinds = [...new Set(current.map((p) => p.meta.kind))];
+      const meta = current.length === 1 ? current[0]!.meta : { kind: kinds.length === 1 ? kinds[0] : "wake", parts: current.map((p) => p.meta) };
+      const r = D().engine.send(sessionId, current.map((p) => p.text).join("\n\n"), { meta });
+      if (r.event) for (const p of current) p.onSent?.(r.event);
+    }
   } catch (e) {
     capture(e, { at: "deliver", session: sessionId });
   }
+  // What did not fit is the next input: after the turn this one started, or
+  // now when nothing of this one was left to send.
+  if (!rest.length) return;
+  pending.set(sessionId, [...rest, ...(pending.get(sessionId) ?? [])]);
+  if (!D().engine.isRunning(sessionId)) flush(sessionId);
 }
 
 // After a drain that was called off: what came due while the daemon started

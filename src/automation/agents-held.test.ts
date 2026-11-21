@@ -31,6 +31,7 @@ const usage = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
 const hangs = new Set<string>();
 const pauses = new Map<string, Promise<void>>();
 let gate: Promise<void> | undefined;
+let report = "ok"; // what an agent answers
 const provider = {
   wire: "openai",
   stream: async (req: any) => {
@@ -38,7 +39,7 @@ const provider = {
     if (hangs.delete(req.sessionKey)) await new Promise((_r, rej) => req.signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true }));
     else if (pause) { pauses.delete(req.sessionKey); await pause; }
     else if (store.session(req.sessionKey)?.parent_id) await gate;
-    return { blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "x" };
+    return { blocks: [{ type: "text", text: store.session(req.sessionKey)?.parent_id ? report : "ok" }], usage, stop: "end_turn", model: "x" };
   },
 };
 const engine = new Engine(store, bus, { models: async () => [info], current: () => [info], resolve: async () => ({ provider, info }) } as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
@@ -228,3 +229,39 @@ test("a goal set on a held session ends the hold", async () => {
   expect(reports(p.id)).toEqual([lanes[0]!.id]);
   expect(owed(p.id)).toBe(0);
 }, 60_000);
+
+// Twelve long reports ride a held parent. One input takes what a quarter of
+// the model's window holds and the rest keep riding, so no input is too long
+// to send whole; when the hold ends the rest come the same way, a few an input.
+test("what rides one input is bounded by the model's window, and the rest keep riding", async () => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "many long reports" });
+  agents.setLimit(p.id, 12);
+  hangs.add(p.id);
+  engine.send(p.id, "owner: start");
+  await until(() => engine.isRunning(p.id));
+  report = "r".repeat(45_000);
+  const lanes = [];
+  for (let i = 0; i < 12; i++) lanes.push(await lane(p.id, `long lane ${i}`));
+  await engine.interrupt(p.id, "owner");
+  for (const l of lanes) await l.ended();
+  report = "ok";
+  await quiet(p.id);
+  expect([engine.isHeld(p.id), owed(p.id)]).toEqual([true, 12]);
+  const room = info.context * 0.25 * 2.5; // a quarter of the window, at the bytes a token of a model nothing was learned of
+  const longest = () => Math.max(...inputs(p.id).map((i) => i.text.length));
+  const ends = () => store.events(p.id).filter((e) => e.kind === "turn_end").map((e) => e.data.reason);
+
+  wake(p.id);
+  await quiet(p.id);
+  expect(reports(p.id).length).toBeGreaterThan(0);
+  expect(reports(p.id).length).toBeLessThan(12);
+  expect(owed(p.id)).toBe(12 - reports(p.id).length);
+  expect(longest()).toBeLessThanOrEqual(room);
+
+  engine.send(p.id, "owner: go on"); // the hold ends: the rest go as inputs of their own
+  await until(() => owed(p.id) === 0, 20_000);
+  await quiet(p.id);
+  expect(reports(p.id).toSorted()).toEqual(lanes.map((l) => l.id).toSorted());
+  expect(longest()).toBeLessThanOrEqual(room);
+  expect(ends()).not.toContain("error");
+}, 90_000);
