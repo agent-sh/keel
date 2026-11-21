@@ -95,13 +95,16 @@ const lastText = (childId: string) => {
 };
 
 // Runs one verification; resolves with its verdict (or why there is none),
-// the child session and what it spent.
-export async function verify(sessionId: string, g: { objective: string; started_ms: number; judge_model?: string | null; verifier_model?: string | null }, judged: string, onChild?: (childId: string) => void): Promise<{ result: Verdict | { error: string }; child_id: string; tokens: number }> {
+// the child session and what it spent. `still`: whether the goal it checks is
+// still the one there; asked before its session is made, so a goal cleared or
+// replaced while the model resolved gets no verifier (and no child session).
+export async function verify(sessionId: string, g: { objective: string; started_ms: number; judge_model?: string | null; verifier_model?: string | null }, judged: string, onChild?: (childId: string) => void, still?: () => boolean): Promise<{ result: Verdict | { error: string }; child_id: string | null; tokens: number }> {
   hook();
   const { store, providers, engine, bus } = D();
   const s = store.session(sessionId)!;
   const model = g.verifier_model ?? g.judge_model ?? s.model;
   const { info } = await providers.resolve(model);
+  if (still && !still()) return { result: { error: "the goal changed before its verifier started" }, child_id: null, tokens: 0 };
   const child = store.createSession({ model, workspace: s.workspace, title: `Verify goal: ${g.objective}`.slice(0, 80) });
   store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(sessionId, child.id);
   const sb = sandboxStatus().available;

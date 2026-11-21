@@ -19,6 +19,7 @@ let store!: Store;
 let running = false;
 let draining = false; // the daemon is on its way down
 let modelUp = true;
+let modelGate: Promise<void> | undefined; // a model listing that takes its time
 // The scripted judge: each request waits for its answer; `verdict` answers the newest.
 const asked: ((text: string) => void)[] = [];
 const askedFor: string[] = []; // the session of each request, in the same order
@@ -40,7 +41,7 @@ const engine = {
 // A daemon on a state folder; called again on the same folder, the daemon after a restart.
 function boot(dir: string) {
   store = new Store(dir);
-  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { resolve: async (id: string) => { if (!modelUp) throw new Error("the provider is not up"); return { info: { id } }; } } } as any);
+  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { resolve: async (id: string) => { await modelGate; if (!modelUp) throw new Error("the provider is not up"); return { info: { id } }; } } } as any);
   activity.migrate();
   agents.migrate();
   waits.migrate();
@@ -218,6 +219,23 @@ test("a verifier's met counts only with evidence it names", async () => {
   await missing.check;
   expect(goals.get(missing.id)).toMatchObject({ status: "pursuing", last_verdict: "not_met" });
   expect(said(missing.id, "continue").map((e) => e.data.text)).toEqual([expect.stringContaining("nothing to cite")]);
+});
+
+test("a goal cleared while its verifier's model resolves gets no verifier session", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "Verify A" });
+  turn(s.id, 5);
+  let open!: () => void;
+  modelGate = new Promise((r) => (open = r));
+  const check = goals.afterTurn(s.id, "end_turn");
+  verdict('{"verdict": "met", "reason": "A looks done"}');
+  await until(() => goals.get(s.id)?.verifying);
+  goals.clear(s.id);
+  modelGate = undefined;
+  open();
+  await check;
+  expect(store.sessions().filter((x) => x.parent_id === s.id)).toHaveLength(0);
+  expect(goals.get(s.id)).toBeUndefined();
 });
 
 test("a paused goal is not resumed in an archived session", async () => {

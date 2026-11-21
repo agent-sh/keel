@@ -323,7 +323,7 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     if (v.verdict === "met") {
       // Met by the judge: the verifier checks the work before it counts.
       save({ ...next, verifying: true, evidence: null });
-      const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (ours(c)) save({ ...c!, verifier_session: child }); });
+      const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (ours(c)) save({ ...c!, verifier_session: child }); }, () => ours(get(sessionId)));
       const after = get(sessionId);
       if (!ours(after)) return; // cleared or replaced meanwhile: the goal there now is not this check's to touch
       if (!active(after)) return void done({ ...after!, verifying: false }); // paused meanwhile
