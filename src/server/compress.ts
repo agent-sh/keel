@@ -73,9 +73,10 @@ const TEXT = /^(text\/|application\/(javascript|json|manifest\+json|wasm)|image\
 
 type Asset = { type: string; etag: string; cache: string; raw: Uint8Array<ArrayBuffer>; gzip?: Uint8Array<ArrayBuffer>; br?: Uint8Array<ArrayBuffer> };
 
-// Every output file but the page is named by its content hash (/_bun/client/index-<hash>.js,
-// /_bun/asset/<hash>.css): it never changes under its name. The page is asked again each
-// load (its etag makes that a 304), so a new build is picked up at once.
+// Every output file but the page is named by its content hash (/_ui/index-<hash>.js,
+// /_ui/index-<hash>.css, at the address scripts/build.ts gives each file of the binary's
+// page): it never changes under its name. The page is asked again each load (its etag
+// makes that a 304), so a new build is picked up at once.
 const IMMUTABLE = "public, max-age=31536000, immutable";
 const PAGE = "no-cache";
 
