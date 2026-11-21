@@ -267,3 +267,39 @@ test("fleet machines: a rename keeps names unique", async ({ request }) => {
     stub.close();
   }
 });
+
+// An edited daemon port follows the rule of a new one. What is not a port is
+// refused before anything is written: the record keeps its port and, for a
+// linked machine, its link.
+test("fleet machines: an edited daemon port is checked like a new one", async ({ request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  mkdirSync(ROOT, { recursive: true });
+  const stub = createServer((_, res) => res.writeHead(404).end("{}"));
+  await new Promise<void>((resolve, reject) => stub.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const scratch = (await (await request.post("/api/fleet/machines", { data: { name: `Port-${Date.now().toString(36)}`, daemon_url: `http://127.0.0.1:${(stub.address() as AddressInfo).port}` } })).json()).id as string;
+  let { machines } = await (await request.get("/api/fleet/machines")).json();
+  let linked = machines.find((m: any) => m.daemon_url === PEER)?.id as string | undefined;
+  if (!linked) linked = (await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json()).id as string;
+  await request.post(`/api/fleet/machines/${linked}/check`);
+  const view = async (id: string) => { const m = await (await request.get(`/api/fleet/machines/${id}`)).json(); return { port: m.daemon_port, link: m.daemon.state, far: m.daemon.daemon_id }; };
+  try {
+    const before = await view(linked);
+    expect(before).toMatchObject({ port: undefined, link: "linked" });
+    for (const port of [1.5, "80.5", 0, -1, 65536, "abc", true, [8080], {}]) {
+      const r = await request.patch(`/api/fleet/machines/${linked}`, { data: { daemon_port: port } });
+      expect(r.status(), `daemon_port ${JSON.stringify(port)}`).toBe(400);
+      expect((await r.json()).error).toBe("daemon_port must be the port its daemon listens on there");
+    }
+    expect(await view(linked)).toEqual(before); // not changed, not linked again
+    // A whole number, its digits, and clearing it are taken.
+    for (const [given, kept] of [[48123, 48123], ["48124", 48124], [null, undefined], [65535, 65535], ["", undefined]] as const) {
+      expect((await request.patch(`/api/fleet/machines/${scratch}`, { data: { daemon_port: given } })).ok(), `daemon_port ${JSON.stringify(given)}`).toBe(true);
+      expect((await view(scratch)).port).toBe(kept);
+    }
+  } finally {
+    await request.patch(`/api/fleet/machines/${linked}`, { data: { daemon_port: null } });
+    await request.delete(`/api/fleet/machines/${scratch}`);
+    stub.close();
+  }
+});

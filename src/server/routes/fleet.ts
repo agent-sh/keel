@@ -34,6 +34,14 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
 const COLOUR = /^(#[0-9a-f]{3,8}|[a-z]+|(rgb|hsl|oklch)a?\([^)]*\))$/i;
+const BAD_PORT = "daemon_port must be the port its daemon listens on there";
+// A daemon port as given: a whole number from 1 to 65535 (a number, or its
+// digits), null when none is given, undefined when it is not a port.
+const daemonPort = (v: unknown): number | null | undefined => {
+  if (v === undefined || v === null || v === "") return null;
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : undefined;
+};
 const KEEPALIVE_MS = 5_000; // under Bun's 10 s idle timeout: a long call keeps its connection
 
 export let fleet: Fleet | undefined;
@@ -259,8 +267,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           if (same) return bad(`${host} reaches ${same.name}, which is already enabled`);
           // With a daemon port: a Keel daemon runs there, reached through ssh -L.
           // Without: the machine itself, its tools through the helper Keel puts there.
-          const port = b.daemon_port === undefined || b.daemon_port === null || b.daemon_port === "" ? null : Number(b.daemon_port);
-          if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) return bad("daemon_port must be the port its daemon listens on there");
+          const port = daemonPort(b.daemon_port);
+          if (port === undefined) return bad(BAD_PORT);
           const name = String(b.name || group.alias);
           if (f.rows().some((r) => r.name.toLowerCase() === name.toLowerCase())) return bad(`a machine is already named ${name}`);
           m = f.add({ name, source: "ssh", ssh_host: group.alias, daemon_port: port ?? undefined, workspace_root: root });
@@ -308,7 +316,12 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (b.auto_connect !== undefined) patch.auto_connect = b.auto_connect ? 1 : 0;
         if (b.colour !== undefined) { if (b.colour !== null && !COLOUR.test(String(b.colour))) return bad("colour must be a CSS colour"); patch.colour = b.colour; }
         if (b.daemon_url !== undefined) { if (b.daemon_url !== null && !loopbackUrl(b.daemon_url)) return bad("daemon_url must be http on a loopback address"); patch.daemon_url = b.daemon_url && loopbackUrl(b.daemon_url)!.origin; }
-        if (b.daemon_port !== undefined) patch.daemon_port = b.daemon_port;
+        if (b.daemon_port !== undefined) {
+          // The same rule as for a new machine; null (or "") clears it.
+          const port = daemonPort(b.daemon_port);
+          if (port === undefined) return bad(BAD_PORT);
+          patch.daemon_port = port;
+        }
         if (b.messages !== undefined) { if (!["allow", "hold"].includes(b.messages)) return bad("messages is allow or hold"); patch.messages = b.messages; }
         if (b.max_jobs !== undefined) { if (b.max_jobs !== null && !(Number.isInteger(b.max_jobs) && b.max_jobs > 0)) return bad("max_jobs must be at least 1"); patch.max_jobs = b.max_jobs; }
         if (b.workspace_root !== undefined) { if (b.workspace_root !== null && !isAbsolute(String(b.workspace_root))) return bad("workspace_root must be absolute"); patch.workspace_root = b.workspace_root; }
