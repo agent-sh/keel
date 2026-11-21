@@ -7,7 +7,7 @@ import { Bus } from "../core/bus.ts";
 import { localStamp } from "../core/clock.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { buildBundle } from "./bundle.ts";
+import { buildBundle, logFor } from "./bundle.ts";
 import { Tracer } from "./trace.ts";
 
 test("a bundle asked from a span is about that span and the branch its turn ran on; a span no longer kept is said so", () => {
@@ -97,3 +97,21 @@ test("a bundle asked from a span is about that span and the branch its turn ran 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a session's own bundle holds its own log lines and the daemon's lines that name it, never another session's", () => {
+  const me = "01a1fd57-0861-7438-b6d5-030fa4213433", other = "01a1fd57-095a-7557-af0f-38a84abd7dd6";
+  const line = (text: string, session?: string) => ({ ts: 1, level: "info" as const, text, ...(session ? { session } : {}) });
+  const lines = [
+    line("keel listening on http://127.0.0.1:1"),
+    line("[provider] 529 overloaded", me),
+    line(`[turn] started agent ${me}`, other),
+    line("[provider] credit balance is too low", other),
+    line(`[daemon] session ${me} was archived by policy`),
+  ];
+  // The owner's bundle: every line of the window.
+  expect(logFor(lines, me, false)).toEqual(lines);
+  // Its own: the line of its turn and the daemon's line that names it; the other session's line that names it stays out.
+  expect(logFor(lines, me, true).map((l) => l.text)).toEqual(["[provider] 529 overloaded", `[daemon] session ${me} was archived by policy`]);
+  expect(logFor(lines, undefined, true)).toEqual([]);
+});
+

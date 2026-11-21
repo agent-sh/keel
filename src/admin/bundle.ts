@@ -9,7 +9,7 @@ import type { Store } from "../core/store.ts";
 import { leafOf, lineage } from "../core/tree.ts";
 import type { ErrorRecord, StoredEvent, TurnStatus } from "../core/types.ts";
 import { redact } from "../server/routes/admin.ts";
-import { logDir, logLines } from "./logs.ts";
+import { logDir, type LogLine, logLines } from "./logs.ts";
 import { type Span, SPAN_DAYS, traceIdOf, type Tracer } from "./trace.ts";
 
 const LOG_WINDOW_MS = 2 * 60_000;
@@ -28,6 +28,14 @@ const fence = (s: string, lang = "") => "```" + lang + "\n" + s.replace(/```/g, 
 // the owner: it holds that session only. No other session's open errors, no daemon log line that
 // does not name the session, no path of the daemon's, and no way to send a request again.
 export type BundleOpts = { error?: ErrorRecord; session_id?: string; turn_event?: string; span_id?: string; daemon: Record<string, unknown>; version?: string; own?: boolean; live?: (sessionId: string) => { running: boolean; status: TurnStatus } };
+
+// The log lines a bundle shows. The owner's holds every line of the window. A
+// session's own (`own`) holds the lines written in its turns, and the
+// daemon's own lines (written in no session's turn) that name it; a line
+// written in another session's turn is never in it, whatever it names.
+export function logFor(lines: LogLine[], sid: string | undefined, own: boolean): LogLine[] {
+  return own ? lines.filter((l) => !!sid && (l.session ? l.session === sid : l.text.includes(sid))) : lines;
+}
 
 export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { markdown: string; title: string; trace_id?: string } {
   const e = o.error;
@@ -145,7 +153,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
   // The daemon's log is every session's: a session reading about itself gets
   // the lines written in its own turns, and the daemon's own lines that name
   // it; never a line written in another session's turn.
-  const logs = logLines({ since: at - LOG_WINDOW_MS, until: at + 30_000 }).filter((l) => !o.own || (!!sid && (l.session ? l.session === sid : l.text.includes(sid)))).slice(-LOG_LINES);
+  const logs = logFor(logLines({ since: at - LOG_WINDOW_MS, until: at + 30_000 }), sid, !!o.own).slice(-LOG_LINES);
   if (!o.own || logs.length) {
     out.push(`## Daemon log around it (${iso(at - LOG_WINDOW_MS)} to ${iso(at + 30_000)}, ${logs.length} lines)`, "");
     // Whose line it is: this turn's, this session's, another session's, or the daemon's own (nothing said).
