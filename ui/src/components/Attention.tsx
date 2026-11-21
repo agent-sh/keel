@@ -1,10 +1,12 @@
 // What needs the owner, outside the page: the tab's title starts with how many
-// sessions need them, its icon carries a dot in the state's color (needs you,
+// things wait on them, its icon carries a dot in the state's color (needs you,
 // else working), and an installed app gets the count as its badge. So a tab
 // in the background, or the app in the dock, says when to come back.
+// Each waiting thing is counted once: an agent's question is its parent's
+// to answer and is in the parent's state, so only top-level sessions are read.
 import { useEffect, useMemo } from "react";
 import { useStore } from "../lib/store.ts";
-import { useWatches } from "../lib/watch.ts";
+import { useSessionStates } from "../lib/watch.ts";
 
 let base = "Keel";
 let need = 0;
@@ -48,10 +50,13 @@ function favicon(state: "need" | "work" | null) {
 
 export function Attention() {
   const sessions = useStore((s) => s.sessions);
-  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived), [sessions]);
-  const w = useWatches(list);
+  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
+  const states = useSessionStates(list);
   let n = 0, working = 0;
-  for (const s of list) { if (w[s.id] === "need") n++; else if (w[s.id] === "work") working++; }
+  for (const s of list) {
+    const st = states[s.id];
+    if (st?.watch === "need") n += st.asks ?? 1; else if (st?.watch === "work") working++;
+  }
   const state = n > 0 ? "need" : working > 0 ? "work" : null;
   useEffect(() => {
     need = n;

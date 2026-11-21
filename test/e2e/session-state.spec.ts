@@ -442,6 +442,33 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
   }
 });
 
+test("the tab title counts each waiting thing once", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const made: string[] = [];
+  try {
+    const parent = await start(request, "Fan out one check");
+    made.push(parent);
+    const ask = `Ask about scope\n${script([{ name: "AskUserQuestion", input: { questions: [{ header: "Scope", question: "Should the check cover staging?", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false }] } }])}`;
+    await send(request, parent, script([{ name: "spawn_agent", input: { message: ask, isolation: "none" } }]));
+    await expect.poll(async () => (await stateOf(request, parent))?.watch, { timeout: 30_000 }).toBe("need");
+    // What else waits on this daemon is counted too; the agent's question adds one, not two.
+    const others = async () => Object.entries((await (await request.get("/api/state")).json()).states as Record<string, { watch: string; asks?: number }>);
+    const sessions = (await (await request.get("/api/sessions")).json()).sessions as { id: string; parent_id?: string }[];
+    const roots = new Set(sessions.filter((s) => !s.parent_id).map((s) => s.id));
+    const want = (await others()).filter(([id, st]) => roots.has(id) && st.watch === "need").reduce((n, [, st]) => n + (st.asks ?? 1), 0);
+    expect((await stateOf(request, parent) as { asks?: number }).asks).toBe(1);
+    await page.goto(`/s/${parent}`);
+    await expect(page).toHaveTitle(new RegExp(`^\\(${want}\\) `));
+    // A second thing in another session is one more.
+    const asks = await start(request, "Clean the build output", "ask");
+    made.push(asks);
+    await send(request, asks, script([{ name: "Bash", input: { command: "rm -rf dist" } }]));
+    await expect(page).toHaveTitle(new RegExp(`^\\(${want + 1}\\) `));
+  } finally {
+    await drop(request, made);
+  }
+});
+
 test("the parent's Now line says what a parked agent waits for and until when", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });
