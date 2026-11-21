@@ -1,17 +1,55 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Bell, CheckCheck, Dot, Settings2, X } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { Bell, CheckCheck, Settings2, X } from "lucide-react";
+import { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import { alertTarget, auto, focusApproval, openSession, placeName, useAuto, type Alert, type Target } from "../../lib/automation.ts";
+import { useSafety } from "../../lib/safety.ts";
 import { navigate, setUI } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
-import { ago, cn } from "../../lib/utils.ts";
+import { ago, cn, when } from "../../lib/utils.ts";
 import { ActivityList } from "./ActivityList.tsx";
+import { plainLine } from "../../../../src/core/plain.ts";
 import { AwayDigest } from "./AwayDigest.tsx";
 import { ALERT_LABEL, ALERT_STATE, AlertIcon, CHANNEL_NAME, Empty } from "./bits.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 import { Seg, tabId } from "../Seg.tsx";
 
+const actCls = "flex h-ctl-md items-center gap-1.5 rounded-md px-2.5 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-ring";
 
+// Text a model wrote (a reply's first line, what an agent said, a question) is
+// markdown: the row reads it as words. A command or an error is kept as written.
+const WRITTEN = new Set<Alert["kind"]>(["finished", "agent", "question"]);
+const lineOf = (a: Alert) => (WRITTEN.has(a.kind) ? plainLine(a.body) : a.body.split("\n").find((l) => l.trim())?.trim()) || a.body;
+
+const WIDE = matchMedia("(min-width: 640px)");
+// The kinds that wait on the owner: their row opens the card that answers them, and says so.
+const ASKS = new Set<Alert["kind"]>(["approval", "question"]);
+
+const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+
+// Where alerts go besides this list, said once for all of them: the channels
+// some kind is routed to, and the chosen ones that are not set up.
+export function routesLine(routes: Record<string, string[]> | undefined, channels: { id: string; label: string; available: boolean }[]): string {
+  const chosen = new Set(Object.values(routes ?? {}).flat());
+  const name = (c: { id: string; label: string }) => CHANNEL_NAME[c.id] ?? c.label;
+  const on = channels.filter((c) => chosen.has(c.id) && c.available).map(name);
+  const off = channels.filter((c) => chosen.has(c.id) && !c.available).map(name);
+  const head = on.length ? `Alerts also go to ${list(on)}` : "Alerts stay here";
+  return off.length ? `${head}. ${list(off)} ${off.length > 1 ? "are" : "is"} not set up.` : on.length ? `${head}.` : `${head}: no route is chosen.`;
+}
+
+// Where this one alert went, for the row's tooltip: the list's line covers the
+// usual case, a row says it on screen only when a route failed.
+function routeOf(a: Alert): string | undefined {
+  const name = (c: string) => CHANNEL_NAME[c] ?? c;
+  const d = a.delivery;
+  const sent = d ? Object.keys(d).filter((c) => d[c]!.state !== "failed") : a.channels ?? [];
+  if (sent.length) return `Sent to ${list(sent.map(name))}`;
+  const only = a.data?.inbox_only;
+  if (only?.no_route) return "Kept here: no route is chosen for this kind";
+  if (only?.not_set_up) return `Kept here: ${list(only.not_set_up.map(name))} not set up`;
+  if (only?.routine) return "Kept here: a routine finish";
+  return undefined;
+}
 
 type Note = { text: string; parent?: string | null };
 
@@ -22,6 +60,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
   const alerts = useAuto((s) => s.alerts);
   const unread = useAuto((s) => s.unread.total);
   const sessions = useStore((s) => s.sessions);
+  const cards = useSafety((s) => s.approvals);
   const [onlyUnread, setOnlyUnread] = useState(false);
   const [notes, setNotes] = useState<Record<string, Note>>({});
   const note = (id: string, n: Note | null) => setNotes((cur) => {
@@ -29,6 +68,27 @@ function Inbox({ onClose }: { onClose: () => void }) {
     return n ? { ...rest, [id]: n } : rest;
   });
   const shown = onlyUnread ? alerts.filter((a) => !a.read) : alerts;
+  // A phone's drawer is too narrow for a title and its alert on one line.
+  const wide = useSyncExternalStore((f) => (WIDE.addEventListener("change", f), () => WIDE.removeEventListener("change", f)), () => WIDE.matches);
+  // One session's alerts (or one agent's inside it) stand together under its
+  // title, newest first, the session with the newest alert on top. An alert of
+  // no session is a group of its own.
+  const rows = useMemo(() => {
+    const groups = new Map<string, { a: Alert; child?: string; place: string }[]>();
+    for (const a of shown) {
+      const child = a.data?.child_session ?? (a.data?.open_session && a.data.open_session !== a.session_id ? a.data.open_session : undefined);
+      const key = a.session_id ? `${a.session_id}:${child ?? ""}` : a.id;
+      const place = placeName(sessions, a.session_id, child, { title: a.title, child_title: a.data?.child_title });
+      (groups.get(key) ?? groups.set(key, []).get(key)!).push({ a, child, place });
+    }
+    // `alone`: the session's only alert, which takes one line with its title. `asks`: an unread one
+    // waits on the owner, the only titles that carry weight.
+    // Requests that wait are a queue: a session's open approvals stand first in its group, in the
+    // order their cards are in (the calls' own order), not newest first.
+    const cardAt = (r: { a: Alert }) => (r.a.kind === "approval" && !r.a.read && r.a.session_id ? (cards[r.a.session_id] ?? []).findIndex((c) => c.id === r.a.data?.approval_id) : -1);
+    const queued = (g: { a: Alert; child?: string; place: string }[]) => [...g.filter((r) => cardAt(r) >= 0).sort((x, y) => cardAt(x) - cardAt(y)), ...g.filter((r) => cardAt(r) < 0)];
+    return [...groups.values()].map(queued).flatMap((g) => g.map((r, i) => ({ ...r, first: i === 0, last: i === g.length - 1, alone: wide && g.length === 1, fresh: g.some((x) => !x.a.read), asks: g.some((x) => !x.a.read && ASKS.has(x.a.kind)) })));
+  }, [shown, sessions, wide, cards]);
 
   const open = async (a: Alert) => {
     note(a.id, null);
@@ -49,7 +109,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
       if (!page) return note(a.id, { text: "This session was deleted." });
       openSession(page);
       onClose();
-      focusApproval(a.data.approval_id);
+      // The row showed the request in short: it is read on its card, the keyboard on no answer.
+      focusApproval(a.data.approval_id, "card");
       return;
     }
     if (t.child_deleted) return note(a.id, { text: "This agent was deleted.", parent: t.parent });
@@ -62,7 +123,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <AwayDigest onClose={onClose} />
-      <div className="flex items-center gap-1 px-3 py-2 text-caption">
+      <div className={bandCls}>
         <Seg
           label="Show"
           value={onlyUnread ? "unread" : "all"}
@@ -72,21 +133,18 @@ function Inbox({ onClose }: { onClose: () => void }) {
             { value: "unread", testid: "inbox-unread-filter", label: <>Unread{unread ? <span className="tabular-nums text-faint">{unread}</span> : null}</> },
           ]}
         />
-        <button
-          type="button"
-          data-testid="mark-all-read"
-          onClick={() => auto.read().catch(reportError)}
-          className="ml-auto flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-ring outline-none"
-        >
-          <CheckCheck className="size-3.5" /> Mark all read
+        <button type="button" data-testid="mark-all-read" onClick={() => auto.read().catch(reportError)} className={cn(actCls, "ml-auto whitespace-nowrap")}>
+          <CheckCheck className="size-3.5" /> <span className="max-sm:sr-only">Mark all read</span>
         </button>
       </div>
-      <ul className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-testid="inbox-list">
+      <ul className="min-h-0 flex-1 overflow-y-auto p-2 max-sm:pt-1.5" data-testid="inbox-list">
         {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : "Nothing needs you."}</Empty></li>}
-        {shown.map((a) => {
-          const child = a.data?.child_session ?? (a.data?.open_session && a.data.open_session !== a.session_id ? a.data.open_session : undefined);
-          const place = placeName(sessions, a.session_id, child, { title: a.title, child_title: a.data?.child_title });
+        {rows.map(({ a, first, last, alone, place, fresh, asks }) => {
+          // On a phone a row that waits gives its line the width: its mark and its "Review" say what it is, and its age is in the tooltip.
+          const tight = !wide && !a.read && ASKS.has(a.kind);
           const n = notes[a.id];
+          // On a shared line the width goes to what waits on the owner: the title gives way first there.
+          const title = <span dir="auto" className={cn("truncate text-left text-ui", asks ? "font-semibold text-fg" : fresh ? "text-fg" : "text-muted", !alone ? "mb-0.5 block" : asks ? "min-w-0 max-w-[30%] shrink" : "min-w-0 max-w-[46%] shrink")} data-testid="inbox-place">{place}</span>;
           return (
             <li
               key={a.id}
@@ -94,30 +152,32 @@ function Inbox({ onClose }: { onClose: () => void }) {
               data-alert={a.id}
               data-unread={!a.read || undefined}
               data-watch={ALERT_STATE[a.kind]}
-              className="k-alert group rounded-lg hover:bg-hover"
+              // A session's group ends with a hairline, so the one-line row after it is not read as its member.
+              className={cn("group", first && !alone && "mt-1.5 first:mt-0", last && !alone && wide && "mb-1.5 border-b border-line pb-1.5 last:mb-0 last:border-0 last:pb-0")}
             >
-              <div className="flex items-start">
+              <div className="flex items-end rounded-md hover:bg-hover">
                 <button
                   type="button"
                   data-testid="inbox-open"
                   onClick={() => void open(a)}
-                  className="flex min-w-0 flex-1 gap-3 rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="min-w-0 flex-1 rounded-md px-2.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <AlertIcon kind={a.kind} read={a.read} />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-baseline gap-2">
-                      <span className={cn("min-w-0 flex-1 truncate text-ui", !a.read ? "font-semibold" : "text-muted")} data-testid="inbox-place">{place}</span>
-                      <span className="shrink-0 text-micro text-faint tabular-nums">{ago(a.ts)}</span>
+                  {/* A session's alerts stand under its title, said once; its only alert shares the title's line. */}
+                  {first && !alone ? title : !first ? <span className="sr-only">{place}, </span> : null}
+                  <span className="flex min-h-ctl-sm items-center gap-2 text-caption">
+                    {/* The mark is the state, in its color while unread: a glyph, no box around it. */}
+                    <AlertIcon kind={a.kind} read={a.read} />
+                    {/* The kind stands second in both row forms, so the eye finds it in one place. */}
+                    <span className="shrink-0 text-muted" data-testid="inbox-state" title={routeOf(a)}>
+                      <span data-testid="inbox-word" className={tight ? "sr-only" : undefined}>{ALERT_LABEL[a.kind]}</span>
+                      <span className="sr-only">, {a.read ? "read" : "unread"}{a.data?.snoozed ? ", snoozed" : a.data?.held ? ", held by the snooze" : ""}: </span>
                     </span>
-                    <span className="flex flex-wrap items-center gap-x-1 text-caption text-faint" data-testid="inbox-state">
-                      <span className="k-alert-word">{ALERT_LABEL[a.kind]}</span>
-                      {/* The state in words for a reader; the eye has the bar and the dot. */}
-                      <span className="sr-only">, {a.read ? "read" : "unread"}</span>
-                      {a.data?.snoozed ? <><Dot className="size-3" aria-hidden /><span>snoozed</span></> : null}
-                      {a.data?.held ? <><Dot className="size-3" aria-hidden /><span>held by the snooze</span></> : null}
-                      <Route a={a} />
-                    </span>
-                    <span className={cn("mt-0.5 line-clamp-2 block text-caption leading-snug", a.read ? "text-faint" : "text-muted")}>{a.body}</span>
+                    {alone && title}
+                    <span dir="auto" className={cn("min-w-[4rem] truncate text-left", "flex-1", a.read ? "text-faint" : "text-fg")} data-testid="inbox-line" title={a.body}>{lineOf(a)}</span>
+                    {(a.data?.snoozed || a.data?.held) && <span className="shrink-0 text-micro text-faint" aria-hidden>{a.data?.snoozed ? "snoozed" : "held by the snooze"}</span>}
+                    {/* What waits on the owner is answered on its card: the row says it opens one. */}
+                    {!a.read && ASKS.has(a.kind) && <span className="shrink-0 text-micro font-medium text-accent-ink" data-testid="inbox-opens">{a.kind === "approval" ? "Review" : "Answer"}</span>}
+                    <span className={cn("shrink-0 text-micro text-faint tabular-nums", tight && "sr-only")} title={when(a.ts)}>{ago(a.ts)}</span>
                   </span>
                 </button>
                 <button
@@ -127,16 +187,16 @@ function Inbox({ onClose }: { onClose: () => void }) {
                   title={a.read ? "Mark unread" : "Mark read"}
                   onClick={() => (a.read ? auto.unreadOne(a.id) : auto.read({ ids: [a.id] })).catch(reportError)}
                   className={cn(
-                    "mr-1 mt-1.5 grid size-6 shrink-0 place-items-center rounded-md outline-none hover:bg-raised focus-visible:ring-2 focus-visible:ring-ring",
+                    "mb-1 mr-1 grid size-ctl-sm shrink-0 place-items-center rounded-md outline-none hover:bg-raised focus-visible:ring-2 focus-visible:ring-ring",
                     a.read && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                   )}
                 >
-                  {a.read ? <span className="size-2 rounded-full border border-line-strong" /> : <span className="k-alert-dot !mt-0" />}
+                  {a.read ? <span className="size-2 rounded-full border border-line-strong" /> : <span className="size-2 rounded-full bg-fg" data-testid="inbox-dot" />}
                 </button>
               </div>
               <Failed a={a} />
               {n && (
-                <p role="status" data-testid="inbox-note" className="flex items-center gap-2 px-2.5 pb-2 pl-[3.25rem] text-caption text-muted">
+                <p role="status" data-testid="inbox-note" className="flex items-center gap-2 px-2.5 pb-2 pl-[2.25rem] text-caption text-muted">
                   {n.text}
                   {n.parent && (
                     <button type="button" data-testid="inbox-open-parent" onClick={() => { openSession(n.parent!); onClose(); }} className="rounded-md px-1.5 py-0.5 text-accent hover:bg-raised outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -153,31 +213,13 @@ function Inbox({ onClose }: { onClose: () => void }) {
   );
 }
 
-
-// Where the alert went besides the inbox, channel by channel: handed over,
-// still on its way, or failed. Inbox only says why.
-function Route({ a }: { a: Alert }) {
-  const d = a.delivery;
-  const name = (c: string) => CHANNEL_NAME[c] ?? c;
-  const parts: string[] = [];
-  if (d) {
-    const sent = Object.keys(d).filter((c) => d[c]!.state === "sent");
-    const pending = Object.keys(d).filter((c) => d[c]!.state === "pending");
-    if (sent.length) parts.push(`sent to ${sent.map(name).join(", ")}`);
-    if (pending.length) parts.push(`sending to ${pending.map(name).join(", ")}`);
-  } else if (a.channels?.length) parts.push(`sent to ${a.channels.map(name).join(", ")}`);
-  const only = a.data?.inbox_only;
-  if (only?.no_route) parts.push("inbox only, no route chosen");
-  else if (only?.not_set_up) parts.push(`inbox only, ${only.not_set_up.map(name).join(", ")} not set up`);
-  else if (only?.routine) parts.push("inbox only, a routine finish");
-  return <>{parts.map((p) => <span key={p} className="contents"><Dot className="size-3" aria-hidden /><span>{p}</span></span>)}</>;
-}
+const bandCls = "flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-3 py-2 max-sm:py-1.5";
 
 function Failed({ a }: { a: Alert }) {
   const failed = Object.entries(a.delivery ?? {}).filter(([, d]) => d.state === "failed");
   if (!failed.length) return null;
   return (
-    <p className="flex items-center gap-2 px-2.5 pb-2 pl-[3.25rem] text-caption text-danger" data-testid="inbox-failed">
+    <p className="flex items-center gap-2 px-2.5 pb-1.5 pl-[2.25rem] text-caption text-danger" data-testid="inbox-failed">
       <span className="min-w-0 truncate" title={failed.map(([c, d]) => `${CHANNEL_NAME[c] ?? c}: ${d.error ?? "failed"}`).join("\n")}>
         {failed.map(([c]) => CHANNEL_NAME[c] ?? c).join(", ")} failed
       </span>
@@ -191,9 +233,14 @@ function Failed({ a }: { a: Alert }) {
 export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [tab, setTab] = useState("inbox");
   const panel = useId();
+  const routes = useAuto((s) => s.settings?.routes);
+  const channels = useAuto((s) => s.channels);
   useEffect(() => {
     if (open) auto.loadAlerts().catch(reportError);
   }, [open]);
+  const close = () => onOpenChange(false);
+  // The shared surface, as a drawer on the rail's side: its head holds the title and the two
+  // views; the list's own band and the delivery line at its foot are the Inbox's.
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -202,32 +249,31 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
           data-testid="inbox-panel"
           data-float
           className={cn(
-            "k-surface fixed left-[17rem] top-3 bottom-3 z-50 w-[min(32rem,calc(100vw-2rem))]",
-            "transition-[transform,opacity] duration-200 data-starting-style:-translate-x-3 data-starting-style:opacity-0 data-ending-style:-translate-x-3 data-ending-style:opacity-0",
+            "k-surface fixed left-3 top-3 bottom-3 z-50 w-[min(40rem,calc(100vw-1.5rem))]",
+            "transition-[transform,opacity] duration-200 data-starting-style:-translate-x-4 data-starting-style:opacity-0 data-ending-style:-translate-x-4 data-ending-style:opacity-0",
           )}
         >
           <div className="flex min-h-0 flex-1 flex-col">
-          <div className="k-surface-head">
-            <Bell className="k-surface-icon" />
-            <Dialog.Title className="k-surface-title">Inbox</Dialog.Title>
-            <Seg kind="tabs" panel={panel} label="Inbox views" value={tab} onChange={setTab} options={[{ value: "inbox", label: "Alerts", testid: "tab-inbox" }, { value: "activity", label: "Activity", testid: "tab-activity" }]} />
-            <span className="k-surface-end">
-            <GlobalSnoozeButton />
-            <button
-              type="button"
-              data-testid="alert-routes-link"
-              onClick={() => { onOpenChange(false); navigate({ name: "settings", section: "alerts" }); }}
-              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg"
-            >
-              <Settings2 className="size-3.5" /> Routes
-            </button>
-            <Dialog.Close className="k-surface-close" aria-label="Close">
-              <X />
-            </Dialog.Close>
-            </span>
-          </div>
-          {tab === "inbox" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><Inbox onClose={() => onOpenChange(false)} /></div>}
-          {tab === "activity" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><ActivityList onClose={() => onOpenChange(false)} /></div>}
+            <div className="k-surface-head">
+              <Bell className="k-surface-icon" />
+              <Dialog.Title className="k-surface-title">Inbox</Dialog.Title>
+              <Seg kind="tabs" panel={panel} label="Inbox views" value={tab} onChange={setTab} options={[{ value: "inbox", label: "Alerts", testid: "tab-inbox" }, { value: "activity", label: "Activity", testid: "tab-activity" }]} />
+              <span className="k-surface-end">
+                <Dialog.Close className="k-surface-close" aria-label="Close">
+                  <X />
+                </Dialog.Close>
+              </span>
+            </div>
+            {tab === "inbox" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><Inbox onClose={close} /></div>}
+            {tab === "activity" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><ActivityList onClose={close} /></div>}
+            {/* Delivery, once for the list: where alerts go besides here, and the two controls over it. */}
+            <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-1 border-t border-line px-3 py-2">
+              <p className="min-w-0 flex-1 basis-full px-1 text-caption leading-snug text-faint sm:basis-56" data-testid="inbox-routes">{routesLine(routes, channels)}</p>
+              <GlobalSnoozeButton />
+              <button type="button" data-testid="alert-routes-link" onClick={() => { close(); navigate({ name: "settings", section: "alerts" }); }} className={actCls}>
+                <Settings2 className="size-3.5" /> Routes
+              </button>
+            </div>
           </div>
         </Dialog.Popup>
       </Dialog.Portal>

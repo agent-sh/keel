@@ -24,12 +24,14 @@ test("alerts: snooze per session and global, activity list", async ({ page, requ
   await page.goto("/");
   await request.post("/api/alerts/test", { data: { kind: "finished", session_id: session.id } });
   await page.getByTestId("inbox-button").click();
-  const item = page.getByTestId("inbox-item").first();
+  // (This session's rows: a turn another spec left running may finish meanwhile and stand above them.)
+  const mine = page.getByTestId("inbox-item").filter({ hasText: "Snooze target" });
+  const item = mine.first();
   await expect(item).toContainText("snoozed");
   await expect(item).not.toHaveAttribute("data-unread");
   await expect(page.getByTestId("inbox-count")).toHaveCount(0);
   await request.post("/api/alerts/test", { data: { kind: "failed", session_id: session.id } });
-  await expect(page.getByTestId("inbox-item").first()).toHaveAttribute("data-unread", "true");
+  await expect(mine.first()).toHaveAttribute("data-unread", "true");
   await expect(page.getByTestId("snoozed-mark")).toHaveCount(0);
   await shoot(page, "snooze-02-inbox");
 

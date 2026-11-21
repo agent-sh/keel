@@ -747,26 +747,16 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-child-approvals > * { border-radius: 0.3125rem; }
 
 /* ---------- Alerts: the inbox speaks in the state colors ---------- */
-.k-alert-icon, .k-alert, .k-inbox-count { --k-st: var(--st-idle); }
-:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="need"] { --k-st: var(--st-need); }
-:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="work"] { --k-st: var(--st-work); }
-:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="wait"] { --k-st: var(--st-wait); }
-:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="fail"] { --k-st: var(--st-fail); }
-:is(.k-alert-icon, .k-alert, .k-inbox-count)[data-watch="done"] { --k-st: var(--st-done); }
-.k-alert-icon {
-  display: grid; place-items: center; flex-shrink: 0; width: 1.75rem; height: var(--spacing-ctl-md); border-radius: 0.375rem;
-  color: var(--k-st); background: color-mix(in oklch, var(--k-st) 13%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--k-st) 30%, transparent);
-}
-.k-alert-icon svg { width: 0.875rem; height: 0.875rem; }
-/* Read: the color stays as a tint, the tile goes quiet. */
-.k-alert-icon[data-read] { background: transparent; box-shadow: inset 0 0 0 1px var(--line); color: color-mix(in oklch, var(--k-st) 70%, var(--faint)); }
-.k-alert { position: relative; }
-.k-alert[data-unread]::before { content: ""; position: absolute; left: 0; top: 0.5625rem; bottom: 0.5625rem; width: 2px; border-radius: 1px; background: var(--k-st); }
-.k-alert[data-unread] .k-alert-word { color: var(--k-st); font-weight: 700; font-size: var(--text-micro); letter-spacing: 0.06em; text-transform: uppercase; }
-.k-alert-dot { flex-shrink: 0; width: 0.5rem; height: 0.5rem; margin-top: 0.4375rem; border-radius: 50%; background: var(--k-st); }
-.k-alert[data-watch="need"] .k-alert-dot { border-radius: 1px; transform: rotate(45deg) scale(0.86); }
-.k-alert[data-watch="fail"] .k-alert-dot { border-radius: 1px; }
+.k-alert-icon, .k-inbox-count { --k-st: var(--st-idle); }
+:is(.k-alert-icon, .k-inbox-count)[data-watch="need"] { --k-st: var(--st-need); }
+:is(.k-alert-icon, .k-inbox-count)[data-watch="work"] { --k-st: var(--st-work); }
+:is(.k-alert-icon, .k-inbox-count)[data-watch="wait"] { --k-st: var(--st-wait); }
+:is(.k-alert-icon, .k-inbox-count)[data-watch="fail"] { --k-st: var(--st-fail); }
+:is(.k-alert-icon, .k-inbox-count)[data-watch="done"] { --k-st: var(--st-done); }
+/* An alert's mark: a glyph in its state's color while unread, quiet once read. No box of its own. */
+.k-alert-icon { display: grid; place-items: center; flex-shrink: 0; width: 1rem; height: 1rem; color: var(--k-st); }
+.k-alert-icon svg { width: 0.9375rem; height: 0.9375rem; }
+.k-alert-icon[data-read] { color: color-mix(in oklch, var(--k-st) 45%, var(--faint)); }
 .k-inbox-count {
   min-width: 1rem; height: 1rem; padding: 0 0.3125rem; border-radius: 0.5rem;
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);

@@ -123,6 +123,7 @@ function localShellDir(session: Session, call: ToolCall, target: Target, cls: Ca
 }
 
 export class Gate {
+  private lastCard = 0; // when the newest card was made
   private waiting = new Map<string, Waiter>();
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
@@ -579,7 +580,8 @@ export class Gate {
     const a: Approval = this.unpark(session.id, call.id, once) ?? {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, cut: ask.cut, notice: ask.notice,
-      input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: Date.now(),
+      // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
+      input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,
     };
     return this.wait(a, session, call, name, cls);

@@ -129,7 +129,7 @@ test("alerts: rows by keyboard, kept unread, a failed hook, routes one by one", 
   expect(after.sessions[session.id]).toBe(1);
   // The unread view lists exactly what the count says.
   await page.getByTestId("inbox-button").click();
-  await page.getByTestId("inbox-unread-filter").click();
+  await page.getByTestId("inbox-unread-filter").check();
   await expect(page.getByTestId("inbox-item")).toHaveCount(1);
   await page.getByTestId("mark-all-read").click();
   await expect(page.getByTestId("inbox-item")).toHaveCount(0);
@@ -140,7 +140,7 @@ test("alerts: rows by keyboard, kept unread, a failed hook, routes one by one", 
     const { writeFileSync, rmSync } = await import("node:fs");
     writeFileSync(`${NOTIFY_LOG}.fail`, "");
     try {
-      await page.getByTestId("inbox-unread-filter").click();
+      await page.getByTestId("inbox-unread-filter").check();
       await request.post("/api/alerts/test", { data: { kind: "agent" } });
       const failed = page.getByTestId("inbox-item").first();
       await expect(failed.getByTestId("inbox-failed")).toContainText("Command hook failed");
@@ -149,7 +149,8 @@ test("alerts: rows by keyboard, kept unread, a failed hook, routes one by one", 
       rmSync(`${NOTIFY_LOG}.fail`, { force: true });
     }
     await page.getByTestId("inbox-retry").click();
-    await expect(page.getByTestId("inbox-item").first().getByTestId("inbox-state")).toContainText("sent to Command hook");
+    // The row says no route again once it went through; where it went is its tooltip.
+    await expect(page.getByTestId("inbox-item").first().getByTestId("inbox-state")).toHaveAttribute("title", "Sent to Command hook");
     await expect(page.getByTestId("inbox-failed")).toHaveCount(0);
     await page.getByTestId("mark-all-read").click();
   }
@@ -176,4 +177,109 @@ test("alerts: rows by keyboard, kept unread, a failed hook, routes one by one", 
   await request.post("/api/alerts/read", { data: {} });
   await request.delete(`/api/sessions/${session.id}`);
   expect(await others()).toBe(errorsBefore);
+});
+
+// A row is a title, a state and one line of plain words. Where alerts go is
+// said once, at the top of the list; a row names a route only when it failed.
+// The Inbox is a drawer with a title, as Errors is.
+test("alerts: a row is title, state and one line; routes are said once", async ({ page, request }) => {
+  await request.post("/api/alerts/read", { data: {} });
+  await page.goto("/");
+  await expect(page.getByTestId("new-composer")).toBeVisible();
+  // A reply that opens with a markdown heading, finished while the page is elsewhere.
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Write up the parser move", text: "script:render" } })).json();
+  await expect(page.getByTestId("inbox-count")).toHaveText("1", { timeout: 60_000 });
+  for (const kind of ["question", "failed", "approval"]) await request.post("/api/alerts/test", { data: { kind, session_id: session.id } });
+  // A second session with one alert, of a kind that asks nothing of the owner.
+  const { session: quiet } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Tidy the changelog" } })).json();
+  await request.post("/api/alerts/test", { data: { kind: "agent", session_id: quiet.id } });
+  // A third with one alert that waits on the owner, under a title longer than its line has room for.
+  const { session: waits } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Decide which of the three plan names the pricing page should carry from next quarter on" } })).json();
+  await request.post("/api/alerts/test", { data: { kind: "question", session_id: waits.id } });
+
+  await page.getByTestId("inbox-button").click();
+  const panel = page.getByTestId("inbox-panel");
+  // A title on screen, in a drawer that starts at the window's edge, not over the rail's.
+  const title = await panel.getByRole("heading", { name: "Inbox" }).boundingBox();
+  expect(title!.height).toBeGreaterThan(12);
+  expect((await panel.boundingBox())!.x).toBeLessThan(16);
+  await page.getByTestId("inbox-unread-filter").check();
+  const all = page.getByTestId("inbox-item");
+  await expect(all).toHaveCount(6);
+  // A session's only alert takes one line, its title beside it; no mark has a box around it;
+  // weight is on what waits for the owner, not on every unread title.
+  const lone = page.locator(`[data-testid="inbox-item"]`).filter({ hasText: "Tidy the changelog" });
+  await expect(lone.getByTestId("inbox-place")).toHaveText("Tidy the changelog");
+  expect((await lone.boundingBox())!.height).toBeLessThanOrEqual(40);
+  expect(await lone.getByTestId("alert-icon").evaluate((el) => { const c = getComputedStyle(el); return `${c.boxShadow} ${c.backgroundColor}`; })).toBe("none rgba(0, 0, 0, 0)");
+  expect(Number(await lone.getByTestId("inbox-place").evaluate((el) => getComputedStyle(el).fontWeight))).toBeLessThan(600);
+  // The kind stands in one place in both row forms: second, after the mark.
+  const wordX = async (row: typeof lone) => Math.round((await row.getByTestId("inbox-word").boundingBox())!.x);
+  const asks = all.filter({ hasText: "Decide which of the three" });
+  expect(await wordX(lone)).toBe(await wordX(asks));
+  expect((await lone.getByTestId("inbox-word").boundingBox())!.x).toBeLessThan((await lone.getByTestId("inbox-place").boundingBox())!.x);
+  // On a shared line the width goes to what waits, not to the title: the title is cut first.
+  expect((await asks.getByTestId("inbox-line").boundingBox())!.width).toBeGreaterThan((await asks.getByTestId("inbox-place").boundingBox())!.width);
+  const rows = all.filter({ hasNotText: "Tidy the changelog" }).filter({ hasNotText: "Decide which of the three" });
+  await expect(rows).toHaveCount(4);
+  expect(await wordX(rows.first())).toBe(await wordX(lone));
+  expect(Number(await rows.first().getByTestId("inbox-place").evaluate((el) => getComputedStyle(el).fontWeight))).toBeGreaterThanOrEqual(600);
+  // A row that waits on the owner says that it opens the card that answers it.
+  await expect(rows.filter({ hasText: "Approval" }).getByTestId("inbox-opens")).toHaveText("Review");
+  await expect(rows.filter({ hasText: "Question" }).getByTestId("inbox-opens")).toHaveText("Answer");
+  await expect(rows.filter({ hasText: "Finished" }).getByTestId("inbox-opens")).toHaveCount(0);
+  // The model's markdown is read as words.
+  const finished = rows.filter({ hasText: "Finished" }).first();
+  await expect(finished.getByTestId("inbox-line")).toHaveText(/^The parser, moved: The change is in notes\/plan\.md:2/);
+  // Routes: once for the list, on no row.
+  await expect(page.getByTestId("inbox-routes")).toHaveCount(1);
+  await expect(page.getByTestId("inbox-routes")).toContainText(/also go to .*Command hook|stay here/);
+  for (const row of await rows.all()) {
+    await expect(row).not.toContainText(/inbox only|sent to|sending to|not set up/i);
+    // The state word is followed by the line, never by a separator with nothing after it.
+    await expect(row.getByTestId("inbox-state").locator("svg")).toHaveCount(0);
+    // One line: the row's words are the title's line and one more.
+    const lines = await row.getByTestId("inbox-line").evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+    expect(lines).toBe(1);
+  }
+  // The four are one session's: its title stands once, over them.
+  await expect(rows.getByTestId("inbox-place")).toHaveCount(1);
+  await expect(rows.getByTestId("inbox-place")).toHaveText("Write up the parser move");
+  // An unread row says its state once, with its mark: no bar, no second colored mark,
+  // and the state word in the same face and case as on a read row.
+  const first = rows.first();
+  const face = (row: typeof first) => row.getByTestId("inbox-word").evaluate((el) => { const c = getComputedStyle(el); return [c.fontFamily, c.textTransform, c.fontWeight, c.color].join("|"); });
+  expect(await first.evaluate((el) => getComputedStyle(el, "::before").content)).toBe("none");
+  const unreadFace = await face(first);
+  expect(unreadFace).toContain("|none|");
+  expect(await first.getByTestId("inbox-dot").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await rows.getByTestId("inbox-place").evaluate((el) => getComputedStyle(el).color));
+  // What a person or a model wrote reads in its own direction.
+  for (const id of ["inbox-place", "inbox-line"]) await expect(rows.getByTestId(id).first()).toHaveAttribute("dir", "auto");
+  await shoot(page, "alerts-09-rows");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(panel).toBeInViewport({ ratio: 1 });
+  // On a phone the list starts high: the bands over it are two short rows.
+  expect((await all.first().boundingBox())!.y).toBeLessThanOrEqual(124);
+  // A phone's drawer is too narrow for a title and its alert on one line: the lone alert stands under its title there.
+  expect((await lone.boundingBox())!.height).toBeGreaterThan(44);
+  await shoot(page, "alerts-09-rows-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  // Read, the word keeps its face.
+  await first.getByTestId("inbox-toggle-read").click();
+  await page.getByTestId("inbox-panel").getByRole("radio", { name: "All" }).click();
+  const read = page.locator(`[data-testid="inbox-item"]:not([data-unread])`).first();
+  expect(await face(read)).toBe(await face(page.locator(`[data-testid="inbox-item"][data-unread]`).first()));
+  // The Activity view says a session's title once a row (under the text), and marks an alert by its kind.
+  await page.getByTestId("tab-activity").click();
+  const act = page.locator('[data-testid="activity-item"][data-kind="alert"]').filter({ has: page.getByTestId("activity-place").filter({ hasText: "Tidy the changelog" }) }).first();
+  await expect(act).toBeVisible();
+  expect(((await act.innerText()).match(/Tidy the changelog/g) ?? []).length).toBe(1);
+  await expect(act.getByTestId("alert-icon")).toHaveAttribute("data-watch", "work");
+  await expect(act.getByTestId("activity-word")).toHaveText(/From the agent/);
+  await shoot(page, "alerts-10-activity");
+  await page.getByTestId("tab-inbox").click();
+  await page.getByTestId("mark-all-read").click();
+  await request.delete(`/api/sessions/${waits.id}`);
+  await request.delete(`/api/sessions/${session.id}`);
+  await request.delete(`/api/sessions/${quiet.id}`);
 });

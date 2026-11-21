@@ -1,11 +1,11 @@
 import { Bell, Bot, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, Workflow } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { activityTarget, auto, openSession, placeName, useAuto, type Activity } from "../../lib/automation.ts";
+import { activityTarget, auto, openSession, placeName, useAuto, type Activity, type Alert } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { openReceipt } from "../../lib/timeline.ts";
 import { ago, cn, when } from "../../lib/utils.ts";
 import { type Restart, restartSummary, restartTurnLine } from "../../../../src/admin/life-rows.ts";
-import { Empty } from "./bits.tsx";
+import { ALERT_LABEL, AlertIcon, Empty } from "./bits.tsx";
 import { Select } from "../Select.tsx";
 
 const KIND: Record<Activity["kind"], { label: string; icon: typeof Bell }> = {
@@ -143,11 +143,19 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           const place = a.session_id ? placeName(sessions, a.session_id, a.data?.child_session, { child_title: a.data?.child_title }) : "";
           // A daemon restart: the sentence in this page's own time zone, then a line for each turn it cut, which opens its session.
           const restart = a.kind === "daemon" ? (a.data?.restart as Restart | undefined) : undefined;
+          // An alert's row carries its kind's own mark and word, and its session's title once: under the text.
+          const alert = a.kind === "alert" && a.sub in ALERT_LABEL ? (a.sub as Alert["kind"]) : null;
+          const title = a.session_id ? sessions[a.session_id]?.title : undefined;
+          const at = alert && title ? a.text.indexOf(`${title}: `) : -1;
+          const cut = at >= 0 && at <= 40 ? a.text.slice(0, at) + a.text.slice(at + title!.length + 2) : a.text;
+          const text = alert && cut.toLowerCase().startsWith(`${ALERT_LABEL[alert].toLowerCase()}: `) ? cut.slice(ALERT_LABEL[alert].length + 2) : cut;
           const body = (
             <>
-              <Icon className={cn("mt-0.5 size-3.5 shrink-0", bad(a) ? "text-danger" : "text-faint")} aria-hidden />
+              {alert
+                ? <span className="mt-0.5 shrink-0"><AlertIcon kind={alert} read={!bad(a)} /></span>
+                : <Icon className={cn("mt-0.5 size-3.5 shrink-0", bad(a) ? "text-danger" : "text-faint")} aria-hidden />}
               <span className="min-w-0 flex-1">
-                <span className="block text-caption leading-snug">{restart ? restartSummary(restart) : a.text}</span>
+                <span dir="auto" className="block text-caption leading-snug">{restart ? restartSummary(restart) : <>{alert && <span className="text-muted" data-testid="activity-word">{ALERT_LABEL[alert]} </span>}{text}</>}</span>
                 {restart?.turns.map((t) => (
                   <button
                     key={t.end_event}

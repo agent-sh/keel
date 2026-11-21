@@ -7,6 +7,7 @@ import { QUESTION_CUT } from "../core/stops.ts";
 import { planWaits } from "../server/routes/plan.ts";
 import { sessionState } from "./state.ts";
 import { readText } from "../core/proc.ts";
+import { plainLine } from "../core/plain.ts";
 import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
@@ -591,5 +592,5 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   }
   // How long the turn ran: a long one is worth a desktop notice (LONG_TURN_MS).
   const ran_ms = start >= 0 ? Date.now() - all[start]!.ts : undefined;
-  raise("finished", sessionId, title, clip(text.split("\n")[0]!, 300) || "The turn finished.", event || ran_ms !== undefined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}) } : undefined);
+  raise("finished", sessionId, title, plainLine(text) || "The turn finished.", event || ran_ms !== undefined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}) } : undefined);
 }
