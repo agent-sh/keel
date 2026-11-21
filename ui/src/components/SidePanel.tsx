@@ -102,7 +102,7 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
                 onKeyDown={(e) => { const top = shown[0]?.items[0]; if (e.key === "Enter" && !composing(e) && top) pick(top.id); }}
               />
             </label>
-            <div className="k-picker-list">
+            <div className="k-picker-list k-scroll-more">
               {shown.map(({ g, items }) => {
                 return (
                   <section key={g}>

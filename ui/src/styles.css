@@ -355,6 +355,17 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
   textarea, input { font-size: max(16px, 1rem) !important; }
 }
 
+/* ---------- An overlay ends cleanly ----------
+   What scrolls inside a popup or a dialog never stops in the middle of a line
+   without saying so: while more is below, its foot fades out; at the end the
+   fade is gone. Where there is nothing to scroll there is no fade. */
+@property --k-foot { syntax: "<length>"; inherits: false; initial-value: 0px; }
+.k-scroll-more { overflow-y: auto; overscroll-behavior: contain; }
+@supports (animation-timeline: scroll()) {
+  .k-scroll-more { mask-image: linear-gradient(to bottom, #000 calc(100% - var(--k-foot)), transparent); animation: k-foot linear both; animation-timeline: scroll(self block); }
+}
+@keyframes k-foot { from, 96% { --k-foot: 2.5rem; } to { --k-foot: 0px; } }
+
 /* ---------- A panel's shortcut in a head ----------
    Its glyph and its name, so each is told apart without pointing at it; the
    one that is open is raised. Where the row is short (a pane among several)

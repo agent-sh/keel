@@ -109,3 +109,42 @@ test("the header's panel shortcuts show their names", async ({ page, request }) 
   await expect.poll(async () => (await words()).filter((w) => w.shown).length).toBe(0);
   for (const w of await words()) { expect(w.text).toBe(w.name); expect(w.icon).toBe(true); }
 });
+
+// An overlay ends cleanly. The panel chooser shows every group when the window
+// has the room; the shortcut sheet keeps its head in place, a label that wraps
+// has a row tall enough for it, and while more is below the foot fades out.
+test("the panel chooser and the shortcut sheet end cleanly", async ({ page, request }) => {
+  const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
+  const { session } = await (await request.post("/api/sessions", { data: { model, title: "Overlays end cleanly" } })).json();
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("panel-menu").first().click();
+  const list = page.getByTestId("panel-picker").locator(".k-picker-list");
+  await list.waitFor();
+  // Nothing is cut: the whole list is on screen, its last row inside the popup.
+  const cut = await list.evaluate((el) => ({ hidden: el.scrollHeight - el.clientHeight, lastInside: el.lastElementChild!.getBoundingClientRect().bottom <= el.getBoundingClientRect().bottom + 1 }));
+  expect(cut.hidden).toBeLessThanOrEqual(1);
+  expect(cut.lastInside).toBe(true);
+  await shoot(page, "surfaces-07-panel-chooser");
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Control+/");
+  const sheet = page.getByTestId("shortcuts");
+  const body = page.getByTestId("shortcuts-body");
+  await body.waitFor();
+  // No row is shorter than its label, so a wrapped label never runs into the next row.
+  const rows = await body.evaluate((el) => [...el.querySelectorAll("section > div")].map((row) => ({ label: row.firstElementChild!.textContent, row: row.getBoundingClientRect().height, text: row.firstElementChild!.getBoundingClientRect().height })));
+  expect(rows.length).toBeGreaterThan(20);
+  expect(rows.filter((r) => r.text > r.row)).toEqual([]);
+  // The head stays; the body scrolls under it.
+  await expect(sheet.locator(".k-surface-title")).toHaveText("Keyboard shortcuts");
+  const foot = () => body.evaluate((el) => ({ more: Math.round(el.scrollHeight - el.clientHeight - el.scrollTop), fade: parseFloat(getComputedStyle(el).getPropertyValue("--k-foot")) }));
+  // A window too short for the sheet: its foot fades while more is below, and not at the end.
+  await page.setViewportSize({ width: 1920, height: 700 });
+  await expect.poll(async () => (await foot()).more).toBeGreaterThan(40);
+  expect((await foot()).fade).toBeGreaterThan(20);
+  await shoot(page, "surfaces-08-shortcuts");
+  await body.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  await expect.poll(async () => (await foot()).fade).toBe(0);
+  await expect(sheet.locator(".k-surface-title")).toBeInViewport();
+});
