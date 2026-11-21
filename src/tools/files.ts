@@ -58,13 +58,11 @@ const CHUNK = 64 * 1024;
 // rest of the file is not read, and nothing held grows with the file. `total`
 // is the file's line count when the scan reached its end (`past`: the offset
 // lies beyond it); a page cut before that says where to continue without it.
-// `signal` stops a scan on its way to a far offset. A limit below zero asks
-// for no lines, as numbered() takes it: none are kept, and the scan goes as
-// far as the offset's own line, so an offset past the end is still told.
+// `signal` stops a scan on its way to a far offset. (A limit below 1 is
+// refused by the tools before a file is read: readFile, read_file.)
 export async function lineRange(p: string, o: { offset?: number; limit?: number; number?: boolean; maxChars?: number; signal?: AbortSignal } = {}): Promise<{ body: string; partial: boolean; total?: number; past?: boolean; stopped?: boolean; bytes: number }> {
   const start = Math.max(1, o.offset ?? 1);
-  const none = (o.limit ?? 0) < 0;
-  const end = none ? start : o.limit ? start - 1 + o.limit : Infinity;
+  const end = o.limit ? start - 1 + o.limit : Infinity;
   const maxChars = o.maxChars ?? READ_CHARS;
   const out: string[] = [];
   let size = 0;
@@ -75,7 +73,7 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
   let cut = false;
   // The line read is over: it joins the page unless the page is full. False ends the read.
   const close = () => {
-    if (line >= start && !none) {
+    if (line >= start) {
       const l = len > LINE_CAP ? `${head} [line cut at ${LINE_CAP} of ${len} chars]` : head;
       const row = o.number === false ? l : `${line}\t${l}`;
       if (size + row.length > maxChars && out.length) return !(cut = true);
@@ -138,6 +136,8 @@ export async function readFile(p: string, ctx: ToolContext, o: { offset?: number
   let st;
   try { st = statSync(p); } catch { return { content: notFound(p, ctx.cwd), error: true }; }
   if (st.isDirectory()) return { content: `${p} is a directory. List it with the shell (ls).`, error: true };
+  // A count of lines: one below 1 reads nothing, and an empty result with no reason reads as an empty file.
+  if (o.limit !== undefined && o.limit < 1) return { content: `limit is the number of lines to read, 1 or more (it was ${o.limit}). Leave it out to read on from the offset.`, error: true };
   if (isClaimFile(p)) return { content: claimNote(p), error: true };
   const f = Bun.file(p);
   const ext = extname(p).toLowerCase();

@@ -422,6 +422,11 @@ test("a session reads its own timeline and its agents' through a tool, and no ot
     await page.goto(`${d.url}/s/${id}`);
     await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 7 calls", { timeout: 30_000 });
     await shoot(page, "timeline-tool-01-calls");
+    // An agent whose session was deleted: the answer says that, not that it is on another machine.
+    await call(`/api/sessions/${agent.session_id}`, undefined, "DELETE");
+    await call(`/api/sessions/${id}/messages`, { text: script([tool({ session: agent.id })]) });
+    await idle(id, 4);
+    expect((await results(id)).at(-1)).toMatchObject({ is_error: true, content: "NOT_AVAILABLE: that agent's session was deleted, so it has no timeline to read." });
     const errs = (await call("/api/errors?resolved=0")).errors as { context?: { at?: string } }[];
     expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
   } finally {

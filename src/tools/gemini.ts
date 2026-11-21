@@ -68,6 +68,7 @@ const read_file: Tool = {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
       if (isClaimFile(p)) return fail(claimNote(p));
       const limit = e ? e - (s ?? 1) + 1 : undefined;
+      if (limit !== undefined && limit < 1) return fail(`end_line ${e} is before start_line ${s}: no line is in that range. Leave end_line out to read on from start_line.`);
       if (Bun.file(p).size > WHOLE_FILE_BYTES) {
         // Too large to read whole: only the lines up to the range's end are read.
         const r = await lineRange(p, { offset: s ?? 1, limit, number: false, signal: ctx.signal });
@@ -77,6 +78,8 @@ const read_file: Tool = {
       }
       const { text } = decodeText(new Uint8Array(await Bun.file(p).arrayBuffer()));
       ctx.seen.set(p, mtime(p));
+      // As a whole read says it: an empty file has no line 1 to be past.
+      if (!text) return ok(`${p} exists but is empty.`);
       const r = numbered(text, s ?? 1, limit, false);
       // The same answer as for a file read in chunks: a start past the end is said, not an empty success.
       return s && s > r.total ? fail(`${p} has ${r.total} lines; line ${s} is past the end.`) : ok(r.body);

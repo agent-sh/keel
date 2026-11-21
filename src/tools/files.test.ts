@@ -219,11 +219,12 @@ test("a negative limit and a start past the end read the same for a small file a
   const g = geminiTools.find((t) => t.name === "read_file")!;
   for (const { p, n } of [small, large]) {
     const read = async (o: { offset?: number; limit?: number }) => { const r = await readFile(p, ctx, o); return [r.content, r.error ?? false]; };
-    // A limit below zero asks for no lines: none come back, from any offset in the file.
-    expect([p, await read({ offset: 5, limit: -1 })]).toEqual([p, ["", false]]);
-    expect([p, await read({ offset: n, limit: -3 })]).toEqual([p, ["", false]]);
-    // A start past the end is named with the line count, whatever the limit.
-    for (const limit of [undefined, 1, -1]) expect([p, limit, await read({ offset: n + 1, limit })]).toEqual([p, limit, [`${p} has ${n} lines; offset ${n + 1} is past the end.`, true]]);
+    // A limit below 1 is said, with what a limit is: not an empty result a model would read as an empty range.
+    for (const [offset, limit] of [[5, -1], [n, -3], [n + 1, -1], [1, 0]]) {
+      expect([p, await read({ offset, limit })]).toEqual([p, [`limit is the number of lines to read, 1 or more (it was ${limit}). Leave it out to read on from the offset.`, true]]);
+    }
+    // A start past the end is named with the line count.
+    for (const limit of [undefined, 1]) expect([p, limit, await read({ offset: n + 1, limit })]).toEqual([p, limit, [`${p} has ${n} lines; offset ${n + 1} is past the end.`, true]]);
     // The last line is not past the end.
     expect([p, await read({ offset: n, limit: 1 })]).toEqual([p, [`${n}\t${row(n)}`, false]]);
     // The Gemini profile's read_file, by start and end line.
@@ -231,7 +232,19 @@ test("a negative limit and a start past the end read the same for a small file a
     expect([p, await lines({ start_line: n + 1 })]).toEqual([p, [`${p} has ${n} lines; line ${n + 1} is past the end.`, true]]);
     expect([p, await lines({ start_line: n + 4, end_line: n + 9 })]).toEqual([p, [`${p} has ${n} lines; line ${n + 4} is past the end.`, true]]);
     expect([p, await lines({ start_line: n, end_line: n + 9 })]).toEqual([p, [row(n), false]]);
-    expect([p, await lines({ start_line: 9, end_line: 5 })]).toEqual([p, ["", false]]);
+    expect([p, await lines({ start_line: 9, end_line: 5 })]).toEqual([p, ["end_line 5 is before start_line 9: no line is in that range. Leave end_line out to read on from start_line.", true]]);
+  }
+  // Claude's Read takes a limit of 0 as not given (its default page); a negative one is refused with the reason.
+  const Read = claudeTools.find((t) => t.name === "Read")!;
+  expect((await Read.run({ file_path: small.p, offset: 199, limit: 0 }, ctx)).content).toBe(`199\t${row(199)}\n200\t${row(200)}`);
+  expect(await Read.run({ file_path: small.p, limit: -1 }, ctx)).toMatchObject({ is_error: true, content: expect.stringContaining("limit is the number of lines to read, 1 or more (it was -1)") });
+  // An empty file is empty to both tools, from any line asked for.
+  const empty = join(dir, "empty.txt");
+  writeFileSync(empty, "");
+  expect([(await readFile(empty, ctx, { offset: 2 })).content, (await readFile(empty, ctx, { offset: 2 })).error ?? false]).toEqual([`${empty} exists but is empty.`, false]);
+  for (const input of [{ start_line: 2 }, { start_line: 1, end_line: 3 }, {}]) {
+    const r = await g.run({ file_path: empty, ...input }, ctx);
+    expect([input, r.content, r.is_error ?? false]).toEqual([input, `${empty} exists but is empty.`, false]);
   }
   rmSync(dir, { recursive: true, force: true });
 });

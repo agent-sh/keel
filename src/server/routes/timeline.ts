@@ -69,7 +69,7 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
         id = found[0];
       }
       const s = store.session(id);
-      if (!s) return fail("NOT_AVAILABLE: that session is not on this machine any more.");
+      if (!s) return fail(want ? "NOT_AVAILABLE: that agent's session was deleted, so it has no timeline to read." : "NOT_AVAILABLE: this session was deleted.");
       if (input?.open !== undefined) {
         // One failure in full: the bundle keel debug prints, for a failure of this session or of an agent it started.
         const ref = String(input.open).trim().replace(/^\[|\]$/g, "");
