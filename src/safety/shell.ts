@@ -1,7 +1,7 @@
 // Shell command analysis for the permission gate: split a command line into
 // the simple commands it runs, decide which are read-only, which are high
 // risk, and whether a stored rule covers each one. Pure functions.
-import { ENDS, READERS, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
+import { ENDS, KEPT, READERS, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
 
 // One simple command: its words with quotes removed, and whether it writes
 // through a redirection. `nested`: it runs inside a substitution or a
@@ -399,7 +399,7 @@ const READ_PROGRAMS = new Set([
   "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "pwd", "echo", "which", "type",
   "stat", "du", "df", "cut", "tr", "diff", "cmp", "jq", "basename", "dirname", "realpath",
   "readlink", "whoami", "id", "uname", "true", "false", "cd", "nl", "column",
-  "sha256sum", "md5sum", "free", "uptime", "nproc", "lsof", "ps", "printenv",
+  "sha256sum", "md5sum", "free", "uptime", "nproc", "ps", "printenv",
 ]);
 const GIT_READ = new Set([
   "status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "blame", "grep", "describe", "shortlog",
@@ -594,7 +594,7 @@ function gitConfigReads(rest: string[]): boolean {
 }
 
 // Options of the reading subcommands that take no value: a `--` right after one of them ends the options, and is not a value.
-const GIT_PLAIN = /^(-\d+|-[pqswbrtzc]+|--[a-z-]+=.*|--(oneline|stat|shortstat|numstat|name-only|name-status|cached|staged|patch|no-patch|graph|all|no-merges|merges|first-parent|follow|reverse|quiet|abbrev-commit|no-color|color|decorate|summary|raw|full-history|word-diff|cc|porcelain|short|long|tags|branches|remotes|ignore-all-space|ignore-space-change|check|exit-code|verify|heads|count|left-right|cherry-pick|no-index|text|minimal|patience|histogram|full-index|no-renames|find-renames|others|modified|deleted|stage|unmerged|ignored|exclude-standard|line-number|files-with-matches|ignore-case|word-regexp|fixed-strings|extended-regexp|perl-regexp|untracked))$/;
+const GIT_PLAIN = /^(-\d+|-[pqswbrtzc]+|--[a-z-]+=.*|--(oneline|stat|shortstat|numstat|name-only|name-status|cached|staged|patch|no-patch|graph|all|no-merges|merges|first-parent|follow|reverse|quiet|abbrev-commit|no-color|color|decorate|summary|raw|full-history|word-diff|cc|porcelain|short|long|tags|branches|remotes|ignore-all-space|ignore-space-change|check|exit-code|verify|heads|left-right|cherry-pick|no-index|text|minimal|patience|histogram|full-index|no-renames|find-renames|others|modified|deleted|stage|unmerged|ignored|exclude-standard|line-number|files-with-matches|ignore-case|word-regexp|fixed-strings|extended-regexp|perl-regexp|untracked))$/;
 
 // `made`: the arguments an expansion makes, with what is known of each.
 function gitReadOnly(args: string[], made?: Map<number, Kind>): boolean {
@@ -611,6 +611,8 @@ function gitReadOnly(args: string[], made?: Map<number, Kind>): boolean {
   if (made?.has(i)) return false; // the subcommand itself
   const sub = args[i];
   const rest = args.slice(i + 1);
+  // --help after a subcommand opens its manual page (in a pager, or with -w in a browser). -h prints the usage.
+  if (rest.some((a) => a.startsWith("--help"))) return false;
   const loose = made ? [...made.keys()].filter((k) => k > i).map((k) => k - i - 1) : [];
   if (loose.length) {
     // Among a reading subcommand's arguments an expansion is a revision, a pattern or a path: after --, or when it cannot be an option.
@@ -724,16 +726,13 @@ function condReadOnly(args: string[], dyn: number[]): boolean {
   return !args.some((w, k) => !dyn.includes(k + 1) && /^-(v|R|eq|ne|lt|le|gt|ge)$/.test(w));
 }
 
-// A variable the shell or a program on the allow-list reads for itself: giving it a value changes what the rest of the line does.
-const KEPT = /^(histchars|auto_resume|[a-z_]*_proxy)=/;
-
 // A command that cannot change anything (files, processes, the network state).
 export function isReadOnly(s: Simple): boolean {
   if (s.heredoc) return true;
   if (s.unknown || s.redirects) return false;
   const { env, words } = body(s.words);
   // `name=value` alone gives a shell variable a value. A name in capitals may be one the shell or a program reads (PATH, IFS, GIT_DIR).
-  if (!words.length) return s.words.every((w) => /^[a-z_][a-z0-9_]*=/.test(w) && !KEPT.test(w));
+  if (!words.length) return s.words.every((w) => /^[a-z_][a-z0-9_]*=/.test(w) && !KEPT.test(w.slice(0, w.indexOf("="))));
   const [prog, ...args] = words;
   const lead = s.words.length - words.length;
   // An assignment before a command changes what that command runs with. `IFS= read` only says how read splits its line.

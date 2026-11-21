@@ -205,6 +205,15 @@ const CHANGES: string[] = [
   "sed -n \"x$(echo ';w out')\" a", "git log \"--$(echo output=f)\"", "git log \"--out$(echo put=f)\"", "sort \"--output=$(echo out)\" a", "git log \"--output=$(echo f)\"",
   "find . -exec grep \"x$(echo)\" {} \\; -exec rm {} \\;", "find . -exec echo \"{$(echo '}')\" + -delete \\;", "git -C $(echo '. -c core.pager=x') log", "git \"$(echo commit)\" -m x",
   "git branch -- \"x$(echo)\"", "git tag -l -- $(echo -d) v1", "uniq -- $(echo a out)", "git -c \"x$(echo)=y\" log",
+  // An option that takes a value takes the next word, whatever it looks like; after `--`, and in a program that does not reorder
+  // its arguments after the first operand, every word is an operand.
+  "gzip -S -c a", "gzip --suffix -c a", "gzip --su -c a", "gzip -9 -S -c a", "gzip -S -t a", "gzip -S -l a", "gunzip -S -c a.gz", "gzip -b -c a", "gzip -- -c", "gzip -d -- -c.gz",
+  "gzip a -c -S -t", "gzip -n -S -c a", "xxd a -b", "xxd a -x", "xxd -l 4 a -r", "xxd -- a out", "xxd -s -2 a out", "xxd -cols 8 a out", "xxd -n name a out",
+  // A cut-short option another option's name hides behind, and options of another subcommand.
+  "pip show --local x", "pip show --log x", "pip freeze --log out", "pip show --user x", "pip freeze --loc x", "pip freeze x", "pip3 show --local x",
+  // A program that runs its operand on one system and prints on another; a device cache file; a replacement in the command's own name.
+  "rustc x.rs", "cargo run", "arch -arm64 rm x", "arch rm x", "arch -x86_64 sh -c 'touch f'", "lsof -D b/tmp/dcache", "lsof -nD u", "echo touch | xargs -I ls ls out", "ls | xargs -I l ls -la",
+  "ls | xargs --replace=cat cat", "read http_proxy <<< http://203.0.113.9; git log", "read histchars <<< x", "read -r auto_resume <<< 1",
 ];
 
 // Reads the rules could prove, as they are written every day.
@@ -276,13 +285,13 @@ const READS: string[] = [
   "getent group sudo", "tput cols", "stty size", "sysctl -a", "sysctl kernel.ostype", "nvidia-smi", "nvidia-smi -L", "nvidia-smi --query-gpu=name,memory.used --format=csv",
   "zcat a.gz | head", "bzcat a.bz2", "xzcat a.xz", "gzip -dc a.gz | head", "gzip -l a.gz", "gzip -t a.gz", "gunzip -c a.gz", "zstdcat a.zst", "tar tf a.tar", "tar -tzf a.tgz",
   "tar tvf a.tar", "tar --list --file=a.tar", "tar -tf a.tar a", "unzip -l a.zip", "unzip -t a.zip", "zipinfo a.zip", "dpkg -l | head", "dpkg -L bash | head", "dpkg -s bash", "dpkg -S /bin/ls",
-  "dpkg-query -W bash", "apt list --installed | head", "apt show bash", "apt-cache policy bash", "apt-cache search json", "pip show pip", "pip freeze", "pip --version", "pip3 show -f pip",
+  "dpkg-query -W bash", "apt list --installed | head", "apt show bash", "apt-cache policy bash", "apt-cache search json", "pip show pip", "pip freeze", "pip --version", "pip3 show -f pip", "pip freeze --local", "pip show -v pip setuptools",
   "docker ps", "docker ps -a --format '{{.Names}}'", "docker images", "docker version", "docker info", "docker inspect x", "docker logs --tail 20 x", "docker image ls", "docker container ls -a",
-  "docker volume ls", "docker network ls", "docker system df", "docker --version", "systemctl status sshd", "systemctl --user status x", "systemctl list-units | head",
+  "docker volume ls", "docker network ls", "docker system df", "docker --version", "docker top x -o pid", "docker logs -ft --since 1h x", "docker ps -aq --filter status=running",
+  "docker inspect -f '{{.Id}}' x", "docker stats --no-stream --format '{{.Name}}'", "systemctl status sshd", "systemctl --user status x", "systemctl list-units | head",
   "systemctl list-units --type=service --state=running", "systemctl is-active sshd", "systemctl show sshd -p ActiveState", "systemctl cat sshd", "systemctl list-timers --all", "systemctl --version",
   "journalctl -n 20", "journalctl -u sshd -n 50 --no-pager", "journalctl --user -u x --since=today", "journalctl -xe", "journalctl -b -1 -p err", "journalctl -fu sshd",
-  "node --version", "node -v", "bun --version", "python3 --version", "python --version", "python3 -V", "uv --version", "ruby --version", "gcc --version",
-  "g++ --version", "cc --version", "clang --version", "clang++ --version", "make --version", "cmake --version", "bash --version", "zsh --version", "curl --version", "wget --version",
+  "bash --version", "zsh --version",
   "openssl version", "ssh -V",
   // An expansion that cannot be an option: commit hashes, a word that starts with written-out text, what stands after --.
   "git diff $(git merge-base main HEAD)", "git diff $(git merge-base main HEAD)..HEAD", "git log --oneline $(git merge-base origin/main HEAD)..HEAD", "git diff --stat $(git merge-base main HEAD) -- src",
@@ -299,6 +308,11 @@ const READS: string[] = [
   'name=world; echo "hello $name"', "count=$(ls | wc -l); echo $count", "today=$(date +%F); echo $today", "b=main; git log --oneline ${b}..HEAD", "f=a g=b; diff $f $g; sort $g",
   // Arithmetic on numbers alone, and an element or a slice named by a number.
   "echo $((1+2))", 'echo "$((1+2))"', "echo ${HOME:0:5}", "echo ${a[0]}", 'echo "${a[@]}"', "echo ${#a[@]}", "head -n $((10+5)) a",
+  // Options and operands of the network tools in numbers, and the exact reading forms of gzip and xxd.
+  "ss -tln sport = :80", "ss -o state established '( dport = :22 or sport = :22 )'", "ss dst 10.0.0.0/8", "ss -f inet -a", "ss -A tcp,udp", "ss state listening", "ss dst '[::1]:80'",
+  "ss -tn src 127.0.0.1:8080", "ss --numeric --listening --tcp", "netstat -an", "netstat -rn", "netstat --numeric --tcp", "netstat -nlt", "lsof -i @127.0.0.1:80", "lsof -nP -iTCP -sTCP:LISTEN",
+  "lsof -p 1", "lsof +D src", "who -a", "gzip -c a", "gzip -cd a.gz", "gzip -ck a", "gzip -c -- a", "gzip -tv a.gz", "gzip --stdout --best a", "gunzip -cf a.gz", "xxd -s -2 a", "xxd -c 8 -g 1 a",
+  "xxd -- a", "xxd -r a.hex", "xxd -p -l 4 a", "git log -h", "git status -h", "ls | xargs -I{} cat {}", "pip_cache=x; echo $pip_cache",
 ];
 
 // Reads the rules cannot prove: an expansion among the arguments of a program
@@ -321,11 +335,17 @@ const UNPROVEN: string[] = [
 const REACHES: string[] = [
   // The network: the remote, a registry, a cluster, a name server.
   "git ls-remote origin", "git remote show origin", "git fetch --dry-run", "npm view left-pad version", "kubectl get pods", "docker search x", "pip list", "docker compose ps",
-  // A manual page or a pager: on a terminal it runs commands typed into it.
-  "git help log", "git help -a", "man ls", "less a", "more a",
+  // A name where an address goes is sent to the name server; so is every address the tool prints unless it is told to print numbers.
+  "ss dst example.com", "ss -a K", "ss p", "ss -F a", "ss --filter=a", "ss -r", "ss sport = :ssh", "ss dst 999.999.1.1", "ss -N x", "ss dst 10.0.0.1 or dst example.com", "ss -f inet dst a.example",
+  "ss '( dst example.com )'", "netstat -g", "netstat -r", "netstat -a", "netstat -p -n", "netstat", "netstat -an tcp", "who --lookup", "who --loo", "lsof -i @example.com",
+  "lsof -n -i TCP@example.com:80", "lsof -i@[example.com]", "curl --version", "wget --version", "docker ps -H tcp://203.0.113.9", "docker --version --host x", "docker top x -H tcp://203.0.113.9", "docker inspect --output out x", "docker ps --forma=x", "docker images -o out",
+  // A manual page or a pager: on a terminal it runs commands typed into it. With -w it is a browser.
+  "git help log", "git help -a", "man ls", "less a", "more a", "git log --help", "git diff --help -w", "git var --help --web", "git stash list --help", "git branch --help", "git status --help",
+  "git -C x log --help", "git cherry --help -w",
   // A shim that installs the toolchain a project pins, a tool that writes a log or a settings folder on every run, a script that evaluates its arguments.
-  "cargo --version", "rustc --version", "go version", "go env GOPATH", "pnpm --version", "yarn --version", "npm ls", "npm ls --depth=0", "npm --version", "top -bn1",
-  "java -version", "gh --version", "podman ps", "zgrep foo a.gz",
+  "go version", "go env GOPATH", "pnpm --version", "yarn --version", "npm ls", "npm ls --depth=0", "npm --version", "top -bn1",
+  "java -version", "gh --version", "podman ps", "zgrep foo a.gz", "node --version", "node -v", "bun --version", "python3 --version", "python --version", "uv --version",
+  "ruby --version", "gcc --version", "clang --version", "make --version", "cmake --version", "cargo --version", "rustc --version",
   // An assignment in front changes what the program runs with (LD_PRELOAD loads code into env).
   "FOO=1 env", "IFS=: ls",
 ];
