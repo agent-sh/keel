@@ -196,7 +196,8 @@ export function SidePanel({ session }: { session: Session }) {
   // text area with a draft in it, keeps its Escape.
   const leave = (e: KeyboardEvent<HTMLElement>) => {
     const t = e.target as HTMLElement;
-    if (beside || e.key !== "Escape" || e.defaultPrevented || t.tagName !== "INPUT" || !e.currentTarget.contains(t)) return;
+    // An input method's Escape drops the word being composed: it is not the sheet's.
+    if (beside || e.key !== "Escape" || composing(e) || e.defaultPrevented || t.tagName !== "INPUT" || !e.currentTarget.contains(t)) return;
     e.preventDefault();
     openPanel(null);
   };

@@ -83,7 +83,17 @@ test("several requests are answered one by one from the keys, or all of a tool a
     await downTo("one", -1);
     await expect(row("one.txt").getByTestId("allow-once")).toBeFocused();
     await page.keyboard.press("Escape");
-    await expect(row("one.txt").getByTestId("deny-reason")).toBeFocused();
+    const why = row("one.txt").getByTestId("deny-reason");
+    await expect(why).toBeFocused();
+    // An input method's Escape drops the word being composed: the reason field stays.
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      await why.evaluate((el, init) => {
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true, ...init }));
+        el.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", code: "Escape", bubbles: true }));
+      }, init);
+    }
+    await page.waitForTimeout(200);
+    await expect(why).toBeFocused();
     await page.keyboard.type("one.txt is kept as it is");
     await shoot(page, "approvals-batch-1920-deny");
     await page.keyboard.press("Enter");

@@ -254,7 +254,8 @@ test("an input method's Enter does not save a title, a folder name, a tag, a lab
 
     // The key of something the helper remembers.
     await page.getByTestId("open-helper").click();
-    await openPanel(page, "helper");
+    // The helper's page shows its panel by itself, unless another panel was left open there: then it is picked.
+    await page.getByTestId("helper-panel").waitFor({ timeout: 3000 }).catch(() => openPanel(page, "helper"));
     await expect(page.getByTestId("helper-panel")).toBeVisible();
     await page.getByTestId("memory-new").fill("通知は必要なときだけ");
     const newKey = page.getByTestId("memory-new-key");
@@ -264,6 +265,28 @@ test("an input method's Enter does not save a title, a folder name, a tag, a lab
     expect(await memory()).toBe(0);
     await newKey.press("Enter");
     await expect.poll(memory).toBe(1);
+
+    // On a phone a panel is a sheet, and Escape in one of its fields puts it away: an input
+    // method's Escape (it drops the word being composed) does not.
+    await page.goto(`/s/${session.id}`);
+    await openPanel(page, "session");
+    const sheet = page.getByTestId("side-panel");
+    await expect(sheet).toHaveAttribute("data-panel", "session");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(sheet).toHaveAttribute("data-mode", "sheet");
+    const field = page.getByTestId("tag-input");
+    await field.fill("作業");
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      await field.evaluate((el, init) => {
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true, ...init }));
+        el.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", code: "Escape", bubbles: true }));
+      }, init);
+    }
+    await page.waitForTimeout(200);
+    await expect(sheet).toBeVisible();
+    await expect(field).toHaveValue("作業");
+    await field.press("Escape");
+    await expect(sheet).toHaveCount(0);
   } finally {
     await request.delete(`/api/helper/memory/${encodeURIComponent(key)}`);
     await request.delete(`/api/session-folders/${folder.id}`);

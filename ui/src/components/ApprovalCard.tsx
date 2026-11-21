@@ -2,6 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, FilePen, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { batches, batchName, SETTLE_MS, type Batch } from "../lib/approvals.ts";
+import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
@@ -364,7 +365,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked }: { a: Approval
             data-testid="deny-reason"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setDenying(false); } }}
+            onKeyDown={(e) => { if (e.key === "Escape" && !composing(e)) { e.stopPropagation(); setDenying(false); } }}
             aria-label="Why you deny it (optional)"
             placeholder="Tell the model why, or what to do instead (optional)"
             className="h-8 min-w-[min(100%,14rem)] flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong"
