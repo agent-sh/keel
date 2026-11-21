@@ -878,7 +878,7 @@ function SessionComposer({
 }
 
 // The cards of the region above the box, by their test ids, at any depth.
-const CARDS = ["approval", "plan-card", "secret-request", "trust-card", "blocked", "held-message", "saved-draft", "queue-item", "dock-job", "live-source"].map((t) => `[data-testid="${t}"]`).join(",");
+const CARDS = ["approval", "question", "plan-card", "secret-request", "trust-card", "blocked", "held-message", "saved-draft", "queue-item", "dock-job", "live-source"].map((t) => `[data-testid="${t}"]`).join(",");
 
 // What waits above the box: the session's cards, the queue, the messages kept
 // after a send that did not go, and last, nearest the box, what waits on the

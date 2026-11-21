@@ -214,7 +214,7 @@ function segmented(pageList: Src[], sheetList: Src[]): string[] {
     for (const { c, line } of classes(s.text)) if (c === "k-seg") out.push(at(s, line, "k-seg"));
     // An attribute of an element (not a selector in a string), written out or by an expression.
     // (A question card's options are its answer: one or several of a list, by the question.)
-    if (s.file !== "components/ToolCall.tsx") for (const m of src.matchAll(/(?<![[\w-])role=(["'](tablist|tab|radio)["']|\{[^}]*["'](tablist|tab|radio)["'][^}]*\})|<Tabs\.(List|Tab)\b/g)) out.push(at(s, lineOf(src, m.index!), m[0].slice(0, 40)));
+    if (s.file !== "components/QuestionCard.tsx") for (const m of src.matchAll(/(?<![[\w-])role=(["'](tablist|tab|radio)["']|\{[^}]*["'](tablist|tab|radio)["'][^}]*\})|<Tabs\.(List|Tab)\b/g)) out.push(at(s, lineOf(src, m.index!), m[0].slice(0, 40)));
   }
   for (const s of sheetList) for (const r of rules(s.text)) {
     if (/\.k-tabs\b/.test(r.selector) || (/\.k-seg\b/.test(r.selector) && s.file !== "styles.css" && !/\.k-seg\.k-[\w-]+ > button$/.test(r.selector))) out.push(at(s, r.line, r.selector));

@@ -24,6 +24,7 @@ const SessionDock = lazy(() => import("./SessionDock.tsx").then((m) => ({ defaul
 if (location.pathname.startsWith("/s/")) loadTranscript();
 else whenIdle(() => void loadTranscript());
 const Approvals = lazy(() => import("./ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
+const Questions = lazy(() => import("./QuestionCard.tsx").then((m) => ({ default: m.Questions })));
 
 
 export { Boundary };
@@ -114,6 +115,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                 }
                 asks={
                   <>
+                    <Suspense fallback={null}><Questions sessionId={session.id} /></Suspense>
                     <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
                     <ChildApprovals parentId={session.id} />
                   </>

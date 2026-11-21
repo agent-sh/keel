@@ -84,3 +84,109 @@ test("Esc twice on an approval gives the keyboard back to Allow once", async ({ 
   await request.post(`/api/sessions/${long}/interrupt`);
   await request.delete(`/api/sessions/${long}`);
 });
+
+const colors = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal", description: "Calm and cool" }, { label: "Amber", description: "Warm" }, { label: "Slate" }], multiSelect: false }] } };
+const twoParts = { name: "AskUserQuestion", input: { questions: [
+  { header: "Checks", question: "Which checks should run?", options: [{ label: "Lint" }, { label: "Types" }, { label: "Tests" }], multiSelect: true },
+  { header: "Branch", question: "Which branch is the base?", options: [{ label: "main" }, { label: "release" }], multiSelect: false },
+] } };
+const pending = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/sessions/${id}/questions`)).json()).pending as string[];
+// What the owner answered, as the daemon stored it with the question's result.
+const answersOf = async (request: APIRequestContext, id: string) => {
+  const { events } = await (await request.get(`/api/sessions/${id}`)).json();
+  const shown = events.findLast((e: any) => e.kind === "tool_result" && e.data.shown)?.data.shown as Record<string, { answers: Record<string, { picked: string[]; other?: string }> }> | undefined;
+  return shown ? Object.values(shown)[0]!.answers : undefined;
+};
+
+test("a question docks above the message box, takes the keyboard and is answered with a number", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("question");
+  const id = await create(request, "Pick a color", ws);
+  // A long conversation first: the question must not scroll away with it.
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:fill" } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 30_000 }).toBe(true);
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([colors]) } });
+  await expect.poll(() => pending(request, id)).toHaveLength(1);
+
+  await page.goto(`/s/${id}`);
+  const card = page.getByTestId("question");
+  await expect(card).toHaveAttribute("data-state", "open");
+  // Docked: in the region above the message box, where approvals wait, and one line in the conversation.
+  await expect(page.getByTestId("composer-asks").getByTestId("question")).toHaveCount(1);
+  await expect(page.getByTestId("transcript").getByTestId("question")).toHaveCount(0);
+  await expect(page.getByTestId("transcript").getByTestId("question-asked")).toContainText("Which color should I use?");
+  // It takes the keyboard when it opens, and says what the keys do.
+  await expect(card).toBeFocused();
+  await expect(card.getByTestId("question-hint")).toBeVisible();
+  await expect(card.getByTestId("question-hint")).toHaveText("Press 1 to 3 to answer, or type your own");
+  await shoot(page, "answer-keys-02-question-docked");
+  // At any scroll position of the conversation the card stays whole in view.
+  const whole = () => card.evaluate((el) => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.height > 0; });
+  for (const top of [0, 3000, 1e9]) {
+    await page.evaluate((y) => { document.querySelector<HTMLElement>(".k-reading")!.scrollTop = y; }, top);
+    await page.waitForTimeout(150);
+    expect(await whole()).toBe(true);
+  }
+  await page.evaluate(() => { document.querySelector<HTMLElement>(".k-reading")!.scrollTop = 0; });
+  await shoot(page, "answer-keys-03-question-scrolled-up");
+
+  // 1 then Enter answers it (the number alone already does: one question, one choice).
+  await page.keyboard.press("1");
+  await page.keyboard.press("Enter");
+  await expect(card).toHaveAttribute("data-state", "answered");
+  expect(await answersOf(request, id)).toEqual({ "0": { picked: ["Teal"] } });
+  await expect(page.getByTestId("composer-asks").getByTestId("question")).toHaveCount(0);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await expect(page.getByTestId("composer")).toHaveValue("");
+  await expect.poll(() => pending(request, id)).toHaveLength(0);
+  await request.post(`/api/sessions/${id}/interrupt`);
+  await request.delete(`/api/sessions/${id}`);
+});
+
+test("a question with several parts: numbers choose, words are an own answer, Enter sends", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("question-parts");
+  const id = await create(request, "Checks and base", ws);
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([twoParts, colors]) } });
+  await expect.poll(() => pending(request, id)).toHaveLength(1);
+  await page.goto(`/s/${id}`);
+  const card = page.getByTestId("composer-asks").getByTestId("question");
+  await expect(card).toBeFocused();
+  await expect(card.getByTestId("question-hint")).toHaveText("Press 1 to 3 to choose, Enter to send");
+
+  // Enter with nothing chosen says why it does nothing.
+  await page.keyboard.press("Enter");
+  await expect(card.getByTestId("question-nudge")).toHaveText("Choose an answer for each question first");
+  // Numbers go to the first part that has no answer: two checks, then that part is answered and the next takes them.
+  await page.keyboard.press("1");
+  await expect(card.getByRole("checkbox", { name: "Lint" })).toHaveAttribute("aria-checked", "true");
+  // Down and Up move through the options; Space toggles the one the keyboard is on.
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await expect(card.getByRole("checkbox", { name: "Types" })).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(card.getByRole("checkbox", { name: "Types" })).toHaveAttribute("aria-checked", "true");
+  await card.focus();
+  await page.keyboard.press("2");
+  await expect(card.getByRole("radio", { name: "release" })).toHaveAttribute("aria-checked", "true");
+  await shoot(page, "answer-keys-04-question-parts");
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => await answersOf(request, id)).toEqual({ "0": { picked: ["Lint", "Types"] }, "1": { picked: ["release"] } });
+
+  // The next question: words typed on the card are the owner's own answer, and Enter sends them.
+  await expect.poll(() => pending(request, id)).toHaveLength(1);
+  await expect(card).toBeFocused();
+  await expect(card).toHaveAttribute("data-live", "true");
+  await page.keyboard.type("a dark teal");
+  await expect(card.getByTestId("question-other")).toBeFocused();
+  await expect(card.getByTestId("question-other")).toHaveValue("a dark teal");
+  await expect(page.getByTestId("composer")).toHaveValue("");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => pending(request, id)).toHaveLength(0);
+  expect(await answersOf(request, id)).toEqual({ "0": { picked: [], other: "a dark teal" } });
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await request.post(`/api/sessions/${id}/interrupt`);
+  await request.delete(`/api/sessions/${id}`);
+});

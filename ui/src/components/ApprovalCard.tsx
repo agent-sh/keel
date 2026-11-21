@@ -5,6 +5,7 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, settled, SETTLE_MS, spentAction, stand, type Action, type Batch, type Hold, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { hasHidden, hasRtl } from "../lib/hidden-chars.ts";
+import { mayTakeFocus } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
@@ -531,16 +532,6 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
   );
 }
 
-// Focus may move to a new card's Allow only when nothing else holds it (or
-// the composer is empty): never out of a field the owner is typing in, or
-// out of another card.
-function mayTakeFocus(): boolean {
-  const el = document.activeElement;
-  if (!el || el === document.body) return true;
-  if (el instanceof HTMLTextAreaElement) return el.value.trim() === "" && !el.closest("[data-testid=approval]");
-  return false;
-}
-
 // `many`: one of several, drawn as a row (the request beside its answers, no
 // hint: the list says it once), framed only while it has the keyboard.
 // `plain`: every row is the same tool and the list's heading names it, so the
@@ -822,6 +813,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             data-nudge={nudge.mark}
             data-testid="allow-once"
             data-stop="card"
+            data-ask=""
             onPointerDown={pressed.onPointerDown}
             onMouseDown={pressed.onMouseDown}
             onClick={(e) => { if (pressed.said(e)) answer({ choice: "once" }); else if (mustOpen) { setTold(true); nudge.refuse(openFirst); } else nudge.refuse(notYet); }}

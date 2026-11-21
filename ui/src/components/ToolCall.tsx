@@ -8,11 +8,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
-import { actions, api, failed, useStore } from "../lib/store.ts";
+import { api } from "../lib/store.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
 import {
-  patchFiles, planItems, questions, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind,
+  patchFiles, planItems, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind,
   type PlanItem, type ToolKind,
 } from "../lib/tools.ts";
 import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
@@ -22,7 +22,7 @@ import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
 import { Copyable } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
-import { composing } from "../lib/keys.ts";
+import { QuestionCard } from "./QuestionCard.tsx";
 
 // The file a call names, for its copy line.
 const pathOf = (input: any): string | undefined => { const p = input?.file_path ?? input?.path ?? input?.notebook_path; return typeof p === "string" && p ? p : undefined; };
@@ -353,133 +353,3 @@ export function PlanCard({ items, explanation, compact, rejected }: { items: Pla
     </div>
   );
 }
-
-// Unsent answers, per session and call: they outlive the card (a station
-// switch, a remount) until the question settles. Never sent by themselves.
-const answerDrafts = new Map<string, { picked: Record<string, string[]>; other: Record<string, string> }>();
-
-function QuestionCard({ use, result, sessionId }: Props) {
-  const qs = questions(use.name, use.input);
-  const key = `${sessionId}:${use.id}`;
-  const [picked, setPicked] = useState<Record<string, string[]>>(() => answerDrafts.get(key)?.picked ?? {});
-  const [other, setOther] = useState<Record<string, string>>(() => answerDrafts.get(key)?.other ?? {});
-  const [sending, setSending] = useState(false);
-  const inflight = useRef(false);
-  const [err, setErr] = useState("");
-  const answered = !!result && !result.is_error;
-  const open = useStore((s) => !result && !!sessionId && !!s.questionCalls[sessionId]?.includes(use.id));
-  // What the owner answered, by question (stored with the result); older records have only the result text.
-  const given = (result as (ToolResultBlock & { shown?: { answers?: Record<string, { picked: string[]; other?: string }> } }) | undefined)?.shown?.answers;
-  useEffect(() => {
-    if (!open) answerDrafts.delete(key);
-    else if (Object.keys(picked).length || Object.values(other).some((t) => t)) answerDrafts.set(key, { picked, other });
-  }, [key, open, picked, other]);
-  // An answer on its way is over when the card closes, and when the daemon
-  // went away under it: a card put back after a restart takes an answer again.
-  const connected = useStore((s) => s.connected);
-  useEffect(() => {
-    if (open && connected) return;
-    inflight.current = false;
-    setSending(false);
-  }, [open, connected]);
-  const toggle = (q: { id: string; multi: boolean }, label: string) => setPicked((p) => {
-    const cur = p[q.id] ?? [];
-    return { ...p, [q.id]: q.multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label] };
-  });
-  const ready = qs.every((q) => (picked[q.id]?.length ?? 0) > 0 || (other[q.id] ?? "").trim());
-  // One answer per question: Enter and the button share the guard while it is on its way.
-  const submit = async () => {
-    if (!sessionId || inflight.current) return;
-    inflight.current = true;
-    setSending(true);
-    setErr("");
-    try {
-      await actions.answer(sessionId, use.id, Object.fromEntries(qs.map((q) => [q.id, { picked: picked[q.id] ?? [], other: other[q.id] }])));
-    } catch (e) {
-      setErr(failed(e, { at: "ToolCall" }));
-      setSending(false);
-      inflight.current = false;
-    }
-  };
-  return (
-    <div className={cn("k-question rounded-lg border bg-raised animate-in", open ? "border-accent/50 shadow-2" : "border-line shadow-1")} data-testid="question" data-state={open ? "open" : answered ? "answered" : "closed"}>
-      <div className="flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui">
-        <MessageCircleQuestion className={cn("size-3.5", open ? "text-accent-ink" : "text-muted")} />
-        <span className="font-medium">{open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>
-        {open && <span className="ml-auto size-1.5 rounded-full bg-accent animate-pulse-dot" />}
-      </div>
-      <div className="flex flex-col gap-4 px-3.5 py-3">
-        {qs.map((q) => (
-          <fieldset key={q.id} className="flex flex-col gap-2">
-            <legend className="mb-1.5 flex items-baseline gap-2">
-              {q.header && <span className="rounded-md bg-accent-soft px-1.5 py-px text-micro font-medium uppercase tracking-wide text-accent-ink">{q.header}</span>}
-              <span className="text-read font-medium leading-snug">{q.question}</span>
-            </legend>
-            {q.options.length > 0 && (
-              <div className={cn("grid gap-1.5", q.options.length > 2 ? "sm:grid-cols-2" : "sm:grid-cols-2")} role={q.multi ? "group" : "radiogroup"}>
-                {q.options.map((o) => {
-                  const on = ((given ? given[q.id]?.picked : picked[q.id]) ?? []).includes(o.label);
-                  return (
-                    <button
-                      key={o.label}
-                      type="button"
-                      role={q.multi ? "checkbox" : "radio"}
-                      aria-checked={on}
-                      disabled={!open || sending}
-                      onClick={() => toggle(q, o.label)}
-                      data-testid="question-option"
-                      className={cn(
-                        "flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
-                        on ? "border-accent bg-accent-soft" : "border-line bg-sunken hover:border-line-strong",
-                        !open && "cursor-default opacity-80",
-                      )}
-                    >
-                      <span className="text-ui font-medium">{o.label}</span>
-                      {o.description && <span className="text-caption leading-snug text-muted">{o.description}</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {open && (
-              <input
-                value={other[q.id] ?? ""}
-                onChange={(e) => setOther((o) => ({ ...o, [q.id]: e.target.value }))}
-                onKeyDown={(e) => { if (e.key === "Enter" && !composing(e) && ready && !sending) submit(); }}
-                placeholder={q.options.length ? "Or type your own answer" : "Type your answer"}
-                data-testid="question-other"
-                className="h-8 rounded-md border border-line bg-sunken px-3 text-ui outline-none placeholder:text-faint focus:border-accent"
-              />
-            )}
-            {given && (
-              <p className="whitespace-pre-wrap break-words text-caption text-muted" data-testid="question-answer">
-                <span className="font-medium text-fg">Answered: </span>
-                {[...(given[q.id]?.picked ?? []), ...(given[q.id]?.other?.trim() ? [given[q.id]!.other!.trim()] : [])].join(", ") || "no answer"}
-              </p>
-            )}
-          </fieldset>
-        ))}
-        {open && (
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              disabled={!ready || sending}
-              onClick={submit}
-              data-testid="question-submit"
-              className="h-8 rounded-md bg-accent px-3.5 hover:bg-accent-hover text-ui font-medium text-accent-fg transition-opacity disabled:opacity-40"
-            >
-              {sending ? "Sending" : "Answer"}
-            </button>
-            {err && <span className="text-caption text-danger">{err}</span>}
-          </div>
-        )}
-        {result && !given && (
-          <p className={cn("whitespace-pre-wrap break-words text-caption", result.is_error && !stopKind(result.content) ? "text-danger" : "text-muted")} data-testid="question-result">
-            {resultText(result)}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
