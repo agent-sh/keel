@@ -178,8 +178,19 @@ test("the archive list is read again only when the archive changed", async ({ pa
   const later = await mk(`Archived a little later ${tag}`);
   const last = await mk(`Archived last ${tag}`);
   const busy = await mk(`Still worked on ${tag}`);
+  const away = await mk(`Archived while the page was cut off ${tag}`);
+  const stale = await mk(`Deleted while the page was cut off ${tag}`);
   await patch(old, { archived: true });
-  const made = [old, next, later, last, busy];
+  await patch(stale, { archived: true });
+  const made = [old, next, later, last, busy, away, stale];
+  // The page's socket, to cut and to keep out for a while.
+  let hold: Promise<void> | undefined;
+  let cut: (() => void) | undefined;
+  await page.routeWebSocket(/\/ws$/, async (ws) => {
+    await hold;
+    const server = ws.connectToServer();
+    cut = () => { ws.close({ code: 4000, reason: "cut by the test" }); server.close({ code: 1000 }); };
+  });
   try {
     // Every read of the archive, as the daemon answered it.
     let reads = 0;
@@ -242,6 +253,25 @@ test("the archive list is read again only when the archive changed", async ({ pa
     await request.delete(`/api/sessions/${next}`);
     await expect(row(next)).toHaveCount(0);
     await expect(row(later)).toBeVisible();
+    await expect(row(last)).toBeVisible();
+
+    // Cut off: one session is archived and an archived one deleted, and no
+    // frame of either reaches the page. Back, it reads the archive again.
+    // (The page is loaded anew first: it then holds no archived row of its
+    // own, whose loss to the list reload would be a change it sees.)
+    await page.reload();
+    await page.getByTestId("tab-archived").click();
+    await expect(row(stale)).toBeVisible();
+    await expect(row(last)).toBeVisible();
+    let back!: () => void;
+    hold = new Promise<void>((r) => (back = r));
+    cut!();
+    await expect(page.getByTestId("sync-state")).toHaveText("Reconnecting", { timeout: 10_000 });
+    await patch(away, { archived: true });
+    await request.delete(`/api/sessions/${stale}`);
+    back();
+    await expect(row(away)).toBeVisible({ timeout: 15_000 });
+    await expect(row(stale)).toHaveCount(0);
     await expect(row(last)).toBeVisible();
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);

@@ -306,15 +306,18 @@ function Index({ current }: { current: string | null }) {
   // The archive is asked for when its tab opens and when what it lists moved:
   // a session was archived or restored, or one is gone. A status or a title
   // of a session is no reason (the list shows the store's row of each). The
-  // answer of a request that a newer one overtook is dropped.
+  // answer of a request that a newer one overtook is dropped. A page that was
+  // cut off reads it again when it is back: what was archived or deleted
+  // meanwhile reached it by no frame.
   const inArchive = useStore((s) => Object.values(s.sessions).filter((x) => x.archived).map((x) => x.id).sort().join(" "));
   const gone = useStore((s) => s.gone);
+  const connected = useStore((s) => s.connected);
   const asked = useRef(0);
   useEffect(() => {
-    if (tab !== "archived") return;
+    if (tab !== "archived" || !connected) return;
     const n = ++asked.current;
     api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => { if (n === asked.current) setArchived(r.sessions); }).catch(reportError);
-  }, [tab, inArchive, gone]);
+  }, [tab, inArchive, gone, connected]);
   // A tag picked above the list narrows it; pinned sessions lead it.
   // Each tab keeps its own tag: one picked in Sessions does not empty Archived.
   const [tags_, setTags] = useState<Record<string, string | null>>({});
