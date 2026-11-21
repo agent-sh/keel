@@ -11,8 +11,8 @@
 // it cannot hold the loop, and needs no privilege.
 import { readFileSync, readlinkSync } from "node:fs";
 import {
-  type Arch, type Around, type Call, commandOf, decide, type Dirs, type Lookup, parseEpoll, parseLoad, parsePidfd, parsePressure,
-  parseSchedstat, parseThrottled, type Sample, sampleOf,
+  type Arch, type Around, type CallMemo, commandOf, decide, type Dirs, type Lookup, parseEpoll, parseLoad, parsePidfd, parsePressure,
+  parsePressureTotal, parseSchedstat, parseThrottled, type Sample, sampleOf,
 } from "./stall-cause.ts";
 import { ALLOW_MASK } from "./stall-beat.ts";
 
@@ -49,8 +49,11 @@ let ticks = 0;
 let sampling: Episode | undefined;
 let taken = 0;
 let quota: string | undefined;
-const memo: { text?: string; call?: Call } = {};
-const base: { own?: number; run?: number; wait?: number; skew?: number; suspends?: number } = {};
+// What the call of the sample before was found to wait on (stall-cause.ts): never kept from one stall to the next.
+const memo: CallMemo = {};
+// The daemon's own cgroup, whose memory pressure says when all of its threads were held in reclaim.
+let unit: string | undefined;
+const base: { own?: number; run?: number; wait?: number; skew?: number; suspends?: number; memory?: number } = {};
 
 const rd = (path: string): string | undefined => { try { return readFileSync(path, "utf8"); } catch { return undefined; } };
 const look: Lookup = {
@@ -60,11 +63,14 @@ const look: Lookup = {
   child: (pid) => { const comm = rd(`/proc/${pid}/comm`); return comm === undefined ? undefined : commandOf(comm, rd(`/proc/${pid}/cmdline`)); },
 };
 
+const unitDir = (): string | undefined => {
+  const own = /^0::(\/.*)$/m.exec(rd("/proc/self/cgroup") ?? "")?.[1];
+  return own ? `/sys/fs/cgroup${own}`.replace(/\/$/, "") : undefined;
+};
 // The cgroup whose processor quota holds the daemon back, when one does.
 function quotaDir(): string | undefined {
-  const own = /^0::(\/.*)$/m.exec(rd("/proc/self/cgroup") ?? "")?.[1];
-  if (!own) return undefined;
-  for (let dir = `/sys/fs/cgroup${own}`.replace(/\/$/, ""); dir.length > "/sys/fs/cgroup".length; dir = dir.slice(0, dir.lastIndexOf("/"))) {
+  if (!unit) return undefined;
+  for (let dir = unit; dir.length > "/sys/fs/cgroup".length; dir = dir.slice(0, dir.lastIndexOf("/"))) {
     const max = rd(`${dir}/cpu.max`);
     if (max && !max.startsWith("max")) return dir;
   }
@@ -75,6 +81,13 @@ const throttled = () => (quota ? parseThrottled(rd(`${quota}/cpu.stat`) ?? "") :
 const skew = () => { const up = Number((rd("/proc/uptime") ?? "").split(" ")[0]); return Number.isFinite(up) && up > 0 ? up * 1000 - performance.now() : undefined; };
 const suspends = () => { const n = Number(rd("/sys/power/suspend_stats/success")); return Number.isFinite(n) ? n : undefined; };
 const ownWait = () => parseSchedstat(rd("/proc/thread-self/schedstat") ?? "")?.wait_ns;
+// How long some task waited for memory, in ms since the start: in the daemon's own unit when that is kept, else on the machine.
+function memoryStall(): { ms: number; unit: boolean } | undefined {
+  const own = unit ? parsePressureTotal(rd(`${unit}/memory.pressure`) ?? "") : undefined;
+  if (own !== undefined) return { ms: own, unit: true };
+  const all = parsePressureTotal(rd("/proc/pressure/memory") ?? "");
+  return all === undefined ? undefined : { ms: all, unit: false };
+}
 
 function rebase() {
   const main = parseSchedstat(rd(`${MAIN}/schedstat`) ?? "");
@@ -83,6 +96,7 @@ function rebase() {
   base.wait = main?.wait_ns;
   base.skew = skew();
   base.suspends = suspends();
+  base.memory = memoryStall()?.ms;
 }
 
 function around(): Around {
@@ -97,6 +111,8 @@ const merge = (a: Around, b: Around): Around => ({
   pressure: { cpu: higher(a.pressure?.cpu, b.pressure?.cpu), io: higher(a.pressure?.io, b.pressure?.io), memory: higher(a.pressure?.memory, b.pressure?.memory) },
   ...((a.throttled_ms ?? 0) + (b.throttled_ms ?? 0) > 0 ? { throttled_ms: (a.throttled_ms ?? 0) + (b.throttled_ms ?? 0) } : {}),
   ...((a.suspended_ms ?? 0) + (b.suspended_ms ?? 0) > 0 ? { suspended_ms: (a.suspended_ms ?? 0) + (b.suspended_ms ?? 0) } : {}),
+  ...((a.memory_unit ?? b.memory_unit) !== undefined ? { memory_unit: a.memory_unit ?? b.memory_unit } : {}),
+  ...((a.memory_stall_ms ?? 0) + (b.memory_stall_ms ?? 0) > 0 ? { memory_stall_ms: (a.memory_stall_ms ?? 0) + (b.memory_stall_ms ?? 0) } : {}),
 });
 
 function sample(t: number, ep: number): Sample {
@@ -115,6 +131,8 @@ function open(t: number): Episode {
   episodes.push(e);
   if (episodes.length > 40) episodes.shift();
   taken = 0;
+  // A new stall: nothing found for an earlier one is its.
+  memo.text = memo.run_ns = memo.link = memo.call = undefined;
   return e;
 }
 function close(e: Episode, t: number) {
@@ -123,15 +141,23 @@ function close(e: Episode, t: number) {
   e.around = merge(e.around, { ...around(), ...(now !== undefined && e.throttled0 !== undefined && now > e.throttled0 ? { throttled_ms: now - e.throttled0 } : {}) });
 }
 
-// This thread did not run from `from` to `now`, so the process did not: it
-// was stopped, the machine slept, or nothing got a processor. The first two
-// are marked on the sample; in the third the main thread's own wait says so.
-function gap(from: number, now: number) {
+// This thread did not run from `from` to `now`, so the process did not: the
+// machine slept, every thread was held waiting for memory (the unit over
+// its memory limit: no thread runs and none waits for a processor, as in a
+// stop, but the unit's memory stall grew meanwhile), it was stopped, or
+// nothing got a processor. The first three are marked on the sample; in the
+// last the main thread's own wait says so.
+// Returns the run of samples the gap is in: a loop still held after it is sampled on in the same run.
+function gap(from: number, now: number): Episode {
   const dt = now - from;
   const sk = skew(), count = suspends(), own = ownWait();
   const slept = sk !== undefined && base.skew !== undefined ? Math.max(0, sk - base.skew) : 0;
   const waited = own !== undefined && base.own !== undefined ? (own - base.own) / 1e6 : 0;
-  const kind = slept >= 500 || (count !== undefined && base.suspends !== undefined && count > base.suspends) ? "suspended" : waited < dt / 2 ? "stopped" : undefined;
+  const mem = memoryStall();
+  const stalled = mem && base.memory !== undefined ? mem.ms - base.memory : 0;
+  const kind = slept >= 500 || (count !== undefined && base.suspends !== undefined && count > base.suspends) ? "suspended"
+    : stalled >= dt / 2 ? "memory"
+    : waited < dt / 2 ? "stopped" : undefined;
   const e = sampling ?? open(from);
   const s = sample(now, e.ep);
   if (!sampling) {
@@ -140,12 +166,16 @@ function gap(from: number, now: number) {
     // waits since the last look happened.
     const ran = kind || base.run === undefined ? 0 : Math.min(s.run_ns - base.run, dt * 1e6);
     const queued = kind || base.wait === undefined ? 0 : Math.min(s.wait_ns - base.wait, dt * 1e6);
-    keep({ t: from, ep: e.ep, state: kind === "stopped" ? "T" : "R", user_ticks: s.user_ticks, sys_ticks: s.sys_ticks, run_ns: s.run_ns - Math.max(0, ran), wait_ns: s.wait_ns - Math.max(0, queued) });
+    keep({ t: from, ep: e.ep, state: kind === "stopped" ? "T" : kind ? "S" : "R", user_ticks: s.user_ticks, sys_ticks: s.sys_ticks, run_ns: s.run_ns - Math.max(0, ran), wait_ns: s.wait_ns - Math.max(0, queued) });
   }
   keep(kind ? { ...s, gap: kind } : s);
   if (slept >= 500) e.around = merge(e.around, { suspended_ms: Math.round(slept) });
+  if (kind === "memory") e.around.memory_unit = mem!.unit;
+  // Some of a gap that reads as a stop was spent waiting for memory: the row says so instead of naming a stop alone.
+  else if (kind === "stopped" && stalled >= 200) e.around = merge(e.around, { memory_stall_ms: Math.round(stalled) });
   if (!sampling) close(e, now);
   rebase();
+  return e;
 }
 
 function tick() {
@@ -155,7 +185,7 @@ function tick() {
   // The loop's stall timer does not run (the daemon is starting, or reloading): nothing is expected of it.
   if (v === 0 && !sampling) { lastTick = now; seen = v; changedAt = now; return; }
   const late = lastTick > 0 && now - lastTick > GAP_MS;
-  if (late) gap(lastTick, now);
+  const gapped = late ? gap(lastTick, now) : undefined;
   lastTick = now;
   if (v !== seen) {
     seen = v;
@@ -167,7 +197,8 @@ function tick() {
       sampling = undefined;
     }
   } else if (now - changedAt > (v & ALLOW_MASK) + SLACK_MS) {
-    sampling ??= open(now);
+    // After a gap its sample is this tick's, and the time before and after it is one stretch.
+    sampling ??= gapped ?? open(now);
     if (!late && (taken < DENSE || ticks % 10 === 0)) { keep(sample(now, sampling.ep)); taken++; }
   }
   ticks++;
@@ -181,7 +212,7 @@ function answer(m: Asked) {
   const from = now - m.window_ms - SLACK_MS;
   let about: Around = {};
   for (const e of episodes) if (e.t1 >= from) about = merge(about, e.around);
-  self.postMessage({ id: m.ask, cause: decide(ring.filter((s) => s.t >= from), about, m.ms) });
+  self.postMessage({ id: m.ask, cause: decide(ring.filter((s) => s.t >= from), about, m.ms, m.window_ms) });
 }
 
 let failed = false;
@@ -202,6 +233,7 @@ self.onmessage = (ev: MessageEvent) => {
       beat = new Int32Array(m.start.beat);
       dirs = m.start.dirs;
       arch = m.start.arch;
+      unit = unitDir();
       quota = quotaDir();
       // Read once here: a machine whose kernel keeps no schedstat is found out at the start, not at the first stall.
       sample(performance.now(), 0);

@@ -202,7 +202,8 @@ export class Daemon {
   // `onRow`: what else a stall's row becomes (its span in the trace of each turn that ran through it).
   watchStalls(dirs: Dirs, onRow?: (context: Record<string, unknown>, what: string, errorId?: string) => void): StallMonitor {
     const watch = new TurnWatch();
-    this.deps.bus.on((f) => watch.frame(f as any));
+    // A turn that starts while the timer waits out its idle second brings its next tick forward.
+    this.deps.bus.on((f) => { watch.frame(f as any); if (f.t === "event" && f.event.kind === "turn_start") monitor.wake(); });
     const G = globalThis as { __keelStallWatch?: StallWatch };
     G.__keelStallWatch?.stop();
     const sight = (G.__keelStallWatch = new StallWatch(dirs, (e) => this.deps.errors.capture("server", e, { at: "stall watcher" })));
@@ -215,7 +216,7 @@ export class Daemon {
       const context = { ...d.context, ended_ms: ended };
       const rec = this.deps.errors.capture("server", Object.assign(new Error(d.message), { stack: undefined }), context, { group: d.group });
       try { onRow?.(context, d.what, rec.id || undefined); } catch (e) { console.warn(`[daemon] a stall's span was not written: ${(e as Error).message}`); }
-      this.stalls.unshift({ ts_ms: ended, ms: Math.round(stall.ms), what: d.what, kind: d.kind, ...(rec.id ? { error_id: rec.id } : {}) });
+      this.stalls.unshift({ ts_ms: ended, ms: d.ms, what: d.what, kind: d.kind, ...(rec.id ? { error_id: rec.id } : {}) });
       this.stalls.length = Math.min(this.stalls.length, STALLS_KEPT);
       this.emit();
     };

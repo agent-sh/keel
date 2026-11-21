@@ -26,7 +26,7 @@ const X64: Record<number, string> = {
   0: "read", 1: "write", 2: "open", 3: "close", 4: "stat", 5: "fstat", 6: "lstat", 7: "poll", 8: "lseek", 9: "mmap", 11: "munmap",
   16: "ioctl", 17: "pread64", 18: "pwrite64", 19: "readv", 20: "writev", 21: "access", 23: "select", 26: "msync", 28: "madvise",
   35: "nanosleep", 40: "sendfile", 42: "connect", 43: "accept", 44: "sendto", 45: "recvfrom", 46: "sendmsg", 47: "recvmsg",
-  59: "execve", 61: "wait4", 72: "fcntl", 73: "flock", 74: "fsync", 75: "fdatasync", 76: "truncate", 77: "ftruncate", 78: "getdents",
+  56: "clone", 57: "fork", 58: "vfork", 59: "execve", 61: "wait4", 72: "fcntl", 73: "flock", 74: "fsync", 75: "fdatasync", 76: "truncate", 77: "ftruncate", 78: "getdents",
   82: "rename", 83: "mkdir", 84: "rmdir", 87: "unlink", 89: "readlink", 162: "sync", 202: "futex", 217: "getdents64",
   230: "clock_nanosleep", 232: "epoll_wait", 247: "waitid", 257: "openat", 258: "mkdirat", 262: "newfstatat", 263: "unlinkat",
   264: "renameat", 267: "readlinkat", 269: "faccessat", 270: "pselect6", 271: "ppoll", 277: "sync_file_range", 281: "epoll_pwait",
@@ -39,7 +39,7 @@ const ARM64: Record<number, string> = {
   66: "writev", 67: "pread64", 68: "pwrite64", 69: "preadv", 70: "pwritev", 71: "sendfile", 72: "pselect6", 73: "ppoll", 78: "readlinkat",
   79: "newfstatat", 80: "fstat", 81: "sync", 82: "fsync", 83: "fdatasync", 84: "sync_file_range", 95: "waitid", 98: "futex",
   101: "nanosleep", 115: "clock_nanosleep", 202: "accept", 203: "connect", 206: "sendto", 207: "recvfrom", 211: "sendmsg", 212: "recvmsg",
-  215: "munmap", 221: "execve", 222: "mmap", 227: "msync", 233: "madvise", 242: "accept4", 260: "wait4", 267: "syncfs", 276: "renameat2",
+  215: "munmap", 220: "clone", 221: "execve", 222: "mmap", 227: "msync", 233: "madvise", 242: "accept4", 260: "wait4", 267: "syncfs", 276: "renameat2",
   285: "copy_file_range", 286: "preadv2", 287: "pwritev2", 291: "statx", 426: "io_uring_enter", 435: "clone3", 439: "faccessat2",
   441: "epoll_pwait2",
 };
@@ -54,6 +54,8 @@ const ON_FD = new Set([
 // Calls that take a folder's descriptor and a path: the path is the caller's memory and is not read.
 const AT_DIR = new Set(["openat", "mkdirat", "unlinkat", "renameat", "renameat2", "readlinkat", "newfstatat", "statx", "faccessat", "faccessat2"]);
 const EPOLL = new Set(["epoll_wait", "epoll_pwait", "epoll_pwait2"]);
+// Whether the call's first argument is a descriptor whose link names what it works on.
+const onDescriptor = (name: string) => ON_FD.has(name) || AT_DIR.has(name) || EPOLL.has(name);
 // What the call was doing, in words; `%` is where the file goes.
 const WORDS: Record<string, string> = {
   read: "reading %", pread64: "reading %", readv: "reading %", preadv: "reading %", preadv2: "reading %",
@@ -73,6 +75,7 @@ const WORDS: Record<string, string> = {
   pselect6: "waiting on descriptors (pselect6)", epoll_wait: "waiting in a loop of its own (epoll_wait)",
   epoll_pwait: "waiting in a loop of its own (epoll_pwait)", epoll_pwait2: "waiting in a loop of its own (epoll_pwait2)",
   wait4: "waiting for a child", waitid: "waiting for a child", execve: "starting a program (execve)", clone3: "starting a thread or a process (clone3)",
+  clone: "starting a thread or a process (clone)", fork: "starting a child (fork)", vfork: "starting a child (vfork)",
   mmap: "in a memory call (mmap)", munmap: "in a memory call (munmap)", madvise: "in a memory call (madvise)",
 };
 
@@ -97,6 +100,8 @@ export type RawCall = { nr: number; args: bigint[] };
 export function parseSyscall(text: string): RawCall | "running" | undefined {
   const f = text.trim().split(/\s+/);
   if (f[0] === "running") return "running";
+  // An empty or unreadable file is no call (an empty string would read as call 0).
+  if (!f[0]) return undefined;
   const nr = Number(f[0]);
   if (!Number.isInteger(nr)) return undefined;
   if (nr < 0) return { nr: -1, args: [] };
@@ -118,6 +123,11 @@ export function parsePressure(text: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 export const parseLoad = (text: string): number | undefined => { const v = Number(text.trim().split(/\s+/)[0]); return Number.isFinite(v) ? v : undefined; };
+// A pressure file's total: the time, in ms, some task waited for it since the start.
+export function parsePressureTotal(text: string): number | undefined {
+  const m = /^some\s.*\btotal=(\d+)/m.exec(text);
+  return m ? Number(m[1]) / 1000 : undefined;
+}
 // A cgroup's cpu.stat: the time its tasks were held back by its quota.
 export function parseThrottled(text: string): number | undefined {
   const m = /^throttled_usec\s+(\d+)/m.exec(text);
@@ -131,12 +141,13 @@ export const parseEpoll = (text: string): number[] => [...text.matchAll(/^tfd:\s
 
 export type Dirs = { state: string; config: string };
 // `kind` is what repeats of one cause share (the store's log, a worktree,
-// a pipe); `text` is what the row says. A path is shown relative to the
-// state or the config folder, a few folders deep; one outside both is not
-// shown at all.
+// a pipe); `text` is what the row says. A file is named by its kind or by
+// the folder of Keel's own it is under, never by a name the owner chose: a
+// worktree's repository, an artifact's or a skill's name, a volume's. Only
+// what sits directly in the state or the config folder is shown by name
+// (those names are Keel's). A file outside both is not shown at all.
 export type Place = { kind: string; text: string };
 const within = (path: string, dir: string) => (dir && contains(dir, path) ? relative(dir, path) : undefined);
-const short = (rel: string, depth = 3) => { const p = rel.split("/"); return p.length > depth ? `${p.slice(0, depth).join("/")}/...` : rel; };
 export function placeOf(link: string, dirs: Dirs): Place {
   const gone = / \(deleted\)$/.test(link);
   const path = link.replace(/ \(deleted\)$/, "");
@@ -145,9 +156,10 @@ export function placeOf(link: string, dirs: Dirs): Place {
   if (/^socket:/.test(path)) return { kind: "socket", text: "a socket" };
   if (path === "anon_inode:[eventpoll]") return { kind: "epoll", text: "its event queue" };
   if (path === "anon_inode:[pidfd]") return { kind: "pidfd", text: "a process handle" };
-  if (/^anon_inode:/.test(path)) return { kind: "anon", text: `an anonymous descriptor (${path.slice(11).replace(/[[\]]/g, "")})` };
+  if (/^anon_inode:/.test(path)) return { kind: "anon", text: "an anonymous descriptor" };
   if (/^\/dev\/(pts\/\d+|tty\w*|console)$/.test(path)) return { kind: "terminal", text: "a terminal" };
-  if (/^\/dev\//.test(path)) return { kind: `device ${path}`, text: `the device ${path}` };
+  if (/^\/dev\/(null|zero|u?random)$/.test(path)) return { kind: `device ${path.slice(5)}`, text: `the device ${path}` };
+  if (/^\/dev\//.test(path)) return { kind: "device", text: "a device" };
   if (/^\/(proc|sys)\//.test(path)) return { kind: "kernel", text: "a kernel file (under /proc or /sys)" };
   if (!path.startsWith("/")) return { kind: "other", text: "a descriptor that is no file" };
   // The folder nested in the other is looked at first.
@@ -155,23 +167,28 @@ export function placeOf(link: string, dirs: Dirs): Place {
   for (const which of order) {
     const rel = within(path, dirs[which]);
     if (rel === undefined) continue;
-    if (which === "config") return { kind: `config ${rel.split("/")[0]}`, text: `${rel ? `config/${short(rel)}` : "the config folder"}${was}` };
-    if (rel === "keel.db-wal") return { kind: "store log", text: "the store's log (keel.db-wal)" };
-    if (rel === "keel.db") return { kind: "store", text: "the store's database (keel.db)" };
-    if (rel === "keel.db-shm") return { kind: "store index", text: "the store's index (keel.db-shm)" };
-    const wt = /^worktrees\/([^/]+)/.exec(rel);
-    if (wt) return { kind: "worktree", text: `a file under worktrees/${wt[1]}${was}` };
-    return { kind: `state ${rel.split("/")[0]}`, text: `${rel ? `state/${short(rel)}` : "the state folder"}${was}` };
+    if (!rel) return { kind: which, text: `the ${which} folder` };
+    if (which === "state" && rel === "keel.db-wal") return { kind: "store log", text: "the store's log (keel.db-wal)" };
+    if (which === "state" && rel === "keel.db") return { kind: "store", text: "the store's database (keel.db)" };
+    if (which === "state" && rel === "keel.db-shm") return { kind: "store index", text: "the store's index (keel.db-shm)" };
+    const top = rel.split("/")[0]!;
+    // Below a folder: the folder is Keel's, what is in it may be named by the owner.
+    return rel.includes("/") ? { kind: `${which} ${top}`, text: `a file under ${which}/${top}${was}` } : { kind: `${which} file`, text: `${which}/${top}${was}` };
   }
   return { kind: "outside", text: `a file outside its state and config folders${was}` };
 }
 
-// A child's command: its program's name and its first argument, never the rest.
+// A child's command: its program's name, and its first argument when that
+// is a flag's name, a short number, or the subcommand of a program that
+// takes one. Anything else (a host, a path, a key, a password glued to its
+// flag) is the owner's and is not shown.
+const SUBCOMMANDS = new Set(["git", "gh", "systemctl", "systemd-run", "journalctl", "docker", "podman", "bun", "npm", "pnpm", "yarn", "cargo", "go", "tacit"]);
 export function commandOf(comm: string | undefined, cmdline: string | undefined): string {
   const argv = (cmdline ?? "").split("\0").filter(Boolean);
   const program = (argv[0]?.split("/").pop() || comm?.trim() || "a process").slice(0, 40);
-  const first = argv[1] && !argv[1].startsWith("/") && !/[=:@]/.test(argv[1]) ? argv[1].slice(0, 40) : "";
-  return first ? `${program} ${first}` : program;
+  const arg = argv[1] ?? "";
+  const shown = /^(-[A-Za-z]|--[a-z][a-z-]{0,30})$/.test(arg) || /^\d{1,6}(\.\d{1,3})?$/.test(arg) || (SUBCOMMANDS.has(program) && /^[a-z][a-z-]{0,20}$/.test(arg));
+  return shown ? `${program} ${arg}` : program;
 }
 
 // What the watcher looks up for a call's arguments (the real one reads
@@ -242,25 +259,40 @@ export type Sample = {
   call?: Call;            // what it was asleep in
   wchan?: string;         // the kernel function it sleeps in
   // The watcher did not run either between the sample before and this one:
-  // the process was stopped, or the machine asleep.
-  gap?: "stopped" | "suspended";
+  // the process was stopped, the machine asleep, or every thread of the
+  // process held in memory reclaim (its unit over its memory limit).
+  gap?: "stopped" | "suspended" | "memory";
 };
+// What a call was found to wait on, kept while the thread stays in that
+// very call: the same syscall text, no processor time since (a thread that
+// left the call and made another ran in between), and the descriptor still
+// naming the same file. A descriptor's number is used again for another
+// file, and a synchronous spawn waits with the same arguments for another
+// child, so the text alone says nothing.
+export type CallMemo = { text?: string; run_ns?: number; link?: string; call?: Call };
+
 // One sample from the thread's four files (`read` gives each by name, or
 // nothing when it cannot be read). The call is looked up only for a thread
-// that is asleep, and not again while the syscall file says the same.
+// that is asleep. A sample of a running thread forgets the memo.
 export type ThreadFile = "stat" | "schedstat" | "syscall" | "wchan";
-export function sampleOf(t: number, ep: number, read: (file: ThreadFile) => string | undefined, arch: Arch, dirs: Dirs, look: Lookup, memo: { text?: string; call?: Call } = {}): Sample | undefined {
+export function sampleOf(t: number, ep: number, read: (file: ThreadFile) => string | undefined, arch: Arch, dirs: Dirs, look: Lookup, memo: CallMemo = {}): Sample | undefined {
   const stat = parseStat(read("stat") ?? "");
   const sched = parseSchedstat(read("schedstat") ?? "");
   if (!stat || !sched) return undefined;
   const s: Sample = { t, ep, state: stat.state, user_ticks: stat.user_ticks, sys_ticks: stat.sys_ticks, run_ns: sched.run_ns, wait_ns: sched.wait_ns };
-  if (stat.state === "R") return s;
+  const forget = () => { memo.text = memo.run_ns = memo.link = memo.call = undefined; };
+  if (stat.state === "R") { forget(); return s; }
   const text = (read("syscall") ?? "").trim();
   const raw = parseSyscall(text);
   if (raw && raw !== "running") {
-    if (memo.text !== text || !memo.call) { memo.text = text; memo.call = callOf(raw, arch, dirs, look); }
+    const fd = raw.nr >= 0 && onDescriptor(syscallName(raw.nr, arch)) ? int32(raw.args[0]) : -1;
+    const link = fd >= 0 ? look.link(fd) : undefined;
+    if (!memo.call || memo.text !== text || memo.run_ns !== sched.run_ns || memo.link !== link) {
+      memo.text = text; memo.run_ns = sched.run_ns; memo.link = link;
+      memo.call = callOf(raw, arch, dirs, look);
+    }
     s.call = memo.call;
-  }
+  } else forget();
   const wchan = read("wchan")?.trim();
   if (wchan && wchan !== "0") s.wchan = wchan;
   return s;
@@ -273,16 +305,18 @@ export type Around = {
   throttled_ms?: number;                                      // the unit's quota held its tasks back this long, summed over processors
   suspended_ms?: number;                                      // the boot-time clock ran this much further than the monotonic one
   cont?: boolean;                                             // a SIGCONT arrived as it ended
+  memory_unit?: boolean;                                      // the memory stall was read from the daemon's own unit (else the machine's)
+  memory_stall_ms?: number;                                   // some task waited for memory this long during a pause that was not all of that
 };
-export type CauseKind = "compute" | "cpu_wait" | "call" | "child" | "disk" | "stopped" | "suspended" | "unknown";
+export type CauseKind = "compute" | "cpu_wait" | "call" | "child" | "disk" | "memory" | "stopped" | "suspended" | "unknown";
 export type Share = { kind: CauseKind; key: string; what: string; ms: number };
 export type Cause = Around & {
   kind: CauseKind;
   key: string;          // what repeats of this cause share: the Errors row is one per key
   text: string;         // "2.1 s waiting for a processor (machine load 22, CPU pressure 41%)"
   also?: string;        // the same for what else took a real part of it, after the first
-  sampled_ms: number;   // how much of the stall the watcher saw
-  shares: Share[];      // the largest first
+  sampled_ms: number;   // how much time the watcher saw the loop held
+  shares: Share[];      // the largest first; they do not overlap and sum to no more than the stall
   run_ms?: number;      // on a processor
   kernel_ms?: number;   // of that, in the kernel
   wait_ms?: number;     // runnable, waiting for a processor
@@ -294,12 +328,25 @@ export type Cause = Around & {
 
 // The watcher cannot name the code of a stall that computed, and the row says so.
 export const UNSEEN = "which code is not visible from the watcher's thread (no JavaScript frames across threads): only a section the daemon times names it";
+// What a pause of the whole process is called. A SIGCONT as it ends makes it a signal's (stall-watch.ts).
+export const STOPPED = "stopped (a stop signal, a debugger or a frozen unit)";
+export const STOPPED_OR_MEMORY = "not running: stopped, or waiting for memory";
 export const unknown = (text: string): Cause => ({ kind: "unknown", key: "unknown", text, sampled_ms: 0, shares: [] });
 
-// The watcher's samples of one stall, in order. `stallMs`: how long the loop says it was held.
-export function decide(samples: Sample[], around: Around, stallMs: number): Cause {
-  let run = 0, wait = 0, user = 0, sys = 0, seen = 0, runnable = 0;
-  const gaps = { stopped: 0, suspended: 0 };
+// The watcher's samples of one stall, in order. `stallMs`: how long the
+// loop says it was held, at least; `windowMs`: the time since its last tick
+// on time, which the stall lies in (idle, the loop measures a stall up to a
+// second short, and the watcher may have seen more of it).
+//
+// The parts do not overlap. Time on a processor and time runnable and
+// waiting for one are schedstat's own two counters and nothing else. A
+// pause of the whole process is the watcher's own gap. What is left was
+// spent asleep, and goes to the calls the samples showed the thread asleep
+// in, in their proportions. Together they are what was seen, cut to the
+// stall when more was seen than the stall can hold.
+export function decide(samples: Sample[], around: Around, stallMs: number, windowMs = stallMs): Cause {
+  let run = 0, wait = 0, user = 0, sys = 0, seen = 0;
+  const gaps = { stopped: 0, suspended: 0, memory: 0 };
   // Asleep or stopped, by what the thread was seen in at the start of each stretch.
   const asleep = new Map<string, { kind: CauseKind; what: string; ms: number; sample: Sample }>();
   for (let i = 0; i + 1 < samples.length; i++) {
@@ -311,7 +358,8 @@ export function decide(samples: Sample[], around: Around, stallMs: number): Caus
     seen += dt; run += r; wait += w;
     user += Math.max(0, b.user_ticks - a.user_ticks); sys += Math.max(0, b.sys_ticks - a.sys_ticks);
     if (b.gap) { gaps[b.gap] += Math.max(0, dt - r - w); continue; }
-    if (a.state === "R") { runnable += dt; continue; }
+    // Running or runnable: both are in the two counters already.
+    if (a.state === "R") continue;
     const stopped = a.state === "T" || a.state === "t";
     const key = stopped ? "stopped" : a.call ? callKey(a.call) : `asleep ${a.state}`;
     const had = asleep.get(key);
@@ -323,16 +371,13 @@ export function decide(samples: Sample[], around: Around, stallMs: number): Caus
     });
   }
   if (seen <= 0) return { ...unknown("the watcher saw none of it"), ...around };
-  // A wait for a processor is counted when it ends, so one that began before the first sample is in it whole.
-  const paused = gaps.stopped + gaps.suspended;
+  // A wait for a processor is counted when it ends, so one that began before
+  // the first sample is in the counter whole: each part is cut to what is left.
+  const paused = Math.min(seen, gaps.stopped + gaps.suspended + gaps.memory);
   run = Math.min(run, seen - paused);
-  wait = Math.min(wait, Math.max(0, seen - paused - run));
-  // What is left was spent off a processor: asleep in what the samples
-  // showed, in their proportions. A thread seen runnable and not running was
-  // waiting for a processor, whether or not that wait is counted yet.
-  let rest = Math.max(0, seen - paused - run - wait);
+  wait = Math.min(wait, seen - paused - run);
+  const rest = seen - paused - run - wait;
   const weight = [...asleep.values()].reduce((n, a) => n + a.ms, 0);
-  if (weight + runnable > 0) { const queued = rest * (runnable / (weight + runnable)); wait += queued; rest -= queued; }
   const shares: (Share & { sample?: Sample })[] = [];
   // Processor time in the kernel is a system call's work (a large write, memory being mapped), not JavaScript.
   const kernel = user + sys > 0 && sys / (user + sys) >= 0.6;
@@ -347,21 +392,30 @@ export function decide(samples: Sample[], around: Around, stallMs: number): Caus
     shares.push({ kind: "cpu_wait", key: "cpu_wait", what: `waiting for a processor${bits.length ? ` (${bits.join(", ")})` : ""}`, ms: wait });
   }
   if (gaps.suspended > 0) shares.push({ kind: "suspended", key: "suspended", what: "with the machine suspended (going to sleep or waking)", ms: gaps.suspended });
-  if (gaps.stopped > 0) shares.push({ kind: "stopped", key: "stopped", what: "stopped (a stop signal, a debugger or a frozen unit)", ms: gaps.stopped });
+  if (gaps.memory > 0) shares.push({ kind: "memory", key: "memory", what: around.memory_unit === false ? "waiting for memory (the machine is short of it)" : "waiting for memory (its unit is over its memory limit)", ms: gaps.memory });
+  // A pause in which the memory stall grew, but by less than half of it, is not called a stop alone.
+  if (gaps.stopped > 0) shares.push({ kind: "stopped", key: "stopped", what: around.memory_stall_ms ? `${STOPPED_OR_MEMORY} (the memory stall grew ${secs(around.memory_stall_ms)} meanwhile)` : STOPPED, ms: gaps.stopped });
   if (weight > 0) for (const [key, a] of asleep) {
     const io = a.kind === "disk" || (a.sample.state === "D" && a.kind === "call");
-    const bits = io && around.pressure?.io !== undefined ? ` (IO pressure ${Math.round(around.pressure.io)}%)` : "";
-    shares.push({ kind: a.kind, key, what: `${a.what}${bits}`, ms: rest * (a.ms / weight), sample: a.sample });
-  } else if (rest >= 100) shares.push({ kind: "unknown", key: "unknown", what: "not running, in no call the watcher saw", ms: rest });
+    const bits = [
+      io && around.pressure?.io !== undefined ? `IO pressure ${Math.round(around.pressure.io)}%` : "",
+      a.kind === "disk" && (around.pressure?.memory ?? 0) >= 10 ? `memory pressure ${Math.round(around.pressure!.memory!)}%` : "",
+    ].filter(Boolean);
+    shares.push({ kind: a.kind, key, what: `${a.what}${bits.length ? ` (${bits.join(", ")})` : ""}`, ms: rest * (a.ms / weight), sample: a.sample });
+  } else if (rest >= 100) shares.push({ kind: "unknown", key: "unknown", what: "off a processor, in no call the watcher saw", ms: rest });
+  // More was seen than the stall can hold (samples from just before it): the parts keep their proportions.
+  const limit = Math.max(stallMs, Math.min(seen, windowMs));
+  const total = shares.reduce((n, x) => n + x.ms, 0);
+  if (total > limit) for (const x of shares) x.ms *= limit / total;
   shares.sort((x, y) => y.ms - x.ms);
   const main = shares[0];
   if (!main) return { ...unknown("the watcher saw none of it"), ...around };
   // The row names what took a real part of it: at most three, each a sixth of what was seen or more.
-  const named = shares.filter((s, i) => i === 0 || (i < 3 && s.ms >= Math.max(100, seen / 6)));
-  // Idle, the loop measures a stall up to a second short, and the watcher may have seen more of it: the row's parts stay within its length.
-  const part = (s: Share) => (s.kind === "suspended" && s.ms >= seen * 0.8 ? "the machine was suspended" : `${secs(Math.min(s.ms, Math.max(stallMs, 0) || s.ms))} ${s.what}`);
+  const named = shares.filter((x, i) => i === 0 || (i < 3 && x.ms >= Math.max(100, Math.min(seen, limit) / 6)));
+  const part = (x: Share) => (x.kind === "suspended" && x.ms >= Math.min(seen, limit) * 0.8 ? "the machine was suspended" : `${secs(x.ms)} ${x.what}`);
   const partial = seen < stallMs * 0.6 ? ` (seen for the last ${secs(seen)} of it)` : "";
   const at = main.sample;
+  const scale = total > limit ? limit / total : 1;
   return {
     ...around,
     kind: main.kind,
@@ -370,9 +424,9 @@ export function decide(samples: Sample[], around: Around, stallMs: number): Caus
     ...(named.length > 1 ? { also: named.slice(1).map(part).join(", ") } : {}),
     sampled_ms: Math.round(seen),
     shares: shares.slice(0, 6).map(({ kind, key, what, ms }) => ({ kind, key, what, ms: Math.round(ms) })),
-    run_ms: Math.round(run),
-    ...(user + sys > 0 ? { kernel_ms: Math.round(run * (sys / (user + sys))) } : {}),
-    wait_ms: Math.round(wait),
+    run_ms: Math.round(run * scale),
+    ...(user + sys > 0 ? { kernel_ms: Math.round(run * scale * (sys / (user + sys))) } : {}),
+    wait_ms: Math.round(wait * scale),
     ...(at?.call && at.call.name !== "none" ? { call: { name: at.call.name, ...(at.call.on ? { on: at.call.on.text } : {}), ...(at.call.child ? { child: at.call.child } : {}) } } : {}),
     ...(at ? { state: at.state } : {}),
     ...(at?.wchan ? { wchan: at.wchan } : {}),

@@ -26,13 +26,16 @@
 // is named by the section the daemon timed (stall.ts), not by the watcher.
 // Bun's profiler (node:inspector) samples the thread that starts it, and a
 // held loop cannot start one.
-import { type Arch, type Cause, type Dirs, unknown } from "./stall-cause.ts";
+import { realOf } from "../core/paths.ts";
+import { type Arch, type Cause, type Dirs, STOPPED, unknown } from "./stall-cause.ts";
 import { dropBeat, shareBeat } from "./stall.ts";
 
 declare const __KEEL_STALLWATCH_JS__: string | undefined;
 
 // How long a stall's row waits for the watcher's answer.
 const ASK_MS = 2000;
+// This many answers in a row that did not come: the thread is taken to be stuck, and is reported and ended.
+const UNANSWERED = 2;
 
 let program: string | undefined;
 function programUrl(): string {
@@ -44,12 +47,13 @@ function programUrl(): string {
 
 const NOT_HERE = "the cause is not known on this platform (the watcher reads Linux's /proc)";
 
-const STOPPED = "stopped (a stop signal, a debugger or a frozen unit)";
 const BY_SIGNAL = "stopped by a signal (continued by SIGCONT)";
+// The words of a pause, wherever they stand, become the signal's.
+const signalled = (text: string) => text.replace(/not running: stopped, or waiting for memory \([^)]*\)/g, BY_SIGNAL).split(STOPPED).join(BY_SIGNAL);
 const bySignal = (c: Cause): Cause => ({
-  ...c, cont: true, text: c.text.replace(STOPPED, BY_SIGNAL),
-  ...(c.also ? { also: c.also.replace(STOPPED, BY_SIGNAL) } : {}),
-  shares: c.shares.map((s) => (s.kind === "stopped" ? { ...s, what: s.what.replace(STOPPED, BY_SIGNAL) } : s)),
+  ...c, cont: true, text: signalled(c.text),
+  ...(c.also ? { also: signalled(c.also) } : {}),
+  shares: c.shares.map((s) => (s.kind === "stopped" ? { ...s, what: BY_SIGNAL } : s)),
 });
 
 export class StallWatch {
@@ -57,6 +61,7 @@ export class StallWatch {
   private asked = new Map<number, (c: Cause | undefined) => void>();
   private ids = 0;
   private off?: string;
+  private unanswered = 0;
   private stopped = false;
   private cells?: Int32Array;
   // The watcher's thread id once it runs (its processor time is under /proc/<pid>/task/<tid>).
@@ -65,7 +70,7 @@ export class StallWatch {
   private continued = 0;
   private onCont = () => { this.continued = performance.now(); };
 
-  constructor(private dirs: Dirs, private onError: (e: unknown) => void = () => {}, private workerProgram?: string) {}
+  constructor(private dirs: Dirs, private onError: (e: unknown) => void = () => {}, private workerProgram?: string, private askMs = ASK_MS) {}
 
   get running() { return !!this.worker; }
   // Why no watcher runs, when none does.
@@ -88,12 +93,16 @@ export class StallWatch {
       if ("ready" in m) { this.tid = m.tid; return; }
       const done = this.asked.get(m.id);
       this.asked.delete(m.id);
+      this.unanswered = 0;
       done?.(m.cause);
     };
     w.onerror = (ev: ErrorEvent) => this.fail(new Error(`The stall watcher stopped: ${ev.message || "its thread failed"}`));
+    // A thread that ended without a word (it exited, or was ended from outside) is a failure as well.
+    w.addEventListener("close", () => { if (this.worker === w) this.fail(new Error("The stall watcher stopped: its thread ended")); });
     this.worker = w;
     shareBeat((this.cells = new Int32Array(cells)));
-    w.postMessage({ start: { beat: cells, dirs: this.dirs, arch: process.arch as Arch } });
+    // A descriptor's link under /proc is a real path: the folders are compared as where their links land.
+    w.postMessage({ start: { beat: cells, dirs: { state: realOf(this.dirs.state), config: realOf(this.dirs.config) }, arch: process.arch as Arch } });
     process.on("SIGCONT", this.onCont);
   }
 
@@ -126,15 +135,19 @@ export class StallWatch {
     const ended = performance.now();
     return new Promise<Cause>((resolve) => {
       const id = ++this.ids;
-      const timer = setTimeout(() => { this.asked.delete(id); resolve(unknown("the watcher did not answer in time")); }, ASK_MS);
+      const timer = setTimeout(() => {
+        this.asked.delete(id);
+        resolve(unknown("the watcher did not answer in time"));
+        if (++this.unanswered >= UNANSWERED) this.fail(new Error(`The stall watcher stopped: it did not answer ${UNANSWERED} stalls in a row`));
+      }, this.askMs);
       this.asked.set(id, (c) => {
         clearTimeout(timer);
         if (!c) return resolve(unknown(this.off ?? "the watcher stopped"));
         // A SIGCONT as the stall ended: the stop was a signal's, and the watcher's word for it says so.
         // The signal's own callback may still be on its way: it gets a moment.
-        const signalled = () => this.continued > 0 && Math.abs(this.continued - ended) < 1000;
-        const named = () => resolve(signalled() ? bySignal(c) : c);
-        if (c.shares.some((s) => s.kind === "stopped") && !signalled()) setTimeout(named, 50);
+        const continued = () => this.continued > 0 && Math.abs(this.continued - ended) < 1000;
+        const named = () => resolve(continued() ? bySignal(c) : c);
+        if (c.shares.some((s) => s.kind === "stopped") && !continued()) setTimeout(named, 50);
         else named();
       });
       try { w.postMessage({ ask: id, ms, window_ms: windowMs }); } catch (e) { this.asked.get(id)?.(undefined); this.fail(e); }

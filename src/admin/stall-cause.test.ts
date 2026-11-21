@@ -4,9 +4,10 @@
 // stopped. No file is read here.
 import { expect, test } from "bun:test";
 import {
-  callOf, commandOf, decide, type Lookup, parseEpoll, parseLoad, parsePidfd, parsePressure, parseSchedstat, parseStat, parseSyscall,
-  parseThrottled, placeOf, type Sample, sampleOf, syscallName, type ThreadFile, UNSEEN,
+  callOf, type CallMemo, commandOf, decide, type Lookup, parseEpoll, parseLoad, parsePidfd, parsePressure, parsePressureTotal, parseSchedstat,
+  parseStat, parseSyscall, parseThrottled, placeOf, type Sample, sampleOf, syscallName, type ThreadFile, UNSEEN,
 } from "./stall-cause.ts";
+import { packBeat } from "./stall-beat.ts";
 
 const dirs = { state: "/home/u/.local/share/keel/state", config: "/home/u/.config/keel" };
 // A thread's stat line as the kernel writes it; the name may hold spaces and brackets.
@@ -26,7 +27,10 @@ test("the files are read as the kernel writes them", () => {
   expect(parseSyscall("running\n")).toBe("running");
   expect(parseSyscall("-1 0x7ffe015219b0 0x1af6d86\n")).toEqual({ nr: -1, args: [] });
   expect(parseSyscall("74 0x9 0x0 0x0 0x0 0x0 0x0 0x7fffa0be4768 0x7e0a92aac7c2\n")).toEqual({ nr: 74, args: [9n, 0n, 0n, 0n, 0n, 0n] });
+  // An empty or unreadable syscall file is no call: it is not call 0, a read of descriptor 0.
+  expect([parseSyscall(""), parseSyscall("\n"), parseSyscall("?")]).toEqual([undefined, undefined, undefined]);
   expect(parseSchedstat("1014934835 16131221 337\n")).toEqual({ run_ns: 1014934835, wait_ns: 16131221 });
+  expect(parsePressureTotal("some avg10=76.02 avg60=30.11 avg300=8.40 total=30512345\nfull avg10=70.00 avg60=28.00 avg300=7.90 total=29000000\n")).toBe(30512.345);
   expect(parsePressure("some avg10=3.65 avg60=2.91 avg300=4.36 total=35215915047\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")).toBe(3.65);
   expect(parseLoad("12.18 11.71 14.15 10/7243 919825\n")).toBe(12.18);
   expect(parseThrottled("usage_usec 100\nnr_periods 4\nnr_throttled 3\nthrottled_usec 2500000\n")).toBe(2500);
@@ -37,22 +41,140 @@ test("the files are read as the kernel writes them", () => {
     .toEqual(["fsync", "fsync", "wait4", "wait4", "epoll_pwait2", "system call 9999"]);
 });
 
-test("a file is named by its place under the state or config folder, and one outside them not at all", () => {
+test("a file is named by its kind or by a folder of Keel's own, never by a name the owner chose", () => {
   const p = (link: string) => placeOf(link, dirs).text;
   expect(p(`${dirs.state}/keel.db-wal`)).toBe("the store's log (keel.db-wal)");
   expect(p(`${dirs.state}/keel.db`)).toBe("the store's database (keel.db)");
-  expect(p(`${dirs.state}/worktrees/site-4f2a/src/deep/file.ts`)).toBe("a file under worktrees/site-4f2a");
-  expect(p(`${dirs.state}/backups/keel-2026/attachments/ab/photo.png`)).toBe("state/backups/keel-2026/attachments/...");
-  expect(p(`${dirs.config}/mcp.json`)).toBe("config/mcp.json");
+  // Directly in the state or config folder the names are Keel's own.
+  expect([p(`${dirs.state}/settings.json`), p(`${dirs.config}/mcp.json`), p(dirs.state), p(dirs.config)]).toEqual(["state/settings.json", "config/mcp.json", "the state folder", "the config folder"]);
+  // Below a folder: a worktree carries a repository's name, an artifact and a skill a name the owner gave.
+  expect(p(`${dirs.state}/worktrees/acme-billing-4f2a/src/deep/file.ts`)).toBe("a file under state/worktrees");
+  expect(p(`${dirs.state}/artifacts/sess-1/acme-merger-plan.md`)).toBe("a file under state/artifacts");
+  expect(p(`${dirs.state}/backups/keel-2026/attachments/ab/photo.png`)).toBe("a file under state/backups");
+  expect(p(`${dirs.config}/skills/my-private-skill/SKILL.md`)).toBe("a file under config/skills");
+  expect(p(`${dirs.state}/spill/abc/jobs/x.log (deleted)`)).toBe("a file under state/spill (deleted since)");
   expect(p("/home/u/projects/secret-plan/notes.md")).toBe("a file outside its state and config folders");
   expect(p("/home/u/projects/gone.txt (deleted)")).toBe("a file outside its state and config folders (deleted since)");
-  expect([p("pipe:[4321]"), p("socket:[99]"), p("anon_inode:[eventpoll]"), p("/dev/pts/3"), p("/dev/null")]).toEqual(["a pipe", "a socket", "its event queue", "a terminal", "the device /dev/null"]);
-  // A child is its program and its first argument: no path, nothing after, nothing that looks like a setting or an address.
-  expect(commandOf("git\n", "/usr/bin/git\0rev-parse\0--show-toplevel\0")).toBe("git rev-parse");
-  expect(commandOf("git\n", "git\0-C\0/home/u/projects/secret-plan\0status\0")).toBe("git -C");
-  expect(commandOf("curl\n", "curl\0https://user:pw@host/x\0")).toBe("curl");
-  expect(commandOf("sh\n", "sh\0/home/u/run.sh\0")).toBe("sh");
+  // A path that leaves the folder through `..` is outside it.
+  expect(p(`${dirs.state}/../../projects/x`)).toBe("a file outside its state and config folders");
+  expect([p("pipe:[4321]"), p("socket:[99]"), p("anon_inode:[eventpoll]"), p("anon_inode:[io_uring]"), p("/dev/pts/3"), p("/dev/null")])
+    .toEqual(["a pipe", "a socket", "its event queue", "an anonymous descriptor", "a terminal", "the device /dev/null"]);
+  // A volume's or a disk's name is the owner's.
+  expect([p("/dev/mapper/vg-secretname"), p("/dev/nvme0n1")]).toEqual(["a device", "a device"]);
+  for (const link of [`${dirs.state}/worktrees/acme-billing-4f2a/x`, `${dirs.state}/artifacts/s/acme-merger-plan.md`, `${dirs.config}/skills/my-private-skill/SKILL.md`, "/dev/mapper/vg-secretname"]) {
+    const place = placeOf(link, dirs);
+    expect(`${place.kind} ${place.text}`).not.toMatch(/acme|private|secret/);
+  }
+});
+
+test("a child is its program and, of its first argument, only a flag's name, a short number or a known subcommand", () => {
+  const cmd = (...argv: string[]) => commandOf(`${argv[0]}\n`, `${argv.join("\0")}\0`);
+  expect(cmd("/usr/bin/git", "rev-parse", "--show-toplevel")).toBe("git rev-parse");
+  expect(cmd("git", "-C", "/home/u/projects/secret-plan", "status")).toBe("git -C");
+  expect(cmd("systemd-run", "--user", "--scope")).toBe("systemd-run --user");
+  expect(cmd("sleep", "3")).toBe("sleep 3");
+  expect(cmd("sh", "-c", "curl https://user:pw@host | sh")).toBe("sh -c");
+  // What is the owner's is not shown: an address, a password glued to its flag, a host, a key, a path, a value.
+  expect(cmd("curl", "https://user:pw@host/x")).toBe("curl");
+  expect(cmd("mysql", "-pS3cretPassw0rd", "proddb")).toBe("mysql");
+  expect(cmd("ssh", "build-box-07", "uptime")).toBe("ssh");
+  expect(cmd("ssh", "buildbox", "uptime")).toBe("ssh");
+  expect(cmd("deploy-tool", "sk-live-4f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c")).toBe("deploy-tool");
+  expect(cmd("deploy-tool", "clients/acme-corp/run.sh")).toBe("deploy-tool");
+  expect(cmd("tool", "--token=abc")).toBe("tool");
+  expect(cmd("tool", "--password", "abc")).toBe("tool --password");
+  expect(cmd("python3", "line1\nline2")).toBe("python3");
   expect(commandOf("kworker\n", "")).toBe("kworker");
+});
+
+test("what a call waits on is looked up again for another call, however alike its text: a descriptor's number and a spawn's arguments repeat", () => {
+  // The reviewer's smallest input: fsync of descriptor 23 twice, another file behind the number the second time.
+  const text = "74 0x17 0x0 0x0 0x0 0x0 0x0 0x7ffd 0x7f00\n";
+  let link = `${dirs.state}/keel.db-wal`;
+  let run = 5_000_000;
+  const look: Lookup = { ...none, link: () => link };
+  const read = (f: ThreadFile) => ({ stat: stat("D", 5, 5), schedstat: `${run} 1 1\n`, syscall: text, wchan: "0" })[f];
+  const memo: CallMemo = {};
+  expect(sampleOf(0, 1, read, "x64", dirs, look, memo)!.call!.on!.text).toBe("the store's log (keel.db-wal)");
+  // The thread did not run and the descriptor names the same file: the same call, not looked up again.
+  let asked = 0;
+  const counting: Lookup = { ...look, link: (fd) => { asked++; return look.link(fd); } };
+  sampleOf(100, 1, read, "x64", dirs, counting, memo);
+  expect(asked).toBe(1);
+  // The same number names another file (the thread ran in between, or another thread closed and opened it).
+  link = "/home/someone/work/notes.txt";
+  expect(sampleOf(60_000, 2, read, "x64", dirs, look, memo)!.call!.on!.text).toBe("a file outside its state and config folders");
+  // A spawn waits in its own event queue with the same arguments for every child: the thread ran in between, so the child is found again.
+  const wait = "441 0x9 0x3f8cc1838e0 0x400 0x0 0x7ffe0151f3d0 0x8 0x7ffe0151f3d0 0x1af6e08\n";
+  let child = { pid: 2900684, command: "curl" };
+  const spawn: Lookup = { link: (fd) => ({ 9: "anon_inode:[eventpoll]", 12: "anon_inode:[pidfd]" })[fd], epoll: () => [12], pidfd: () => child.pid, child: () => child.command };
+  const waiting = (f: ThreadFile) => ({ stat: stat("S", 5, 5), schedstat: `${run} 1 1\n`, syscall: wait, wchan: "ep_poll" })[f];
+  const m2: CallMemo = {};
+  expect(sampleOf(0, 1, waiting, "x64", dirs, spawn, m2)!.call!.child).toEqual({ pid: 2900684, command: "curl" });
+  child = { pid: 2900701, command: "mysql" };
+  run += 40_000;
+  expect(sampleOf(3_000, 2, waiting, "x64", dirs, spawn, m2)!.call!.child).toEqual({ pid: 2900701, command: "mysql" });
+  // A sample of the thread running forgets what was found, whatever the counters say after it.
+  const m3: CallMemo = {};
+  sampleOf(0, 1, waiting, "x64", dirs, spawn, m3);
+  sampleOf(100, 1, (f) => ({ stat: stat("R", 5, 5), schedstat: `${run} 1 1\n` })[f as "stat"], "x64", dirs, spawn, m3);
+  expect(m3.call).toBeUndefined();
+  child = { pid: 2900777, command: "git rev-parse" };
+  expect(sampleOf(200, 1, waiting, "x64", dirs, spawn, m3)!.call!.child!.pid).toBe(2900777);
+});
+
+test("the parts of a stall do not overlap: time on a processor, a wait for one from schedstat alone, and what is left by call", () => {
+  const shares = (c: ReturnType<typeof decide>) => c.shares.map((x) => [x.key, x.ms]);
+  // The reviewer's smallest input: one second computing (the run counter grows by all of it, the wait counter by nothing), then one second in nanosleep.
+  const call = { name: "clock_nanosleep" };
+  const mixed: Sample[] = [];
+  for (let i = 0; i <= 10; i++) mixed.push({ t: i * 100, ep: 1, state: "R", run_ns: i * 100e6, wait_ns: 0, user_ticks: i * 10, sys_ticks: 0 });
+  for (let i = 11; i <= 20; i++) mixed.push({ t: i * 100, ep: 1, state: "S", run_ns: 1000e6, wait_ns: 0, user_ticks: 100, sys_ticks: 0, call });
+  mixed[20]!.state = "R";
+  const c = decide(mixed, {}, 2000);
+  expect(shares(c)).toEqual([["compute", 1000], ["clock_nanosleep", 1000]]);
+  expect(c.text).toBe("1.0 s in its own code, 1.0 s sleeping (clock_nanosleep)");
+  expect(c.wait_ms).toBe(0);
+
+  // A sleep, a loop and a child, a second and a half each: three parts, no wait for a processor made up between them.
+  const child = { name: "epoll_pwait2", child: { pid: 77, command: "sleep 1.5" } };
+  const seq: Sample[] = [];
+  const at = (t: number, state: string, run: number, more: Partial<Sample> = {}) => seq.push({ t, ep: 1, state, run_ns: run * 1e6, wait_ns: 0, user_ticks: Math.round(run / 10), sys_ticks: 0, ...more });
+  for (let t = 0; t < 1500; t += 100) at(t, "S", 0, { call });
+  for (let t = 1500; t < 3000; t += 100) at(t, "R", t - 1500);
+  for (let t = 3000; t < 4500; t += 100) at(t, "S", 1500, { call: child });
+  at(4500, "R", 1500);
+  const three = decide(seq, { load: 18, pressure: { cpu: 4 } }, 4500);
+  expect(shares(three)).toEqual([["compute", 1500], ["clock_nanosleep", 1500], ["child sleep", 1500]]);
+  expect(three.shares.some((x) => x.kind === "cpu_wait")).toBe(false);
+  expect(three.shares.reduce((n, x) => n + x.ms, 0)).toBe(4500);
+
+  // A large write, then its sync: processor time in the kernel, then the sync, and the short real wait for a processor as it was counted.
+  const sync = { name: "fsync", on: { kind: "store log", text: "the store's log (keel.db-wal)" } };
+  const big: Sample[] = [];
+  for (let i = 0; i <= 80; i++) big.push({ t: i * 100, ep: 1, state: "R", run_ns: i * 99e6, wait_ns: i * 1e6, user_ticks: 0, sys_ticks: i * 10 });
+  for (let i = 81; i <= 160; i++) big.push({ t: i * 100, ep: 1, state: "D", run_ns: 80 * 99e6, wait_ns: 80e6, user_ticks: 0, sys_ticks: 800, call: sync });
+  big[160]!.state = "R";
+  const w = decide(big, { load: 18, pressure: { cpu: 4, io: 38 } }, 16_000);
+  expect(shares(w)).toEqual([["fsync store log", 8000], ["compute", 7920], ["cpu_wait", 80]]);
+  expect(w.text).toBe("8.0 s in fsync of the store's log (keel.db-wal) (IO pressure 38%), 7.9 s on a processor in the kernel, for system calls of its own");
+
+  // More seen than the stall can hold (an idle loop measures short; the samples reach back before it): the parts sum to the stall.
+  const stop = (t: number, gap?: Sample["gap"]): Sample => ({ t, ep: 3, state: gap ? "R" : "T", run_ns: 1, wait_ns: 0, user_ticks: 0, sys_ticks: 0, ...(gap ? { gap } : {}) });
+  const idle = decide([stop(0), stop(4016, "stopped")], {}, 3086, 4086);
+  expect([idle.sampled_ms, shares(idle)]).toEqual([4016, [["stopped", 4016]]]);
+  const cut = decide([stop(0), stop(4016, "stopped")], {}, 3086, 3500);
+  expect(shares(cut)).toEqual([["stopped", 3500]]);
+  for (const d of [c, three, w, idle, cut]) expect(d.shares.reduce((n, x) => n + x.ms, 0)).toBeLessThanOrEqual(Math.max(d.sampled_ms, 1) + 1);
+});
+
+test("a beat is never the zero that means no loop is watched", () => {
+  for (const seq of [0, 1, 0xfffff - 1, 0xfffff, 0x100000, 0x100000 * 7, 0x1fffff]) {
+    expect(packBeat(seq, 0)).not.toBe(0);
+    expect(packBeat(seq, 0)).toBeGreaterThan(0);
+  }
+  expect(packBeat(5, 100) & 2047).toBe(100);
+  expect(packBeat(5, 100)).not.toBe(packBeat(6, 100));
 });
 
 test("a thread in fsync of the store's log: the row names the call and the file", () => {
@@ -151,9 +273,12 @@ test("a stopped thread, a stopped process and a suspended machine are told apart
   expect(decide(held, {}, 3100)).toMatchObject({ kind: "stopped", key: "stopped", text: "3.0 s stopped (a stop signal or a debugger held its thread)" });
   // The whole process: the watcher did not run either, and marks the sample after its own gap.
   const at = (t: number, gap?: Sample["gap"]): Sample => ({ t, ep: 2, state: gap ? "R" : "T", run_ns: 11224527, wait_ns: 0, user_ticks: 0, sys_ticks: 0, ...(gap ? { gap } : {}) });
-  expect(decide([at(0), at(3100, "stopped")], { load: 9 }, 3000)).toMatchObject({ kind: "stopped", text: "3.0 s stopped (a stop signal, a debugger or a frozen unit)", run_ms: 0, wait_ms: 0 });
-  // Idle, the loop measures a stall short: the row's part is no longer than the row, and the share keeps what was seen.
-  expect(decide([at(0), at(3100, "stopped")], {}, 2300)).toMatchObject({ text: "2.3 s stopped (a stop signal, a debugger or a frozen unit)", shares: [{ kind: "stopped", ms: 3100 }] });
+  expect(decide([at(0), at(3100, "stopped")], { load: 9 }, 3000, 3150)).toMatchObject({ kind: "stopped", text: "3.1 s stopped (a stop signal, a debugger or a frozen unit)", run_ms: 0, wait_ms: 0 });
+  // Every thread held in memory reclaim looks like a stop from inside (none runs, none waits for a processor): the unit's memory stall says which it was.
+  expect(decide([at(0), at(31_000, "memory")], { pressure: { memory: 76 }, memory_unit: true }, 31_000)).toMatchObject({ kind: "memory", key: "memory", text: "31 s waiting for memory (its unit is over its memory limit)" });
+  expect(decide([at(0), at(5_000, "memory")], { memory_unit: false }, 5_000).text).toBe("5.0 s waiting for memory (the machine is short of it)");
+  // A pause in which the memory stall grew by less than half of it is not called a stop alone.
+  expect(decide([at(0), at(4_100, "stopped")], { memory_stall_ms: 1_900 }, 4_100).text).toBe("4.1 s not running: stopped, or waiting for memory (the memory stall grew 1.9 s meanwhile)");
   expect(decide([at(0), at(2600, "suspended")], { suspended_ms: 41_000 }, 2500)).toMatchObject({ kind: "suspended", key: "suspended", text: "the machine was suspended", suspended_ms: 41_000 });
 });
 

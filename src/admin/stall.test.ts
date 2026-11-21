@@ -63,7 +63,7 @@ test("a late tick is one stall, with how long, how busy, and the turns that ran 
   expect(describeStall(s)).toEqual({
     message: "Daemon unresponsive for 10 s: blocked by its own code, outside anything it times (1 turn was running)",
     context: { kind: "stall", ms: 10_200, busy_ms: 10_250, turns: [{ session_id: "s1", turn: "t1", doing: "tool Bash" }] },
-    group: "stall compute untimed", what: "blocked by its own code, outside anything it times", kind: "compute",
+    group: "stall compute untimed", what: "blocked by its own code, outside anything it times", kind: "compute", ms: 10_200,
   });
   // The same stall while a pass of the daemon's own was in progress says which.
   let done = () => {};
@@ -135,6 +135,40 @@ test("the row says what took the time, and the rows are one per cause whatever t
   expect(off.message).toBe("Daemon unresponsive for 4.0 s: its process was not running (a blocking call, or a stopped or starved machine); the cause is not known on this platform (the watcher reads Linux's /proc)");
   expect([off.group, off.kind]).toEqual(["stall unknown", "unknown"]);
   expect(describeStall(stall(4_000, unknown("x"), { busy_ms: 3_900 })).message).toBe("Daemon unresponsive for 4.0 s: blocked by its own code, outside anything it times");
+});
+
+test("idle, the loop measures a stall short: the row is as long as the watcher saw the loop held, within the time since its last tick", () => {
+  const stopped = (seen: number): Cause => decide([{ t: 0, ep: 1, state: "T", run_ns: 1, wait_ns: 0, user_ticks: 0, sys_ticks: 0 }, { t: seen, ep: 1, state: "R", run_ns: 1, wait_ns: 0, user_ticks: 0, sys_ticks: 0, gap: "stopped" }], {}, 3_086, 4_086);
+  const d = describeStall(stall(3_086, stopped(4_016), { window_ms: 4_086 }));
+  expect(d.message).toBe("Daemon unresponsive for 4.0 s: 4.0 s stopped (a stop signal, a debugger or a frozen unit)");
+  expect([d.ms, d.context.ms]).toEqual([4_016, 4_016]);
+  expect((d.context.cause as Cause).shares.reduce((n, x) => n + x.ms, 0)).toBeLessThanOrEqual(d.ms);
+  // The watcher saw less than the loop measured: the loop's length stands.
+  expect(describeStall(stall(3_086, stopped(1_900), { window_ms: 4_086 })).ms).toBe(3_086);
+});
+
+test("work that begins while the timer waits out its idle second brings the next tick forward", () => {
+  const { m, clock } = monitor();
+  const cells = new Int32Array(new SharedArrayBuffer(8));
+  shareBeat(cells);
+  const allow = () => Atomics.load(cells, 0) & ALLOW_MASK;
+  try {
+    clock.working = false;
+    m.start();
+    expect(allow()).toBe(1000);
+    // A request arrives: the watcher is told to expect the next beat within the short period.
+    const open = inFlight({}, () => "answering GET /api/sessions");
+    expect(allow()).toBe(100);
+    // Once per wait: more work does not move it again.
+    const before = Atomics.load(cells, 0);
+    timed(() => "answering GET /api/sessions", () => {});
+    expect((Atomics.load(cells, 0) & ALLOW_MASK) <= 100).toBe(true);
+    expect(Atomics.load(cells, 0)).not.toBe(before);
+    open();
+  } finally {
+    m.stop();
+    dropBeat(cells);
+  }
 });
 
 test("the loop tells its watcher when it will beat next, and at once when a section holds it", () => {

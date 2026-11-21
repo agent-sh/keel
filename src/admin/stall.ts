@@ -49,7 +49,8 @@ type Section = { label: string; ms: number };
 // `inside`: the longest section the process was not busy for (it slept in
 // it: a call of its own, or a machine that did not run it).
 // `beat`: the number the watcher reads; `due`: when the next tick is due; `depth`: timed sections open.
-type State = { longest: Section | null; inside: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number };
+// `wake`: set while the timer is armed for its idle second: work that begins then brings the next tick forward.
+type State = { longest: Section | null; inside: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number; wake?: () => void };
 const state = (): State => (G.__keelStall ??= { longest: null, inside: null, flights: new Map(), work: new Map(), touched: 0, seq: 0, due: 0, depth: 0 });
 // Tells the watcher the loop is alive and will say so again within `allowMs`.
 function beat(st: State, allowMs: number) {
@@ -81,6 +82,7 @@ export function timed<T>(label: () => string, f: () => T): T {
   const t0 = performance.now();
   const c0 = cpuMs();
   const st = state();
+  st.wake?.();
   if (st.depth++ === 0) beat(st, 0);
   try {
     return f();
@@ -100,6 +102,7 @@ export function timed<T>(label: () => string, f: () => T): T {
 // A request from its handler's start to its answer: what was in progress when a stall began.
 export function inFlight(key: object, label: () => string): () => void {
   const st = state();
+  st.wake?.();
   st.flights.set(key, { label, t0: (st.touched = performance.now()) });
   return () => void st.flights.delete(key);
 }
@@ -134,12 +137,15 @@ const sessionIn = (label: string) => /\/api\/sessions\/([0-9a-f-]{36})(?:[/ ]|$)
 // share, so the Errors panel holds one row per cause with a count (a wait
 // for a processor and a sync of the log are two rows), whatever the numbers
 // and however many turns ran.
-// `what` and `kind`: the cause alone, as a list of stalls says it.
-export function describeStall(s: Stall): { message: string; context: Record<string, unknown>; group: string; what: string; kind: string } {
+// `what` and `kind`: the cause alone, as a list of stalls says it. `ms`: how long it was, with what the watcher saw.
+export function describeStall(s: Stall): { message: string; context: Record<string, unknown>; group: string; what: string; kind: string; ms: number } {
   const c = s.cause;
   const known = c && c.kind !== "unknown" ? c : undefined;
+  // Idle, the timer measures a stall up to a second short. The watcher saw
+  // the loop held for longer: the stall is that long, within the time since the last tick on time.
+  const ms = known ? Math.max(s.ms, Math.min(known.sampled_ms, s.window_ms ?? s.ms)) : s.ms;
   // The watcher saw the main thread itself; without it, the process's processor time says.
-  const busy = known ? known.kind === "compute" : !!s.during || s.busy_ms >= s.ms * 0.5;
+  const busy = known ? known.kind === "compute" : !!s.during || s.busy_ms >= ms * 0.5;
   const kernel = known?.kind === "compute" && (known.kernel_ms ?? 0) >= (known.run_ms ?? 0) * 0.6 && (known.run_ms ?? 0) > 0;
   // A call of the daemon's own is the doing of the section it was made in.
   // A machine that did not run the daemon inside a section did not make that
@@ -163,12 +169,13 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
   const section = busy ? s.during : own ? slept : undefined;
   const where = section ? section.label : busy ? (s.work?.length ? s.work.join(" and ") : "untimed") : "";
   return {
-    message: `Daemon unresponsive for ${secs(s.ms)}${what}${ran ? ` (${ran})` : ""}`,
+    message: `Daemon unresponsive for ${secs(ms)}${what}${ran ? ` (${ran})` : ""}`,
+    ms: Math.round(ms),
     group: `stall ${known?.key ?? (busy ? "compute" : "unknown")}${where ? ` ${where}` : ""}`,
     what: what.replace(/^:? /, ""),
     kind: known?.kind ?? (busy ? "compute" : "unknown"),
     context: {
-      kind: "stall", ms: Math.round(s.ms), busy_ms: Math.round(s.busy_ms),
+      kind: "stall", ms: Math.round(ms), busy_ms: Math.round(s.busy_ms),
       ...(s.during ? { during: s.during.label, during_ms: Math.round(s.during.ms), ...(sessionIn(s.during.label) ? { session: sessionIn(s.during.label) } : {}) } : {}),
       ...(s.within ? { within: s.within.label, within_ms: Math.round(s.within.ms) } : {}),
       ...(c ? { cause: defined({ ...c, ...(busy && !kernel && !c.note ? { note: UNSEEN } : {}) }) } : {}),
@@ -258,6 +265,7 @@ export class StallMonitor {
     this.timer = undefined;
     // No timer, no beat: the watcher is told not to expect one.
     const st = state();
+    st.wake = undefined;
     if (st.beat) Atomics.store(st.beat, 0, 0);
   }
 
@@ -273,8 +281,27 @@ export class StallMonitor {
     const st = state();
     st.due = this.due;
     beat(st, ms);
+    st.wake = undefined;
     if (!timer) return;
     this.timer = setTimeout(() => { this.tick(); this.arm(); }, ms);
+    (this.timer as any).unref?.();
+    if (ms > TICK_MS) st.wake = () => this.wake();
+  }
+
+  // Work begins while the timer waits out its idle second (a request, a
+  // timed section, a turn): the next tick comes within the short period, so
+  // a stall that begins with that work is measured and watched from its
+  // start, not from up to a second into it. Once per idle wait.
+  wake() {
+    const st = state();
+    st.wake = undefined;
+    if (!this.timer) return;
+    const due = performance.now() + TICK_MS;
+    if (due >= this.due) return;
+    clearTimeout(this.timer);
+    this.due = st.due = due;
+    beat(st, TICK_MS);
+    this.timer = setTimeout(() => { this.tick(); this.arm(); }, TICK_MS);
     (this.timer as any).unref?.();
   }
 

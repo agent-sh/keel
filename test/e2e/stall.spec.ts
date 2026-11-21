@@ -113,6 +113,12 @@ test("each stall names what took the time: a child it waited for, its own code, 
   await turn("Waits for a child again", "script:child 2600");
   await expect.poll(() => times("child"), { timeout: 10_000 }).toBe(before.child + 2);
   expect((await of("child")).length).toBe(Math.max(1, rows));
+  // The row's words are the second child's own: its command and its pid, not what was found for the first.
+  const again = (await of("child"))[0];
+  expect(again.message).toMatch(/waiting for a child: sleep 2\.6 \(pid \d+\)/);
+  expect(again.context.cause.call.child.pid).not.toBe(child.context.cause.call.child.pid);
+  // The parts of a stall do not overlap: together they are no longer than the stall.
+  for (const row of [child, computed, stopped, again]) expect((row.context.cause.shares as any[]).reduce((n, x) => n + x.ms, 0)).toBeLessThanOrEqual(row.context.ms + 5);
   expect(new Set([child.id, computed.id, stopped.id]).size).toBe(3);
 
   // The turn that ran through the stall has it as a span of its trace, with the same cause.

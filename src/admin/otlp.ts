@@ -47,7 +47,8 @@ export function spanAttrs(s: Span): Record<string, unknown> {
     return { "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "keel", "gen_ai.request.model": a.model, "keel.turn.reason": a.reason, "keel.parent_session": a.parent_session, ...common };
   }
   // A wait says what it waited on and nothing of what was asked or answered.
-  if (s.kind === "wait") return { "keel.wait": s.name, "keel.attempt": a.attempt, "gen_ai.tool.name": a.tool, "gen_ai.tool.call.id": a.call_id, ...common };
+  // A stall of the daemon says its kind of cause (a word of Keel's own), never the file or the child.
+  if (s.kind === "wait") return { "keel.wait": s.name, "keel.attempt": a.attempt, "gen_ai.tool.name": a.tool, "gen_ai.tool.call.id": a.call_id, "keel.stall.cause": s.name === "daemon stall" ? a.cause?.kind : undefined, ...common };
   if (s.kind === "tool") {
     return { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": a.tool, "gen_ai.tool.call.id": a.call_id, "keel.tool.input_bytes": a.input_bytes, "keel.tool.result_bytes": a.result_bytes, ...common };
   }

@@ -346,10 +346,13 @@ export class Tracer {
       const turn = s && t.turn ? this.store.db.query<Turn, [string, string]>("SELECT id, ts, seq FROM events WHERE id = ? AND session_id = ? AND kind = 'turn_start'").get(t.turn, s.id) : null;
       if (!s || !turn) continue;
       const parent = this.ensureTurn(s, turn);
+      const span = newSpanId();
       this.store.db.run(
         "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error_id, attrs) VALUES (?, ?, ?, ?, 'wait', 'daemon stall', ?, ?, 'ok', ?, ?)",
-        [newSpanId(), parent.trace, parent.span, s.id, Math.round(Math.max(turn.ts, ctx.ended_ms - ctx.ms)), Math.round(ctx.ended_ms), errorId ?? null, JSON.stringify({ turn_event: turn.id, ms: ctx.ms, what, ...(ctx.cause ? { cause: ctx.cause } : {}) })],
+        [span, parent.trace, parent.span, s.id, Math.round(Math.max(turn.ts, ctx.ended_ms - ctx.ms)), Math.round(ctx.ended_ms), errorId ?? null, JSON.stringify({ turn_event: turn.id, ms: ctx.ms, what, ...(ctx.cause ? { cause: ctx.cause } : {}) })],
       );
+      // Ended as it is written: it goes to whatever exports the trace, as a tool's span does.
+      this.emitEnd(span);
     }
   }
 

@@ -6,7 +6,7 @@ import type { CauseKind } from "./stall-cause.ts";
 // daemon's own doing (its code, a call it made, a child it waited for), or
 // the machine's (no processor, a stop, a sleep).
 export const CAUSE_LABEL: Record<CauseKind, string> = {
-  compute: "Own code", call: "System call", child: "Child process", disk: "Disk", cpu_wait: "No processor", stopped: "Stopped", suspended: "Suspended", unknown: "Not known",
+  compute: "Own code", call: "System call", child: "Child process", disk: "Disk", cpu_wait: "No processor", memory: "No memory", stopped: "Stopped", suspended: "Suspended", unknown: "Not known",
 };
 export const ownDoing = (kind: string) => kind === "compute" || kind === "call" || kind === "child" || kind === "disk";
 

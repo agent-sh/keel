@@ -5,4 +5,5 @@
 // Zero: no loop is watched (its timer has not started, or was stopped).
 export const ALLOW_BITS = 11;
 export const ALLOW_MASK = (1 << ALLOW_BITS) - 1;
-export const packBeat = (seq: number, allowMs: number): number => ((seq & 0xfffff) << ALLOW_BITS) | Math.min(ALLOW_MASK, Math.max(0, Math.round(allowMs)));
+// The count part is never zero, so a beat is never read as "no loop".
+export const packBeat = (seq: number, allowMs: number): number => (((seq % 0xfffff) + 1) << ALLOW_BITS) | Math.min(ALLOW_MASK, Math.max(0, Math.round(allowMs)));
