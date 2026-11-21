@@ -390,3 +390,110 @@ test("settings search shows keyboard focus", async ({ page }) => {
   await page.keyboard.press("Tab");
   expect((await mark()).shown).not.toContain((await mark()).ring);
 });
+
+// A narrow Settings page (a phone, or a window the session list and a large
+// text size leave little of) names its section in a bar under the head: the
+// bar is the section's title and opens the search and the grouped list in
+// place of the section. A wide page keeps the grouped rail, with the row of
+// the section shown in view.
+test("settings sections on a narrow page", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/settings/storage");
+  const settings = page.getByTestId("settings");
+  const jump = page.getByTestId("settings-jump");
+  const nav = settings.getByRole("navigation", { name: "Settings sections" });
+  const row = (id: string) => nav.locator(`button[data-section="${id}"]`);
+  const title = page.getByTestId("settings-title");
+  // Nothing on the page is wider than the page, so nothing pans sideways.
+  const fits = () => settings.evaluate((el) => [el, ...el.querySelectorAll("*")].every((n) => n.scrollWidth <= n.clientWidth + 1 || getComputedStyle(n).overflowX === "visible" || getComputedStyle(n).overflowX === "hidden" || getComputedStyle(n).overflowX === "clip"));
+  const inView = (l: ReturnType<typeof row>) => l.evaluate((el) => { const r = el.getBoundingClientRect(); return r.left >= -1 && r.right <= innerWidth + 1 && r.top >= -1 && r.bottom <= innerHeight + 1; });
+
+  // A direct link to a late section: the bar says which one, whole, inside the page.
+  await expect(title).toHaveText("Storage");
+  await expect(jump).toBeVisible();
+  await expect(jump).toContainText("Machine");
+  await expect(jump).toContainText("Storage");
+  await expect(jump).toHaveAttribute("aria-expanded", "false");
+  expect(await inView(jump)).toBe(true);
+  expect(await fits()).toBe(true);
+  await expect(row("storage")).toBeHidden();
+  await shoot(page, "layout-13-settings-narrow");
+
+  // The bar opens the grouped list in place of the section, on the row of the section shown.
+  await jump.click();
+  await expect(jump).toHaveAttribute("aria-expanded", "true");
+  await expect(row("storage")).toHaveAttribute("aria-current", "page");
+  await expect.poll(() => inView(row("storage"))).toBe(true);
+  await expect(nav.getByRole("heading", { name: "Machine" })).toBeVisible();
+  await expect(settings.getByTestId("storage-panel")).toBeHidden();
+  expect(await fits()).toBe(true);
+  await shoot(page, "layout-14-settings-narrow-sections");
+
+  // Search reaches General; picking it shows the section and closes the list.
+  await page.getByTestId("settings-find").fill("theme");
+  await expect(nav.locator("button[data-section]")).toHaveCount(1);
+  await shoot(page, "layout-15-settings-narrow-search");
+  await row("general").click();
+  await expect(page).toHaveURL(/\/settings\/general$/);
+  await expect(title).toHaveText("General");
+  await expect(jump).toContainText("General");
+  await expect(jump).toHaveAttribute("aria-expanded", "false");
+  await expect(jump).toBeFocused();
+  await expect(page.getByTestId("text-size")).toBeVisible();
+  expect(await fits()).toBe(true);
+  // And back, through the groups: the search is empty again, and Escape closes without a pick.
+  await jump.click();
+  await expect(page.getByTestId("settings-find")).toHaveValue("");
+  await page.getByTestId("settings-find").fill("no such setting");
+  await expect(page.getByTestId("settings-none")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(jump).toHaveAttribute("aria-expanded", "false");
+  await expect(title).toHaveText("General");
+  await jump.click();
+  await row("storage").scrollIntoViewIfNeeded();
+  await row("storage").click();
+  await expect(title).toHaveText("Storage");
+  await expect(settings.getByTestId("storage-panel")).toBeVisible();
+  // A section reached from elsewhere while the list is open (here, Back in the history) closes the list on it.
+  await jump.click();
+  await expect(jump).toHaveAttribute("aria-expanded", "true");
+  await page.evaluate(() => { history.replaceState(null, "", "/settings/about"); dispatchEvent(new PopStateEvent("popstate")); });
+  await expect(title).toHaveText("About");
+  await expect(jump).toHaveAttribute("aria-expanded", "false");
+  await expect(jump).toContainText("About");
+  await expect(row("about")).toBeHidden();
+  // Opened narrow, then the window is widened: a rail click keeps the search as typed.
+  await jump.click();
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await expect(jump).toBeHidden();
+  await page.getByTestId("settings-find").fill("a");
+  await row("storage").click();
+  await expect(title).toHaveText("Storage");
+  await expect(page.getByTestId("settings-find")).toHaveValue("a");
+  await page.getByTestId("settings-find").fill("");
+  await page.setViewportSize({ width: 320, height: 568 });
+  await expect(jump).toHaveAttribute("aria-expanded", "false");
+
+  // With the session list open and the text at 150%, a 1024 px window leaves a narrow page: the same bar.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.evaluate(() => { localStorage.setItem("keel.textScale", "1.5"); localStorage.setItem("keel.list", "true"); });
+  await page.reload();
+  await expect(page.getByTestId("sidebar")).toBeVisible();
+  await expect(jump).toBeVisible();
+  expect(await fits()).toBe(true);
+  await shoot(page, "layout-16-settings-1024-text-150");
+  await page.evaluate(() => localStorage.removeItem("keel.textScale"));
+
+  // A wide page keeps the grouped rail and no bar; a short window still has the row of a late section in view.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto("/settings/about");
+  await expect(jump).toBeHidden();
+  await expect(nav.getByRole("heading", { name: "Working" })).toBeVisible();
+  await expect(row("about")).toHaveAttribute("aria-current", "page");
+  await expect(title).toBeVisible();
+  await shoot(page, "layout-17-settings-wide");
+  await page.setViewportSize({ width: 1920, height: 420 });
+  await page.reload();
+  await expect(row("about")).toBeVisible();
+  await expect.poll(() => inView(row("about"))).toBe(true);
+});

@@ -1,6 +1,6 @@
 import { Radio } from "@base-ui/react/radio";
-import { ArrowLeft, Bot, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { ArrowLeft, Bot, ChevronDown, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
@@ -174,14 +174,31 @@ const groupOf = (id?: string) => (id ? GROUP[id] ?? "More" : "");
 // Sections of figures and lists use the width; forms keep a reading measure.
 const WIDE = new Set(["usage", "observability", "experiments", "resources", "storage", "machines", "models", "mcp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
 
+// A wide page keeps the grouped rail beside the section. A narrow one (by the
+// page's own width, so the session list and the text size count) names the
+// section in a bar under the head: the bar is the section's title and opens
+// the same search and grouped list in place of the section.
 export function Settings({ section }: { section: string }) {
   useSyncExternalStore(settingsSections.subscribe, settingsSections.version);
   const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const jump = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const sidebar = useUI((s) => s.sidebar);
   const all = settingsSections.all().sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (a.order ?? 50) - (b.order ?? 50));
   const shown = q ? all.filter((s) => `${s.label} ${s.words ?? ""}`.toLowerCase().includes(q.toLowerCase())) : all;
   const cur = all.find((s) => s.id === section) ?? all[0]!;
   const Body = cur.component;
+  // The section shown has its row in view: on a direct link to a late one, and when the list opens.
+  useEffect(() => { list.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: open ? "center" : "nearest" }); }, [cur.id, open]);
+  const close = () => { setOpen(false); setQ(""); jump.current?.focus(); };
+  // A section reached from elsewhere (the palette, a link, Back) while the list is open: the list gives way to it.
+  useEffect(() => setOpen(false), [section]);
+  const go = (id: string) => {
+    navigate({ name: "settings", section: id }, true);
+    // Only where the bar is on screen (a narrow page): a rail click on a wide page keeps the search as typed.
+    if (open && jump.current?.offsetParent) close();
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="settings">
@@ -191,39 +208,52 @@ export function Settings({ section }: { section: string }) {
             <Menu className="size-4" />
           </button>
         )}
-        <button type="button" onClick={() => history.length > 1 ? history.back() : navigate({ name: "new" })} className="flex h-8 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
+        <button type="button" onClick={() => history.length > 1 ? history.back() : navigate({ name: "new" })} className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
           <ArrowLeft className="size-4" /> Back
         </button>
-        <h1 className="text-base font-semibold">Settings</h1>
+        <h1 className="min-w-0 truncate text-base font-semibold">Settings</h1>
       </header>
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <nav className="shrink-0 border-line p-3 md:w-60 md:overflow-y-auto md:border-r md:p-4" aria-label="Settings sections">
-          <label className="mb-3 flex h-8 items-center gap-2 rounded-md border border-line bg-raised px-2.5 text-ui focus-within:border-transparent focus-within:ring-2 focus-within:ring-ring">
-            <Search className="size-3.5 shrink-0 text-faint" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Find a setting" placeholder="Find a setting" className="w-full min-w-0 bg-transparent outline-none placeholder:text-faint" />
-          </label>
-          <div className="k-settings-nav flex gap-1 overflow-x-auto md:flex-col md:gap-px">
-            {shown.map((s, i) => (
-              <Fragment key={s.id}>
-              {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && <h3 className="k-settings-group">{groupOf(s.id)}</h3>}
-              <button
-                type="button"
-                onClick={() => navigate({ name: "settings", section: s.id }, true)}
-                aria-current={s.id === cur.id ? "page" : undefined}
-                className={cn(
-                  "flex h-8 shrink-0 items-center gap-2 rounded-md px-2.5 text-ui text-muted hover:bg-hover hover:text-fg",
-                  s.id === cur.id && "bg-raised text-fg shadow-1 hover:bg-raised",
-                )}
-              >
-                <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>
-                {s.label}
-              </button>
-              </Fragment>
-            ))}
+      <div className="k-settings-main">
+        <nav className="k-settings-rail" aria-label="Settings sections" data-open={open || undefined} onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}>
+          <button ref={jump} type="button" className="k-settings-jump" data-testid="settings-jump" aria-expanded={open} aria-controls="settings-sections" onClick={() => (open ? close() : setOpen(true))}>
+            <span className="k-settings-jump-icon" aria-hidden>{cur.icon}</span>
+            <span className="min-w-0 flex-1">
+              <span className="k-settings-jump-group">{groupOf(cur.id)}</span>
+              <span className="k-settings-jump-label">{cur.label}</span>
+            </span>
+            <span className="k-settings-jump-hint">{open ? "Close" : "All sections"}</span>
+            <ChevronDown className="k-settings-jump-mark" aria-hidden />
+          </button>
+          <div id="settings-sections" className="k-settings-sections">
+            <label className="k-settings-find">
+              <Search className="size-3.5 shrink-0 text-faint" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a setting" aria-label="Find a setting" data-testid="settings-find" className="w-full min-w-0 bg-transparent outline-none placeholder:text-faint" />
+            </label>
+            <div ref={list} className="k-settings-nav">
+              {shown.map((s, i) => (
+                <Fragment key={s.id}>
+                  {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && <h3 className="k-settings-group">{groupOf(s.id)}</h3>}
+                  <button
+                    type="button"
+                    onClick={() => go(s.id)}
+                    aria-current={s.id === cur.id ? "page" : undefined}
+                    data-section={s.id}
+                    className={cn(
+                      "flex shrink-0 items-center gap-2 rounded-md px-2.5 text-ui text-muted hover:bg-hover hover:text-fg",
+                      s.id === cur.id && "bg-raised text-fg shadow-1 hover:bg-raised",
+                    )}
+                  >
+                    <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>
+                    {s.label}
+                  </button>
+                </Fragment>
+              ))}
+              {shown.length === 0 && <p className="px-2.5 py-3 text-ui text-faint" data-testid="settings-none">No section matches. Try another word.</p>}
+            </div>
           </div>
         </nav>
-        <div className="min-h-0 flex-1 overflow-y-auto" data-testid="settings-scroll">
-          <div className="k-settings-body px-4 py-6 md:px-12 md:py-10" data-wide={WIDE.has(cur.id) || undefined}>
+        <div className="k-settings-scroll" data-testid="settings-scroll">
+          <div className="k-settings-body" data-wide={WIDE.has(cur.id) || undefined}>
             <h2 className="mb-5 text-title font-semibold tracking-[-0.015em]" data-testid="settings-title">{cur.label}</h2>
             <Body />
           </div>
@@ -232,4 +262,3 @@ export function Settings({ section }: { section: string }) {
     </div>
   );
 }
-
