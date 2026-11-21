@@ -41,6 +41,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import dev.avifenesh.keel.ApiError
+import dev.avifenesh.keel.Earlier
 import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.MainActivity
 import dev.avifenesh.keel.Msg
@@ -48,6 +50,7 @@ import dev.avifenesh.keel.Route
 import dev.avifenesh.keel.State
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.Wire
+import dev.avifenesh.keel.earlierAfter
 import dev.avifenesh.keel.elapsed
 import dev.avifenesh.keel.stateOf
 import dev.avifenesh.keel.str
@@ -66,6 +69,20 @@ fun SessionScreen(act: MainActivity, id: String) {
     val scope = rememberCoroutineScope()
     var error by remember(id) { mutableStateOf("") }
     var usage by remember(id) { mutableStateOf<String?>(null) }
+    // Earlier messages: a read that failed says so and offers the way on. What is shown stays as it is.
+    var earlierBusy by remember(id) { mutableStateOf(false) }
+    var earlierFail by remember(id) { mutableStateOf<Pair<Earlier, String>?>(null) }
+    fun earlier() {
+        if (earlierBusy) return
+        val reload = earlierFail?.first == Earlier.RELOAD
+        earlierBusy = true
+        scope.launch {
+            runCatching { if (reload) Hub.open(id) else Hub.loadOlder(id) }
+                .onSuccess { earlierFail = null }
+                .onFailure { earlierFail = (if (reload) Earlier.RELOAD else earlierAfter((it as? ApiError)?.code)) to (it.message ?: "no answer from the daemon") }
+            earlierBusy = false
+        }
+    }
     val chat = chats[id]
     val msgs = all[id].orEmpty()
     val pending = cards.values.any { it.chatId == id && it.pending }
@@ -103,9 +120,17 @@ fun SessionScreen(act: MainActivity, id: String) {
                 }
             }
             items(items.asReversed(), key = { it.id }) { m -> MsgView(act, m, cards[m.approvalId]) }
-            if (older[id] != null) item(key = "older") {
-                Box(Modifier.fillMaxWidth().padding(S.md), contentAlignment = Alignment.Center) {
-                    Btn("Earlier messages", { scope.launch { runCatching { Hub.loadOlder(id) } } }, Tone.LINE, compact = true)
+            if (older[id] != null || earlierFail != null) item(key = "older") {
+                Column(Modifier.fillMaxWidth().padding(S.md), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(S.sm)) {
+                    earlierFail?.let { (way, why) ->
+                        Notice(
+                            if (way == Earlier.RELOAD) "This conversation shows another branch now, so the earlier messages here are no longer its own. Reload it to read on."
+                            else "The earlier messages did not load: $why",
+                            modifier = Modifier.semantics { contentDescription = "earlier-failed" },
+                        )
+                    }
+                    val label = when { earlierBusy -> "Loading"; earlierFail?.first == Earlier.RELOAD -> "Reload the conversation"; earlierFail != null -> "Try again"; else -> "Earlier messages" }
+                    Btn(label, { earlier() }, Tone.LINE, compact = true, enabled = !earlierBusy, tag = "earlier")
                 }
             }
             if (items.isEmpty() && !isWorking) item(key = "empty") { Empty("Nothing here yet", "Write the first message below. The session runs on the computer.") }

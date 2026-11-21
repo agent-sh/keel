@@ -193,6 +193,9 @@ describe("messages", () => {
     m = await shown();
     expect(m.filter((x: any) => x.kind !== "deleted").map((x: any) => x.content)).toEqual(["base", "old"]);
     expect(m.find((x: any) => x.id === neu.id).kind).toBe("deleted");
+    // A page asked for from a message of the branch that was left: refused, so the app reloads the chat.
+    const stale = await call("GET", `/v1/chats/${s.id}/messages?paged=1&limit=150&before=${neu.id}`);
+    expect([stale.status, stale.body.error]).toEqual([409, "that message is not on this chat's shown branch; reload the chat"]);
   });
 
   test("a client that pages gets the newest page and the page before it", async () => {

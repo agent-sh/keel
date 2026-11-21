@@ -226,6 +226,16 @@ data class Card(
     }
 }
 
+/** What a failed read of earlier messages offers: the same read again, or the conversation read anew. */
+enum class Earlier { AGAIN, RELOAD }
+
+/**
+ * 409 says the page's cursor is no longer on the shown branch (another one
+ * was picked on the computer): reading the same page again cannot work, the
+ * conversation is reloaded. Anything else may pass: the same read again.
+ */
+fun earlierAfter(code: Int?): Earlier = if (code == 409) Earlier.RELOAD else Earlier.AGAIN
+
 /** "now", "4m", "3h", "2d", "5w". */
 fun ago(secs: Double, now: Double = System.currentTimeMillis() / 1000.0): String {
     val d = (now - secs).coerceAtLeast(0.0)

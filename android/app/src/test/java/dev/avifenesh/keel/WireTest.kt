@@ -37,6 +37,14 @@ class WireTest {
         assertEquals("fresh", Wire.sendId("kept", key, Wire.sendKey("look", listOf(photo.copy(id = "b2")))) { "fresh" })
     }
 
+    @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
+        // The cursor is no longer on the shown branch: the same page cannot be read again.
+        assertEquals(Earlier.RELOAD, earlierAfter(409))
+        // The daemon was busy, or out of reach (no HTTP code at all).
+        assertEquals(Earlier.AGAIN, earlierAfter(503))
+        assertEquals(Earlier.AGAIN, earlierAfter(null))
+    }
+
     @Test fun pairLinks() {
         val l = Wire.parsePair("keel://pair?u=https%3A%2F%2Fkeel.example.test&c=abc123&n=desk%20one")!!
         assertEquals(Wire.PairLink("https://keel.example.test", "abc123", "desk one"), l)
