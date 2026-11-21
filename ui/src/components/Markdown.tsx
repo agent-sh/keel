@@ -1,4 +1,5 @@
-import { copyText } from "../lib/copy.ts";
+import { announce } from "../lib/announce.ts";
+import { COPY_FAILED, copyText } from "../lib/copy.ts";
 import { Marked, type Token } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { mathExtensions, mathHtml } from "../lib/mdmath.ts";
@@ -192,11 +193,16 @@ const onClick = (sessionId?: string) => (e: React.MouseEvent | React.KeyboardEve
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".code-copy");
   if (!btn) return;
   const code = btn.closest(".code-block")?.querySelector("code")?.textContent ?? "";
-  copyText(code).then(() => {
-    btn.dataset.copied = "";
-    btn.lastElementChild!.textContent = "Copied";
-    setTimeout(() => { delete btn.dataset.copied; btn.lastElementChild!.textContent = "Copy"; }, 1400);
-  }, (err) => reportError(err, { kind: "clipboard" }));
+  // Copied or failed, the button says which for a moment, in view and to assistive technology.
+  const say = (mark: "copied" | "failed", words: string, ms: number) => {
+    btn.dataset[mark] = "";
+    btn.lastElementChild!.textContent = words;
+    setTimeout(() => { delete btn.dataset[mark]; btn.lastElementChild!.textContent = "Copy"; }, ms);
+  };
+  copyText(code).then(
+    () => { say("copied", "Copied", 1400); announce("Copied"); },
+    (err) => { say("failed", COPY_FAILED, 2600); announce(`${COPY_FAILED}: the browser refused the clipboard.`, "alert"); reportError(err, { kind: "clipboard" }); },
+  );
 };
 
 // A reply being written. Only its unfinished last block is lexed and rendered

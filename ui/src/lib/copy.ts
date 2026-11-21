@@ -3,6 +3,7 @@
 // address has no navigator.clipboard at all. Then (or when it refuses) the
 // text is copied through a hidden text field, the way browsers always allowed
 // from a click. A copy that fails both ways throws: the caller reports it.
+export const COPY_FAILED = "Copy failed";
 export async function copyText(text: string): Promise<void> {
   if (window.isSecureContext && navigator.clipboard?.writeText) {
     try { return await navigator.clipboard.writeText(text); } catch { /* the field below */ }

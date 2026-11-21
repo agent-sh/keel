@@ -7,6 +7,9 @@ let tip: HTMLDivElement | null = null;
 let host: Element | null = null;
 let timer = 0;
 let watch: MutationObserver | null = null;
+// A tip shown by tipNow stays through a scroll (it follows its control): the
+// transcript scrolls by itself while a reply is written.
+let pinned = false;
 
 function place() {
   if (!tip || !host) return;
@@ -55,7 +58,17 @@ function hide() {
     host.removeAttribute("data-tip");
   }
   host = null;
+  pinned = false;
   if (tip) { delete tip.dataset.open; tip.remove(); }
+}
+
+// A control whose state changed under the hand that used it (a copy that
+// failed) says so at once, in words, on touch too, and for `ms` only.
+export function tipNow(el: Element, ms: number) {
+  hide();
+  show(el, 0);
+  pinned = true;
+  setTimeout(() => { if (host === el && pinned) hide(); }, ms);
 }
 
 const titled = (t: EventTarget | null) => (t instanceof Element ? t.closest("[title], [data-tip]") : null);
@@ -66,5 +79,5 @@ if (matchMedia("(hover: hover)").matches) {
   document.addEventListener("mouseleave", hide);
   document.addEventListener("focusin", (e) => { const el = titled(e.target); if (el && el === e.target && el.matches(":focus-visible")) show(el, 150); });
   document.addEventListener("focusout", hide);
-  for (const ev of ["mousedown", "keydown", "wheel", "scroll"] as const) window.addEventListener(ev, () => { if (tip?.isConnected) { clearTimeout(timer); delete tip.dataset.open; tip.remove(); } else clearTimeout(timer); }, { capture: true, passive: true });
+  for (const ev of ["mousedown", "keydown", "wheel", "scroll"] as const) window.addEventListener(ev, () => { if (pinned && (ev === "scroll" || ev === "wheel")) place(); else if (tip?.isConnected) { clearTimeout(timer); delete tip.dataset.open; tip.remove(); } else clearTimeout(timer); }, { capture: true, passive: true });
 }

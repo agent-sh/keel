@@ -70,3 +70,57 @@ test("copy what a session shows, also without the async clipboard", async ({ pag
   expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// A copy the browser refuses both ways (no async clipboard, the hidden field
+// refused too) says so on the button, in view and to assistive technology,
+// never shows Copied, and is recorded once.
+test("a failed copy says so", async ({ page, request }) => {
+  const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title: `Copy fails ${Date.now()}` } })).json()).session;
+  await request.post(`/api/sessions/${s.id}/messages`, { data: { text: "Show the parser. script:render" } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
+  // The record of this failure counts how many times it happened.
+  const recorded = async () => Number(((await (await request.get("/api/errors")).json()).errors as { message: string; count: number }[]).find((e) => /refused to copy/.test(e.message))?.count ?? 0);
+  const before = await recorded();
+
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "clipboard", { get: () => undefined });
+    document.execCommand = () => false;
+    // Whatever the button said while it was pressed, for the "never Copied" check.
+    (window as any).said = [];
+    new MutationObserver((list) => {
+      for (const m of list) {
+        const el = m.target instanceof Element ? m.target : m.target.parentElement;
+        const b = el?.closest("button");
+        if (b) (window as any).said.push(`${b.getAttribute("aria-label")}|${b.getAttribute("title") ?? b.getAttribute("data-tip")}|${b.textContent}|${b.hasAttribute("data-copied")}`);
+      }
+    }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["aria-label", "title", "data-tip", "data-copied"] });
+  });
+  await page.goto(`/s/${s.id}`);
+  const reply = page.getByTestId("copy-reply").last();
+  await reply.focus();
+  await page.keyboard.press("Enter");
+  await expect(reply).toHaveAttribute("data-failed", "true");
+  await expect(reply).toHaveAccessibleName("Copy failed");
+  await expect(reply).not.toHaveAttribute("data-copied", /.*/);
+  await expect(page.getByRole("tooltip")).toHaveText("Copy failed");
+  await expect(page.getByRole("alert")).toHaveText("Copy failed: the browser refused the clipboard.");
+  await shoot(page, "copy-03-failed");
+  // Recorded once, and the button goes back to Copy.
+  await expect.poll(recorded).toBe(before + 1);
+  await expect(reply).toHaveAccessibleName("Copy the reply", { timeout: 6000 });
+  await expect(reply).not.toHaveAttribute("data-failed", /.*/);
+
+  // A code block's own button says it in its label.
+  const code = page.locator(".code-block .code-copy").first();
+  await code.focus();
+  await page.keyboard.press("Enter");
+  await expect(code).toHaveText("Copy failed");
+  await expect(code).toHaveAttribute("data-failed", "");
+  await shoot(page, "copy-04-code-failed");
+  await expect(code).toHaveText("Copy", { timeout: 6000 });
+  await expect.poll(recorded).toBe(before + 2);
+  await page.waitForTimeout(500);
+  expect(await recorded()).toBe(before + 2);
+  expect(await page.evaluate(() => (window as any).said.filter((x: string) => /Copied|\|true$/.test(x)))).toEqual([]);
+  await request.delete(`/api/sessions/${s.id}`);
+});

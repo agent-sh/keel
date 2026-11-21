@@ -1,29 +1,46 @@
 // The one copy button: the raw text (markdown as written, a command, an
-// output, a path), a clear Copied state, and a failure reported, never lost.
-import { Check, Copy } from "lucide-react";
-import { useState } from "react";
-import { copyText } from "../lib/copy.ts";
+// output, a path), a clear Copied state, and a failure that is said (the
+// button turns to "Copy failed", in view and to assistive technology) and
+// reported once, never shown as Copied.
+import { Check, Copy, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { announce } from "../lib/announce.ts";
+import { COPY_FAILED, copyText } from "../lib/copy.ts";
 import { reportError } from "../lib/store.ts";
+import { tipNow } from "../lib/tips.ts";
 import { cn } from "../lib/utils.ts";
 
 export function CopyButton({ text, label = "Copy", testid = "copy", className }: { text: string | (() => string); label?: string; testid?: string; className?: string }) {
-  const [done, setDone] = useState(false);
-  const copy = () => copyText(typeof text === "function" ? text() : text).then(
-    () => { setDone(true); setTimeout(() => setDone(false), 1400); },
-    (err) => reportError(err, { kind: "clipboard" }),
+  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
+  const timer = useRef(0);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const show = (s: "done" | "failed", ms: number) => {
+    setState(s);
+    clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setState("idle"), ms);
+  };
+  const copy = (button: Element) => copyText(typeof text === "function" ? text() : text).then(
+    () => { show("done", 1400); announce("Copied"); },
+    (err) => {
+      show("failed", 2600);
+      tipNow(button, 2600);
+      announce(`${COPY_FAILED}: the browser refused the clipboard.`, "alert");
+      reportError(err, { kind: "clipboard" });
+    },
   );
+  const name = state === "done" ? "Copied" : state === "failed" ? COPY_FAILED : label;
   return (
     <button
       type="button"
-      title={done ? "Copied" : label}
-      aria-label={done ? "Copied" : label}
+      title={name}
+      aria-label={name}
       data-testid={testid}
-      data-copied={done || undefined}
-      onClick={(e) => { e.stopPropagation(); void copy(); }}
+      data-copied={state === "done" || undefined}
+      data-failed={state === "failed" || undefined}
+      onClick={(e) => { e.stopPropagation(); void copy(e.currentTarget); }}
       className={cn("k-copy", className)}
     >
-      {done ? <Check /> : <Copy />}
-      <span className="sr-only" aria-live="polite">{done ? "Copied" : ""}</span>
+      {state === "done" ? <Check /> : state === "failed" ? <X /> : <Copy />}
     </button>
   );
 }
