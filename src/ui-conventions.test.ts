@@ -71,3 +71,10 @@ test("a choice of a few is the one segmented control", () => {
   // An option's look comes from the track: no component raises the chosen one by hand.
   expect(found(components, /\? "bg-raised text-fg shadow-[12]"|data-\[active\]:bg-raised|data-checked:bg-raised/)).toEqual([]);
 });
+
+test("steel is the frame and nothing else", () => {
+  // The panel color is the rail and the phone dock. A chip or an inner pane is a
+  // well (bg-sunken); a list inside a page stands on the page.
+  expect(found(components, /\bbg-panel\b/)).toEqual([]);
+  expect(found(sheets, /^.*var\(--panel\).*$/, (line) => /^\s*(\.k-rail |\.k-where-pip|--color-panel:|background: var\(--panel\); border-top)/.test(line))).toEqual([]);
+});

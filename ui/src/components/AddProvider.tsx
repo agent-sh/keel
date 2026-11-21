@@ -136,7 +136,7 @@ function Starts({ setup, pick, chosen }: { setup: Setup | null; pick: (t: Templa
   };
   const head = (t: string) => <div className="px-2.5 pt-4 pb-1 text-micro font-medium uppercase tracking-wide text-faint first:pt-1">{t}</div>;
   return (
-    <div className="flex min-h-0 flex-col overflow-y-auto border-r border-line bg-panel p-2" data-testid="provider-starts">
+    <div className="flex min-h-0 flex-col overflow-y-auto border-r border-line bg-sunken p-2" data-testid="provider-starts">
       {head("Compatible endpoint")}
       <button type="button" data-testid="provider-start" data-start="blank" onClick={() => pick("blank")} className={cn("flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-ui hover:bg-hover", chosen === "blank" && "bg-hover")}>
         <Plus className="size-3.5 text-faint" /> Any OpenAI, Anthropic or Gemini compatible server

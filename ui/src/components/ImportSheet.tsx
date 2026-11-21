@@ -414,7 +414,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>
           </div>
           {keelFile && (
-            <div data-testid="import-keel-result" data-state={keelFile.state} className={cn("flex items-start gap-3 border-b border-line px-4 py-2.5 text-caption", keelFile.state === "failed" ? "bg-danger-soft text-danger" : "bg-panel text-muted")}>
+            <div data-testid="import-keel-result" data-state={keelFile.state} className={cn("flex items-start gap-3 border-b border-line px-4 py-2.5 text-caption", keelFile.state === "failed" ? "bg-danger-soft text-danger" : "bg-sunken text-muted")}>
               <FileUp className="mt-0.5 size-4 shrink-0" />
               <div className="min-w-0 flex-1 space-y-0.5">
                 {keelFile.state === "sending" && <p>Importing {keelFile.name}</p>}
@@ -486,7 +486,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                       <div className="flex items-center gap-2">
                         <span className="min-w-0 flex-1 truncate text-ui font-medium">{r.title}</span>
                         {r.imported && <span className="shrink-0 rounded-xs bg-ok/15 px-1.5 text-micro font-medium text-ok" data-testid="import-imported">{r.imported.grew ? "imported · grew" : "imported"}</span>}
-                        {r.kind !== "interactive" && <span className="shrink-0 rounded-xs bg-panel px-1.5 text-micro text-muted">{r.kind}</span>}
+                        {r.kind !== "interactive" && <span className="shrink-0 rounded-xs bg-sunken px-1.5 text-micro text-muted">{r.kind}</span>}
                       </div>
                       <div className="mt-0.5 flex gap-2 text-micro text-faint">
                         <span className="min-w-0 flex-1 truncate">{home(r.cwd)}</span>

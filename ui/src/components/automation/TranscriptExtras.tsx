@@ -272,19 +272,19 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
       <div className="flex items-center gap-2.5 px-3 py-2 text-ui">
         <span className="grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent"><Bot className="size-3.5" /></span>
         <span className="font-medium shrink-0">Agent</span>
-        <span className="shrink-0 rounded bg-panel px-1.5 py-px text-micro text-muted">{type}</span>
+        <span className="shrink-0 rounded bg-sunken px-1.5 py-px text-micro text-muted">{type}</span>
         <span className="min-w-0 truncate text-muted">{agent?.title ?? title}</span>
         {agent?.branch && (
-          <span data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`} className="flex shrink-0 items-center gap-1 rounded bg-panel px-1.5 py-px font-mono text-micro text-muted">
+          <span data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`} className="flex shrink-0 items-center gap-1 rounded bg-sunken px-1.5 py-px font-mono text-micro text-muted">
             <GitBranch className="size-3" />{agent.branch}
           </span>
         )}
         {(agent?.machine || input.machine) && (
-          <span data-testid="agent-call-machine" title="Its tools run on this machine" className="flex shrink-0 items-center gap-1 rounded bg-panel px-1.5 py-px text-micro text-muted">
+          <span data-testid="agent-call-machine" title="Its tools run on this machine" className="flex shrink-0 items-center gap-1 rounded bg-sunken px-1.5 py-px text-micro text-muted">
             <Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}
           </span>
         )}
-        {agent?.structured && <span data-testid="agent-call-structured" className="shrink-0 rounded bg-panel px-1.5 py-px font-mono text-micro text-muted">json</span>}
+        {agent?.structured && <span data-testid="agent-call-structured" className="shrink-0 rounded bg-sunken px-1.5 py-px font-mono text-micro text-muted">json</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {agent ? (
             <>

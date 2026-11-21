@@ -157,7 +157,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
   let hunks = 0;
   return (
     <section className="overflow-hidden rounded-xl border border-line bg-raised" data-testid="diff-file" data-path={f.path}>
-      <header className="flex items-center gap-2 border-b border-line bg-panel/60 px-3 py-1.5">
+      <header className="flex items-center gap-2 border-b border-line bg-sunken/60 px-3 py-1.5">
         <button onClick={() => setOpen(!open)} className="grid size-5 place-items-center rounded text-faint hover:text-fg" aria-label={open ? "Collapse" : "Expand"}>
           <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} />
         </button>

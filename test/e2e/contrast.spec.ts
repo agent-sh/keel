@@ -233,3 +233,43 @@ test("every text reads in both themes, an earlier turn's stats and a diff's line
   await page.evaluate(() => document.documentElement.classList.remove("theme-switch"));
   await shoot(page, "contrast-every-text");
 });
+
+// The light theme has contrast of surface: steel frames the work (the rail),
+// paper is the page, white is what is worked on (a card, a side panel). On
+// Settings the rail, the section list and a card are not three greys, and a
+// side panel is not a slab of the rail's color.
+test("the light theme steps from steel to paper to white", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto("/settings/general");
+  await page.getByTestId("text-size").waitFor();
+  await page.evaluate(() => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.remove("dark"); });
+  // The luminance of what is painted behind an element.
+  const lumOf = (sel: string) => page.locator(sel).first().evaluate((el) => {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 1;
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+    let color = "";
+    for (let p: Element | null = el; p; p = p.parentElement) { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = getComputedStyle(p).backgroundColor; ctx.fillRect(0, 0, 1, 1); if (ctx.getImageData(0, 0, 1, 1).data[3] === 255) { color = getComputedStyle(p).backgroundColor; break; } }
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    const [r, g, b] = [d[0]!, d[1]!, d[2]!].map((v) => { const x = v / 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+    return { color, lum: 0.2126 * r! + 0.7152 * g! + 0.0722 * b! };
+  });
+  const step = (a: { lum: number }, b: { lum: number }) => Math.round(((Math.max(a.lum, b.lum) + 0.05) / (Math.min(a.lum, b.lum) + 0.05)) * 1000) / 1000;
+  const rail = await lumOf(".k-rail"), list = await lumOf(".k-settings-rail"), body = await lumOf(".k-settings-body"), card = await lumOf(".k-settings-body .k-card");
+  console.log(`rail ${rail.color}; section list ${list.color}; page ${body.color}; card ${card.color}; rail to page ${step(rail, body)}, page to card ${step(body, card)}`);
+  expect(list.color).toBe(body.color);
+  expect(step(rail, body)).toBeGreaterThanOrEqual(1.12);
+  expect(step(body, card)).toBeGreaterThanOrEqual(1.06);
+  expect(card.lum).toBeGreaterThan(body.lum);
+  expect(body.lum).toBeGreaterThan(rail.lum);
+
+  const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
+  const { session } = await (await request.post("/api/sessions", { data: { model, title: "Surfaces in light" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await openPanel(page, "files");
+  await page.evaluate(() => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.remove("dark"); });
+  const side = await lumOf('[data-testid="side-panel"]');
+  expect(side.color).toBe(card.color);
+  expect(step(rail, side)).toBeGreaterThanOrEqual(1.2);
+  await shoot(page, "contrast-surfaces");
+});

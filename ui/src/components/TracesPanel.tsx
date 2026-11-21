@@ -173,7 +173,7 @@ function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: strin
               <span className="truncate">{label(s)}</span>
               {retried && s.kind === "request" && s.attrs.attempt && <span className="shrink-0 font-normal tabular-nums text-faint" data-testid="span-attempt">attempt {s.attrs.attempt}</span>}
             </span>
-            <span className={cn("relative h-2.5 rounded-xs", sel === s.span_id ? "bg-panel" : "bg-sunken")}>
+            <span className={cn("relative h-2.5 rounded-xs", sel === s.span_id ? "bg-sunken" : "bg-sunken")}>
               <span
                 className={cn("absolute inset-y-0 rounded-xs", tone(s.status), s.kind === "turn" && "opacity-40")}
                 style={{ left: `${((s.start_ms - t0) / total) * 100}%`, width: `max(2px, ${(spanMs(s) / total) * 100}%)` }}

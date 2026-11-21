@@ -138,7 +138,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
           </div>
           <div className="k-dialog-body space-y-2 p-4">
             {origin?.origin && (
-              <div className="mb-3 flex items-center gap-2.5 rounded-lg bg-panel px-3 py-2.5 text-caption" data-testid="export-origin">
+              <div className="mb-3 flex items-center gap-2.5 rounded-lg bg-sunken px-3 py-2.5 text-caption" data-testid="export-origin">
                 <History className="size-4 shrink-0 text-muted" />
                 <span className="min-w-0 flex-1">
                   Imported from {origin.origin.label} {ago(origin.origin.imported_ms)}

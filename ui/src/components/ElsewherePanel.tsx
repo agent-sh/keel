@@ -264,7 +264,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
       </div>
       {model !== null && s && (
         <form
-          className="flex items-center gap-2 border-b border-line bg-panel px-4 py-2"
+          className="flex items-center gap-2 border-b border-line bg-sunken px-4 py-2"
           onSubmit={async (e) => { e.preventDefault(); if (model.trim() && (await act({ action: "model", model }))) setModel(null); }}
         >
           <span className="text-caption text-muted">Sends</span>

@@ -70,7 +70,7 @@ const Row = memo(function Row({ n, sid, depth, fork, working, stop, onStop }: { 
       className={cn("group/n relative flex min-h-8 cursor-default items-center gap-2 rounded-md py-1 pr-2 text-ui hover:bg-hover focus-visible:bg-hover", !n.active && "text-muted")}
     >
       {depth > 0 && <span className="absolute top-0 bottom-0 border-l border-line" style={{ left: `${0.35 + (depth - 1) * 1.1 + 0.55}rem` }} />}
-      <span className={cn("relative z-10 grid size-3.5 shrink-0 place-items-center rounded-full border-2", n.active ? "border-accent bg-accent" : "border-line-strong bg-panel", fork && "ring-2 ring-accent-soft")}>
+      <span className={cn("relative z-10 grid size-3.5 shrink-0 place-items-center rounded-full border-2", n.active ? "border-accent bg-accent" : "border-line-strong bg-sunken", fork && "ring-2 ring-accent-soft")}>
         {n.kind === "summary" && <Layers className="size-2 text-accent-fg" />}
       </span>
       {editing ? (

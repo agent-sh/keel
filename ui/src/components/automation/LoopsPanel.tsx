@@ -222,7 +222,7 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
                     data-testid="loop-item"
                     onClick={() => setSel(l.id)}
                     onKeyDown={(e) => e.key === "Enter" && setSel(l.id)}
-                    className={cn("group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-2 outline-none hover:bg-hover", current?.id === l.id && "bg-panel")}
+                    className={cn("group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-2 outline-none hover:bg-hover", current?.id === l.id && "bg-sunken")}
                   >
                     <span className={cn("size-2 shrink-0 rounded-full", l.last_status === "running" ? "bg-brass animate-pulse-dot" : l.enabled ? (l.last_status === "failed" ? "bg-danger" : "bg-ok") : "bg-line-strong")} />
                     <div className="min-w-0 flex-1">

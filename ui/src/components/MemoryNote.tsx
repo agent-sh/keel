@@ -21,7 +21,7 @@ export function MemoryNote({ text, hooks, label = "Memory from tacit" }: { text:
         </span>
         <ChevronRight className="size-3 transition-transform group-data-[open]/mem:rotate-90" />
       </Collapsible.Trigger>
-      <Collapsible.Panel className="mt-1.5 w-[min(40rem,100%)] overflow-hidden rounded-lg border border-line bg-panel px-3 py-2">
+      <Collapsible.Panel className="mt-1.5 w-[min(40rem,100%)] overflow-hidden rounded-lg border border-line bg-sunken px-3 py-2">
         <pre className="whitespace-pre-wrap break-words font-mono text-micro leading-relaxed text-muted" data-testid="memory-text">{body}</pre>
       </Collapsible.Panel>
     </Collapsible.Root>

@@ -94,7 +94,7 @@ export function VoiceCard() {
   return (
     <div data-testid="voice-card" role="dialog" aria-label="Voice" className="fixed right-4 top-14 z-50 w-80 rounded-xl border border-line bg-raised p-3.5 shadow-3 animate-in">
       <div className="flex items-center gap-2">
-        <span className={cn("grid size-7 place-items-center rounded-full", here ? "bg-accent-soft text-accent" : "bg-panel text-muted")}><Mic className="size-4" /></span>
+        <span className={cn("grid size-7 place-items-center rounded-full", here ? "bg-accent-soft text-accent" : "bg-sunken text-muted")}><Mic className="size-4" /></span>
         <span className="font-medium">Voice</span>
         <span className="text-caption text-faint">parlar</span>
         <button type="button" aria-label="Close" onClick={() => setVoiceOpen(null)} className="ml-auto grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-3.5" /></button>

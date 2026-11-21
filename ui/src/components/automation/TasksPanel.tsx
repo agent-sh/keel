@@ -13,7 +13,7 @@ const GOAL_LABEL: Record<Goal["status"], string> = {
   pursuing: "Working on it", paused: "Paused", achieved: "Met", impossible: "Not reachable", budget: "Budget spent", stalled: "Stalled",
 };
 const GOAL_TONE: Record<Goal["status"], string> = {
-  pursuing: "bg-accent-soft text-accent", paused: "bg-panel text-muted", achieved: "bg-panel text-ok", impossible: "bg-danger-soft text-danger", budget: "bg-panel text-warn", stalled: "bg-panel text-warn",
+  pursuing: "bg-accent-soft text-accent", paused: "bg-sunken text-muted", achieved: "bg-sunken text-ok", impossible: "bg-danger-soft text-danger", budget: "bg-sunken text-warn", stalled: "bg-sunken text-warn",
 };
 const field = "w-full rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none focus:border-line-strong placeholder:text-faint";
 const button = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2.5 text-caption hover:bg-hover hover:text-fg";
@@ -186,7 +186,7 @@ function TaskRow({ t, sid }: { t: Task; sid: string }) {
         ) : (
           <span data-testid="task-text" onDoubleClick={begin} className={cn("min-w-0 flex-1 text-ui", done && "text-faint line-through", t.status === "in_progress" && "font-medium")}>{t.text}</span>
         )}
-        {t.by === "owner" && <span className="mt-0.5 shrink-0 rounded bg-panel px-1 text-micro text-faint">you</span>}
+        {t.by === "owner" && <span className="mt-0.5 shrink-0 rounded bg-sunken px-1 text-micro text-faint">you</span>}
         <span className={cn("shrink-0 items-center", linked ? "flex" : "hidden group-hover:flex")}>
           {linked ? (
             <IconButton title="Open its session" onClick={() => openSession(dest!)} testid="task-open"><ExternalLink className="size-3.5" /></IconButton>

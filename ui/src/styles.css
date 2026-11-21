@@ -17,10 +17,15 @@
    work, violet is the owner (needs you, focus), red is a failure, sea green
    is done. Buttons are ink. Light is the chart room, dark the wheelhouse. */
 :root {
-  --bg: oklch(0.948 0.005 250);
+  /* Four surfaces, each a clear step from the next, and each with one job:
+     steel frames the work (the rail, the phone dock) and nothing else; paper is
+     a page and a pane that does not hold the keyboard; white is what is worked
+     on (the helm, a card, a field, a floating surface); a well is set into any
+     of them (a track, a chip, an inset field). */
+  --bg: oklch(0.965 0.004 250);
   --panel: oklch(0.915 0.008 250);
-  --raised: oklch(0.985 0.002 250);
-  --sunken: oklch(0.928 0.007 250);
+  --raised: oklch(0.995 0.001 250);
+  --sunken: oklch(0.938 0.006 250);
   --hover: oklch(0.88 0.01 250 / 0.6);
   --fg: oklch(0.2 0.02 260);
   --muted: oklch(0.4 0.02 258);
@@ -50,7 +55,7 @@
   --ok-ink: oklch(0.45 0.09 168);
   --st-fail-ink: var(--danger-ink);
   --st-done-ink: var(--ok-ink);
-  --code-bg: oklch(0.935 0.006 250);
+  --code-bg: oklch(0.95 0.005 250);
   /* Solid: at 60% the violet was under 3:1 on the grey rail and panels. */
   --ring: oklch(0.52 0.22 295);
   --overlay: oklch(0.22 0.02 255 / 0.32);

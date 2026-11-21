@@ -42,7 +42,7 @@ function CodeView({ file, line, end }: { file: Opened; line?: number; end?: numb
         <div ref={band} data-testid="file-line" aria-hidden="true" className="pointer-events-none absolute inset-x-0 bg-accent-soft"
           style={{ top: `calc(12px + ${line - 1} * 1.65em)`, height: `calc(${Math.max(1, Math.min(end ?? line, lines.length) - line + 1)} * 1.65em)` }} />
       )}
-      <div aria-hidden="true" className="sticky left-0 select-none border-r border-line bg-panel px-3 py-3 text-right text-faint tabular-nums">
+      <div aria-hidden="true" className="sticky left-0 select-none border-r border-line bg-sunken px-3 py-3 text-right text-faint tabular-nums">
         {lines.map((_, i) => <div key={i}>{i + 1}</div>)}
       </div>
       {html ? (
