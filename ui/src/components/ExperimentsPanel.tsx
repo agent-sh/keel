@@ -48,12 +48,15 @@ export function fmtMetric(unit: string, v: number | null | undefined, signed = f
   if (unit === "tokens") return `${s}${Math.abs(v) >= 10_000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v)}`;
   return `${s}${v.toFixed(v % 1 ? 2 : 0)}`;
 }
-// The estimate, with its interval under it.
-const iv = (unit: string, i: Interval | undefined, signed = false) =>
+// The estimate, with its interval under it. `of`: the arm's units; when
+// fewer of them have the metric (a cost with no price is left out, not
+// counted as zero), the cell says how many it is over.
+const iv = (unit: string, i: Interval | undefined, signed = false, of?: number) =>
   !i || !Number.isFinite(i.estimate) ? <span className="text-faint">none</span> : (
     <span className="inline-flex flex-col items-end whitespace-nowrap leading-tight">
       <span className="text-fg">{fmtMetric(unit, i.estimate, signed)}</span>
       {i.method !== "none" && <span className="text-micro text-faint">{fmtMetric(unit, i.lo, signed)} to {fmtMetric(unit, i.hi, signed)}</span>}
+      {of !== undefined && i.n < of && <span className="text-micro text-faint" data-testid="metric-partial">over {i.n} of {of}</span>}
     </span>
   );
 
@@ -215,7 +218,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
                 return (
                   <tr key={m} className="border-b border-line/60 last:border-0" data-testid={`metric-${m}`}>
                     <td className="whitespace-nowrap px-4 py-1.5">{info.label}{m === e.primary && <span className="ml-2 rounded-sm bg-accent-soft px-1 text-micro text-accent">primary</span>}</td>
-                    {r.arms.map((a) => <td key={a.arm} className="px-4 py-1.5 text-right tabular-nums text-muted">{iv(info.unit, a.metrics[m])}</td>)}
+                    {r.arms.map((a) => <td key={a.arm} className="px-4 py-1.5 text-right tabular-nums text-muted">{iv(info.unit, a.metrics[m], false, a.units)}</td>)}
                     {e.arms.slice(1).map((a) => {
                       const f = r.effects.find((x) => x.arm === a.name && x.metric === m);
                       return (

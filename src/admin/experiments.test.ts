@@ -7,9 +7,10 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
+import { allHooks } from "../engine/hooks.ts";
 import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
 import { armOf, Experiments, liveGuards, WINDOW_MIN, type Experiment, type Obs } from "./experiments.ts";
-import { Uploads } from "./offline.ts";
+import { offlineReport, runMetrics, Uploads } from "./offline.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { assignArm, rng } from "./stats.ts";
 import { Telemetry } from "./telemetry.ts";
@@ -23,6 +24,7 @@ function daemon() {
     // Subagent sessions name their parent (the agents module's column).
     if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
     new Telemetry(store, bus);
+    const calls = allHooks().at(-1)!; // the telemetry's own hooks: a model request sent, answered, failed
     const routes = experimentRoutes({ store, errors: new ErrorTracker(store, bus) } as any);
     const call = async (method: string, path: string, body?: unknown) => {
       for (const [pattern, handlers] of Object.entries(routes)) {
@@ -34,7 +36,7 @@ function daemon() {
       }
       throw new Error(`no route ${method} ${path}`);
     };
-    return { store, x: experiments!, o: outcomes!, call };
+    return { store, x: experiments!, o: outcomes!, call, calls };
   };
   return { dir, open, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
@@ -350,5 +352,58 @@ test("the offline runner recovers a lost upload from its receipt file and stops 
     expect(refused).toMatchObject({ finalized: false, pending: 1 });
     expect(refused.problem).toContain("409");
     expect(x.get(e2.id)!.state).toBe("running");
+  } finally { d.close(); }
+});
+
+test("an offline run's metrics share one scope, and the runner's report is the daemon's", async () => {
+  const d = daemon();
+  try {
+    const { store, o, call, calls } = d.open();
+    // A run's turn: the first attempt fails, its retry is answered, a reader model reads, and a title is made on the side.
+    const turnOf = (reader: Record<string, unknown>) => {
+      const s = store.createSession({ model: "p:main", workspace: "/" });
+      const sess = () => store.session(s.id)!;
+      const request = (purpose: string, route: string) => ({ model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal, purpose, route }) as any;
+      const answer = (req: any, usage: Record<string, unknown>) => { calls.requestSent!(sess(), req); calls.requestDone!(sess(), req, { blocks: [], stop: "end_turn", usage } as any); };
+      store.append(s.id, "user", { text: "the task" });
+      store.append(s.id, "turn_start", { model: "p:main" });
+      const step = request("turn", "p:main");
+      calls.requestSent!(sess(), step);
+      calls.requestFailed!(sess(), step, Object.assign(new Error("overloaded"), { status: 529 }), false);
+      answer(step, { input: 100, cache_read: 300, cache_write: 50, output: 20, cost: 0.002 });
+      answer(request("reader", "p:small"), { input: 1000, cache_read: 0, cache_write: 0, output: 40, ...reader });
+      answer(request("side", "p:small"), { input: 30, cache_read: 0, cache_write: 0, output: 5, cost: 0.0001 });
+      store.append(s.id, "assistant", { blocks: [{ type: "text", text: "done" }], model: "p:main", usage: {}, stop: "end_turn" });
+      store.append(s.id, "turn_end", { reason: "end_turn", ms: 4000, usage: {} });
+      o.recordTurn(sess(), "end_turn");
+      return o.sessionTurns(s.id)[0];
+    };
+
+    // Three requests (the failed attempt, its retry, the reader); tokens, cost and cache share over the two answered; the side request in none.
+    const priced = runMetrics(turnOf({ cost: 0.0005 }), { ok: true, ms: 4321 });
+    expect(priced).toEqual({ requests: 3, prompt_tokens: 1450, output_tokens: 60, cost_usd: 0.0025, cache_read_share: 300 / 1450, ms: 4321, ok: 1, error: 0, tool_errors: 0 });
+    // The reader has no price: the run's cost is not known, so it has none (not the working model's part, not zero).
+    const unpriced = runMetrics(turnOf({ unpriced: true }), { ok: false, ms: 5000 });
+    expect("cost_usd" in unpriced).toBe(false);
+    expect(unpriced).toMatchObject({ requests: 3, prompt_tokens: 1450, cache_read_share: 300 / 1450, ok: 0 });
+    // A run whose turn left no rollup reports what the runner saw, nothing made up.
+    expect(runMetrics(undefined, { ok: false, ms: 9 })).toEqual({ ok: 0, ms: 9 });
+
+    // The runner's report and the daemon's, from the same runs.
+    const e = (await call("POST", "/api/experiments", { template: "readers", name: "scopes" })).body.experiment as Experiment;
+    await call("POST", `/api/experiments/${e.id}/start`);
+    const runs = [1, 2, 3].flatMap((rep) => [
+      { receipt: `on-${rep}`, arm: "readers on", task: "readlog", rep, metrics: rep === 2 ? unpriced : { ...priced, cost_usd: 0.0025 + rep * 0.0001 } },
+      { receipt: `off-${rep}`, arm: "readers off", task: "readlog", rep, metrics: { ...unpriced, ok: 1 } },
+    ]);
+    expect((await call("POST", `/api/experiments/${e.id}/runs`, { runs })).status).toBe(201);
+    const theirs = (await call("GET", `/api/experiments/${e.id}`)).body.report;
+    const ours = JSON.parse(JSON.stringify(offlineReport(e, runs)));
+    expect([theirs.arms, theirs.effects, theirs.guards]).toEqual([ours.arms, ours.effects, ours.guards]);
+    // The cost is over the two priced runs of the first arm; the second arm has none, and no effect is claimed.
+    expect(theirs.arms[0].metrics.cost_usd).toMatchObject({ n: 2, estimate: 0.0027 });
+    expect(theirs.arms[0].metrics.requests).toMatchObject({ n: 3, estimate: 3 });
+    expect(theirs.arms[1].metrics.cost_usd).toBeUndefined();
+    expect(theirs.effects.some((f: any) => f.metric === "cost_usd")).toBe(false);
   } finally { d.close(); }
 });

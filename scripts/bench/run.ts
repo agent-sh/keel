@@ -23,7 +23,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import { Uploads } from "../../src/admin/offline.ts";
+import type { RunUpload } from "../../src/admin/experiments.ts";
+import { offlineReport, runMetrics, RUN_SCOPE, Uploads } from "../../src/admin/offline.ts";
 import { TASKS } from "./tasks.ts";
 
 const OUT = process.env.KEEL_BENCH_DIR ?? join(homedir(), ".cache/keel-work/bun/tokens");
@@ -41,6 +42,8 @@ type Row = {
   reply: string; error?: string; ts: string;
   // Everything the session spent, side calls included (a reader's read, a summary).
   session_cost?: number; session_in: number; session_out: number;
+  // The run's values for the experiment metrics, over one scope (RUN_SCOPE in src/admin/offline.ts).
+  metrics: Record<string, number>;
 };
 
 function loadEnvFile(p: string) {
@@ -63,6 +66,7 @@ async function bench(opts: { model: string; label: string; reps: number; tasks: 
   const { serve } = await import("../../src/server/app.ts");
   const { routeModules } = await import("../../src/server/routes/index.ts");
   const perms = await import("../../src/server/routes/permissions.ts");
+  const rollups = await import("../../src/server/routes/experiments.ts");
 
   const stateDir = join(OUT, "state", opts.label);
   rmSync(stateDir, { recursive: true, force: true });
@@ -201,6 +205,8 @@ async function bench(opts: { model: string; label: string; reps: number; tasks: 
       tools_bytes: sh.tools, system_bytes: sh.system, last_messages_bytes: sh.messages,
       per_request: u.per.map(({ cost: _c, ...x }) => x), followup, reply: reply.slice(0, 2000), error: err, ts: new Date().toISOString(),
       ...(() => { const su = store.session(s.id)!.usage; return { session_cost: su.cost, session_in: su.input + su.cache_read + su.cache_write, session_out: su.output }; })(),
+      // The task's turn is the session's first; a follow-up after a pause is not part of the run.
+      metrics: runMetrics(rollups.outcomes?.sessionTurns(s.id)[0], { ok: c.ok, ms }),
     };
     appendFileSync(results, JSON.stringify(row) + "\n");
     await opts.onRow?.(row);
@@ -263,16 +269,6 @@ function compare(labels: string[]) {
   }
 }
 
-// A run's values for the experiment metrics: everything the session spent, readers included.
-function runMetrics(r: Row): Record<string, number> {
-  const turnIn = r.total_in;
-  return {
-    ...(r.session_cost !== undefined ? { cost_usd: r.session_cost } : {}),
-    prompt_tokens: r.session_in, output_tokens: r.session_out, ms: r.ms, ok: r.ok ? 1 : 0, requests: r.requests,
-    ...(turnIn ? { cache_read_share: r.cache_read / turnIn } : {}), tool_errors: r.tool_errors ?? 0,
-  };
-}
-
 async function experiment(opts: { spec: string; daemon?: string; model?: string; reps?: number; tasks: string[] }) {
   const ex = await import("../../src/admin/experiments.ts");
   type Exp = import("../../src/admin/experiments.ts").Experiment;
@@ -299,24 +295,28 @@ async function experiment(opts: { spec: string; daemon?: string; model?: string;
   if (!tasks.length) throw new Error("name the tasks (--tasks) or put them in the experiment's stop.tasks");
   const label = `exp-${e.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
   const rows: Row[] = [];
+  const runs: RunUpload[] = [];
   // Every run is kept in a local receipt file before it is sent; a failed upload is sent again with the next one.
   const receipts = join(OUT, "receipts", `${label}.json`);
   const up = daemon ? Uploads.start(receipts, { daemon, experiment: e.id, label }) : null;
   await bench({ model, label, reps: opts.reps ?? e.stop.reps ?? 3, tasks, without: [], arms: e.arms,
     onRow: async (r) => {
       rows.push(r);
+      // One object per run: what the report below reads is what the daemon is sent.
+      const run = { receipt: `${label}:${r.task}:${r.rep}:${r.arm}`, arm: r.arm!, task: r.task, rep: r.rep, metrics: r.metrics };
+      runs.push(run);
       if (!up) return;
-      up.add({ receipt: `${label}:${r.task}:${r.rep}:${r.arm}`, arm: r.arm!, task: r.task, rep: r.rep, metrics: runMetrics(r) });
+      up.add(run);
       if (!(await up.flush())) console.error(`upload not acknowledged, ${up.pending.length} pending in ${receipts}: ${up.problem}`);
     } });
-  const rep = ex.report(e, rows.map((r, i) => ({ arm: r.arm!, cluster: `run-${i}`, stratum: r.task, m: runMetrics(r) })));
-  console.log(`\n${e.name}: ${e.hypothesis}\nmodel ${model}, tasks ${tasks.join(", ")}, unit: ${rep.unit}. Means with 95% BCa bootstrap intervals; effects are arm minus ${e.arms[0]!.name}.\n`);
-  const show = (m: string, v: number) => (m === "cost_usd" ? `${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(5)}` : m === "ok" || m === "cache_read_share" ? `${(v * 100).toFixed(0)}%` : m === "ms" ? `${(v / 1000).toFixed(1)}s` : v.toFixed(0));
-  const metrics = ["cost_usd", "prompt_tokens", "output_tokens", "ms", "ok", "requests", "tool_errors"];
+  const rep = offlineReport(e, runs);
+  console.log(`\n${e.name}: ${e.hypothesis}\nmodel ${model}, tasks ${tasks.join(", ")}, unit: ${rep.unit}. Means with 95% BCa bootstrap intervals; effects are arm minus ${e.arms[0]!.name}.\nEach run is measured over ${RUN_SCOPE}. A metric a run could not measure (a cost with no price) is left out of that run, shown as - when no run of an arm has it.\n`);
+  const show = (m: string, v: number) => (m === "cost_usd" ? `${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(5)}` : m === "ok" || m === "error" || m === "cache_read_share" ? `${(v * 100).toFixed(0)}%` : m === "ms" ? `${(v / 1000).toFixed(1)}s` : v.toFixed(0));
+  const metrics = ["cost_usd", "prompt_tokens", "output_tokens", "cache_read_share", "ms", "ok", "error", "requests", "tool_errors"];
   console.log(`| metric | ${rep.arms.map((a) => `${a.arm} (n=${a.units})`).join(" | ")} | effect | significant |`);
   console.log(`|${" --- |".repeat(rep.arms.length + 3)}`);
   for (const m of metrics) {
-    const cells = rep.arms.map((a) => { const iv = a.metrics[m as keyof typeof a.metrics]; return iv ? `${show(m, iv.estimate)} [${show(m, iv.lo)}, ${show(m, iv.hi)}]` : "-"; });
+    const cells = rep.arms.map((a) => { const iv = a.metrics[m as keyof typeof a.metrics]; return iv ? `${show(m, iv.estimate)} [${show(m, iv.lo)}, ${show(m, iv.hi)}]${iv.n < a.units ? ` (${iv.n} of ${a.units} runs)` : ""}` : "-"; });
     const f = rep.effects.find((x) => x.metric === m);
     const eff = f ? `${f.diff.estimate >= 0 ? "+" : ""}${show(m, f.diff.estimate)} [${show(m, f.diff.lo)}, ${show(m, f.diff.hi)}]${f.diff.relative !== null ? ` (${(f.diff.relative * 100).toFixed(0)}%)` : ""}` : "-";
     console.log(`| ${m}${m === e.primary ? " (primary)" : ""} | ${cells.join(" | ")} | ${eff} | ${f ? (f.diff.significant ? "yes" : "no") : "-"} |`);
@@ -339,7 +339,7 @@ async function finish(up: Uploads): Promise<boolean> {
     console.log(`The daemon has all ${up.ledger.runs.length} runs and stopped the experiment: its report is final.`);
     return true;
   }
-  console.error(`Not finalized: ${f.pending ? `${f.pending} of ${up.ledger.runs.length} runs are not acknowledged by the daemon` : "the daemon did not stop the experiment"} (${f.problem}). The experiment stays running there and the report above is local only.\nSend them again, each counted once, with: bun scripts/bench/run.ts --resume ${up.file}`);
+  console.error(`Not finalized: ${f.pending ? `${f.pending} of ${up.ledger.runs.length} runs are not acknowledged by the daemon` : "the daemon did not stop the experiment"} (${f.problem}). The experiment stays running there and nothing is final.\nSend them again, each counted once, with: bun scripts/bench/run.ts --resume ${up.file}`);
   return false;
 }
 
@@ -354,7 +354,7 @@ else if (values.experiment) {
   process.exit(done ? 0 : 1);
 } else {
   if (!values.model || !values.label) {
-    console.error("usage: run.ts --model ID --label NAME [--reps N] [--tasks a,b] [--without tool,tool] [--no-defer] | run.ts compare LABEL...");
+    console.error("usage: run.ts --model ID --label NAME [--reps N] [--tasks a,b] [--without tool,tool] [--no-defer] | run.ts compare LABEL... | run.ts --experiment SPEC [--daemon URL] | run.ts --resume FILE");
     process.exit(2);
   }
   await bench({ model: values.model, label: values.label, reps: Number(values.reps), tasks: values.tasks ? values.tasks.split(",") : [], gapMin: values.gap ? Number(values.gap) : undefined, without: values.without ? values.without.split(",") : [], noDefer: values["no-defer"] });

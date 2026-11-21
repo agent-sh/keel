@@ -10,7 +10,35 @@
 // the run is recovered from (`run.ts --resume FILE`).
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { RunUpload } from "./experiments.ts";
+import { report, turnMetrics, type Experiment, type Report, type RunUpload } from "./experiments.ts";
+
+// What a run's metrics are measured over: one scope for all of them, the
+// same in the runner's own report and in what the daemon is sent.
+export const RUN_SCOPE = "every model request of the run's turn: the working model's requests and the reader models' requests; side requests (a title, a summary) belong to no turn and are left out";
+// A run's values for the experiment metrics, from its turn's rollup (the row
+// a live turn is judged by too), so offline and live metrics mean the same:
+// - requests: every request sent in the turn, failed attempts and retries included.
+// - prompt_tokens, output_tokens: the tokens of the requests that were
+//   answered (a failed attempt reports none).
+// - cache_read_share: cache reads over prompt_tokens, of the same requests.
+// - cost_usd: the cost of the same requests; left out when one of them has
+//   no price, never counted as free.
+// - ok: the task's check passed; ms: the run's wall time; error: the turn
+//   ended in an error; tool_errors: failed tool calls of the turn.
+// A run whose turn left no rollup reports only what the runner saw itself.
+export function runMetrics(turn: Record<string, any> | undefined, run: { ok: boolean; ms: number }): Record<string, number> {
+  const seen = { ok: run.ok ? 1 : 0, ms: run.ms };
+  if (!turn) return seen;
+  // No reply is rated in a run.
+  const { thumbs_down: _none, ...m } = turnMetrics(turn);
+  return { ...m, ...seen };
+}
+
+// The report over a set of runs, as the runner prints it and as the daemon
+// computes it from the same uploads: one cluster per run, the task as stratum.
+export function offlineReport(e: Experiment, runs: RunUpload[]): Report {
+  return report(e, runs.map((r, i) => ({ arm: r.arm, cluster: `run-${i}`, stratum: r.task, m: r.metrics })));
+}
 
 export type Ledger = { daemon: string; experiment: string; label: string; runs: RunUpload[]; acked: string[]; stopped: boolean };
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;

@@ -103,6 +103,8 @@ test("experiments: create, run live, stop and decide; an offline report", async 
     runs.push({ receipt: `${tag}:${task}:${rep}:on`, arm: "readers on", task, rep, metrics: { cost_usd: base * 0.7, ok: 1, prompt_tokens: 40_000 + rep * 300, ms: 14_000 + rep * 200 } });
     runs.push({ receipt: `${tag}:${task}:${rep}:off`, arm: "readers off", task, rep, metrics: { cost_usd: base, ok: 1, prompt_tokens: 66_000 + rep * 300, ms: 13_000 + rep * 200 } });
   }
+  // One run could not be priced: the runner leaves its cost out instead of sending a zero.
+  delete runs.at(-1)!.metrics.cost_usd;
   expect((await request.post(`/api/experiments/${off.id}/runs`, { data: { runs } })).status()).toBe(201);
   // The runner sends a batch again when its answer was lost: every run still counts once.
   const resent = await request.post(`/api/experiments/${off.id}/runs`, { data: { runs } });
@@ -114,6 +116,9 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await page.reload();
   await panel.getByTestId("experiment-item").filter({ hasText: `Readers ${tag}` }).click();
   await expect(detail.getByTestId("metric-cost_usd")).toContainText("worse");
+  // The cost is over the runs that have one, and the cell says so.
+  await expect(detail.getByTestId("metric-cost_usd").getByTestId("metric-partial")).toHaveText("over 8 of 9");
+  await expect(detail.getByTestId("metric-prompt_tokens").getByTestId("metric-partial")).toHaveCount(0);
   await expect(detail.getByTestId("experiment-decision")).toContainText("readers on wins");
   await expect(detail.getByTestId("experiment-command")).toContainText(`--experiment ${off.id}`);
   await shoot(page, "experiments-04-offline-report");

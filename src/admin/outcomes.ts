@@ -221,6 +221,11 @@ export class Outcomes {
     return Object.fromEntries(this.store.db.query<{ event_id: string; value: number }, [string]>("SELECT event_id, value FROM reply_ratings WHERE session_id = ?").all(sessionId).map((r) => [r.event_id, r.value]));
   }
 
+  // A session's turn rollups, oldest first.
+  sessionTurns(sessionId: string): Turn[] {
+    return this.store.db.query<Turn, [string]>("SELECT * FROM telemetry_turns WHERE session_id = ? ORDER BY ts, id").all(sessionId);
+  }
+
   private turns(q: Filter): Turn[] {
     return this.store.db.query<Turn, [number, number]>("SELECT * FROM telemetry_turns WHERE ts >= ? AND ts < ? ORDER BY ts").all(q.since ?? 0, q.until ?? Date.now() + 1);
   }
