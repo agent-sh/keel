@@ -12,7 +12,8 @@ export const DEFAULT_URL = "http://127.0.0.1:47960";
 
 export class ApiError extends Error {
   // `unreached`: the daemon took no connection, so it read nothing of the request.
-  constructor(message: string, readonly status: number, readonly unreached = false) { super(message); }
+  // `refused`: a draining daemon turned the request away at the door, before any route read it.
+  constructor(message: string, readonly status: number, readonly unreached = false, readonly refused = false) { super(message); }
 }
 
 // Text from a model, a tool or a prompt never reaches a terminal raw: escape
@@ -73,7 +74,7 @@ export class Client {
       throw new ApiError(`no daemon answers at ${this.base} (start one with \`keel serve\`, or pass --url)`, 0, /ConnectionRefused|ECONNREFUSED/.test(String((e as any)?.code)));
     }
     const b = (await r.json().catch(() => ({}))) as any;
-    if (!r.ok) throw new ApiError(await refusal(this.base, r, b), r.status);
+    if (!r.ok) throw new ApiError(await refusal(this.base, r, b), r.status, false, r.status === 503 && b?.draining === true);
     return b as T;
   }
   get = <T = any>(path: string) => this.call<T>("GET", path);

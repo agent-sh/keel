@@ -40,6 +40,12 @@ test("keel send says nothing was sent only when the failure proves it", async ()
   const failed = await sendTo(() => Response.json({ error: "the disk is full" }, { status: 500 }));
   expect(failed).toEqual({ code: 3, said: `keel send: the disk is full: the prompt may not have been sent; look before sending it again: keel logs ${SID}`, posts: 1 });
 
+  // A draining daemon turns the request away before any route reads it; another 503 proves nothing.
+  const draining = await sendTo(() => Response.json({ error: "the daemon is restarting and takes no new work until it is back", draining: true }, { status: 503 }));
+  expect(draining.said).toBe("keel send: the daemon is restarting and takes no new work until it is back: nothing was sent");
+  const busy = await sendTo(() => Response.json({ error: "try later" }, { status: 503 }));
+  expect(busy.said).toStartWith("keel send: try later: the prompt may not have been sent");
+
   // No connection was taken: nothing was read. An answer lost on the way says nothing.
   const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
   const port = closed.port;

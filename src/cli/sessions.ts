@@ -149,13 +149,14 @@ const SEND_USAGE = `keel send [ID] [TEXT] [options]
 
 const looksLikeId = (s: string) => /^[0-9a-f]{8}[0-9a-f-]*$/i.test(s);
 
-// What a failed send says about the prompt. The daemon's refusal (a 4xx) and a
-// daemon that took no connection prove nothing was sent. Anything else does
+// What a failed send says about the prompt. The daemon's refusal (a 4xx, or a
+// draining daemon's answer at the door) and a daemon that took no connection
+// prove nothing was sent. Anything else does
 // not (the daemon failed after it read the request, or its answer was lost on
 // the way): the prompt may be in the session, so the caller is told to look
 // before sending it a second time.
 export const sendFailure = (e: ApiError, sessionId: string, drafted: boolean) =>
-  (e.status >= 400 && e.status < 500) || e.unreached
+  (e.status >= 400 && e.status < 500) || e.unreached || e.refused
     ? `${e.message}: nothing was sent${drafted ? " and the draft is as it was" : ""}`
     : `${e.message}: the prompt may not have been sent${drafted ? " (the draft is as it was)" : ""}; look before sending it again: keel logs ${sessionId}`;
 

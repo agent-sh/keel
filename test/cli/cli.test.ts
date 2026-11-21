@@ -512,7 +512,7 @@ describe("a prompt next to other work in its session", () => {
 
     // A prompt the daemon refuses: the draft is as it was, and the command says so.
     const c = await drafted("first words", "one.png");
-    const closed = front(url, (method, path) => (method === "POST" && path.endsWith("/messages") ? Response.json({ error: "the daemon is stopping and takes no new work" }, { status: 503 }) : undefined));
+    const closed = front(url, (method, path) => (method === "POST" && path.endsWith("/messages") ? Response.json({ error: "the daemon is stopping and takes no new work", draining: true }, { status: 503 }) : undefined));
     const refused = await k(["send", c.sid, "not now", "--url", closed.url]);
     closed.stop();
 
