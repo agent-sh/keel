@@ -63,6 +63,33 @@ const settled = () => Bun.sleep(5);
 const tool = (name: string) => automationTools.find((t) => t.name === name)!;
 const ctx = { sessionId: parent.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
 
+test("blocking spawns wake on failed admission and a raised limit, and detach when cancelled", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Slots" });
+  store.append(p.id, "assistant", { blocks: [] });
+  const input = { prompt: "Hold a slot", isolation: "none" } as const;
+  agents.setLimit(p.id, 1);
+  const failing = agents.spawn(p.id, { ...input, model: "missing" });
+  const blocking = () => agents.spawn(p.id, { ...input, background: false });
+  const first = blocking();
+  await expect(failing).rejects.toThrow("no listed model");
+  await settled();
+  const [a] = agents.list(p.id);
+  expect(a?.status).toBe("running");
+
+  const ctl = new AbortController();
+  const cancelled = agents.spawn(p.id, { ...input, background: false }, ctl.signal);
+  ctl.abort();
+  await expect(cancelled).rejects.toThrow("cancelled");
+  const second = blocking();
+  agents.setLimit(p.id, 2);
+  await settled();
+  const [_, b] = agents.list(p.id);
+  expect(b?.status).toBe("running");
+  end(a!, "end_turn");
+  end(b!, "end_turn");
+  expect((await Promise.all([first, second])).map((r) => r.status)).toEqual(["completed", "completed"]);
+});
+
 test("who stopped an agent is kept, and a second stop does not change it", async () => {
   const a = await spawn();
   agents.stop(a.id, "owner");

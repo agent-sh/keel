@@ -37,6 +37,23 @@ sandboxing separately from approvals and can review eligible approvals
 automatically. [OpenCode](https://opencode.ai/docs/permissions/) uses
 `allow`, `ask` and `deny` rules scoped by action and resource.
 
+## Subagent concurrency
+
+From the machine running the session's daemon, set a limit for that session:
+
+```bash
+curl -fsS -X PATCH http://127.0.0.1:47960/api/sessions/SESSION_ID/agents \
+  -H 'Content-Type: application/json' -d '{"limit":12}'
+```
+
+`GET` on the same path shows the effective limit. Set `limit` to `null` to
+return to `KEEL_MAX_SUBAGENTS` (8 when unset). The override survives a restart
+and does not change other sessions. Starting, running and waiting agents
+occupy slots. Lowering the limit does not stop any agents. Blocking spawns
+wait for room. Background spawns and agent messages that would restart a
+finished agent are refused while the session is full. The daemon that owns
+the parent counts its agents even when their tools run on another machine.
+
 ## Refresh the frontend without restarting
 
 Build the page from the daemon's source revision, with only the UI changes

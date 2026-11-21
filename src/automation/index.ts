@@ -19,6 +19,7 @@ import * as waits from "./waits.ts";
 import { liveAgents } from "./state.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
+import { forwardedStanding, isLocal } from "../safety/presence.ts";
 
 // Subagents, waits, loops and alerts: tables, tools, turn hooks, the scheduler
 // and the HTTP routes, joined to the daemon from this one module.
@@ -269,7 +270,21 @@ export const automationRoutes: RouteModule = (deps) => {
       GET: (req: Request) => json({ agents: agents.definitions(new URL(req.url).searchParams.get("cwd") || deps.workspace) }),
     },
     "/api/sessions/:id/agents": {
-      GET: (req: any) => (session(req.params.id) ? json({ agents: agents.list(req.params.id), limit: agents.MAX_LIVE }) : bad("no such session", 404)),
+      GET: (req: any) => {
+        const s = session(req.params.id);
+        return s ? json({ agents: agents.list(s.id), limit: s.parent_id ? 0 : agents.limitOf(s.id) }) : bad("no such session", 404);
+      },
+      PATCH: async (req: any) => {
+        // Fleet forwarding arrives on loopback; it cannot change the host's limit.
+        if (!isLocal(req) || forwardedStanding(req)) return bad("change this limit from the daemon's own desk", 403);
+        const { limit } = await body(req);
+        if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1)) return bad("limit must be a positive integer or null to use the daemon default");
+        const s = session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (s.parent_id) return bad("a subagent cannot start agents", 409);
+        agents.setLimit(s.id, limit);
+        return json({ limit: agents.limitOf(s.id) });
+      },
     },
     "/api/sessions/:id/agents/:agent_id/stop": {
       POST: (req: any) => {

@@ -81,7 +81,7 @@ export type AgentDef = {
   format?: "codex"; // a Codex TOML file: its model is another harness's id, a preference rather than a demand
 };
 
-export const MAX_LIVE = Number(process.env.KEEL_MAX_SUBAGENTS ?? 8);
+const MAX_LIVE = Number(process.env.KEEL_MAX_SUBAGENTS ?? 8);
 const RESULT_CAP = 40_000;
 
 const BUILTIN: AgentDef[] = [
@@ -100,6 +100,10 @@ export function migrate() {
   const { store } = D();
   if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
   store.migrate(`
+CREATE TABLE IF NOT EXISTS agent_limits (
+  parent_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  max_live INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   parent_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -163,11 +167,27 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>) {
   }
   if (sets.length) D().store.db.query(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
   const rec = get(id);
+  if (rec && patch.status && isEnded(rec)) wakeSlots(rec.parent_id);
   if (rec) emit("agent", rec);
   return rec;
 }
 
-const live = (parentId: string) => list(parentId).filter((a) => a.status === "running" || a.status === "waiting").length;
+const live = (parentId: string) => D().store.db.query<{ n: number }, [string]>(
+  "SELECT count(*) AS n FROM agents WHERE parent_id = ? AND status IN ('running', 'waiting')",
+).get(parentId)!.n;
+
+export function limitOf(parentId: string) {
+  return D().store.db.query<{ max_live: number }, [string]>("SELECT max_live FROM agent_limits WHERE parent_id = ?").get(parentId)?.max_live ?? MAX_LIVE;
+}
+
+// Stored separately from portable session settings. Only the owner API sets
+// it, and a fork, import or remote tools host cannot supply an override.
+export function setLimit(parentId: string, limit: number | null) {
+  const db = D().store.db;
+  if (limit === null) db.query("DELETE FROM agent_limits WHERE parent_id = ?").run(parentId);
+  else db.query("INSERT OR REPLACE INTO agent_limits (parent_id, max_live) VALUES (?, ?)").run(parentId, limit);
+  wakeSlots(parentId);
+}
 
 // --- definitions -----------------------------------------------------------
 
@@ -319,7 +339,50 @@ const PREAMBLE =
 
 type Waiter = { done: (a: AgentRecord) => boolean; resolve: (r: AgentRecord) => void };
 const waiters = new Map<string, Waiter[]>(); // agent id -> callers blocked on it
-const slotWaiters: (() => void)[] = [];
+const slotWaiters = new Map<string, Set<() => void>>(); // parent id -> blocking spawns
+const reservations = new Map<string, number>(); // placements not yet recorded as live
+
+const wakeSlots = (parentId: string) => slotWaiters.get(parentId)?.forEach((wake) => wake());
+
+function waitForSlot(parentId: string, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const waiting = slotWaiters.get(parentId) ?? new Set();
+    const wake = () => {
+      waiting.delete(wake);
+      if (!waiting.size) slotWaiters.delete(parentId);
+      signal?.removeEventListener("abort", wake);
+      resolve();
+    };
+    waiting.add(wake);
+    slotWaiters.set(parentId, waiting);
+    signal?.addEventListener("abort", wake, { once: true });
+  });
+}
+
+function full(parentId: string): Error | undefined {
+  const limit = limitOf(parentId);
+  // Use the existing >= comparison, including for an environment-supplied limit.
+  if (live(parentId) + (reservations.get(parentId) ?? 0) >= limit)
+    return Object.assign(new Error(`AGENT_LIMIT: ${limit} agent slots of this session are in use. Do not retry: wait for one to report, or stop one.`), { status: 409 });
+}
+
+function needSlot(parentId: string) {
+  const refused = full(parentId);
+  if (refused) throw refused;
+}
+
+function reserve(parentId: string) {
+  reservations.set(parentId, (reservations.get(parentId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = reservations.get(parentId)! - 1;
+    if (left) reservations.set(parentId, left);
+    else reservations.delete(parentId);
+    wakeSlots(parentId);
+  };
+}
 
 // Resolves when the agent has ended, or with `parked` also when it parked on a
 // wait (a blocking spawn returns then); else at the timeout or the abort.
@@ -420,7 +483,7 @@ async function isolate(parent: Session, def: AgentDef, input: SpawnInput, title:
 }
 
 export async function spawn(parentId: string, input: SpawnInput, signal?: AbortSignal): Promise<AgentRecord> {
-  const { store, bus, engine } = D();
+  const { store } = D();
   const parent = store.session(parentId);
   if (!parent) throw new Error("no such session");
   if (parent.parent_id) throw new Error("a subagent cannot start agents; do the work yourself or report back");
@@ -428,20 +491,36 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   const defs = definitions(parent.workspace);
   const def = defs.find((d) => d.name.toLowerCase() === (input.type ?? "general-purpose").toLowerCase());
   if (!def) throw new Error(`no agent type "${input.type}"; available: ${defs.map((d) => d.name).join(", ")}`);
-  while (live(parentId) >= MAX_LIVE) {
-    if (input.background !== false) throw new Error(`AGENT_LIMIT: ${MAX_LIVE} agents of this session are already running. Do not retry: wait for one to report, or stop one.`);
-    await new Promise<void>((r) => slotWaiters.push(r));
-    if (signal?.aborted) throw new Error("cancelled");
-  }
   if (input.output_schema !== undefined) {
     const bad = validSchema(input.output_schema);
     if (bad) throw new Error(bad);
   }
+  for (;;) {
+    if (signal?.aborted) throw new Error("cancelled");
+    const current = store.session(parentId);
+    if (!current || current.archived) throw new Error("the parent session is gone or archived");
+    const refused = full(parentId);
+    if (!refused) {
+      // No await between checking and reserving. Both local and remote
+      // placement can await before a durable agent row is available.
+      const release = reserve(parentId);
+      try { return await startSpawn(current, input, def, release, signal); }
+      finally { release(); }
+    }
+    if (input.background !== false) throw refused;
+    await waitForSlot(parentId, signal);
+  }
+}
+
+async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, release: () => void, signal?: AbortSignal) {
+  const { store, bus, engine } = D();
+  const parentId = parent.id;
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
   const model = input.fork ? parent.model
     : !input.model && def.format === "codex" ? await pickModel(parent, def.model).catch(() => parent.model)
     : await pickModel(parent, input.model ?? def.model);
   const { info } = await D().providers.resolve(model);
+  if (signal?.aborted) throw new Error("cancelled");
   const effort = def.effort && info.efforts?.includes(def.effort) ? def.effort : undefined;
   const title = (input.title || input.prompt.split("\n")[0]!).slice(0, 80);
   const id = Bun.randomUUIDv7().slice(-12);
@@ -483,6 +562,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   store.db.query(
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null);
+  release(); // the persisted running row now occupies the slot
   activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})`, { agent_id: id, child_session: child.id });
   const task = [
     PREAMBLE, def.body,
@@ -495,6 +575,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   const waited = await stagger(parentId, model, child.id, signal);
   if (waited) activity.record("agent", "staggered", parentId, `Agent "${title}" started ${Math.round(waited / 100) / 10} s after the first one on ${model}, to read its prompt cache`, { agent_id: id });
   if (settling.has(id) || get(id)?.status !== "running") return get(id)!; // stopped while it waited
+  if (input.background === false && signal?.aborted) return stop(id, "parent_turn")!;
   // task_at: where the parent's own words start, so the page shows them verbatim.
   // traceparent: the spawn call's span, so the child's turns trace under it.
   const parentTurn = input.call_id ? store.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(parentId) : null;
@@ -741,7 +822,6 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);
   if (!blocked) handback(rec);
-  slotWaiters.splice(0).forEach((f) => f());
 }
 
 // A worktree with nothing in it goes (its branch too); one with work stays,
@@ -779,10 +859,11 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
 // A message to an agent: steers a running one (after its current turn, or at
 // once with interrupt), or continues a finished one with its context.
 export async function send(id: string, message: string, interrupt = false): Promise<AgentRecord> {
-  const a = get(id);
+  let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
   const { engine, store } = D();
   if (!store.session(a.session_id)) throw new Error("the agent's session is gone");
+  if (isEnded(a)) needSlot(a.parent_id);
   // A finished work agent whose empty worktree went gets a fresh one at the same place.
   if (a.machine && remote) await remote.revive(a);
   const w = a.worktree && !a.machine ? wts().get(a.session_id) : undefined;
@@ -793,11 +874,14 @@ export async function send(id: string, message: string, interrupt = false): Prom
   // running. Steering it now would start a turn its record says is done.
   const ending = settling.get(id);
   if (ending) { await ending; return send(id, message, interrupt); }
-  if (a.status === "running" || a.status === "waiting") {
+  a = get(id); // placement may have yielded while this agent finished
+  if (!a) throw new Error(`no agent ${id}`);
+  if (!isEnded(a)) {
     if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
     deliver(a.session_id, text, { kind: "steer", agent_id: id });
     return update(id, { status: "running" })!;
   }
+  needSlot(a.parent_id);
   const last = store.events(a.session_id).at(-1)?.seq ?? 0;
   update(id, { status: "running", ended: null, first_seq: last, handback: false, background: true, stopped_by: null, end_reason: null });
   deliver(a.session_id, text, { kind: "steer", agent_id: id });
