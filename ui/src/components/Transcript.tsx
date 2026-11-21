@@ -7,7 +7,7 @@ import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session,
 import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { rowActions } from "../lib/extend.ts";
 import { blockKey, buildRows, nextLineage, nextSiblings, PROBE, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
-import { actions, api, forgetEvents, getState, keepEvents, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
+import { actions, api, dropSession, failed, forgetEvents, getState, keepEvents, liveNow, onFeature, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
@@ -809,21 +809,39 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const more = !!events?.length && events[0]!.parent !== null;
   const busy = useRef({ older: false, later: false });
   const [loading, setLoading] = useState(false);
-  const older = (): Promise<unknown> | undefined => {
-    if (!more || busy.current.older || !events) return;
+  // A part that did not load is said where it would have come in, with a way
+  // to ask again. It is not asked for again by the scroll that asked for it
+  // (`auto`), only by the owner or when the page reconnects. A session that
+  // was deleted meanwhile is no failure: its view says it is gone.
+  const [unread, setUnread] = useState<{ older?: string; later?: string }>({});
+  const unreadNow = useRef(unread);
+  unreadNow.current = unread;
+  const partFailed = (which: "older" | "later") => (e: unknown) => {
+    if ((e as { status?: number }).status === 404) return dropSession(sessionId);
+    // An unreachable daemon is a state the page already shows, not an error of its own.
+    setUnread((u) => ({ ...u, [which]: e instanceof TypeError ? "Keel is not reachable." : failed(e, { at: "transcript part", session_id: sessionId }) }));
+  };
+  const older = (auto = false): Promise<unknown> | undefined => {
+    if (!more || busy.current.older || !events || (auto && unreadNow.current.older)) return;
     busy.current.older = true;
     setLoading(true);
-    return actions.page(sessionId, { head: events.at(-1)!.id, before: events[0]!.seq }).catch(reportError).finally(() => { busy.current.older = false; setLoading(false); });
+    setUnread((u) => (u.older ? { ...u, older: undefined } : u));
+    return actions.page(sessionId, { head: events.at(-1)!.id, before: events[0]!.seq }).catch(partFailed("older")).finally(() => { busy.current.older = false; setLoading(false); });
   };
-  const later = (): Promise<unknown> | undefined => {
-    if (!reading?.end || busy.current.later || !events) return;
+  const later = (auto = false): Promise<unknown> | undefined => {
+    if (!reading?.end || busy.current.later || !events || (auto && unreadNow.current.later)) return;
     busy.current.later = true;
+    setUnread((u) => (u.later ? { ...u, later: undefined } : u));
     const from = reading;
     return actions.page(sessionId, { head: from.other ? from.head ?? undefined : undefined, after: events.at(-1)!.seq })
       .then((p) => setView((v) => (v !== from ? v : p.end || !p.last ? (from.other ? { ...from, end: null } : null) : { ...from, end: p.last })))
-      .catch(reportError)
+      .catch(partFailed("later"))
       .finally(() => { busy.current.later = false; });
   };
+  // The connection is back: what did not load is asked for again.
+  const reads = useRef({ older, later });
+  reads.current = { older, later };
+  useEffect(() => onFeature({ reconnect: () => { if (unreadNow.current.older) void reads.current.older(); if (unreadNow.current.later) void reads.current.later(); } }), []);
   // The owner's prompts of the branch outside the part shown, counted once per
   // part: "Prompt 12 of 44" counts the whole branch, not what the page holds.
   const outside = useRef<{ key: string; before: number; after: number } | null>(null);
@@ -840,7 +858,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // A page that does not fill the view asks for the one before it.
   useEffect(() => {
     const el = scroller.current;
-    if (more && el && el.scrollHeight <= el.clientHeight) older();
+    if (more && el && el.scrollHeight <= el.clientHeight) older(true);
   }, [events]);
 
   // An event to show that is not on the run shown (a search hit, a jump from
@@ -1064,8 +1082,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           else remember();
           // The reader moving toward an edge reads the part beyond it (not a
           // scroll that only followed the content changing size).
-          if (!stick.current && up && el.scrollTop < el.clientHeight) older();
-          if (near && down) later();
+          if (!stick.current && up && el.scrollTop < el.clientHeight) older(true);
+          if (near && down) later(true);
         }}
       >
         <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
@@ -1081,9 +1099,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           )}
           {events.length === 0 && session.phase !== "working" && <p className="k-empty py-4">No messages yet.</p>}
           {more && (
-            <div className="flex justify-center" data-testid="earlier-messages" data-pinned="1">
-              <button type="button" data-testid="load-earlier" disabled={loading} onClick={older} className="h-7 rounded-md px-2.5 text-caption font-medium text-muted hover:bg-hover hover:text-fg disabled:opacity-60">
-                {loading ? "Loading earlier messages" : "Load earlier messages"}
+            <div className="flex flex-wrap items-center justify-center gap-x-2" data-testid="earlier-messages" data-pinned="1">
+              {unread.older && !loading && <span role="status" data-testid="earlier-failed" className="text-caption text-warn">Earlier messages did not load: {unread.older}</span>}
+              <button type="button" data-testid="load-earlier" disabled={loading} onClick={() => void older()} className={cn("h-7 rounded-md px-2.5 text-caption font-medium hover:bg-hover hover:text-fg disabled:opacity-60", unread.older && !loading ? "border border-line text-fg" : "text-muted")}>
+                {loading ? "Loading earlier messages" : unread.older ? "Try again" : "Load earlier messages"}
               </button>
             </div>
           )}
@@ -1094,8 +1113,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           {reading?.end && (
             // Clear of the Latest pill, which floats over the foot of the view while a part is read.
             <div className="mb-10 flex items-center justify-center gap-1 py-1 text-caption text-faint" data-testid="later-messages" data-pinned="1">
-              <span>Later messages are not shown here.</span>
-              <button type="button" data-testid="load-later" onClick={later} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Load later messages</button>
+              {unread.later
+                ? <span role="status" data-testid="later-failed" className="text-warn">Later messages did not load: {unread.later}</span>
+                : <span>Later messages are not shown here.</span>}
+              <button type="button" data-testid="load-later" onClick={() => void later()} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">{unread.later ? "Try again" : "Load later messages"}</button>
             </div>
           )}
           <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} />

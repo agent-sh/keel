@@ -279,6 +279,68 @@ test("a long session opens with its newest part and reads the rest as asked", as
 // transcript changes size above it) is found by halving over the rows where
 // they are: a scroll reaches a handful of them, however many are mounted, and
 // never walks or copies the list.
+// A part that does not load is a state the page says where the part would
+// have come in, with a way to ask again: it is not asked for over and over
+// by the scroll that asked for it, the reconnect asks again by itself, and
+// nothing lands in the error table for a daemon that could not be reached or
+// for a session that was deleted meanwhile (its view says it is gone).
+test("a part that does not load says so and can be asked for again", async ({ page }) => {
+  const { state, ids: [id] } = seeded("part-fails", 2000, "turns", "A part that fails");
+  const d = await daemon(state);
+  try {
+    const posted: string[] = [];
+    page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") posted.push(r.postData() ?? ""); });
+    // The page's socket can be cut, and kept from opening again.
+    const live: { ws?: import("@playwright/test").WebSocketRoute; down: boolean } = { down: false };
+    await page.routeWebSocket(/\/ws$/, (ws) => { if (live.down) return void ws.close({ code: 4000, reason: "down for the test" }); ws.connectToServer(); live.ws = ws; });
+    let cut = true, asked = 0;
+    await page.route(`**/api/sessions/${id}/page?*`, (r) => { asked++; return cut ? r.abort("connectionrefused") : r.fallback(); });
+    await page.goto(`${d.url}/s/${id}`);
+    const button = page.getByTestId("load-earlier");
+    await expect(button).toBeVisible({ timeout: 30_000 });
+    const held = () => page.evaluate(() => document.querySelectorAll('[data-testid="transcript"] [data-event-id]').length);
+    const scroller = page.getByTestId("transcript").locator("xpath=..");
+
+    // Scrolling up asks for the part before; the read is cut.
+    await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
+    const said = page.getByTestId("earlier-failed");
+    await expect(said).toHaveText("Earlier messages did not load: Keel is not reachable.");
+    await expect(button).toHaveText("Try again");
+    await expect(button).toBeEnabled();
+    // The scroll that asked does not ask again while it stands.
+    const once = asked;
+    await scroller.evaluate((el) => { el.scrollTo({ top: 400 }); el.scrollTo({ top: 0 }); });
+    await page.waitForTimeout(500);
+    expect(asked).toBe(once);
+    await shoot(page, "long-transcript-08-part-did-not-load");
+
+    // Asked for again by the owner, and still cut: said again.
+    await button.click();
+    await expect.poll(() => asked).toBe(once + 1);
+    await expect(said).toBeVisible();
+    // The connection comes back: the part is read without being asked for.
+    const rows = await held();
+    cut = false;
+    await live.ws!.close({ code: 4000, reason: "cut by the test" });
+    await expect.poll(held, { timeout: 15_000 }).toBeGreaterThan(rows);
+    await expect(said).toHaveCount(0);
+    await expect(button).toHaveText("Load earlier messages");
+
+    // The session is deleted while the page is cut off: the next part's read finds it gone.
+    live.down = true;
+    await live.ws!.close({ code: 4000, reason: "cut by the test" });
+    expect((await fetch(`${d.url}/api/sessions/${id}`, { method: "DELETE" })).ok).toBe(true);
+    await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
+    await expect(page.getByTestId("session-missing")).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(3_500); // a network failure is posted 3 s after it happened
+    expect(posted).toEqual([]);
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
+  }
+});
+
 test("the reader's place is found by halving and holds under the branch banner", async ({ page }) => {
   const { state, ids: [id] } = seeded("anchor", 3000, "turns", "Anchored");
   const d = await daemon(state);
