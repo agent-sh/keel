@@ -23,7 +23,10 @@ test("a reply in a four-pane bridge has 55 characters a line or more", async ({ 
     const ctx = document.createElement("canvas").getContext("2d")!;
     ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
     const t = el.textContent!;
-    return { chars: Math.round(el.getBoundingClientRect().width / (ctx.measureText(t).width / t.length)), px: parseFloat(cs.fontSize), pane: Math.round(el.closest(".k-station")!.getBoundingClientRect().width) };
+    const station = el.closest(".k-station")!;
+    // The owner's own words in the same pane: they are the reply's size.
+    const owner = parseFloat(getComputedStyle(station.querySelector(".k-user-words")!).fontSize);
+    return { chars: Math.round(el.getBoundingClientRect().width / (ctx.measureText(t).width / t.length)), px: parseFloat(cs.fontSize), owner, pane: Math.round(station.getBoundingClientRect().width) };
   });
 
   await page.setViewportSize({ width: 1920, height: 1040 });
@@ -36,6 +39,7 @@ test("a reply in a four-pane bridge has 55 characters a line or more", async ({ 
   console.log(`four panes: ${JSON.stringify(four)}`);
   expect(four.pane).toBeLessThan(520);
   expect(four.chars).toBeGreaterThanOrEqual(55);
+  expect(four.owner).toBe(four.px);
   await shoot(page, "reading-size-four-panes");
 
   // One pane: the reading size, and still a readable measure.
@@ -46,6 +50,18 @@ test("a reply in a four-pane bridge has 55 characters a line or more", async ({ 
   expect(one.px).toBeGreaterThan(four.px);
   expect(one.px).toBeGreaterThanOrEqual(18);
   expect(one.chars).toBeLessThanOrEqual(95);
+  expect(one.owner).toBe(one.px);
+
+  // A phone is a narrow pane too: one step down for the reply and the owner's words alike,
+  // which holds 48 characters a line or more where the reading size held 44.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(async () => (await measure(page)).pane).toBeLessThanOrEqual(390);
+  const phone = await measure(page);
+  console.log(`phone: ${JSON.stringify(phone)}`);
+  expect(phone.px).toBe(four.px);
+  expect(phone.owner).toBe(phone.px);
+  expect(phone.chars).toBeGreaterThanOrEqual(48);
+  await shoot(page, "reading-size-phone");
 });
 
 const document_fonts = (page: Page) => page.evaluate(() => document.fonts.ready.then(() => undefined));

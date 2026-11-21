@@ -385,11 +385,14 @@ html[data-resizing] iframe { pointer-events: none; }
 /* The reading size fits the pane. A pane among four is too narrow for 18 px
    text at a readable measure (38 characters a line): under 28rem, where the
    reading size holds fewer than 55 characters a line, the reply is set one
-   step down with less margin. */
+   step down with less margin. A phone is such a pane: at 390 px the reading
+   size gives 44 characters a line and the base size 50, at the platform's
+   own body size. The owner's words are the reply's size in every pane. */
 .k-reading { container: reading / inline-size; }
 @container reading (max-width: 28rem) {
   .k-transcript { padding-inline: 0.875rem; }
   .k-transcript .prose-keel { font-size: var(--text-base); line-height: 1.6; }
+  .k-transcript .k-user-message > .k-user-words { font-size: var(--text-base); }
   .k-transcript .prose-keel :not(pre) > code { font-size: var(--text-ui); }
   .k-transcript .prose-keel h1 { font-size: var(--text-head); }
   .k-transcript .prose-keel h2 { font-size: var(--text-read); }
