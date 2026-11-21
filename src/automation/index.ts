@@ -123,6 +123,9 @@ function init(deps: Deps) {
     },
   });
 
+  // A hold that ended with no turn sends what it held (agents.onQueue).
+  deps.bus.on((f) => { if (f.t === "queue") agents.onQueue(f); });
+
   // The last agent of a parent whose turn already ended, ending with no report
   // for it (a reviewer's findings go to their own panel): no turn of the
   // parent follows, so the alert its turn held back is raised now.

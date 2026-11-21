@@ -111,6 +111,17 @@ export function withdraw(sessionId: string, which: (meta: Record<string, unknown
 export const isPending = (sessionId: string, which: (meta: Record<string, unknown>) => boolean) =>
   [pending, riding].some((lists) => lists.get(sessionId)?.some((p) => which(p.meta)));
 
+// Takes back what rides (never what is lined up) and says what it took: the
+// reason it could start no turn is gone, and its sender lines it up again.
+export function takeRiding(sessionId: string, which: (meta: Record<string, unknown>) => boolean): Record<string, unknown>[] {
+  const list = riding.get(sessionId) ?? [];
+  const took = list.filter((p) => which(p.meta));
+  if (!took.length) return [];
+  if (took.length < list.length) riding.set(sessionId, list.filter((p) => !which(p.meta)));
+  else riding.delete(sessionId);
+  return took.map((p) => p.meta);
+}
+
 export function flush(sessionId: string) {
   const list = pending.get(sessionId);
   if (!list?.length) return;
@@ -122,7 +133,7 @@ export function flush(sessionId: string) {
   try {
     // Live statuses can change while the recipient is busy. Recheck them
     // before grouping the parts; a withdrawn status must not start a turn.
-    const lined = list.map((p) => p.meta);
+    const lined = [...list, ...(riding.get(sessionId) ?? [])].map((p) => p.meta);
     const fresh = (p: Pending) => {
       if (!p.refresh) return [p];
       const next = p.refresh(lined);

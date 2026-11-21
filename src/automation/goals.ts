@@ -168,7 +168,11 @@ export async function patch(sessionId: string, p: { status?: "paused" | "pursuin
     g.status_reason = null;
     g.idle_turns = 0;
     save(g);
-    if (!D().engine.isRunning(sessionId)) resume(g);
+    // The owner's own resume: after a Stop it releases the held queue, as a prompt
+    // they type does. A prompt queued on another branch still waits for them.
+    const { engine } = D();
+    if (engine.isHeld(sessionId) && !engine.queued(sessionId).slice(0, 1).some((q) => engine.offBranch(q))) engine.resumeQueue(sessionId);
+    if (!engine.isRunning(sessionId)) resume(g);
     return g;
   } else if (p.status !== undefined) throw new Error("status is paused or pursuing");
   return save(g);

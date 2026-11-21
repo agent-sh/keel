@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { lineage } from "../core/tree.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
@@ -760,39 +760,83 @@ function waitHolds(a: AgentRecord, report = reportId(a)): boolean {
 function handback(a: AgentRecord, grouped = false) {
   const parent = D().store.session(a.parent_id);
   if (!parent || parent.archived) return;
-  if (!grouped) owe(a);
-  // Said with each report while others run: models set timers to wait for the rest.
-  const left = list(a.parent_id).filter((o) => o.id !== a.id && !isEnded(o) && o.type !== "reviewer").length;
-  let still = left ? `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.` : "";
-  // The last report is what a timer set while the agents ran waited for (models
-  // set them though told not to, and each woke the parent again after the work
-  // was done): it is cancelled, and the report says so.
-  if (!left) {
-    const mine = list(a.parent_id);
-    const during = (t: number) => mine.some((o) => o.created <= t && (o.ended ?? Date.now()) >= t);
-    const timers = waits.list(a.parent_id, 0).filter((w) => w.status === "active" && w.kind === "timer" && during(w.created));
-    for (const w of timers) waits.cancel(w.id, a.parent_id);
-    if (timers.length) still = `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.map((w) => w.id).join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.`;
+  if (!grouped) {
+    owe(a);
+    return sendOwed({ report_id: reportId(a), agent_id: a.id, block: reportBlock(a), status: a.status }, a.parent_id);
   }
-  if (grouped) return failures.wake(a.parent_id, left ? undefined : still);
-  sendOwed({ report_id: reportId(a), agent_id: a.id, block: reportBlock(a), status: a.status }, a.parent_id, still);
+  // Told in the failure notice. Its timers are cancelled only when the notice
+  // can go and say so: a parent held after the owner's Stop keeps them, and
+  // one that fires brings what the parent is owed.
+  const t = tail(a.parent_id);
+  if (!t.timers.length || D().engine.isHeld(a.parent_id)) return failures.wake(a.parent_id);
+  for (const id of t.timers) waits.cancel(id, a.parent_id);
+  failures.wake(a.parent_id, t.text);
 }
 
+// What the last report of an input says after it, as things stand when it is
+// sent. While others run: how many (models set timers to wait for the rest).
+// With none left: the timers the parent set while its agents ran, which this
+// report is what they waited for (models set them though told not to, and
+// each woke the parent again after the work was done). They are cancelled
+// when the report that says so is sent.
+function tail(parentId: string): { text: string; timers: string[] } {
+  const mine = list(parentId);
+  const left = mine.filter((o) => !isEnded(o) && o.type !== "reviewer").length;
+  if (left) return { text: `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.`, timers: [] };
+  const during = (t: number) => mine.some((o) => o.created <= t && (o.ended ?? Date.now()) >= t);
+  const timers = waits.list(parentId, 0).filter((w) => w.status === "active" && w.kind === "timer" && during(w.created)).map((w) => w.id);
+  return { text: timers.length ? `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.` : "", timers };
+}
+
+const isReport = (reportId: string) => (m: Record<string, unknown>) => m.kind === "subagent" && m.report_id === reportId;
+
 // Queued per report: a later task's report is queued too, after the earlier one.
-// A parent held after the owner's Stop starts no turn for a report: it stays
-// owed, also when it was lined up while the stopped turn ran, and goes after
-// the owner's next turn (onTurnEnd). A wait_agent still returns it.
-function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, parentId: string, still = "") {
-  if (isPending(parentId, (m) => m.kind === "subagent" && m.report_id === o.report_id)) return; // already on its way
-  const held = () => D().engine.isHeld(parentId);
-  if (held()) return;
-  const input = { text: `${HANDBACK_PREFACE}\n${o.block}${still}`, meta: { kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status } };
-  deliver(parentId, input.text, input.meta, {
-    coalesceMs: 300,
-    refresh: () => (held() ? undefined : input),
-    // Sending this report settles this report only, never a newer one.
-    onSent: () => settle(o.agent_id, o.report_id),
+// A parent held after the owner's Stop starts no turn for a report, also one
+// lined up while the stopped turn ran: it rides the parent's next input (a
+// wait that fires, a goal or loop that goes on), so a coordinator the owner
+// stopped once still hears from its agents. When the hold ends it goes as an
+// input of its own (releaseOwed). A wait_agent still returns it.
+function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, parentId: string) {
+  if (isPending(parentId, isReport(o.report_id))) return; // already on its way
+  const meta = { kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status };
+  const text = `${HANDBACK_PREFACE}\n${o.block}`;
+  const go = (ride: boolean) => deliver(parentId, text, meta, {
+    ride, coalesceMs: 300,
+    refresh: (parts) => {
+      // Lined up to start a turn, and the owner stopped the parent since: it rides instead.
+      if (!ride && D().engine.isHeld(parentId)) return void go(true);
+      const last = parts.findLast((p) => p.kind === "subagent")?.report_id === o.report_id;
+      const t = last ? tail(parentId) : { text: "", timers: [] };
+      return {
+        text: text + t.text, meta,
+        // Sending this report settles this report only, never a newer one.
+        onSent: () => {
+          for (const id of t.timers) waits.cancel(id, parentId);
+          settle(o.agent_id, o.report_id);
+        },
+      };
+    },
   });
+  go(D().engine.isHeld(parentId));
+}
+
+// A parent that is not held gets its reports as inputs of their own: those
+// that rode while the owner's Stop held it, and any owed with nothing lined up.
+export function releaseOwed(parentId: string) {
+  if (D().engine.isHeld(parentId)) return;
+  const rode = new Set(takeRiding(parentId, (m) => m.kind === "subagent").map((m) => m.report_id));
+  const rows = owedOf(parentId);
+  for (const o of rows) if (rode.has(o.report_id)) sendOwed(o, parentId);
+  sendAllOwed(rows);
+}
+
+// The session's queue changed. A hold that ended with no turn (the owner
+// resumed an empty queue, a session moved here in the middle of a turn) has
+// no turn end to send what was held: it goes now.
+export function onQueue(f: { session_id: string; held: boolean }) {
+  if (f.held || D().engine.isRunning(f.session_id)) return;
+  releaseOwed(f.session_id);
+  failures.wake(f.session_id);
 }
 
 // A park is a live status, not a report. If the parent was still busy when
@@ -846,8 +890,8 @@ const INCOMPLETE = new Set(["refusal", "max_tokens", "max_steps"]);
 // Turn-end of any session: settle the agent whose session it is, unless more
 // work is already lined up for it (a queued message, a wait).
 export function onTurnEnd(sessionId: string, reason: string) {
-  // Reports held back while the owner had stopped this session go now, after the owner's next turn.
-  sendAllOwed(owedOf(sessionId));
+  // This session's own turn ended: with no hold on it, what its agents owe it goes now.
+  releaseOwed(sessionId);
   const a = byChild(sessionId);
   if (!a || (isEnded(a) && !stopping.has(a.id))) return;
   // Parked for a daemon stop: the agent has not ended. The next daemon
@@ -1192,6 +1236,8 @@ function sendAllOwed(rows: Owed[]) {
     const parent = D().store.session(o.parent_id);
     if (!a || !parent) { D().store.db.query("DELETE FROM agent_owed WHERE report_id = ?").run(o.report_id); continue; }
     if (parent.archived) continue;
+    // Lined up or riding already: nothing to do, and the parent's history is not read for it.
+    if (isPending(o.parent_id, isReport(o.report_id))) continue;
     if (waitHolds(a, o.report_id)) { settle(a.id, o.report_id); continue; }
     sendOwed(o, o.parent_id);
   }
