@@ -192,3 +192,75 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// A queued draft keeps its first line in view beside its cues: on a narrow
+// screen at a large text size the cues and the actions go under the text, and
+// nothing runs off the row.
+test("a queued draft's first line stays visible on a narrow screen", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
+  const sid = session.id;
+  const send = (data: Record<string, unknown>) => request.post(`/api/sessions/${sid}/messages`, { data }).then((r) => r.json());
+  const events = async () => (await (await request.get(`/api/sessions/${sid}`)).json()).events as any[];
+  const ends = async () => (await events()).filter((e) => e.kind === "turn_end").length;
+  await send({ text: "on branch A" });
+  await expect.poll(ends, { timeout: 30_000 }).toBe(1);
+  const firstEnd = (await events()).filter((e) => e.kind === "turn_end").at(-1);
+  await send({ text: "on branch B" });
+  await expect.poll(ends, { timeout: 30_000 }).toBe(2);
+  await send({ text: "script:slow" });
+  const text = "Compare the two retry policies and say which one the importer should keep";
+  const follow = (await send({ text, mode: "queue", images: [{ type: "image", media_type: "image/png", data: PNG.toString("base64") }] })).queued;
+  await request.post(`/api/sessions/${sid}/interrupt`);
+  await expect.poll(ends, { timeout: 30_000 }).toBe(3);
+  await request.post(`/api/sessions/${sid}/head`, { data: { head_event_id: firstEnd.id, leaf: false } });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`/s/${sid}`);
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.reload();
+  const station = page.locator(`[data-station="${sid}"]`);
+  const item = station.getByTestId("queue-item").filter({ hasText: "Compare the two" });
+  await expect(item.getByTestId("queue-off-branch")).toBeVisible();
+  await expect(item.getByTestId("queue-images")).toHaveText("1 image");
+  const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+  expect(rem).toBeCloseTo(25.5, 1);
+  // The first words of the draft are on screen: its text has a line of the row to itself.
+  const row = (await item.boundingBox())!;
+  const words = (await item.getByText(text, { exact: true }).boundingBox())!;
+  expect(words.width).toBeGreaterThan(row.width * 0.8);
+  expect(words.width).toBeGreaterThan(8 * rem);
+  // Both cues and every control are whole inside the row, and the row is inside the screen.
+  expect(row.x).toBeGreaterThanOrEqual(0);
+  expect(row.x + row.width).toBeLessThanOrEqual(320);
+  expect(await item.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  for (const id of ["queue-off-branch", "queue-images", "queue-back-to-branch", "queue-send-here", "queue-remove"]) {
+    const b = (await item.getByTestId(id).boundingBox())!;
+    expect(b.x, id).toBeGreaterThanOrEqual(row.x - 0.5);
+    expect(b.x + b.width, id).toBeLessThanOrEqual(row.x + row.width + 0.5);
+    expect(b.width, id).toBeGreaterThan(0);
+  }
+  await shoot(page, "turn-07-queued-draft-narrow");
+  // The branch control works there: back on its branch the cue goes; and Remove takes the draft out.
+  await item.getByTestId("queue-back-to-branch").click();
+  await expect(item.getByTestId("queue-off-branch")).toHaveCount(0);
+  await expect(item.getByTestId("queue-images")).toBeVisible();
+  await item.getByTestId("queue-remove").click();
+  await expect(station.getByTestId("queue-item")).toHaveCount(0);
+  expect((await (await request.get(`/api/sessions/${sid}/queue`)).json()).queue.map((x: any) => x.id)).not.toContain(follow.id);
+
+  // A wide row keeps everything on one line.
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await request.post(`/api/sessions/${sid}/messages`, { data: { text: "script:slow" } });
+  await send({ text, mode: "queue", images: [{ type: "image", media_type: "image/png", data: PNG.toString("base64") }] });
+  await page.reload();
+  const wide = station.getByTestId("queue-item").filter({ hasText: "Compare the two" });
+  await expect(wide).toBeVisible();
+  expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))).toBe(17);
+  expect((await wide.boundingBox())!.height).toBeLessThan(2.2 * 17);
+  await shoot(page, "turn-08-queued-draft-wide");
+  await request.post(`/api/sessions/${sid}/interrupt`);
+  await request.delete(`/api/sessions/${sid}`);
+});

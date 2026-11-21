@@ -2,7 +2,7 @@
 // prompts), the context meter with compaction, and the effort picker.
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { ArrowUp, Check, ChevronDown, CornerDownRight, Gauge, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
@@ -45,8 +45,12 @@ function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: strin
     const st = (e as { status?: number }).status;
     if (st !== 404 && st !== 409) failed(e, { at });
   });
+  // A wide row is one line: badge, text, cues, actions. A narrow one (by the
+  // queue's own width) gives the text a line to itself, first, and wraps the
+  // badge, the cues and the actions under it, so nothing is squeezed to nothing.
+  const words = "order-first min-w-0 basis-full @md/queue:order-none @md/queue:flex-1 @md/queue:basis-0";
   return (
-    <li className="group/q flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-hover" data-testid="queue-item">
+    <li className="group/q flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 py-1 hover:bg-hover @md/queue:flex-nowrap" data-testid="queue-item">
       <span className={cn(
         "shrink-0 rounded px-1.5 py-px text-micro font-semibold uppercase tracking-wide",
         q.steer ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted",
@@ -60,14 +64,14 @@ function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: strin
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && canSave) save(); if (e.key === "Escape") setEditing(false); }}
           onBlur={() => setEditing(false)}
-          className="min-w-0 flex-1 rounded-md border border-line bg-sunken px-2 py-0.5 text-ui outline-none"
+          className={cn(words, "rounded-md border border-line bg-sunken px-2 py-0.5 text-ui outline-none")}
         />
       ) : (
-        <span className="min-w-0 flex-1 truncate text-ui" title={q.text}>{q.text}</span>
+        <span className={cn(words, "truncate text-ui")} title={q.text}>{q.text}</span>
       )}
-      {!editing && off && <span className="shrink-0 text-caption text-warn" data-testid="queue-off-branch" title="Written while the chat showed another branch">Queued on another branch</span>}
-      {!editing && !!q.images?.length && <span className="shrink-0 text-caption text-faint" data-testid="queue-images">{q.images.length === 1 ? "1 image" : `${q.images.length} images`}</span>}
-      <span className="flex shrink-0 items-center opacity-60 group-hover/q:opacity-100">
+      {!editing && off && <span className="inline-flex shrink-0 items-center gap-1 text-caption text-warn" data-testid="queue-off-branch" title="Written while the chat showed another branch"><GitBranch className="size-3.5 shrink-0" />On another branch</span>}
+      {!editing && !!q.images?.length && <span className="inline-flex shrink-0 items-center gap-1 text-caption text-faint" data-testid="queue-images"><ImageIcon className="size-3.5 shrink-0" />{q.images.length === 1 ? "1 image" : `${q.images.length} images`}</span>}
+      <span className="ml-auto flex flex-wrap items-center justify-end opacity-60 group-hover/q:opacity-100 group-focus-within/q:opacity-100 touch:opacity-100 @md/queue:shrink-0 @md/queue:flex-nowrap">
         {!q.steer && place > 0 && (
           <button type="button" className={chipBtn} data-testid="queue-move-up" title="Move up one place" aria-label="Move up one place" onClick={() => act(actions.queueEdit(sessionId, q.id, { position: place - 1 }), "queue move")}>
             <ArrowUp className="size-3.5" />
@@ -113,7 +117,7 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
   const off = (x: QueueItem) => !!all && !!x.anchor && !shown.has(x.anchor);
   const nextOff = off(q.queue[0]!);
   return (
-    <div className="mb-2 rounded-lg border border-line bg-raised/80 px-1.5 py-1.5 shadow-2 animate-in" data-testid="queue">
+    <div className="@container/queue mb-2 rounded-lg border border-line bg-raised/80 px-1.5 py-1.5 shadow-2 animate-in" data-testid="queue">
       {q.held && (
         <div className="flex items-center gap-2 px-2 pb-1 text-caption text-muted" data-testid="queue-held">
           <span className="size-1.5 rounded-full bg-warn" />
