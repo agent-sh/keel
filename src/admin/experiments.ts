@@ -3,9 +3,16 @@
 //
 // Offline: scripts/bench/run.ts runs the arms over a fixed task set and
 // uploads one row per run. Live: while one runs, every new top-level session
-// gets an arm by a hash of the experiment and session ids (a subagent takes
-// its parent's), keeps it for its life, and every telemetry row of it carries
-// the experiment and the arm. A guard regression stops it by itself.
+// gets an arm by a hash of the experiment and session ids, keeps it for its
+// life, and every telemetry row of it carries the experiment and the arm. A
+// guard regression stops it by itself.
+//
+// The randomized unit of a live experiment is the session family: the
+// top-level session that drew the arm (the root) with every subagent session
+// under it. Subagents take the root's arm and its family key, so their turns
+// count in the report, but the family is one independent sample: intervals
+// resample families, guards read one value per family, and the sessions per
+// arm cap counts families. The key is stored with the assignment.
 //
 // An arm is a configuration difference for the life of its experiment, never
 // a kept switch: the decision names what the losing side was, so its code
@@ -67,11 +74,26 @@ CREATE INDEX IF NOT EXISTS experiment_sessions_exp ON experiment_sessions(exp_id
 CREATE TABLE IF NOT EXISTS experiment_runs (id INTEGER PRIMARY KEY, exp_id TEXT NOT NULL, arm TEXT NOT NULL, task TEXT, rep INTEGER, ts INTEGER NOT NULL, metrics TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS experiment_runs_exp ON experiment_runs(exp_id);
 `;
-export const experimentTables = (store: Store) => store.migrate(SCHEMA);
+export function experimentTables(store: Store) {
+  store.migrate(SCHEMA);
+  const db = store.db;
+  if (!store.columnExists("experiment_sessions", "root")) db.exec("ALTER TABLE experiment_sessions ADD COLUMN root TEXT");
+  // Assignments from before the family key: the root is the highest ancestor in the same experiment.
+  const old = db.query<{ session_id: string; exp_id: string }, []>("SELECT session_id, exp_id FROM experiment_sessions WHERE root IS NULL").all();
+  if (!old.length) return;
+  const inExp = db.query<{ exp_id: string }, [string]>("SELECT exp_id FROM experiment_sessions WHERE session_id = ?");
+  const parent = store.columnExists("sessions", "parent_id") ? db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?") : null;
+  for (const r of old) {
+    let root = r.session_id;
+    for (let up = parent?.get(root)?.parent_id; up && inExp.get(up)?.exp_id === r.exp_id; up = parent?.get(up)?.parent_id) root = up;
+    db.query("UPDATE experiment_sessions SET root = ? WHERE session_id = ?").run(root, r.session_id);
+  }
+}
 
 // The arm a session runs in, for tagging rows: null when it is in none.
-export function armOf(store: Store, sessionId: string): { exp_id: string; arm: string } | null {
-  return store.db.query<{ exp_id: string; arm: string }, [string]>("SELECT exp_id, arm FROM experiment_sessions WHERE session_id = ?").get(sessionId) ?? null;
+// `root` is its family: the top-level session that drew the arm.
+export function armOf(store: Store, sessionId: string): { exp_id: string; arm: string; root: string } | null {
+  return store.db.query<{ exp_id: string; arm: string; root: string }, [string]>("SELECT exp_id, arm, COALESCE(root, session_id) AS root FROM experiment_sessions WHERE session_id = ?").get(sessionId) ?? null;
 }
 
 const READERS = ["AskReaders", "ask_readers"];
@@ -154,7 +176,8 @@ export const worse = (m: Metric, diff: number) => (METRICS[m].better === "lower"
 
 export type ArmReport = { arm: string; units: number; clusters: number; metrics: Partial<Record<Metric, Interval>> };
 export type Effect = { arm: string; metric: Metric; diff: Interval & { significant: boolean; relative: number | null }; better: boolean | null };
-export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean }[]; decision: Decision };
+// A guard's `n`: the independent samples it read, the control's and the arm's.
+export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean; n: [number, number] }[]; decision: Decision };
 
 type Row = { arm: string; cluster: string; stratum?: string; m: Partial<Record<Metric, number>> };
 
@@ -179,11 +202,11 @@ export function report(e: Experiment, rows: Row[]): Report {
     effects.push({ arm: a.name, metric: m, diff, better: diff.significant ? !worse(m, diff.estimate) : null });
   }
   const guards = guardTests(e, rows);
-  return { mode: e.mode, unit: e.mode === "live" ? "turn (resampled by session)" : "run (resampled within task)", arms, effects, guards, decision: decide(e, effects, guards) };
+  return { mode: e.mode, unit: e.mode === "live" ? "turn (resampled by session family)" : "run (resampled within task)", arms, effects, guards, decision: decide(e, effects, guards) };
 }
 
-// Guards on cluster means (one value per session or run: the randomized
-// unit), each arm against the control, by mSPRT.
+// Guards on cluster means (one value per session family or run: the
+// randomized unit), each arm against the control, by mSPRT.
 export function guardTests(e: Experiment, rows: Row[]): Report["guards"] {
   const control = e.arms[0]!.name;
   const perCluster = (arm: string, m: Metric) => {
@@ -200,7 +223,7 @@ export function guardTests(e: Experiment, rows: Row[]): Report["guards"] {
     const base = ca.length ? ca.reduce((x, y) => x + y, 0) / ca.length : 0;
     const tau = g.relative ? g.mde * Math.abs(base) : g.mde;
     const t = msprt(ca, cb, tau, e.stop.alpha ?? 0.05);
-    return { arm: a.name, metric: g.metric, lr: t.lr, reject: t.reject, diff: t.diff, worse: t.reject && worse(g.metric, t.diff) };
+    return { arm: a.name, metric: g.metric, lr: t.lr, reject: t.reject, diff: t.diff, worse: t.reject && worse(g.metric, t.diff), n: [ca.length, cb.length] as [number, number] };
   }));
 }
 
@@ -352,21 +375,21 @@ export class Experiments {
   }
 
   // A new top-level session joins the running live experiment at its first
-  // turn; a subagent takes its parent's arm. Sessions from before the start,
-  // and ones that already ran a turn, stay out.
+  // turn; a subagent takes its parent's arm and family. Sessions from before
+  // the start, and ones that already ran a turn, stay out.
   assign(s: Session) {
     if (armOf(this.store, s.id)) return;
     const db = this.store.db;
     if (s.parent_id) {
       const p = armOf(this.store, s.parent_id);
-      if (p) db.query("INSERT OR IGNORE INTO experiment_sessions (session_id, exp_id, arm, ts) VALUES (?, ?, ?, ?)").run(s.id, p.exp_id, p.arm, Date.now());
+      if (p) db.query("INSERT OR IGNORE INTO experiment_sessions (session_id, exp_id, arm, ts, root) VALUES (?, ?, ?, ?, ?)").run(s.id, p.exp_id, p.arm, Date.now(), p.root);
       return;
     }
     const e = this.running();
     if (!e || s.created < (e.started_ms ?? Infinity)) return;
     if (db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' LIMIT 1").get(s.id)) return;
     const arm = e.arms[assignArm(e.id, s.id, e.arms.map((a) => a.weight ?? 1))]!;
-    db.query("INSERT OR IGNORE INTO experiment_sessions (session_id, exp_id, arm, ts) VALUES (?, ?, ?, ?)").run(s.id, e.id, arm.name, Date.now());
+    db.query("INSERT OR IGNORE INTO experiment_sessions (session_id, exp_id, arm, ts, root) VALUES (?, ?, ?, ?, ?)").run(s.id, e.id, arm.name, Date.now(), s.id);
     if (arm.settings && Object.keys(arm.settings).length) this.store.mergeSettings(s.id, arm.settings);
   }
 
@@ -387,23 +410,26 @@ export class Experiments {
       return this.store.db.query<{ id: number; arm: string; task: string | null; metrics: string }, [string]>("SELECT id, arm, task, metrics FROM experiment_runs WHERE exp_id = ?").all(e.id)
         .map((r) => ({ arm: r.arm, cluster: `run-${r.id}`, stratum: r.task ?? undefined, m: JSON.parse(r.metrics) }));
     }
-    // Turns of the experiment's sessions while it ran.
+    // Turns of the experiment's sessions while it ran, each in its family's
+    // cluster and arm (the assignment, not the row's own tag).
     const until = e.stopped_ms ?? Date.now();
     return this.store.db.query<any, [string, number, number]>(
-      `SELECT t.* FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND t.ts <= ?`).all(e.id, e.started_ms ?? 0, until)
-      .map((t) => ({ arm: t.arm ?? "", cluster: t.session_id, m: turnMetrics(t) }));
+      `SELECT t.*, x.arm AS family_arm, COALESCE(x.root, x.session_id) AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND t.ts <= ?`).all(e.id, e.started_ms ?? 0, until)
+      .map((t) => ({ arm: t.family_arm, cluster: t.family, m: turnMetrics(t) }));
   }
 
   report(e: Experiment) {
     return report(e, this.rows(e));
   }
 
+  // Session families per arm: a root with its subagents is one.
   sessions(e: Experiment) {
-    return this.store.db.query<{ arm: string; n: number }, [string]>("SELECT arm, COUNT(*) AS n FROM experiment_sessions WHERE exp_id = ? GROUP BY arm").all(e.id);
+    return this.store.db.query<{ arm: string; n: number }, [string]>("SELECT arm, COUNT(DISTINCT COALESCE(root, session_id)) AS n FROM experiment_sessions WHERE exp_id = ? GROUP BY arm").all(e.id);
   }
 
   // After each turn of a session in the running live experiment: a guard
-  // regression stops it; so does reaching the sessions per arm it asked for.
+  // regression stops it; so does reaching the sessions per arm it asked for
+  // (session families with a turn, so a subagent adds none).
   check(sessionId: string) {
     const tag = armOf(this.store, sessionId);
     if (!tag) return;

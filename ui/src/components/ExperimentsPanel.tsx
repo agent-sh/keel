@@ -236,7 +236,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
         )}
       </Panel>
       {e.mode === "live" && (
-        <Panel title="Sessions by arm" hint="a new top-level session gets its arm at its first turn, by a hash of its id; a subagent takes its parent's">
+        <Panel title="Sessions by arm" hint="a new top-level session gets its arm at its first turn, by a hash of its id; its subagents run in the same arm and count with it as one">
           <div className="flex flex-wrap gap-6 text-ui" data-testid="experiment-sessions">
             {e.arms.map((a) => (
               <div key={a.name} className="flex flex-col">
