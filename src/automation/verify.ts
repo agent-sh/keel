@@ -21,7 +21,10 @@ import { check, extractJson } from "./schema.ts";
 
 export type Verdict = { verdict: "met" | "not_met"; reason: string; evidence: string[] };
 const SCHEMA = { type: "object", required: ["verdict", "reason"], properties: { verdict: { enum: ["met", "not_met"] }, reason: { type: "string" }, evidence: { type: "array", items: { type: "string" } } } };
-const WAIT_MS = Number(process.env.KEEL_VERIFY_TIMEOUT_MS ?? 15 * 60_000);
+// The most one verification takes, from its start (kept in the goal's row) to
+// its verdict, whatever happens in between: a daemon restart does not start
+// the count again.
+export const WAIT_MS = Number(process.env.KEEL_VERIFY_TIMEOUT_MS ?? 15 * 60_000);
 
 // The verifier's answer, from its last reply. A reply that is not the JSON
 // asked for is no verdict, and neither is a met that names nothing it saw
@@ -103,43 +106,70 @@ const lastText = (childId: string) => {
 export type Outcome = { result: Verdict | { error: string }; child_id: string | null; tokens: number };
 
 // The end of the verifier's turn that runs now or is about to: one it was just
-// sent, or one a restart cut that the engine continues.
-const turnEnd = (childId: string) =>
+// sent, or one a restart cut that the engine continues. The wait always ends:
+// at `until` (the verification's start plus its limit), and at once when the
+// session is archived or gone, where no turn runs or is continued.
+const turnEnd = (childId: string, until: number) =>
   new Promise<string>((resolve) => {
-    const timer = setTimeout(() => { waiting.delete(childId); D().engine.interrupt(childId).catch(() => {}); resolve("timeout"); }, WAIT_MS);
+    const s = D().store.session(childId);
+    if (!s || s.archived) return resolve(s ? "archived" : "deleted");
+    const left = until - Date.now();
+    if (left <= 0) return resolve("timeout");
+    const timer = setTimeout(() => { waiting.delete(childId); resolve("timeout"); }, left);
     waiting.set(childId, (reason) => { clearTimeout(timer); waiting.delete(childId); resolve(reason); });
   });
 
+// The verifier's session was archived or deleted (a session frame): a
+// verification waiting on it ends there.
+export function verifierSession(s: { id: string; archived?: boolean }, deleted: boolean) {
+  if (deleted || s.archived) waiting.get(s.id)?.(deleted ? "deleted" : "archived");
+}
+
+// Why a verification ended with no turn end of its verifier to read.
 const WHY: Record<string, string> = {
   timeout: `the verifier ran past ${Math.round(WAIT_MS / 60_000)} minutes`,
   held: "the verifier's turn was cut by daemon restarts and was not continued",
+  archived: "the verifier's session was archived",
+  deleted: "the verifier's session was deleted",
 };
 const answer = (childId: string, reason: string): Verdict | { error: string; unproven?: true } =>
   reason === "end_turn" ? parseVerdict(lastText(childId)) : { error: WHY[reason] ?? `the verifier's turn ended: ${reason}` };
 
 // The prompts the verifier got: its task, then at most one request for its evidence.
 const prompts = (childId: string) => D().store.events(childId).filter((e) => e.kind === "user" && e.data.kind === "verify_goal").length;
-const ask = (childId: string, text: string) => {
-  const ended = turnEnd(childId);
-  D().engine.send(childId, text, { meta: { kind: "verify_goal" } });
+// Sent only while there is something to wait for (not past the limit, the session there).
+const ask = (childId: string, text: string, until: number) => {
+  const ended = turnEnd(childId, until);
+  if (waiting.has(childId)) D().engine.send(childId, text, { meta: { kind: "verify_goal" } });
   return ended;
 };
 
 // From the end of a verifier's turn to the verification's outcome.
-async function conclude(childId: string, ended: string | Promise<string>): Promise<Outcome> {
+async function conclude(childId: string, ended: string | Promise<string>, until: number): Promise<Outcome> {
   const { store, engine } = D();
-  let result = answer(childId, await ended);
+  let reason = await ended;
+  let result = answer(childId, reason);
   if ("unproven" in result && prompts(childId) < 2) {
     // Asked once for what it saw, in its own context (what it read is cached there).
     await engine.idle(childId);
-    result = answer(childId, await ask(childId, EVIDENCE));
+    reason = await ask(childId, EVIDENCE, until);
+    result = answer(childId, reason);
+  }
+  // Ended without its verifier: nothing more is wanted from it. A turn of its
+  // that runs is stopped, and its record ends, so a turn a restart cut is not
+  // continued either (agents.onCutTurn).
+  if (reason === "timeout" || reason === "archived" || reason === "deleted") {
+    const a = agents.byChild(childId);
+    if (a && (!agents.isEnded(a) || engine.isRunning(childId))) agents.stop(a.id, reason === "timeout" ? "time_limit" : "parent");
   }
   const u = store.session(childId)?.usage as any;
   const tokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cache_read ?? 0) + (u?.cache_write ?? 0);
   return { result, child_id: childId, tokens };
 }
 
-type Checked = { objective: string; started_ms: number; judge_model?: string | null; verifier_model?: string | null };
+// `verify_started_ms`: when this verification began, as the goal's row keeps it.
+type Checked = { objective: string; started_ms: number; judge_model?: string | null; verifier_model?: string | null; verify_started_ms?: number | null };
+const untilOf = (g: Checked) => (g.verify_started_ms ?? Date.now()) + WAIT_MS;
 const taskFor = (sessionId: string, g: Checked, judged: string) => {
   const t = trail(sessionId, g.started_ms);
   return task({ objective: g.objective, claim: t.claim, judged, commands: t.commands, cwd: D().store.session(sessionId)!.workspace });
@@ -163,22 +193,28 @@ export async function verify(sessionId: string, g: Checked, judged: string, onCh
   agents.adopt(sessionId, child.id, { title: child.title || "Verify goal", type: "verifier", model: info.id });
   bus.emit({ t: "session", session: store.session(child.id)! });
   onChild?.(child.id);
-  return conclude(child.id, ask(child.id, taskFor(sessionId, g, judged)));
+  const until = untilOf(g);
+  return conclude(child.id, ask(child.id, taskFor(sessionId, g, judged), until), until);
 }
 
 // After a restart: the verification goes on with the verifier it had. Its turn
 // the restart cut is the engine's to continue (it asks agents.onCutTurn), and
 // the wait is put back on that same session; a turn that had ended before the
 // daemon went down is read now; a verifier that never got its task gets it.
-// One verifier and one verdict per check, however many restarts it spans.
+// One verifier and one verdict per check, however many restarts it spans, and
+// one limit: the time left is counted from the verification's start, and a
+// verifier whose session is archived or gone ends it at once (turnEnd).
 export function reattach(sessionId: string, g: Checked, judged: string, childId: string): Promise<Outcome> {
   hook();
   const { store, engine } = D();
-  if (!prompts(childId)) return conclude(childId, ask(childId, taskFor(sessionId, g, judged)));
-  const line = lineage(store.events(childId), store.session(childId)?.head ?? null);
+  const until = untilOf(g);
+  const s = store.session(childId);
+  if (!s || s.archived) return conclude(childId, s ? "archived" : "deleted", until);
+  if (!prompts(childId)) return conclude(childId, ask(childId, taskFor(sessionId, g, judged), until), until);
+  const line = lineage(store.events(childId), s.head ?? null);
   const last = line.findLast((e) => e.kind === "user" || e.kind === "turn_start" || e.kind === "turn_end");
   const over = last?.kind === "turn_end" && !engine.isRunning(childId);
   // Held by the daemon before this one (its note follows the cut turn): no turn is coming.
-  if (over && last.data.reason === "restart" && line.at(-1)?.kind === "note" && line.at(-1)!.data.kind === "restart") return conclude(childId, "held");
-  return conclude(childId, over && last.data.reason !== "restart" ? String(last.data.reason) : turnEnd(childId));
+  if (over && last.data.reason === "restart" && line.at(-1)?.kind === "note" && line.at(-1)!.data.kind === "restart") return conclude(childId, "held", until);
+  return conclude(childId, over && last.data.reason !== "restart" ? String(last.data.reason) : turnEnd(childId, until), until);
 }

@@ -19,6 +19,7 @@ import { afterCallOff, afterTurn, capture, D, hasPending, setDeps } from "./core
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop, waitAckHooks } from "./tools.ts";
+import { verifierSession } from "./verify.ts";
 import * as waits from "./waits.ts";
 import { liveAgents } from "./state.ts";
 import { runMode } from "../core/runmode.ts";
@@ -132,6 +133,9 @@ function init(deps: Deps) {
     taskRenames.told(f.session.id);
     agents.onSessionDeleted(f.session.id);
   });
+
+  // A goal's verifier archived or deleted while its verification waits on it: the verification ends there.
+  deps.bus.on((f) => { if (f.t === "session") verifierSession(f.session, !!f.deleted); });
 
   // A hold that ended with no turn sends what it held (agents.onQueue).
   deps.bus.on((f) => { if (f.t === "queue") agents.onQueue(f); });

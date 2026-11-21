@@ -12,7 +12,7 @@ import { alertHook, dropPending, flush, hasPending, setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
-import { parseVerdict } from "./verify.ts";
+import { parseVerdict, verifierSession, WAIT_MS } from "./verify.ts";
 import * as waits from "./waits.ts";
 
 let store!: Store;
@@ -471,6 +471,157 @@ test("a verifier the engine does not continue pauses the goal and tells the owne
   await quiet();
   expect(goals.get(g.id)).toMatchObject({ status: "paused", verifying: false });
   expect(verifiersOf(g.id)).toEqual([g.child]);
+});
+
+// A verification always ends. Its limit is counted from its start, kept in the
+// goal's row, so restarts do not start the count again; and a verifier whose
+// session is archived, deleted or gone ends it at once. Each ends as a paused
+// goal with the reason and an alert, the verifier's record ended, no judge
+// call and no second verifier.
+const row = (id: string, patch: Record<string, unknown>) =>
+  store.db.query("UPDATE goals SET data = json_patch(data, ?) WHERE session_id = ?").run(JSON.stringify(patch), id);
+const children = (id: string) => store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE parent_id = ? ORDER BY created, id").all(id).map((r) => r.id);
+const alerted = async (f: () => Promise<void>) => {
+  const alerts: string[][] = [];
+  alertHook.raise = (kind, id, title, body) => void alerts.push([kind, id ?? "", title, body]);
+  try { await f(); } finally { alertHook.raise = undefined; }
+  return alerts;
+};
+
+test("a verification's limit is counted from its start in the goal's row, not from each daemon start", async () => {
+  const over = await judgedMet("ship it");
+  const near = await judgedMet("ship it");
+  expect(goals.get(over.id)!.verify_started_ms).toBeGreaterThan(Date.now() - 5_000);
+  const alerts = await alerted(async () => {
+    draining = true;
+    cutVerifier(over.child);
+    cutVerifier(near.child);
+    // The limit passed while the daemon was down; for the other it has 150 ms left.
+    row(over.id, { verify_started_ms: Date.now() - WAIT_MS - 1 });
+    row(near.id, { verify_started_ms: Date.now() - WAIT_MS + 150 });
+    restart(over.id, near.id);
+    await until(() => goals.get(over.id)?.status === "paused");
+    expect(goals.get(near.id)).toMatchObject({ status: "pursuing", verifying: true });
+    // The engine continues the other's turn; it is stopped when its time is up, though this daemon started just now.
+    continued(near.child);
+    live.delete(near.child);
+    await until(() => goals.get(near.id)?.status === "paused");
+  });
+  for (const g of [over, near]) {
+    expect(goals.get(g.id)).toMatchObject({ verifying: false, verifier_session: g.child, status_reason: "the judge said met; the verifier ran past 15 minutes. Resume to try again." });
+    expect(agents.byChild(g.child)).toMatchObject({ status: "stopped", stopped_by: "time_limit" });
+    expect(asks(g.id)).toBe(1);
+    expect(children(g.id)).toEqual([g.child]);
+  }
+  expect(alerts.map((a) => [a[0], a[1], a[3]])).toEqual([over, near].map((g) => ["failed", g.id, expect.stringContaining("ran past 15 minutes")]));
+  // One more start: a paused goal, nothing waited for.
+  restart(over.id, near.id);
+  await quiet();
+  expect(goals.get(over.id)).toMatchObject({ status: "paused", verifying: false });
+});
+
+test("a verifier whose session is archived, deleted or gone ends the verification at once", async () => {
+  const byStart = { archived: await judgedMet("ship it"), deleted: await judgedMet("ship it") };
+  const byEvent = { archived: await judgedMet("ship it"), deleted: await judgedMet("ship it") };
+  const all = [...Object.values(byStart), ...Object.values(byEvent)];
+  const alerts = await alerted(async () => {
+    draining = true;
+    for (const g of all) cutVerifier(g.child);
+    // Archived and deleted while the daemon was down, or before the engine got to their cut turns.
+    store.updateSession(byStart.archived.child, { archived: true });
+    store.deleteSession(byStart.deleted.child);
+    restart(...all.map((g) => g.id));
+    await until(() => goals.get(byStart.archived.id)?.status === "paused" && goals.get(byStart.deleted.id)?.status === "paused");
+    // The other two wait for their cut turns; the owner archives one and deletes the other (the session frames).
+    await quiet();
+    for (const g of Object.values(byEvent)) expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: true });
+    verifierSession(store.updateSession(byEvent.archived.child, { archived: true }), false);
+    const gone = store.session(byEvent.deleted.child)!;
+    store.deleteSession(gone.id);
+    verifierSession({ ...gone, archived: true }, true);
+    await until(() => goals.get(byEvent.archived.id)?.status === "paused" && goals.get(byEvent.deleted.id)?.status === "paused");
+  });
+  for (const set of [byStart, byEvent]) {
+    expect(goals.get(set.archived.id)).toMatchObject({ verifying: false, status_reason: "the judge said met; the verifier's session was archived. Resume to try again." });
+    expect(goals.get(set.deleted.id)).toMatchObject({ verifying: false, status_reason: "the judge said met; the verifier's session was deleted. Resume to try again." });
+    expect(agents.byChild(set.archived.child)!.status).toBe("stopped");
+  }
+  expect(alerts).toHaveLength(4);
+  expect(alerts.map((a) => a[1]).sort()).toEqual(all.map((g) => g.id).sort());
+  for (const g of all) {
+    expect(asks(g.id)).toBe(1);
+    // No second verifier was made for it.
+    expect(children(g.id).filter((c) => c !== g.child)).toEqual([]);
+  }
+  // A start after that waits for nothing.
+  restart(...all.map((g) => g.id));
+  await quiet();
+  for (const g of all) expect(goals.get(g.id)).toMatchObject({ status: "paused", verifying: false });
+});
+
+test("a row of the build before: a verifier left from the check before is not this check's, and the limit starts now", async () => {
+  // The check before ended not met with its verifier's session in the row; the worker went on, the judge said
+  // met again, and that build (which did not clear the session then) went down before it made the new verifier.
+  const g = await judgedMet("ship it");
+  verifierSays(g.child, '{"verdict": "not_met", "reason": "one test fails"}');
+  await g.check;
+  await Bun.sleep(5);
+  turn(g.id, 5);
+  const ended = store.events(g.id).findLast((e) => e.kind === "turn_end")!;
+  row(g.id, { verifying: true, verifier_session: g.child, verify_started_ms: null, counted: ended.id, turns: 2, last_verdict: "met", last_reason: "it looks done now" });
+  const before = asks(g.id);
+  restart(g.id);
+  const fresh = await until(() => { const c = goals.get(g.id)?.verifier_session; return c && c !== g.child ? c : undefined; });
+  await until(() => live.has(fresh));
+  // The old verifier's not met was not taken for this check's verdict.
+  expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: true });
+  expect(goals.get(g.id)!.verify_started_ms).toBeGreaterThan(Date.now() - 5_000);
+  expect(store.events(fresh).filter((e) => e.kind === "user")[0]!.data.text).toContain("Why the judge said met:\nit looks done now");
+  verifierSays(fresh, MET);
+  await until(() => goals.get(g.id)?.status === "achieved");
+  expect(asks(g.id)).toBe(before);
+  expect(children(g.id)).toEqual([g.child, fresh]);
+
+  // The same row with this check's own verifier (made after the turn ended) keeps it.
+  const own = await judgedMet("ship it");
+  draining = true;
+  cutVerifier(own.child);
+  row(own.id, { verify_started_ms: null });
+  restart(own.id);
+  await quiet();
+  expect(goals.get(own.id)).toMatchObject({ verifying: true, verifier_session: own.child });
+  expect(goals.get(own.id)!.verify_started_ms).toBeGreaterThan(Date.now() - 5_000);
+  continued(own.child);
+  verifierSays(own.child, MET);
+  await until(() => goals.get(own.id)?.status === "achieved");
+  expect(children(own.id)).toEqual([own.child]);
+});
+
+test("a verification that cannot go on at a start pauses the goal and tells the owner", async () => {
+  // Down while the verifier's model resolved; at the next start that model does not come up.
+  const s = session();
+  await goals.set(s.id, { objective: "ship it" });
+  turn(s.id, 5);
+  modelGate = new Promise(() => {});
+  void goals.afterTurn(s.id, "end_turn");
+  verdict('{"verdict": "met", "reason": "it looks done"}');
+  await until(() => goals.get(s.id)?.verifying);
+  modelGate = undefined;
+  process.env.KEEL_GOAL_READY_GAP_MS = "1";
+  modelUp = false;
+  const alerts = await alerted(async () => {
+    try {
+      restart(s.id);
+      await until(() => goals.get(s.id)?.status === "paused");
+    } finally {
+      modelUp = true;
+      delete process.env.KEEL_GOAL_READY_GAP_MS;
+    }
+  });
+  const why = "its verification could not go on: the provider is not up. Resume to try again.";
+  expect(goals.get(s.id)).toMatchObject({ verifying: false, status_reason: why });
+  expect(alerts).toEqual([["failed", s.id, expect.stringContaining("Goal paused"), why]]);
+  expect(store.db.query<{ text: string }, [string]>("SELECT text FROM activity WHERE session_id = ? AND text LIKE 'Goal paused%'").all(s.id).map((r) => r.text)).toEqual([`Goal paused: ${why}`]);
 });
 
 test("a continuation lined up behind a turn the owner stops is dropped, and the resume carries the verifier's findings", async () => {

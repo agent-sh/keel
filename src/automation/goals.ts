@@ -42,6 +42,9 @@ export type Goal = {
   // The independent check of a "met" (verify.ts): its child session, while it
   // runs and after; what it saw; met only once it agreed.
   verifier_session?: string | null; verifying?: boolean; evidence?: string[] | null; verified?: boolean;
+  // When the verification under way began: its time limit is counted from
+  // here, the same across daemon restarts (verify.ts).
+  verify_started_ms?: number | null;
 };
 export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
 // dest_session: the session the task was taken out into, once it was.
@@ -266,8 +269,10 @@ export function recover() {
 }
 
 // The verification a restart interrupted, taken up where it was: the judge is
-// not asked again and no second verifier starts. Only a goal whose verifier
-// had no session yet (the daemon went down as it was being made) gets one now.
+// not asked again and no second verifier starts. Its time limit goes on from
+// its start, kept in the row. Only a goal whose verifier had no session yet
+// (the daemon went down as it was being made) gets one now; a verifier whose
+// session is archived or gone ends the verification (reattach).
 function reverify(g: Goal) {
   const id = g.session_id;
   const mine = instance(g);
@@ -276,9 +281,17 @@ function reverify(g: Goal) {
   // The check's outcome is saved with the turn end counted last.
   const done = (x: Goal) => save({ ...x, checked: x.counted ?? null });
   const judged = g.last_reason ?? "";
+  // The verifier of this check was started after the turn it checks ended. One
+  // from before that is the check before's, left in a row the build before
+  // this one wrote (it did not clear it when a new check began): its verdict
+  // is not this check's, and this check has no verifier yet.
+  const kept = g.verifier_session ? agents.byChild(g.verifier_session) : undefined;
+  const turnEnded = g.counted ? D().store.event(g.counted)?.ts ?? 0 : 0;
+  const child = g.verifier_session && !(kept && kept.created < turnEnded) ? g.verifier_session : null;
+  // A row from before the start was kept is timed from this start, once.
+  if (!g.verify_started_ms || child !== (g.verifier_session ?? null)) g = save({ ...g, verifier_session: child, verify_started_ms: g.verify_started_ms || Date.now() });
   judging.add(key);
   (async () => {
-    const child = g.verifier_session && D().store.session(g.verifier_session) ? g.verifier_session : null;
     if (!child) await ready(g.verifier_model ?? g.judge_model ?? D().store.session(id)!.model);
     const out = child ? await reattach(id, g, judged, child) : await verify(id, g, judged, (c) => { const now = get(id); if (ours(now)) save({ ...now!, verifier_session: c }); }, () => ours(get(id)));
     const got = verified(id, ours, done, out);
@@ -286,7 +299,12 @@ function reverify(g: Goal) {
   })().catch((e) => {
     capture(e, { at: "goal verification", session: id });
     const now = get(id);
-    if (ours(now)) done({ ...now!, verifying: false, status: "paused", status_reason: `its verification could not go on: ${(e as Error).message}. Resume to try again.` });
+    if (!ours(now)) return;
+    // The goal stops here until the owner resumes it, so the owner is told.
+    const why = `its verification could not go on: ${(e as Error).message}. Resume to try again.`;
+    activity.record("turn", "goal", id, `Goal paused: ${why}`.slice(0, 400));
+    alertHook.raise?.("failed", id, `Goal paused: ${D().store.session(id)?.title || "a session"}`, why, { open_session: id });
+    done({ ...now!, verifying: false, status: "paused", status_reason: why });
   }).finally(() => judging.delete(key));
 }
 
@@ -411,8 +429,8 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     if (v.verdict === "met") {
       // Met by the judge: the verifier checks the work before it counts.
       // The verifier of a check before this one is not this check's: a start that finds no session makes one.
-      save({ ...next, verifying: true, evidence: null, verifier_session: null });
-      const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (ours(c)) save({ ...c!, verifier_session: child }); }, () => ours(get(sessionId)));
+      const checking = save({ ...next, verifying: true, evidence: null, verifier_session: null, verify_started_ms: Date.now() });
+      const out = await verify(sessionId, checking, v.reason, (child) => { const c = get(sessionId); if (ours(c)) save({ ...c!, verifier_session: child }); }, () => ours(get(sessionId)));
       const got = verified(sessionId, ours, done, out, opts.turn);
       if (!got) return;
       next = got.next;
