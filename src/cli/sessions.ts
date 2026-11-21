@@ -149,6 +149,16 @@ const SEND_USAGE = `keel send [ID] [TEXT] [options]
 
 const looksLikeId = (s: string) => /^[0-9a-f]{8}[0-9a-f-]*$/i.test(s);
 
+// What a failed send says about the prompt. The daemon's refusal (a 4xx) and a
+// daemon that took no connection prove nothing was sent. Anything else does
+// not (the daemon failed after it read the request, or its answer was lost on
+// the way): the prompt may be in the session, so the caller is told to look
+// before sending it a second time.
+export const sendFailure = (e: ApiError, sessionId: string, drafted: boolean) =>
+  (e.status >= 400 && e.status < 500) || e.unreached
+    ? `${e.message}: nothing was sent${drafted ? " and the draft is as it was" : ""}`
+    : `${e.message}: the prompt may not have been sent${drafted ? " (the draft is as it was)" : ""}; look before sending it again: keel logs ${sessionId}`;
+
 const send = command("send", SEND_USAGE, {
   text: { type: "string" }, steer: { type: "boolean" }, queue: { type: "boolean" }, attach: { type: "string", multiple: true },
   send: { type: "boolean" }, "no-send": { type: "boolean" }, new: { type: "boolean" }, model: { type: "string", short: "m" }, provider: { type: "string" },
@@ -222,7 +232,7 @@ const send = command("send", SEND_USAGE, {
   const body = [draft.text, text].filter((t) => t?.trim()).join("\n\n") || "(see the attached files)";
   const before = await c.get<any>(`/api/cli/state/${s.id}`);
   const r = await c.post<any>(`/api/sessions/${s.id}/messages`, { text: body, mode: v.steer ? "steer" : v.queue ? "queue" : undefined, images: [...held, ...files.images, ...files.files] }).catch((e) => {
-    throw e instanceof ApiError ? new ApiError(`${e.message}: nothing was sent${draft.text || drafted.length ? " and the draft is as it was" : ""}`, e.status) : e;
+    throw e instanceof ApiError ? new ApiError(sendFailure(e, s.id, !!(draft.text || drafted.length)), e.status) : e;
   });
   const left: string[] = [];
   if (typeof draft.text_ms === "number") await c.post(`/api/sessions/${s.id}/draft`, { text: "", taken: draft.text_ms, origin: "cli" }).catch((e) => left.push(`its text (${e.message})`));
