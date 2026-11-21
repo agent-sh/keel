@@ -70,6 +70,13 @@ under `~/.cache/keel-work/bun/research/`.
   two minutes after the session idles (`src/core/store.ts`). A route that
   answers with a whole session brings it in first, a part at a time
   (`store.warm`).
+- The loop waits for the disk as little as SQLite allows. The write-ahead log
+  is synced and checkpointed on a thread (`src/core/checkpoint.ts`), a
+  statement's undo pages stay in memory (`temp_store`), and what a start or a
+  hook event needs of a file or a session is kept from the last read and read
+  again only when it changed (the hook files by their marks on disk, a
+  session's idle facts by its head). A new write that every step of a turn
+  makes needs a reason to be a commit of its own.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its
@@ -107,6 +114,7 @@ under `~/.cache/keel-work/bun/research/`.
 | `src/tools/` | tool profiles per family, spill |
 | `src/server/app.ts` | HTTP API and WebSocket |
 | `src/server/reads.ts` | the read thread: heavy reads off the loop |
+| `src/core/checkpoint.ts` | the checkpoint thread: the log's syncs off the loop |
 | `ui/` | React 19 UI, bundled by Bun from `ui/index.html` |
 | `test/e2e/` | Playwright e2e per feature |
 
