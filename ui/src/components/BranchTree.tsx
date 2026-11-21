@@ -4,7 +4,7 @@
 // The rows are one tree for the keyboard: one Tab stop, the arrows move between
 // rows (both sides of a split), Enter or Space shows a row's branch, F2 names it.
 import { Bookmark, Layers, Pencil, X } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { reportError, useStore } from "../lib/store.ts";
 import { tree, type TreeNode, type TreeState } from "../lib/tree.ts";
@@ -12,9 +12,10 @@ import { ago, cn, when } from "../lib/utils.ts";
 
 const use = <T,>(sel: (s: TreeState) => T) => useSyncExternalStore(tree.subscribe, () => sel(tree.state()));
 
-// `onKeys`: the box is closing by its own keys (saved or cancelled), not by a
-// click elsewhere, so the row it belongs to takes the focus back.
-function LabelInput({ sid, eventId, value, onKeys }: { sid: string; eventId: string; value: string; onKeys?: () => void }) {
+// `onKeys`: the box is closing by its own keys (saved or cancelled), so the
+// row it belongs to takes the focus back. `onAway`: the focus left it another
+// way (a click elsewhere, also after a save that failed): the row leaves it there.
+function LabelInput({ sid, eventId, value, onKeys, onAway }: { sid: string; eventId: string; value: string; onKeys?: () => void; onAway?: () => void }) {
   const [text, setText] = useState(value);
   const save = () => tree.label(sid, eventId, text.trim() || null).catch(reportError);
   return (
@@ -30,7 +31,7 @@ function LabelInput({ sid, eventId, value, onKeys }: { sid: string; eventId: str
         if (e.key === "Enter") { onKeys?.(); save(); }
         if (e.key === "Escape") { onKeys?.(); tree.edit(null); }
       }}
-      onBlur={() => tree.edit(null)}
+      onBlur={() => { onAway?.(); tree.edit(null); }}
       className="h-7 min-w-0 flex-1 rounded-md border border-line-strong bg-raised px-2 text-caption outline-none"
     />
   );
@@ -40,7 +41,8 @@ function Chip({ children }: { children: ReactNode }) {
   return <span className="inline-flex max-w-48 shrink-0 items-center gap-1 truncate rounded-sm bg-brass-soft px-1.5 py-px text-micro font-medium text-fg" data-testid="label-chip"><Bookmark className="size-3 shrink-0 text-brass" />{children}</span>;
 }
 
-function Row({ n, sid, depth, fork, working, stop, onStop }: { n: TreeNode; sid: string; depth: number; fork: boolean; working: boolean; stop: boolean; onStop: () => void }) {
+// Memoized: moving the Tab stop renders the two rows it moves between, not the tree.
+const Row = memo(function Row({ n, sid, depth, fork, working, stop, onStop }: { n: TreeNode; sid: string; depth: number; fork: boolean; working: boolean; stop: boolean; onStop: (eventId: string) => void }) {
   const editing = use((s) => s.editing === n.event_id);
   const row = useRef<HTMLDivElement>(null);
   const back = useRef(false);
@@ -61,7 +63,7 @@ function Row({ n, sid, depth, fork, working, stop, onStop }: { n: TreeNode; sid:
       data-testid="tree-node"
       data-event={n.event_id}
       data-active={n.active || undefined}
-      onFocus={(e) => { if (e.target === e.currentTarget) onStop(); }}
+      onFocus={(e) => { if (e.target === e.currentTarget) onStop(n.event_id); }}
       onClick={() => !working && tree.go(sid, n.event_id, n.active ? undefined : n.head_event_id).catch(reportError)}
       title={working && !n.active ? "Another branch can be shown when the turn ends" : n.active ? "On the branch shown: go to it" : "Show this branch"}
       style={{ paddingLeft: `${0.75 + depth * 1.1}rem` }}
@@ -72,7 +74,7 @@ function Row({ n, sid, depth, fork, working, stop, onStop }: { n: TreeNode; sid:
         {n.kind === "summary" && <Layers className="size-2 text-accent-fg" />}
       </span>
       {editing ? (
-        <LabelInput sid={sid} eventId={n.event_id} value={n.label ?? ""} onKeys={() => { back.current = true; }} />
+        <LabelInput sid={sid} eventId={n.event_id} value={n.label ?? ""} onKeys={() => { back.current = true; }} onAway={() => { back.current = false; }} />
       ) : (
         <>
           <span className={cn("min-w-0 flex-1 truncate", n.kind === "summary" && "italic")}>{n.preview}</span>
@@ -92,7 +94,7 @@ function Row({ n, sid, depth, fork, working, stop, onStop }: { n: TreeNode; sid:
       )}
     </div>
   );
-}
+});
 
 export function BranchTree({ session }: { session: Session }) {
   const data = use((s) => s.trees[session.id]);
@@ -139,7 +141,7 @@ export function BranchTree({ session }: { session: Session }) {
       const below = kids.get(n.event_id) ?? [];
       return (
         <Fragment key={n.event_id}>
-          <Row n={n} sid={session.id} depth={depth} fork={below.length > 1} working={working} stop={n.event_id === stop} onStop={() => setVisited(n.event_id)} />
+          <Row n={n} sid={session.id} depth={depth} fork={below.length > 1} working={working} stop={n.event_id === stop} onStop={setVisited} />
           {below.length === 1 ? chain(below, depth) : below.length > 1 ? below.map((b) => <Fragment key={b.event_id}>{chain([b], depth + 1)}</Fragment>) : null}
         </Fragment>
       );
@@ -181,7 +183,7 @@ export function BranchTree({ session }: { session: Session }) {
           <div className="mb-3 flex items-center gap-2 px-3"><Bookmark className="size-3.5 text-brass" /><LabelInput sid={session.id} eventId={editing} value="" /></div>
         )}
         {data.nodes.length === 0 ? <p className="px-3 py-8 text-center text-ui text-faint">No prompts yet.</p> : (
-          <div role="tree" aria-label="Branches" data-jump-keeps-focus onKeyDown={onKey}>{chain(kids.get(null) ?? [], 0)}</div>
+          <div role="tree" aria-label="Branches" onKeyDown={onKey}>{chain(kids.get(null) ?? [], 0)}</div>
         )}
       </div>
     </div>

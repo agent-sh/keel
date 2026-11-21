@@ -32,10 +32,11 @@ export const tree = {
     await tree.load(id);
   },
   edit: (eventId: string | null) => set({ editing: eventId }),
-  // Show the branch that holds the event and scroll to it.
+  // Show the branch that holds the event and scroll to it. The keyboard stays
+  // on the panel that asked: the transcript is the view of what is picked here.
   async go(id: string, eventId: string, branchEnd?: string) {
     await actions.setHead(id, branchEnd ?? eventId, !branchEnd);
-    setUI({ focusEvent: eventId });
+    setUI({ focusEvent: eventId, focusStay: eventId });
     await tree.load(id);
   },
 };

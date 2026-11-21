@@ -550,15 +550,15 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // A search hit opens the session at its message.
   // The request is checked when the frame runs, before anything moves: one
   // cleared or replaced meanwhile scrolls nothing. The row becomes the
-  // keyboard's place too, so the next Tab reaches its actions; a jump asked
-  // from a list that stays beside the transcript (the branch tree) leaves the
-  // keyboard on that list.
+  // keyboard's place too, so the next Tab reaches its actions; a jump that
+  // says so (`focusStay`, the branch tree's) leaves the keyboard where it is.
   const focus = useUI((s) => s.focusEvent);
   useEffect(() => {
     if (!focus || !events?.some((e) => e.id === focus)) return;
     const raf = requestAnimationFrame(() => {
       if (getUI().focusEvent !== focus) return;
-      setUI({ focusEvent: null });
+      const stay = getUI().focusStay === focus;
+      setUI({ focusEvent: null, focusStay: null });
       const el = document.getElementById(`e-${focus}`);
       if (!el) return; // folded into a turn's notes: the session opens at its end as usual
       stick.current = false;
@@ -570,7 +570,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         sc.scrollTop += r.top - box.top - Math.max(0, (box.height - r.height) / 2);
       }
       remember();
-      if (!document.activeElement?.closest("[data-jump-keeps-focus]")) {
+      if (!stay) {
         el.tabIndex = -1;
         el.focus({ preventScroll: true });
       }

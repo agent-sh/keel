@@ -105,7 +105,8 @@ test("branch tree and labels", async ({ page, request }) => {
 test("branches by keyboard", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
-  const session = await forked(page, request, `kb${Date.now().toString(36)}`);
+  const tag = `kb${Date.now().toString(36)}`;
+  const session = await forked(page, request, tag);
   const panel = page.getByTestId("branch-tree");
   const rows = panel.getByTestId("tree-node");
   await expect(rows).toHaveCount(4);
@@ -128,6 +129,10 @@ test("branches by keyboard", async ({ page, request }) => {
   await key("ArrowUp");
   await expect(rows.nth(2)).toBeFocused();
   await expect(rows.nth(2)).not.toHaveAttribute("aria-current", /./);
+  // No tip comes up under a row reached with the arrows (it would cover the next row).
+  await page.waitForTimeout(400);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await shoot(page, "tree-04-row-by-arrows");
   await expect(rows.nth(2)).toHaveAttribute("aria-level", "2");
   await key("ArrowLeft");
   await expect(rows.nth(0)).toBeFocused();
@@ -173,5 +178,20 @@ test("branches by keyboard", async ({ page, request }) => {
   await expect(rows.nth(1).getByTestId("label-chip")).toHaveText("first try");
   await expect(pos).toHaveText("2/3");
   expect((await (await request.get(`/api/sessions/${session.id}/tree`)).json()).labels.map((l: any) => l.label)).toEqual(["first try"]);
+  // A save that fails leaves the box open; a click elsewhere then closes it and keeps the focus where the click put it.
+  await page.route("**/events/*/label", (r) => r.fulfill({ status: 500, contentType: "application/json", body: "{}" }), { times: 1 });
+  await key("F2");
+  await page.keyboard.type(" kept");
+  await key("Enter");
+  await expect(rows.nth(1).getByTestId("label-input")).toBeFocused();
+  await page.getByTestId("composer").click();
+  await expect(panel.getByTestId("label-input")).toHaveCount(0);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  // A search hit still takes the keyboard to its message: only the tree's own jumps leave it.
+  await rows.nth(1).focus();
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill(`state machine ${tag}`);
+  await page.getByRole("option").filter({ hasText: "state machine" }).first().click();
+  await expect(page.locator('[data-testid="user-message"]:focus')).toContainText(`state machine ${tag}`);
   await request.delete(`/api/sessions/${session.id}`);
 });

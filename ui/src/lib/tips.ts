@@ -77,7 +77,8 @@ const titled = (t: EventTarget | null) => (t instanceof Element ? t.closest("[ti
 if (matchMedia("(hover: hover)").matches) {
   document.addEventListener("mouseover", (e) => { const el = titled(e.target); if (el) show(el, 450); else hide(); }, true);
   document.addEventListener("mouseleave", hide);
-  document.addEventListener("focusin", (e) => { const el = titled(e.target); if (el && el === e.target && el.matches(":focus-visible")) show(el, 150); });
+  // Not on a row of a tree: the arrows move through them, and a tip under each would cover the next.
+  document.addEventListener("focusin", (e) => { const el = titled(e.target); if (el && el === e.target && el.matches(":focus-visible") && el.getAttribute("role") !== "treeitem") show(el, 150); });
   document.addEventListener("focusout", hide);
   for (const ev of ["mousedown", "keydown", "wheel", "scroll"] as const) window.addEventListener(ev, () => { if (pinned && (ev === "scroll" || ev === "wheel")) place(); else if (tip?.isConnected) { clearTimeout(timer); delete tip.dataset.open; tip.remove(); } else clearTimeout(timer); }, { capture: true, passive: true });
 }

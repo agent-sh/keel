@@ -34,6 +34,7 @@ type UIState = {
   composerSeed: { text: string; n: number; session?: string; append?: boolean; notice?: string; blocks?: PromptBlock[] } | null;
   panel: string | null; // the open tab of the side panel
   focusEvent: string | null; // a message to scroll to once its session is shown (?e=)
+  focusStay: string | null; // that message, when the jump leaves the keyboard where it is (asked from a list beside the transcript)
   focusCall: string | null; // a tool call whose card opens there (a search hit on a command or its output)
   // A message opened from search on another branch: shown without moving the
   // session's branch until the owner chooses to continue from it.
@@ -86,6 +87,7 @@ let state: UIState = {
   composerSeed: null,
   panel: null, // closed on load; a session they opened it in brings it back (Bridge)
   focusEvent: new URLSearchParams(location.search).get("e"),
+  focusStay: null,
   focusCall: null,
   preview: null,
   fileAt: null,
