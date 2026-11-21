@@ -1,5 +1,6 @@
 // What the store reads for a question, which no page can see: how many event
 // bodies a cursor read parses, and how it finds its place in a session in memory.
+import { Database } from "bun:sqlite";
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,4 +103,72 @@ test("the session list reads its partition in order from an index, with the same
   store.updateSession(last, { archived: true });
   expect(store.sessions().some((s) => s.id === last)).toBe(false);
   expect(store.sessions({ archived: true })[0]!.id).toBe(last);
+});
+
+// A database from before the event tree: no parent, no head; two sessions
+// whose events were written in turns.
+function beforeTheTree(dir: string) {
+  const db = new Database(join(dir, "keel.db"), { create: true });
+  db.exec(`
+    CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', model TEXT NOT NULL, workspace TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, phase TEXT NOT NULL DEFAULT 'idle', archived INTEGER NOT NULL DEFAULT 0, usage TEXT NOT NULL DEFAULT '{}');
+    CREATE TABLE events (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, seq INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL, UNIQUE(session_id, seq));
+    INSERT INTO sessions (id, model, workspace, created, updated) VALUES ('a', 'm', '/', 1, 1), ('b', 'm', '/', 2, 2);
+  `);
+  const add = db.query("INSERT INTO events (id, session_id, seq, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?)");
+  for (let i = 1; i <= 4; i++) {
+    add.run(`a${i}`, "a", i, i % 2 ? "user" : "assistant", JSON.stringify(i % 2 ? { text: `prompt ${i}` } : { blocks: [] }), i);
+    if (i <= 3) add.run(`b${i}`, "b", i * 10, "user", JSON.stringify({ text: `prompt ${i}` }), i);
+  }
+  return db;
+}
+const tree = (dir: string) => {
+  const db = new Database(join(dir, "keel.db"), { readonly: true });
+  try {
+    return {
+      events: db.query("SELECT id, session_id, seq, parent FROM events ORDER BY session_id, seq").all() as { id: string; session_id: string; seq: number; parent: string | null }[],
+      heads: db.query("SELECT id, head FROM sessions ORDER BY id").all(),
+    };
+  } finally { db.close(); }
+};
+const LINES = {
+  events: [
+    { id: "a1", session_id: "a", seq: 1, parent: null }, { id: "a2", session_id: "a", seq: 2, parent: "a1" }, { id: "a3", session_id: "a", seq: 3, parent: "a2" }, { id: "a4", session_id: "a", seq: 4, parent: "a3" },
+    { id: "b1", session_id: "b", seq: 10, parent: null }, { id: "b2", session_id: "b", seq: 20, parent: "b1" }, { id: "b3", session_id: "b", seq: 30, parent: "b2" },
+  ],
+  heads: [{ id: "a", head: "a4" }, { id: "b", head: "b3" }],
+};
+
+test("the event tree migration that fails part way is done whole by the next start", () => {
+  const dir = scratch();
+  const db = beforeTheTree(dir);
+  // The fault: the first statement after the columns are added fails.
+  db.exec("CREATE TRIGGER fault BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'injected fault'); END");
+  db.close();
+  expect(() => new Store(dir)).toThrow("injected fault");
+
+  const clear = new Database(join(dir, "keel.db"));
+  clear.exec("DROP TRIGGER fault");
+  clear.close();
+  const store = new Store(dir);
+  expect(tree(dir)).toEqual(LINES);
+  expect(store.session("a")!.head).toBe("a4");
+  expect(store.events("b").map((e) => [e.id, e.parent])).toEqual([["b1", null], ["b2", "b1"], ["b3", "b2"]]);
+  store.db.close();
+
+  // Another start changes nothing, also after the tree was used: a branch
+  // off the middle of a session stays a branch.
+  const again = new Store(dir);
+  const fork = again.append("a", "user", { text: "edited" }, "a2");
+  again.db.close();
+  new Store(dir).db.close();
+  expect(tree(dir)).toEqual({ events: [...LINES.events.slice(0, 4), { id: fork.id, session_id: "a", seq: 5, parent: "a2" }, ...LINES.events.slice(4)], heads: [{ id: "a", head: fork.id }, { id: "b", head: "b3" }] });
+});
+
+test("a database whose tree columns were added and never filled gets its lines", () => {
+  const dir = scratch();
+  const db = beforeTheTree(dir);
+  db.exec("ALTER TABLE events ADD COLUMN parent TEXT; ALTER TABLE sessions ADD COLUMN head TEXT");
+  db.close();
+  new Store(dir).db.close();
+  expect(tree(dir)).toEqual(LINES);
 });
