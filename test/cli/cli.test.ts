@@ -15,6 +15,8 @@ const BIN = join(SCRATCH, "keel");
 const WS = join(SCRATCH, "ws");
 const ENV = {
   ...process.env,
+  // The binary has no test guard of its own: its config folder is named here, whatever folder the run starts in.
+  KEEL_CONFIG_DIR: join(SCRATCH, "keel-config"),
   KEEL_SCRIPTED_PROVIDER: "1",
   KEEL_DEFAULT_MODEL: "scripted:stand-in",
   KEEL_URL: "",

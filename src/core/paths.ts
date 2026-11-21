@@ -2,12 +2,15 @@ import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-// Under `bun test` the owner's own folders are never the answer. A run from
-// the repository root has scratch ones named before any test loads
-// (bunfig.toml, test/preload.ts); a run that skipped that stops here rather
-// than read or write the owner's files.
+// Under `bun test` (it sets NODE_ENV to "test") the owner's own folders are
+// never the answer. A run from the repository root has scratch ones named
+// before any test loads (bunfig.toml, test/preload.ts); a run that skipped
+// that stops here rather than read or write the owner's files. This guards
+// source runs only: the built binary is compiled with NODE_ENV fixed, so a
+// shell that exports NODE_ENV=test never stops the daemon or the CLI, and
+// what starts the binary in a test names its folders itself (test/cli).
 export function ownersFolder(what: string, variable: string) {
-  if (process.env.NODE_ENV === "test") throw new Error(`a test asked for the owner's ${what}: run bun test from the repository root, or set ${variable}`);
+  if (process.env.NODE_ENV === "test") throw new Error(`NODE_ENV is "test" and ${variable} is not set: under a test the owner's ${what} is never the default. Set ${variable} to a scratch folder (bun test does, when run from the repository root), or unset NODE_ENV.`);
 }
 
 // The daemon's state folder: --state-dir, else KEEL_STATE_DIR, else the XDG state home.

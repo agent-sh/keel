@@ -3,8 +3,9 @@
 // config folder (MCP servers, hooks, skills, plugins, agents) and the state
 // folder unless told otherwise, and a scratch state folder alone is not
 // enough: the config folder is separate. Here both, and what else a test can
-// reach on the machine, point into one fresh folder that is removed at exit.
-// A test that needs its own sets it over these.
+// reach on the machine, point into one fresh folder, removed when the last
+// test is done. A test that needs its own sets it over these.
+import { afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,4 +33,5 @@ Object.assign(process.env, {
 });
 // A path the shell names for one config file would point past the scratch folder.
 for (const k of ["KEEL_MCP_CONFIG", "KEEL_HOOKS", "KEEL_ACP_AGENTS", "KEEL_ACP_FOLDERS"]) delete process.env[k];
-process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+// Once, after the last test file (bun test fires no exit event from a preload).
+afterAll(() => rmSync(dir, { recursive: true, force: true }));

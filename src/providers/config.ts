@@ -32,9 +32,9 @@
 //   price = { input = 0.2, output = 0.8, cache_read = 0.02 }
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { removeOwnFile, writeOwnFile } from "../core/ownfile.ts";
-import { ownersFolder } from "../core/paths.ts";
+import { contains, ownersFolder } from "../core/paths.ts";
 import type { Price, Wire } from "./types.ts";
 
 export function configDir(): string {
@@ -44,7 +44,10 @@ export function configDir(): string {
   return join(x && x.startsWith("/") ? x : join(homedir(), ".config"), "keel-bun");
 }
 // A file of Keel's own config folder: an edit of one keeps what it held as <name>.prev (core/ownfile.ts).
-export const inConfigDir = (path: string) => path.startsWith(configDir() + sep);
+export const inConfigDir = (path: string) => {
+  const dir = resolve(configDir()), p = resolve(path);
+  return p !== dir && contains(dir, p);
+};
 
 export type ModelOverride = {
   name?: string;

@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configDir } from "../providers/config.ts";
+import { configDir, inConfigDir } from "../providers/config.ts";
 import { defaultStateDir } from "../core/paths.ts";
 import { configPath, mergeServers } from "./config.ts";
 import { McpManager } from "./manager.ts";
@@ -121,8 +121,11 @@ test("under bun test the owner's own folders are never the default", () => {
   delete process.env.KEEL_CONFIG_DIR;
   delete process.env.KEEL_STATE_DIR;
   try {
-    expect(() => configDir()).toThrow("a test asked for the owner's config folder");
-    expect(() => defaultStateDir()).toThrow("a test asked for the owner's state folder");
+    expect(() => configDir()).toThrow("under a test the owner's config folder is never the default");
+    expect(() => defaultStateDir()).toThrow("under a test the owner's state folder is never the default");
+    // A folder named with a trailing slash still holds its files.
+    process.env.KEEL_CONFIG_DIR = "/scratch/config/";
+    expect([inConfigDir("/scratch/config/mcp.json"), inConfigDir("/scratch/config"), inConfigDir("/scratch/config-other/mcp.json")]).toEqual([true, false, false]);
   } finally {
     process.env.KEEL_CONFIG_DIR = kept.c;
     process.env.KEEL_STATE_DIR = kept.s;
