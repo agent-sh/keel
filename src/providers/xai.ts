@@ -6,10 +6,11 @@
 //
 // Requests use the Responses API on the documented API first; a plan the API
 // refuses moves the grant to the Grok CLI's proxy once, and the choice is saved.
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "./config.ts";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson, ProviderError, scrub } from "./http.ts";
@@ -84,11 +85,8 @@ export class XaiProvider implements Provider {
   }
 
   private save(g: Grant) {
-    mkdirSync(configDir(), { recursive: true });
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(g, null, 2), { mode: 0o600 });
-    chmodSync(tmp, 0o600);
-    renameSync(tmp, this.file);
+    // The owner's alone, and no previous copy: an older grant beside it would outlive a sign-out.
+    writeOwnFile(this.file, JSON.stringify(g, null, 2), { mode: 0o600, prev: false });
   }
 
   available() {

@@ -43,6 +43,54 @@ test("a backup restores into an empty state folder", () => {
   }
 });
 
+// The owner's config folder goes with the state: a restore puts its files
+// back, each at the mode it had, with what it replaced kept as .prev. A
+// sign-in is neither copied nor put back.
+test("a backup carries the config folder, and a restore puts it back", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const config = join(root, "config");
+    fs.mkdirSync(join(config, "agents"), { recursive: true });
+    writeFileSync(join(config, "mcp.json"), '{"servers":{"a":{"command":"a"}}}');
+    writeFileSync(join(config, "agents", "scout.md"), "scout");
+    writeFileSync(join(config, "fcm-service-account.json"), "key", { mode: 0o600 });
+    fs.chmodSync(join(config, "fcm-service-account.json"), 0o600);
+    writeFileSync(join(config, "xai-auth.json"), "grant-then", { mode: 0o600 });
+    writeFileSync(join(config, "mcp.json.prev"), "older");
+    fs.symlinkSync("/etc/hostname", join(config, "linked"));
+    const src = new Store(join(root, "src"));
+    src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const b = new Storage(src, {} as any, new Bus(), {} as any, config).backup("test");
+    src.db.close();
+    const mode = (p: string) => fs.statSync(p).mode & 0o777;
+    const held = (dir: string, under = ""): string[] => readdirSync(join(dir, under)).flatMap((n) => (fs.statSync(join(dir, under, n)).isDirectory() ? held(dir, join(under, n)) : [join(under, n)])).sort();
+    expect(held(join(b.path, "config"))).toEqual(["agents/scout.md", "fcm-service-account.json", "mcp.json"]);
+    // No copy is easier to read than its original.
+    expect(mode(join(b.path, "config", "fcm-service-account.json"))).toBe(0o600);
+    expect(mode(join(b.path, "config"))).toBe(0o700);
+    expect(verify(b.path).ok).toBe(true);
+
+    // Since the backup: a server list changed, a file lost, a newer sign-in, a file the backup never held.
+    writeFileSync(join(config, "mcp.json"), '{"servers":{}}');
+    rmSync(join(config, "agents", "scout.md"));
+    writeFileSync(join(config, "xai-auth.json"), "grant-now");
+    writeFileSync(join(config, "hooks.json"), "{}");
+    const r = restore(join(root, "src"), b.path, config);
+    expect(r.config_files).toBe(2);
+    expect(readFileSync(join(config, "mcp.json"), "utf8")).toBe('{"servers":{"a":{"command":"a"}}}');
+    expect(readFileSync(join(config, "mcp.json.prev"), "utf8")).toBe('{"servers":{}}');
+    expect(readFileSync(join(config, "agents", "scout.md"), "utf8")).toBe("scout");
+    expect(mode(join(config, "fcm-service-account.json"))).toBe(0o600);
+    expect(readFileSync(join(config, "xai-auth.json"), "utf8")).toBe("grant-now");
+    expect(readFileSync(join(config, "hooks.json"), "utf8")).toBe("{}");
+    // A changed config file in a backup fails its check, as any other file of it does.
+    writeFileSync(join(b.path, "config", "mcp.json"), "other");
+    expect(() => restore(join(root, "dst"), b.path, config)).toThrow("changed since the backup was made");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a backup carries uploaded files and a restore reads as the backup did", () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   try {

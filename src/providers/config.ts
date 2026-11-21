@@ -30,16 +30,21 @@
 //   tools = true
 //   images = false
 //   price = { input = 0.2, output = 0.8, cache_read = 0.02 }
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { removeOwnFile, writeOwnFile } from "../core/ownfile.ts";
+import { ownersFolder } from "../core/paths.ts";
 import type { Price, Wire } from "./types.ts";
 
 export function configDir(): string {
   if (process.env.KEEL_CONFIG_DIR) return process.env.KEEL_CONFIG_DIR;
+  ownersFolder("config folder", "KEEL_CONFIG_DIR");
   const x = process.env.XDG_CONFIG_HOME;
   return join(x && x.startsWith("/") ? x : join(homedir(), ".config"), "keel-bun");
 }
+// A file of Keel's own config folder: an edit of one keeps what it held as <name>.prev (core/ownfile.ts).
+export const inConfigDir = (path: string) => path.startsWith(configDir() + sep);
 
 export type ModelOverride = {
   name?: string;
@@ -165,19 +170,16 @@ export const ID_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 
 export function writeEndpoint(e: EndpointConfig) {
   if (!ID_RE.test(e.id)) throw new Error(`the id "${e.id}" is not a name: lowercase letters, digits, - and _`);
-  mkdirSync(endpointsDir(), { recursive: true });
   const p = join(endpointsDir(), `${e.id}.toml`);
   const text = endpointToml(e);
   Bun.TOML.parse(text); // what is written must read back
-  writeFileSync(`${p}.tmp`, text);
-  renameSync(`${p}.tmp`, p);
+  writeOwnFile(p, text);
 }
 
 export function removeEndpoint(id: string): boolean {
   const p = join(endpointsDir(), `${id}.toml`);
-  if (!ID_RE.test(id) || !existsSync(p)) return false;
-  rmSync(p);
-  return true;
+  if (!ID_RE.test(id)) return false;
+  return removeOwnFile(p); // kept as <id>.toml.prev, which the listing does not read
 }
 
 // ---- moving a providers.toml entry to its own file ----
@@ -229,11 +231,8 @@ export function moveEndpoint(id: string) {
   const dest = join(endpointsDir(), `${id}.toml`);
   if (existsSync(dest)) throw new Error(`endpoints/${id}.toml already exists: it is the one in use`);
   const { file, rest } = splitEndpoint(readFileSync(src, "utf8"), id);
-  mkdirSync(endpointsDir(), { recursive: true });
-  writeFileSync(`${dest}.tmp`, file);
-  renameSync(`${dest}.tmp`, dest);
-  writeFileSync(`${src}.tmp`, rest);
-  renameSync(`${src}.tmp`, src);
+  writeOwnFile(dest, file);
+  writeOwnFile(src, rest);
 }
 
 // ---- checking an endpoint before it is written ----

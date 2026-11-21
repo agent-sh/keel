@@ -2,10 +2,11 @@
 // Codex share). The session's system prompt lists each skill's name and
 // description once (frozen, so cached); the body loads only when the model
 // calls the skill tool, with Claude Code's argument substitution.
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
 
@@ -37,8 +38,7 @@ export function skillsConfig(): SkillsConfig {
   try { const c = JSON.parse(readFileSync(offFile(), "utf8")); return c && typeof c === "object" ? c : {}; } catch { return {}; }
 }
 export function writeSkillsConfig(c: SkillsConfig) {
-  mkdirSync(configDir(), { recursive: true });
-  writeFileSync(offFile(), JSON.stringify(c, null, 2) + "\n");
+  writeOwnFile(offFile(), JSON.stringify(c, null, 2) + "\n");
 }
 export function skillsOff(): Set<string> {
   return new Set((skillsConfig().off ?? []).map(String));

@@ -9,9 +9,10 @@
 //
 // Which program: `agent_view` in <config>/drive.json. Keel names none of its
 // own; without it no outside session is listed and the list says why.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { configDir } from "../providers/config.ts";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { readText } from "../core/proc.ts";
 
 export const KINDS = ["claude", "codex", "agy"] as const;
@@ -29,8 +30,7 @@ export function settings(): { agent_view?: string } {
 
 export function setAgentView(path: string | null) {
   const next = { ...settings(), agent_view: path?.trim() || undefined };
-  mkdirSync(dirname(file()), { recursive: true });
-  writeFileSync(file(), JSON.stringify(next, null, 2) + "\n");
+  writeOwnFile(file(), JSON.stringify(next, null, 2) + "\n");
 }
 
 export function program(): string {

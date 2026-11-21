@@ -38,6 +38,14 @@ under `~/.cache/keel-work/bun/research/`.
   image is sent again with the images at the limit it stated, else without
   the damaged ones, else without any, and the owner can have them sent again.
   Decodes are four at a time across the process.
+- The owner's config folder (MCP servers, hooks, skills, plugins, agents) is
+  edited only through `src/core/ownfile.ts`: whole or not at all, with what the
+  file held kept as `<name>.prev`. The MCP manager reads and writes the file
+  it is given (`configPath()` from the daemon's route) and merges a file that
+  changed under it. `bun test` gets scratch config and state folders before
+  any test loads (`test/preload.ts`, from the repository root), and the
+  defaults refuse the owner's folders under a test. A probe or script that
+  imports Keel source sets `KEEL_CONFIG_DIR` and a state folder first.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

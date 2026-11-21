@@ -4,9 +4,10 @@
 // <config>/acp-agents.json (Zed's custom agents: command, args, env). Nothing
 // is hard-coded: a registry agent counts when its binary is on PATH; one the
 // registry ships through npx or uvx is offered to add (it downloads on first run).
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { configDir } from "../providers/config.ts";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { readFolders } from "./confine.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 
@@ -70,10 +71,7 @@ export function readCustom(path = agentsPath()): Record<string, CustomAgent> {
 }
 
 export function writeCustom(agents: Record<string, CustomAgent>, path = agentsPath()) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ agents }, null, 2) + "\n");
-  renameSync(tmp, path);
+  writeOwnFile(path, JSON.stringify({ agents }, null, 2) + "\n");
 }
 
 export class AcpAgents {

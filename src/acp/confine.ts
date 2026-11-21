@@ -5,10 +5,11 @@
 // agent writes its sessions, logs and caches under home (opencode in the XDG
 // folders, Kimi in ~/.kimi-code, Claude Code in ~/.claude and ~/.claude.json, Codex
 // in ~/.codex, Gemini in ~/.gemini), and npx or uvx their package caches.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { configDir } from "../providers/config.ts";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { confine, sandboxStatus } from "../safety/sandbox.ts";
 import type { SessionPerm } from "../safety/gate.ts";
 import type { AcpAgent } from "./agents.ts";
@@ -51,9 +52,7 @@ export function readFolders(path = foldersPath()): Record<string, string[]> {
   return out;
 }
 export function writeFolders(agents: Record<string, string[]>, path = foldersPath()) {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.tmp`, JSON.stringify({ agents }, null, 2) + "\n");
-  renameSync(`${path}.tmp`, path);
+  writeOwnFile(path, JSON.stringify({ agents }, null, 2) + "\n");
 }
 
 const expandHome = (p: string, home = homedir()) => (p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p);

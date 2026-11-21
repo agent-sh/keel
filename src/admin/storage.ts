@@ -5,8 +5,9 @@
 // the durable state that are checked when written and can be restored.
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { closeSync, copyFileSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { basename, join } from "node:path";
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { GRANT_FILES, writeOwnFile } from "../core/ownfile.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
@@ -54,7 +55,8 @@ export class Storage {
   private last?: StorageReport;
   private measuring?: Promise<StorageReport>;
 
-  constructor(private store: Store, private engine: Engine, private bus: Bus, private errors: ErrorTracker) {}
+  // `config`: the owner's config folder, which a backup carries with the state. Named by the daemon; none, none carried.
+  constructor(private store: Store, private engine: Engine, private bus: Bus, private errors: ErrorTracker, private config?: string) {}
 
   get dir() { return this.store.stateDir; }
 
@@ -321,6 +323,17 @@ export class Storage {
           files.push(`attachments/${id}/${name}`);
         }
       }
+      // The owner's config folder (MCP servers, hooks, skills, plugins, agents,
+      // instructions), under config/: each file at its own mode, in folders
+      // only the owner can open, so a copy is never easier to read than its
+      // original.
+      if (this.config) for (const rel of configFiles(this.config)) {
+        const from = join(this.config, rel), to = join(tmp, "config", rel);
+        mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+        copyFileSync(from, to);
+        chmodSync(to, statSync(from).mode & 0o777);
+        files.push(`config/${rel}`);
+      }
       const check = verify(tmp);
       if (!check.ok) throw new Error(`the backup did not check out: ${check.why}`);
       if (check.sessions !== counts.sessions || check.events < counts.events) throw new Error(`the backup holds ${check.sessions} sessions and ${check.events} events, the store ${counts.sessions} and ${counts.events}`);
@@ -386,6 +399,25 @@ const stampMs = (name: string) => {
   return Number.isNaN(t) ? null : t;
 };
 
+// The files of a config folder a backup carries, as paths inside it: every
+// regular file. Left out: links (what they point at is not the folder's), the
+// .prev and .tmp files an edit leaves beside a config file, a clone's
+// history and installed packages, and a sign-in (GRANT_FILES): its tokens
+// rotate, so an older copy no longer signs in and would replace one that
+// does, and a copy in every backup would outlive a sign-out.
+export function configFiles(dir: string, under = ""): string[] {
+  const out: string[] = [];
+  let names: string[];
+  try { names = readdirSync(join(dir, under)).sort(); } catch { return out; }
+  for (const name of names) {
+    const rel = under ? join(under, name) : name;
+    const st = lstatSync(join(dir, rel));
+    if (st.isDirectory()) { if (name !== ".git" && name !== "node_modules") out.push(...configFiles(dir, rel)); }
+    else if (st.isFile() && !name.endsWith(".prev") && !name.endsWith(".tmp") && !(under === "" && GRANT_FILES.has(name))) out.push(rel);
+  }
+  return out;
+}
+
 export const shadowDir = (stateDir: string, workspace: string) =>
   join(stateDir, "checkpoints", createHash("sha256").update(workspace).digest("hex").slice(0, 16) + ".git");
 
@@ -448,12 +480,16 @@ const ASIDE = /^before-restore-[\w-]+$/;
 // Puts a backup in place of the state (the daemon must be stopped; the caller
 // holds the state folder's claim). The current files are kept beside it, so a
 // restore can be undone.
+// `config` is the owner's config folder: the config files the backup carries
+// are put back there once the state is in, each one whole, and what it
+// replaced stays beside it as <name>.prev. A config file the backup does not
+// hold is left as it is, and so is a sign-in.
 // The backup is copied into the state folder first: what can fail for lack of
 // space or a bad file fails with the state untouched. Then it is swapped in by
 // renames, written down before the first one. A swap that fails is undone, and
 // one that was cut (the process died) is undone by the next restore or the next
 // start of the daemon. Either way the state is the one before, or the backup.
-export function restore(stateDir: string, backupDir: string) {
+export function restore(stateDir: string, backupDir: string, config?: string) {
   if (undoCutRestore(stateDir) === "unreadable") {
     throw new Error(`${PENDING} in ${stateDir} could not be read, so nothing was changed: the state is as it was found. The file is now ${PENDING}.unreadable, and what a restore moved aside is in the before-restore folders. Run keel restore again to put the backup in.`);
   }
@@ -462,7 +498,7 @@ export function restore(stateDir: string, backupDir: string) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const aside = `before-restore-${stamp}`, stage = `.restore-${stamp}.partial`;
   const at = (...p: string[]) => join(stateDir, ...p);
-  const inBackup = readdirSync(backupDir).filter((f) => f !== "manifest.json" && f !== "attachments");
+  const inBackup = readdirSync(backupDir).filter((f) => f !== "manifest.json" && f !== "attachments" && f !== "config");
   try {
     mkdirSync(at(stage), { recursive: true });
     for (const f of inBackup) copyFileSync(join(backupDir, f), at(stage, f));
@@ -501,7 +537,19 @@ export function restore(stateDir: string, backupDir: string) {
   }
   rmSync(at(PENDING));
   rmSync(at(stage), { recursive: true, force: true });
-  return { ...check, aside: at(aside) };
+  let put = 0;
+  if (config) {
+    const from = join(backupDir, "config");
+    try {
+      for (const rel of configFiles(from)) {
+        const src = join(from, rel);
+        if (writeOwnFile(join(config, rel), readFileSync(src), { mode: statSync(src).mode & 0o777 })) put++;
+      }
+    } catch (e) {
+      throw new Error(`the state was restored (what it replaced is in ${at(aside)}), but not every config file was put back: ${(e as Error).message}. Each file that was replaced has what it held beside it as .prev.`, { cause: e });
+    }
+  }
+  return { ...check, aside: at(aside), config_files: put };
 }
 
 // What a restore that was cut left in a state folder (the caller holds the

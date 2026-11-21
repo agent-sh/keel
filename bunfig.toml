@@ -3,3 +3,5 @@ plugins = ["bun-plugin-tailwind"]
 
 [test]
 root = "./src"
+# Points config and state at a scratch folder before any test file loads: the owner's own are never touched.
+preload = ["./test/preload.ts"]

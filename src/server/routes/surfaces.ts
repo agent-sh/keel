@@ -3,14 +3,15 @@
 // plugins.toml. Each write goes to a file the listing named (or the one place
 // a new one belongs), a repository file the owner wrote here is trusted at
 // that content, and from a remote device a write takes the passkey.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { RouteModule } from "../app.ts";
 import { definitions } from "../../automation/agents.ts";
 import { expandImports, instructionPaths } from "../../engine/turn.ts";
 import { ownerHooksPath, parseHooks } from "../../integrations/hooks.ts";
-import { configDir } from "../../providers/config.ts";
+import { configDir, inConfigDir } from "../../providers/config.ts";
+import { writeOwnFile } from "../../core/ownfile.ts";
 import { pluginsFile } from "../../providers/plugins/config.ts";
 import { rootOf } from "../../safety/trust.ts";
 import { discoverSkills, listingBudget, listingOf, setSkillOff, setSkillUsage, type Skill } from "../../tools/skills.ts";
@@ -22,7 +23,9 @@ const bad = (error: string, status = 400) => json({ error }, status);
 const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as Record<string, any>;
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
 const read = (p: string) => { try { return readFileSync(p, "utf8"); } catch { return null; } };
-const write = (p: string, text: string) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, text); };
+// Whole or not at all. A file of Keel's own config folder keeps what it held
+// as <name>.prev; a project's or another agent's folder gets no extra file.
+const write = (p: string, text: string, own = inConfigDir(p)) => { writeOwnFile(p, text, { prev: own }); };
 // The agentskills.io name rule, also used for agent definitions.
 const NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const MAX_TEXT = 256 * 1024;
@@ -264,7 +267,7 @@ export const surfaceRoutes: RouteModule = (deps) => {
         const t = text(await body(req));
         try { JSON.parse(t); } catch (e) { return bad(`not JSON: ${(e as Error).message}`); }
         const { problems } = parseHooks(t);
-        write(ownerHooksPath(), t);
+        write(ownerHooksPath(), t, true);
         return json({ path: ownerHooksPath(), text: t, problems });
       }),
     },

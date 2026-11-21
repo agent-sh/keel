@@ -10,6 +10,7 @@ import { unitTemplate } from "../admin/unit.ts";
 import { claimState, lockHolder } from "../admin/daemon.ts";
 import { parseBind } from "../core/bind.ts";
 import { restore as restoreBackup } from "../admin/storage.ts";
+import { configDir } from "../providers/config.ts";
 import { authHeaders, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir } from "../core/paths.ts";
 
@@ -163,8 +164,9 @@ const restore = wrap("keel restore BACKUP [--state-dir DIR]\n  Puts a backup (a 
     const claim = claimState(dir);
     if (!claim) throw new Error(`a daemon uses ${dir}: stop it first (keel drain)`);
     let r;
-    try { r = restoreBackup(dir, src); } finally { claim.release(); }
+    try { r = restoreBackup(dir, src, configDir()); } finally { claim.release(); }
     console.log(`restored ${r.sessions} sessions, ${r.events} events into ${dir}\nthe files it replaced are in ${r.aside}`);
+    if (r.config_files) console.log(`put back ${r.config_files} config file${r.config_files === 1 ? "" : "s"} in ${configDir()}: what each one held is beside it as .prev`);
     return 0;
   });
 

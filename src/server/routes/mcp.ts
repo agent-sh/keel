@@ -3,7 +3,7 @@ import { McpManager } from "../../mcp/manager.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
-import { readConfig, type McpServerConfig } from "../../mcp/config.ts";
+import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
 import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
@@ -27,7 +27,8 @@ export const mcpRoutes: RouteModule = (deps) => {
   // Under `bun --hot` this module runs again: close the old servers first.
   const g = globalThis as { __keelMcp?: McpManager };
   g.__keelMcp?.dispose();
-  const m = new McpManager(deps.errors, deps.store.stateDir, deps.workspace);
+  // The daemon's manager is the one that reads and writes the owner's server list.
+  const m = new McpManager(deps.errors, deps.store.stateDir, deps.workspace, configPath());
   g.__keelMcp = m;
   installMcpTools(m);
   installChromeBridge(m);
@@ -135,7 +136,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         const b = await body(req);
         try {
           // a server only in the file may be reloaded into existence
-          if (b.server && !m.has(b.server) && !(b.server in readConfig().servers)) return bad(`no MCP server named ${b.server}`, 404);
+          if (b.server && !m.has(b.server) && !(b.server in readConfig(configPath()).servers)) return bad(`no MCP server named ${b.server}`, 404);
           const reload = m.reload(b.server || undefined);
           // Phone control has no file entry: a reload asks the gateway again.
           reload.servers.push(...(await m.checkLive(b.server || undefined)));

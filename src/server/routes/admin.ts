@@ -22,6 +22,7 @@ import { Awake } from "../../admin/awake.ts";
 import { Daemon } from "../../admin/daemon.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
+import { configDir } from "../../providers/config.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
 import { runMode } from "../../core/runmode.ts";
@@ -62,7 +63,7 @@ export const adminRoutes: RouteModule = (deps) => {
   prev?.awake.stopAll();
   clearInterval(prev?.daily);
   const daemon = new Daemon(deps);
-  const storage = new Storage(store, deps.engine, bus, errors);
+  const storage = new Storage(store, deps.engine, bus, errors, configDir());
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   daemon.onExit(() => awake.stopAll());
   // The backup before a restart is made once the running turns had their

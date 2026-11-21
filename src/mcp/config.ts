@@ -3,8 +3,9 @@
 // Import copies and keeps the copy in step with its source; the source file
 // is never written.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { configDir } from "../providers/config.ts";
 import type { OAuthConfig } from "./oauth.ts";
 import { endpoint, identity, readSources, type SourceServer } from "./sources.ts";
@@ -37,12 +38,18 @@ export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: stri
 // Built-in groups and catalogs, and the servers Keel brings itself (bundled).
 export const RESERVED = new Set(["web", "mcp", "chrome", "keel", "keel-import", "phone", "parlar"]);
 
+// The owner's file. Named by whoever starts a manager or a command (the
+// daemon's route, keel port); nothing below them falls back to it.
 export const configPath = () => process.env.KEEL_MCP_CONFIG ?? join(configDir(), "mcp.json");
 
 // Throws with the parser's reason; the caller keeps the old config then.
-export function readConfig(path = configPath()): McpConfigFile {
+export function readConfig(path: string): McpConfigFile {
   if (!existsSync(path)) return { servers: {} };
-  const raw = JSON.parse(readFileSync(path, "utf8"));
+  return parseConfig(readFileSync(path, "utf8"));
+}
+
+export function parseConfig(text: string): McpConfigFile {
+  const raw = JSON.parse(text);
   // Accept Claude Code's key too, so a copied .mcp.json just works.
   const servers = raw.servers ?? raw.mcpServers ?? {};
   if (typeof servers !== "object" || Array.isArray(servers)) throw new Error("servers must be an object");
@@ -51,15 +58,39 @@ export function readConfig(path = configPath()): McpConfigFile {
   return { ...raw, servers: out };
 }
 
-// Write back keeping every other top-level key the file had.
-export function writeConfig(cfg: McpConfigFile, path = configPath()) {
-  mkdirSync(dirname(path), { recursive: true });
+// Write back keeping every other top-level key the file had. Whole or not at
+// all, and what the file held before stays as mcp.json.prev (core/ownfile.ts).
+// Returns the text now in the file.
+export function writeConfig(cfg: McpConfigFile, path: string): string {
   let keep: Record<string, unknown> = {};
   try { keep = JSON.parse(readFileSync(path, "utf8")); } catch {}
   delete keep.mcpServers;
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ ...keep, ...cfg, servers: cfg.servers }, null, 2) + "\n");
-  renameSync(tmp, path);
+  const text = JSON.stringify({ ...keep, ...cfg, servers: cfg.servers }, null, 2) + "\n";
+  writeOwnFile(path, text);
+  return text;
+}
+
+// Key order is the writer's: compare with keys sorted.
+export const canon = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().filter((k) => x[k] !== undefined).map((k) => [k, x[k]])) : x));
+
+// The file changed under a writer: by a hand edit, or another process. What
+// goes back is a merge by server name of three maps: `base` (the servers as
+// this writer last read or wrote them), `mine` (its own now) and `disk` (the
+// file now). A server this writer changed since `base`, removed included, is
+// its own; every other one is the file's, so an entry it never read is kept
+// and one taken out of the file by hand stays out. `theirs` names what the
+// file changed that this writer did not.
+export function mergeServers(base: Record<string, McpServerConfig>, mine: Record<string, McpServerConfig>, disk: Record<string, McpServerConfig>) {
+  const servers: Record<string, McpServerConfig> = {};
+  const theirs: string[] = [];
+  const same = (a?: McpServerConfig, b?: McpServerConfig) => (a === undefined || b === undefined ? a === b : canon(a) === canon(b));
+  for (const name of new Set([...Object.keys(disk), ...Object.keys(mine), ...Object.keys(base)])) {
+    const changedHere = !same(mine[name], base[name]);
+    const kept = changedHere ? mine[name] : disk[name];
+    if (kept) servers[name] = kept;
+    if (!changedHere && !same(disk[name], base[name])) theirs.push(name);
+  }
+  return { servers, theirs };
 }
 
 export function validate(name: string, c: McpServerConfig): string | null {

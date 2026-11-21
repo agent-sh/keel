@@ -15,14 +15,15 @@
 // file an error of its own item). Unlike both, Keel reads skills and plugins
 // where they are (a root or a plugin reference, not a copy), so an update in
 // the other harness reaches Keel without another import.
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { configDir } from "../providers/config.ts";
+import { configDir, inConfigDir } from "../providers/config.ts";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { expandImports } from "../engine/turn.ts";
 import { carriedPlugins, discoverSkills, frontmatter, pluginDir, skillsConfig, writeSkillsConfig, type SkillRoot } from "../tools/skills.ts";
 import { EVENTS, ownerHooksPath, parseHooks, projectRoot } from "./hooks.ts";
-import { importable, readConfig, writeConfig, type McpServerConfig } from "../mcp/config.ts";
+import { configPath, importable, readConfig, writeConfig, type McpServerConfig } from "../mcp/config.ts";
 import { identity, importHome } from "../mcp/sources.ts";
 import { findBin } from "./tacit.ts";
 import { collect } from "../core/proc.ts";
@@ -67,12 +68,8 @@ const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch {
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const hash = (s: string) => Bun.hash(s).toString(36);
 
-function writeAtomic(path: string, text: string) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.port-tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, path);
-}
+// Whole or not at all; a file of Keel's own config keeps what it held as <name>.prev.
+const writeAtomic = (path: string, text: string, own = inConfigDir(path)) => { writeOwnFile(path, text, { prev: own }); };
 
 // ---- instructions -----------------------------------------------------------
 
@@ -433,7 +430,7 @@ function planSkills(items: Planned[], hookPlan: HookCandidate[]) {
 function planMcp(items: Planned[], deps: PortDeps) {
   const failed: { file: string; error: string }[] = [];
   let mine: Record<string, McpServerConfig> = {};
-  try { mine = readConfig().servers; } catch {}
+  try { mine = readConfig(configPath()).servers; } catch {}
   const all = importable(portHome(), mine, failed).filter((s) => !s.project);
   for (const f of failed) items.push({ id: `mcp:error:${f.file}`, area: "mcp", source: "MCP", title: tilde(f.file), state: "error", reason: f.error, pick: false });
   const seen = new Map<string, string>(); // name -> label it is brought from
@@ -456,7 +453,7 @@ function planMcp(items: Planned[], deps: PortDeps) {
       ...item, state: "new", pick: true, ...(c.other_account ? { reason: `same server as ${c.other_account}, another account` } : {}),
       run: async () => {
         if (deps.mcp) { const err = deps.mcp.importFrom(c.source, c.name); if (err) throw new Error(err); }
-        else { const cfg = readConfig(); if (!cfg.servers[c.name]) { cfg.servers[c.name] = { ...c.config, sync: { source: c.source, name: c.name } }; writeConfig(cfg); } }
+        else { const cfg = readConfig(configPath()); if (!cfg.servers[c.name]) { cfg.servers[c.name] = { ...c.config, sync: { source: c.source, name: c.name } }; writeConfig(cfg, configPath()); } }
         return "added to Keel's MCP servers; it follows its source";
       },
     });
@@ -523,7 +520,7 @@ function planHooks(items: Planned[], fromPlugins: HookCandidate[]) {
           const h: any = { type: "command", command };
           if (typeof c.hook.timeout === "number") h.timeout = c.hook.timeout;
           groups.push({ ...(c.matcher ? { matcher: c.matcher } : {}), hooks: [h] });
-          writeAtomic(ownPath, JSON.stringify(file, null, 2) + "\n");
+          writeAtomic(ownPath, JSON.stringify(file, null, 2) + "\n", true);
         }
         return `added to ${tilde(ownPath)}`;
       },
