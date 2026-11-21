@@ -129,6 +129,32 @@ test("a backup carries the config folder, and a restore puts it back where it is
 // keel restore, from a shell whose config folder is neither the one the
 // backup was made from nor anything to do with the state folder named: the
 // case that would rewrite the owner's servers with a scratch daemon's.
+// A file that did not change shares the previous backup's copy. A copy that
+// was changed inside a backup since is not shared again: the next backup
+// holds the live file and checks out, where it used to carry the damage on.
+test("a config copy damaged inside one backup is not linked into the next", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  const config = join(root, "config");
+  try {
+    fs.mkdirSync(config, { recursive: true });
+    writeFileSync(join(config, "mcp.json"), '{"servers":{"a":{"command":"a"}}}');
+    const store = new Store(join(root, "src"));
+    store.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const storage = new Storage(store, {} as any, new Bus(), { capture: () => {} } as any, config);
+    const one = storage.backup("test");
+    const two = storage.backup("test");
+    expect(fs.statSync(join(two.path, "config", "mcp.json")).ino).toBe(fs.statSync(join(one.path, "config", "mcp.json")).ino);
+    // Written in place, so every backup linked to it changes with it.
+    writeFileSync(join(two.path, "config", "mcp.json"), '{"servers":{"b":{"command":"b"}}}');
+    const three = storage.backup("test");
+    expect(verify(three.path).ok).toBe(true);
+    expect(fs.readFileSync(join(three.path, "config", "mcp.json"), "utf8")).toBe('{"servers":{"a":{"command":"a"}}}');
+    store.db.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("keel restore leaves the config folder alone unless asked, and asks for the folder when it is another", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   const made = join(root, "made-config"), shell = join(root, "shell-config"), other = join(root, "other-config");
@@ -174,6 +200,20 @@ test("keel restore leaves the config folder alone unless asked, and asks for the
     expect(servers(made)).toContain("stand-in");
     expect(said.join("\n")).toContain(`put back 1 of 1 config file into ${made}`);
     expect(servers(shell)).toContain("owners");
+
+    // "--config DIR" with a space, from the shell the backup was made in: the
+    // folder would be read as a second backup and the files put into the
+    // shell's own folder. Refused, with nothing moved.
+    writeFileSync(join(made, "mcp.json"), '{"servers":{"edited-since":{"command":"z"}}}');
+    const stateBefore = readdirSync(state).sort();
+    expect(await run("--config", other)).toBe(1);
+    expect(said.join("\n")).toContain("--config=DIR");
+    expect(servers(made)).toContain("edited-since");
+    expect(readdirSync(state).sort()).toEqual(stateBefore);
+    // The hint after a plain restore names the state folder it was run with.
+    process.env.KEEL_CONFIG_DIR = shell;
+    expect(await run()).toBe(0);
+    expect(said.join("\n")).toContain(`--state-dir ${state} --config=${made}`);
   } finally {
     console.log = log;
     console.error = error;

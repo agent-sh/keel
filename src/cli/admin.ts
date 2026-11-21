@@ -175,6 +175,8 @@ const restore = (argv: string[]) => {
   return wrap(RESTORE_USAGE, { "state-dir": { type: "string" } }, async (v, pos) => {
     const dir = stateDirOf(v["state-dir"]);
     if (!pos[0]) throw new Error("name the backup (keel backups lists them)");
+    // `--config DIR` with a space would read DIR as a second backup name and put the files into this shell's folder.
+    if (pos.length > 1) throw new Error(`one backup at a time: ${pos.slice(1).join(" ")} was not expected${config === true ? " (a config folder is named as --config=DIR)" : ""}`);
     const pid = lockHolder(dir);
     if (pid) throw new Error(`a daemon (pid ${pid}) uses ${dir}: stop it first (keel drain)`);
     const src = existsSync(pos[0]) ? resolve(pos[0]) : join(dir, "backups", pos[0]);
@@ -197,7 +199,7 @@ const restore = (argv: string[]) => {
     console.log(`restored ${r.sessions} sessions, ${r.events} events into ${dir}\nthe files it replaced are in ${r.aside}`);
     const n = (k: number) => `${k} config file${k === 1 ? "" : "s"}`;
     if (into) console.log(`put back ${r.config_files} of ${n(held.files)} into ${into}${held.dir && resolve(held.dir) !== into ? `, which is not the folder they came from (${from})` : ""}. A file not put back was already as the backup has it; what each replaced one held is beside it as .prev. A daemon that uses this folder takes them up at its next reload.`);
-    else if (held.files) console.log(`left alone: the ${n(held.files)} this backup carries, from ${from}. The config folder is not part of the state folder, so it is put back only when asked: keel restore ${pos[0]} --config${held.dir ? `=${held.dir}` : "=DIR"}`);
+    else if (held.files) console.log(`left alone: the ${n(held.files)} this backup carries, from ${from}. The config folder is not part of the state folder, so it is put back only when asked: keel restore ${pos[0]}${v["state-dir"] ? ` --state-dir ${v["state-dir"]}` : ""} --config${held.dir ? `=${held.dir}` : "=DIR"}`);
     return 0;
   })(rest);
 };

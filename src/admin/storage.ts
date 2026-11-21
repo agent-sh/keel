@@ -375,11 +375,17 @@ export class Storage {
         if (!st.isFile()) continue; // became a folder or a link since the listing
         const mode = st.mode & 0o777, old = was.get(name);
         mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
-        if (old && old.bytes === st.size && old.mtime_ms === st.mtimeMs && old.mode === mode) {
+        // An unchanged file shares the previous backup's copy. Unchanged is by
+        // content, and that copy is read too: a copy that was damaged since is
+        // not carried into every backup after it.
+        if (old && old.bytes === st.size && old.mode === mode && hashFile(from) === old.sha256) {
           try {
             linkSync(join(prev!.path, name), to);
-            files.push({ ...old });
-            continue;
+            if (hashFile(to) === old.sha256) {
+              files.push({ ...old, mtime_ms: st.mtimeMs });
+              continue;
+            }
+            rmSync(to, { force: true });
           } catch {} // another filesystem, or that copy is gone: a real copy
         }
         copyFileSync(from, to);
