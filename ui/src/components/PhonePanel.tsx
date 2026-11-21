@@ -2,7 +2,7 @@
 // phone with whether its alerts arrive, send a test push, revoke.
 import { copyOrSay } from "../lib/copy.ts";
 import { BellRing, Check, Copy, QrCode, Send, ShieldAlert, Smartphone, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
@@ -41,12 +41,22 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
   useEffect(() => { if (paired) setBundle(null); }, [paired?.id]);
   const end = useCallback(() => setBundle(null), []);
 
+  // Each request makes a new code on the daemon: while one is on its way a
+  // second click asks for nothing (the ref holds between two clicks of one render).
+  const [busy, setBusy] = useState(false);
+  const asking = useRef(false);
   const show = async () => {
+    if (asking.current) return;
+    asking.current = true;
+    setBusy(true);
     setError("");
     try {
       setBundle(await api<Bundle>("/api/mobile/pair", { method: "POST", body: JSON.stringify({ public_url: url }) }));
     } catch (e) {
       setError(failed(e, { at: "PhonePanel" }));
+    } finally {
+      asking.current = false;
+      setBusy(false);
     }
   };
 
@@ -64,8 +74,8 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
             spellCheck={false}
             className="h-8 min-w-0 flex-1 rounded-md border border-line bg-sunken px-2.5 font-mono text-caption outline-none placeholder:text-faint focus:border-accent"
           />
-          <button type="button" data-testid="pair-show" onClick={show} disabled={!url.trim()} className={cn(button, "border-accent bg-accent text-accent-fg hover:bg-accent-hover")}>
-            <QrCode className="size-3.5" /> {bundle ? "New code" : "Show pairing code"}
+          <button type="button" data-testid="pair-show" onClick={show} disabled={!url.trim() || busy} aria-busy={busy} className={cn(button, "border-accent bg-accent text-accent-fg hover:bg-accent-hover")}>
+            <QrCode className="size-3.5" /> {busy ? "Making a code" : bundle ? "New code" : "Show pairing code"}
           </button>
         </div>
         {error && <div className="mt-2 text-caption text-danger">{error}</div>}
