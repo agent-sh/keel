@@ -421,32 +421,79 @@ export function verify(dir: string): { ok: true; sessions: number; events: numbe
   }
 }
 
+// The swap a restore is in the middle of: the names it moves, in order,
+// relative to the state folder. Written before the first move and removed
+// after the last.
+const PENDING = "restore.pending";
+type Pending = { aside: string; stage: string; moves: [from: string, to: string][] };
+
 // Puts a backup in place of the state (the daemon must be stopped). The
 // current files are kept beside it, so a restore can be undone.
+// The backup is copied into the state folder first: what can fail for lack of
+// space or a bad file fails with the state untouched. Then it is swapped in by
+// renames, written down before the first one. A swap that fails is undone, and
+// one that was cut (the process died) is undone by the next restore or the next
+// start of the daemon. Either way the state is the one before, or the backup.
 export function restore(stateDir: string, backupDir: string) {
+  undoCutRestore(stateDir);
   const check = verify(backupDir);
   if (!check.ok) throw new Error(`the backup cannot be restored: ${check.why}`);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const aside = join(stateDir, `before-restore-${stamp}`);
-  mkdirSync(aside, { recursive: true });
-  for (const f of ["keel.db", "keel.db-wal", "keel.db-shm"]) if (existsSync(join(stateDir, f))) renameSync(join(stateDir, f), join(aside, f));
+  const aside = `before-restore-${stamp}`, stage = `.restore-${stamp}.partial`;
+  const at = (...p: string[]) => join(stateDir, ...p);
+  const inBackup = readdirSync(backupDir).filter((f) => f !== "manifest.json" && f !== "attachments");
+  try {
+    mkdirSync(at(stage), { recursive: true });
+    for (const f of inBackup) copyFileSync(join(backupDir, f), at(stage, f));
+    // Attachments are stored by content: one already present is the same
+    // bytes, and one more changes nothing the state reads.
+    const att = join(backupDir, "attachments");
+    if (existsSync(att)) for (const id of readdirSync(att)) for (const name of readdirSync(join(att, id))) {
+      if (existsSync(at("attachments", id, name))) continue;
+      mkdirSync(at("attachments", id), { recursive: true });
+      copyFileSync(join(att, id, name), at("attachments", id, name));
+    }
+  } catch (e) {
+    rmSync(at(stage), { recursive: true, force: true });
+    throw new Error(`the restore failed and the state is as it was: ${(e as Error).message}`, { cause: e });
+  }
   // The state's JSON files are what a backup holds of them: one the backup
   // does not have (a settings file written after it) moves aside too, so the
   // restored state reads as it did then, defaults included.
-  const inBackup = new Set(readdirSync(backupDir));
-  for (const f of readdirSync(stateDir)) if (f.endsWith(".json") && !inBackup.has(f)) renameSync(join(stateDir, f), join(aside, f));
-  for (const f of inBackup) {
-    if (f === "manifest.json" || f === "attachments") continue;
-    if (f.endsWith(".json") && existsSync(join(stateDir, f))) copyFileSync(join(stateDir, f), join(aside, f));
-    copyFileSync(join(backupDir, f), join(stateDir, f));
+  const live = [...["keel.db", "keel.db-wal", "keel.db-shm"].filter((f) => existsSync(at(f))), ...readdirSync(stateDir).filter((f) => f.endsWith(".json"))];
+  const pending: Pending = { aside, stage, moves: [...live.map((f): [string, string] => [f, join(aside, f)]), ...inBackup.map((f): [string, string] => [join(stage, f), f])] };
+  mkdirSync(at(aside), { recursive: true });
+  writeFileSync(at(`${PENDING}.tmp`), JSON.stringify(pending), { mode: 0o600 });
+  renameSync(at(`${PENDING}.tmp`), at(PENDING));
+  try {
+    for (const [from, to] of pending.moves) renameSync(at(from), at(to));
+  } catch (e) {
+    let undone = true;
+    try { undoCutRestore(stateDir); } catch { undone = false; }
+    throw new Error(
+      undone ? `the restore failed and the state is as it was: ${(e as Error).message}`
+        : `the restore failed part way and could not be undone now: ${(e as Error).message}. The next keel restore, or the next start of the daemon, undoes it.`,
+      { cause: e },
+    );
   }
-  // Attachments are stored by content: one already present is the same bytes.
-  const att = join(backupDir, "attachments");
-  if (existsSync(att)) for (const id of readdirSync(att)) for (const name of readdirSync(join(att, id))) {
-    const to = join(stateDir, "attachments", id, name);
-    if (existsSync(to)) continue;
-    mkdirSync(join(stateDir, "attachments", id), { recursive: true });
-    copyFileSync(join(att, id, name), to);
+  rmSync(at(stage), { recursive: true, force: true });
+  rmSync(at(PENDING));
+  return { ...check, aside: at(aside) };
+}
+
+// Undoes a restore that stopped in the middle of its swap: every move it made
+// is taken back, last first, so the state is the one before it. True when
+// there was one. A move was made when its source is gone and its target is there.
+export function undoCutRestore(stateDir: string): boolean {
+  const path = join(stateDir, PENDING);
+  if (!existsSync(path)) return false;
+  const p = JSON.parse(readFileSync(path, "utf8")) as Pending;
+  for (const [from, to] of p.moves.toReversed()) {
+    if (!existsSync(join(stateDir, from)) && existsSync(join(stateDir, to))) renameSync(join(stateDir, to), join(stateDir, from));
   }
-  return { ...check, aside };
+  rmSync(join(stateDir, p.stage), { recursive: true, force: true });
+  // Nothing is left in it once every move is back.
+  if (!readdirSync(join(stateDir, p.aside)).length) rmSync(join(stateDir, p.aside), { recursive: true });
+  rmSync(path);
+  return true;
 }

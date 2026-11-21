@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { unitTemplate } from "../admin/unit.ts";
-import { lockHolder } from "../admin/daemon.ts";
+import { claimState, lockHolder } from "../admin/daemon.ts";
 import { restore as restoreBackup } from "../admin/storage.ts";
 import { authHeaders, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir } from "../core/paths.ts";
@@ -158,7 +158,11 @@ const restore = wrap("keel restore BACKUP [--state-dir DIR]\n  Puts a backup (a 
     if (pid) throw new Error(`a daemon (pid ${pid}) uses ${dir}: stop it first (keel drain)`);
     const src = existsSync(pos[0]) ? resolve(pos[0]) : join(dir, "backups", pos[0]);
     if (!existsSync(src)) throw new Error(`no backup ${pos[0]}`);
-    const r = restoreBackup(dir, src);
+    // Held for the restore: no daemon starts on the folder in the middle of it.
+    const claim = claimState(dir);
+    if (!claim) throw new Error(`a daemon uses ${dir}: stop it first (keel drain)`);
+    let r;
+    try { r = restoreBackup(dir, src); } finally { claim.release(); }
     console.log(`restored ${r.sessions} sessions, ${r.events} events into ${dir}\nthe files it replaced are in ${r.aside}`);
     return 0;
   });

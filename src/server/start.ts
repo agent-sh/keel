@@ -4,6 +4,7 @@ import { endStreams } from "./streams.ts";
 import { join, resolve } from "node:path";
 import { defaultStateDir } from "../core/paths.ts";
 import { acquireLock, recordUrl } from "../admin/daemon.ts";
+import { undoCutRestore } from "../admin/storage.ts";
 import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { runMode } from "../core/runmode.ts";
@@ -36,6 +37,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // The state folder is claimed before anything of it is opened: a second
   // daemon on it stops here, with the database untouched.
   acquireLock(stateDir);
+  if (undoCutRestore(stateDir)) console.error(`keel: a restore of a backup into ${stateDir} was cut part way. It was undone: the state is the one before it.`);
   const store = new Store(stateDir);
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);
