@@ -40,6 +40,7 @@ export class Fleet {
   readonly name: string;
   private relays = new Map<string, Relay>();
   private stopped = false;
+  private pairing = new Map<string, Promise<void>>();
   private tunnels = new Map<string, Promise<Tunnel>>();
   private queues = new Map<string, Queue>();
   private links = new Map<string, DaemonLink>();
@@ -297,28 +298,41 @@ export class Fleet {
     return uids.every((u) => u === me) ? null : `port ${m.daemon_port} on ${m.ssh_host} is listened on by another user`;
   }
 
-  // The paired peer of a machine, pairing at the first link.
+  // The paired peer of a machine, pairing at the first link. One pairing at a
+  // time for a machine: a second one would replace, over there, the key the
+  // first is about to keep here, and the link would answer 403 from then on.
   async peer(id: string): Promise<Peer> {
     let m = this.row(id);
     if (!m) throw new LinkError("no such machine");
     const url = await this.baseUrl(m);
     if (!m.link_key || !m.link_daemon_id) {
-      const name = m.name;
-      const why = await this.ownerListens(m, url).catch((e) => {
-        throw new LinkError(`cannot check the listener for ${name}: ${(e as Error).message}`);
-      });
-      if (why) throw new LinkError(why);
-      const r = await fetch(`${url}/api/fleet/pair`, {
-        method: "POST", headers: { "content-type": "application/json" }, redirect: "manual",
-        body: JSON.stringify({ daemon_id: this.id, name: this.name }), signal: AbortSignal.timeout(CONNECT_MS),
-      }).catch((e) => { throw new LinkError(`cannot reach ${url}: ${(e as Error).message}`); });
-      const b = (await r.json().catch(() => ({}))) as any;
-      if (!r.ok || !b.key || !b.daemon_id) throw new LinkError(`pairing refused: ${b.error ?? `HTTP ${r.status}`}`);
-      if (b.daemon_id === this.id) throw new LinkError("that is this daemon: a daemon is never linked to itself");
-      this.set(id, { link_daemon_id: b.daemon_id, link_key: b.key });
-      m = this.row(id)!;
+      let p = this.pairing.get(id);
+      if (!p) {
+        p = this.pair(m, url).finally(() => this.pairing.delete(id));
+        this.pairing.set(id, p);
+      }
+      await p;
+      m = this.row(id);
+      if (!m?.link_key || !m.link_daemon_id) throw new LinkError("no such machine");
     }
-    return { url, myId: this.id, key: m.link_key!, daemonId: m.link_daemon_id! };
+    return { url, myId: this.id, key: m.link_key, daemonId: m.link_daemon_id };
+  }
+
+  private async pair(m: MachineRow, url: string) {
+    if (this.row(m.id)?.link_key) return; // paired while this call waited for its address
+    const name = m.name;
+    const why = await this.ownerListens(m, url).catch((e) => {
+      throw new LinkError(`cannot check the listener for ${name}: ${(e as Error).message}`);
+    });
+    if (why) throw new LinkError(why);
+    const r = await fetch(`${url}/api/fleet/pair`, {
+      method: "POST", headers: { "content-type": "application/json" }, redirect: "manual",
+      body: JSON.stringify({ daemon_id: this.id, name: this.name }), signal: AbortSignal.timeout(CONNECT_MS),
+    }).catch((e) => { throw new LinkError(`cannot reach ${url}: ${(e as Error).message}`); });
+    const b = (await r.json().catch(() => ({}))) as any;
+    if (!r.ok || !b.key || !b.daemon_id) throw new LinkError(`pairing refused: ${b.error ?? `HTTP ${r.status}`}`);
+    if (b.daemon_id === this.id) throw new LinkError("that is this daemon: a daemon is never linked to itself");
+    this.set(m.id, { link_daemon_id: b.daemon_id, link_key: b.key });
   }
 
   // ---- checks

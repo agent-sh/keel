@@ -83,6 +83,34 @@ test("the outbox: handed out until acknowledged, and kept once however often it 
   expect(a.msgs.pendingOutbound("dB")).toHaveLength(1);
 });
 
+test("two first requests to a machine pair once and hold the same key", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Fleet } = await import("./fleet.ts");
+  let pairings = 0;
+  const srv = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    async fetch() {
+      const n = ++pairings;
+      await Bun.sleep(20); // both callers are waiting before the first answer
+      return Response.json({ daemon_id: "far", key: `key-${n}` });
+    },
+  });
+  const store = new Store(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-pair-")));
+  const f = new Fleet(store, new Bus(), { capture: (_s: string, e: unknown) => { throw e; } } as any);
+  try {
+    const m = f.add({ name: "far box", source: "daemon", daemon_url: `http://127.0.0.1:${srv.port}` });
+    const [a, b] = await Promise.all([f.peer(m.id), f.peer(m.id)]);
+    expect(pairings).toBe(1);
+    expect([a.key, b.key]).toEqual(["key-1", "key-1"]);
+    expect((await f.peer(m.id)).key).toBe("key-1");
+  } finally {
+    f.stop();
+    srv.stop(true);
+    store.db.close();
+  }
+});
+
 // A scratch daemon's messages: its own store, no engine and no link.
 async function scratchDaemon(id: string) {
   const { Store } = await import("../core/store.ts");
