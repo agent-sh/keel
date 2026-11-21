@@ -370,10 +370,19 @@ export class Telemetry {
   // id, the first line of a failure and the step that asked for it. A fork
   // copies its history with the original timestamps: a step or result copied
   // into another session is the same request, counted once.
+  // The work grows with the events, not with their square: copies are found
+  // through an index of the steps' and results' times made for this pass
+  // (two events are compared byte for byte only when they share a time), and
+  // each session's calls are read once, in order, to name its results.
   private backfill() {
     const db = this.store.db;
     if (db.query("SELECT 1 FROM admin_meta WHERE key = 'telemetry_backfill'").get()) return;
     db.transaction(() => {
+      db.exec("CREATE TEMP TABLE telemetry_backfill_at AS SELECT rowid AS rid, kind, ts FROM events WHERE kind IN ('assistant', 'tool_result')");
+      db.exec("CREATE INDEX temp.telemetry_backfill_at_ts ON telemetry_backfill_at (kind, ts, rid)");
+      // The first stored copy of an event: no earlier row of its kind has its time and its bytes.
+      const first = `NOT EXISTS (SELECT 1 FROM temp.telemetry_backfill_at t JOIN events c ON c.rowid = t.rid
+        WHERE t.kind = e.kind AND t.ts = e.ts AND t.rid < e.rowid AND c.data = e.data)`;
       db.exec(`INSERT INTO telemetry_calls (session_id, ts, model, input, output, cache_read, cache_write, cost, unpriced, outcome, stop)
         SELECT e.session_id, e.ts, COALESCE(json_extract(e.data, '$.model'), s.model),
           COALESCE(json_extract(e.data, '$.usage.input'), 0), COALESCE(json_extract(e.data, '$.usage.output'), 0),
@@ -381,19 +390,29 @@ export class Telemetry {
           json_extract(e.data, '$.usage.cost'), CASE WHEN json_extract(e.data, '$.usage.unpriced') > 0 THEN 1 ELSE 0 END,
           'ok', json_extract(e.data, '$.stop')
         FROM events e JOIN sessions s ON s.id = e.session_id
-        WHERE e.kind = 'assistant' AND e.rowid = (SELECT MIN(c.rowid) FROM events c WHERE c.kind = 'assistant' AND c.ts = e.ts AND c.data = e.data)`);
-      const results = db.query<{ session_id: string; ts: number; data: string }, []>(
-        `SELECT e.session_id, e.ts, e.data FROM events e
-          WHERE e.kind = 'tool_result' AND e.rowid = (SELECT MIN(c.rowid) FROM events c WHERE c.kind = 'tool_result' AND c.ts = e.ts AND c.data = e.data)`).all();
+        WHERE e.kind = 'assistant' AND ${first}`);
+      // A session's calls, oldest first: the newest step that holds a call id names it (callEvent).
+      const calls = db.query<{ id: string; model: string | null; call: string | null; name: string | null }, [string]>(
+        `SELECT e.id, json_extract(e.data, '$.model') AS model, json_extract(b.value, '$.id') AS call, json_extract(b.value, '$.name') AS name
+          FROM events e, json_each(e.data, '$.blocks') b
+          WHERE e.session_id = ? AND e.kind = 'assistant' AND json_extract(b.value, '$.type') = 'tool_use' ORDER BY e.seq`);
+      const results = db.query<{ ts: number; call: string | null; is_error: number | null; text: number; content: string | null }, [string]>(
+        `SELECT e.ts, json_extract(r.value, '$.tool_use_id') AS call, json_extract(r.value, '$.is_error') AS is_error,
+            json_type(r.value, '$.content') = 'text' AS text, CASE WHEN json_extract(r.value, '$.is_error') THEN json_extract(r.value, '$.content') END AS content
+          FROM events e, json_each(e.data, '$.results') r
+          WHERE e.session_id = ? AND e.kind = 'tool_result' AND ${first} ORDER BY e.seq`);
       const insert = db.query("INSERT INTO telemetry_tools (session_id, ts, tool, is_error, call_id, error, outcome, event_id, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-      for (const r of results) {
-        for (const res of (JSON.parse(r.data).results ?? []) as any[]) {
-          const ev = res.tool_use_id ? this.callEvent(r.session_id, res.tool_use_id) : undefined;
-          const use = ev ? (this.store.event(ev.id)?.data.blocks ?? []).find((b: any) => b.type === "tool_use" && b.id === res.tool_use_id) : undefined;
-          insert.run(r.session_id, r.ts, use?.name ?? "?", res.is_error ? 1 : 0, res.tool_use_id ?? null, res.is_error ? excerpt(res.content) : null,
-            res.is_error ? "error" : "ok", ev?.id ?? null, ev?.model ?? null);
+      for (const { id } of db.query<{ id: string }, []>("SELECT id FROM sessions ORDER BY created, id").all()) {
+        const uses = new Map<string, { id: string; model: string | null; name: string | null }>();
+        for (const c of calls.iterate(id)) if (c.call) uses.set(c.call, c);
+        for (const r of results.iterate(id)) {
+          const use = r.call ? uses.get(r.call) : undefined;
+          let content: unknown = r.content;
+          if (r.is_error && !r.text && typeof content === "string") { try { content = JSON.parse(content); } catch { content = ""; } }
+          insert.run(id, r.ts, use?.name ?? "?", r.is_error ? 1 : 0, r.call ?? null, r.is_error ? excerpt(content) : null, r.is_error ? "error" : "ok", use?.id ?? null, use?.model ?? null);
         }
       }
+      db.exec("DROP TABLE temp.telemetry_backfill_at");
       db.query("INSERT INTO admin_meta (key, value) VALUES ('telemetry_backfill', ?)").run(String(Date.now()));
     })();
   }
