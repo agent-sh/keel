@@ -101,19 +101,29 @@ export function toMarkdown(s: Session, events: StoredEvent[], include: Set<strin
 // The Keel file: a header (with how many events follow, so a cut copy is
 // caught), then one event a line. Events carry refs local to the file (e1, e2,
 // ...), not the store's ids; a summary's covered event is named by its ref.
-export function toKeelJsonl(s: Session, events: StoredEvent[]): string {
+// With `blob` it is self-contained: each file the prompts name follows the
+// events once, as a line of its own (its sha256 id, its size, its bytes in
+// base64), however many prompts and names refer to it.
+export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (id: string) => Uint8Array | undefined } = {}): string {
   const ref = new Map(events.map((e, i) => [e.id, `e${i + 1}`]));
   const files = new Map<string, { id: string; name: string; size: number }>();
   for (const e of events) if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") files.set(b.id, { id: b.id, name: b.name, size: b.size });
-  const header = { keel_export: EXPORT_VERSION, events: events.length, scope: "current branch", title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
+  const blobs: { blob: string; size: number; data: string }[] = [];
+  if (opts.blob) for (const id of files.keys()) {
+    const bytes = opts.blob(id);
+    if (bytes) blobs.push({ blob: id, size: bytes.byteLength, data: Buffer.from(bytes).toString("base64") });
+  }
+  const header = { keel_export: EXPORT_VERSION, events: events.length, blobs: opts.blob ? blobs.length : undefined, scope: "current branch", title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
   const line = (e: StoredEvent) => {
     const data = e.kind === "compaction" && e.data.covered ? { ...e.data, covered: ref.get(e.data.covered) } : e.data;
     return { ref: ref.get(e.id), kind: e.kind, data, ts: e.ts };
   };
-  return toJsonl([header, ...events.map(line)]);
+  return toJsonl([header, ...events.map(line), ...blobs]);
 }
 
-export type ParsedExport = { ok: true; header: any; events: { ref?: string; kind: any; data: any; ts?: number }[]; notes: string[] } | { ok: false; error: string };
+// `blobs`: the bytes a self-contained file carries, by their sha256 id, each
+// checked against its id and size before the file is accepted.
+export type ParsedExport = { ok: true; header: any; events: { ref?: string; kind: any; data: any; ts?: number }[]; blobs: Map<string, Uint8Array>; notes: string[] } | { ok: false; error: string };
 
 export function parseKeelJsonl(text: string): ParsedExport {
   const lines = text.split("\n");
@@ -121,18 +131,32 @@ export function parseKeelJsonl(text: string): ParsedExport {
   try { header = JSON.parse(lines[0] ?? ""); } catch { return { ok: false, error: "the body is not a Keel export" }; }
   if (header?.keel_export !== 1 && header?.keel_export !== EXPORT_VERSION) return { ok: false, error: "the body is not a Keel export" };
   const events: any[] = [];
+  const blobs = new Map<string, Uint8Array>();
   for (let i = 1; i < lines.length; i++) {
     const l = lines[i]!;
     if (!l.trim()) continue;
     let e: any;
     try { e = JSON.parse(l); } catch { return { ok: false, error: `incomplete export: the record on line ${i + 1} is cut or unreadable` }; }
+    if (typeof e?.blob === "string") {
+      // What the line says its bytes are is checked, never taken on its word.
+      const bytes = typeof e.data === "string" && /^[0-9a-f]{64}$/.test(e.blob) ? new Uint8Array(Buffer.from(e.data, "base64")) : undefined;
+      if (!bytes || bytes.byteLength !== e.size || new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== e.blob)
+        return { ok: false, error: `the attached file on line ${i + 1} is damaged: its bytes do not match its digest, so nothing was imported` };
+      blobs.set(e.blob, bytes);
+      continue;
+    }
     if (typeof e?.kind !== "string") return { ok: false, error: `the record on line ${i + 1} is not an event` };
     events.push(e);
   }
   const notes: string[] = [];
   if (header.keel_export === 1) notes.push("A version 1 file says nothing of its length: whether it is complete cannot be checked.");
   else if (header.events !== events.length) return { ok: false, error: `incomplete export: expected ${header.events} events, found ${events.length}` };
-  return { ok: true, header, events, notes };
+  if (header.blobs !== undefined && header.blobs !== blobs.size) return { ok: false, error: `incomplete export: expected ${header.blobs} attached files, found ${blobs.size}` };
+  // Bytes no prompt names are not stored for a file's saying so.
+  const named = new Set<string>();
+  for (const e of events) if (e.kind === "user") for (const b of e.data?.images ?? []) if (b?.type === "attachment") named.add(b.id);
+  for (const id of blobs.keys()) if (!named.has(id)) return { ok: false, error: "the file carries bytes that none of its prompts names, so nothing was imported" };
+  return { ok: true, header, events, blobs, notes };
 }
 
 // Claude Code wants tool ids of its own shape: each distinct source id gets one

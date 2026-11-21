@@ -65,6 +65,39 @@ test("a Keel file cut short is caught; a whole one, even empty, reads", () => {
   expect(p.ok && p.events[2]!.data.covered).toBe("e1");
 });
 
+test("a self-contained Keel file carries each file once, and is refused when its bytes are not what it says", () => {
+  const bytes = new TextEncoder().encode("quarterly numbers\n");
+  const id = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  const file = (name: string) => ({ type: "attachment", id, name, media_type: "text/plain", size: bytes.byteLength });
+  const evs = [ev("user", { text: "one", images: [file("budget.txt")] }), ev("user", { text: "two", images: [file("release.txt")] })];
+  // Without the option the file is what it was: a manifest, no bytes.
+  const plain = toKeelJsonl(s, evs);
+  expect(plain.split("\n").filter(Boolean)).toHaveLength(3);
+  expect(JSON.parse(plain.split("\n")[0]!).blobs).toBeUndefined();
+  const p0 = parseKeelJsonl(plain);
+  expect(p0.ok && p0.blobs.size).toBe(0);
+
+  const whole = toKeelJsonl(s, evs, { blob: (x) => (x === id ? bytes : undefined) });
+  const lines = whole.split("\n").filter(Boolean);
+  expect(lines).toHaveLength(4); // two names, one blob
+  expect(JSON.parse(lines[0]!)).toMatchObject({ events: 2, blobs: 1 });
+  const p = parseKeelJsonl(whole);
+  expect(p.ok && [...p.blobs.keys()]).toEqual([id]);
+  expect(p.ok && Buffer.from(p.blobs.get(id)!).toString()).toBe("quarterly numbers\n");
+  expect(p.ok && p.events.map((e) => e.data.images[0].name)).toEqual(["budget.txt", "release.txt"]);
+
+  // One changed byte, a wrong size, a missing blob line, bytes no prompt names: nothing is accepted.
+  const blob = JSON.parse(lines[3]!);
+  const withBlob = (b: any) => [...lines.slice(0, 3), JSON.stringify(b)].join("\n") + "\n";
+  const flipped = Buffer.from(bytes); flipped[0]! ^= 1;
+  expect(parseKeelJsonl(withBlob({ ...blob, data: flipped.toString("base64") }))).toEqual({ ok: false, error: expect.stringContaining("do not match its digest") });
+  expect(parseKeelJsonl(withBlob({ ...blob, size: blob.size + 1 }))).toEqual({ ok: false, error: expect.stringContaining("do not match its digest") });
+  expect(parseKeelJsonl(lines.slice(0, 3).join("\n") + "\n")).toEqual({ ok: false, error: "incomplete export: expected 1 attached files, found 0" });
+  const other = new TextEncoder().encode("not named");
+  const stray = { blob: new Bun.CryptoHasher("sha256").update(other).digest("hex"), size: other.byteLength, data: Buffer.from(other).toString("base64") };
+  expect(parseKeelJsonl([lines[0]!.replace('"blobs":1', '"blobs":2'), ...lines.slice(1), JSON.stringify(stray)].join("\n") + "\n")).toEqual({ ok: false, error: expect.stringContaining("none of its prompts names") });
+});
+
 test("a resume handoff carries the active context only", () => {
   const before = ev("user", { text: "old rule" });
   const after = ev("user", { text: "new rule" });

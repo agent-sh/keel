@@ -1,7 +1,7 @@
 // Import of other harnesses' sessions (Claude Code, Codex, the Rust Keel) and
 // export of a session: to read, to import into another keel-bun, or to resume
 // in Claude Code or Codex.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
@@ -11,7 +11,7 @@ import { offered, scrub, tail } from "../../integrations/import/offer.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, proven } from "../../fleet/link.ts";
 import { contains } from "../../core/paths.ts";
-import { attachmentPath } from "../../engine/attachments.ts";
+import { attachmentPath, saveAttachment } from "../../engine/attachments.ts";
 import { fleet } from "./fleet.ts";
 import { takeover } from "./takeover.ts";
 import { grantedMachine, resumes } from "./resume.ts";
@@ -345,6 +345,9 @@ export const importRoutes: RouteModule = (deps) => {
           "content-disposition": `attachment; filename="${ascii}.${ext}"${title ? `; filename*=UTF-8''${encodeURIComponent(`${title.slice(0, 80)}.${ext}`)}` : ""}`,
           "x-keel-redacted": "1",
         });
+        // The files the prompts name travel inside the Keel file when asked for.
+        const withFiles = u.get("attachments") === "1";
+        if (withFiles && format !== "jsonl") return bad("attached files travel in the Keel file: format=jsonl");
         const all = store.events(s.id);
         const shown = events(s.id);
         const leaves = all.filter((e) => !all.some((x) => x.parent === e.id)).length;
@@ -354,7 +357,8 @@ export const importRoutes: RouteModule = (deps) => {
           // The Keel file is the whole branch, for another Keel to continue: there is no part to choose.
           if (include.size) return bad("the Keel file always holds every part of the branch; include applies to Markdown");
           const evs = shown.map((e) => ({ ...e, data: redactDeep(e.data) }));
-          return new Response(toKeelJsonl({ ...s, title: redact(s.title) }, evs), { headers: headers("application/x-ndjson", "jsonl") });
+          const blob = (id: string) => { const p = attachmentPath(id); return p ? new Uint8Array(readFileSync(p)) : undefined; };
+          return new Response(toKeelJsonl({ ...s, title: redact(s.title) }, evs, withFiles ? { blob } : {}), { headers: headers("application/x-ndjson", "jsonl") });
         }
         return bad(`unknown format ${format}`);
       },
@@ -394,13 +398,19 @@ export const importRoutes: RouteModule = (deps) => {
           return { id, kind: e.kind, data: e.data, ts: Number.isFinite(e.ts) ? Number(e.ts) : Date.now() };
         });
         for (const r of rows) if (r.kind === "compaction" && r.data?.covered) r.data = { ...r.data, covered: ids.get(r.data.covered) ?? r.data.covered };
+        // The bytes a self-contained file carries (checked against their digests
+        // when it was read) are stored once each, under the first name a prompt gives them.
+        for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) {
+          const bytes = b?.type === "attachment" && !attachmentPath(b.id) ? parsed.blobs.get(b.id) : undefined;
+          if (bytes) saveAttachment(bytes, b.name, b.media_type, b.charset);
+        }
         // Files the prompts name and this machine does not hold.
         const missing = new Set<string>();
         for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) if (b?.type === "attachment" && !attachmentPath(b.id)) missing.add(b.name);
         if (missing.size) notes.push(`${[...missing].join(", ")} ${missing.size === 1 ? "is" : "are"} not stored on this machine: the model is told ${missing.size === 1 ? "it is" : "they are"} missing.`);
         const out = store.createWithEvents({ title: header.title, model, workspace }, rows);
         bus.emit({ t: "session", session: out });
-        return json({ session: out, events_imported: rows.length, model: { exported: header.model ?? null, used: model, reason }, notes }, 201);
+        return json({ session: out, events_imported: rows.length, files_imported: parsed.blobs.size, model: { exported: header.model ?? null, used: model, reason }, notes }, 201);
       },
     },
   };

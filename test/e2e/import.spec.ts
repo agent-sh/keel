@@ -1,7 +1,8 @@
 import { expect, test } from "./isolate.ts";
-import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { APIRequestContext } from "@playwright/test";
 import { HAIKU, shoot } from "./shots.ts";
 
 // The Claude Code session gains a question and an answer.
@@ -256,4 +257,119 @@ test("a Markdown export refuses a part it does not write", async ({ request }) =
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
   }
+});
+
+// ---- the scripted specs: no model is called, a stand-in answers.
+
+const SCRIPTED = "scripted:stand-in";
+const scripted = async (request: APIRequestContext) => ((await (await request.get("/api/models")).json()).models as any[]).some((m) => m.id === SCRIPTED);
+const SCRATCH = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws");
+const eventsOf = async (request: APIRequestContext, id: string, base = "") => (await (await request.get(`${base}/api/sessions/${id}`)).json()).events as any[];
+
+// One prompt and the stand-in's reply, waited for.
+async function say(request: APIRequestContext, id: string, text: string, images?: unknown[]) {
+  const ends = async () => (await eventsOf(request, id)).filter((e) => e.kind === "turn_end").length;
+  const before = await ends();
+  expect((await request.post(`/api/sessions/${id}/messages`, { data: { text, images } })).ok()).toBe(true);
+  await expect.poll(ends, { timeout: 30_000 }).toBe(before + 1);
+}
+
+// Another Keel with nothing in it: a state folder of its own, scratch stores, the stand-in provider.
+async function emptyKeel(dir: string): Promise<{ url: string; state: string; stop: () => Promise<void> }> {
+  for (const d of ["state", "work", "config", "home", "stores"]) mkdirSync(join(dir, d), { recursive: true });
+  const proc: ChildProcess = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(dir, "state"), "--workspace", join(dir, "work")], {
+    env: {
+      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: SCRIPTED, KEEL_CONFIG_DIR: join(dir, "config"), KEEL_MCP_CONFIG: join(dir, "mcp.json"),
+      KEEL_IMPORT_HOME: join(dir, "home"), KEEL_IMPORT_CLAUDE_DIR: join(dir, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(dir, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(dir, "stores/agy"),
+      KEEL_IMPORT_KEEL_DB: join(dir, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(dir, "stores/hermes"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const url = await new Promise<string>((done, reject) => {
+    let out = "";
+    const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
+    const on = (d: Buffer) => {
+      out += d;
+      const m = out.match(/keel listening on (http:\/\/\S+?)\/? /);
+      if (m) { clearTimeout(t); done(m[1]!.replace(/\/$/, "")); }
+    };
+    proc.stdout!.on("data", on);
+    proc.stderr!.on("data", on);
+  });
+  const stop = () => new Promise<void>((r) => { if (proc.exitCode !== null) return r(); proc.once("exit", () => r()); proc.kill("SIGTERM"); });
+  return { url, state: join(dir, "state"), stop };
+}
+
+// A Keel file with its attached files inside opens whole in a Keel that never
+// had them: the same bytes under two names are one stored file there, and each
+// name downloads them. The ordinary Keel file is as it was: names, no bytes.
+test("a Keel file carries its attached files to an empty Keel", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = Date.now().toString(36);
+  const bytes = Buffer.from(`ledger ${tag}\n\u0000\u00ff binary tail`, "latin1");
+  const up = async (name: string) => (await (await request.post(`/api/attachments?name=${encodeURIComponent(name)}`, { headers: { "content-type": "application/octet-stream" }, data: bytes })).json());
+  const budget = await up(`budget-${tag}.bin`);
+  const release = await up(`דוח-${tag}.bin`);
+  expect(budget.id).toBe(release.id);
+  const { session } = await (await request.post("/api/sessions", { data: { model: SCRIPTED, title: `Bundle ${tag}` } })).json();
+  await say(request, session.id, "The budget.", [budget]);
+  await say(request, session.id, "The release.", [release]);
+
+  // The dialog offers the files once; the switch changes what the Keel file link fetches.
+  await page.goto(`/s/${session.id}`);
+  await page.getByRole("button", { name: "Export or continue elsewhere" }).click();
+  const dialog = page.getByTestId("export-dialog");
+  const link = dialog.getByTestId("export-jsonl");
+  await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl`);
+  await expect(dialog.getByTestId("export-with-files")).toBeVisible();
+  await expect(dialog).toContainText("Put the attached file inside the Keel file");
+  await dialog.getByTestId("export-with-files").click();
+  await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl&attachments=1`);
+  await shoot(page, "import-07-export-with-files");
+
+  const plain = await (await request.get(`/api/sessions/${session.id}/export?format=jsonl`)).text();
+  expect(plain).not.toContain('"blob"');
+  expect(JSON.parse(plain.split("\n")[0]!).blobs).toBeUndefined();
+  const whole = await (await request.get((await link.getAttribute("href"))!)).text();
+  expect(JSON.parse(whole.split("\n")[0]!)).toMatchObject({ blobs: 1 });
+  expect(whole.split("\n").filter((l) => l.startsWith('{"blob"'))).toHaveLength(1);
+  expect((await request.get(`/api/sessions/${session.id}/export?format=md&attachments=1`)).status()).toBe(400);
+
+  const other = await emptyKeel(join(SCRATCH, `empty-${tag}`));
+  try {
+    const post = (body: string) => fetch(`${other.url}/api/sessions/import`, { method: "POST", headers: { "content-type": "application/x-ndjson" }, body });
+    // A file whose bytes are not what it says is refused whole: no session, nothing stored.
+    const lines = whole.split("\n");
+    const at = lines.findIndex((l) => l.startsWith('{"blob"'));
+    const bad = JSON.parse(lines[at]!);
+    const flipped = Buffer.from(bad.data, "base64"); flipped[0]! ^= 1;
+    const refused = await post([...lines.slice(0, at), JSON.stringify({ ...bad, data: flipped.toString("base64") }), ...lines.slice(at + 1)].join("\n"));
+    expect(refused.status).toBe(400);
+    expect((await refused.json() as any).error).toContain("do not match its digest");
+    expect(existsSync(join(other.state, "attachments")) ? readdirSync(join(other.state, "attachments")) : []).toEqual([]);
+    expect(((await (await fetch(`${other.url}/api/sessions`)).json()) as any).sessions).toEqual([]);
+
+    // The ordinary file names what is missing there; the whole one brings it.
+    const bare = (await (await post(plain)).json()) as any;
+    expect(bare.notes.join(" ")).toContain("not stored on this machine");
+    const made = await post(whole);
+    expect(made.status).toBe(201);
+    const got = (await made.json()) as any;
+    expect(got.files_imported).toBe(1);
+    expect(got.notes.join(" ")).not.toContain("not stored on this machine");
+    const refs = ((await (await fetch(`${other.url}/api/sessions/${got.session.id}`)).json()) as any).events.filter((e: any) => e.kind === "user").flatMap((e: any) => e.data.images);
+    expect(refs.map((r: any) => r.name)).toEqual([`budget-${tag}.bin`, `דוח-${tag}.bin`]);
+    for (const r of refs) {
+      const dl = await fetch(`${other.url}/api/attachments/${r.id}?name=${encodeURIComponent(r.name)}&type=${encodeURIComponent(r.media_type)}`);
+      expect(dl.status).toBe(200);
+      expect(Buffer.from(await dl.arrayBuffer()).equals(bytes)).toBe(true);
+      expect(dl.headers.get("content-disposition")).toContain(`filename*=UTF-8''${encodeURIComponent(r.name)}`);
+    }
+    expect(readdirSync(join(other.state, "attachments"))).toEqual([budget.id]);
+    expect(readdirSync(join(other.state, "attachments", budget.id))).toHaveLength(1);
+  } finally {
+    await other.stop();
+    rmSync(join(SCRATCH, `empty-${tag}`), { recursive: true, force: true });
+  }
+  await request.delete(`/api/sessions/${session.id}`);
 });

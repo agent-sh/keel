@@ -4,8 +4,10 @@
 // gained since.
 import { copyText } from "../lib/copy.ts";
 import { Dialog } from "@base-ui/react/dialog";
+import { Switch } from "@base-ui/react/switch";
 import { Check, Copy, FileDown, FileJson, History, Terminal, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { lineage } from "../../../src/core/tree.ts";
 import type { Session } from "../../../src/core/types.ts";
 import { reportError, failed, useStore } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -42,15 +44,31 @@ function Option({ icon, title, hint, onClick, href, testid, busy }: { icon: Reac
   );
 }
 
+// What the Keel file can carry besides the branch's events: off unless asked for.
+function Carry({ on, onChange, testid, children }: { on: boolean; onChange: (v: boolean) => void; testid: string; children: React.ReactNode }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2.5 px-1 text-caption text-muted">
+      <Switch.Root checked={on} onCheckedChange={onChange} data-testid={testid} className="relative flex h-4 w-7 shrink-0 rounded-full bg-line-strong p-0.5 transition-colors data-checked:bg-accent">
+        <Switch.Thumb className="size-3 rounded-full bg-raised transition-transform data-checked:translate-x-3" />
+      </Switch.Root>
+      <span>{children}</span>
+    </label>
+  );
+}
+
 function ExportDialog({ session, onClose }: { session: Session | null; onClose: () => void }) {
   const [origin, setOrigin] = useState<Origin | null>(null);
   const [written, setWritten] = useState<Written | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [withFiles, setWithFiles] = useState(false);
   // What the Keel file leaves behind: other branches, and messages still waiting to run.
   const all = useStore((st) => (session ? st.events[session.id] : undefined));
   const pending = useStore((st) => (session ? st.queues[session.id]?.queue.length ?? 0 : 0));
+  // The files the current branch's prompts name, each counted once.
+  const head = useStore((st) => (session ? st.sessions[session.id]?.head ?? session.head : null));
+  const files = new Set((all ? lineage(all, head) : []).flatMap((e) => (e.kind === "user" ? (e.data.images ?? []).filter((b: any) => b.type === "attachment").map((b: any) => b.id as string) : []))).size;
   const branches = all ? Math.max(0, all.filter((e) => !all.some((x) => x.parent === e.id)).length - 1) : 0;
   const stays = [
     branches ? `${branches} other branch${branches === 1 ? "" : "es"}` : "",
@@ -60,6 +78,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
     setWritten(null);
     setErr("");
     setOrigin(null);
+    setWithFiles(false);
     if (session) fetch(`/api/sessions/${session.id}/origin`).then((r) => r.json()).then(setOrigin).catch(reportError);
   }, [session?.id]);
   if (!session) return null;
@@ -113,7 +132,12 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
               </div>
             )}
             <Option href={`${base}/export?format=md&include=tools`} icon={<FileDown />} title="Markdown" hint="To read or share: the current branch with its tool calls and results; images and files named, not included; secrets taken out." testid="export-md" />
-            <Option href={`${base}/export?format=jsonl`} icon={<FileJson />} title="Keel file" hint="To continue in another Keel: the current branch whole, thinking and tool data included; secrets taken out, ids of calls kept, so it is not anonymous." testid="export-jsonl" />
+            <Option href={`${base}/export?format=jsonl${withFiles ? "&attachments=1" : ""}`} icon={<FileJson />} title="Keel file" hint="To continue in another Keel: the current branch whole, thinking and tool data included; secrets taken out, ids of calls kept, so it is not anonymous." testid="export-jsonl" />
+            {files > 0 && (
+              <Carry on={withFiles} onChange={setWithFiles} testid="export-with-files">
+                Put the {files === 1 ? "attached file" : `${files} attached files`} inside the Keel file, so it opens whole on a machine that never had {files === 1 ? "it" : "them"}. Files go as they are: secrets in them stay.
+              </Carry>
+            )}
             {stays && <p className="px-1 text-caption text-faint" data-testid="export-stays">{stays} stay{branches + pending === 1 ? "s" : ""} in this session.</p>}
             <div className="pt-2 text-caption font-medium uppercase tracking-wide text-faint">Continue in another harness</div>
             <div className="grid grid-cols-2 gap-2">
