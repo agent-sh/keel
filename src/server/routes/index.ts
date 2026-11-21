@@ -38,6 +38,7 @@ import { worktreeRoutes } from "./worktrees.ts";
 import { reviewRoutes } from "./reviews.ts";
 import { turnRoutes } from "./turns.ts";
 import { switchRoutes } from "./switch.ts";
+import { buildPinRoutes } from "./build-pin.ts";
 import { sideRoutes } from "./side.ts";
 import { treeRoutes } from "./tree.ts";
 import { attachmentRoutes } from "./attachments.ts";
@@ -79,6 +80,7 @@ export const routeModules: RouteModule[] = [
   reviewRoutes,
   turnRoutes,
   switchRoutes,
+  buildPinRoutes,
   sideRoutes,
   treeRoutes,
   attachmentRoutes,

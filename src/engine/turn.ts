@@ -11,17 +11,18 @@ import { conceal } from "../core/conceal.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
 import { testBuild } from "../core/build.ts";
+import { BuildPins, coldReason } from "./build-pin.ts";
 import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
-import { asksOwner, toolsFor } from "../tools/registry.ts";
+import { asksOwner, registerPinnedDeferred, sessionToolsKey, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, stopKind } from "../core/stops.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
-import { allHooks, type ExternalTurn, type ToolAuthorization, type ToolCall } from "./hooks.ts";
+import { allHooks, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
@@ -249,7 +250,7 @@ const CORE = [
 function sessionParts(cwd: string, created: number): PromptPart[] {
   const inst = instructionFiles(cwd);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
-  return [{ name: "place", text: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "" }];
+  return [{ name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst }];
 }
 
 type Running = { abort: AbortController; done: Promise<void> };
@@ -340,6 +341,8 @@ export class Engine {
   private seen = new SessionMap<Map<string, number>>(64);
   private systems = new SessionMap<{ text: string; split: number; model?: string }>(64);
   private prompts: PromptStore;
+  // The tools and prompt each session was last sent, kept across a daemon upgrade (src/engine/build-pin.ts).
+  private pins: BuildPins;
   private rendering = new Map<string, Promise<{ text: string; split: number }>>();
   // Sessions whose kept prompt was compared with a fresh render in this run,
   // and sessions that moved (their next request renders for the new place).
@@ -354,6 +357,8 @@ export class Engine {
     private spillRoot: string,
   ) {
     this.prompts = new PromptStore(store);
+    this.pins = new BuildPins(store);
+    registerPinnedDeferred((id) => this.pins.deferred(id));
     // A summary prepared ahead survives a restart.
     store.migrate("CREATE TABLE IF NOT EXISTS prepared_summaries (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, covered TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL)");
     store.migrate("CREATE TABLE IF NOT EXISTS queue_holds (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
@@ -838,12 +843,47 @@ export class Engine {
 
   private async step(session: Session, model: string): Promise<Step> {
     const { provider, info } = await this.providers.resolve(model);
-    const system = await this.systemOf(session, info);
-    const effort = effectiveEffort(info, session.settings.effort);
     // A model known to take no tool definitions (the owner, a probe, its listing
     // or catalog said so) is sent none: it would refuse them or answer garbled.
     const native = info.tools !== false && loadsNatively(provider.wire, info);
-    return { provider, info, tools: info.tools === false ? [] : toolsFor(info.family, native, session.id), system: system.text, systemSplit: system.split, effort, native };
+    const built = info.tools === false ? [] : toolsFor(info.family, native, session.id);
+    // On its own model the session keeps the tools and prompt it was last
+    // sent, across a daemon upgrade too, and takes this build's when no warm
+    // cache holds its context or waiting would be wrong (src/engine/build-pin.ts).
+    // A request on another model (an advisor, a fallback) has no cache of the
+    // session's to keep: it gets this build's tools.
+    const own = info.id === session.model;
+    const to = { model: info.id, native, own: info.tools === false ? "no tools" : sessionToolsKey(info.family, session.id) };
+    const why = own ? this.pins.due(session, to, built, () => this.coldWhy(session.id, provider, info)) : undefined;
+    if (why && !(session.parent_id && !session.machine)) this.forgetSystem(session.id);
+    this.pins.begin(session.id, why);
+    try {
+      const system = await this.systemOf(session, info);
+      const effort = effectiveEffort(info, session.settings.effort);
+      return { provider, info, tools: own ? this.pins.tools(session, to, built) : built, system: system.text, systemSplit: system.split, effort, native };
+    } finally {
+      this.pins.end(session.id);
+    }
+  }
+
+  // Why no warm cache holds the session's context on this model, if none does.
+  private coldWhy(id: string, provider: Provider, info: ModelInfo, events = this.lineage(id)): string | undefined {
+    return coldReason(events, info.id, retention(provider.wire, events, info.id).max, Date.now(), this.preparedMs(id, events, { info } as Step));
+  }
+
+  // Which build the session's tools and prompt are from, and what waits.
+  buildState(id: string) {
+    return this.pins.state(id);
+  }
+
+  // The owner asks for this build's tools and prompt now: an idle session
+  // takes them at once, a running turn at its next request. Either way the
+  // next request writes the session's context to the cache again.
+  async adoptBuild(id: string) {
+    const session = this.store.session(id);
+    if (!session) throw Object.assign(new Error("no such session"), { status: 404 });
+    if (this.pins.ask(id) && !this.running.has(id)) await this.step(session, session.model);
+    return this.pins.state(id);
   }
 
   // A subagent on this machine runs on its parent's system prompt byte for byte
@@ -872,9 +912,11 @@ export class Engine {
   // The prompt is kept with the session (session_prompts), so a restart or a
   // session that dropped out of memory sends the same bytes again. Once per
   // daemon run it is rendered again for the model it was made for and
-  // compared block by block: it is replaced only when a block really differs
-  // (an instruction file was edited, a skill was added, a server published
-  // other instructions), and the row then names the blocks.
+  // compared block by block. A block that differs (an instruction file was
+  // edited, a skill was added, a server published other instructions, a new
+  // build reworded one) replaces the kept prompt when the session's cache is
+  // cold or the change must not wait, and the row then names the blocks;
+  // until then the kept prompt is sent as it was (src/engine/build-pin.ts).
   private async loadSystem(session: Session, info?: ModelInfo): Promise<{ text: string; split: number }> {
     const parent = session.parent_id && !session.machine ? this.store.session(session.parent_id) : undefined;
     let system: { text: string; split: number };
@@ -890,11 +932,15 @@ export class Engine {
         if (kept && !forModel) return kept;
         const made = await this.renderSystem(session, forModel);
         const changed = kept ? changedBlocks(kept.blocks, made.blocks) : [];
+        // A kept prompt whose blocks differ stays as it was sent while a warm
+        // cache holds the context, unless a changed block must not wait: the
+        // pins decide, and remember what waits (src/engine/build-pin.ts).
+        const taken = this.pins.prompt(session.id, kept?.blocks, made.blocks, changed, moved);
         // A prompt made again for a new model is kept as made for it, so the
         // next run compares it against that model.
-        if (kept && !changed.length) {
+        if (kept && !taken) {
           system = kept;
-          if (moved && forModel && kept.model !== forModel.id) this.prompts.put(session.id, made);
+          if (moved && !changed.length && forModel && kept.model !== forModel.id) this.prompts.put(session.id, made);
         } else {
           this.prompts.put(session.id, made, changed);
           system = made;
@@ -908,12 +954,15 @@ export class Engine {
   }
 
   private async renderSystem(session: Session, info?: ModelInfo) {
-    const extra = (await Promise.all(allHooks().map((h) => h.system?.(session, info) ?? ""))).filter(Boolean);
+    const extra = await Promise.all(allHooks().map((h) => h.system?.(session, info) ?? ""));
     // Each block as the model is sent it, secrets as placeholders: the kept
     // prompt and its fingerprints never hold a secret's value.
-    const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id) });
-    const shared: PromptPart[] = [CORE + (testBuild?.core ? `\n${testBuild.core}` : ""), ...extra].map((t, i) => sent({ name: i ? blockName(t) : "core", text: t + "\n\n" }));
-    const own = (await Promise.all(allHooks().map((h) => h.sessionSystem?.(session, info) ?? ""))).filter(Boolean).map((t) => sent({ name: blockName(t), text: `\n${t}\n` }));
+    const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id), ...(p.data !== undefined && { data: conceal(p.data, session.id) }) });
+    // A block of the owner's data keeps its place while it is empty, so its data can be compared (hooks.ts SystemBlock).
+    const part = (b: string | SystemBlock, wrap: (t: string) => string): PromptPart[] =>
+      typeof b === "string" ? (b ? [sent({ name: blockName(b), text: wrap(b) })] : []) : [sent({ name: b.name, text: b.text ? wrap(b.text) : "", data: b.data })];
+    const shared: PromptPart[] = [sent({ name: "core", text: `${CORE}${testBuild?.core ? `\n${testBuild.core}` : ""}\n\n` }), ...extra.flatMap((b) => part(b, (t) => t + "\n\n"))];
+    const own = (await Promise.all(allHooks().map((h) => h.sessionSystem?.(session, info) ?? ""))).flatMap((b) => part(b, (t) => `\n${t}\n`));
     const parts = [...shared, ...sessionParts(session.workspace, session.created).map(sent), ...own];
     return { text: parts.map((p) => p.text).join(""), split: shared.reduce((n, p) => n + p.text.length, 0), blocks: blocksOf(parts), model: info?.id ?? null };
   }
@@ -1021,7 +1070,8 @@ export class Engine {
           this.errors.capture("provider", e, { session: id, fallback: "deferred tools refused; using search_tools" });
           refuseDefer(st.info.id);
           st.native = false;
-          st.tools = toolsFor(st.info.family, false, id);
+          const eager = toolsFor(st.info.family, false, id);
+          st.tools = st.info.id === session.model ? this.pins.tools(session, { model: st.info.id, native: false, own: sessionToolsKey(st.info.family, id) }, eager) : eager;
           req = { ...req, tools: st.tools };
           fits(); // every built-in is in the prompt now
           continue;
@@ -1320,6 +1370,10 @@ export class Engine {
         } else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
         }
+        // A context no warm cache holds any more (just compacted or cleared, expired),
+        // or the owner's request: this build's tools and prompt from this request on.
+        const waits = st.info.id === session.model ? this.pins.waits(id) : undefined;
+        if (waits === "asked" || (waits && this.coldWhy(id, st.provider, st.info, events))) st = await this.step(session, session.model);
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
         const messages = toMessages(events);
         let res: ProviderResult;

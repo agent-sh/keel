@@ -118,9 +118,11 @@ export const projectRoutes: RouteModule = ({ store, bus, engine, providers }) =>
   registerHooks({
     sessionSystem: (s) => {
       const p = projectOf(s);
-      if (!p || (!p.instructions.trim() && !p.files.length)) return "";
+      // The project and its instructions are the owner's side of the block (hooks.ts SystemBlock).
+      const block = (text: string, data: unknown[]) => ({ name: "Project instructions", text, data: JSON.stringify(data) });
+      if (!p || (!p.instructions.trim() && !p.files.length)) return block("", []);
       const files = p.files.length ? `\n\nFiles of the project (read the ones the task touches):\n${p.files.map((f) => `- ${f}`).join("\n")}` : "";
-      return `Project instructions (${p.name}): this session is part of the project ${p.name}.${p.instructions.trim() ? `\n\n${p.instructions.trim()}` : ""}${files}`;
+      return block(`Project instructions (${p.name}): this session is part of the project ${p.name}.${p.instructions.trim() ? `\n\n${p.instructions.trim()}` : ""}${files}`, [p.name, p.instructions, p.files]);
     },
   });
 

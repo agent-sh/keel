@@ -2,16 +2,16 @@
 // prompts), the context meter with compaction, and the effort picker.
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { ArrowUp, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
+import { ArrowUp, ArrowUpCircle, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { isLive, useAuto } from "../lib/automation.ts";
-import { actions, reportError, useStore, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
+import { actions, reportError, useStore, type BuildState, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { seedComposer } from "../lib/ui.ts";
-import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
+import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 import { composing } from "../lib/keys.ts";
 
@@ -172,7 +172,8 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
   const [info, setInfo] = useState<ContextInfo | null>(null);
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState("");
-  const [busy, setBusy] = useState<"" | "compact" | "clear">("");
+  const [busy, setBusy] = useState<"" | "compact" | "clear" | "build">("");
+  const [build, setBuild] = useState<BuildState | null>(null);
   const [error, setError] = useState("");
   const model = models.find((m) => m.id === session?.model);
   const window_ = model?.context ?? 0;
@@ -183,7 +184,16 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
   // again on each committed event (not on streaming text); only the latest
   // answer is kept.
   const seq = useRef(0);
-  const reload = () => { const n = ++seq.current; return actions.context(sessionId).then((x) => { if (n !== seq.current) return; if (x.bytes_per_token && session) setRatio(session.model, x.bytes_per_token); setInfo(x); }); };
+  const reload = () => {
+    const n = ++seq.current;
+    // A daemon from before sessions were pinned to a build has no such route: the popup shows the rest.
+    return Promise.all([actions.context(sessionId), actions.buildState(sessionId).catch(() => null)]).then(([x, b]) => {
+      if (n !== seq.current) return;
+      if (x.bytes_per_token && session) setRatio(session.model, x.bytes_per_token);
+      setInfo(x);
+      setBuild(b);
+    });
+  };
   useEffect(() => { if (open) reload().catch(reportError); }, [open, session?.head]);
   if (!session) return null;
   // No model row (the listing lacks it): counts and actions stay, without a share.
@@ -197,11 +207,12 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
   const windowText = !model ? "window unknown: the model is not in the current listing" : model.context_assumed ? `window unknown; ${fmtTokens(window_)} assumed for automatic compaction` : `${fmtTokens(window_)} window`;
   const usedText = est?.estimated ? `${fmtTokens(used)} tokens (${fmtTokens(est.measured)} measured, ~${fmtTokens(est.estimated)} estimated since)` : `${fmtTokens(used)} tokens`;
   const working = session.phase === "working";
-  const run = async (what: "compact" | "clear") => {
+  const run = async (what: "compact" | "clear" | "build") => {
     setBusy(what);
     setError("");
     try {
       if (what === "compact") await actions.compact(sessionId, focus.trim() || undefined);
+      else if (what === "build") await actions.adoptBuild(sessionId);
       else await actions.clear(sessionId);
       setFocus("");
       await reload();
@@ -249,6 +260,7 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
               </dl>
             )}
             <p className="mt-3 text-caption text-faint">System prompt and tools are counted in the measured total; they stay cached.</p>
+            {build && <BuildPin build={build} busy={busy === "build"} disabled={!!busy} onAdopt={() => run("build")} />}
             <div className="mt-3 border-t border-line pt-3">
               <input
                 data-testid="compact-focus"
@@ -284,6 +296,54 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
         </Popover.Positioner>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+const some = (names: string[]) => (names.length > 4 ? `${names.slice(0, 4).join(", ")} and ${names.length - 4} more` : names.join(", "));
+
+// Which build the session's tools and system prompt are from, when the
+// running build has others: a session keeps what it was last sent across a
+// daemon upgrade, so its cached context is not written again, and takes the
+// build's when that cache is cold anyway. The owner can take them now.
+function BuildPin({ build, busy, disabled, onAdopt }: { build: BuildState; busy: boolean; disabled: boolean; onAdopt: () => void }) {
+  const p = build.pinned;
+  const { blocks, tools } = build.waiting;
+  const behind = blocks.length + tools.length > 0;
+  // Not compared yet by this build: only a pin of another build says so.
+  const unknown = !build.known && !!p && p.build !== build.build;
+  if (!p || (!behind && !unknown && !build.asked)) {
+    // Just taken (the button, or the request that found the cache cold): say so once.
+    const last = build.adoptions[0];
+    if (!last || Date.now() - last.ts > 60_000) return null;
+    return <p className="mt-2 text-caption text-faint" data-testid="build-pin-taken">Now on this build's tools and prompt ({last.reason}).</p>;
+  }
+  const from = p.build && p.build !== build.build ? `build ${p.build}` : "an earlier build";
+  const what = [blocks.length ? `the prompt (${some(blocks)})` : "", tools.length ? `the tools (${some(tools)})` : ""].filter(Boolean).join(" and ");
+  return (
+    <div className="mt-3 border-t border-line pt-3" data-testid="build-pin">
+      <p className="text-caption text-muted" title={`Since ${when(p.since)}`}>
+        Tools and prompt are from <span className="text-fg">{from}</span>, so the cached context is not written again.
+      </p>
+      <p className="mt-1 text-caption text-faint" data-testid="build-pin-waiting">
+        {build.asked
+          ? "This build's are taken at the turn's next request."
+          : behind
+            ? `This build (${build.build}) changed ${what}. They are taken at the next compaction or clear, on another model, or once the cache has expired.`
+            : `They are compared with this build's (${build.build}) at the session's next request.`}
+      </p>
+      {!build.asked && (
+        <button
+          type="button"
+          data-testid="build-adopt"
+          disabled={disabled}
+          onClick={onAdopt}
+          title="The next request writes the whole context to the cache again"
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40"
+        >
+          <ArrowUpCircle className="size-3.5" /> {busy ? "Taking this build's" : "Use this build's now"}
+        </button>
+      )}
+    </div>
   );
 }
 

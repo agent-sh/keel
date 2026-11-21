@@ -46,6 +46,8 @@ export class ScriptedProvider implements Provider {
   readonly label = "Scripted (test)";
   readonly family = "other" as const;
   private seen = new Map<string, number>();
+  // The tools and system of each session's last request, per model (KEEL_SCRIPTED_CACHE=prefix).
+  private prefixes = new Map<string, string>();
   private paused = new Map<string, string>();
   // What the strict stand-in counted per session: its requests, the largest
   // one in tokens, and those over its window, which it refused. `script:counted
@@ -82,6 +84,16 @@ export class ScriptedProvider implements Provider {
     // Everything but the newest message counts as read from cache.
     const usage = { input: tokens(last), cache_read: tokens(msgs.slice(0, -1)) + tokens(req.system) / 8, cache_write: 0, output: 0 };
     usage.cache_read = Math.round(usage.cache_read);
+    // KEEL_SCRIPTED_CACHE=prefix: the cache is keyed by the prefix, as a real
+    // one is. A request whose tools or system differ from the session's last
+    // one on this model reads nothing and writes its whole prompt.
+    if (process.env.KEEL_SCRIPTED_CACHE === "prefix" && req.purpose !== "reader") {
+      const at = `${req.sessionKey}\u0000${req.model}`;
+      const prefix = String(Bun.hash(JSON.stringify([req.tools.filter((t) => !t.defer).map((t) => [t.name, t.description, t.input_schema]), req.system])));
+      const had = this.prefixes.get(at);
+      this.prefixes.set(at, prefix);
+      if (had !== undefined && had !== prefix) { usage.cache_write = usage.cache_read; usage.cache_read = 0; }
+    }
     if (req.model === STRICT) {
       const count = (v: unknown) => Math.ceil(Buffer.byteLength(typeof v === "string" ? v : JSON.stringify(v)) / STRICT_BYTES);
       const total = count(req.system) + count(req.tools.map((t: any) => [t.name, t.description, t.input_schema])) + count(msgs);

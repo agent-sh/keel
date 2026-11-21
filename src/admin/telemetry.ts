@@ -8,6 +8,7 @@ import { SessionMap } from "../core/session-map.ts";
 import { lineage } from "../core/tree.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { promptOf } from "../engine/prompt-store.ts";
+import { adoptionBetween } from "../engine/build-pin.ts";
 import { errorText } from "../engine/retry.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { errorClass } from "./classes.ts";
@@ -261,7 +262,12 @@ export class Telemetry {
     // The blocks of the system prompt the engine replaced since the last request.
     const changed = promptOf(this.store, sessionId)?.changed;
     const diff = now ? prefixDiff(prev, now, changed && changed.ts > prev.ts && changed.ts <= ts ? changed.blocks : []) : null;
-    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, diff }), detail: diff?.length ? diff.join("; ") : null };
+    // The session took the running build's tools and prompt in between
+    // (src/engine/build-pin.ts): the detail names the tools and says why then.
+    const took = adoptionBetween(this.store, sessionId, prev.ts, ts);
+    const parts = (diff ?? []).map((d) => (d === "tools" && took?.tools.length ? `tools (${took.tools.slice(0, 8).join(", ")}${took.tools.length > 8 ? `, ${took.tools.length - 8} more` : ""})` : d));
+    if (took) parts.push(`build ${took.to_build} taken: ${took.reason}`);
+    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, diff }), detail: parts.length ? parts.join("; ") : null };
   }
 
   private compactedBetween(sessionId: string, a: number, b: number) {

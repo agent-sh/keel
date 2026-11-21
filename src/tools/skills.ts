@@ -347,7 +347,14 @@ export function skillListing(cwd: string, window?: number): string {
 }
 
 // Built with the session's system prompt, which stays frozen: the budget is the window of the model it runs on (made again when the session switches model).
-registerHooks({ system: (s, model) => skillListing(s.workspace, model && !model.context_assumed ? model.context : undefined) });
+// The skills themselves are the owner's side of the block (hooks.ts SystemBlock); how the listing was cut to fit is not.
+registerHooks({
+  system: (s, model) => ({
+    name: "Skills you can load with the skill tool when a t",
+    text: skillListing(s.workspace, model && !model.context_assumed ? model.context : undefined),
+    data: JSON.stringify(discoverSkills(s.workspace).filter((k) => k.modelInvocable && k.enabled).map((k) => [k.name, k.description])),
+  }),
+});
 
 export const skillTool = (name: string, nameKey: string, argsKey: string | null, description?: string): Tool => ({
   name,

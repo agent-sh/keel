@@ -186,11 +186,14 @@ export function installMcpTools(m: McpManager) {
   registerCatalog({ name: "mcp", tools: async () => builtins(m) });
   // One frozen line per session so the model knows the servers exist.
   registerHooks({
+    // The servers and what they published are the owner's side of the block (hooks.ts SystemBlock).
     system: async () => {
       const s = await m.configured(FIRST_CONNECT_WAIT_MS);
-      if (!s.length) return "";
       const lines = s.map((x) => `- ${x.name}${x.instructions ? `: ${oneLine(x.instructions, 200)}` : ""}`);
-      return `MCP servers are connected; their tools are deferred: load them with your tool search tool (ToolSearch, or search_tools and mcp_call):\n${lines.join("\n")}`;
+      return {
+        name: "MCP servers are connected", data: lines.join("\n"),
+        text: s.length ? `MCP servers are connected; their tools are deferred: load them with your tool search tool (ToolSearch, or search_tools and mcp_call):\n${lines.join("\n")}` : "",
+      };
     },
   });
 }

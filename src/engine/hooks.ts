@@ -17,15 +17,24 @@ export type ToolAuthorization = {
 };
 export type ToolGate = void | { deny: string } | { input?: any; ctx?: Partial<ToolContext>; authorization?: ToolAuthorization };
 
+// A block of the system prompt that renders the owner's or the machine's own
+// data (their servers, skills, agent types, files): `data` is that data alone,
+// without the words around it, and `name` names the block also while it is
+// empty. A kept prompt follows a change of the data at the first request after
+// a daemon start; a change of the words alone is the build's and waits until
+// the session's cache is cold (src/engine/build-pin.ts). A plain string is the
+// build's own words.
+export type SystemBlock = { name: string; text: string; data: string };
+
 // Points where feature modules join the turn loop without editing it.
 export type TurnHooks = {
   // Extra text for the system prompt; called once per session (the prompt is
   // frozen), with the model the session's first request goes to.
-  system?: (s: Session, model?: ModelInfo) => string | Promise<string>;
+  system?: (s: Session, model?: ModelInfo) => string | SystemBlock | Promise<string | SystemBlock>;
   // Text of the session's own part of the prompt, after the cache split (a
   // project's instructions): it never enters the prefix other sessions share.
   // Rendered and kept like the rest; Engine.forgetSystem has it made again.
-  sessionSystem?: (s: Session, model?: ModelInfo) => string | Promise<string>;
+  sessionSystem?: (s: Session, model?: ModelInfo) => string | SystemBlock | Promise<string | SystemBlock>;
   // Change the request just before it is sent (compaction, volatile-tail notes).
   // Must keep the prefix stable: append, never rewrite earlier messages.
   // Runs for every purpose: a hook that answers the newest prompt or rebuilds

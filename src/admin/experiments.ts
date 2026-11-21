@@ -503,7 +503,8 @@ export class Experiments {
     registerHooks({
       turnStart: (s) => this.assign(s),
       // After the cache split: the prefix every session shares stays the same in both arms.
-      sessionSystem: (s) => this.armFor(s.id)?.system_append ?? "",
+      // The arm's text is the owner's side of the block (hooks.ts SystemBlock).
+      sessionSystem: (s) => { const text = this.armFor(s.id)?.system_append ?? ""; return { name: "experiment arm", text, data: text }; },
       beforeRequest: (s, req) => {
         const arm = this.armFor(s.id);
         const life = req.purpose !== "reader" ? arm?.cache_life : undefined;

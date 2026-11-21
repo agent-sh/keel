@@ -1,6 +1,8 @@
 // The workbench's own commands and slash commands. Feature lanes register
 // theirs the same way from their own modules; an id registered again wins.
 import { copyOrSay } from "./copy.ts";
+import { announce } from "./announce.ts";
+import { tipSay } from "./tips.ts";
 import { FolderTree } from "lucide-react";
 import { createElement, lazy } from "react";
 import { panels, slash } from "./extend.ts";
@@ -53,6 +55,18 @@ const lastReply = (id: string) => {
   return text.join("\n\n");
 };
 
+// A session keeps the tools and system prompt it was last sent across a daemon
+// upgrade (its cached context is not written again); this takes the running
+// build's now, and says what happened.
+const adoptBuild = async (id: string) => {
+  const was = await actions.buildState(id);
+  const now = await actions.adoptBuild(id);
+  const took = now.adoptions[0] && now.adoptions[0].ts !== was.adoptions[0]?.ts;
+  const said = now.asked ? "This build's tools and prompt are taken at the turn's next request." : took ? "The session now uses this build's tools and prompt." : "The session already uses this build's tools and prompt.";
+  tipSay(null, said, 3200);
+  announce(said);
+};
+
 panels.add({
   id: "files",
   label: "Files",
@@ -100,6 +114,7 @@ registerCommand(
   { id: "theme-dark", label: "Theme: dark", group: "View", words: "appearance", run: () => setTheme("dark") },
   { id: "theme-system", label: "Theme: follow the system", group: "View", words: "appearance auto", run: () => setTheme("system") },
   { id: "refresh-models", label: "Refresh the model listings", group: "General", words: "providers reload", run: () => actions.loadModels(true).catch(reportError) },
+  { id: "adopt-build", label: "Use this build's tools and prompt in this session now", group: "Sessions", words: "upgrade pinned cache adopt update", when: () => !!current(), run: () => adoptBuild(current()!.id).catch(reportError) },
 );
 
 slash.add(
@@ -160,6 +175,7 @@ slash.add(
     },
   },
   { id: "agents", label: "Show every session and its agents, by folder", run: () => toggleList(true) },
+  { id: "adopt-build", label: "Use this build's tools and prompt now", when: ({ session }) => !!session, run: (_a, { session }) => adoptBuild(session!.id) },
 );
 // A placeholder never replaces a command a lane registered (import order varies).
 for (const p of [

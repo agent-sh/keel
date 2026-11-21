@@ -105,10 +105,12 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       } catch (e) {
         if (!(e instanceof LinkError)) errors.capture("server", e, { at: "fleet instructions", machine: m.id });
       }
-      return [
+      const text = [
         `Your workspace tools (shell, files, search) run on the machine "${m.name}"${facts ? ` (${facts.os} ${facts.arch}, ${facts.cpus} cores)` : ""}, not on this daemon's machine. Paths are paths there; the directory granted there is ${m.workspace_root}.`,
         inst ? `\nInstructions from the owner's files on ${m.name}:\n\n${inst}` : "",
       ].join("\n");
+      // The machine and its instruction files are the owner's side of the block (hooks.ts SystemBlock).
+      return { name: "Your workspace tools", text, data: JSON.stringify([m.name, m.workspace_root, facts ?? null, inst]) };
     },
     // A stop of the daemon waits for the moves that run, within its drain time.
     draining: () => moves.idle(),

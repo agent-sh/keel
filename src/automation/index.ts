@@ -73,9 +73,10 @@ function init(deps: Deps) {
       taskRenames.told(s.id);
       return { ...req, messages: toMessages(lineage(deps.store.events(s.id), deps.store.session(s.id)?.head ?? null)) };
     },
+    // The owner's agent types are their side of the block (hooks.ts SystemBlock).
     system: (s) => {
-      const custom = agents.definitions(s.workspace).filter((d) => d.source !== "built-in");
-      return custom.length ? `Agent types you can start besides the built-ins:\n${custom.map((d) => `- ${d.name}: ${d.description}`).join("\n")}` : "";
+      const lines = agents.definitions(s.workspace).filter((d) => d.source !== "built-in").map((d) => `- ${d.name}: ${d.description}`).join("\n");
+      return { name: "Agent types you can start besides the built-ins", data: lines, text: lines ? `Agent types you can start besides the built-ins:\n${lines}` : "" };
     },
     beforeTool: async (s, call) => {
       const target = call.tool.target && agents.byChild(s.id) ? await call.tool.target(call.input) : null;

@@ -144,7 +144,7 @@ export async function withCatalog(tools: Tool[], family: string, messages: Messa
 // Keel ranks the deferred tools and answers with the ones that match, which
 // the wire sends back as the loaded namespaces (tool_search_output). Same
 // ranking as ToolSearch; Codex's name, words and arguments.
-export function gptToolSearch(builtins: () => Tool[]): Tool {
+export function gptToolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
   const inner = toolSearch(builtins);
   return {
     name: "tool_search",
@@ -168,7 +168,8 @@ export function gptToolSearch(builtins: () => Tool[]): Tool {
 
 // Claude Code's ToolSearch: `select:A,B` for exact names, `+word rest` to
 // require a word in the name, else ranked keywords.
-export function toolSearch(builtins: () => Tool[]): Tool {
+// `builtins`: the deferred built-ins, for a session the ones its own list defers.
+export function toolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
   return {
     name: TOOL_SEARCH,
     readOnly: true,
@@ -189,10 +190,10 @@ export function toolSearch(builtins: () => Tool[]): Tool {
       required: ["query"],
       additionalProperties: false,
     },
-    async run(input): Promise<ToolOutput> {
+    async run(input, ctx): Promise<ToolOutput> {
       const query = String(input?.query ?? "").trim();
       const limit = Math.min(Math.max(Number(input?.max_results) || 5, 1), 20);
-      const own = builtins().map((t) => ({ name: t.name, qualified: t.name, description: t.description, server: "built-in", hidden: false }));
+      const own = builtins(ctx?.sessionId).map((t) => ({ name: t.name, qualified: t.name, description: t.description, server: "built-in", hidden: false }));
       const cat = (await catalogTools()).map((t) => ({ name: nativeName(t), qualified: nativeName(t), description: t.description, server: t.server, hidden: !!t.hidden }));
       // A hidden tool answers an exact name only (its call says why it is off).
       const all = [...own, ...cat.filter((c) => !own.some((o) => o.name === c.name))];
