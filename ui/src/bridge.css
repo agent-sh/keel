@@ -70,12 +70,50 @@
 /* The New session button's word for a message kept in its box; folded, a dot at the button's corner. */
 .k-act-mark { flex-shrink: 0; padding: 0 0.375rem; border-radius: 0.5rem; font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need); }
 .k-rail[data-open] .k-act-mark { margin-left: auto; }
-.k-rail[data-open] .k-new-session .k-act-label { white-space: nowrap; }
+/* A word of a button is one line: cut with an ellipsis where the bar is narrower than it. */
+.k-rail[data-open] .k-act-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-act-mark { white-space: nowrap; }
 .k-rail:not([data-open]) .k-act-mark { position: absolute; right: 0.25rem; top: 0.25rem; width: 0.5rem; height: 0.5rem; padding: 0; border-radius: 50%; overflow: hidden; color: transparent; }
 .k-act-n { font-weight: 600; font-size: var(--text-micro); line-height: 1; }
 .k-rail:not([data-open]) .k-act-n { position: absolute; right: 2px; top: 2px; }
 /* Feature buttons dropped into the footer (inbox, loops) take the rail's shape. */
 .k-rail:not([data-open]) .k-rail-foot > button:not(.k-act) { justify-content: center; min-width: 2.5rem; height: var(--spacing-ctl-lg); padding: 0 0.375rem; }
+
+/* ---------- The list squeezed ----------
+   The open list is laid out by its own width, not the window's: its edge drags down to 14.5rem
+   (a narrower window, more panes and a larger text size all end there). What says least gives
+   way first, in this order: the shortcut hints, the brand's name, the Settings word, a row's
+   tag. A control never leaves the bar and no word runs under another. */
+.k-rail[data-open] { container: rail / inline-size; }
+.k-rail[data-open] .k-brand-name { white-space: nowrap; }
+/* The pane count gives way before the fold button leaves the bar: its options keep their size and
+   its track scrolls sideways (six panes to choose from, in a very wide window, at the narrowest). */
+.k-rail[data-open] .k-rail-brand .k-panes { flex-shrink: 1; min-width: 0; }
+.k-rail[data-open] .k-rail-brand .k-fold { flex-shrink: 0; }
+/* The foot: the counts keep their size and the Settings word shortens; narrower, it goes. */
+.k-rail[data-open] .k-rail-foot > * { flex-shrink: 0; }
+.k-rail[data-open] .k-rail-foot > .k-act-word { flex-shrink: 1; overflow: hidden; }
+@container rail (max-width: 18.5rem) {
+  .k-rail-acts .k-act-key { display: none; }
+}
+@container rail (max-width: 17rem) {
+  .k-rail[data-open] .k-brand-name { display: none; }
+  .k-rail[data-open] .k-rail-brand { gap: 0.375rem; padding-left: 0.625rem; }
+  .k-rail[data-open] .k-rail-brand .k-fold { min-width: 2rem; padding: 0 0.375rem; }
+}
+/* With five or six panes to choose from the name goes sooner. */
+@container rail (max-width: 19rem) { .k-rail[data-open] .k-rail-brand:has(.k-panes > :nth-child(5)) .k-brand-name { display: none; } }
+@container rail (max-width: 21rem) { .k-rail[data-open] .k-rail-brand:has(.k-panes > :nth-child(6)) .k-brand-name { display: none; } }
+/* A row's tag takes a share of the bar, never the title's room; at the narrowest it goes (the tag chips above the list and the session's panel still say it). */
+.k-row-tag { max-width: min(5rem, 26cqi); }
+@container rail (max-width: 16rem) { .k-row-tag { display: none; } }
+@container rail (max-width: 16.5rem) {
+  .k-rail[data-open] .k-rail-foot .k-act-label { display: none; }
+  /* Its buttons stand closer, so the five are one row with two-digit counts. Counts of more
+     digits in every button: a second row, never a button outside the bar. */
+  .k-rail[data-open] .k-rail-foot { flex-wrap: wrap; row-gap: 2px; padding-inline: 0.375rem; }
+  .k-rail[data-open] .k-rail-foot .k-act { min-width: 2rem; gap: 0.375rem; padding: 0 0.375rem; }
+}
 
 /* "Is anything stuck": the steps that made no progress for too long, above the
    sessions, in the working ink. There only while something is stuck. */
@@ -274,7 +312,8 @@
 .k-row-sub .k-row-in { flex-shrink: 1; min-width: 2rem; max-width: 40%; margin-left: auto; }
 .k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }
 .k-row-sub .k-where { flex-shrink: 1; }
-.k-row-act { flex-shrink: 0; margin: -0.1875rem 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: 0.1875rem; color: var(--faint); }
+/* A row's actions take the time's place under the pointer and its line's height (1.25rem): the row is as high as at rest, and the rows under it stay where they are. */
+.k-row-act { flex-shrink: 0; margin: -0.125rem 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: 0.1875rem; color: var(--faint); }
 .k-row-act:hover { background: var(--hover); color: var(--fg); }
 .k-row-act svg { width: 0.875rem; height: 0.875rem; }
 .k-more { height: var(--spacing-ctl-md); padding-left: 1.75rem; border-radius: 0.25rem; text-align: left; font-size: var(--text-caption); color: var(--faint); }

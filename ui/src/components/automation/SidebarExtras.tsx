@@ -54,8 +54,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         {!expanded && (asking > 0 ? <Mark w="need" className="size-2" /> : running > 0 && <Mark w="work" className="size-2 border-[1.5px]" />)}
         <span className="shrink-0">{kids.length} agent{kids.length > 1 ? "s" : ""}</span>
         {asking > 0 && <span className="shrink-0 font-medium text-st-need" data-testid="children-asking">· {asking} {asking === 1 ? "asks" : "ask"} you</span>}
-        {running > 0 && <span className="shrink-0 text-accent">· {running} running</span>}
-        {waiting > 0 && <span className="shrink-0 text-warn">· {waiting} waiting</span>}
+        {/* Who asks stays whole; the running and waiting counts shorten before the line leaves the bar. */}
+        {running > 0 && <span className="min-w-0 truncate text-accent">· {running} running</span>}
+        {waiting > 0 && <span className="min-w-0 truncate text-warn">· {waiting} waiting</span>}
         {!expanded && viewing && <span className="min-w-0 truncate text-fg" data-testid="children-viewing">· viewing {sessions[viewing.session_id]?.title || viewing.title}</span>}
       </button>
       {expanded && kids.map((a) => (

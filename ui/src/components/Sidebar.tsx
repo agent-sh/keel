@@ -150,7 +150,7 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       <span className="k-row-main">
         <span className="k-row-title" title={s.title || undefined}>{s.title || "New session"}</span>
       </span>
-      {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag max-w-20 shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
+      {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
       <SessionBadges sessionId={s.id} />
       {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
       {timed(st)
@@ -476,8 +476,8 @@ function Index({ current }: { current: string | null }) {
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (
             <button key={t} type="button" aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}
-              className={cn("inline-flex h-ctl-sm items-center gap-1 rounded-xs px-1.5 text-caption", tag === t ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted hover:text-fg")}>
-              <Tag className="size-3" />{t}
+              className={cn("inline-flex h-ctl-sm min-w-0 max-w-full items-center gap-1 rounded-xs px-1.5 text-caption", tag === t ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted hover:text-fg")}>
+              <Tag className="size-3 shrink-0" /><span className="truncate">{t}</span>
             </button>
           ))}
         </div>
@@ -598,14 +598,14 @@ export function Sidebar({ open }: { open: boolean }) {
           <Plus /><span className="k-act-label">New session</span>
           {/* A first message kept in the New box, which nobody may be looking at: said here, in words when the list is open (in the shortcut's place). */}
           {newUnsent && <span data-testid="new-unsent-mark" className="k-act-mark">{NEW_UNSENT[newUnsent].word}</span>}
-          {open && !newUnsent && <Kbd keys="mod+shift+o" className="ml-auto" />}
+          {open && !newUnsent && <Kbd keys="mod+shift+o" className="k-act-key ml-auto" />}
         </button>
         <button type="button" className="k-act" data-testid="open-palette" aria-label="Search and commands" title="Search and commands (Ctrl K)" onClick={() => setUI({ palette: true })}>
-          <Search /><span className="k-act-label">Search and commands</span>{open && <Kbd keys="mod+k" className="ml-auto" />}
+          <Search /><span className="k-act-label">Search and commands</span>{open && <Kbd keys="mod+k" className="k-act-key ml-auto" />}
         </button>
         {/* The helper: one conversation kept above the sessions (src/helper/). */}
         <button type="button" className="k-act" data-testid="open-helper" aria-label="Helper" title="Helper (Ctrl J)" aria-current={onHelper ? "page" : undefined} onClick={() => void openHelper().catch(reportError)}>
-          <Sparkles /><span className="k-act-label">Helper</span>{open && <Kbd keys="mod+j" className="ml-auto" />}
+          <Sparkles /><span className="k-act-label">Helper</span>{open && <Kbd keys="mod+j" className="k-act-key ml-auto" />}
         </button>
       </div>
       <StuckStrip open={open} />
@@ -621,7 +621,7 @@ export function Sidebar({ open }: { open: boolean }) {
             <Archive />
           </button>
         )}
-        <button type="button" className="k-act" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
+        <button type="button" className="k-act k-act-word" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
           <Settings /><span className="k-act-label">Settings</span>
         </button>
         <button type="button" className={cn("k-act", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={errors ? `${errors} unread failures` : "Errors"} title={errors ? `${errors} unread failures` : "No unread failures"} onClick={() => setUI({ errors: true })}>
