@@ -63,6 +63,18 @@ function deepFreeze<T>(v: T): T {
   return v;
 }
 
+// Where the events after a cursor start in a list in seq order (a binary search).
+function firstAfter(events: readonly StoredEvent[], afterSeq: number): number {
+  let lo = 0;
+  let hi = events.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (events[mid]!.seq > afterSeq) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
 function rowToSession(r: SessionRow): Session {
@@ -262,9 +274,20 @@ export class Store {
     return ev;
   }
 
-  // Every event of the session, all branches, in seq order.
+  // Every event of the session, all branches, in seq order. With a cursor,
+  // only the events after it: a reader that is catching up pays for what it
+  // missed, not for the session.
   events(session_id: string, afterSeq = 0): StoredEvent[] {
     let all = this.parsed.get(session_id);
+    if (afterSeq > 0) {
+      if (all) return all.slice(firstAfter(all, afterSeq));
+      // Not in memory: the (session_id, seq) index finds the rows after the
+      // cursor and only they are parsed. A part is not kept as the session.
+      return this.db
+        .query<EventRow, [string, number]>("SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq")
+        .all(session_id, afterSeq)
+        .map((r) => deepFreeze(rowToEvent(r)));
+    }
     if (!all) {
       all = this.db
         .query<EventRow, [string]>("SELECT * FROM events WHERE session_id = ? ORDER BY seq")
@@ -272,7 +295,7 @@ export class Store {
         .map((r) => deepFreeze(rowToEvent(r)));
       this.parsed.set(session_id, all);
     }
-    return afterSeq ? all.filter((e) => e.seq > afterSeq) : all.slice();
+    return all.slice();
   }
 
   event(id: string): StoredEvent | undefined {
