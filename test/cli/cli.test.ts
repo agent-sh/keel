@@ -252,6 +252,23 @@ describe("admin commands", () => {
     });
   }, 30_000);
 
+  test("ui install: a missing bundle or a folder is a local error and asks the daemon nothing", async () => {
+    asked.length = 0;
+    const missing = join(SCRATCH, "no-such-bundle.tar.gz");
+    const gone = await k(["ui", "install", missing]);
+    const folder = await k(["ui", "install", SCRATCH]);
+    expect({ gone: [gone.code, gone.out, gone.err.trim()], folder: [folder.code, folder.out, folder.err.trim()], asked }).toEqual({
+      gone: [1, "", `keel: no UI bundle at ${missing}`],
+      folder: [1, "", `keel: ${SCRATCH} is a folder, not a UI bundle (bun scripts/build.ts --ui OUT.tar.gz makes one)`],
+      asked: [],
+    });
+    // A real file and no daemon at the address: the connection is what is reported.
+    const real = join(SCRATCH, "a-bundle.tar.gz");
+    writeFileSync(real, "not read: nothing answers");
+    const dead = await keel(["ui", "install", real, "--url", "http://127.0.0.1:9"], { state, env: { XDG_CONFIG_HOME: join(SCRATCH, "config") } });
+    expect([dead.code, dead.out, dead.err.trim()]).toEqual([1, "", "keel: no daemon answers at http://127.0.0.1:9 (pass --url or set KEEL_URL)"]);
+  }, 30_000);
+
   test("port --apply exits by its result with --json as without", async () => {
     const item = { id: "skills:one", area: "skills", source: "claude", title: "one", state: "new", pick: true };
     const got: unknown[] = [];

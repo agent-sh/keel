@@ -2,7 +2,7 @@
 // backups | restore | report | usage | service: the daemon's administration
 // from a terminal. Each asks the running daemon over HTTP, except restore
 // (the daemon must be stopped) and service (writes the systemd unit).
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -315,7 +315,12 @@ const uiCmd = wrap("keel ui [status | install BUNDLE.tar.gz | rollback] [--url U
     else if (sub === "rollback") st = await call(url, "/api/ui/rollback", { method: "POST" });
     else if (sub === "install") {
       if (!file) throw new Error("keel ui install BUNDLE.tar.gz");
-      const r = await fetch(url + "/api/ui", { method: "POST", body: Bun.file(file), headers: { "content-type": "application/gzip", ...authHeaders() } }).catch(() => {
+      // The bundle is checked here first: a path that is not a file is this machine's problem, not the daemon's.
+      const path = resolve(file);
+      const info = statSync(path, { throwIfNoEntry: false });
+      if (!info) throw new Error(`no UI bundle at ${path}`);
+      if (!info.isFile()) throw new Error(`${path} is a ${info.isDirectory() ? "folder" : "special file"}, not a UI bundle (bun scripts/build.ts --ui OUT.tar.gz makes one)`);
+      const r = await fetch(url + "/api/ui", { method: "POST", body: Bun.file(path), headers: { "content-type": "application/gzip", ...authHeaders() } }).catch(() => {
         throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
       });
       st = await r.json().catch(() => ({}));
