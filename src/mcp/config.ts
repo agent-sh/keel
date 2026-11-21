@@ -58,14 +58,23 @@ export function parseConfig(text: string): McpConfigFile {
   return { ...raw, servers: out };
 }
 
-// Write back keeping every other top-level key the file had. Whole or not at
-// all, and what the file held before stays as mcp.json.prev (core/ownfile.ts).
-// Returns the text now in the file.
+// Write back the servers, with every other top-level key as the file has it
+// now and in the file's order: the servers are all a writer changes, and its
+// own copy of the other keys may be older than a hand edit. A file that is
+// gone gets the writer's keys. Whole or not at all, and what the file held
+// before stays as mcp.json.prev (core/ownfile.ts). Returns the text now in
+// the file.
 export function writeConfig(cfg: McpConfigFile, path: string): string {
-  let keep: Record<string, unknown> = {};
-  try { keep = JSON.parse(readFileSync(path, "utf8")); } catch {}
-  delete keep.mcpServers;
-  const text = JSON.stringify({ ...keep, ...cfg, servers: cfg.servers }, null, 2) + "\n";
+  let file: Record<string, unknown> | null = null;
+  try { file = JSON.parse(readFileSync(path, "utf8")); } catch {}
+  const from: Record<string, unknown> = file && typeof file === "object" && !Array.isArray(file) ? file : cfg;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(from)) {
+    if (k === "servers" || k === "mcpServers") out.servers = cfg.servers; // where the file keeps them
+    else out[k] = v;
+  }
+  out.servers = cfg.servers;
+  const text = JSON.stringify(out, null, 2) + "\n";
   writeOwnFile(path, text);
   return text;
 }

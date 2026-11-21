@@ -224,28 +224,32 @@ export class McpManager {
     return { cfg: text === null ? { servers: {} } : parseConfig(text), text };
   }
 
-  // Writes the server list. A file that changed since this manager last read
-  // or wrote it (a hand edit, another process) is merged by server name, not
-  // replaced: what this manager changed is its own, the rest is the file's,
-  // and what the file changed is taken up as a reload would. A file that no
-  // longer parses is left alone: the save fails with the parser's reason.
-  private save() {
+  // Writes `next` as the server list; the one way the list changes. Memory
+  // follows the file: until the write is done nothing in this manager has
+  // changed, so a save that fails leaves it as it was, and a writer touches
+  // its entries only after this returned.
+  // A file that changed since this manager last read or wrote it (a hand
+  // edit, another process) is merged by server name, not replaced: what this
+  // manager changed is its own, the rest is the file's, and what the file
+  // changed is taken up as a reload would. A file that is gone is no edit:
+  // the list is written whole. A file that no longer parses is left alone:
+  // the save fails with the parser's reason.
+  private save(next: Record<string, McpServerConfig>) {
     const file = this.mustSave();
     let text: string | null = null;
-    try { text = readFileSync(file, "utf8"); } catch {} // no file yet
+    try { text = readFileSync(file, "utf8"); } catch {} // no file
     let theirs: string[] = [];
-    if (text !== this.fileText) {
-      let disk: Record<string, McpServerConfig> = {};
-      try { if (text !== null) disk = parseConfig(text).servers; } catch (e) {
+    if (text !== null && text !== this.fileText) {
+      let disk: Record<string, McpServerConfig>;
+      try { disk = parseConfig(text).servers; } catch (e) {
         throw new Error(`${file} was changed and cannot be read, so it is left as it is: ${(e as Error).message}`);
       }
-      const merged = mergeServers(this.base, this.cfg.servers, disk);
-      this.cfg.servers = merged.servers;
-      theirs = merged.theirs;
+      ({ servers: next, theirs } = mergeServers(this.base, next, disk));
     }
-    this.fileText = writeConfig(this.cfg, file);
-    this.base = { ...this.cfg.servers };
-    for (const name of theirs) this.adopt(name, this.cfg.servers[name]);
+    this.fileText = writeConfig({ ...this.cfg, servers: next }, file);
+    this.cfg = { ...this.cfg, servers: next };
+    this.base = { ...next };
+    for (const name of theirs) this.adopt(name, next[name]);
   }
 
   // Asked before a writer changes anything, so one that cannot save changes nothing.
@@ -569,10 +573,8 @@ export class McpManager {
   add(name: string, config: McpServerConfig): string | null {
     const bad = validate(name, config);
     if (bad) return bad;
-    this.mustSave();
+    this.save({ ...this.cfg.servers, [name]: config });
     this.drop(name);
-    this.cfg.servers[name] = config;
-    this.save();
     this.addEntry(name, config);
     if (config.enabled !== false) this.ensure(name).catch(() => {});
     return null;
@@ -582,20 +584,17 @@ export class McpManager {
   setReads(name: string, tools: string[]) {
     const e = this.entries.get(name)!;
     if (e.bundled) throw new Error(`${name} is built in: its reads are its own`);
-    this.mustSave();
     const c: McpServerConfig = { ...e.config, read_tools: [...new Set(tools.map(String))] };
     if (!c.read_tools!.length) delete c.read_tools;
+    this.save({ ...this.cfg.servers, [name]: c });
     e.config = c;
-    this.cfg.servers[name] = c;
-    this.save();
   }
 
   remove(name: string) {
     if (this.entries.get(name)?.bundled) throw new Error(`${name} is built in: turn it off instead`);
-    this.mustSave();
+    const { [name]: _gone, ...rest } = this.cfg.servers;
+    this.save(rest);
     this.drop(name);
-    delete this.cfg.servers[name];
-    this.save();
     this.oauth.forget(name);
   }
 
@@ -626,13 +625,11 @@ export class McpManager {
       if (enabled) void e.bundled.live?.check();
       return;
     }
-    this.mustSave();
     const c = { ...e.config };
     if (enabled) delete c.enabled;
     else c.enabled = false;
+    this.save({ ...this.cfg.servers, [name]: c });
     e.config = c;
-    this.cfg.servers[name] = c;
-    this.save();
     if (!enabled) {
       e.client?.close();
       e.client = undefined;
@@ -748,7 +745,7 @@ export class McpManager {
     const src = readSources(this.workspace, failed);
     for (const f of failed) this.errors.capture("server", new Error(`${f.file}: ${f.error}`), { at: "mcp sources" });
     for (const s of src) this.labels.set(s.source, s.label);
-    const out: McpReloadedServer[] = [];
+    const changed: Record<string, McpServerConfig> = {};
     for (const [name, c] of Object.entries(this.cfg.servers)) {
       if (!c.sync) continue;
       const hit = src.find((s) => s.source === c.sync!.source && s.name === c.sync!.name);
@@ -760,14 +757,17 @@ export class McpManager {
       if (c.enabled === false) next.enabled = false;
       if (c.read_tools) next.read_tools = c.read_tools;
       if (validate(name, next)) continue;
-      this.cfg.servers[name] = next;
-      this.drop(name);
-      this.addEntry(name, next);
-      if (next.enabled !== false) this.ensure(name).catch(() => {});
-      out.push({ name, change: "changed" });
+      changed[name] = next;
     }
-    if (out.length) this.save();
-    return out;
+    const names = Object.keys(changed);
+    if (!names.length) return [];
+    this.save({ ...this.cfg.servers, ...changed });
+    for (const name of names) {
+      this.drop(name);
+      this.addEntry(name, changed[name]!);
+      if (changed[name]!.enabled !== false) this.ensure(name).catch(() => {});
+    }
+    return names.map((name) => ({ name, change: "changed" }));
   }
 
   // Agents replace their files by rename: watch the folders, debounced. A

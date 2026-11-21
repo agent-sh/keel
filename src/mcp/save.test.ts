@@ -1,7 +1,7 @@
 // Where a manager keeps its server list, and what a save does to a file
 // that changed under it.
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "../providers/config.ts";
@@ -60,10 +60,49 @@ test("a save keeps what the file gained since it was read, and what it replaced 
   m.remove("c");
   expect(Object.keys(read(file).servers).sort()).toEqual(["b", "s"]);
 
-  // A file that no longer parses is not written over.
+  m.dispose();
+});
+
+test("a save that fails changes nothing, and a later save does not bring the change in", () => {
+  const d = dir(), file = join(d, "mcp.json");
+  const good = JSON.stringify({ servers: { a: off("a"), b: off("b"), c: off("c") } }, null, 2) + "\n";
+  writeFileSync(file, good);
+  const m = new McpManager(errors, join(d, "state"), "/", file);
+  m.start();
+  const shown = () => m.list().filter((s) => !s.bundled).map((s) => [s.name, s.enabled, s.read_tools.join()]);
+  const before = shown();
+  // A file that no longer parses is not written over, and every writer leaves the manager as it was.
   writeFileSync(file, "{ not json");
-  expect(() => m.setReads("s", [])).toThrow("cannot be read");
+  for (const write of [() => m.remove("b"), () => m.add("e", off("e")), () => m.setReads("a", ["x"]), () => m.toggle("c", true)]) expect(write).toThrow("cannot be read");
   expect(readFileSync(file, "utf8")).toBe("{ not json");
+  expect(shown()).toEqual(before);
+  // The file put right: the next save writes its own change and none of the ones that failed.
+  writeFileSync(file, good);
+  m.setReads("c", ["y"]);
+  const now = read(file).servers;
+  expect(Object.keys(now)).toEqual(["a", "b", "c"]);
+  expect([now.a.read_tools, now.c.read_tools, now.c.enabled]).toEqual([undefined, ["y"], false]);
+  m.dispose();
+});
+
+test("a file that is gone is written whole, and a top-level key changed by hand is kept", () => {
+  const d = dir(), file = join(d, "mcp.json");
+  writeFileSync(file, JSON.stringify({ note: "v1", servers: { a: off("a"), b: off("b"), c: off("c") } }, null, 2) + "\n");
+  const m = new McpManager(errors, join(d, "state"), "/", file);
+  m.start();
+  // Gone is not "every server taken out by hand".
+  rmSync(file);
+  m.setReads("a", ["x"]);
+  expect(Object.keys(read(file))).toEqual(["note", "servers"]);
+  expect(Object.keys(read(file).servers)).toEqual(["a", "b", "c"]);
+  expect(m.list().filter((s) => !s.bundled).map((s) => s.name)).toEqual(["a", "b", "c"]);
+  // The owner changes a key of their own and adds one: the manager's older copy does not win.
+  const mine = read(file);
+  writeFileSync(file, JSON.stringify({ added: 1, note: "v2-by-hand", servers: mine.servers }, null, 2) + "\n");
+  m.toggle("b", true);
+  const now = read(file);
+  expect(Object.keys(now)).toEqual(["added", "note", "servers"]);
+  expect([now.added, now.note, now.servers.b.enabled]).toEqual([1, "v2-by-hand", undefined]);
   m.dispose();
 });
 
