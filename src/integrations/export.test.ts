@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { marked } from "marked";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
-import { activeContext, forClaude, handoffNotes, parseKeelJsonl, toCodexRollout, toKeelJsonl, toMarkdown } from "./export.ts";
+import { activeContext, forClaude, handoffNotes, parseKeelJsonl, rowsOf, toCodexRollout, toKeelJsonl, toMarkdown } from "./export.ts";
 import { readClaude } from "./import/claude.ts";
 import { readCodex } from "./import/codex.ts";
 
@@ -96,6 +96,30 @@ test("a self-contained Keel file carries each file once, and is refused when its
   const other = new TextEncoder().encode("not named");
   const stray = { blob: new Bun.CryptoHasher("sha256").update(other).digest("hex"), size: other.byteLength, data: Buffer.from(other).toString("base64") };
   expect(parseKeelJsonl([lines[0]!.replace('"blobs":1', '"blobs":2'), ...lines.slice(1), JSON.stringify(stray)].join("\n") + "\n")).toEqual({ ok: false, error: expect.stringContaining("none of its prompts names") });
+});
+
+test("an event that names another one names its copy after a Keel file round trip, never the source's", () => {
+  const u1 = ev("user", { text: "one" });
+  const a1 = ev("assistant", { blocks: [{ type: "text", text: "two" }] });
+  const clear = ev("compaction", { mode: "clear", undo_head: a1.id });
+  const u2 = ev("user", { text: "three" });
+  // A summary made on another branch: what it replaced is not in this file.
+  const sum = ev("compaction", { mode: "summary", summary: "S", covered: u1.id, from_event: u2.id, replaced_head: "id-on-another-branch" });
+  const evs = [u1, a1, clear, u2, sum];
+  const p = parseKeelJsonl(toKeelJsonl(s, evs));
+  if (!p.ok) throw new Error(p.error);
+  expect(p.events[2]!.data).toEqual({ mode: "clear", undo_head: "e2" });
+  expect(p.events[4]!.data).toEqual({ mode: "summary", summary: "S", covered: "e1", from_event: "e4" });
+  let k = 0;
+  const rows = rowsOf(p, () => `new${++k}`);
+  expect(rows[2]!.data.undo_head).toBe("new2");
+  expect(rows[4]!.data).toEqual({ mode: "summary", summary: "S", covered: "new1", from_event: "new4" });
+  const text = JSON.stringify(rows);
+  for (const e of evs) expect(text).not.toContain(`"${e.id}"`);
+  expect(text).not.toMatch(/"e\d+"/);
+  // A version 1 file names a covered event by its old id: kept, as before.
+  const v1 = parseKeelJsonl(JSON.stringify({ keel_export: 1 }) + "\n" + JSON.stringify({ kind: "compaction", data: { mode: "summary", covered: "old-id" } }) + "\n");
+  expect(v1.ok && rowsOf(v1)[0]!.data.covered).toBe("old-id");
 });
 
 test("a resume handoff carries the active context only", () => {

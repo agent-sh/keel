@@ -5,7 +5,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
-import { exportTo, parseKeelJsonl, redact, redactDeep, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
+import { exportTo, parseKeelJsonl, redact, redactDeep, rowsOf, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
 import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON } from "../../integrations/import/service.ts";
 import { offered, scrub, tail } from "../../integrations/import/offer.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
@@ -390,14 +390,8 @@ export const importRoutes: RouteModule = (deps) => {
         if (!exact && header.model) notes.push(`Exported with ${header.model}; the next reply will use ${model}: ${listed ? `${header.model} is not listed here` : "the model listing failed"}.`);
         const workspace = isDir(header.workspace) ? header.workspace : deps.workspace;
         if (header.workspace && workspace !== header.workspace) notes.push(`The folder ${header.workspace} is not on this machine: the session works in ${workspace}.`);
-        // New ids; a summary's covered event (a file ref, or a v1 file's old id) follows its event.
-        const ids = new Map<string, string>();
-        const rows = parsed.events.map((e) => {
-          const id = Bun.randomUUIDv7();
-          if (e.ref) ids.set(e.ref, id);
-          return { id, kind: e.kind, data: e.data, ts: Number.isFinite(e.ts) ? Number(e.ts) : Date.now() };
-        });
-        for (const r of rows) if (r.kind === "compaction" && r.data?.covered) r.data = { ...r.data, covered: ids.get(r.data.covered) ?? r.data.covered };
+        // New ids; an event that names another one of the file names its copy.
+        const rows = rowsOf(parsed);
         // The bytes a self-contained file carries (checked against their digests
         // when it was read) are stored once each, under the first name a prompt gives them.
         for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) {

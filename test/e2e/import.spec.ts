@@ -373,3 +373,29 @@ test("a Keel file carries its attached files to an empty Keel", async ({ page, r
   }
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// A clear travels in a Keel file with its way back: in the copy, Undo returns
+// to the copy's own event before the clear, not to an id of the session exported.
+test("a clear in a Keel file is undone in its copy", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: SCRIPTED, title: `Cleared ${Date.now().toString(36)}` } })).json();
+  await say(request, session.id, "Name one harbour.");
+  const cleared = await (await request.post(`/api/sessions/${session.id}/clear`)).json();
+  const source = await eventsOf(request, session.id);
+  const file = await (await request.get(`/api/sessions/${session.id}/export?format=jsonl`)).text();
+  const made = await (await request.post("/api/sessions/import", { data: file, headers: { "content-type": "application/x-ndjson" } })).json();
+  const copy = await eventsOf(request, made.session.id);
+  const clear = copy.find((e) => e.kind === "compaction")!;
+  // The way back is the copy's event before the clear; no id of the source is left in the copy.
+  expect(clear.data.undo_head).toBe(clear.parent);
+  expect(clear.data.undo_head).not.toBe(cleared.undo_head_event_id);
+  const text = JSON.stringify(copy.map((e) => e.data));
+  for (const e of source) expect(text).not.toContain(e.id);
+
+  await page.goto(`/s/${made.session.id}`);
+  await page.getByTestId("undo-clear").click();
+  await expect(page.getByTestId("undo-clear")).toHaveCount(0);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${made.session.id}`)).json()).session.head).toBe(clear.parent);
+  await request.delete(`/api/sessions/${session.id}`);
+  await request.delete(`/api/sessions/${made.session.id}`);
+});

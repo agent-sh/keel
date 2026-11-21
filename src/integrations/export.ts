@@ -5,7 +5,8 @@
 // only ever adds a new file under a new id; nothing there is replaced.
 import { linkSync, mkdirSync, openSync, rmSync, writeSync, closeSync, fsyncSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Session, StoredEvent } from "../core/types.ts";
+import { EVENT_REFS } from "../core/store.ts";
+import type { EventKind, Session, StoredEvent } from "../core/types.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { claudeRoot } from "./import/claude.ts";
 import { codexHome } from "./import/codex.ts";
@@ -98,9 +99,25 @@ export function toMarkdown(s: Session, events: StoredEvent[], include: Set<strin
   return out.join("\n");
 }
 
+// An event's names of other events (a summary's `covered`, a clear's
+// `undo_head`, a summary's `from_event` and `replaced_head`) through a map of
+// ids; a name the map does not hold points outside what is copied and is dropped.
+function renamed(data: any, to: (id: string) => string | undefined): any {
+  if (!data || typeof data !== "object" || !EVENT_REFS.some((k) => typeof data[k] === "string")) return data;
+  const out = { ...data };
+  for (const k of EVENT_REFS) {
+    if (typeof out[k] !== "string") continue;
+    const id = to(out[k]);
+    if (id) out[k] = id;
+    else delete out[k];
+  }
+  return out;
+}
+
 // The Keel file: a header (with how many events follow, so a cut copy is
 // caught), then one event a line. Events carry refs local to the file (e1, e2,
-// ...), not the store's ids; a summary's covered event is named by its ref.
+// ...), not the store's ids; an event that names another one of the branch
+// names it by its ref, and a name of an event outside the branch is left out.
 // With `blob` it is self-contained: each file the prompts name follows the
 // events once, as a line of its own (its sha256 id, its size, its bytes in
 // base64), however many prompts and names refer to it.
@@ -114,10 +131,7 @@ export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (i
     if (bytes) blobs.push({ blob: id, size: bytes.byteLength, data: Buffer.from(bytes).toString("base64") });
   }
   const header = { keel_export: EXPORT_VERSION, events: events.length, blobs: opts.blob ? blobs.length : undefined, scope: "current branch", title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
-  const line = (e: StoredEvent) => {
-    const data = e.kind === "compaction" && e.data.covered ? { ...e.data, covered: ref.get(e.data.covered) } : e.data;
-    return { ref: ref.get(e.id), kind: e.kind, data, ts: e.ts };
-  };
+  const line = (e: StoredEvent) => ({ ref: ref.get(e.id), kind: e.kind, data: renamed(e.data, (id) => ref.get(id)), ts: e.ts });
   return toJsonl([header, ...events.map(line), ...blobs]);
 }
 
@@ -157,6 +171,21 @@ export function parseKeelJsonl(text: string): ParsedExport {
   for (const e of events) if (e.kind === "user") for (const b of e.data?.images ?? []) if (b?.type === "attachment") named.add(b.id);
   for (const id of blobs.keys()) if (!named.has(id)) return { ok: false, error: "the file carries bytes that none of its prompts names, so nothing was imported" };
   return { ok: true, header, events, blobs, notes };
+}
+
+// The events of a parsed Keel file as rows of a new session: new ids, and every
+// name of another event follows that event to its new id. A version 1 file
+// names a summary's covered event by its old id, which is kept as it is.
+export function rowsOf(parsed: Extract<ParsedExport, { ok: true }>, newId: () => string = () => Bun.randomUUIDv7()): { id: string; kind: EventKind; data: any; ts: number }[] {
+  const ids = new Map<string, string>();
+  const rows = parsed.events.map((e) => {
+    const id = newId();
+    if (e.ref) ids.set(e.ref, id);
+    return { id, kind: e.kind as EventKind, data: e.data, ts: Number.isFinite(e.ts) ? Number(e.ts) : Date.now() };
+  });
+  const v1 = parsed.header.keel_export === 1;
+  for (const r of rows) r.data = renamed(r.data, (ref) => ids.get(ref) ?? (v1 && ref === r.data.covered ? ref : undefined));
+  return rows;
 }
 
 // Claude Code wants tool ids of its own shape: each distinct source id gets one

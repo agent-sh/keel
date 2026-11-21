@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS queue (
 
 type EventRow = Omit<StoredEvent, "data"> & { data: string };
 // Fields of event data that hold the id of another event of the same session.
-const EVENT_REFS = ["covered", "undo_head", "from_event", "replaced_head"] as const;
+export const EVENT_REFS = ["covered", "undo_head", "from_event", "replaced_head"] as const;
 const rowToEvent = (r: EventRow): StoredEvent => ({ ...r, parent: r.parent ?? null, kind: r.kind as EventKind, data: JSON.parse(r.data) });
 
 // Cached events are shared by every reader: frozen, so a reader that changes
