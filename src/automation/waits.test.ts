@@ -345,3 +345,25 @@ test("a wake owed at start waits for a cut turn to end, and a draining daemon se
   expect(stored()).toBe(1);
   expect(store.events(cut.id).at(-1)!.data.text).toContain(`<wait_fired id="${w.id}"`);
 });
+
+test("a daemon that stops also stops the probe that is out", async () => {
+  const pids = join(dir, "gh-stop.pids");
+  const gh = join(dir, "gh-stop.sh");
+  writeFileSync(gh, `#!/bin/sh\necho $$ >> ${pids}\nsleep 20\n`, { mode: 0o755 });
+  const started = () => (existsSync(pids) ? readFileSync(pids, "utf8").trim().split("\n").map(Number) : []);
+  const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+  const env = process.env.KEEL_GH_BIN;
+  process.env.KEEL_GH_BIN = gh;
+  const w = waits.create(s.id, waits.normalize({ kind: "pr_checks", repo: "o/r", pr_number: 8 }, dir), { timeout_seconds: 600 });
+  try {
+    await waits.tick();
+    await until(() => started().length === 1);
+    waits.stopAll(); // what the daemon does as it exits
+    await until(() => gone(started()[0]!));
+    expect(gone(started()[0]!)).toBe(true);
+  } finally {
+    for (const pid of started()) { Bun.spawnSync(["pkill", "-P", String(pid)]); try { process.kill(pid); } catch {} }
+    if (env === undefined) delete process.env.KEEL_GH_BIN; else process.env.KEEL_GH_BIN = env;
+    waits.cancel(w.id);
+  }
+});

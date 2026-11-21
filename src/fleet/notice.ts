@@ -30,7 +30,7 @@ export function bindNotices(fleet: Fleet, msgs: Messages, store: Store, engine: 
     return d.handled ? `${who} handled your message and is idle.` : undefined;
   };
 
-  async function probe(w: WaitRecord): Promise<string | undefined> {
+  async function probe(w: WaitRecord, signal?: AbortSignal): Promise<string | undefined> {
     const spec = w.spec as Spec;
     const who = spec.title || spec.session;
     if (spec.machine === "local") {
@@ -54,7 +54,7 @@ export function bindNotices(fleet: Fleet, msgs: Messages, store: Store, engine: 
     if (!looksIdle && Date.now() - (lastAsk.get(w.id) ?? 0) < REMOTE_ASK_MS) return undefined;
     lastAsk.set(w.id, Date.now());
     try {
-      const d = await linkJson<Disposition>(await fleet.peer(m.id), `/api/fleet/messages/${encodeURIComponent(spec.message_id)}/disposition`);
+      const d = await linkJson<Disposition>(await fleet.peer(m.id), `/api/fleet/messages/${encodeURIComponent(spec.message_id)}/disposition`, { signal });
       const out = outcome(spec, d, `${who} on ${m.name}`);
       if (out) lastAsk.delete(w.id);
       return out;

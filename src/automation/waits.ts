@@ -423,7 +423,10 @@ function probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> 
       }
     }
     case "http":
-      return fetch(s.url, { signal, redirect: "manual" }).then((r) => {
+      // Five seconds whatever becomes of the wait: one whose session was deleted
+      // has no row for the scheduler to stop it by.
+      return fetch(s.url, { signal: AbortSignal.any([signal, AbortSignal.timeout(limitOf("http"))]), redirect: "manual" }).then((r) => {
+        void r.body?.cancel().catch(() => {}); // only the status is read: the connection is not kept for a body
         const ok = s.status != null ? r.status === s.status : r.status >= 200 && r.status < 400;
         setError(w.id, ok ? null : `HTTP ${r.status}`);
         return ok ? `${s.url} answered ${r.status}.` : undefined;
@@ -720,6 +723,7 @@ export function recover() {
 
 export function stopAll() {
   for (const [, st] of live) {
+    st.probing?.abort.abort(); // gh has a process group of its own: nothing else stops it with the daemon
     if (st.proc) try { process.kill(-st.proc.pid, "SIGTERM"); } catch {}
     if (st.ws) try { st.ws.close(1001); } catch {}
   }
