@@ -26,7 +26,8 @@ export function edit(sessionId: string, id: string, p: { text?: string; status?:
   return after;
 }
 
-// The model was told of the owner's changes: its next plan has the rows as they read.
+// The model was told of the owner's changes, so its next plan has the rows as
+// they read; or the session was deleted. Nothing of it is remembered.
 export const told = (sessionId: string) => void renames.delete(sessionId);
 
 const FIELD: Record<string, [list: string, text: string]> = { update_plan: ["plan", "step"], write_todos: ["todos", "description"], TodoWrite: ["todos", "content"] };

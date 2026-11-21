@@ -123,6 +123,9 @@ function init(deps: Deps) {
     },
   });
 
+  // A deleted session's remembered renames go with it.
+  deps.bus.on((f) => { if (f.t === "session" && f.deleted) taskRenames.told(f.session.id); });
+
   // A hold that ended with no turn sends what it held (agents.onQueue).
   deps.bus.on((f) => { if (f.t === "queue") agents.onQueue(f); });
 
