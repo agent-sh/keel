@@ -178,6 +178,8 @@ test("a turn the model declined is a failed turn in the list of traces, with the
     const out = toOtlp([declined!], {}).resourceSpans[0]!.scopeSpans[0]!.spans[0]!;
     expect(out.status).toEqual({ code: 2 });
     expect(out.attributes).toContainEqual({ key: "error.type", value: { stringValue: "refusal" } });
+    // The refusal's words stay on the local span.
+    expect(JSON.stringify(out)).not.toContain("Declined for the test.");
   } finally {
     x.close();
   }
