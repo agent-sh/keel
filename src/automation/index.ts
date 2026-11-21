@@ -8,6 +8,7 @@ import { registerShared } from "../tools/registry.ts";
 import * as activity from "./activity.ts";
 import * as consult from "./consult.ts";
 import * as goals from "./goals.ts";
+import * as taskOut from "./task-out.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
@@ -497,28 +498,11 @@ export const automationRoutes: RouteModule = (deps) => {
       PATCH: (req: any) => attempt(async () => json({ task: goals.editTask(req.params.id, req.params.tid, await body(req)) })),
       DELETE: (req: any) => (goals.removeTask(req.params.id, req.params.tid) ? json({ ok: true }) : bad("no such task", 404)),
     },
-    // A task taken out into a session of its own, on this session's model and
-    // folder. Once: a retry answers with the session it already has. A task
-    // that was completed or cancelled meanwhile is not started (reopen it first).
+    // A task taken out into a session of its own (task-out.ts).
     "/api/sessions/:id/tasks/:tid/start": {
       POST: (req: any) => attempt(async () => {
-        const s = session(req.params.id);
-        if (!s) return bad("no such session", 404);
-        const t = goals.tasks(s.id).find((x) => x.id === req.params.tid);
-        if (!t) return bad("no such task", 404);
-        if (t.dest_session && session(t.dest_session)) return json({ session_id: t.dest_session, existing: true });
-        if (t.status === "completed" || t.status === "cancelled") return json({ error: `the task is ${t.status === "completed" ? "done" : "cancelled"}; reopen it to start it`, status: t.status }, 409);
-        let n = store.createSession({ model: s.model, workspace: s.workspace, title: t.text.slice(0, 80) });
-        // Its folder is a folder of the machine the source's tools run on: the
-        // new session's tools run there too, from its first prompt.
-        if (s.machine) {
-          store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(s.machine, n.id);
-          n = store.session(n.id)!;
-        }
-        goals.editTask(s.id, t.id, { status: "in_progress", dest_session: n.id });
-        deps.bus.emit({ t: "session", session: n });
-        deps.engine.send(n.id, `${t.text}\n\n(A task taken from the session "${s.title || "untitled"}".)`, { meta: { kind: "task_start", from_session: s.id, task_id: t.id } });
-        return json({ session_id: n.id }, 201);
+        const r = taskOut.start(req.params.id, req.params.tid);
+        return json(r.body, r.status);
       }),
     },
 
