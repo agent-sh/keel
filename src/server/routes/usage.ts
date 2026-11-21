@@ -115,7 +115,8 @@ export const usageRoutes: RouteModule = ({ store }) => ({
       const from = `FROM telemetry_calls WHERE ${where.join(" AND ")}`;
       let key = "model";
       if (group === "provider") key = "substr(model, 1, max(0, instr(model, ':') - 1))";
-      else if (group === "session") key = "session_id";
+      // (The plus keeps the planner from walking the whole ledger in session order to group it: a time window is searched by its index.)
+      else if (group === "session") key = "+session_id";
       else if (group === "day") {
         // The day number of the local clock: at the zone's offset of that
         // instant (the UTC days that hold requests say where its clock changes),
@@ -124,15 +125,21 @@ export const usageRoutes: RouteModule = ({ store }) => ({
           ? dayOf(`ts + ${offsetSql(store.db.query<{ d: number }, any[]>(`SELECT DISTINCT ${dayOf("ts")} AS d ${from} ORDER BY d`).all(...args).map((r) => r.d), offset)}`)
           : dayOf(`CAST(ts - (${tz * 60_000}) AS INTEGER)`);
       }
-      const groups = store.db
-        .query<Group, any[]>(`SELECT ${key} AS key, COALESCE(purpose, 'turn') AS purpose, MIN(id) AS first, COUNT(*) AS calls,
+      // A day key carries the request's offset in its text: its statement is made
+      // for this request and freed after it. Kept, one would stay for every
+      // offset ever asked for.
+      const sums = (sql: string): Group[] => {
+        if (group !== "day") return store.db.query<Group, any[]>(sql).all(...args);
+        const st = store.db.prepare<Group, any[]>(sql);
+        try { return st.all(...args); } finally { st.finalize(); }
+      };
+      const groups = sums(`SELECT ${key} AS key, COALESCE(purpose, 'turn') AS purpose, MIN(id) AS first, COUNT(*) AS calls,
           SUM(input) AS input_tokens, SUM(output) AS output_tokens, SUM(cache_read) AS cache_read_tokens, SUM(cache_write) AS cache_write_tokens,
           COALESCE(SUM(cost), 0) AS priced_cost_usd,
           SUM(cost IS NULL AND unpriced != 0) AS unpriced_calls,
           SUM(cost IS NULL AND unpriced = 0 AND outcome != 'ok') AS incomplete_calls,
           SUM(cost IS NULL AND unpriced = 0 AND outcome = 'ok') AS included_calls
-          ${from} GROUP BY 1, 2`)
-        .all(...args);
+          ${from} GROUP BY 1, 2`);
       // Buckets and purposes in the order their first request was written.
       const total = empty();
       const buckets = new Map<string, Sum & { first: number }>();

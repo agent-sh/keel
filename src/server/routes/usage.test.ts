@@ -21,17 +21,24 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// Every row a statement gives to JS is counted.
+// Every row a statement gives to JS is counted, and every statement the
+// database keeps (`query` keeps one per text; `prepare` makes one for the call).
 let handed = 0;
+const keptSql = new Set<string>();
+let lastSql = "";
 const query = store.db.query.bind(store.db);
-(store.db as any).query = (sql: string) => {
-  const st = query(sql) as any;
+const counted = (make: (sql: string) => any, keep: boolean) => (sql: string) => {
+  const st = make(sql);
+  if (keep) keptSql.add(sql);
+  lastSql = sql;
   return new Proxy(st, {
     get: (t, k) => (k === "all"
       ? (...a: any[]) => { const rows = t.all(...a); handed += rows.length; return rows; }
       : typeof t[k] === "function" ? t[k].bind(t) : t[k]),
   });
 };
+(store.db as any).query = counted(query, true);
+(store.db as any).prepare = counted(store.db.prepare.bind(store.db), false);
 const route = (usageRoutes({ store } as any) as any)["/api/usage"].GET as (req: Request) => Response;
 const ask = async (params: Record<string, string | number>) => {
   const before = handed;
@@ -182,4 +189,18 @@ test("ten times the requests in the same buckets hand no more rows to JS", async
   console.log("rows handed to JS per query:", JSON.stringify(Object.values(before)));
   for (const n of Object.values(before)) expect(n).toBeLessThanOrEqual(25 * PURPOSES.length + 25);
   for (const c of CASES) same(named((await ask(c)).body), named(walked(c)), JSON.stringify(c));
+});
+
+test("a day's offset leaves no statement behind, and a time window of sessions is searched by its index", async () => {
+  await ask({ group: "day", tz: "Europe/Berlin" });
+  const kept = keptSql.size;
+  for (let m = -720; m <= 840; m += 45) await ask({ group: "day", tz_offset_minutes: m });
+  for (const tz of ZONES) await ask({ group: "day", tz, limit: 4 });
+  expect(keptSql.size).toBe(kept);
+  // Sessions since a time, with no statistics for the planner: the time index, not a walk of the ledger by session.
+  const since = Date.UTC(2026, 9, 31);
+  same(named((await ask({ group: "session", since_ms: since })).body), named(walked({ group: "session", since_ms: since })), "sessions since");
+  const plan = query<{ detail: string }, [number]>(`EXPLAIN QUERY PLAN ${lastSql}`).all(since).map((r) => r.detail).join("; ");
+  expect(plan).toContain("telemetry_calls_ts");
+  expect(plan).not.toContain("telemetry_calls_session");
 });
