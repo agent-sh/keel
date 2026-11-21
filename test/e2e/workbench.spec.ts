@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { openPanel, shoot } from "./shots.ts";
 
@@ -346,7 +348,14 @@ test("a file result's Mention by keyboard", async ({ page, request }) => {
 test("files search, a file and Back keep the keyboard's place", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
-  const s = await mentionSession(request);
+  // A folder of its own in the daemon's default workspace (inside the daemon's
+  // home, wherever the daemon runs), with enough files that the results scroll.
+  const base = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Files by keyboard, setup" } })).json()).session;
+  await request.delete(`/api/sessions/${base.id}`);
+  const folder = join(base.workspace, `files-kb-${Date.now().toString(36)}`);
+  mkdirSync(join(folder, "notes"), { recursive: true });
+  for (let i = 1; i <= 34; i++) writeFileSync(join(folder, "notes", `part-${String(i).padStart(2, "0")}.spec.ts`), `// part ${i}\nexport const part = ${i};\n`);
+  const s = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: folder, title: `Files by keyboard ${Date.now().toString(36)}` } })).json()).session;
   try {
     await page.goto(`/s/${s.id}`);
     await openPanel(page, "files");
@@ -396,6 +405,7 @@ test("files search, a file and Back keep the keyboard's place", async ({ page, r
     await expect(search).toHaveValue(".spec.ts");
   } finally {
     await request.delete(`/api/sessions/${s.id}`);
+    rmSync(folder, { recursive: true, force: true });
   }
 });
 
