@@ -21,11 +21,12 @@ const since = (t: number) => {
 // command started, went on in the background or ended: the "jobs" frame) and
 // at a reconnect: a turn at work costs no read by itself. Only while a
 // background command runs is it read again every two seconds, for the line it
-// last printed. A session on another machine has no such frame here: its
-// list is read as its turn starts and ends and every two seconds meanwhile.
+// last printed. A session on another machine gets the same frame through
+// that machine's relay; its list is also read as its turn starts and ends,
+// for a daemon there that does not send the frame yet.
 function useJobs(sessionId: string, working: boolean) {
   const [jobs, setJobs] = useState<JobView[]>([]);
-  const polled = !!splitId(sessionId) && working;
+  const turn = !!splitId(sessionId) && working;
   useEffect(() => {
     let stop = false;
     let timer: Timer | undefined;
@@ -39,13 +40,13 @@ function useJobs(sessionId: string, working: boolean) {
         // A session placed on another machine answers from there, perhaps without the list.
         const list = r.jobs ?? [];
         setJobs(list);
-        if (polled || list.some((j) => j.running && j.background)) timer = setTimeout(load, 2000);
+        if (list.some((j) => j.running && j.background)) timer = setTimeout(load, 2000);
       } catch (e) { reportError(e, { at: "jobs" }); }
     };
     load();
     const off = onFeature({ frame: (f) => { if (f.name === "jobs" && f.session_id === sessionId) void load(); }, reconnect: () => void load() });
     return () => { stop = true; clearTimeout(timer); off(); };
-  }, [sessionId, polled]);
+  }, [sessionId, turn]);
   return jobs.filter((j) => j.background && (j.running || (j.ended ?? 0) > Date.now() - 60_000));
 }
 
