@@ -12,14 +12,24 @@ const subs = new Set<() => void>();
 const changed = () => subs.forEach((f) => f());
 const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 
-export async function loadWorktree(id: string) {
-  const r = await api<{ worktree: WorktreeStatus | null }>(`/api/sessions/${id}/worktree`);
-  byId = { ...byId, [id]: r.worktree };
-  changed();
+// `shared`: a view that shows the status as it mounts takes the read another
+// view of the session already has out (they mount together). A read after a
+// change (a frame, a move) is always its own.
+const reading = new Map<string, Promise<void>>();
+export function loadWorktree(id: string, shared = false): Promise<void> {
+  const out = shared ? reading.get(id) : undefined;
+  if (out) return out;
+  const read = (async () => {
+    const r = await api<{ worktree: WorktreeStatus | null }>(`/api/sessions/${id}/worktree`);
+    byId = { ...byId, [id]: r.worktree };
+    changed();
+  })().finally(() => { if (reading.get(id) === read) reading.delete(id); });
+  reading.set(id, read);
+  return read;
 }
 
 export function useWorktree(id: string): WorktreeStatus | null | undefined {
-  useEffect(() => { if (!(id in byId)) loadWorktree(id).catch(reportError); }, [id]);
+  useEffect(() => { if (!(id in byId)) loadWorktree(id, true).catch(reportError); }, [id]);
   return useSyncExternalStore(subscribe, () => byId[id]);
 }
 

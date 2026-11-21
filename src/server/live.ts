@@ -51,7 +51,7 @@ export class Live {
 
   open(ws: Bun.ServerWebSocket<unknown>) {
     ws.subscribe(ALL);
-    send(ws, { t: "hello", pid: process.pid, started_ms: this.started, ui: this.ui?.() });
+    send(ws, { t: "hello", pid: process.pid, started_ms: this.started, ui: this.ui?.(), sessions_level: this.bus.sessionsLevel() });
     ws.send(JSON.stringify({ t: "questions", pending: allPendingQuestions(), rev: this.bus.rev() } satisfies Frame));
   }
 

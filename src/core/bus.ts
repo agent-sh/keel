@@ -17,6 +17,15 @@ export class Bus {
     return this.base + this.n;
   }
 
+  // How far the session list has moved: one step for every frame that tells
+  // of a session (made, renamed, moved, archived, deleted). A list read at
+  // one level and a socket opened at the same level have nothing between
+  // them; a socket opened at a higher one missed a change the list lacks.
+  private sessionFrames = 0;
+  sessionsLevel(): number {
+    return this.base + this.sessionFrames;
+  }
+
   // Every frame passes the filters before any listener sees it (secrets are
   // kept out of what the UI is sent).
   use(filter: (f: Frame) => Frame) {
@@ -37,6 +46,7 @@ export class Bus {
   }
 
   emit(f: Frame) {
+    if (f.t === "session") this.sessionFrames++;
     f = { ...this.filter(f), rev: this.base + ++this.n };
     for (const l of this.listeners) {
       try {

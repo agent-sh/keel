@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { connect, createServer, type Socket } from "node:net";
 
 // Feature: what the page asks the daemon for. A session at work costs no
 // read of its own: its background commands are read when the daemon says
@@ -45,4 +46,88 @@ test("a session at work reads its background commands when they change, not per 
   expect(reads.jobs).toBe(after);
   expect(reads.origin).toBe(1);
   await request.delete(`/api/sessions/${session.id}`);
+});
+
+// W2RE-S23. A feature reads its state as the page loads and again when the
+// socket opens again; the page's first socket open is not "again". Two views
+// that need the same list ask for it once.
+test("a page load asks each endpoint once", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Reads at load" } })).json();
+  for (const url of ["/", `/s/${session.id}`]) {
+    const asked: string[] = [];
+    const on = (r: { method(): string; url(): string }) => {
+      const u = new URL(r.url());
+      if (r.method() === "GET" && u.pathname.startsWith("/api/")) asked.push(u.pathname + u.search);
+    };
+    page.on("request", on);
+    await page.goto(url);
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(page.getByTestId("sync-state")).toHaveCount(0);
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 2500)));
+    page.off("request", on);
+    expect(asked.length).toBeGreaterThan(10);
+    expect(asked.filter((p, i) => asked.indexOf(p) !== i).map((p) => p.replace(session.id, ":id")), `repeats loading ${url === "/" ? "/" : "/s/:id"}`).toEqual([]);
+  }
+  await request.delete(`/api/sessions/${session.id}`);
+});
+
+
+// What changes between a page's first reads and its socket's open is told
+// by no frame. A feature's state (the open approvals, a session's state) is
+// therefore read when the socket opens, not before; the session list, read
+// as the page loads so it paints at once, is read again when the daemon says
+// its list moved in between. The socket is held back here the way a slow
+// link does: a pass-through in front of the daemon lets every request
+// through at once and the WebSocket's upgrade when the test says. Inside
+// that gap a session asks for an approval and another session is made: both
+// show once the socket opens, with no reload.
+test("what changed before the page's socket opened is shown once it opens", async ({ page, request, baseURL }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const daemon = new URL(baseURL!);
+  const open = Promise.withResolvers<void>();
+  const pipes = new Set<Socket>();
+  const front = createServer((c) => {
+    const up = connect(Number(daemon.port), daemon.hostname);
+    pipes.add(c).add(up);
+    for (const [x, y] of [[c, up], [up, c]] as const) { x.on("error", () => y.destroy()); x.on("close", () => y.destroy()); }
+    up.pipe(c);
+    c.once("data", (first) => {
+      const go = () => { up.write(first); c.pipe(up); };
+      if (/^upgrade:\s*websocket/im.test(first.toString("latin1"))) void open.promise.then(go);
+      else go();
+    });
+  });
+  await new Promise<void>((r) => front.listen(0, "127.0.0.1", r));
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Asked before the socket opened" } })).json();
+  let made: string | undefined;
+  try {
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    await page.goto(`http://127.0.0.1:${(front.address() as { port: number }).port}/`);
+    const row = page.locator(`[data-testid="session-row"][data-session="${session.id}"]`);
+    await expect(row).toBeVisible();
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 700))); // whatever the page reads as it loads has been answered
+    // The session asks for an approval while the socket is still on its way.
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch asked.txt" } }])}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/approvals`)).json()).approvals.length, { timeout: 30_000 }).toBe(1);
+    await expect(row).not.toHaveAttribute("data-watch", "need");
+    // And a session is made meanwhile.
+    made = (await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Made before the socket opened" } })).json()).session.id as string;
+    const fresh = page.locator(`[data-testid="session-row"][data-session="${made}"]`);
+    await expect(fresh).toHaveCount(0);
+    const loads: string[] = [];
+    page.on("framenavigated", (f) => { if (f === page.mainFrame()) loads.push(f.url()); });
+    open.resolve();
+    await expect(row).toHaveAttribute("data-watch", "need", { timeout: 10_000 });
+    await expect(fresh).toContainText("Made before the socket opened", { timeout: 10_000 });
+    expect(loads).toEqual([]); // shown by the page as it stands: nothing was loaded again
+  } finally {
+    open.resolve();
+    if (made) await request.delete(`/api/sessions/${made}`);
+    await request.delete(`/api/sessions/${session.id}`);
+    for (const s of pipes) s.destroy();
+    front.close();
+  }
 });

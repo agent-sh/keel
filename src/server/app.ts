@@ -188,7 +188,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         GET: wrap((req) => {
           const q = new URL(req.url).searchParams;
           const fs = [...listFilters.values()];
-          return json({ sessions: store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q))) });
+          // `level`: how far the list had moved when it was read (the socket's hello says the same of its open).
+          return json({ sessions: store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q))), level: bus.sessionsLevel() });
         }),
         POST: wrap(async (req) => {
           const body = (await req.json().catch(() => ({}))) as any;

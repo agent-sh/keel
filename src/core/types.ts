@@ -186,7 +186,8 @@ export type Frame = (
 // replay, the reply a running turn has streamed so far, a ping's answer.
 export type DraftBlocks = Record<number, { kind: "text" | "thinking" | "tool_input"; text: string; name?: string }>;
 export type SocketFrame =
-  | { t: "hello"; pid: number; started_ms: number; ui?: string }
+  // `sessions_level`: how far the session list had moved when this socket was subscribed (Bus.sessionsLevel).
+  | { t: "hello"; pid: number; started_ms: number; ui?: string; sessions_level?: number }
   | { t: "replayed"; cursors: Record<string, number> }
   | { t: "draft"; session_id: string; blocks: DraftBlocks; rev?: number }
   | { t: "pong"; nonce?: number };

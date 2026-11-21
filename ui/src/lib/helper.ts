@@ -4,7 +4,7 @@
 import { useSyncExternalStore } from "react";
 import type { DigestEvent } from "../../../src/helper/policy.ts";
 import type { MemoryRecord } from "../../../src/helper/records.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { api, onFeature, readAtOpen } from "./store.ts";
 import { navigate } from "./ui.ts";
 
 export type { DigestEvent, MemoryRecord };
@@ -31,13 +31,12 @@ export async function loadHelper(): Promise<HelperView> {
   set({ view, memory: mem.items });
   return view;
 }
-loadHelper().catch(reportError);
 onFeature({
   frame(f) {
     if (f.name === "helper") set({ view: f.data });
     else if (f.name === "helper_memory") set({ memory: f.data.items });
   },
-  reconnect: () => void loadHelper().catch(reportError),
+  reconnect: readAtOpen(loadHelper),
 });
 
 export async function setHelper(p: Partial<Pick<HelperView, "on" | "mail_every_min" | "wake_gap_min">>) {

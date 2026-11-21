@@ -4,7 +4,7 @@
 import { Switch } from "@base-ui/react/switch";
 import { Plus, Search } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { api, reportError, failed } from "../../lib/store.ts";
+import { api, reportError, failed, workspaces } from "../../lib/store.ts";
 import { WorkspacePicker } from "../WorkspacePicker.tsx";
 import { Seg as Track } from "../Seg.tsx";
 
@@ -25,7 +25,7 @@ const setFolder = (f: string) => { folder = f; subs.forEach((s) => s()); };
 export function useFolder(): [string, (f: string) => void] {
   const f = useSyncExternalStore((s) => (subs.add(s), () => void subs.delete(s)), () => folder);
   useEffect(() => {
-    if (!folder) api<{ default: string; recent: { path: string }[] }>("/api/workspaces").then((r) => folder || setFolder(r.recent[0]?.path ?? r.default)).catch(reportError);
+    if (!folder) workspaces().then((r) => folder || setFolder(r.recent[0]?.path ?? r.default)).catch(reportError);
   }, []);
   return [f, setFolder];
 }

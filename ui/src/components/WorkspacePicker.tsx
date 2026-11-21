@@ -1,7 +1,7 @@
 import { Popover } from "@base-ui/react/popover";
 import { ChevronDown, ChevronLeft, Folder, FolderGit2, History } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, reportError, failed } from "../lib/store.ts";
+import { api, reportError, failed, workspaces } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 
@@ -17,7 +17,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
   const [browse, setBrowse] = useState<{ path: string; parent: string | null; dirs: Dir[]; is_git: boolean } | null>(null);
   const [typed, setTyped] = useState("");
 
-  useEffect(() => { api("/api/workspaces").then(setInfo).catch(reportError); }, [open]);
+  useEffect(() => { workspaces<NonNullable<typeof info>>().then(setInfo).catch(reportError); }, [open]);
   // The repositories under the repo roots and of past sessions (GET /api/fs/repos).
   const [repos, setRepos] = useState<{ name: string; path: string; linked_worktree: boolean }[]>([]);
   useEffect(() => { if (open) api<{ repos: typeof repos }>("/api/fs/repos").then((r) => setRepos(r.repos)).catch(reportError); }, [open]);

@@ -8,7 +8,7 @@ import type { WaitRecord } from "../../../src/automation/waits.ts";
 import type { Activity } from "../../../src/automation/activity.ts";
 import type { Snooze } from "../../../src/automation/snooze.ts";
 import type { Goal, Task } from "../../../src/automation/goals.ts";
-import { actions, api, newer, onFeature, reportError } from "./store.ts";
+import { actions, api, newer, onFeature, readAtOpen, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { clock } from "./utils.ts";
@@ -219,7 +219,7 @@ onFeature({
     else if (kind === "tasks") { if (newer(`tasks:${d.session_id}`, f.rev)) set({ tasks: { ...state.tasks, [d.session_id]: d.tasks } }); }
     else if (kind === "activity") set({ activityTick: state.activityTick + 1, lastActivity: d });
   },
-  reconnect: () => void auto.load().catch(reportError),
+  reconnect: () => reread(),
 });
 
 // Presence: which session is on screen and whether the page has focus (an
@@ -261,7 +261,7 @@ function input() {
   if (back || now - sent.at > 5_000) presence(true);
 }
 for (const type of ["keydown", "pointerdown", "pointermove", "wheel", "touchstart"]) addEventListener(type, input, { capture: true, passive: true });
-auto.load().catch(reportError);
+const reread = readAtOpen(() => auto.load());
 
 
 export const openSession = (id: string) => navigate({ name: "session", id });

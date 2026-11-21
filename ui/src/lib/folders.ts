@@ -4,7 +4,7 @@
 // settings.folder_id, which comes with the session.
 import { useSyncExternalStore } from "react";
 import type { SessionFolder } from "../../../src/server/routes/session-folders.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { api, onFeature, readAtOpen, reportError } from "./store.ts";
 
 export type { SessionFolder };
 type State = { folders: SessionFolder[]; loaded: boolean };
@@ -12,11 +12,9 @@ let state: State = { folders: [], loaded: false };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => { state = { ...state, ...p }; subs.forEach((f) => f()); };
 
-export function loadFolders() {
-  return api<{ folders: SessionFolder[] }>("/api/session-folders").then((r) => set({ folders: r.folders, loaded: true }), reportError);
-}
-loadFolders();
-onFeature({ frame: (f) => { if (f.name === "folders") loadFolders(); }, reconnect: loadFolders });
+const read = () => api<{ folders: SessionFolder[] }>("/api/session-folders").then((r) => set({ folders: r.folders, loaded: true }));
+export const loadFolders = () => read().catch(reportError);
+onFeature({ frame: (f) => { if (f.name === "folders") loadFolders(); }, reconnect: readAtOpen(read) });
 
 export const getFolders = () => state;
 export function useFolders<T>(sel: (s: State) => T): T {

@@ -28,7 +28,7 @@ export function WorktreeChip({ session }: { session: Session }) {
   const [open, setOpen] = useState(false);
 
   // Fresh counts when the popup opens and after each turn.
-  useEffect(() => { if (open || session.phase === "idle") loadWorktree(session.id).catch(reportError); }, [open, session.phase]);
+  useEffect(() => { if (open || session.phase === "idle") loadWorktree(session.id, true).catch(reportError); }, [open, session.phase]);
   useEffect(() => {
     if (!open || !wt || wt.state !== "active") return;
     api(`/api/sessions/${session.id}/pr`).then(setPr).catch(reportError);

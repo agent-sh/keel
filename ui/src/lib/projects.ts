@@ -2,7 +2,7 @@
 // in which, loaded once and again on each "projects" frame and reconnect.
 import { useSyncExternalStore } from "react";
 import type { Project } from "../../../src/server/routes/projects.ts";
-import { api, getState as appState, onFeature, reportError } from "./store.ts";
+import { api, getState as appState, onFeature, readAtOpen, reportError } from "./store.ts";
 import { navigate, savePref, setUI } from "./ui.ts";
 
 export type { Project };
@@ -11,11 +11,9 @@ let state: State = { projects: [], members: {}, loaded: false };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => { state = { ...state, ...p }; subs.forEach((f) => f()); };
 
-export function loadProjects() {
-  return api<{ projects: Project[]; members: Record<string, string> }>("/api/projects").then((r) => set({ ...r, loaded: true }), reportError);
-}
-loadProjects();
-onFeature({ frame: (f) => { if (f.name === "projects") loadProjects(); }, reconnect: loadProjects });
+const read = () => api<{ projects: Project[]; members: Record<string, string> }>("/api/projects").then((r) => set({ ...r, loaded: true }));
+export const loadProjects = () => read().catch(reportError);
+onFeature({ frame: (f) => { if (f.name === "projects") loadProjects(); }, reconnect: readAtOpen(read) });
 
 export const getProjects = () => state;
 export const subscribeProjects = (f: () => void) => (subs.add(f), () => void subs.delete(f));

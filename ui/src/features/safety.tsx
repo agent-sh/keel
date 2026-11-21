@@ -5,7 +5,7 @@ import { lazy } from "react";
 import { panels, settingsSections } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { safety } from "../lib/safety.ts";
-import { getState, reportError, failed } from "../lib/store.ts";
+import { getState, failed } from "../lib/store.ts";
 import { getUI, savePref } from "../lib/ui.ts";
 import { handoff } from "../lib/worktree.ts";
 import { confirmAction } from "../components/Confirm.tsx";
@@ -80,5 +80,3 @@ registerCommand(
   { id: "handoff-main", label: "Move this session to the main checkout", group: "Session", words: "handoff branch local worktree", when: () => !!current(), run: () => void move("main") },
 );
 slash.add({ id: "worktree", label: "Move this session and its uncommitted work to a new worktree", run: () => move("worktree") });
-
-safety.loadPending().catch(reportError);

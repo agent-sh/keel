@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { Approval, BatchResult, SessionPerm } from "../../../src/safety/gate.ts";
 import type { Rule, Suggest } from "../../../src/safety/policy.ts";
-import { api, newer, onFeature, reportError } from "./store.ts";
+import { api, newer, onFeature, readAtOpen, reportError } from "./store.ts";
 
 export type { Approval, Rule, SessionPerm, Suggest };
 export type ModeInfo = { id: SessionPerm["mode"]; name: string; description: string; group?: string; summary?: string };
@@ -145,7 +145,9 @@ onFeature({
     }
   },
   reconnect() {
-    safety.loadPending().catch(reportError);
+    pending();
     for (const id of shown.keys()) safety.loadSession(id).catch(reportError);
   },
 });
+// The open cards of every session, read as the page loads.
+const pending = readAtOpen(() => safety.loadPending());

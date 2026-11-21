@@ -4,7 +4,7 @@
 // reloading, so nothing typed is lost).
 import { RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, downSince, onFeature, reportError, useStore } from "../lib/store.ts";
+import { api, downSince, onFeature, readAtOpen, useStore } from "../lib/store.ts";
 import { clock } from "../lib/utils.ts";
 
 // A drop this short is a blip (the socket opened again at once): nothing is said.
@@ -20,9 +20,8 @@ export function AdminBand() {
       if (build.current && build.current !== b.build_id) setUpdated(true);
       build.current ??= b.build_id;
       setDraining(b.draining);
-    }).catch((e) => reportError(e, { at: "daemon status" }));
-    check();
-    return onFeature({ frame: (f) => { if (f.name === "daemon") setDraining(f.data.draining); }, reconnect: check });
+    });
+    return onFeature({ frame: (f) => { if (f.name === "daemon") setDraining(f.data.draining); }, reconnect: readAtOpen(check, "daemon status") });
   }, []);
   // A request the daemon turned away while draining (reportError says so): shown for a moment.
   const [refused, setRefused] = useState(false);

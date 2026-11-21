@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, Fragment } from "react";
-import { actions, api, reportError, useStore } from "../lib/store.ts";
+import { actions, api, reportError, useStore, workspaces } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
@@ -31,7 +31,7 @@ export function StartBox({ only }: { only?: boolean } = {}) {
   const newProject = useUI((s) => s.newProject);
   const chosen = useUI((s) => s.newWorkspace);
   const [fallback, setFallback] = useState("");
-  useEffect(() => { api("/api/workspaces").then((r) => setFallback(r.recent[0]?.path ?? r.default)).catch(reportError); }, []);
+  useEffect(() => { workspaces().then((r) => setFallback(r.recent[0]?.path ?? r.default)).catch(reportError); }, []);
   const workspace = chosen || fallback;
   const model = newModel || defaultModel;
   // Saving another default ends a pick made against the old one.

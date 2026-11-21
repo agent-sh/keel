@@ -12,7 +12,7 @@ import { useAuto } from "./automation.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
 import { sendDrafts, unsentOf, useShelfVersion } from "./send-drafts.ts";
-import { actions, api, getState, newer, onFeature, reportError, useStore } from "./store.ts";
+import { actions, api, getState, newer, onFeature, readAtOpen, reportError, useStore } from "./store.ts";
 import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
 
 export { toolLine };
@@ -100,9 +100,8 @@ onFeature({
     const { [f.session_id]: _gone, ...rest } = told;
     setTold(rest);
   },
-  reconnect: () => void loadStates().catch(reportError),
+  reconnect: readAtOpen(loadStates),
 });
-loadStates().catch(reportError);
 
 // A message this browser keeps because it was not sent, or nobody confirmed
 // it, waits for the owner like a question does: the session needs them. One

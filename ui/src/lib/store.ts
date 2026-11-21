@@ -149,7 +149,8 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
 
 export const actions = {
   async loadSessions() {
-    const { sessions } = await api<{ sessions: Session[] }>("/api/sessions");
+    const { sessions, level } = await api<{ sessions: Session[]; level?: number }>("/api/sessions");
+    listLevel = level;
     // Sessions of other machines (the fleet module keeps them) stay.
     const remote = Object.entries(state.sessions).filter(([id]) => splitId(id));
     set({ sessions: Object.fromEntries([...remote, ...sessions.map((s) => [s.id, s] as const)]), loaded: { ...state.loaded, sessions: true } });
@@ -448,6 +449,24 @@ export function onFeature(l: FeatureListener) {
   features.add(l);
   return () => void features.delete(l);
 }
+// The page's socket has opened at least once.
+let opened = false;
+// A feature reads its own state when the page's socket opens, the first
+// time and every time after: from the open on, frames tell what changes, so
+// nothing falls between the read and the frames. (Read as the page loaded,
+// a change before the socket opened was told by no frame and stayed unseen:
+// an approval asked for in that moment showed only at the next reconnect.)
+// A feature that arrives after the socket opened reads at once. Returns the
+// feature's `reconnect` listener: one read per open, none before.
+export function readAtOpen(load: () => Promise<unknown>, at?: string): () => void {
+  const read = () => void load().catch((e) => reportError(e, at ? { at } : undefined));
+  if (opened) read();
+  return read;
+}
+// The folders a new session can start in: read once for the views that ask for it together.
+type Workspaces = { default: string; home: string; recent: { path: string; name?: string; last?: number }[] };
+let workspacesOut: Promise<any> | null = null;
+export const workspaces = <T = Workspaces>(): Promise<T> => (workspacesOut ??= api("/api/workspaces").finally(() => { workspacesOut = null; }));
 // src/engine/build-pin.ts: `waiting` is what the running build changed that the session does not carry yet.
 export type BuildState = {
   build: string;
@@ -679,10 +698,12 @@ export function preloadSession(id: string) {
 // The page's first socket open does not load the sessions, models and errors
 // the page is loading at start; it does when those loads failed (the daemon
 // was not up yet).
-let opened = false;
 let bootLoad: Promise<unknown> | null = null;
 export const setBootLoad = (p: Promise<unknown>) => { bootLoad = p; };
 let onReplayed: ((ends: Record<string, number>) => void) | undefined;
+// How far the daemon's session list had moved: when the page last read it, and (told once per socket) when the socket was subscribed.
+let listLevel: number | undefined;
+let onHello: ((level: number | undefined) => void) | undefined;
 // The last socket opened and closed before its replay was through (a replay
 // too large for it): the next one reads the open transcripts by HTTP too.
 let cutShort = false;
@@ -714,7 +735,14 @@ export function connect() {
     };
     const first = !opened && bootLoad;
     opened = true;
-    const listed = first ? first.then(() => {}, reload) : reload();
+    // The list the page read as it loaded stands for this first open when
+    // nothing moved between the two: the daemon says how far its session
+    // list had moved at each. A session made, renamed or deleted after the
+    // read and before the socket was subscribed was told by no frame: the
+    // list is then read again.
+    const hello = new Promise<number | undefined>((said) => (onHello = said));
+    const level = () => hello.then((at) => (at !== undefined && listLevel !== undefined && at > listLevel ? actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" })) : undefined));
+    const listed = first ? first.then(level, reload) : reload();
     // Once a page: what this browser kept for sessions that were deleted while no page was open goes.
     void listed.then(() => {
       if (swept || !state.loaded.sessions) return; // a list that did not come is asked for again at the next socket
@@ -798,13 +826,17 @@ export function connect() {
     // opened (nothing was emitted between them): the open dropped the snapshot's copy.
     else if (f.t === "draft") delivered(() => { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); });
     else if (f.t === "replayed") { caught = true; if (socket === ws) onReplayed?.(f.cursors ?? {}); }
-    else if (f.t === "hello" || f.t === "ui") servedUi(f.t === "ui" ? f.version : f.ui);
+    else if (f.t === "hello" || f.t === "ui") {
+      if (f.t === "hello" && socket === ws) onHello?.(f.sessions_level);
+      servedUi(f.t === "ui" ? f.version : f.ui);
+    }
     else delivered(() => apply(f));
   };
   ws.onclose = () => {
     clearInterval(pinger);
     clearTimeout(deadline);
     if (socket !== ws) return;
+    onHello?.(undefined); // a socket that closed before it said hello leaves nothing waiting on it
     if (open && !caught) cutShort = true;
     clearInterval(questionPoll);
     drops++;
