@@ -87,7 +87,9 @@ export const within = (w: number, h: number, l: Pick<ImageLimits, "edge" | "patc
 // Matched on the message, since every provider sends these as a plain 400.
 const IMAGE = /\bimages?\b|image_url|input_image|inline_?data/i;
 const FAULT = /exceed|too (large|big|many|small)|maximum|max allowed|limit|invalid|unsupported|not support|could ?n[o']t|cannot|can't|unable|failed|not (a )?valid|malformed|corrupt|decode|process/i;
-const NOT_IMAGE = /context.{0,20}(length|window)|too many tokens|prompt is too long|rate.?limit|quota/i;
+// Refusals over how much is asked, not over an image: the window, a rate or a
+// quota (a 413 that reports tokens a minute is one of these).
+const NOT_IMAGE = /context.{0,20}(length|window)|too many tokens|prompt is too long|rate.?limit|quota|\b[tr]pm\b|(tokens|requests) per (minute|day)|per.minute/i;
 export function imageRefusal(e: unknown): { edge?: number } | null {
   const err = e as any;
   if (!err) return null;
@@ -101,9 +103,14 @@ export function imageRefusal(e: unknown): { edge?: number } | null {
 // A request refused as too large in bytes (HTTP 413, Anthropic's
 // request_too_large; 128 MB on the Claude API, less on Bedrock and Vertex).
 // When the request holds images they are what made it so: base64 images are
-// megabytes each, the words of a full context window are not.
+// megabytes each, the words of a full context window are not. A 413 can also
+// be a gateway's passing answer or a rate limit's: the engine sends the same
+// request once more before it acts on one, and a 413 about a rate, a quota or
+// tokens is not one of these.
 export function requestTooLarge(e: unknown): boolean {
   const err = e as any;
   if (!err || (typeof err.kind === "string" && err.kind !== "invalid")) return false;
-  return Number(err.status ?? err.statusCode ?? 0) === 413 || /request_too_large|request (entity |body |payload |size )?(is )?too large|payload too large|request size exceed/i.test(String(err.message ?? ""));
+  const msg = String(err.message ?? "");
+  if (NOT_IMAGE.test(msg)) return false;
+  return Number(err.status ?? err.statusCode ?? 0) === 413 || /request_too_large|request (entity |body |payload |size )?(is )?too large|payload too large|request size exceed/i.test(msg);
 }

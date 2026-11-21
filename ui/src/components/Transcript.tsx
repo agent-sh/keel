@@ -1,5 +1,5 @@
 import { CopyButton } from "./CopyButton.tsx";
-import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
+import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { Fragment, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
@@ -277,6 +277,24 @@ function Checkpoint({ e, s, undoable }: { e: StoredEvent; s: Session; undoable?:
       </summary>
       <div className="mt-2 rounded-lg border border-line bg-raised px-4 py-3 text-ui text-muted"><Markdown text={e.data.summary} /></div>
     </details>
+  );
+}
+
+// The provider refused a request over the session's images: what Keel did so
+// the turn went on. Where it left images out, the newest such note offers to
+// send them again (the session's images_out is cleared; a provider that
+// refuses them again has them left out again).
+function ImagesNote({ e, s, last }: { e: StoredEvent; s: Session; last: boolean }) {
+  const out = s.settings.images_out?.length ?? 0;
+  return (
+    <Divider testid="images-note">
+      <span className="flex items-center gap-1.5"><ImageOff className="size-3.5 shrink-0" /> {e.data.text}</span>
+      {last && e.data.left_out > 0 && (out > 0 ? (
+        <button type="button" data-testid="images-restore" className="shrink-0 rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.patch(s.id, { settings: { images_out: null } }).catch(reportError)}>
+          Send them again
+        </button>
+      ) : <span data-testid="images-restored">Sent again from the next request.</span>)}
+    </Divider>
   );
 }
 
@@ -674,6 +692,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   let reply: string[] = [];
   let notes: StoredEvent[] = []; // harness notes of the turn, shown on its footer
   const lastEnd = [...events].reverse().find((e) => e.kind === "turn_end")?.id;
+  const lastImages = events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id;
 
   return (
     // A strip of the conversation stays above a tall stack of cards and a long
@@ -747,6 +766,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
             if (e.kind === "note" && e.data.kind === "fork") return <ForkNote key={e.id} e={e} />;
             if (e.kind === "note" && e.data.kind === "peer_refused") return <RefusedNote key={e.id} e={e} />;
+            if (e.kind === "note" && e.data.kind === "images") return <ImagesNote key={e.id} e={e} s={session} last={e.id === lastImages} />;
             // What the new model is told after a switch: the switch note above already says it.
             if (e.kind === "note" && e.data.kind === "model_told") return null;
             // A model switch: who made it and when, inline where it took effect.

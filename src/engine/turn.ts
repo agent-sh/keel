@@ -764,6 +764,7 @@ export class Engine {
     req.messages = await fitForWire(whole, limits, out);
     // What an image refusal changed for this request; kept for the session once it passes.
     let fixed: { cause: unknown; edge?: number; out?: string[] } | undefined;
+    let resent = false;
     for (let attempt = 0; ; attempt++) {
       partial.clear();
       this.measure(id, (h) => h.requestSent?.(session, req));
@@ -810,7 +811,17 @@ export class Engine {
         // images of this history are left out, each as a note. Either way the
         // turn goes on.
         const held = retryable(e) ? [] : imageKeys(whole);
-        const refusal = held.length ? imageRefusal(e) ?? (requestTooLarge(e) ? {} : null) : null;
+        const large = held.length > 0 && !imageRefusal(e) && requestTooLarge(e);
+        // Too large in bytes can be a passing answer (a gateway's, a proxy's):
+        // the same request goes once more before any image is left out.
+        if (large && !resent) {
+          resent = true;
+          const wait = backoffMs(0);
+          this.status(id, { kind: "retry", attempt: 1, max: 1, at: Date.now() + wait, message: errorText(e) });
+          await sleep(wait, signal);
+          continue;
+        }
+        const refusal = held.length ? imageRefusal(e) ?? (large ? {} : null) : null;
         if (refusal) {
           const left = held.filter((k) => !out.has(k));
           if (!left.length) throw Object.assign(new Error(`The provider refused the request over an image, and again with every image of this session left out: compact the session or go on in a new one. (${errorText(e).slice(0, 110)})`), { cause: e, kind: "invalid", status: (e as any)?.status });
@@ -845,11 +856,11 @@ export class Engine {
       ...(fixed.out ? { images_out: [...new Set([...(s.settings.images_out ?? []), ...fixed.out])] } : {}),
     });
     const n = fixed.out?.length ?? 0;
-    const text = n
-      ? `The provider refused a request over this session's images (${errorText(fixed.cause).slice(0, 160)}). ${n === 1 ? "The image" : `The ${n} images`} sent so far ${n === 1 ? "is" : "are"} left out of what the model reads from here; new images are sent as before.`
-      : `The provider takes images of at most ${fixed.edge} px a side here: larger ones in this session are sent scaled down from now on.`;
+    const note = n
+      ? { text: `${n === 1 ? "One image" : `${n} images`} left out of what the model reads: the provider refused a request over this session's images.`, left_out: n, detail: errorText(fixed.cause) }
+      : { text: `Images over ${fixed.edge} px a side are sent scaled down: the provider stated that limit.`, detail: errorText(fixed.cause) };
     this.errors.capture("provider", fixed.cause, { session: id, then: n ? `${n} images left out for this session` : `images scaled to ${fixed.edge} px for this session` });
-    this.imageNotes.set(id, text);
+    this.imageNotes.set(id, note);
     this.sayImages(id, purpose);
   }
 
@@ -857,12 +868,14 @@ export class Engine {
   // request. A summary request (a compaction is bound to the head it read: a
   // note appended while it runs would have it thrown away with the summary
   // paid for), a side answer and a reader leave it for the next turn's request.
-  private imageNotes = new SessionMap<string>(256);
+  // `left_out`: how many images it left out; the owner can have them sent
+  // again by clearing the session's images_out (the note offers it).
+  private imageNotes = new SessionMap<{ text: string; left_out?: number; detail: string }>(256);
   private sayImages(id: string, purpose: ProviderRequest["purpose"]) {
-    const text = purpose === "turn" ? this.imageNotes.get(id) : undefined;
-    if (!text) return;
+    const note = purpose === "turn" ? this.imageNotes.get(id) : undefined;
+    if (!note) return;
     this.imageNotes.delete(id);
-    this.append(id, "note", { kind: "images", text });
+    this.append(id, "note", { kind: "images", ...note });
   }
 
   // A subagent's cache lifetime, where the route offers a choice. It starts

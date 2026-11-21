@@ -248,7 +248,7 @@ test("a provider that states a lower limit: the images are scaled to it, the tur
   expect(e.store.session(e.s.id)!.settings.image_edge).toBe(1500);
   const events = e.store.events(e.s.id);
   expect(events.at(-1)!.data.reason).toBe("end_turn");
-  expect(events.find((x) => x.kind === "note" && x.data.kind === "images")!.data.text).toContain("at most 1500 px");
+  expect(events.find((x) => x.kind === "note" && x.data.kind === "images")!.data.text).toContain("Images over 1500 px a side are sent scaled down");
   expect(e.captured.some((c) => String(c?.then).includes("1500"))).toBe(true);
   // The next turn is not refused at all, and its prefix is the same bytes.
   await e.turn("more");
@@ -268,7 +268,7 @@ test("a provider that refuses an image for a reason scaling cannot fix: the imag
   const events = e.store.events(e.s.id);
   expect(events.at(-1)!.data.reason).toBe("end_turn");
   expect(events.some((x) => x.kind === "error")).toBe(false);
-  expect(events.find((x) => x.kind === "note" && x.data.kind === "images")!.data.text).toMatch(/^The provider refused a request over this session's images \(.*Could not process image\)\. The image sent so far is left out/);
+  expect(events.find((x) => x.kind === "note" && x.data.kind === "images")!.data).toMatchObject({ text: "One image left out of what the model reads: the provider refused a request over this session's images.", left_out: 1 });
   expect(e.store.session(e.s.id)!.settings.images_out).toHaveLength(1);
   expect(events[0]!.data.images[0]).toEqual(img); // stored as it was
   await e.turn("more");
@@ -297,10 +297,22 @@ test("a request refused as too large in bytes while it holds images goes on with
   e.store.append(e.s.id, "user", { text: "see this", images: [shot] });
   e.store.append(e.s.id, "assistant", { blocks: [{ type: "text", text: "seen" }], model: "p:m", stop: "end_turn", usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 } });
   await e.turn("go on");
-  expect(e.asked).toHaveLength(2);
-  expect(imagesOf(e.asked[1].messages)).toEqual([]);
+  expect(e.asked).toHaveLength(3); // refused, the same request once more, then without the image
+  expect(imagesOf(e.asked[1].messages)).toHaveLength(1);
+  expect(imagesOf(e.asked[2].messages)).toEqual([]);
   expect(e.store.events(e.s.id).at(-1)!.data.reason).toBe("end_turn");
   expect(e.store.session(e.s.id)!.settings.images_out).toHaveLength(1);
+  // One passing 413 (a gateway's): the same request passes the second time and nothing is left out.
+  const once = await engineWith((_req, n) => { if (n === 1) throw classify("p", 413, new Headers(), "<html><h1>413 Request Entity Too Large</h1></html>"); return undefined; });
+  once.store.append(once.s.id, "user", { text: "see this", images: [block(png(300, 200))] });
+  once.store.append(once.s.id, "assistant", { blocks: [{ type: "text", text: "seen" }], model: "p:m", stop: "end_turn", usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 } });
+  await once.turn("go on");
+  expect(once.asked.map((r) => imagesOf(r.messages).length)).toEqual([1, 1]);
+  expect(once.store.session(once.s.id)!.settings.images_out).toBeUndefined();
+  // A 413 about tokens a minute is a rate limit, not the images.
+  const { requestTooLarge } = await import("../providers/image-limits.ts");
+  expect(requestTooLarge(classify("p", 413, new Headers(), JSON.stringify({ error: { message: "Request too large for model `x` on tokens per minute (TPM): Limit 6000, Requested 9106" } })))).toBe(false);
+  expect(requestTooLarge(no)).toBe(true);
   // No image in the request: nothing of this applies, the provider's refusal is the turn's error.
   const plain = await engineWith(() => { throw no; });
   await plain.turn("hello");
