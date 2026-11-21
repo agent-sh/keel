@@ -7,6 +7,7 @@ import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts"
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
 import { seedComposer } from "./ui.ts";
 import { servedUi } from "./hotui.ts";
+import { dropSendDrafts } from "./send-drafts.ts";
 
 export type ProvidersReport = {
   providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem })[];
@@ -383,6 +384,7 @@ export function apply(f: Frame) {
       const { [s.id]: _e, ...events } = state.events;
       set({ sessions, events, gone: { ...state.gone, [s.id]: s.parent_id ?? state.sessions[s.id]?.parent_id ?? true } });
       forgetLegacyQuestions(s.id);
+      dropSendDrafts(s.id);
       return;
     }
     if (!state.sessions[s.id] && s.archived) return;
@@ -500,6 +502,7 @@ export function connect() {
         const { [id]: __, ...sessions } = state.sessions;
         set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
         forgetLegacyQuestions(id);
+        dropSendDrafts(id);
       }));
     }
     // Caught up when this socket's replay came and the reloads landed; a late

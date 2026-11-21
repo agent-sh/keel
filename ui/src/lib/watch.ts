@@ -7,6 +7,7 @@ import type { Session, StoredEvent } from "../../../src/core/types.ts";
 import { agentLive, liveAgentCounts, watchLabel, watchOf as sharedWatch, type Watch } from "../../../src/core/watch.ts";
 import { useAuto } from "./automation.ts";
 import { useSafety } from "./safety.ts";
+import { unsentOf, useShelfVersion, useUnsent } from "./send-drafts.ts";
 import { actions, getState, reportError, useStore } from "./store.ts";
 import { shortPath, stripAnsi, toolKind, type ToolKind } from "./tools.ts";
 
@@ -20,12 +21,15 @@ export function useAgentCounts(): Record<string, number> {
 export const useAgentCount = (id: string | undefined) =>
   useAuto((x) => { let n = 0; if (id) for (const a of Object.values(x.agents)) if (a.parent_id === id && agentLive(a)) n++; return n; });
 
+// A message this browser keeps because it was not sent, or nobody confirmed
+// it, waits for the owner like a question does: the session needs them.
 export function useWatch(s: Session | undefined): Watch {
   const events = useStore((x) => (s ? x.events[s.id] : undefined));
   const n = useSafety((x) => (s ? x.approvals[s.id]?.length ?? 0 : 0));
   const asking = useStore((x) => !!s && !!(x.questionCalls[s.id]?.length || x.questionChildren[s.id]?.length));
+  const unsent = useUnsent(s?.id);
   const agents = useAgentCount(s?.id);
-  return s ? sharedWatch(s, events, { approvals: n, asking, agents }) : "idle";
+  return s ? sharedWatch(s, events, { approvals: n, asking: asking || !!unsent, agents }) : "idle";
 }
 
 // The word as shown, with the agents that keep it working.
@@ -41,8 +45,9 @@ export function useWatches(list: Session[]): Record<string, Watch> {
   const children = useStore((x) => x.questionChildren);
   const approvals = useSafety((x) => x.approvals);
   const agents = useAgentCounts();
+  useShelfVersion();
   const out: Record<string, Watch> = {};
-  for (const s of list) out[s.id] = sharedWatch(s, events[s.id], { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length), agents: agents[s.id] });
+  for (const s of list) out[s.id] = sharedWatch(s, events[s.id], { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length || unsentOf(s.id)), agents: agents[s.id] });
   return out;
 }
 

@@ -9,6 +9,7 @@ import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useSta
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
+import { useUnsent } from "../lib/send-drafts.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
@@ -177,11 +178,22 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   );
 }
 
-// A session waiting on an approval.
+// What a kept message of the session says where its row or card names it.
+const UNSENT = {
+  refused: { word: "not sent", line: "A message was not sent", title: "A message here was not sent. Open the session to send it again or discard it." },
+  unconfirmed: { word: "unconfirmed", line: "A message's delivery is unconfirmed", title: "Nobody confirmed that a message here arrived. Open the session to check." },
+} as const;
+
+// A session waiting on an approval, or holding a message that did not go.
 export function NeedsYou({ sessionId }: { sessionId: string }) {
   const n = useSafety((s) => s.approvals[sessionId]?.length ?? 0);
-  if (!n) return null;
-  return <span data-testid="needs-you" title={`${n} approval${n === 1 ? "" : "s"} waiting`} className="k-needs">needs you</span>;
+  const unsent = useUnsent(sessionId);
+  return (
+    <>
+      {n > 0 && <span data-testid="needs-you" title={`${n} approval${n === 1 ? "" : "s"} waiting`} className="k-needs">needs you</span>}
+      {unsent && <span data-testid="unsent-mark" title={UNSENT[unsent].title} className="k-needs">{UNSENT[unsent].word}</span>}
+    </>
+  );
 }
 
 // The tab the index opens on (the folded rail's archive button asks for "archived").
@@ -262,6 +274,7 @@ function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }
   const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
   const approvals = useSafety((x) => x.approvals[s.id]?.length ?? 0);
+  const unsent = useUnsent(s.id);
   const line = lastLine(events, s.workspace);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
   return (
@@ -273,6 +286,7 @@ function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }
       </div>
       <p className="k-rail-card-title">{s.title || "New session"}</p>
       {approvals > 0 && <p className="k-rail-card-need">{approvals === 1 ? "An approval waits for you" : `${approvals} approvals wait for you`}</p>}
+      {unsent && <p className="k-rail-card-need" data-testid="rail-card-unsent">{UNSENT[unsent].line}</p>}
       {line && <p className="k-rail-card-line">{line}</p>}
       {unread > 0 && approvals === 0 && <p className="k-rail-card-new">New since you looked</p>}
       <dl className="k-rail-card-meta">

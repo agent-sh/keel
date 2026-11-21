@@ -130,15 +130,34 @@ test("a refused send stays separate from the next draft", async ({ page, request
   await refused;
   await expect(saved).toHaveCount(0);
   await expect(composer).toHaveValue("A draft in another session.");
+  // The session it was for says so on its row, while the other one is shown.
+  const row = page.locator(`[data-testid="session-row"][data-session="${a}"]`);
+  await expect(row).toHaveAttribute("data-watch", "need");
+  await expect(row.getByTestId("unsent-mark")).toHaveText("not sent");
+  await shoot(page, "draft-05-row-mark");
   await select(a);
   await expect(saved).toContainText("Review the first screenshot.");
   await expect(saved).toContainText("first.png");
   await expect(composer).toHaveValue("A separate note for later.");
   await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
+  await expect(saved).toContainText("The daemon refused this message.");
   await shoot(page, "draft-03-rejected-send");
 
-  await saved.getByRole("button", { name: "Retry send" }).dblclick();
+  // A reload keeps the item with its own image; the box keeps only its own.
+  await page.reload();
+  await expect(saved).toContainText("Review the first screenshot.");
+  await expect(saved).toContainText("first.png");
+  await expect(composer).toHaveValue("A separate note for later.");
+  await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
+  await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
+
+  // Two clicks before the page draws again: the second finds the item already sending.
+  const retry = saved.getByRole("button", { name: "Retry send" });
+  await expect(retry).toBeEnabled();
+  await retry.evaluate((b: HTMLButtonElement) => { b.click(); b.click(); });
   await expect(saved).toHaveCount(0);
+  await expect(row).not.toHaveAttribute("data-watch", "need");
+  await expect(row.getByTestId("unsent-mark")).toHaveCount(0);
   await expect(composer).toHaveValue("A separate note for later.");
   await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
   expect(posts.map((p) => p.text)).toEqual(["Review the first screenshot.", "Review the first screenshot."]);
@@ -153,7 +172,9 @@ test("a refused send stays separate from the next draft", async ({ page, request
   }, { times: 1 });
   await composer.press("Enter");
   await expect(saved).toContainText("Delivery unconfirmed");
+  await expect(saved.getByTestId("saved-reason")).toHaveText("The daemon's answer did not arrive.");
   await expect(saved.getByRole("button", { name: "Retry send" })).toHaveCount(0);
+  await expect(row.getByTestId("unsent-mark")).toHaveText("unconfirmed");
   await shoot(page, "draft-04-unconfirmed-send");
   await expect(composer).toHaveValue("");
   await composer.fill("Keep this one too.");
@@ -166,6 +187,82 @@ test("a refused send stays separate from the next draft", async ({ page, request
   expect(events.filter((e: any) => e.kind === "user").map((e: any) => e.data.text)).toEqual([
     "Review the first screenshot.", "A separate note for later.",
   ]);
+
+  // A deleted session takes what was kept for it.
+  const kept = () => page.evaluate((k) => localStorage.getItem(k), `keel.sends.${a}`);
+  expect(await kept()).toContain("Keep this one too.");
+  await select(b);
+  await request.delete(`/api/sessions/${a}`);
+  await expect.poll(kept).toBeNull();
+  await request.delete(`/api/sessions/${b}`);
+});
+
+// The New session box: a create the daemon refused is a certain non-send. Its
+// words go back into the box with the daemon's reason; when the box holds a
+// newer draft by then, it is kept beside it with the reason and a Retry. Only
+// an answer lost after the session was made is "unconfirmed".
+test("a refused create comes back to the New session box", async ({ page, request }) => {
+  const gate: { hold?: Promise<void>; refuse: boolean; lose: boolean } = { refuse: true, lose: false };
+  const made: string[] = [];
+  await page.route("**/api/sessions", async (r) => {
+    if (r.request().method() !== "POST") return r.fallback();
+    const body = r.request().postDataJSON();
+    await gate.hold;
+    // The real daemon answers: a folder that is not there is its own 400.
+    if (gate.refuse) return r.continue({ postData: JSON.stringify({ ...body, workspace: "/nonexistent/keel-e2e" }) });
+    const res = await r.fetch({ postData: JSON.stringify({ ...body, model: HAIKU }) });
+    made.push((await res.json()).session.id);
+    if (gate.lose) return r.abort("failed");
+    await r.fulfill({ response: res });
+  });
+  await page.goto("/");
+  const box = page.getByTestId("new-composer");
+  const composer = box.getByTestId("composer");
+  const saved = box.getByTestId("saved-draft");
+
+  // 1. The box is still empty when the refusal lands: the words come back.
+  await composer.fill("Start in a folder that is gone.");
+  await composer.press("Enter");
+  await expect(box.getByTestId("composer-notice")).toContainText("not a directory: /nonexistent/keel-e2e");
+  await expect(composer).toHaveValue("Start in a folder that is gone.");
+  await expect(saved).toHaveCount(0);
+  await shoot(page, "draft-06-new-refused");
+
+  // 2. A newer draft is in the box by then: the refused one is kept beside it.
+  const go = Promise.withResolvers<void>();
+  gate.hold = go.promise;
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("");
+  await composer.fill("The next idea.");
+  go.resolve();
+  await expect(saved).toContainText("Not sent");
+  await expect(saved).toContainText("Start in a folder that is gone.");
+  await expect(saved.getByTestId("saved-reason")).toContainText("not a directory: /nonexistent/keel-e2e");
+  await expect(saved).not.toContainText("may have");
+  await expect(composer).toHaveValue("The next idea.");
+  await shoot(page, "draft-07-new-refused-kept");
+
+  // 3. An answer lost after the daemon made the session is the unconfirmed case, with its reason.
+  gate.hold = undefined;
+  gate.refuse = false;
+  gate.lose = true;
+  await composer.press("Enter");
+  await expect(saved.filter({ hasText: "Delivery unconfirmed" })).toContainText("The next idea.");
+  await expect(saved.filter({ hasText: "Delivery unconfirmed" }).getByTestId("saved-reason")).not.toBeEmpty();
+  await expect(saved.filter({ hasText: "Delivery unconfirmed" }).getByRole("button", { name: "Retry send" })).toHaveCount(0);
+  expect(made).toHaveLength(1);
+  await saved.filter({ hasText: "Delivery unconfirmed" }).getByRole("button", { name: "Discard" }).click();
+  await expect(saved).toHaveCount(1);
+
+  // 4. Retry sends the kept one: the session opens with its words.
+  gate.lose = false;
+  await saved.getByRole("button", { name: "Retry send" }).click();
+  await expect(page).toHaveURL(/\/s\//);
+  expect(made).toHaveLength(2);
+  const users = (await (await request.get(`/api/sessions/${made[1]}`)).json()).events.filter((e: any) => e.kind === "user");
+  expect(users.map((e: any) => e.data.text)).toEqual(["Start in a folder that is gone."]);
+  await page.goto("/");
+  for (const id of made) await request.delete(`/api/sessions/${id}`);
 });
 
 // The page's "taken" names the write it took: a newer write that lands while

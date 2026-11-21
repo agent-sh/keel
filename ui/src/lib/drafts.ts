@@ -38,7 +38,8 @@ export function keepImage(sid: string, a: Attachment) {
 
 export const dropImage = async (sid: string, id: string) => {
   await keeping.get(id);
-  await api(`${base(sid)}/files/${id}`, { method: "DELETE" }).catch(() => {}); // a file that was never kept is fine
+  // keepalive: a send's or a discard's release still lands when the page reloads right after.
+  await api(`${base(sid)}/files/${id}`, { method: "DELETE", keepalive: true }).catch(() => {}); // a file that was never kept is fine
 };
 
 export const clearDraft = (sid: string) => api(base(sid), { method: "DELETE" }).catch((e) => reportError(e, { at: "draft clear" }));

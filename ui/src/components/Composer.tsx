@@ -7,7 +7,7 @@ import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images
 import { fuzzy } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
-import { hasSavedImage, messageRefused, sendDrafts, setSendDraft, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
+import { hasSavedImage, messageRefused, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
@@ -31,6 +31,11 @@ function useSlashItems() {
   useEffect(() => slash.subscribe(() => force((n) => n + 1)), []);
   return slash.all();
 }
+
+// Images of kept sends being read back from the session's draft after a reload.
+const reading = new Set<string>();
+const MAX_FILES = 20;
+const heading = (d: SendDraft) => (d.state === "refused" ? (d.queue ? "Not queued" : "Not sent") : d.state === "unconfirmed" ? "Delivery unconfirmed" : "Saved draft");
 
 const OFF_BRANCH = "You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.";
 
@@ -64,7 +69,8 @@ function SessionComposer({
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
-  const saved = useSendDrafts(key);
+  const shelf = shelfKey(sid);
+  const saved = useSendDrafts(shelf);
   const [text, commitText] = useState(() => localStorage.getItem(key) ?? "");
   const [images, commitImages] = useState<Attachment[]>([]);
   // Resolve changes immediately so a late response reads the whole current
@@ -109,6 +115,9 @@ function SessionComposer({
   // The session's server draft: images kept until sent, and whatever was put
   // in from outside (text is added to the box once, then emptied there).
   const have = useRef(new Set<string>()); // draft files already in the box
+  // The server draft takes 20 images, and the kept sends' images are in it too.
+  const held = () => (sid ? savedImages(shelf) : 0);
+  const room = () => MAX_FILES - draft.current.images.length - held();
   const keep = (id: string, a: Attachment) => {
     have.current.add(a.id);
     void keepImage(id, a);
@@ -134,12 +143,12 @@ function SessionComposer({
       const now = ids;
       setImages((cur) => cur.filter((a) => a.file || now.has(a.id) || isKeeping(a.id)));
       for (const f of d.attachments) {
-        if (have.current.has(f.id) || hasSavedImage(key, f.id)) continue;
+        if (have.current.has(f.id) || hasSavedImage(shelf, f.id)) continue;
         have.current.add(f.id);
         try {
           const a = await fromServer(sid, f);
           // Gone meanwhile, or dropped by a newer update while it loaded: not added.
-          if (a && live && ids.has(a.id) && !hasSavedImage(key, a.id)) setImages((cur) => (cur.some((x) => x.id === a.id) ? cur : [...cur, a]));
+          if (a && live && ids.has(a.id) && !hasSavedImage(shelf, a.id)) setImages((cur) => (cur.some((x) => x.id === a.id) ? cur : [...cur, a]));
         } catch (e) {
           have.current.delete(f.id);
           reportError(e, { at: "draft image" });
@@ -153,6 +162,29 @@ function SessionComposer({
     });
     return () => { live = false; off(); have.current.clear(); };
   }, [sid]);
+
+  // After a reload the shelf knows its images by reference: read them from the
+  // session's draft. One the draft no longer has is named on its item.
+  useEffect(() => {
+    if (!sid) return;
+    for (const d of saved) for (const a of d.images) {
+      if (!unread(a) || reading.has(a.id)) continue;
+      reading.add(a.id);
+      fromServer(sid, { id: a.id, name: a.name, mime: a.media_type, bytes: a.bytes, origin: null, added_ms: 0 })
+        .then((got) => setSendImage(shelf, d.id, a.id, got))
+        .catch((e) => reportError(e, { at: "kept image" }))
+        .finally(() => reading.delete(a.id));
+    }
+  }, [saved, sid]);
+  // One live region, mounted before any item: it says each kept item once.
+  const told = useRef(new Set<string>());
+  const [said, setSaid] = useState("");
+  useEffect(() => {
+    const fresh = saved.filter((d) => shown(d) && !told.current.has(`${d.id} ${d.state}`));
+    for (const d of fresh) told.current.add(`${d.id} ${d.state}`);
+    const d = fresh.at(-1);
+    if (d) setSaid([`${heading(d)}: ${d.text.trim() || "attachments only"}`, d.state !== "parked" && d.error].filter(Boolean).join(". "));
+  }, [saved]);
 
   useEffect(() => {
     if (text && session?.id) typing(session.id);
@@ -176,7 +208,7 @@ function SessionComposer({
     if (seed.notice) setNotice(seed.notice);
     if (seed.blocks?.length) {
       // Attachments in their order: a picture is kept in the server draft like a pasted one.
-      const add = seed.blocks.map(fromBlock).slice(0, 20 - draft.current.images.length);
+      const add = seed.blocks.map(fromBlock).slice(0, Math.max(0, room()));
       setImages((cur) => [...cur, ...add]);
       if (sid) for (const a of add) if (!a.file) keep(sid, a);
     }
@@ -214,7 +246,11 @@ function SessionComposer({
     for (const f of list) {
       try {
         const a = await toAttachment(f);
-        if (!mounted.current || draft.current.images.length >= 20) continue;
+        if (!mounted.current) continue;
+        if (room() <= 0) {
+          setNotice(held() ? `Not attached: the draft takes ${MAX_FILES} images, counting the kept messages above. Send or discard one first.` : `Not attached: a message takes at most ${MAX_FILES} files.`);
+          continue;
+        }
         setImages((cur) => [...cur, a]);
         if (sid && !a.file) keep(sid, a);
       } catch (e) {
@@ -328,29 +364,34 @@ function SessionComposer({
     const { id, text, images, queue } = entry;
     // Lock this snapshot before awaiting anything, including a rapid click
     // on Retry before React has disabled its button.
-    setSendDraft(key, id, { ...entry, state: "sending" });
+    setSendDraft(shelf, id, { ...entry, state: "sending" });
     try {
       const send = queue && onQueue ? onQueue : onSend;
       await send(text.trim(), images.map(toBlock));
     } catch (e) {
+      // The New box sends through a create: its refusal is as certain as a message's.
       const refused = messageRefused(e, sid);
-      const error = failed(e, { at: "send", ...(sid && { session_id: sid }) });
-      if (refused && fromBox && mounted.current && !draft.current.text && !draft.current.images.length) {
+      const words = failed(e, { at: "send", ...(sid && { session_id: sid }) });
+      // A request the network dropped has no words of the daemon's to show.
+      const error = e instanceof TypeError ? "The daemon's answer did not arrive." : words;
+      if (refused && fromBox && mounted.current && !draft.current.text.trim() && !draft.current.images.length) {
         // Preserve the old quick repair when the entire box is still empty.
         // Never restore just one part or restore after unconfirmed delivery.
         setText(text);
         setImages(images);
         setNotice(error);
-        setSendDraft(key, id);
+        setSendDraft(shelf, id);
       } else {
-        setSendDraft(key, id, { ...entry, state: refused ? "refused" : "unconfirmed", error });
+        setSendDraft(shelf, id, { ...entry, state: refused ? "refused" : "unconfirmed", error });
       }
       return;
     }
-    // Both a sent message and an accepted queue entry count as success. Keep
-    // these images out of draft broadcasts until their individual deletes land.
+    // Both a sent message and an accepted queue entry count as success. The
+    // stored copy goes now; these images stay out of draft broadcasts until
+    // their individual deletes land.
+    setSendDraft(shelf, id, { ...entry, state: "done" });
     if (sid) await Promise.all(images.map((a) => drop(sid, a)));
-    setSendDraft(key, id);
+    setSendDraft(shelf, id);
   };
 
   const submit = (queue = false) => {
@@ -373,8 +414,8 @@ function SessionComposer({
   };
 
   const retry = (id: string) => {
-    const entry = sendDrafts(key).find((d) => d.id === id);
-    if (entry?.state !== "refused") return;
+    const entry = sendDrafts(shelf).find((d) => d.id === id);
+    if (entry?.state !== "refused" || entry.images.some(unread)) return;
     const why = blocked(entry.images);
     if (why) return setNotice(why);
     ref.current?.focus();
@@ -382,27 +423,27 @@ function SessionComposer({
   };
 
   const restore = (id: string) => {
-    const entry = sendDrafts(key).find((d) => d.id === id);
-    if (!entry || entry.state === "sending") return;
+    const entry = sendDrafts(shelf).find((d) => d.id === id);
+    if (!entry || !shown(entry) || entry.images.some(unread)) return;
     const { text, images } = draft.current;
-    if (text || images.length) {
+    if (text.trim() || images.length) {
       const swap = { id: crypto.randomUUID(), text, images, queue: false, state: "parked" } as const;
-      setSendDraft(key, swap.id, swap);
+      setSendDraft(shelf, swap.id, swap);
     }
     setText(entry.text);
     setImages(entry.images);
     setMenu(null);
-    setNotice(entry.state === "unconfirmed" ? "Check the conversation before sending this draft again." : null);
-    setSendDraft(key, id);
+    setNotice(entry.state === "unconfirmed" ? (sid ? "Check the conversation before sending this draft again." : "Check the session list before sending this draft again.") : null);
+    setSendDraft(shelf, id);
     ref.current?.focus();
   };
 
   const discard = async (id: string) => {
-    const entry = sendDrafts(key).find((d) => d.id === id);
-    if (!entry || entry.state === "sending") return;
-    setSendDraft(key, id, { ...entry, state: "sending" });
+    const entry = sendDrafts(shelf).find((d) => d.id === id);
+    if (!entry || !shown(entry)) return;
+    setSendDraft(shelf, id, { ...entry, state: "done" });
     if (sid) await Promise.all(entry.images.map((a) => drop(sid, a)));
-    setSendDraft(key, id);
+    setSendDraft(shelf, id);
     ref.current?.focus();
   };
 
@@ -458,26 +499,29 @@ function SessionComposer({
         </div>
       )}
 
-      {saved.some((d) => d.state !== "sending") && (
+      <p role="status" className="sr-only" data-testid="saved-status">{said}</p>
+      {saved.some(shown) && (
         <div className="max-h-48 space-y-1.5 overflow-y-auto border-b border-line px-3 py-2">
-          {saved.filter((d) => d.state !== "sending").map((d) => (
-            <div key={d.id} data-testid="saved-draft" className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md bg-sunken px-2.5 py-1.5 text-caption">
-              <div className="min-w-0 flex-1 basis-48" role="status">
-                <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-warn"}>
-                  {d.state === "refused" ? (d.queue ? "Not queued" : "Not sent") : d.state === "unconfirmed" ? "Delivery unconfirmed" : "Saved draft"}
-                </p>
-                <p className="truncate text-fg" title={d.text}>{d.text || "Attachments only"}</p>
-                {!!d.images.length && <p className="truncate text-muted" title={d.images.map((a) => a.name).join(", ")}>{d.images.map((a) => a.name).join(", ")}</p>}
-                {d.state === "refused" && <p className="break-words text-muted">{d.error}</p>}
-                {d.state === "unconfirmed" && <p className="text-muted">It may have arrived. Check before sending again.</p>}
+          {saved.filter(shown).map((d) => {
+            const waiting = d.images.some(unread);
+            return (
+              <div key={d.id} role="group" aria-label={`${heading(d)}: ${d.text.trim().slice(0, 80) || "attachments only"}`} data-testid="saved-draft" data-state={d.state} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md bg-sunken px-2.5 py-1.5 text-caption">
+                <div className="min-w-0 flex-1 basis-48">
+                  <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-warn"}>{heading(d)}</p>
+                  <p className="truncate text-fg" title={d.text}>{d.text.trim() || "Attachments only"}</p>
+                  {!!d.images.length && <p className="truncate text-muted" title={d.images.map((a) => a.name).join(", ")}>{d.images.map((a) => a.name).join(", ")}</p>}
+                  {!!d.lost?.length && <p className="break-words text-warn" data-testid="saved-lost">Not kept across the reload: {d.lost.join(", ")}</p>}
+                  {d.state !== "parked" && d.error && <p className="break-words text-muted" data-testid="saved-reason">{d.error}</p>}
+                  {d.state === "unconfirmed" && <p className="text-muted">{sid ? "It may have arrived. Check before sending again." : "The session may have been made. Check the list before sending again."}</p>}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {d.state === "refused" && <button type="button" disabled={waiting} className={cn(draftButton, "bg-accent text-accent-fg hover:bg-accent-hover")} onClick={() => retry(d.id)}>{d.queue ? "Retry queue" : "Retry send"}</button>}
+                  <button type="button" disabled={waiting} className={cn(draftButton, "border border-line text-fg hover:bg-hover")} title="Move this into the box without sending. The current draft is kept." onClick={() => restore(d.id)}>Restore draft</button>
+                  <button type="button" className={cn(draftButton, "text-muted hover:bg-hover hover:text-fg")} onClick={() => void discard(d.id)}>Discard</button>
+                </div>
               </div>
-              <div className="flex flex-wrap gap-1">
-                {d.state === "refused" && <button type="button" className={draftButton} onClick={() => retry(d.id)}>{d.queue ? "Retry queue" : "Retry send"}</button>}
-                <button type="button" className={draftButton} title="Move this into the box without sending. The current draft is kept." onClick={() => restore(d.id)}>Restore draft</button>
-                <button type="button" className={cn(draftButton, "border-transparent text-muted")} onClick={() => void discard(d.id)}>Discard</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -614,7 +658,8 @@ function SessionComposer({
   );
 }
 
-const draftButton = "h-7 rounded-md border border-line px-2 font-medium text-fg hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent";
+// Retry is the main action (filled), Restore the second (outlined), Discard the quiet one.
+const draftButton = "h-7 rounded-md px-2 font-medium disabled:opacity-40";
 
 // Who said a model takes no tools (an owner's "yes" wins over the rest).
 const TOOLS_FROM = { owner: "you set it", probe: "the probe found it", listing: "its server says so", catalog: "the catalog says so" } as const;

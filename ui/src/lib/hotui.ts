@@ -1,11 +1,11 @@
 // A new page installed on the daemon (`keel ui install`, src/server/ui-bundle.ts):
 // the socket's hello and its `ui` frame name the version served. This page
 // knows its own from the meta tag the daemon stamped into its HTML. It reloads
-// itself when nothing would be lost (no text in a box or send drafts, no key pressed for 5 s, no dialog,
+// itself when nothing would be lost (no text in a box, no send still out, no key pressed for 5 s, no dialog,
 // every transcript at its end, or the tab hidden with no text in a box);
 // otherwise it offers the reload and keeps trying while it waits.
 import { useSyncExternalStore } from "react";
-import { hasSendDrafts } from "./send-drafts.ts";
+import { sendsBusy } from "./send-drafts.ts";
 
 const mine = document.querySelector<HTMLMetaElement>('meta[name="keel-ui"]')?.content ?? "dev";
 const TRIED = "keel.ui-reload";
@@ -16,7 +16,7 @@ const notify = () => subs.forEach((f) => f());
 let lastKey = 0;
 addEventListener("keydown", () => (lastKey = Date.now()), true);
 
-const hasDraft = () => hasSendDrafts() || [...document.querySelectorAll("textarea")].some((t) => t.value.trim())
+const hasDraft = () => sendsBusy() || [...document.querySelectorAll("textarea")].some((t) => t.value.trim())
   || !!document.querySelector("[contenteditable=true]:not(:empty)");
 const atRest = () =>
   !document.querySelector('[role="dialog"]') &&
