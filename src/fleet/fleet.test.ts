@@ -1040,7 +1040,7 @@ async function takeoverRig() {
     idle: (ms: number) => rig.resumes.resume(rig.m, "claude", "c1", { when: "idle", jobs: "keep", wait_ms: ms } as any),
     async until(f: () => boolean) { for (let i = 0; i < 300 && !f(); i++) await Bun.sleep(10); return f(); },
     // What the helper does when asked: "lost" ends the original and the answer never arrives.
-    stop: "answer" as "answer" | "lost" | "unsent" | "leaving",
+    stop: "answer" as "answer" | "lost" | "unsent" | "leaving" | "deferred",
     read: "ok" as "ok" | "fail",
     store: undefined as unknown as InstanceType<typeof Store>,
     resumes: undefined as unknown as InstanceType<typeof Resumes>,
@@ -1073,6 +1073,7 @@ async function takeoverRig() {
             if (rig.stop === "unsent") throw new LinkError("the link dropped");
             rig.stops++;
             if (rig.stop === "leaving") throw new LinkError("no answer"); // still there: the test lets it go
+            if (rig.stop === "deferred") { await rig.hold.stop; return { ended: false, deferred: true, jobs: [], calls: [] }; } // it went back to work
             rig.alive = false;
             await rig.hold.stop;
             if (rig.stop === "lost") throw new LinkError("no answer");
@@ -1296,7 +1297,7 @@ test("a wait past its deadline or whose process was replaced never ends anything
   }
 });
 
-test("a wait cancelled before its stop is sent ends nothing; after it, the cancel is refused as finishing", async () => {
+test("a wait cancelled before its stop ends nothing; once the stop ended the original the cancel is refused as finishing", async () => {
   const rig = await takeoverRig();
   try {
     // Cancelled while the checks before the stop still run: the stop is never sent.
@@ -1305,24 +1306,60 @@ test("a wait cancelled before its stop is sent ends nothing; after it, the cance
     rig.hold.check = check.promise;
     rig.working = false;
     await Bun.sleep(60); // the wait saw it idle and is checking what the copy needs
-    expect(rig.resumes.cancel("s1", "claude", "c1")).toEqual({ cancelled: true });
+    expect(await rig.resumes.cancel("s1", "claude", "c1")).toEqual({ cancelled: true });
     check.resolve();
     rig.hold.check = undefined;
     await Bun.sleep(60);
     expect(rig.wait()).toMatchObject({ state: "cancelled" });
     expect([rig.alive, rig.stops, rig.copies]).toEqual([true, 0, 0]);
 
-    // The stop is out: a cancel now says finishing, and the copy is made.
+    // The stop is out and the original went back to work: nothing was ended, the wait
+    // was never shown as finishing, and the cancel that came meanwhile holds.
     rig.working = true;
+    await rig.idle(60_000);
+    const back = Promise.withResolvers<void>();
+    rig.hold.stop = back.promise;
+    rig.stop = "deferred";
+    rig.working = false;
+    expect(await rig.until(() => rig.stops === 1)).toBe(true);
+    expect(rig.wait()).toMatchObject({ state: "waiting" });
+    const early = rig.resumes.cancel("s1", "claude", "c1");
+    back.resolve();
+    expect(await early).toEqual({ cancelled: true });
+    expect([rig.alive, rig.copies, rig.wait()!.state]).toEqual([true, 0, "cancelled"]);
+
+    // The stop is out and it ends the original: a cancel now says finishing, and the copy is made.
+    rig.working = true;
+    rig.stop = "answer";
     await rig.idle(60_000);
     const stop = Promise.withResolvers<void>();
     rig.hold.stop = stop.promise;
     rig.working = false;
-    expect(await rig.until(() => rig.wait()?.state === "finishing")).toBe(true);
-    expect(rig.resumes.cancel("s1", "claude", "c1")).toEqual({ cancelled: false, finishing: true });
+    expect(await rig.until(() => rig.stops === 2)).toBe(true);
+    const late = rig.resumes.cancel("s1", "claude", "c1");
     stop.resolve();
+    expect(await late).toEqual({ cancelled: false, finishing: true });
     expect(await rig.until(() => rig.wait()?.state === "resumed")).toBe(true);
-    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    expect([rig.stops, rig.copies]).toEqual([2, 1]);
+  } finally {
+    rig.close();
+  }
+});
+
+// A stop that gets no answer while the original is still seen: the wait goes on
+// looking, one look at a time. However long that lasts, it holds one timer.
+test("a wait whose stop keeps failing has one chain of looks", async () => {
+  const rig = await takeoverRig();
+  try {
+    await rig.idle(60_000);
+    rig.stop = "leaving"; // every stop arrives and is not answered; the original stays
+    rig.working = false;
+    let most = 0;
+    for (let i = 0; i < 40; i++) { await Bun.sleep(20); most = Math.max(most, (rig.resumes as any).timers.size); }
+    expect(rig.stops).toBeGreaterThan(1); // it looked, tried, and tried again
+    expect(most).toBeLessThanOrEqual(1);
+    expect(rig.wait()).toMatchObject({ state: expect.stringMatching(/waiting|finishing/) });
+    expect(await rig.resumes.cancel("s1", "claude", "c1").then((r) => r.cancelled || r.finishing)).toBe(true);
   } finally {
     rig.close();
   }

@@ -34,7 +34,10 @@
 // waiting until that same deadline, for that same process. A wait past its
 // deadline, or whose process was replaced, ends without a stop. From the
 // moment the stop is sent the wait is "finishing": before it a cancel means no
-// stop, after it a cancel is refused and said to be finishing.
+// stop, after it a cancel is refused and said to be finishing. While the stop
+// is out and unanswered neither is known: the wait still shows as waiting,
+// and a cancel waits for the answer, which says which of the two it is.
+// A wait has one timer at a time, whoever set it: one chain of looks.
 import type { Bus } from "../core/bus.ts";
 import { contains } from "../core/paths.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -115,6 +118,8 @@ export class Resumes {
   private ends = new Map<string, EndReceipt>();
   // The conversations a resume works on now: one at a time each, so one copy.
   private busy = new Set<string>();
+  // The stops that are out for a wait and not answered yet: whether each ended the original.
+  private stops = new Map<string, Promise<boolean>>();
   private timers = new Set<Timer>();
   private stopped = false;
 
@@ -136,7 +141,7 @@ export class Resumes {
     for (const [k, w] of this.waits) {
       if (!open(w)) continue;
       if (w.state === "finishing" && !this.ends.has(k)) this.setWait(w, "waiting");
-      if (w.state === "waiting") w.timer = this.later(() => void this.tick(w), delayMs);
+      if (w.state === "waiting") this.look(w, delayMs);
     }
   }
 
@@ -151,6 +156,19 @@ export class Resumes {
     const t = setTimeout(() => { this.timers.delete(t); if (!this.stopped) f(); }, ms);
     this.timers.add(t);
     return t;
+  }
+
+  // The wait's next look. The one it had is taken away first: a wait has one
+  // chain of looks, however many places ask for the next one.
+  private look(w: Waiting, ms: number) {
+    this.unlook(w);
+    w.timer = this.later(() => { w.timer = undefined; void this.tick(w); }, ms);
+  }
+  private unlook(w: Waiting) {
+    if (!w.timer) return;
+    clearTimeout(w.timer);
+    this.timers.delete(w.timer);
+    w.timer = undefined;
   }
 
   // Redacted as the note is: it holds command lines from the far machine.
@@ -174,6 +192,9 @@ export class Resumes {
     try {
       const owed = await this.owed(m, k);
       if (owed) await this.complete(m, r.harness, r.id, owed, owed.model);
+      // The original still runs: the wait that had sent the stop goes on looking.
+      const w = this.waits.get(k);
+      if (w?.state === "waiting") this.look(w, this.poll);
     } catch (e) {
       const link = e instanceof LinkError || (e instanceof ResumeError && e.more.link === true);
       if (link && n + 1 < RECOVER_TRIES) return void this.later(() => void this.recoverOne(k, n + 1), RECOVER_MS);
@@ -203,9 +224,9 @@ export class Resumes {
       const own = seen.process.pid === r.process.pid && seen.process.started_ms === r.process.started_ms;
       if (own && r.sent_ms && Date.now() - r.sent_ms < this.exitMs) return "leaving";
       this.dropEnd(k);
-      // A wait that had sent it waits again, until its deadline.
+      // A wait that had sent it waits again, until its deadline. Its next look is set by whoever runs this one.
       const w = this.waits.get(k);
-      if (w?.state === "finishing") { this.setWait(w, "waiting"); w.timer ??= this.later(() => void this.tick(w), this.poll); }
+      if (w?.state === "finishing") this.setWait(w, "waiting");
       return undefined;
     }
     const jobs = r.in_flight.filter((i) => i.kind === "job").map((j) => ({ label: j.label, command: j.command, pid: j.pid, pgid: j.pgid, since_ms: j.since_ms, running: r.jobs === "keep" }));
@@ -247,6 +268,8 @@ export class Resumes {
       return undefined;
     }
     const { timer: _, ...view } = w;
+    // A stop that is out and not answered has ended nothing yet as far as anyone knows.
+    if (view.state === "finishing" && this.stops.has(this.key(machine, harness, id))) view.state = "waiting";
     return view;
   }
 
@@ -335,20 +358,33 @@ export class Resumes {
     if (seen.process) {
       if (o.wait && o.wait.state !== "waiting") return null;
       // Stored before the stop leaves: a stop whose answer is lost (the link, or
-      // this daemon going down) is settled from it, never sent blind again.
-      if (o.wait) this.setWait(o.wait, "finishing");
+      // this daemon going down) is settled from it, never sent blind again. The
+      // wait is finishing from here on the row; it is shown so once the answer says it ended.
+      const answer = Promise.withResolvers<boolean>();
+      if (o.wait) { o.wait.state = "finishing"; this.saveWait(o.wait); this.stops.set(k, answer.promise); }
       this.saveEnd(k, { machine_id: m.id, harness, id, model: o.model, waited_ms: o.waited_ms, state: "stopping", process: seen.process, jobs: o.jobs, in_flight: seen.in_flight, sent_ms: Date.now() });
-      const ended = await this.fleet.handsJson<Ended>(m.id, "/api/fleet/hands/harness/end", {
-        method: "POST", timeout: 60_000,
-        body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs, revision: seen.revision, idle_ms: o.idle_ms }),
-      }).catch((e) => {
+      let ended: Ended;
+      try {
+        ended = await this.fleet.handsJson<Ended>(m.id, "/api/fleet/hands/harness/end", {
+          method: "POST", timeout: 60_000,
+          body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs, revision: seen.revision, idle_ms: o.idle_ms }),
+        });
+      } catch (e) {
         // No answer says nothing about the stop: the receipt stays, and the next look settles it.
+        this.stops.delete(k);
+        if (o.wait?.state === "finishing") this.emit(o.wait);
+        answer.resolve(true);
         if (!(e instanceof LinkError)) throw e;
         throw new ResumeError(502, `${m.name} did not answer the stop: ${e.message}. The original may have been stopped: look again, and finish the copy if it was.`, { link: true, maybe_stopped: true });
-      });
+      }
       // An answer: nothing was ended, or it was and the copy is owed from here.
+      this.stops.delete(k);
       if (!ended.ended || !ended.was_running) this.dropEnd(k);
-      if (!ended.ended && o.wait?.state === "finishing") this.setWait(o.wait, "waiting");
+      if (o.wait?.state === "finishing") {
+        if (ended.ended) this.emit(o.wait);
+        else { o.wait.state = "waiting"; this.saveWait(o.wait); }
+      }
+      answer.resolve(!!ended.ended);
       if (ended.deferred) return null;
       if (!ended.ended) throw new ResumeError(409, `Keel did not end the original on ${m.name}: ${ended.why ?? "no reason given"}. Nothing was copied; end it there, or look again.`);
       if (ended.was_running) {
@@ -439,15 +475,18 @@ export class Resumes {
     this.waits.set(k, w);
     this.saveWait(w);
     this.emit(w);
-    w.timer = this.later(() => void this.tick(w), this.poll);
+    this.look(w, this.poll);
     return { action: "waiting", wait: this.waitOf(m.id, harness, id)! };
   }
 
-  // Before the stop is sent a cancel means no stop. Once it is sent the wait
-  // is finishing: that is said, not a cancel that did not happen.
-  cancel(machine: string, harness: string, id: string): { cancelled: boolean; finishing?: boolean } {
-    const w = this.waits.get(this.key(machine, harness, id));
-    if (w?.state === "finishing") return { cancelled: false, finishing: true };
+  // Before the stop is sent a cancel means no stop. Once the stop has ended the
+  // original the wait is finishing: that is said, not a cancel that did not
+  // happen. In between, the stop's answer decides: one that ended nothing (the
+  // original went back to work) leaves a wait that can still be cancelled.
+  async cancel(machine: string, harness: string, id: string): Promise<{ cancelled: boolean; finishing?: boolean }> {
+    const k = this.key(machine, harness, id);
+    const w = this.waits.get(k);
+    if (w?.state === "finishing" && (await (this.stops.get(k) ?? true))) return { cancelled: false, finishing: true };
     if (w?.state !== "waiting") return { cancelled: false };
     this.end(w, "cancelled");
     return { cancelled: true };
@@ -465,8 +504,7 @@ export class Resumes {
   }
 
   private end(w: Waiting, state: Wait["state"], more: Partial<Wait> = {}) {
-    clearTimeout(w.timer);
-    w.timer = undefined;
+    this.unlook(w);
     Object.assign(w, more, { state, ended_ms: Date.now() });
     this.saveWait(w);
     this.emit(w);
@@ -478,7 +516,6 @@ export class Resumes {
   }
 
   private async tick(w: Waiting) {
-    w.timer = undefined;
     if (!open(w)) return;
     const k = this.key(w.machine_id, w.harness, w.id);
     // Past the deadline nothing is stopped. A stop already sent is not undone by it: its copy is still owed.
@@ -518,6 +555,6 @@ export class Resumes {
     }
     if (!open(w)) return; // cancelled while the checks ran
     if (Date.now() >= w.deadline_ms) return expired();
-    w.timer = this.later(() => void this.tick(w), Math.min(this.poll, Math.max(100, w.deadline_ms - Date.now())));
+    this.look(w, Math.min(this.poll, Math.max(100, w.deadline_ms - Date.now())));
   }
 }

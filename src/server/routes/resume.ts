@@ -83,13 +83,13 @@ export const resumeRoutes: RouteModule = (deps: Deps) => {
           return failed(t.m, e);
         }
       },
-      // The wait is given up; the original is left as it is. Once its stop is sent
-      // the answer is `finishing`: nothing is cancelled, the copy is being made.
+      // The wait is given up; the original is left as it is. Once its stop ended the
+      // original the answer is `finishing`: nothing is cancelled, the copy is being made.
       DELETE: async (req: any) => {
         const u = new URL(req.url).searchParams;
         const t = named(req, { harness: u.get("harness"), id: u.get("id") });
         if (t instanceof Response) return t;
-        return json(service().cancel(t.m.id, t.harness, t.id));
+        return json(await service().cancel(t.m.id, t.harness, t.id));
       },
     },
   };
