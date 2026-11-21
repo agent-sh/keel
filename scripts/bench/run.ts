@@ -15,6 +15,8 @@
 //      interleaved per task and repetition, the report has per-arm intervals and the effect;
 //      --daemon also uploads each run to that daemon's experiment, under a receipt kept in
 //      $KEEL_BENCH_DIR/receipts, and stops the experiment there once every run is acknowledged)
+//     (a pass over a stopped experiment, or over one the daemon already has runs of, is refused
+//      before anything runs: it would be refused there, or be a second sample of the same tasks)
 //   bun scripts/bench/run.ts --resume FILE   (a receipt file whose runs the daemon did not all
 //      acknowledge: sends them again, each counted once, then stops the experiment)
 //
@@ -24,7 +26,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import type { RunUpload } from "../../src/admin/experiments.ts";
-import { offlineReport, runMetrics, RUN_SCOPE, Uploads } from "../../src/admin/offline.ts";
+import { offlineReport, receiptOf, runMetrics, runnable, RUN_SCOPE, Uploads } from "../../src/admin/offline.ts";
 import { TASKS } from "./tasks.ts";
 
 const OUT = process.env.KEEL_BENCH_DIR ?? join(homedir(), ".cache/keel-work/bun/tokens");
@@ -284,15 +286,16 @@ async function experiment(opts: { spec: string; daemon?: string; model?: string;
     ex.validate(spec);
     e = { ...spec, id: `local-${Date.now()}`, state: "running", created_ms: Date.now() } as Exp;
   }
-  if (e.mode !== "offline") throw new Error(`${e.name} is a live experiment: the daemon runs it in new sessions`);
-  if (daemon && e.state === "draft") {
-    const r = await fetch(`${daemon}/api/experiments/${e.id}/start`, { method: "POST" });
-    if (!r.ok) throw new Error(`could not start it on the daemon: ${r.status} ${await r.text()}`);
-  }
+  // Before anything is run or started: a stopped experiment, or one the daemon already has runs of, takes no new pass.
+  runnable(e);
   const model = opts.model ?? e.stop.model;
   if (!model) throw new Error("name the model the arms run on (--model), or put it in the experiment's stop.model");
   const tasks = opts.tasks.length ? opts.tasks : e.stop.tasks ?? [];
   if (!tasks.length) throw new Error("name the tasks (--tasks) or put them in the experiment's stop.tasks");
+  if (daemon && e.state === "draft") {
+    const r = await fetch(`${daemon}/api/experiments/${e.id}/start`, { method: "POST" });
+    if (!r.ok) throw new Error(`could not start it on the daemon: ${r.status} ${await r.text()}`);
+  }
   const label = `exp-${e.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
   const rows: Row[] = [];
   const runs: RunUpload[] = [];
@@ -303,7 +306,7 @@ async function experiment(opts: { spec: string; daemon?: string; model?: string;
     onRow: async (r) => {
       rows.push(r);
       // One object per run: what the report below reads is what the daemon is sent.
-      const run = { receipt: `${label}:${r.task}:${r.rep}:${r.arm}`, arm: r.arm!, task: r.task, rep: r.rep, metrics: r.metrics };
+      const run = { receipt: receiptOf(e.id, { task: r.task, rep: r.rep, arm: r.arm! }), arm: r.arm!, task: r.task, rep: r.rep, metrics: r.metrics };
       runs.push(run);
       if (!up) return;
       up.add(run);

@@ -10,7 +10,7 @@ import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
 import { armOf, Experiments, familyObs, FAMILIES_PER_ARM, liveGuards, report, TURNS, WINDOW_MIN, type Experiment, type FamilyTurn, type Obs } from "./experiments.ts";
-import { offlineReport, runMetrics, Uploads } from "./offline.ts";
+import { offlineReport, receiptOf, runMetrics, runnable, Uploads } from "./offline.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { assignArm, rng } from "./stats.ts";
 import { Telemetry } from "./telemetry.ts";
@@ -374,7 +374,7 @@ test("the offline runner recovers a lost upload from its receipt file and stops 
     };
     const file = join(d.dir, "receipts", "recover.json");
     const up = Uploads.start(file, { daemon: "http://keel", experiment: e.id, label: "recover" }, fetch);
-    const run = (n: number, arm: string) => ({ receipt: `recover:readlog:${n}:${arm}`, arm, task: "readlog", rep: n, metrics: { cost_usd: arm === "readers on" ? 0.004 : 0.006, ok: 1 } });
+    const run = (n: number, arm: string) => ({ receipt: receiptOf(e.id, { task: "readlog", rep: n, arm }), arm, task: "readlog", rep: n, metrics: { cost_usd: arm === "readers on" ? 0.004 : 0.006, ok: 1 } });
     const state = () => ({ state: x.get(e.id)!.state, runs: x.runs(x.get(e.id)!) });
 
     // The first upload arrives and its answer is lost: the run is not acknowledged, the daemon has it once.
@@ -392,7 +392,7 @@ test("the offline runner recovers a lost upload from its receipt file and stops 
     // Later, from the receipt file alone: both runs are sent, the daemon counts each once, and it stops.
     net = "up";
     const again = Uploads.open(file, fetch);
-    expect(again.pending.map((r) => r.receipt)).toEqual(["recover:readlog:1:readers on", "recover:readlog:1:readers off"]);
+    expect(again.pending.map((r) => r.receipt)).toEqual([`${e.id}:readlog:1:readers on`, `${e.id}:readlog:1:readers off`]);
     expect(await again.finalize("the offline run finished")).toEqual({ finalized: true, pending: 0, problem: "" });
     expect(state()).toEqual({ state: "stopped", runs: 2 });
     expect(x.get(e.id)!.stop_reason).toBe("the offline run finished");
@@ -400,12 +400,22 @@ test("the offline runner recovers a lost upload from its receipt file and stops 
     expect(await Uploads.open(file, fetch).finalize("the offline run finished")).toMatchObject({ finalized: true });
     expect(state()).toEqual({ state: "stopped", runs: 2 });
 
-    // A payload the daemon refuses (its receipt is taken by another payload) blocks the stop too.
+    // A new pass is refused before anything is run: over a stopped experiment, and over one the daemon has runs of.
+    const seen = async (id: string) => (await call("GET", `/api/experiments/${id}`)).body.experiment;
+    const stopped = await seen(e.id);
+    expect(() => runnable(stopped)).toThrow("is stopped: its report is final");
     const e2 = (await call("POST", "/api/experiments", { template: "readers", name: "clash" })).body.experiment as Experiment;
+    const fresh = await seen(e2.id);
+    expect(() => runnable(fresh)).not.toThrow();
     await call("POST", `/api/experiments/${e2.id}/start`);
-    await call("POST", `/api/experiments/${e2.id}/runs`, { runs: [{ ...run(1, "readers on"), metrics: { cost_usd: 1, ok: 0 } }] });
+    // Another pass got there first (two runners at once): its run has the same receipt, since a receipt names
+    // the task, repetition and arm, so the daemon refuses the second one and the stop is blocked.
+    const theirs = { ...run(1, "readers on"), receipt: receiptOf(e2.id, { task: "readlog", rep: 1, arm: "readers on" }), metrics: { cost_usd: 1, ok: 0 } };
+    await call("POST", `/api/experiments/${e2.id}/runs`, { runs: [theirs] });
+    const taken = await seen(e2.id);
+    expect(() => runnable(taken)).toThrow("the daemon already has 1 runs of clash");
     const clash = Uploads.start(join(d.dir, "receipts", "clash.json"), { daemon: "http://keel", experiment: e2.id, label: "clash" }, fetch);
-    clash.add(run(1, "readers on"));
+    clash.add({ ...run(1, "readers on"), receipt: theirs.receipt });
     const refused = await clash.finalize("the offline run finished");
     expect(refused).toMatchObject({ finalized: false, pending: 1 });
     expect(refused.problem).toContain("409");

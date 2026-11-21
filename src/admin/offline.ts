@@ -1,8 +1,8 @@
 // The offline runner's side of an experiment (scripts/bench/run.ts): what it
 // keeps on disk about the runs it made, and how they reach the daemon.
 //
-// Every run gets a receipt, a name made once, and is written to a local
-// receipt file before anything is sent. An upload sends every run the daemon
+// Every run gets a receipt (one per task, repetition and arm of the
+// experiment) and is written to a local receipt file before anything is sent. An upload sends every run the daemon
 // has not acknowledged yet, so a lost answer or a daemon that was down costs
 // nothing: the next attempt sends the same receipts and the daemon counts
 // each once. The experiment is stopped on the daemon (which makes its report
@@ -40,6 +40,18 @@ export function runMetrics(turn: Record<string, any> | undefined, run: { ok: boo
 export function offlineReport(e: Experiment, runs: RunUpload[]): Report {
   return report(e, runs.map((r, i) => ({ arm: r.arm, cluster: `run-${i}`, stratum: r.task, m: r.metrics })));
 }
+
+// Whether the runner may start a pass over this experiment: throws, before
+// anything is run, when the pass could not count. `runs`: the runs a daemon
+// already has for it.
+export function runnable(e: Pick<Experiment, "name" | "mode" | "state"> & { runs?: number }): void {
+  if (e.mode !== "offline") throw new Error(`${e.name} is a live experiment: the daemon runs it in new sessions`);
+  if (e.state === "stopped") throw new Error(`${e.name} is stopped: its report is final, and the daemon would refuse every run of a new pass`);
+  if (e.runs) throw new Error(`the daemon already has ${e.runs} runs of ${e.name}: a second pass would be a second sample of the same tasks. Finish the first from its receipt file (run.ts --resume FILE), or run a new experiment`);
+}
+// A run's receipt on a daemon: one per task, repetition and arm of the
+// experiment, so two passes can never both count.
+export const receiptOf = (experiment: string, run: { task: string; rep: number; arm: string }) => `${experiment}:${run.task}:${run.rep}:${run.arm}`;
 
 export type Ledger = { daemon: string; experiment: string; label: string; runs: RunUpload[]; acked: string[]; stopped: boolean };
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
