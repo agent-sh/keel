@@ -14,6 +14,7 @@ import { FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN } from "./import/types.ts";
 import { INPUT_LABEL, inputKind } from "../core/inputs.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { checkpointAt } from "../engine/compact.ts";
+import { shq } from "../tools/shell.ts";
 
 export const EXPORT_VERSION = 2;
 
@@ -366,6 +367,10 @@ export function writeNew(path: string, text: string) {
 
 const slug = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
+// The line to paste into a shell: into the session's folder, whatever its name
+// holds (a space, a quote, a dollar sign), then the harness's resume command.
+export const resumeLine = (cwd: string, resume: string) => `cd ${/^[\w@%+=:,./-]+$/.test(cwd) ? cwd : shq(cwd)} && ${resume}`;
+
 export function exportTo(format: "claude_code" | "codex", s: Session, lineageEvents: StoredEvent[]) {
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -374,14 +379,14 @@ export function exportTo(format: "claude_code" | "codex", s: Session, lineageEve
   if (format === "claude_code") {
     const path = join(claudeRoot(), slug(s.workspace), `${id}.jsonl`);
     writeNew(path, toJsonl(toClaudeRecords(s, forClaude(events), id)));
-    return { format, target_id: id, path, cwd: s.workspace, resume_command: `claude --resume ${id}`, exported_ms: now, notes };
+    return { format, target_id: id, path, cwd: s.workspace, resume_command: `claude --resume ${id}`, shell_command: resumeLine(s.workspace, `claude --resume ${id}`), exported_ms: now, notes };
   }
   const d = new Date(now);
   const p2 = (n: number) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}-${p2(d.getMinutes())}-${p2(d.getSeconds())}`;
   const path = join(codexHome(), "sessions", String(d.getFullYear()), p2(d.getMonth() + 1), p2(d.getDate()), `rollout-${stamp}-${id}.jsonl`);
   writeNew(path, toCodexRollout(s, events, id, now));
-  return { format, target_id: id, path, cwd: s.workspace, resume_command: `codex resume ${id}`, exported_ms: now, notes };
+  return { format, target_id: id, path, cwd: s.workspace, resume_command: `codex resume ${id}`, shell_command: resumeLine(s.workspace, `codex resume ${id}`), exported_ms: now, notes };
 }
 
 export { redact, redactDeep } from "./redact.ts";

@@ -21,7 +21,7 @@ export function ExportOverlay() {
 }
 
 type Origin = { origin: null | { label: string; harness: string; source_id: string; source_path: string; imported_ms: number; synced_ms: number }; source?: { exists: boolean; grew: boolean } };
-type Written = { format: string; target_id: string; path: string; cwd: string; resume_command: string; notes?: string[] };
+type Written = { format: string; target_id: string; path: string; cwd: string; resume_command: string; shell_command: string; notes?: string[] };
 
 // What an export leaves under the options is brought into view: on a short window the list scrolls.
 const intoView = (el: HTMLElement | null) => el?.scrollIntoView({ block: "nearest" });
@@ -112,7 +112,8 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
       setBusy(false);
     }
   };
-  const command = written ? `cd ${written.cwd} && ${written.resume_command}` : "";
+  // The daemon writes the line with the folder quoted for a shell.
+  const command = written?.shell_command ?? "";
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>

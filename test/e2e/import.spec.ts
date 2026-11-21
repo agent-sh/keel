@@ -503,3 +503,36 @@ test("the import sheet lists every harness and imports from each", async ({ page
   expect(after.sessions.map((s: any) => s.imported?.session_id).sort()).toEqual([...made].sort());
   for (const id of made) await request.delete(`/api/sessions/${id}`);
 });
+
+// The resume line the dialog shows runs as it is pasted, whatever the
+// session's folder is called: here a name with a space and an apostrophe. A
+// stub stands in for the harness and records where it ran and what it was given.
+test("the copied resume command changes to a folder with a space and a quote", async ({ page, request }) => {
+  const first = await (await request.get("/api/import/sessions?limit=1")).json();
+  test.skip(!first.harnesses.find((x: any) => x.harness === "claude")?.store.includes("keel-work"), "needs scratch import stores (KEEL_IMPORT_*)");
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = Date.now().toString(36);
+  const base = join(SCRATCH, `resume-${tag}`);
+  const cwd = join(base, "it's a client's folder $HOME");
+  const bin = join(base, "bin");
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  const ran = join(base, "ran.txt");
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\n{ pwd; printf '%s\\n' "$@"; } > ${JSON.stringify(ran)}\n`, { mode: 0o755 });
+  const { session } = await (await request.post("/api/sessions", { data: { model: SCRIPTED, workspace: cwd, title: `Resume ${tag}` } })).json();
+  await say(request, session.id, "Name one harbour.");
+
+  await page.goto(`/s/${session.id}`);
+  await page.getByRole("button", { name: "Export or continue elsewhere" }).click();
+  const dialog = page.getByTestId("export-dialog");
+  await dialog.getByTestId("export-claude").click();
+  const command = (await dialog.getByTestId("export-command").textContent())!;
+  expect(command).toContain("claude --resume ");
+  await shoot(page, "import-09-resume-quoted");
+  const id = (await dialog.getByTestId("export-path").textContent())!.trim().split("/").pop()!.replace(/\.jsonl$/, "");
+  // Pasted into a shell, as it is.
+  execFileSync("bash", ["-c", command], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  expect(readFileSync(ran, "utf8").trim().split("\n")).toEqual([cwd, "--resume", id]);
+  await request.delete(`/api/sessions/${session.id}`);
+  rmSync(base, { recursive: true, force: true });
+});

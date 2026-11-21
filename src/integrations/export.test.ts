@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { marked } from "marked";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
-import { activeContext, forClaude, handoffNotes, parseKeelJsonl, rowsOf, toCodexRollout, toKeelJsonl, toMarkdown } from "./export.ts";
+import { activeContext, forClaude, handoffNotes, parseKeelJsonl, resumeLine, rowsOf, toCodexRollout, toKeelJsonl, toMarkdown } from "./export.ts";
 import { readClaude } from "./import/claude.ts";
 import { readCodex } from "./import/codex.ts";
 
@@ -311,4 +311,10 @@ test("a tool result's image goes to Codex and Claude Code byte for byte and come
     expect(byId("call_view").is_error).toBeUndefined();
   }
   expect(handoffNotes("codex", evs).join()).toContain("tool search result goes as text");
+});
+
+test("the resume line quotes a folder a shell would split or expand, and leaves a plain one as typed", () => {
+  expect(resumeLine("/home/u/projects/keel-bun", "claude --resume x")).toBe("cd /home/u/projects/keel-bun && claude --resume x");
+  expect(resumeLine("/w/it's a dir", "codex resume x")).toBe(`cd '/w/it'\\''s a dir' && codex resume x`);
+  for (const dir of ["/w/a b", "/w/$HOME", "/w/a;b", "/w/`x`", "/w/a&b", "/w/~", "/w/*"]) expect(resumeLine(dir, "r")).toBe(`cd '${dir}' && r`);
 });
