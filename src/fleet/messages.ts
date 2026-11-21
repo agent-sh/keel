@@ -367,9 +367,26 @@ export class Messages {
   }
 
   receiveOutbound(to: Session, m: Message, trusted: boolean): Message {
+    const had = this.keptOutbound(m);
+    if (had) return had;
+    const from = { ...m.from, outbox_id: m.id };
+    // Given to the session, then the daemon died before the row above was
+    // written: the session's own record (its event, or its queue) says it was
+    // kept. The row is written now, under the id the session knows it by.
+    const same = (x: any) => x?.from?.outbox_id === m.id && x.from.daemon_id === m.from.daemon_id;
+    const ev = this.store.db
+      .query<{ data: string }, [string, string, string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.from.outbox_id') = ? AND json_extract(data, '$.from.daemon_id') = ? LIMIT 1")
+      .get(to.id, m.id, m.from.daemon_id);
+    const queued = ev ? undefined : this.store.queue(to.id).find((q) => same(q.meta));
+    const id = ev ? JSON.parse(ev.data).message_id : queued?.meta?.message_id;
+    if (typeof id === "string" && id) return this.get(id) ?? this.insert({ state: ev ? "delivered" : "queued", to_session: to.id, text: m.text, wake: m.wake, from }, id);
+    return this.receive(to, m.text, from, m.wake, trusted);
+  }
+
+  // The row of an outbox message this daemon already kept.
+  private keptOutbound(m: Message): Message | undefined {
     const had = this.store.db.query<Row, [string, string]>("SELECT * FROM fleet_messages WHERE json_extract(sender, '$.outbox_id') = ? AND json_extract(sender, '$.daemon_id') = ?").get(m.id, m.from.daemon_id);
-    if (had) return toMessage(had);
-    return this.receive(to, m.text, { ...m.from, outbox_id: m.id }, m.wake, trusted);
+    return had ? toMessage(had) : undefined;
   }
 }
 

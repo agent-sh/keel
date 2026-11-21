@@ -156,6 +156,7 @@ test("the outbox: a lost acknowledgement is retried within a bound, the message 
     live: () => live,
     failed: (e) => failed.push(e),
     retryMs: [5, 5],
+    slowMs: 20,
   });
   const settled = async () => { for (let i = 0; i < 200 && !drain.idle("mB"); i++) await Bun.sleep(5); };
   drain.kick("mB");
@@ -166,20 +167,75 @@ test("the outbox: a lost acknowledgement is retried within a bound, the message 
   expect(b.msgs.list({ session_id: to.id })).toHaveLength(1);
   expect(failed).toEqual([]);
 
-  // The bound: a link that stays broken while its relay is open is given up
-  // after the listed retries and reported once; a closed relay is not retried.
+  // The bound: a link that stays broken while its relay is open is reported
+  // once after the listed retries and asked again at the slow pace. When it
+  // answers, the receipt clears.
   a.msgs.queueOutbound("dB", to.id, "again", a.msgs.senderOf(from), true);
   lose = Infinity; fetches = 0;
   drain.kick("mB");
-  await settled();
-  expect(fetches).toBe(3);
+  for (let i = 0; i < 400 && fetches < 5; i++) await Bun.sleep(5);
+  expect(fetches).toBeGreaterThanOrEqual(5); // three quick tries, then slow ones
   expect(failed).toHaveLength(1);
-  live = false; fetches = 0;
+  expect(a.msgs.pendingOutbound("dB")).toHaveLength(1);
+  lose = 0;
+  await settled();
+  expect(a.msgs.pendingOutbound("dB")).toHaveLength(0);
+  expect(b.msgs.list({ session_id: to.id })).toHaveLength(2);
+  expect(failed).toHaveLength(1);
+  // A closed relay is not retried: its reopening drains.
+  a.msgs.queueOutbound("dB", to.id, "third", a.msgs.senderOf(from), true);
+  live = false; lose = Infinity; fetches = 0;
   drain.kick("mB");
   await settled();
   expect(fetches).toBe(1);
   expect(failed).toHaveLength(1);
   expect(a.msgs.pendingOutbound("dB")).toHaveLength(1); // still waits for the next relay
+  drain.stop();
+});
+
+test("the outbox: one message that cannot be kept does not hold back the ones behind it", async () => {
+  const { OutboxDrain } = await import("./outbox.ts");
+  const a = await scratchDaemon("dA"), b = await scratchDaemon("dB");
+  const from = a.store.createSession({ model: "m", workspace: a.ws });
+  const to = b.store.createSession({ model: "m", workspace: b.ws });
+  const [bad, good] = ["first", "second"].map((t) => a.msgs.queueOutbound("dB", to.id, t, a.msgs.senderOf(from), true));
+  const failed: unknown[] = [];
+  const drain = new OutboxDrain({
+    link: async () => ({
+      pending: async () => a.msgs.pendingOutbound("dB"),
+      keep: (m) => { if (m.id === bad!.id) throw new Error("a bug in keeping this one"); return b.msgs.keepOutbound(m, true); },
+      ack: async (ids, refused) => { a.msgs.ackOutbound("dB", ids, refused); },
+    }),
+    live: () => true,
+    failed: (e) => failed.push(e),
+  });
+  drain.kick("mB");
+  for (let i = 0; i < 200 && !drain.idle("mB"); i++) await Bun.sleep(5);
+  expect(a.msgs.get(good!.id)!.state).toBe("delivered");
+  expect(a.msgs.pendingOutbound("dB").map((m) => m.id)).toEqual([bad!.id]); // handed out again at the next drain
+  expect(b.msgs.list({ session_id: to.id }).map((m) => m.text)).toEqual(["second"]);
+  expect(failed.map((e) => (e as Error).message)).toEqual(["a bug in keeping this one"]);
+});
+
+test("the outbox: a message given to its session before the daemon died is not given again", async () => {
+  const a = await scratchDaemon("dA"), b = await scratchDaemon("dB");
+  const from = a.store.createSession({ model: "m", workspace: a.ws });
+  const to = b.store.createSession({ model: "m", workspace: b.ws });
+  let sends = 0;
+  (b.msgs as any).engine.send = () => { sends++; return {}; };
+  const [first, second] = ["one", "two"].map((t) => a.msgs.queueOutbound("dB", to.id, t, a.msgs.senderOf(from), true));
+  // What the engine had stored when the daemon died, before the message's own row:
+  // one as the session's event, one still in its queue.
+  const meta = (m: typeof first, id: string) => ({ kind: "peer", from: { ...m!.from, outbox_id: m!.id }, message_id: id });
+  b.store.append(to.id, "user", { text: "framed one", ...meta(first, "kept-1") });
+  b.store.enqueue(to.id, "framed two", false, undefined, meta(second, "kept-2"));
+  expect(b.msgs.list({ session_id: to.id })).toHaveLength(0);
+  for (const m of a.msgs.pendingOutbound("dB")) expect(b.msgs.keepOutbound(m, true)).toEqual({});
+  expect(sends).toBe(0);
+  expect(b.msgs.list({ session_id: to.id }).map((m) => [m.id, m.state]).sort()).toEqual([["kept-1", "delivered"], ["kept-2", "queued"]]);
+  // And once more, now from its row.
+  for (const m of a.msgs.pendingOutbound("dB")) b.msgs.keepOutbound(m, true);
+  expect(sends).toBe(0);
   expect(b.msgs.list({ session_id: to.id })).toHaveLength(2);
 });
 
