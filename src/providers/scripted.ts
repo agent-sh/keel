@@ -37,7 +37,9 @@ const STRICT_BYTES = 2.5;
 const textOf = (m: Message | undefined) =>
   (m?.content as any[] | undefined)?.filter((b) => b.type === "text").map((b) => b.text).join("\n") ?? "";
 const tokens = (v: unknown) => Math.ceil(JSON.stringify(v).length / 4);
-const longRateLimit = () => new ProviderError("rate", "Scripted: 429 rate limited, retry after 15 min", 429, 15 * 60_000);
+// The wait is 15 minutes unless a spec's daemon names a shorter one (with KEEL_RETRY_WAIT_MAX_MS below it).
+const LONG_WAIT_MS = Number(process.env.KEEL_SCRIPTED_RATE_WAIT_MS) || 15 * 60_000;
+const longRateLimit = () => new ProviderError("rate", `Scripted: 429 rate limited, retry after ${LONG_WAIT_MS >= 60_000 ? `${Math.round(LONG_WAIT_MS / 60_000)} min` : `${Math.round(LONG_WAIT_MS / 1000)} s`}`, 429, LONG_WAIT_MS);
 
 export class ScriptedProvider implements Provider {
   readonly id = "scripted";
@@ -230,6 +232,8 @@ export class ScriptedProvider implements Provider {
         return reply(JSON.stringify({ verdict: "met", reason: "Every check ran.", evidence: [`${n} reads of the pipe were started`] }));
       }
       case "rate-limit-long":
+        // Refused until the engine comes back by itself when the wait is over.
+        if (lastText.includes("[harness] The wait the provider asked for is over")) return reply("Answered after the wait the provider asked for.");
         throw longRateLimit();
       case "rate-limit":
         if (attempt === 0) throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 4 s", 429, 4_000);

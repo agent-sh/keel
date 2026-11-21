@@ -150,6 +150,9 @@ export type SessionSettings = {
   folder_id?: string;  // the owner's folder of sessions it is filed in (src/server/routes/session-folders.ts)
   project?: string;    // a project's id, or "none"; absent = the project that holds its folder (src/server/routes/projects.ts)
   helper?: boolean; // the owner's always-on helper conversation (src/helper/)
+  // The last turn failed because the provider asked for a wait longer than a turn waits: the session
+  // continues by itself at `at`, while the failure `after` is still the last thing in it (src/engine/turn.ts).
+  continue_at?: { at: number; after: string };
 };
 
 // `anchor`: the session's head when it was queued (the branch it was written on).

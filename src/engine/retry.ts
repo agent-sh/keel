@@ -6,16 +6,20 @@
 export const RETRY = { max: 10, baseMs: 500, capMs: 32_000 };
 // The longest a turn waits for one retry. A provider that asks for longer is
 // not retried sooner than it said: the turn ends with the time it named.
-export const RETRY_WAIT_MAX_MS = 5 * 60_000;
+export const RETRY_WAIT_MAX_MS = Number(process.env.KEEL_RETRY_WAIT_MAX_MS) || 5 * 60_000;
 
 // An actionable provider failure, not a server fault or a retry of its own.
 export class RetryTooLong extends Error {
   readonly span_id?: string;
 
+  // When the provider said the wait is over: an owner's session continues by itself then.
+  readonly retryAt: number;
+
   constructor(cause: unknown, retryAt: number) {
     const time = new Date(retryAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     super(`${errorText(cause)} (the provider asked to wait until ${time}, longer than a turn waits; Continue after that)`, { cause });
     this.name = "RetryTooLong";
+    this.retryAt = retryAt;
     const span = (cause as { span_id?: unknown } | null)?.span_id;
     if (typeof span === "string") this.span_id = span;
   }

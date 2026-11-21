@@ -261,6 +261,8 @@ export const actions = {
   compact: (id: string, focus?: string) => api(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ focus }) }),
   clear: (id: string) => api<{ undo_head_event_id: string }>(`/api/sessions/${id}/clear`, { method: "POST" }),
   resume: (id: string) => api(`/api/sessions/${id}/resume`, { method: "POST" }),
+  // Calls off a failed turn that would continue by itself when the provider's wait is over.
+  cancelContinue: (id: string) => api(`/api/sessions/${id}/resume`, { method: "DELETE" }),
   context: (id: string) => api<ContextInfo>(`/api/sessions/${id}/context`),
   queueResume: (id: string) => api(`/api/sessions/${id}/queue/resume`, { method: "POST" }),
   // `here`: a prompt queued on another branch goes on the one shown now.

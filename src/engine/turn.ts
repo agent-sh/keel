@@ -715,9 +715,60 @@ export class Engine {
     errorScope.run({ session: id }, () => this.startTurn(id));
   }
 
+  // A turn that failed because the provider asked for a long wait continues
+  // by itself when the wait is over, without the owner remembering: at `at`,
+  // if the failure `after` is still the last thing in the session (nothing was
+  // sent since) and the owner did not call it off. Kept with the session, so a
+  // restart meanwhile loses nothing (rearmContinues).
+  private continues = new Map<string, ReturnType<typeof setTimeout>>();
+  private continueAt(id: string, at: number, after: string) {
+    this.store.mergeSettings(id, { continue_at: { at, after } });
+    this.emitSession(id);
+    this.armContinue(id, at);
+  }
+  private armContinue(id: string, at: number) {
+    clearTimeout(this.continues.get(id));
+    // A timer takes at most about 24 days; a longer wait is looked at again then.
+    this.continues.set(id, setTimeout(() => this.continueDue(id), Math.min(Math.max(0, at - Date.now()), 2 ** 31 - 1)));
+  }
+  private continueDue(id: string) {
+    this.continues.delete(id);
+    const s = this.store.session(id);
+    const c = s?.settings.continue_at;
+    if (!s || !c) return;
+    if (c.at > Date.now()) return this.armContinue(id, c.at);
+    // Stopping: the next daemon continues it.
+    if (this.draining) return;
+    this.store.mergeSettings(id, { continue_at: null });
+    this.emitSession(id);
+    if (s.archived || this.running.has(id) || this.held.has(id) || this.lineage(id).at(-1)?.id !== c.after) return;
+    this.accept(id, { text: "[harness] The wait the provider asked for is over. Continue where the previous turn left off.", origin: "harness" });
+    this.start(id);
+    this.emitQueue(id);
+  }
+  // The owner called it off (or a turn started): nothing continues by itself.
+  cancelContinue(id: string): boolean {
+    clearTimeout(this.continues.get(id));
+    this.continues.delete(id);
+    if (!this.store.session(id)?.settings.continue_at) return false;
+    this.store.mergeSettings(id, { continue_at: null });
+    this.emitSession(id);
+    return true;
+  }
+  // At startup: the waits the last daemon kept, with one that came due meanwhile continued now.
+  // An archived session continues nothing: restoring it later starts no turn the owner forgot.
+  rearmContinues() {
+    for (const { id, archived } of this.store.db.query<{ id: string; archived: number }, []>("SELECT id, archived FROM sessions WHERE json_extract(settings, '$.continue_at') IS NOT NULL").all()) {
+      const c = this.store.session(id)?.settings.continue_at;
+      if (archived) this.store.mergeSettings(id, { continue_at: null });
+      else if (c && !this.continues.has(id)) this.armContinue(id, c.at);
+    }
+  }
+
   // The turn's first event. What fails from here until the turn is over is
   // captured as this turn's (src/core/errors.ts).
   private openTurn(id: string, data: unknown) {
+    this.cancelContinue(id);
     const ev = this.append(id, "turn_start", data);
     this.turns.set(id, ev.id);
     const scope = errorScope.getStore();
@@ -739,7 +790,16 @@ export class Engine {
         if (abort.signal.aborted) return;
         // A refusal a hook meant (`expected`) is said in the transcript, not tracked as a failure.
         const rec = (e as any)?.expected ? undefined : this.errors.capture("provider", e, { session: id });
-        this.append(id, "error", { message: errorText(e), error_id: rec?.id });
+        // `kind` and `status`: what failed, for the page's words and actions (a ProviderError's own, or its cause's).
+        const cause = e instanceof RetryTooLong ? (e.cause as any) : (e as any);
+        const kind = cause?.kind;
+        const ev = this.append(id, "error", {
+          message: errorText(e), error_id: rec?.id,
+          ...(typeof kind === "string" ? { kind } : {}), ...(typeof cause?.status === "number" ? { status: cause.status } : {}),
+          ...(e instanceof RetryTooLong ? { retry_at: e.retryAt } : {}),
+        });
+        // The provider named when it takes requests again: the owner's session goes on by itself then.
+        if (e instanceof RetryTooLong && !this.store.session(id)?.parent_id) this.continueAt(id, e.retryAt, ev.id);
       })
       .finally(() => {
         // The turn is over: what it left running no longer fails in it.
@@ -1856,6 +1916,8 @@ export class Engine {
     // The drain stopped the summaries being prepared and let the idle timers
     // pass unused: idle sessions get their timer again, as after a start.
     void this.resumeIdle();
+    // A provider's wait that ended during the drain was left for the next daemon: this one takes it.
+    this.rearmContinues();
   }
 
   // At startup: a turn the last daemon left open (a crash, a kill) is closed
@@ -1869,6 +1931,7 @@ export class Engine {
   // the cutTurn hook) may say otherwise.
   async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
     this.closeCut(openAtBoot);
+    this.rearmContinues();
     return this.continueCut(waitModel);
   }
 

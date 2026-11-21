@@ -743,6 +743,75 @@ test("the page says the daemon is unreachable and stops its clocks", async ({ pa
   }
 });
 
+// Feature: a turn the provider asked to wait long for continues by itself.
+// The failure says when, with a countdown; at that time the turn goes on with
+// nobody pressing anything, also when the daemon restarted meanwhile; the
+// owner can go on at once or call it off. (These daemons take a wait of a few
+// seconds for a long one, so the spec does not sit for minutes.)
+test("a rate-limited turn continues by itself at the time the provider named", async ({ page }) => {
+  const state = join(ROOT, `restart-ratelimit-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const env = { KEEL_RETRY_WAIT_MAX_MS: "1000", KEEL_SCRIPTED_RATE_WAIT_MS: "6000" };
+  let d = await daemon(state, env);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Rate limited for a while" });
+    const sid = session.id as string;
+    const view = () => call(`/api/sessions/${sid}`, undefined, "GET");
+    const ends = async () => ((await view()).events as any[]).filter((e) => e.kind === "turn_end").map((e) => e.data.reason);
+    const composer = page.getByTestId("composer");
+    const box = page.getByTestId("turn-error");
+    const answer = "Answered after the wait the provider asked for.";
+
+    // The failure names the time and counts down; the turn then goes on unprompted.
+    await page.goto(`${d.url}/s/${sid}`);
+    await composer.fill("script:rate-limit-long");
+    await composer.press("Enter");
+    await expect(box).toContainText(/asked to wait until \d\d:\d\d/, { timeout: 15_000 });
+    const due = box.getByTestId("continue-at");
+    await expect(due).toContainText(/Continues by itself at \d\d:\d\d/);
+    await expect(due.getByTestId("continue-in")).toHaveText(/^in \ds$/);
+    await shoot(page, "restart-13-continues-at");
+    expect((await view()).session.settings.continue_at.at).toBeGreaterThan(Date.now());
+    await expect(page.getByTestId("assistant-text").last()).toHaveText(answer, { timeout: 20_000 });
+    await expect(due).toHaveCount(0);
+    expect(await ends()).toEqual(["error", "end_turn"]);
+    expect((await view()).session.settings.continue_at).toBeUndefined();
+
+    // A daemon that restarts during the wait still continues it.
+    await composer.fill("script:rate-limit-long again");
+    await composer.press("Enter");
+    await expect(due).toHaveCount(1, { timeout: 15_000 });
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state, env);
+    await page.goto(`${d.url}/s/${sid}`);
+    await expect(page.getByTestId("assistant-text")).toHaveCount(2, { timeout: 30_000 });
+    expect(await ends()).toEqual(["error", "end_turn", "error", "end_turn"]);
+
+    // Called off: nothing continues, and the owner's Continue is still there.
+    await composer.fill("script:rate-limit-long once more");
+    await composer.press("Enter");
+    await expect(due).toHaveCount(1, { timeout: 15_000 });
+    await due.getByTestId("continue-cancel").click();
+    await expect(due).toHaveCount(0);
+    await page.waitForTimeout(7_000);
+    expect(await ends()).toEqual(["error", "end_turn", "error", "end_turn", "error"]);
+    expect((await call(`/api/sessions/${sid}/resume`, undefined, "DELETE")).cancelled).toBe(false);
+
+    // Continue now does not wait for the time.
+    await composer.fill("script:rate-limit-long, the last");
+    await composer.press("Enter");
+    await expect(due).toHaveCount(1, { timeout: 15_000 });
+    await due.getByTestId("continue-now").click();
+    await expect.poll(async () => (await ends()).length, { timeout: 15_000 }).toBeGreaterThanOrEqual(7);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
 // Feature: a loop's run goes on through a restart with its turn. The run a
 // crash or a stop cut is the run that finishes: it closes once, as the
 // continued turn ended, and the loop counts no failure and starts no other run.

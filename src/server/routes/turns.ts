@@ -88,6 +88,12 @@ export const turnRoutes: RouteModule = (deps) => {
         engine.resume(s.id);
         return json({ ok: true });
       },
+      // Calls off a turn that would continue by itself when a provider's wait is over.
+      DELETE: (req: any) => {
+        const s = sessionOr404(req.params.id);
+        if (!s) return bad("no such session", 404);
+        return json({ ok: true, cancelled: engine.cancelContinue(s.id) });
+      },
     },
 
     // What the context holds and how close it is to the model's window.
