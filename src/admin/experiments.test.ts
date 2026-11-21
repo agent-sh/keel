@@ -19,7 +19,11 @@ import { Telemetry } from "./telemetry.ts";
 // again is a restart. `call` is a request to its API.
 function daemon() {
   const dir = mkdtempSync(join(tmpdir(), "keel-experiments-"));
+  // The turn hooks this daemon registered: taken off again at close. Left on, they
+  // would run in every later test of the process, writing to this deleted folder.
+  const mine: unknown[] = [];
   const open = () => {
+    const before = allHooks().length;
     const store = new Store(dir), bus = new Bus();
     // Subagent sessions name their parent (the agents module's column).
     if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
@@ -36,9 +40,14 @@ function daemon() {
       }
       throw new Error(`no route ${method} ${path}`);
     };
+    mine.push(...allHooks().slice(before));
     return { store, x: experiments!, o: outcomes!, call, calls };
   };
-  return { dir, open, close: () => rmSync(dir, { recursive: true, force: true }) };
+  const close = () => {
+    for (const h of mine) { const i = allHooks().indexOf(h as any); if (i >= 0) allHooks().splice(i, 1); }
+    rmSync(dir, { recursive: true, force: true });
+  };
+  return { dir, open, close };
 }
 
 // A look after every family made so far has closed its guard window.
