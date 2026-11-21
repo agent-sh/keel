@@ -465,7 +465,8 @@ test("a whole-tree Keel file keeps both leaves and the branch shown", async ({ p
 
   // The default file is the branch shown: one leaf in its copy.
   const branchFile = await (await request.get(`/api/sessions/${session.id}/export?format=jsonl`)).text();
-  expect(JSON.parse(branchFile.split("\n")[0]!).scope).toBe("current branch");
+  expect(JSON.parse(branchFile.split("\n")[0]!)).toMatchObject({ keel_export: 2, scope: "current branch" });
+  expect(JSON.parse(treeFile.split("\n")[0]!)).toMatchObject({ keel_export: 3, scope: "tree" });
   expect(branchFile).not.toContain(`Leaf beta ${tag}`);
   const post = async (file: string) => (await (await request.post("/api/sessions/import", { data: file, headers: { "content-type": "application/x-ndjson" } })).json());
   const one = await post(branchFile);

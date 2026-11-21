@@ -130,7 +130,8 @@ test("a whole-tree Keel file keeps every branch and the head shown; a tree that 
   const b = at("b", "r", "user", { text: "leaf b" });
   const all = [root, a, clear, b];
   const file = toKeelJsonl(s, all, { tree: { head: "c" } });
-  expect(JSON.parse(file.split("\n")[0]!)).toMatchObject({ scope: "tree", head: "e3", events: 4 });
+  // Its own version: a Keel that reads only branch files (versions 1 and 2) says it is not a Keel export.
+  expect(JSON.parse(file.split("\n")[0]!)).toMatchObject({ keel_export: 3, scope: "tree", head: "e3", events: 4 });
   const p = parseKeelJsonl(file);
   if (!p.ok) throw new Error(p.error);
   let k = 0;
@@ -140,7 +141,7 @@ test("a whole-tree Keel file keeps every branch and the head shown; a tree that 
   expect(rows[2]!.data.undo_head).toBe("new2");
   // The branch file is as it was: a chain with no parents, the last event the head.
   const branch = parseKeelJsonl(toKeelJsonl(s, [root, a, clear]));
-  expect(branch.ok && branch.header.scope).toBe("current branch");
+  expect(branch.ok && [branch.header.keel_export, branch.header.scope]).toEqual([2, "current branch"]);
   expect(branch.ok && rowsOf(branch)).toMatchObject({ rows: [{}, {}, {}] });
   expect(branch.ok && "head" in rowsOf(branch)).toBe(false);
   expect(branch.ok && branch.events.every((e) => !("parent" in e))).toBe(true);

@@ -19,6 +19,10 @@ import { keelFileBytes, sizeText } from "../core/keel-file.ts";
 import { shq } from "../tools/shell.ts";
 
 export const EXPORT_VERSION = 2;
+// A file that holds every branch is a version of its own: a Keel that knows
+// only one branch a file refuses it as not a Keel export, instead of reading
+// the branches one after another as a single conversation.
+export const TREE_VERSION = 3;
 
 // A part with no text of its own is named: a tool a search loaded by its name.
 const partText = (b: any): string => (b.type === "text" ? b.text : b.type === "tool_reference" ? `[loaded tool ${b.tool_name}]` : `[${b.type}]`);
@@ -145,7 +149,7 @@ export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (i
     const bytes = opts.blob(id);
     if (bytes) blobs.push({ blob: id, size: bytes.byteLength, data: Buffer.from(bytes).toString("base64") });
   }
-  const header = { keel_export: EXPORT_VERSION, events: events.length, blobs: opts.blob ? blobs.length : undefined, scope: opts.tree ? "tree" : "current branch", head: opts.tree ? ref.get(opts.tree.head ?? "") ?? null : undefined, title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
+  const header = { keel_export: opts.tree ? TREE_VERSION : EXPORT_VERSION, events: events.length, blobs: opts.blob ? blobs.length : undefined, scope: opts.tree ? "tree" : "current branch", head: opts.tree ? ref.get(opts.tree.head ?? "") ?? null : undefined, title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
   return toJsonl([header]) + body + toJsonl(blobs);
 }
 
@@ -167,7 +171,7 @@ export function parseKeelJsonl(text: string): ParsedExport {
   const lines = text.split("\n");
   let header: any;
   try { header = JSON.parse(lines[0] ?? ""); } catch { return { ok: false, error: "the body is not a Keel export" }; }
-  if (header?.keel_export !== 1 && header?.keel_export !== EXPORT_VERSION) return { ok: false, error: "the body is not a Keel export" };
+  if (![1, EXPORT_VERSION, TREE_VERSION].includes(header?.keel_export)) return { ok: false, error: "the body is not a Keel export" };
   const events: any[] = [];
   const blobs = new Map<string, Uint8Array>();
   for (let i = 1; i < lines.length; i++) {
