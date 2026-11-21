@@ -343,7 +343,7 @@ export function CompareView() {
   // A name two used models share gets its provider, in the options and the heads.
   const name = (id: string) => (used.some((o) => o !== id && short(o) === short(id)) || (ma !== mb && short(ma) === short(mb) && (id === ma || id === mb)) ? `${short(id)} (${provider(id)})` : short(id));
   const select = (v: string, set: (v: string) => void, label: string) => (
-    <Select aria-label={label} data-testid={`compare-${label}`} value={v} onChange={(e) => set(e.target.value)} className="h-8 max-w-72 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+    <Select aria-label={label} data-testid={`compare-${label}`} value={v} onChange={(e) => set(e.target.value)} className="h-8 max-w-[min(26rem,100%)] min-w-0 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
       {used.map((id) => <option key={id} value={id}>{name(id)}</option>)}
     </Select>
   );
@@ -389,7 +389,7 @@ export function CompareView() {
       <div className="flex flex-wrap items-center gap-3">
         <Segmented<Mode> label="Compare" value={mode} onChange={setMode} options={[{ value: "ranges", label: "Two ranges" }, { value: "models", label: "Two models" }]} />
         {mode === "ranges" ? (
-          <Select aria-label="ranges" data-testid="compare-preset" value={preset} onChange={(e) => setPreset(e.target.value)} className="h-8 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+          <Select aria-label="ranges" data-testid="compare-preset" value={preset} onChange={(e) => setPreset(e.target.value)} className="h-8 max-w-full min-w-0 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
             {Object.entries(PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </Select>
         ) : (
@@ -401,16 +401,50 @@ export function CompareView() {
       </div>
       <Panel title="Side by side" hint={mode === "ranges" ? "this range against the one before; rates differ in points" : "the first model against the second; rates differ in points"} testid="compare-table">
         {!r ? <p className="text-ui text-faint">{mode === "models" && used.length < 1 ? "No model calls in this range." : "Reading the measurements."}</p> : (
-          <Table
-            head={["", ...heads, "Change"]}
+          <CompareTable
+            heads={heads}
             rows={[
-              ...rows.map(([label, get, fmt]) => [label, fmt(get(r.a)), fmt(get(r.b)), change(label, get(r.a), get(r.b))]),
+              ...rows.map(([label, get, fmt]): CompareRow => [label, fmt(get(r.a)), fmt(get(r.b)), change(label, get(r.a), get(r.b))]),
               ["Spend", spend(r.a), spend(r.b), spendChange(r.a, r.b)],
-              ...[...new Set([...Object.keys(r.a.classes), ...Object.keys(r.b.classes)])].map((c) => [`${CLASS[c] ?? c}`, r.a.classes[c] ?? 0, r.b.classes[c] ?? 0, countChange(r.a.classes[c] ?? 0, r.b.classes[c] ?? 0)]),
+              ...[...new Set([...Object.keys(r.a.classes), ...Object.keys(r.b.classes)])].map((c): CompareRow => [`${CLASS[c] ?? c}`, r.a.classes[c] ?? 0, r.b.classes[c] ?? 0, countChange(r.a.classes[c] ?? 0, r.b.classes[c] ?? 0)]),
             ]}
           />
         )}
       </Panel>
+    </div>
+  );
+}
+
+// The side by side table. With room it is four columns. In a panel narrower
+// than 36rem (a phone, a large text size) each measurement is a block of its
+// own: its name with the change beside it, then each side's value on a line
+// that starts with the side's name, so nothing is read by panning. One table
+// either way; the roles are written out because the narrow layout is not
+// table layout.
+type CompareRow = [label: string, a: ReactNode, b: ReactNode, change: ReactNode];
+const SIDE = "px-4 py-1.5 text-right tabular-nums text-muted whitespace-nowrap @max-[36rem]:col-span-2 @max-[36rem]:flex @max-[36rem]:items-baseline @max-[36rem]:justify-between @max-[36rem]:gap-4 @max-[36rem]:p-0 @max-[36rem]:before:min-w-0 @max-[36rem]:before:whitespace-normal @max-[36rem]:before:text-left @max-[36rem]:before:text-caption @max-[36rem]:before:text-faint @max-[36rem]:before:content-[attr(data-side)] @max-[36rem]:before:[overflow-wrap:anywhere]";
+function CompareTable({ heads, rows }: { heads: string[]; rows: CompareRow[] }) {
+  return (
+    <div className="@container relative -mx-4">
+      <table role="table" className="w-full text-ui @max-[36rem]:block">
+        <thead role="rowgroup" className="@max-[36rem]:sr-only">
+          <tr role="row" className="border-b border-line text-caption text-faint">
+            <th role="columnheader" className="px-4 py-1.5 text-left font-normal"><span className="sr-only">Measurement</span></th>
+            {heads.map((h, i) => <th key={i} role="columnheader" className="px-4 py-1.5 text-right font-normal">{h}</th>)}
+            <th role="columnheader" className="px-4 py-1.5 text-right font-normal">Change</th>
+          </tr>
+        </thead>
+        <tbody role="rowgroup" className="@max-[36rem]:block">
+          {rows.map(([label, a, b, change]) => (
+            <tr key={label} role="row" className="border-b border-line/60 last:border-0 @max-[36rem]:grid @max-[36rem]:grid-cols-[minmax(0,1fr)_auto] @max-[36rem]:gap-x-4 @max-[36rem]:gap-y-0.5 @max-[36rem]:px-4 @max-[36rem]:py-2.5">
+              <th role="rowheader" scope="row" className="max-w-64 truncate px-4 py-1.5 text-left font-normal @max-[36rem]:max-w-none @max-[36rem]:whitespace-normal @max-[36rem]:p-0 @max-[36rem]:pb-0.5 @max-[36rem]:font-medium">{label}</th>
+              <td role="cell" data-side={heads[0]} className={SIDE}>{a}</td>
+              <td role="cell" data-side={heads[1]} className={SIDE}>{b}</td>
+              <td role="cell" className="px-4 py-1.5 text-right tabular-nums text-muted whitespace-nowrap @max-[36rem]:col-start-2 @max-[36rem]:row-start-1 @max-[36rem]:p-0">{change}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

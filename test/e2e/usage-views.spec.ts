@@ -89,3 +89,78 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
 
   for (const s of [real, fail]) await request.delete(`/api/sessions/${s.id}`);
 });
+
+// Compare on a small phone at the largest text size: every measurement shows
+// both values, each beside the name of its side, and the change, with nothing
+// to pan to. With room it stays the four-column table. The models carry long
+// names that differ only at their end.
+test("usage compare: both sides and the change read together on a phone", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  const BACKUP = "scripted:stand-in-backup";
+  test.skip(!models.includes(STAND_IN) || !models.includes(BACKUP), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const made: string[] = [];
+  for (const [model, text] of [[STAND_IN, "script:rate-limit"], [BACKUP, "One line."]] as const) {
+    const s = (await (await request.post("/api/sessions", { data: { model, title: "Compare check", text } })).json()).session;
+    made.push(s.id);
+    await ended(request, s.id, 1);
+  }
+  const LONG = "Laboratory long context instruct preview quantized";
+  await page.route("**/api/models*", async (route) => {
+    const body = await (await route.fetch()).json();
+    for (const m of body.models ?? []) if (m.id === STAND_IN) m.name = `${LONG} A`; else if (m.id === BACKUP) m.name = `${LONG} B`;
+    await route.fulfill({ json: body });
+  });
+  const panel = page.getByTestId("usage-panel");
+  const table = panel.getByTestId("compare-table");
+  const rows = table.locator("tbody tr");
+  const open = async () => {
+    await page.goto("/settings/usage");
+    await panel.getByRole("radio", { name: "Compare" }).click();
+    await panel.getByRole("radio", { name: "Two models" }).click();
+    await choose(panel.getByTestId("compare-model-a"), STAND_IN);
+    await choose(panel.getByTestId("compare-model-b"), BACKUP);
+    await expect(table).toContainText("Rate limited");
+  };
+  // Where the cells of a row sit: [name, first side, second side, change].
+  const cells = (row: ReturnType<typeof rows.first>) => row.evaluate((tr) => [...tr.children].map((c) => { const r = c.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, side: getComputedStyle(c, "::before").content }; }));
+
+  // With room: one line a measurement, under heads that name the two models.
+  await open();
+  await expect(table.locator("thead")).toContainText(`${LONG} A`);
+  await expect(table.locator("thead")).toContainText(`${LONG} B`);
+  const wide = await cells(rows.filter({ hasText: "Requests" }).first());
+  expect(new Set(wide.map((c) => Math.round(c.top))).size).toBe(1);
+  await shoot(page, "usage-views-06-compare-long-names");
+
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.setViewportSize({ width: 320, height: 640 });
+  await open();
+  // Nothing of the table is off to the side, and nothing in it scrolls sideways.
+  const fit = await table.locator("table").evaluate((el) => { const r = el.getBoundingClientRect(), w = el.parentElement!; return { left: r.left, right: r.right, pans: w.scrollWidth > w.clientWidth + 1 }; });
+  expect(fit.pans).toBe(false);
+  // The page itself stays put: only the settings pane scrolls.
+  expect(await page.evaluate(() => { const d = document.scrollingElement!; return d.scrollWidth <= d.clientWidth && d.scrollHeight <= d.clientHeight; })).toBe(true);
+  expect(fit.left).toBeGreaterThanOrEqual(0);
+  expect(fit.right).toBeLessThanOrEqual(320);
+  for (const row of await rows.all()) {
+    const [name, a, b, change] = await cells(row);
+    for (const c of [name!, a!, b!, change!]) {
+      expect(c.left).toBeGreaterThanOrEqual(0);
+      expect(c.right).toBeLessThanOrEqual(320);
+    }
+    // The change is beside the name; each value is on a line that names its side.
+    expect(change!.top).toBeLessThan(a!.top);
+    expect(a!.bottom).toBeLessThanOrEqual(b!.top + 1);
+    expect(a!.side).toContain(`${LONG} A`);
+    expect(b!.side).toContain(`${LONG} B`);
+  }
+  const limited = rows.filter({ hasText: "Rate limited" });
+  await expect(limited).toContainText(/\d+ (more|fewer)/);
+  await limited.scrollIntoViewIfNeeded();
+  await expect(limited).toBeInViewport({ ratio: 1 });
+  await shoot(page, "usage-views-07-compare-phone");
+  await rows.first().scrollIntoViewIfNeeded();
+  await shoot(page, "usage-views-08-compare-phone-top");
+
+  for (const id of made) await request.delete(`/api/sessions/${id}`);
+});
