@@ -616,6 +616,17 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     if (mustOpen && at && root.current?.contains(at) && (at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always")) toList();
   }, [mustOpen]);
   const held = useHandBack(root, list);
+  // Leaving the reason (Esc, Back) puts the keyboard where the card's own rule would: on
+  // Allow once for a card that is whole and read, so Enter answers again, and on the list
+  // of requests for one whose text is not all on it. It is never lost to the page.
+  const back = useRef(false);
+  const leaveDeny = () => { back.current = true; setDenying(false); };
+  useEffect(() => {
+    if (denying || !back.current) return;
+    back.current = false;
+    if (unread.current) toList();
+    else once.current?.focus({ preventScroll: true });
+  }, [denying]);
   const pressed = usePress(() => !unread.current && armed("live"), (ok) => ok);
   const nudge = useNudge();
   // Why a press on one of its answers does nothing now.
@@ -787,7 +798,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             data-testid="deny-reason"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape" && !composing(e)) { e.stopPropagation(); setDenying(false); } }}
+            onKeyDown={(e) => { if (e.key === "Escape" && !composing(e)) { e.preventDefault(); e.stopPropagation(); leaveDeny(); } }}
             aria-label="Why you deny it (optional)"
             placeholder="Tell the model why, or what to do instead (optional)"
             className="h-8 min-w-[min(100%,14rem)] flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong"
@@ -795,7 +806,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           <button type="submit" disabled={busy} data-testid="deny-send" className="h-8 rounded-lg bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
             Send denial
           </button>
-          <button type="button" onClick={() => setDenying(false)} className="h-8 rounded-lg px-2.5 text-ui text-faint hover:bg-hover hover:text-fg" title="Back to the request (Esc)">
+          <button type="button" onClick={leaveDeny} className="h-8 rounded-lg px-2.5 text-ui text-faint hover:bg-hover hover:text-fg" title="Back to the request (Esc)">
             Back
           </button>
           {err && <span className="basis-full text-micro text-danger" role="alert" data-testid="approval-error">{err}</span>}
