@@ -66,6 +66,13 @@ export const importRoutes: RouteModule = (deps) => {
     return imports.find(b.harness, b.id) ?? (imports.invalidate(), imports.find(b.harness, b.id)) ?? bad(`${b.harness} has no session ${b.id}`, 404);
   };
 
+  // What an update appended to a copy goes to the pages that show it: the
+  // copy's last event before the update, then every event after it.
+  const lastSeq = (id?: string) => (id ? store.events(id).at(-1)?.seq ?? 0 : 0);
+  const emitGained = (id: string, after: number) => {
+    for (const e of store.events(id, after)) bus.emit({ t: "event", event: e });
+  };
+
   // A page of a listing; a cursor this list did not give is the caller's mistake (400).
   const listed = <T,>(f: () => T): T | Response => {
     try { return f(); } catch (e) { if (e instanceof CursorError) return bad(e.message); throw e; }
@@ -180,6 +187,7 @@ export const importRoutes: RouteModule = (deps) => {
         const model = b.model || (await modelFor(f));
         if (!model) return bad("no model is available: no provider has credentials", 409);
         const workspace = f.cwd && r.session.cwd_exists && contains(m.workspace_root!, f.cwd) ? f.cwd : m.workspace_root!;
+        const seq = lastSeq(prior?.session_id);
         let out;
         try {
           out = await imports.import(f, { mode: b.mode, model, workspace, title: b.title, from: { machine: m.id, read: r.read } });
@@ -189,6 +197,7 @@ export const importRoutes: RouteModule = (deps) => {
           throw e;
         }
         if (out.action === "created" && workspace !== f.cwd) store.append(out.session.id, "note", { text: `Its folder ${f.cwd ?? "(none)"} is not inside the directory granted on ${m.name}; it goes on in ${workspace} there.` });
+        if (out.action === "updated") emitGained(out.session.id, seq);
         bus.emit({ t: "session", session: store.session(out.session.id)! });
         // A copy of a conversation whose harness still runs there is told so.
         if (out.action === "created" && fleet!.isSsh(m)) await resumes?.copied(m, out.session.id, b.harness, String(b.id));
@@ -277,7 +286,7 @@ export const importRoutes: RouteModule = (deps) => {
         const model = b.mode === "open" ? "" : b.model || (await modelFor(f));
         if (!model && b.mode !== "open") return bad("no model is available: no provider has credentials", 409);
         if (b.cwd && !isDir(b.cwd)) return bad(`not a directory: ${b.cwd}`);
-        const seq = prior && b.mode === "update" ? store.events(prior.session_id).at(-1)?.seq ?? 0 : 0;
+        const seq = lastSeq(prior?.session_id);
         let r;
         try {
           r = await imports.import(f, { mode: b.mode, model, workspace: workspaceOf(f, b.cwd), title: b.title, session_id: named });
@@ -286,7 +295,7 @@ export const importRoutes: RouteModule = (deps) => {
           throw e;
         }
         // A page that shows the copy gets the events it gained.
-        if (r.action === "updated") for (const e of store.events(r.session.id, seq)) bus.emit({ t: "event", event: e });
+        if (r.action === "updated") emitGained(r.session.id, seq);
         bus.emit({ t: "session", session: r.session });
         // A copy of a session that still runs is told so, once the agent view's list is read.
         if (r.action !== "opened") takeover?.noteLiveLater(r.session.id);
@@ -320,8 +329,10 @@ export const importRoutes: RouteModule = (deps) => {
             if (prior && mode === "update" && takeover?.wentOn(prior.session_id)) { fail(409, WENT_ON, { session_id: prior.session_id, reason: "went_on" }); continue; }
             const model = mode === "open" && prior ? "" : b.model ?? (await modelFor(f));
             if (!model && !(mode === "open" && prior)) { fail(409, "no model is available: no provider has credentials", { reason: "no_model" }); continue; }
+            const seq = lastSeq(prior?.session_id);
             const r = await imports.import(f, { mode: prior ? mode : undefined, model, workspace: workspaceOf(f) });
-            if (r.action === "created") bus.emit({ t: "session", session: r.session });
+            if (r.action === "updated") emitGained(r.session.id, seq);
+            if (r.action !== "opened") bus.emit({ t: "session", session: r.session });
             results.push({ harness: f.harness, id: f.id, title: f.title, ok: true, action: r.action, session_id: r.session.id, imported_events: r.imported_events });
             counts[r.action] = (counts[r.action] ?? 0) + 1;
           } catch (e) {
@@ -347,7 +358,9 @@ export const importRoutes: RouteModule = (deps) => {
         const far = sourceMachine(l.source_path);
         const fm = far ? fleet?.row(far) : undefined;
         const machine = fm ? { id: fm.id, name: fm.name, ssh: fleet!.isSsh(fm) } : undefined;
-        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id), machine }, source });
+        // `went_on`: the copy took a turn here (or runs one now), so it no longer takes the original's later turns.
+        const went_on = takeover ? takeover.wentOn(l.session_id) : imports.wentOn(l.session_id);
+        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id), machine, went_on }, source });
       },
     },
     "/api/sessions/:id/export": {

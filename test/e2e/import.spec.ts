@@ -678,7 +678,7 @@ test("Update in a copy's Export dialog updates that copy", async ({ page, reques
   const cwd = join(SCRATCH, `copies-${tag}`);
   mkdirSync(cwd, { recursive: true });
   const id = `c0b1e500-0000-4000-8000-${tag.padStart(12, "0")}`;
-  const reply = (text: string) => ({ type: "assistant", message: { id: `m-${text}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text }], stop_reason: "end_turn" } });
+  const reply = (text: string) => ({ type: "assistant", message: { id: `m-${text}`, role: "assistant", model: "made-up-model", content: [{ type: "text", text }], stop_reason: "end_turn" } });
   const ask = (text: string) => ({ type: "user", message: { role: "user", content: text } });
   const path = claudeFile(join(store, cwd.replace(/[^A-Za-z0-9]/g, "-")), cwd, id, [ask(`Name a fruit ${tag}`), reply("Quince.")]);
   // The original gains a question and an answer, chained after what it holds.
@@ -708,18 +708,28 @@ test("Update in a copy's Export dialog updates that copy", async ({ page, reques
   expect(await texts(older)).toEqual([`Name a fruit ${tag}`, "Quince.", "And its colour?", "Yellow."]);
   expect(await texts(newer)).toEqual([`Name a fruit ${tag}`, "Quince."]);
 
-  // The older copy goes on here, the original too: its Update is refused, and the other copy is not updated in its place.
+  // The older copy goes on here, the original too: its dialog says so and offers
+  // no Update, and asking anyway is refused without the other copy being updated in its place.
   await say(request, older, "And its season?");
   grow("And its shape?", "Round.");
   const before = { older: await texts(older), newer: await texts(newer) };
   await page.reload();
   await page.getByRole("button", { name: "Export or continue elsewhere" }).click();
-  await dialog.getByTestId("export-update").click();
-  await expect(dialog.getByTestId("export-error")).toContainText("went on since it was copied");
-  await shoot(page, "import-11-update-refused");
+  await expect(dialog.getByTestId("export-origin")).toContainText("and so has this copy here");
+  await expect(dialog.getByTestId("export-update")).toHaveCount(0);
+  await shoot(page, "import-11-update-not-offered");
+  const asked = await request.post("/api/import", { data: { mode: "update", session_id: older } });
+  expect([asked.status(), (await asked.json()).reason]).toEqual([409, "went_on"]);
   expect({ older: await texts(older), newer: await texts(newer) }).toEqual(before);
   // A copy that is not one of this source is not found, whatever else the request names.
   expect((await request.post("/api/import", { data: { mode: "update", session_id: "no-such-copy" } })).status()).toBe(404);
+
+  // An update of many at once reaches a page that shows a copy it updated, without a reload.
+  await page.goto(`/s/${newer}`);
+  await expect(page.getByTestId("transcript").getByText("Quince.")).toBeVisible();
+  const batch = await (await request.post("/api/import/batch", { data: { mode: "update", items: [{ harness: "claude", id, path }] } })).json();
+  expect(batch.results[0]).toMatchObject({ ok: true, action: "updated", session_id: newer, imported_events: 4 });
+  await expect(page.getByTestId("transcript").getByText("Round.")).toBeVisible();
   for (const sid of [older, newer]) await request.delete(`/api/sessions/${sid}`);
   rmSync(path, { force: true });
 });

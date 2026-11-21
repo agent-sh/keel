@@ -21,7 +21,7 @@ export function ExportOverlay() {
   return <ExportDialog session={s} onClose={() => openExport(null)} />;
 }
 
-type Origin = { origin: null | { label: string; harness: string; source_id: string; source_path: string; imported_ms: number; synced_ms: number }; source?: { exists: boolean; grew: boolean } };
+type Origin = { origin: null | { label: string; harness: string; source_id: string; source_path: string; imported_ms: number; synced_ms: number; went_on?: boolean }; source?: { exists: boolean; grew: boolean } };
 type Written = { format: string; target_id: string; path: string; cwd: string; resume_command: string; shell_command: string; notes?: string[] };
 
 // What an export leaves under the options is brought into view: on a short window the list scrolls.
@@ -142,9 +142,9 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
                 <History className="size-4 shrink-0 text-muted" />
                 <span className="min-w-0 flex-1">
                   Imported from {origin.origin.label} {ago(origin.origin.imported_ms)}
-                  {origin.source && !origin.source.exists ? ", its file is gone." : origin.source?.grew ? "; the original has gone on since." : "."}
+                  {origin.source && !origin.source.exists ? ", its file is gone." : !origin.source?.grew ? "." : origin.origin.went_on ? "; the original has gone on since, and so has this copy here: it no longer takes the original's turns. A new copy from Import sessions has them." : "; the original has gone on since."}
                 </span>
-                {origin.source?.grew && <button type="button" disabled={busy} onClick={update} data-testid="export-update" className="shrink-0 rounded-md px-2 py-0.5 text-accent hover:bg-accent-soft">Update</button>}
+                {origin.source?.grew && !origin.origin.went_on && <button type="button" disabled={busy} onClick={update} data-testid="export-update" className="shrink-0 rounded-md px-2 py-0.5 text-accent hover:bg-accent-soft">Update</button>}
               </div>
             )}
             <Option href={`${base}/export?format=md&include=tools`} icon={<FileDown />} title="Markdown" hint="To read or share: the current branch with its tool calls and results; images and files named, not included; secrets taken out." testid="export-md" />
