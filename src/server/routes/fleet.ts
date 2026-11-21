@@ -67,13 +67,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       const p = await f.peer(machineId);
       return {
         pending: async () => (await linkJson<{ messages: Message[] }>(p, "/api/fleet/outbox", { method: "POST", body: JSON.stringify({ daemon_id: f.id, name: f.name }) })).messages,
-        keep(m) {
-          const to = store.session(m.to_session);
-          // Proven by the link's answer; it counts as that daemon's when it says it was written there.
-          // Refused (gone, archived, rate) is an answer too: it is not handed out again.
-          if (to) try { msgs.receiveOutbound(to, m, m.from.daemon_id === p.daemonId); } catch (e) { if (!(e instanceof HttpError)) throw e; }
-        },
-        ack: (ids) => linkJson(p, "/api/fleet/outbox/ack", { method: "POST", body: JSON.stringify({ daemon_id: f.id, ids }) }),
+        // Proven by the link's answer; it counts as that daemon's when it says it was written there.
+        keep: (m) => msgs.keepOutbound(m, m.from.daemon_id === p.daemonId),
+        ack: (ids, refused) => linkJson(p, "/api/fleet/outbox/ack", { method: "POST", body: JSON.stringify({ daemon_id: f.id, ids, refused }) }),
       };
     },
     live: (machineId) => f.relayLive(machineId),
@@ -516,7 +512,11 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const c = paired(req);
         const b = await body(req);
         if (!c || c.daemonId !== b.daemon_id) return proven(bad("not a paired daemon", 403), c, f.id);
-        msgs.ackOutbound(c.daemonId, Array.isArray(b.ids) ? b.ids.map(String).slice(0, 500) : []);
+        // `refused` maps an id to why its daemon did not keep it (a daemon that sends none kept them all).
+        const refused = b.refused && typeof b.refused === "object" && !Array.isArray(b.refused)
+          ? Object.fromEntries(Object.entries(b.refused).map(([id, why]) => [id, String(why).slice(0, 500)]))
+          : {};
+        msgs.ackOutbound(c.daemonId, Array.isArray(b.ids) ? b.ids.map(String).slice(0, 500) : [], refused);
         return proven(json({ ok: true }), c, f.id);
       },
     },

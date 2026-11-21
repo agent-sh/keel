@@ -39,6 +39,7 @@ export class Fleet {
   readonly id: string;
   readonly name: string;
   private relays = new Map<string, Relay>();
+  private stopped = false;
   private tunnels = new Map<string, Promise<Tunnel>>();
   private queues = new Map<string, Queue>();
   private links = new Map<string, DaemonLink>();
@@ -94,6 +95,7 @@ export class Fleet {
   }
 
   stop() {
+    this.stopped = true;
     const relays = [...this.relays.values()];
     this.relays.clear(); // first: an aborted relay that is no longer listed does not reopen
     for (const r of relays) { r.abort.abort(); clearTimeout(r.timer); }
@@ -410,6 +412,7 @@ export class Fleet {
   }
 
   private openRelay(id: string, prev?: Relay) {
+    if (this.stopped) return; // a check that ended after a hot reload replaced this fleet opens nothing
     const relay: Relay = { abort: new AbortController(), sessions: prev?.sessions ?? new Map(), live: false, stale: !!prev?.sessions.size, retry: prev?.retry ?? 0 };
     this.relays.set(id, relay);
     const lost = (reason: string) => {

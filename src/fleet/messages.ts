@@ -10,6 +10,7 @@ import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError, linkFetch } from "./link.ts";
+import { addNotice, takeNotice } from "../tools/jobs.ts";
 
 export const MAX_TEXT = 1_000_000;
 export const PEER_PREFIX = '<external_input source="peer_session"';
@@ -315,12 +316,56 @@ export class Messages {
       .all(daemonId, MAX_OUTBOX)
       .map(toMessage);
   }
-  ackOutbound(daemonId: string, ids: string[]) {
-    for (const id of ids) this.store.db.query("UPDATE fleet_messages SET state = 'delivered', reason = 'received by its daemon' WHERE id = ? AND state = 'outbound' AND to_daemon = ?").run(id, daemonId);
+  // The receiving daemon's answer for each message: kept there (delivered), or
+  // refused with its reason (dropped, and the sending session is told). Only a
+  // message that still waits is settled, so an answer that comes again, with
+  // the same outcome or another, changes nothing.
+  ackOutbound(daemonId: string, ids: string[], refused: Record<string, string> = {}) {
+    for (const id of ids) {
+      const why = refused[id];
+      const done = this.store.db
+        .query("UPDATE fleet_messages SET state = ?, reason = ? WHERE id = ? AND state = 'outbound' AND to_daemon = ?")
+        .run(why === undefined ? "delivered" : "dropped", why === undefined ? "received by its daemon" : `refused by its daemon: ${why}`, id, daemonId);
+      if (!done.changes) continue;
+      const m = this.get(id)!;
+      this.emit(m);
+      if (why !== undefined) this.tellRefused(m, why);
+    }
   }
 
-  // The receiving side of an outbox: each message once, whatever number of
-  // times it is handed out (the sender's id is kept with it).
+  // The sender believed its message was on the way: its transcript and its
+  // model learn that it was not delivered, in one note. An idle session gets
+  // it now, for its next turn. A working one reads it with its next request,
+  // and when its turn ends before another request, as soon as it is idle.
+  private tellRefused(m: Message, why: string) {
+    const id = m.from.session_id;
+    if (!this.store.session(id)) return;
+    const where = this.fleet.pairs().find((p) => p.daemon_id === m.to_daemon)?.name ?? m.to_daemon;
+    const text = `Your message to session ${m.to_session} on ${where} (reply id ${m.id}) was refused there and not delivered: ${why}.`;
+    const note = () => {
+      if (!this.store.session(id)) return;
+      this.bus.emit({ t: "event", event: this.store.append(id, "note", { kind: "peer_refused", model: true, message_id: m.id, text: `<system-reminder>\n${text}\n</system-reminder>` }) });
+    };
+    if (!this.engine.isRunning(id)) return note();
+    addNotice(id, text);
+    void this.engine.idle(id).then(() => { if (!this.engine.isRunning(id) && takeNotice(id, text)) note(); });
+  }
+
+  // One message of a linked daemon's outbox, for this daemon: kept, or the
+  // reason it is refused (its session is gone or archived, takes no messages,
+  // or a limit). Either is an answer: the message is not handed out again.
+  keepOutbound(m: Message, trusted: boolean): { refused?: string } {
+    const to = this.store.session(m.to_session);
+    if (!to) return { refused: "no such session there (deleted)" };
+    try {
+      this.receiveOutbound(to, m, trusted);
+      return {};
+    } catch (e) {
+      if (e instanceof HttpError) return { refused: e.message };
+      throw e;
+    }
+  }
+
   receiveOutbound(to: Session, m: Message, trusted: boolean): Message {
     const had = this.store.db.query<Row, [string, string]>("SELECT * FROM fleet_messages WHERE json_extract(sender, '$.outbox_id') = ? AND json_extract(sender, '$.daemon_id') = ?").get(m.id, m.from.daemon_id);
     if (had) return toMessage(had);

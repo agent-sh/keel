@@ -122,8 +122,8 @@ test("the outbox: a lost acknowledgement is retried within a bound, the message 
   const drain = new OutboxDrain({
     link: async () => ({
       pending: async () => { fetches++; return a.msgs.pendingOutbound("dB"); },
-      keep: (m) => { b.msgs.receiveOutbound(to, m, true); },
-      ack: async (ids) => { acks++; if (lose-- > 0) throw new LinkError("the answer was lost"); a.msgs.ackOutbound("dB", ids); },
+      keep: (m) => b.msgs.keepOutbound(m, true),
+      ack: async (ids, refused) => { acks++; if (lose-- > 0) throw new LinkError("the answer was lost"); a.msgs.ackOutbound("dB", ids, refused); },
     }),
     live: () => live,
     failed: (e) => failed.push(e),
@@ -153,6 +153,53 @@ test("the outbox: a lost acknowledgement is retried within a bound, the message 
   expect(failed).toHaveLength(1);
   expect(a.msgs.pendingOutbound("dB")).toHaveLength(1); // still waits for the next relay
   expect(b.msgs.list({ session_id: to.id })).toHaveLength(2);
+});
+
+test("the outbox: a refused message settles with its reason, never as delivered, and an answer replayed changes nothing", async () => {
+  const { OutboxDrain } = await import("./outbox.ts");
+  const a = await scratchDaemon("dA"), b = await scratchDaemon("dB");
+  (a.msgs as any).fleet.pairs = () => [{ daemon_id: "dB", name: "other box" }];
+  const from = a.store.createSession({ model: "m", workspace: a.ws });
+  const open = b.store.createSession({ model: "m", workspace: b.ws });
+  const archived = b.store.createSession({ model: "m", workspace: b.ws });
+  b.store.updateSession(archived.id, { archived: true });
+  const deleted = b.store.createSession({ model: "m", workspace: b.ws });
+  b.store.deleteSession(deleted.id);
+  const sender = a.msgs.senderOf(from);
+  const [ok, arch, gone] = [open, archived, deleted].map((s, i) => a.msgs.queueOutbound("dB", s.id, `message ${i}`, sender, true));
+  const answers: { ids: string[]; refused: Record<string, string> }[] = [];
+  const drain = new OutboxDrain({
+    link: async () => ({
+      pending: async () => a.msgs.pendingOutbound("dB"),
+      keep: (m) => b.msgs.keepOutbound(m, true),
+      ack: async (ids, refused) => { answers.push({ ids, refused }); a.msgs.ackOutbound("dB", ids, refused); },
+    }),
+    live: () => true,
+    failed: (e) => { throw e; },
+  });
+  drain.kick("mB");
+  for (let i = 0; i < 200 && !drain.idle("mB"); i++) await Bun.sleep(5);
+  const settled = () => [ok, arch, gone].map((m) => { const x = a.msgs.get(m!.id)!; return [x.state, x.reason]; });
+  const want = [
+    ["delivered", "received by its daemon"],
+    ["dropped", "refused by its daemon: the session is archived"],
+    ["dropped", "refused by its daemon: no such session there (deleted)"],
+  ];
+  expect(settled()).toEqual(want);
+  expect(a.msgs.pendingOutbound("dB")).toEqual([]);
+  expect(b.msgs.list({}).map((m) => m.to_session)).toEqual([open.id]); // only the accepted one was kept
+  // The sending session reads each refusal once, as a note its model sees too.
+  const notes = () => a.store.events(from.id).filter((e) => e.kind === "note").map((e) => String(e.data.text));
+  expect(notes()).toHaveLength(2);
+  expect(notes()[0]).toContain(`Your message to session ${archived.id} on other box`);
+  expect(notes()[0]).toContain("was refused there and not delivered: the session is archived.");
+  expect(notes()[1]).toContain("no such session there (deleted)");
+
+  // The same answer again, and a contradicting one: nothing changes, nothing is said twice.
+  a.msgs.ackOutbound("dB", answers[0]!.ids, answers[0]!.refused);
+  a.msgs.ackOutbound("dB", [ok!.id, arch!.id, gone!.id], { [ok!.id]: "late refusal" });
+  expect(settled()).toEqual(want);
+  expect(notes()).toHaveLength(2);
 });
 
 // A message for a session the owner stopped waits in its held queue through

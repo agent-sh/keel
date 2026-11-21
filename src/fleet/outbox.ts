@@ -1,6 +1,7 @@
 // The receiving side of a linked daemon's outbox: fetch what waits for this
-// daemon there, keep each message, acknowledge what was kept. One drain per
-// machine at a time; a trigger during a drain runs it once more after it.
+// daemon there, keep each message, answer for each: kept, or refused with the
+// reason. One drain per machine at a time; a trigger during a drain runs it
+// once more after it.
 // A link error on the way (the fetch or the acknowledgement lost) is tried
 // again after 1, 2, 4 ... 30 s, six times at most and only while the relay to
 // that machine is open: a relay that reopens drains by itself. A message kept
@@ -12,8 +13,8 @@ export const OUTBOX_RETRY_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 
 export type OutboxLink = {
   pending(): Promise<Message[]>;
-  keep(m: Message): void;
-  ack(ids: string[]): Promise<unknown>;
+  keep(m: Message): { refused?: string };
+  ack(ids: string[], refused: Record<string, string>): Promise<unknown>;
 };
 
 type Deps = {
@@ -43,12 +44,14 @@ export class OutboxDrain {
 
   private async once(machineId: string) {
     const l = await this.d.link(machineId);
-    const kept: string[] = [];
+    const ids: string[] = [];
+    const refused: Record<string, string> = {};
     for (const m of await l.pending()) {
-      l.keep(m);
-      kept.push(m.id);
+      const why = l.keep(m).refused;
+      if (why !== undefined) refused[m.id] = why;
+      ids.push(m.id);
     }
-    if (kept.length) await l.ack(kept);
+    if (ids.length) await l.ack(ids, refused);
   }
 
   private async run(machineId: string, st: State) {
