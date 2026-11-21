@@ -79,3 +79,40 @@ test("a worktree parks and comes back where git has no identity to commit under"
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A saved working state is a commit Keel makes for itself, under its own ref:
+// the owner's when git has an identity, Keel's when it has none.
+test("a parked worktree's saved state is the owner's commit, and Keel's where git has no identity", async () => {
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `wt-ident-${process.pid}`);
+  const repo = join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  const g = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
+  const kept = { global: process.env.GIT_CONFIG_GLOBAL, system: process.env.GIT_CONFIG_SYSTEM };
+  // No identity from the machine: only what the repository itself says.
+  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+  process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+  try {
+    g(repo, "init", "-q", "-b", "main");
+    g(repo, "config", "user.name", "The Owner");
+    g(repo, "config", "user.email", "owner@example.test");
+    writeFileSync(join(repo, "a"), "a\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-qm", "init");
+    const wts = new Worktrees(new Store(join(root, "state")), join(root, "wts"));
+    const author = async (session: string) => {
+      const { wt } = await wts.create(session, repo, session, undefined);
+      wts.adopt(session, wt);
+      writeFileSync(join(wt.path, "b"), "b\n");
+      const parked = await wts.park(wts.get(session)!);
+      return g(repo, "log", "-1", "--format=%an <%ae>", parked.snapshot_ref!);
+    };
+    expect(await author("s1")).toBe("The Owner <owner@example.test>");
+    g(repo, "config", "--unset", "user.name");
+    g(repo, "config", "--unset", "user.email");
+    g(repo, "config", "user.useConfigOnly", "true");
+    expect(await author("s2")).toBe("Keel <keel@localhost>");
+  } finally {
+    for (const [k, v] of [["GIT_CONFIG_GLOBAL", kept.global], ["GIT_CONFIG_SYSTEM", kept.system]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    rmSync(root, { recursive: true, force: true });
+  }
+});

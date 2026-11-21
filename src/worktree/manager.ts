@@ -48,7 +48,19 @@ export function git(cwd: string, args: string[], opts: { env?: Record<string, st
   return run;
 }
 
+// A commit Keel makes for itself (a saved working state under its own ref) is
+// the owner's when the machine has a git identity, and Keel's when it has
+// none: git refuses to commit without one.
 const KEEL_IDENT = { GIT_AUTHOR_NAME: "Keel", GIT_AUTHOR_EMAIL: "keel@localhost", GIT_COMMITTER_NAME: "Keel", GIT_COMMITTER_EMAIL: "keel@localhost" };
+const NO_IDENTITY = /tell me who you are|auto-detect|ident name|auto-detection is disabled/i;
+async function ownCommit(dir: string, args: string[]): Promise<string> {
+  try {
+    return await git(dir, args);
+  } catch (e) {
+    if (!(e instanceof GitError) || !NO_IDENTITY.test(e.message)) throw e;
+    return git(dir, args, { env: KEEL_IDENT });
+  }
+}
 
 async function gitNow(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean }): Promise<string> {
   const p = Bun.spawn(["git", ...args], {
@@ -188,8 +200,7 @@ export class Worktrees {
       await git(dir, ["read-tree", "HEAD"], { env });
       await git(dir, ["add", "-A"], { env });
       const tree = (await git(dir, ["write-tree"], { env })).trim();
-      // Keel's own commit under its own ref: made the same on a machine with no git identity set.
-      const commit = (await git(dir, ["commit-tree", tree, "-p", "HEAD", "-m", message], { env: KEEL_IDENT })).trim();
+      const commit = (await ownCommit(dir, ["commit-tree", tree, "-p", "HEAD", "-m", message])).trim();
       await git(dir, ["update-ref", ref, commit]);
       return ref;
     } finally {
