@@ -1,7 +1,9 @@
 // The plans that wait for the owner's approval, by session, as far as this
 // page knows: every plan that opened or closed while the page was connected
 // (the daemon tells all pages), and the open plans of each session it shows.
-// The answering sequence reads it (components/AnswerQueue.tsx).
+// The answering sequence reads it to tell that a plan on screen was answered
+// (components/AnswerQueue.tsx); that a session waits on a plan at all is the
+// daemon's word (lib/watch.ts).
 import { useSyncExternalStore } from "react";
 import { onFeature } from "./store.ts";
 

@@ -1,21 +1,25 @@
 // The sessions that wait on the owner, in the order they are answered: the
-// one that has waited longest first. Pure: the page gives it the sessions and
-// each one's word (lib/watch.ts), so whatever makes a session read "needs
-// you" (an approval, a question, a plan, a message that did not go) is in it.
+// one that has waited longest first. Pure: the page gives it each session's
+// state as the daemon serves it (lib/watch.ts), so whatever makes a session
+// read "needs you" (an approval, a question, a plan, a secret, a message that
+// did not go) is in it.
 
-type Row = { id: string; parent_id?: string | null; archived?: boolean; updated: number };
+type Row = { id: string; archived?: boolean; updated: number };
+// What the order reads of a session's state: its word, since when its reason
+// stands, and the agent session the first thing that waits is in, if any.
+type Told = { watch: string; since?: number; child?: string };
 
 // `own` says whether a session holds a request itself. A session that needs
-// the owner only because an agent it started asks (it holds nothing itself)
-// is left out: the agent's own session is in the order, and that is where the
-// answer is given.
-export function waitingOrder(list: Row[], word: (id: string) => string | undefined, own: (id: string) => boolean): string[] {
-  const need = list.filter((s) => !s.archived && word(s.id) === "need");
-  const asking = new Set(need.map((s) => s.parent_id).filter(Boolean));
+// the owner only because an agent it started asks (its state names that
+// agent, and it holds nothing itself) is left out: the agent's own session
+// is in the order, and that is where the answer is given.
+export function waitingOrder(list: Row[], state: (id: string) => Told | undefined, own: (id: string) => boolean): string[] {
+  const need = list.filter((s) => !s.archived && state(s.id)?.watch === "need");
+  const ids = new Set(need.map((s) => s.id));
+  const at = (s: Row) => state(s.id)?.since ?? s.updated;
   return need
-    .filter((s) => own(s.id) || !asking.has(s.id))
-    // A session that waits is not written to: its last change is when it began to wait.
-    .sort((a, b) => a.updated - b.updated || (a.id < b.id ? -1 : 1))
+    .filter((s) => { const child = state(s.id)?.child; return own(s.id) || !child || !ids.has(child); })
+    .sort((a, b) => at(a) - at(b) || (a.id < b.id ? -1 : 1))
     .map((s) => s.id);
 }
 

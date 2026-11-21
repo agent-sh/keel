@@ -227,7 +227,7 @@ const WAYS: Way[] = [
     await page.goto(`/s/${target}`);
     return { target, all: [target] };
   } },
-  { name: "the key that goes to what waits", panes: 1, kinds: ["approval", "question"], from: "keys", takes: true, arrive: async (page, request, kind, ws, tag) => {
+  { name: "the key that goes to what waits", panes: 1, kinds: KINDS, from: "keys", takes: true, arrive: async (page, request, kind, ws, tag) => {
     const quiet = await create(request, `Quiet ${tag}`, ws);
     const target = await create(request, `Waits ${tag}`, ws);
     await ask(request, target, kind);
@@ -237,7 +237,7 @@ const WAYS: Way[] = [
     await expect(page).toHaveURL(new RegExp(`/s/${target}$`));
     return { target, all: [quiet, target] };
   } },
-  { name: "a step of the answering sequence", panes: 1, kinds: ["approval", "question"], from: "keys", takes: true, arrive: async (page, request, kind, ws, tag) => {
+  { name: "a step of the answering sequence", panes: 1, kinds: KINDS, from: "keys", takes: true, arrive: async (page, request, kind, ws, tag) => {
     const quiet = await create(request, `Quiet ${tag}`, ws);
     const first = await create(request, `First ${tag}`, ws);
     await ask(request, first, "approval", "first");
@@ -299,7 +299,7 @@ const WAYS: Way[] = [
     await expect(pane(page, target)).toHaveAttribute("data-helm", "true");
     return { target, all: [helm, target, ...rest] };
   } },
-  { name: "a step of the answering sequence, both panes on screen", panes: 4, kinds: ["approval", "question"], from: "keys", takes: true, arrive: async (page, request, kind, ws, tag) => {
+  { name: "a step of the answering sequence, both panes on screen", panes: 4, kinds: KINDS, from: "keys", takes: true, arrive: async (page, request, kind, ws, tag) => {
     const helm = await create(request, `Worked in ${tag}`, ws);
     const first = await create(request, `First ${tag}`, ws);
     await ask(request, first, "approval", "first");
@@ -756,6 +756,26 @@ test("a secret request takes no typed word as its value", async ({ page, request
   await page.keyboard.press("Enter");
   await expect.poll(() => requests(empty)).toBe(0);
   await drop(request, draft, empty);
+
+  // A session that waits on a secret reads "needs you": the key that goes to what waits reaches it. The owner
+  // came for it, so its field has the keyboard, and Enter there gives nothing as the keyboard arrives.
+  const quiet = await create(request, "Nothing waits here", ws);
+  const third = await create(request, "Secret from elsewhere", ws);
+  await wants(third);
+  await expect.poll(() => requests(third)).toBe(1);
+  await open(page, [quiet]);
+  await expect(page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${third}"]`)).toHaveAttribute("data-watch", "need");
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${third}$`));
+  await expect(card.getByTestId("secret-value")).toBeFocused();
+  await page.keyboard.type("too-soon");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  expect(await requests(third)).toBe(1);
+  await expect(card).toHaveAttribute("data-keys", "ready");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => requests(third)).toBe(0);
+  await drop(request, quiet, third);
 });
 
 test("what waits across sessions is answered in sequence, one key each", async ({ page, request }) => {

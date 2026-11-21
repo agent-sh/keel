@@ -1,5 +1,7 @@
 // What waits on the owner across sessions, answered in sequence from one
-// place. The order is lib/waiting.ts's: the longest wait first. One key goes
+// place. The order is every session whose state, as the daemon serves it,
+// reads "needs you" (an approval, a question, a plan, a secret, a message
+// that did not go), the longest wait first (lib/waiting.ts). One key goes
 // to what waits: first to what the session on screen asks, then to the next
 // session that waits, with the keyboard on its card above that session's
 // message box (on the card, not on an answer: lib/asks.ts). That starts a
@@ -18,21 +20,23 @@ import { answeredHere, askIn, focusAsk } from "../lib/asks.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
 import { usePlans } from "../lib/plans.ts";
 import { useSafety } from "../lib/safety.ts";
+import { useSecrets } from "../lib/secrets.ts";
 import { unsentOf, useShelfVersion } from "../lib/send-drafts.ts";
 import { useStore } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
 import { getUI, navigate, useUI } from "../lib/ui.ts";
 import { nextWaiting, waitingOrder } from "../lib/waiting.ts";
-import { useWatches } from "../lib/watch.ts";
+import { useSessionStates } from "../lib/watch.ts";
 import { Kbd } from "./Kbd.tsx";
 
 const KEYS = "alt+a";
 type State = {
   order: string[]; // the sessions that wait, the longest wait first
+  parent: Record<string, string>; // of those, the agents' sessions: the session that started each
   on: boolean; // a sequence is being answered
   at: string | null; // the session the sequence is on
 };
-let state: State = { order: [], on: false, at: null };
+let state: State = { order: [], parent: {}, on: false, at: null };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; subs.forEach((f) => f()); };
 const useQueue = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
@@ -74,20 +78,22 @@ registerCommand({
 export function AnswerQueue() {
   const sessions = useStore((s) => s.sessions);
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived), [sessions]);
-  const words = useWatches(list);
+  const states = useSessionStates(list);
   const approvals = useSafety((s) => s.approvals);
   const questions = useStore((s) => s.questionCalls);
   const plans = usePlans();
+  const wanted = useSecrets((s) => s.requests);
   useShelfVersion();
-  // (A waiting plan this page knows of counts, whatever word its session reads.)
-  const order = waitingOrder(list, (id) => (plans[id]?.length ? "need" : words[id]), (id) => !!(approvals[id]?.length || questions[id]?.length || plans[id]?.length || unsentOf(id)));
+  // What a session holds itself, by id (a request of its agent is the agent session's).
+  const held = (id: string) => [...(approvals[id] ?? []).map((a) => a.id), ...(questions[id] ?? []), ...(plans[id] ?? []), ...(wanted[id] ?? []).map((r) => r.id)];
+  const order = waitingOrder(list, (id) => states[id], (id) => held(id).length > 0 || !!unsentOf(id));
   const key = order.join();
-  useEffect(() => set({ order }), [key]);
+  useEffect(() => set({ order, parent: Object.fromEntries(order.flatMap((id) => (sessions[id]?.parent_id ? [[id, sessions[id]!.parent_id!]] : []))) }), [key]);
 
   const cur = useUI((s) => (s.route.name === "session" ? s.route.id : null));
   const on = useQueue((s) => s.on);
   // What the session on screen asks, by id: one that is gone was answered, here or elsewhere.
-  const ids = cur ? [...(approvals[cur] ?? []).map((a) => a.id), ...(questions[cur] ?? []), ...(plans[cur] ?? [])] : [];
+  const ids = cur ? held(cur) : [];
   const idsKey = ids.join();
   const was = useRef({ cur, ids });
   useEffect(() => {
@@ -139,9 +145,10 @@ export function AnswerQueue() {
 }
 
 // Above what a session asks: how many other sessions wait, and how to get to
-// them. In a sequence it says that the next one opens by itself.
+// them. In a sequence it says that the next one opens by itself. The session's
+// own agents are not elsewhere: what they ask is reached from this page.
 export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
-  const others = useQueue((s) => (s.order.includes(sessionId) ? s.order.filter((id) => id !== sessionId).length : 0));
+  const others = useQueue((s) => (s.order.includes(sessionId) ? s.order.filter((id) => id !== sessionId && s.parent[id] !== sessionId).length : 0));
   const on = useQueue((s) => s.on && s.at === sessionId);
   const helm = useUI((s) => s.route.name === "session" && s.route.id === sessionId);
   if (!others || !helm) return null;
