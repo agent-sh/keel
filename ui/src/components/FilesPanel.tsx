@@ -1,6 +1,6 @@
 import { AtSign, ChevronLeft, File as FileIcon, Folder, Search } from "lucide-react";
 import { IMAGE, OpenInEditor, rawFile } from "./OpenInEditor.tsx";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError } from "../lib/store.ts";
 import { seedComposer, setUI, useUI } from "../lib/ui.ts";
@@ -55,6 +55,11 @@ function CodeView({ file, line, end }: { file: Opened; line?: number; end?: numb
 }
 
 // The session's folder: find a file, read it, mention it in the message box.
+// By keyboard: Down from the search box goes into the results, Up and Down
+// move through them (Up from the first goes back to the box), Enter opens the
+// one the keys are on. The file opened takes the keys (a region named after
+// it); Back, or Escape, returns to the list as it was: the same query, the
+// keys on the result that was opened, the list scrolled where it was.
 export function FilesPanel({ session }: { session: Session }) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
@@ -82,9 +87,44 @@ export function FilesPanel({ session }: { session: Session }) {
     return () => { clearTimeout(t); ctl.abort(); };
   }, [q, session.workspace]);
 
+  const input = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const view = useRef<HTMLDivElement>(null);
+  // Where the list was when a file was opened from it: the result the keys were on (none: the search box) and its scroll.
+  const left = useRef<{ path: string | null; top: number } | null>(null);
+  const results = () => [...(list.current?.querySelectorAll<HTMLElement>("[data-result]") ?? [])];
   const show = (h: Hit) => {
-    if (h.dir) return setQ(h.path);
+    // A folder narrows the list to what is in it: the keys go on in the search box.
+    if (h.dir) { setQ(h.path); input.current?.focus(); return; }
+    const on = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.result : undefined;
+    left.current = { path: on ?? null, top: list.current?.scrollTop ?? 0 };
     api<Opened>(`/api/fs/file?root=${encodeURIComponent(session.workspace)}&path=${encodeURIComponent(h.path)}`).then((f) => { setOpen(f); setAt({}); }).catch(reportError);
+  };
+  // The file opened takes the keys; back in the list they return where they were.
+  const shown = open?.path;
+  useLayoutEffect(() => {
+    if (shown) return void view.current?.focus({ preventScroll: true });
+    const was = left.current;
+    left.current = null;
+    if (!was) return void input.current?.focus({ preventScroll: true });
+    if (list.current) list.current.scrollTop = was.top;
+    (results().find((el) => el.dataset.result === was.path) ?? input.current)?.focus({ preventScroll: true });
+  }, [shown]);
+  const keys = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const all = results();
+    const i = all.indexOf(e.target as HTMLElement);
+    if (e.target === input.current) {
+      if (e.key === "ArrowDown" && all.length) { e.preventDefault(); all[0]!.focus(); }
+      // Enter in the box opens the first result.
+      else if (e.key === "Enter" && hits[0]) { e.preventDefault(); show(hits[0]); }
+      return;
+    }
+    if (i < 0) return;
+    const to = e.key === "ArrowDown" ? all[i + 1] : e.key === "ArrowUp" ? (i === 0 ? input.current : all[i - 1]) : e.key === "Home" ? all[0] : e.key === "End" ? all.at(-1) : undefined;
+    if (!to) return;
+    e.preventDefault();
+    to.focus();
   };
   const mention = (path: string) => {
     const draft = localStorage.getItem(`keel.draft.${session.id}`) ?? "";
@@ -93,7 +133,8 @@ export function FilesPanel({ session }: { session: Session }) {
 
   if (open) {
     return (
-      <div className="flex h-full flex-col" data-testid="file-view">
+      <div ref={view} tabIndex={-1} role="region" aria-label={`File ${open.path}`} className="flex h-full flex-col outline-none" data-testid="file-view"
+        onKeyDown={(e) => { if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); setOpen(null); } }}>
         <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-raised px-2">
           <button type="button" onClick={() => setOpen(null)} aria-label="Back to the file list" className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg">
             <ChevronLeft className="size-4" />
@@ -115,17 +156,17 @@ export function FilesPanel({ session }: { session: Session }) {
   }
 
   return (
-    <div className="flex h-full flex-col" data-testid="files-panel">
+    <div className="flex h-full flex-col" data-testid="files-panel" onKeyDown={keys}>
       <div className="p-2">
         <label className="flex h-9 items-center gap-2 rounded-md border border-line bg-raised px-2.5 text-ui focus-within:border-line-strong">
           <Search className="size-4 text-faint" />
-          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Find a file in ${session.workspace.split("/").pop()}`} className="w-full bg-transparent outline-none placeholder:text-faint" data-testid="files-search" />
+          <input ref={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Find a file in ${session.workspace.split("/").pop()}`} className="w-full bg-transparent outline-none placeholder:text-faint" data-testid="files-search" />
         </label>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div ref={list} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-testid="files-list">
         {hits.map((h) => (
           <div key={h.path} className="group flex h-8 items-center gap-2 rounded-md px-2 text-ui hover:bg-hover focus-within:bg-hover touch:h-10">
-            <button type="button" onClick={() => show(h)} className="flex h-full min-w-0 flex-1 items-center gap-2 text-left">
+            <button type="button" data-result={h.path} onClick={() => show(h)} className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-sm text-left">
               {h.dir ? <Folder className="size-4 shrink-0 text-faint" /> : <FileIcon className="size-4 shrink-0 text-faint" />}
               <span className={cn("truncate font-mono text-caption", h.dir ? "text-muted" : "text-fg")}>{h.path}</span>
             </button>

@@ -339,6 +339,66 @@ test("a file result's Mention by keyboard", async ({ page, request }) => {
   await request.delete(`/api/sessions/${s.id}`);
 });
 
+// The Files panel by keyboard, there and back: arrows from the search box into
+// the results, Enter opens the one the keys are on, the file opened takes the
+// keys as a region named after it, and Back (or Escape) returns to the same
+// query with the keys on that result and the list scrolled where it was.
+test("files search, a file and Back keep the keyboard's place", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const s = await mentionSession(request);
+  try {
+    await page.goto(`/s/${s.id}`);
+    await openPanel(page, "files");
+    const search = page.getByTestId("files-search");
+    await expect(search).toBeFocused();
+    await search.fill(".spec.ts");
+    const results = page.getByTestId("files-panel").locator("[data-result]");
+    await expect.poll(() => results.count()).toBeGreaterThanOrEqual(28);
+    // Down into the results and on, far enough that the list scrolls.
+    for (let i = 0; i < 28; i++) await page.keyboard.press("ArrowDown");
+    const picked = results.nth(27);
+    await expect(picked).toBeFocused();
+    const path = (await picked.getAttribute("data-result"))!;
+    const list = page.getByTestId("files-list");
+    const top = await list.evaluate((el) => el.scrollTop);
+    expect(top).toBeGreaterThan(0);
+    await shoot(page, "wb-17-file-result-by-keyboard");
+    await page.keyboard.press("Enter");
+    const view = page.getByRole("region", { name: `File ${path}` });
+    await expect(view).toBeFocused();
+    await expect(view).toHaveAttribute("data-testid", "file-view");
+    await shoot(page, "wb-18-file-opened-by-keyboard");
+    // Back: the next Tab stop, then Enter.
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Back to the file list" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(search).toHaveValue(".spec.ts");
+    await expect(results.nth(27)).toBeFocused();
+    expect(await results.nth(27).getAttribute("data-result")).toBe(path);
+    expect(await list.evaluate((el) => el.scrollTop)).toBe(top);
+    await shoot(page, "wb-19-back-on-the-same-result");
+    // Escape in the file is Back too; Up from the first result is the search box, where Enter opens the first.
+    await page.keyboard.press("Enter");
+    await expect(view).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(results.nth(27)).toBeFocused();
+    await expect(page.getByTestId("side-panel")).toBeVisible();
+    await page.keyboard.press("Home");
+    await expect(results.first()).toBeFocused();
+    const lead = await results.first().getAttribute("data-result");
+    await page.keyboard.press("ArrowUp");
+    await expect(search).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("region", { name: `File ${lead}` })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue(".spec.ts");
+  } finally {
+    await request.delete(`/api/sessions/${s.id}`);
+  }
+});
+
 test.describe("on a touch screen", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test("a file result's Mention shows before a tap", async ({ page, request }) => {
