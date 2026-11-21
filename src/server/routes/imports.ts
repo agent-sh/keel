@@ -216,13 +216,13 @@ export const importRoutes: RouteModule = (deps) => {
       },
     },
     "/api/import/index": {
-      GET: () => json({ building: false, complete: imports.complete, harnesses: imports.harnesses() }),
+      // What the index is doing now; reading it starts no walk.
+      GET: () => json({ ...imports.status(), harnesses: imports.harnesses() }),
       POST: async (req: Request) => {
         const b = await body(req);
         if (b.action !== "refresh" && b.action !== "rebuild") return bad("action is refresh or rebuild");
-        if (b.action === "rebuild") store.db.run("DELETE FROM import_index");
-        imports.refresh().catch((e) => deps.errors.capture("server", e, { at: "import index" }));
-        return json({ building: true, complete: false, harnesses: imports.harnesses() });
+        (b.action === "rebuild" ? imports.rebuild() : imports.refresh()).catch((e) => deps.errors.capture("server", e, { at: "import index" }));
+        return json({ ...imports.status(), harnesses: imports.harnesses() });
       },
     },
     "/api/import/preview": {

@@ -536,3 +536,36 @@ test("the copied resume command changes to a folder with a space and a quote", a
   await request.delete(`/api/sessions/${session.id}`);
   rmSync(base, { recursive: true, force: true });
 });
+
+// The index says what it is doing: building while a walk of the stores runs,
+// complete when it ended, and asking never starts a walk of its own.
+test("the import index status follows a walk of the stores", async ({ request }) => {
+  const first = await (await request.get("/api/import/sessions?limit=1")).json();
+  const store = first.harnesses.find((x: any) => x.harness === "claude")?.store as string;
+  test.skip(!store.includes("keel-work"), "needs scratch import stores (KEEL_IMPORT_*)");
+  // A store large enough for a walk to take a while: every file is read again by a rebuild.
+  const tag = Date.now().toString(36);
+  const dir = join(store, `-walk-${tag}`);
+  mkdirSync(dir, { recursive: true });
+  const N = 4000;
+  for (let i = 0; i < N; i++) {
+    const id = `77777777-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify({ cwd: "/walk", sessionId: id, isSidechain: false, userType: "external", entrypoint: "cli", timestamp: new Date().toISOString(), type: "user", uuid: "u", parentUuid: null, message: { role: "user", content: `walk ${tag} ${i}` } }) + "\n");
+  }
+  const status = async () => (await (await request.get("/api/import/index")).json()) as { building: boolean; complete: boolean; built_ms: number | null; harnesses: any[] };
+  try {
+    const started = await (await request.post("/api/import/index", { data: { action: "rebuild" } })).json();
+    expect(started).toMatchObject({ building: true, complete: false });
+    // While it runs, a reader is told so.
+    expect(await status()).toMatchObject({ building: true, complete: false });
+    await expect.poll(async () => (await status()).building, { timeout: 60_000, intervals: [50] }).toBe(false);
+    const done = await status();
+    expect(done).toMatchObject({ building: false, complete: true });
+    expect(done.harnesses.find((h) => h.harness === "claude").total).toBeGreaterThanOrEqual(N);
+    // Asking again starts no walk: the last one is still the one that ended.
+    for (let i = 0; i < 3; i++) expect(await status()).toMatchObject({ building: false, complete: true, built_ms: done.built_ms });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    await request.post("/api/import/index", { data: { action: "refresh" } });
+  }
+});

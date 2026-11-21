@@ -154,6 +154,21 @@ export class Imports {
     return this.building;
   }
 
+  // Where the index stands, read without starting a walk: one runs now, a
+  // whole one has finished since the index was last emptied, and when.
+  status() {
+    return { building: !!this.building, complete: this.complete, built_ms: this.builtAt || null };
+  }
+
+  // Empty the index and read every file again.
+  rebuild(): Promise<void> {
+    const emptied = () => { this.store.db.run("DELETE FROM import_index"); this.complete = false; this.builtAt = 0; };
+    // A walk under way goes on writing rows: it ends first, then the index is emptied and walked.
+    if (this.building) return this.building.then(() => this.rebuild());
+    emptied();
+    return this.refresh();
+  }
+
   // One file's row of the index: what its reader found (null when it holds no
   // conversation), with the columns a listing reads.
   record(path: string, harness: "claude" | "codex", size: number, mtime: number, row: Found | null) {
