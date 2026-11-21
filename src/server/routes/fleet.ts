@@ -2,7 +2,7 @@
 // view of every session across linked daemons, the forwarder to another
 // daemon's API, sessions placed on a machine, and the paired-only endpoints
 // another daemon calls (facts, live stream, hands).
-import { holdStream } from "../streams.ts";
+import { boundedFeed, FEED_LIMIT } from "../streams.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { instructionFiles } from "../../engine/turn.ts";
@@ -166,6 +166,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   };
 
   const paired = (req: Request) => callerOf(req, f.keyOf);
+  const readers: Record<string, { feeds: Set<ReturnType<typeof boundedFeed>>; stalled: number; stalled_ms?: number }> = {};
   // Paired-only endpoints: a request without this daemon's key for the caller
   // gets a plain 403, with no proof.
   const linked = (h: (req: any, c: NonNullable<ReturnType<typeof paired>>) => Promise<Response> | Response) => async (req: any) => {
@@ -173,6 +174,13 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     if (!c) return proven(bad("not a paired daemon", 403), null, f.id);
     return proven(await h(req, c), c, f.id);
   };
+
+  // Each paired daemon with its readers of this daemon's stream: what waits
+  // for the slowest one, the bound, and the times one was cut as stalled.
+  const pairsView = () => f.pairs().map((p) => {
+    const r = readers[p.daemon_id];
+    return { ...p, stream: { readers: r?.feeds.size ?? 0, pending_bytes: Math.max(0, ...[...(r?.feeds ?? [])].map((x) => x.pending())), limit_bytes: FEED_LIMIT, stalled: r?.stalled ?? 0, stalled_ms: r?.stalled_ms } };
+  });
 
   const machineView = (id: string) => {
     const m = f.row(id);
@@ -226,13 +234,13 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       },
     },
 
-    "/api/fleet/pairs": { GET: () => json({ pairs: f.pairs() }) },
+    "/api/fleet/pairs": { GET: () => json({ pairs: pairsView() }) },
     "/api/fleet/pairs/:id": {
       DELETE: (req: any) => {
         if (!f.keyOf(req.params.id)) return bad("no such pairing", 404);
         f.unpair(req.params.id);
         f.emitMachines();
-        return json({ pairs: f.pairs() });
+        return json({ pairs: pairsView() });
       },
     },
 
@@ -593,30 +601,33 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
 
     // This daemon's live frames, for the other daemon's relay. Opens with the
     // sessions it shows; a comment line every 5 s keeps the stream and proves it alive.
+    // A reader that stops reading is cut at the feed's bound (streams.ts) with a
+    // last line that says so: it reconnects and starts from a new snapshot.
     "/api/fleet/stream": {
       GET: linked((req, c) => {
         let off = () => {};
         let ping: Timer | undefined;
         const enc = new TextEncoder();
-        let forget = () => {};
-        const stop = () => { off(); clearInterval(ping); forget(); };
-        const stream = new ReadableStream({
-          start(ctl) {
-            forget = holdStream(ctl);
-            const send = (x: unknown) => { try { ctl.enqueue(enc.encode(`data: ${JSON.stringify(x)}\n\n`)); } catch { stop(); } };
-            send({ t: "snapshot", sessions: store.sessions() });
-            send({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() });
-            off = bus.on((fr) => {
-              if (fr.t === "feature" && fr.name === "fleet_outbox") { if (fr.data?.daemon_id === c.daemonId) send(fr); return; }
-              if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay
-              send(fr);
-            });
-            ping = setInterval(() => { try { ctl.enqueue(enc.encode(": ping\n\n")); } catch { stop(); } }, KEEPALIVE_MS);
-            req.signal?.addEventListener("abort", stop, { once: true });
-          },
-          cancel: stop,
+        const mine = (readers[c.daemonId] ??= { feeds: new Set(), stalled: 0 });
+        const feed = boundedFeed((stalled) => {
+          off();
+          clearInterval(ping);
+          mine.feeds.delete(feed);
+          if (stalled) { mine.stalled++; mine.stalled_ms = Date.now(); }
+        }, { last: enc.encode(": stalled\n\n") });
+        mine.feeds.add(feed);
+        const send = (x: unknown) => feed.send(enc.encode(`data: ${JSON.stringify(x)}\n\n`));
+        send({ t: "snapshot", sessions: store.sessions() });
+        send({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() });
+        off = bus.on((fr) => {
+          if (fr.t === "feature" && fr.name === "fleet_outbox") { if (fr.data?.daemon_id === c.daemonId) send(fr); return; }
+          if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay
+          send(fr);
         });
-        return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
+        ping = setInterval(() => feed.send(enc.encode(": ping\n\n")), KEEPALIVE_MS);
+        if (feed.ended()) { off(); clearInterval(ping); }
+        req.signal?.addEventListener("abort", feed.end, { once: true });
+        return new Response(feed.stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
       }),
     },
 

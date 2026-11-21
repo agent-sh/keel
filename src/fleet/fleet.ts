@@ -444,6 +444,7 @@ export class Fleet {
         while ((i = buf.indexOf("\n\n")) >= 0) {
           const chunk = buf.slice(0, i);
           buf = buf.slice(i + 2);
+          if (chunk.startsWith(": stalled")) throw new LinkError("its daemon ended the stream: this one fell too far behind reading it");
           const data = chunk.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
           if (data) this.onRelayFrame(id, relay, JSON.parse(data));
         }
