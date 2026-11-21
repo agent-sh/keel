@@ -1,5 +1,5 @@
 import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, Square, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
@@ -294,14 +294,18 @@ function SessionComposer({
     return () => removeEventListener("keel:files", on);
   });
 
-  // The menu under the caret: "/" at the start, "@" after a space.
+  // The menu under the caret: "/" at the start, "@" after a space. One closed
+  // with Escape stays closed while the caret is in the same word.
+  const closed = useRef<string | null>(null);
   const detect = (value: string, caret: number) => {
     const before = value.slice(0, caret);
     const sm = before.match(/^\/([\w:.-]*)$/);
-    if (sm) { loadMcpPrompts(); return setMenu({ kind: "slash", query: sm[1]!, start: 0 }); }
-    const fm = before.match(/(^|\s)@([^\s@]*)$/);
-    if (fm && workspace) return setMenu({ kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 });
-    setMenu(null);
+    const fm = sm ? null : before.match(/(^|\s)@([^\s@]*)$/);
+    const next: Menu | null = sm ? { kind: "slash", query: sm[1]!, start: 0 } : fm && workspace ? { kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 } : null;
+    if (!next || closed.current !== `${next.kind} ${next.start}`) closed.current = null;
+    if (!next || closed.current) return setMenu(null);
+    if (next.kind === "slash") loadMcpPrompts();
+    setMenu(next);
   };
 
   useEffect(() => {
@@ -378,6 +382,21 @@ function SessionComposer({
   }, [menu, slashItems, files, text, session]);
 
   useEffect(() => setSel(0), [menu?.kind, menu?.query]);
+  // The list and its options have ids: the box, which keeps the focus, names
+  // the list it controls and the option the arrows are on.
+  const listId = useId();
+  const optionId = (i: number) => `${listId}-${i}`;
+  const popup = useRef<HTMLDivElement>(null);
+  // The option the arrows are on stays in the popup's view (its own scroll only).
+  useLayoutEffect(() => {
+    const box = popup.current;
+    const el = box && document.getElementById(optionId(sel));
+    if (!box || !el) return;
+    const r = el.getBoundingClientRect();
+    const view = box.getBoundingClientRect();
+    if (r.top < view.top) box.scrollTop -= sel === 0 ? box.scrollTop : view.top - r.top;
+    else if (r.bottom > view.bottom) box.scrollTop += sel === options.length - 1 ? box.scrollHeight : r.bottom - view.bottom;
+  }, [sel, menu?.kind, menu?.query, options.length]);
 
   const blocked = (attachments: Attachment[]) => {
     if (offBranch) return OFF_BRANCH;
@@ -533,30 +552,33 @@ function SessionComposer({
     >
       {open && (
         <div
-          role="listbox"
+          ref={popup}
           data-testid={menu.kind === "slash" ? "slash-menu" : "mention-menu"}
           className="absolute inset-x-0 bottom-[calc(100%+8px)] z-30 max-h-72 overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-3 animate-pop"
         >
-          <div className="px-2 pb-1 pt-1.5 text-micro font-medium text-faint">{menu.kind === "slash" ? "Commands" : `Files in ${workspace?.split("/").pop()}`}</div>
-          {options.map((o, i) => (
-            <div
-              key={o.key}
-              role="option"
-              aria-selected={i === sel}
-              aria-disabled={o.disabled}
-              onMouseEnter={() => setSel(i)}
-              onMouseDown={(e) => { e.preventDefault(); o.apply(); }}
-              className={cn(
-                "flex h-8 items-center gap-2.5 rounded-md px-2 text-ui",
-                i === sel && "bg-hover",
-                o.disabled && "opacity-55",
-              )}
-            >
-              <span className="text-faint">{o.icon}</span>
-              <span className="min-w-0 truncate">{o.label}</span>
-              {o.detail && <span className="ml-auto shrink-0 truncate pl-3 text-caption text-faint">{o.detail}</span>}
-            </div>
-          ))}
+          <div id={`${listId}-name`} className="px-2 pb-1 pt-1.5 text-micro font-medium text-faint">{menu.kind === "slash" ? "Commands" : `Files in ${workspace?.split("/").pop()}`}</div>
+          <div role="listbox" id={listId} aria-labelledby={`${listId}-name`}>
+            {options.map((o, i) => (
+              <div
+                key={o.key}
+                id={optionId(i)}
+                role="option"
+                aria-selected={i === sel}
+                aria-disabled={o.disabled}
+                onMouseEnter={() => setSel(i)}
+                onMouseDown={(e) => { e.preventDefault(); o.apply(); }}
+                className={cn(
+                  "flex h-8 items-center gap-2.5 rounded-md px-2 text-ui",
+                  i === sel && "bg-hover",
+                  o.disabled && "opacity-55",
+                )}
+              >
+                <span className="text-faint">{o.icon}</span>
+                <span className="min-w-0 truncate">{o.label}</span>
+                {o.detail && <span className="ml-auto shrink-0 truncate pl-3 text-caption text-faint">{o.detail}</span>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -600,6 +622,10 @@ function SessionComposer({
         rows={1}
         value={text}
         aria-label="Message"
+        aria-autocomplete="list"
+        aria-haspopup="listbox"
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
         placeholder={working ? `Enter steers the running turn, ${queueKeys} queues for after it` : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
@@ -614,7 +640,7 @@ function SessionComposer({
             if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => (s + 1) % options.length); return; }
             if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => (s - 1 + options.length) % options.length); return; }
             if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); options[sel]?.apply(); return; }
-            if (e.key === "Escape") { e.preventDefault(); setMenu(null); return; }
+            if (e.key === "Escape") { e.preventDefault(); closed.current = `${menu.kind} ${menu.start}`; setMenu(null); return; }
           }
           const mod = e.metaKey || e.ctrlKey;
           // Ctrl Shift Enter queues for after the running turn, whichever key sends.

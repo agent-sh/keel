@@ -363,3 +363,88 @@ test.describe("on a touch screen", () => {
     await request.delete(`/api/sessions/${s.id}`);
   });
 });
+
+// The "/" and "@" suggestions by keyboard and by what assistive technology is
+// told: the focus stays in the message box, which names the list it controls
+// and the option the arrows are on; that option stays in view; Enter applies
+// it; Escape closes the list and leaves the draft.
+test("the message box names its suggestions and the active one", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Suggestions", workspace: process.cwd() } })).json();
+  try {
+    await page.goto(`/s/${session.id}`);
+    const box = page.getByTestId("composer");
+    await expect(box).toBeFocused();
+    await expect(box).toHaveAttribute("aria-haspopup", "listbox");
+    // The option the box points at: a real option of the list it controls, marked selected, whole in the popup.
+    const active = async (menu: "slash-menu" | "mention-menu") => {
+      const id = await box.getAttribute("aria-activedescendant");
+      expect(id).toBeTruthy();
+      const list = page.locator(`[id="${await box.getAttribute("aria-controls")}"]`);
+      await expect(list).toHaveAttribute("role", "listbox");
+      const option = list.locator(`[id="${id}"]`);
+      await expect(option).toHaveAttribute("role", "option");
+      await expect(option).toHaveAttribute("aria-selected", "true");
+      await expect(list.locator('[aria-selected="true"]')).toHaveCount(1);
+      expect(await option.evaluate((el, testid) => {
+        const r = el.getBoundingClientRect();
+        const view = el.closest(`[data-testid="${testid}"]`)!.getBoundingClientRect();
+        return r.top >= view.top - 0.5 && r.bottom <= view.bottom + 0.5;
+      }, menu)).toBe(true);
+      await expect(box).toBeFocused();
+      return option;
+    };
+
+    for (const [menu, typed, name] of [["slash-menu", "/", "Commands"], ["mention-menu", "Read @", /^Files in /]] as const) {
+      await box.fill("");
+      await page.keyboard.type(typed);
+      const popup = page.getByTestId(menu);
+      await expect(popup).toBeVisible();
+      const options = page.getByRole("listbox", { name }).getByRole("option");
+      const n = await options.count();
+      // More options than the popup shows at once: the last ones start out of its view.
+      expect(await popup.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+      await expect(await active(menu)).toHaveAttribute("id", (await options.first().getAttribute("id"))!);
+      for (let i = 1; i < n; i++) {
+        await page.keyboard.press("ArrowDown");
+        if (i % 5 === 0 || i === n - 1) await active(menu);
+      }
+      const last = await active(menu);
+      expect(await last.getAttribute("id")).toBe(await options.last().getAttribute("id"));
+      await shoot(page, menu === "slash-menu" ? "wb-15-slash-last-option" : "wb-16-mention-last-option");
+      await page.keyboard.press("ArrowUp");
+      expect(await (await active(menu)).getAttribute("id")).toBe(await options.nth(n - 2).getAttribute("id"));
+      // Escape closes the list: the words stay, the box points at nothing, and typing on in the same word keeps it closed.
+      await page.keyboard.press("Escape");
+      await expect(popup).toBeHidden();
+      await expect(box).toHaveValue(typed);
+      await expect(box).toBeFocused();
+      expect(await box.getAttribute("aria-activedescendant")).toBeNull();
+      expect(await box.getAttribute("aria-controls")).toBeNull();
+      await page.keyboard.type("a");
+      await expect(popup).toBeHidden();
+      await expect(box).toHaveValue(`${typed}a`);
+    }
+
+    // Enter applies the option the box points at, not the first one.
+    await box.fill("");
+    await page.keyboard.type("/");
+    await expect(page.getByTestId("slash-menu")).toBeVisible();
+    await page.keyboard.press("ArrowDown");
+    const command = (await (await active("slash-menu")).locator("span.font-medium").innerText()).trim();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("slash-menu")).toBeHidden();
+    // A command that takes an argument is written into the box; one that takes none runs and empties it.
+    expect(["", `${command} `]).toContain(await box.inputValue());
+    await box.fill("");
+    await page.keyboard.type("Read @");
+    await expect(page.getByTestId("mention-menu")).toBeVisible();
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+    const path = (await (await active("mention-menu")).innerText()).trim();
+    await page.keyboard.press("Enter");
+    await expect(box).toHaveValue(new RegExp(`^Read @${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    await expect(box).toBeFocused();
+  } finally { await request.delete(`/api/sessions/${session.id}`); }
+});
