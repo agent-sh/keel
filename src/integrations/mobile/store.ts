@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS mobile_sends (
 CREATE TABLE IF NOT EXISTS event_gseq (gseq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT UNIQUE NOT NULL);
 CREATE TRIGGER IF NOT EXISTS event_gseq_ins AFTER INSERT ON events BEGIN INSERT INTO event_gseq (event_id) VALUES (new.id); END;
 CREATE TRIGGER IF NOT EXISTS event_gseq_del AFTER DELETE ON events BEGIN DELETE FROM event_gseq WHERE event_id = old.id; END;
+CREATE TABLE IF NOT EXISTS mobile_branch (session_id TEXT PRIMARY KEY, gseq INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS mobile_branch_mark AFTER UPDATE OF head ON sessions
+WHEN old.head IS NOT NULL AND new.head IS NOT old.head AND (new.head IS NULL OR (SELECT parent FROM events WHERE id = new.head) IS NOT old.head)
+BEGIN
+  INSERT INTO event_gseq (event_id) VALUES ('head:' || new.id);
+  INSERT OR REPLACE INTO mobile_branch (session_id, gseq) VALUES (new.id, last_insert_rowid());
+  DELETE FROM event_gseq WHERE event_id = 'head:' || new.id;
+END;
+CREATE TRIGGER IF NOT EXISTS mobile_branch_del AFTER DELETE ON sessions BEGIN DELETE FROM mobile_branch WHERE session_id = old.id; END;
 `;
 
 export type Device = {
@@ -241,6 +250,17 @@ export class MobileStore implements ReplayStore {
   // cursor above it was given by another store (a restored backup).
   globalSeq(): number {
     return this.db.query<{ n: number | null }, []>("SELECT seq AS n FROM sqlite_sequence WHERE name = 'event_gseq'").get()?.n ?? 0;
+  }
+  // A session's shown branch changed when its head moved anywhere but onto a
+  // new event below the old head: another branch was picked, a prompt was
+  // edited into a sibling, the conversation was rewound or cleared. Each such
+  // move takes a place in the global sequence (the trigger above), so a cursor
+  // says which of them a phone has not seen. Only the newest per session is kept.
+  branchSeq(sessionId: string): number {
+    return this.db.query<{ gseq: number }, [string]>("SELECT gseq FROM mobile_branch WHERE session_id = ?").get(sessionId)?.gseq ?? 0;
+  }
+  branchesAfter(since: number): string[] {
+    return this.db.query<{ session_id: string }, [number]>("SELECT session_id FROM mobile_branch WHERE gseq > ? ORDER BY gseq").all(since).map((r) => r.session_id);
   }
   gseqOf(eventId: string): number {
     return this.db.query<{ gseq: number }, [string]>("SELECT gseq FROM event_gseq WHERE event_id = ?").get(eventId)?.gseq ?? 0;

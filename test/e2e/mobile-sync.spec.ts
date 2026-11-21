@@ -5,7 +5,8 @@ import { Phone } from "./fixtures/phone-app.ts";
 // talks to the real daemon over the signed /v1 surface, with the scripted
 // model. A send whose answer was lost is sent again under its id and stays one
 // prompt. A stream cut in the middle of the work opens again from the phone's
-// cursor and starts with what it missed.
+// cursor and starts with what it missed. A branch picked on the desktop
+// replaces the phone's transcript, live and after a reconnect.
 
 const MODEL = "scripted:stand-in";
 
@@ -74,5 +75,50 @@ test("a phone that reconnects gets what it missed with the stream, then what fol
   const lost = await phone.stream(baseURL!, cursor + 1_000_000);
   await expect.poll(() => lost.frames[0]?.sync?.reload).toBe("ahead");
   lost.close();
+  await request.delete(`/api/mobile/devices/${phone.id}`);
+});
+
+test("the phone's transcript follows the branch shown on the desktop", async ({ request, baseURL }) => {
+  const phone = await new Phone(request).pair();
+  const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title: "Phone branches" } })).json();
+  const events = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events;
+  const idle = () => expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running).toBe(false);
+  const shown = (messages: any[]) => messages.filter((m) => m.chat_id === session.id && m.kind === "text" && m.role === "user").map((m) => m.content);
+
+  // Two versions of one prompt: the second is shown.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "version one" } });
+  await idle();
+  const one = (await events()).find((e: any) => e.kind === "user");
+  const st = await phone.stream(baseURL!, 0);
+  await expect.poll(() => st.frames[0]?.type).toBe("hello");
+  expect(shown(st.frames[0].sync.messages)).toEqual(["version one"]);
+  // An edit on the desktop makes a sibling branch: the phone's transcript is replaced by it.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "version two", edit_of: one.id } });
+  await expect.poll(() => st.frames.filter((f) => f.type === "chat_reset").length).toBe(1);
+  expect(shown(st.frames.find((f) => f.type === "chat_reset").messages)).toEqual(["version two"]);
+  await idle();
+
+  // The first version is picked again: no event is stored, the phone still follows.
+  expect((await request.post(`/api/sessions/${session.id}/head`, { data: { head_event_id: one.id } })).status()).toBe(200);
+  await expect.poll(() => st.frames.filter((f) => f.type === "chat_reset").length).toBe(2);
+  const live = st.frames.filter((f) => f.type === "chat_reset").at(-1);
+  expect(shown(live.messages)).toEqual(["version one"]);
+  expect(live.messages.some((m: any) => m.kind === "deleted")).toBe(true);
+  const cursor = Math.max(...st.frames.map((f) => f.cursor ?? 0));
+  st.close();
+
+  // Picked while the phone is away: the reconnect brings the chosen branch in place of what it holds.
+  const two = (await events()).find((e: any) => e.kind === "user" && e.data.text === "version two");
+  expect((await request.post(`/api/sessions/${session.id}/head`, { data: { head_event_id: two.id } })).status()).toBe(200);
+  const back = await phone.stream(baseURL!, cursor);
+  await expect.poll(() => back.frames[0]?.type).toBe("hello");
+  expect(back.frames[0].sync.reset.map((r: any) => r.chat_id)).toEqual([session.id]);
+  expect(shown(back.frames[0].sync.messages)).toEqual(["version two"]);
+  back.close();
+  // Level again: nothing to reset.
+  const level = await phone.stream(baseURL!, back.frames[0].cursor);
+  await expect.poll(() => level.frames[0]?.type).toBe("hello");
+  expect([level.frames[0].sync.reset, level.frames[0].sync.messages]).toEqual([undefined, []]);
+  level.close();
   await request.delete(`/api/mobile/devices/${phone.id}`);
 });

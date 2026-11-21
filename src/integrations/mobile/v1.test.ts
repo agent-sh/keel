@@ -548,6 +548,62 @@ describe("the event stream", () => {
   });
 });
 
+describe("branches", () => {
+  // A chat with two replies to one prompt; the newer one is shown.
+  const forked = () => {
+    const s = session();
+    const base = store.append(s.id, "user", { text: "base" });
+    const old = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "old" }] }, base.id);
+    const neu = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "new" }] }, base.id);
+    return { s, base, old, neu };
+  };
+  // What the desktop does to show another branch: the head moves, no event is stored.
+  const show = (sid: string, head: string) => bus.emit({ t: "session", session: store.updateSession(sid, { head }) } as any);
+
+  test("a branch picked on the desktop replaces the phone's transcript, live", async () => {
+    const { s, old, neu } = forked();
+    const st = await openStream(mobile.globalSeq());
+    show(s.id, old.id);
+    await st.read((f) => f.some((x) => x.type === "chat_reset"));
+    const reset = st.frames.find((x) => x.type === "chat_reset");
+    expect(reset.chat_id).toBe(s.id);
+    expect(texts(reset.messages, s.id)).toEqual(["base", "old"]);
+    expect(reset.messages.find((m: any) => m.id === neu.id).kind).toBe("deleted");
+    expect(reset.older).toBeNull();
+    // Stored on the chosen branch after that: an ordinary message, no second reset.
+    const next = store.append(s.id, "user", { text: "go on" });
+    bus.emit({ t: "event", event: next } as any);
+    bus.emit({ t: "session", session: store.session(s.id)! } as any);
+    await st.read((f) => f.some((x) => x.type === "message" && x.message.id === next.id));
+    await st.close();
+    expect(st.frames.filter((x) => x.type === "chat_reset")).toHaveLength(1);
+  });
+
+  test("a branch picked while the phone was away comes with the catch-up, in place of the events it missed", async () => {
+    const { s, old, neu } = forked();
+    const other = session();
+    const cursor = mobile.globalSeq();
+    // Stored on the branch the owner then left, and in another chat.
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "more on new" }] }, neu.id);
+    store.append(other.id, "user", { text: "elsewhere" });
+    show(s.id, old.id);
+    const body = (await call("GET", `/v1/sync?since=${cursor}`)).body;
+    expect(body.reset).toEqual([{ chat_id: s.id, older: null }]);
+    expect(texts(body.messages, s.id)).toEqual(["base", "old"]);
+    expect(texts(body.messages, other.id)).toEqual(["elsewhere"]);
+    expect(body.seq).toBeGreaterThan(cursor);
+    // Level again: nothing to reset, and an ordinary append resets nothing.
+    store.append(s.id, "user", { text: "go on" });
+    const next = (await call("GET", `/v1/sync?since=${body.seq}`)).body;
+    expect([next.reset, texts(next.messages, s.id)]).toEqual([undefined, ["go on"]]);
+    // A prompt edited into a sibling is a branch change with an event of its own.
+    const at = next.seq;
+    store.append(s.id, "user", { text: "base, edited" }, null);
+    const edited = (await call("GET", `/v1/sync?since=${at}`)).body;
+    expect([edited.reset.map((r: any) => r.chat_id), texts(edited.messages, s.id)]).toEqual([[s.id], ["base, edited"]]);
+  });
+});
+
 describe("push health", () => {
   const rec = (id: string, device: string, token: string, ms: number) => ({ id, device_id: device, kind: "test", sent_ms: ms, ok: true, token_hash: sha256Hex(token) });
   test("receipts order by send, a new token starts untested, an early receipt is kept, an app without receipts is not warned", () => {

@@ -249,6 +249,7 @@ export function mobileApi(ctx: MobileCtx) {
   // The newest messages of a chat's shown branch, walking back from its head:
   // what a phone starting from nothing gets per chat. The rest comes by paging.
   const FIRST_PAGE = 40;
+  const RESET_PAGE = new URLSearchParams({ paged: "1", limit: String(FIRST_PAGE) });
   // The words each running turn has streamed since its last stored step, for
   // a phone that connects (or recovers) in the middle of a reply.
   const drafts = new Map<string, string>();
@@ -470,12 +471,15 @@ export function mobileApi(ctx: MobileCtx) {
         start(c) {
           forget = holdStream(c);
           const close = () => { off(); clearInterval(beat); forget(); try { c.close(); } catch {} };
-          // Every stored event up to `sent` has gone out here.
-          let sent = mobile.globalSeq();
+          // Every stored event up to `sent` has gone out here. Branch changes
+          // up to `base` are in the last sync; `marks` are the ones sent since.
+          let sent = mobile.globalSeq(), base = sent;
+          const marks = new Map<string, number>();
           const put = (p: unknown) => c.enqueue(enc.encode(`data: ${JSON.stringify(p)}\n\n`));
           const hello = (from: number) => {
             const sync = syncBody(from);
-            sent = sync.seq;
+            sent = base = sync.seq;
+            marks.clear();
             put({ type: "hello", seq: sync.seq, cursor: sync.seq, working: sync.working, sync });
           };
           // False when the frame was not sent. Within one bus frame, once a
@@ -493,6 +497,14 @@ export function mobileApi(ctx: MobileCtx) {
             put(p);
             return true;
           };
+          // The shown branch changed: the chat's newest page replaces what the phone holds for it.
+          const branch = (sid: string) => {
+            const m = mobile.branchSeq(sid);
+            if (m <= (marks.get(sid) ?? base)) return;
+            const s = store.session(sid);
+            const page = s ? chatMessages(s, RESET_PAGE) : null;
+            if (s && page && send({ type: "chat_reset", seq: m, chat_id: sid, messages: page.messages, older: page.older, chat: chatFull(s) })) marks.set(sid, m);
+          };
           if (resumes) hello(Math.max(0, Number(q.get("since")) || 0));
           else send({ type: "hello", seq: sent, working: working() });
           off = bus.on((f) => {
@@ -500,6 +512,7 @@ export function mobileApi(ctx: MobileCtx) {
               if (f.t === "event") {
                 const gseq = mobile.gseqOf(f.event.id);
                 const s = store.session(f.event.session_id);
+                branch(f.event.session_id);
                 const out = msgsOf(f.event, gseq);
                 const chat = s ? chatFull(s) : null;
                 out.forEach((m, i) => send({ type: "message", seq: gseq, message: m, chat, ...(i === out.length - 1 ? { cursor: gseq } : {}) }));
@@ -515,6 +528,7 @@ export function mobileApi(ctx: MobileCtx) {
                 // pinned there: the phone's row follows without a sync.
                 if (f.deleted) send({ type: "chat_removed", chat_id: f.session.id, seq: mobile.globalSeq() });
                 else {
+                  branch(f.session.id);
                   const s = store.session(f.session.id);
                   if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
                   send({ type: "working", chat_id: f.session.id, working: f.session.phase === "working", since: since(f.session) });
@@ -627,7 +641,9 @@ export function mobileApi(ctx: MobileCtx) {
   // What a phone at cursor `since` needs to be level with the daemon.
   // From nothing: every chat with its newest page, at the current cursor.
   // After a cursor: the events the app shows that were stored since (so a run
-  // of tool rounds and notes costs nothing).
+  // of tool rounds and notes costs nothing), and for each chat whose shown
+  // branch changed since (`reset`), its newest page in place of them: the app
+  // replaces what it holds for that chat and pages back from `older`.
   // `reload` says the cursor cannot be caught up from, and the answer is the
   // one from nothing; the app drops what it holds first. "ahead": this store
   // never gave that cursor (a restored backup, another machine). "behind":
@@ -640,6 +656,9 @@ export function mobileApi(ctx: MobileCtx) {
     const whole = since === 0 || !!reload;
     const u = unread();
     const all = allSessions();
+    const moved = whole ? [] : mobile.branchesAfter(since).map((id) => store.session(id)).filter((s): s is Session => !!s)
+      .map((s) => ({ id: s.id, page: chatMessages(s, RESET_PAGE)! }));
+    const reset = new Set(moved.map((m) => m.id));
     // Cards that closed since the cursor's time, or within a push's lifetime.
     const from = Math.min(Date.now() - 15 * 60_000, whole ? Infinity : (mobile.tsOfGseq(since) ?? 0));
     return {
@@ -650,7 +669,8 @@ export function mobileApi(ctx: MobileCtx) {
       complete: true,
       ...(reload ? { reload } : {}),
       chats: all.map((s) => chatFull(s, u)),
-      messages: whole ? all.flatMap(recent) : page.flatMap((e) => msgsOf(e, e.gseq)),
+      messages: whole ? all.flatMap(recent) : [...page.filter((e) => !reset.has(e.session_id)).flatMap((e) => msgsOf(e, e.gseq)), ...moved.flatMap((m) => m.page.messages)],
+      ...(moved.length ? { reset: moved.map((m) => ({ chat_id: m.id, older: m.page.older ?? null })) } : {}),
       approvals: [...pendingApprovals(), ...closedCards(from)],
       working: working(),
       // The reply each running turn has streamed so far.

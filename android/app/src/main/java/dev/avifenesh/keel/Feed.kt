@@ -67,7 +67,12 @@ class Feed {
             chats.value = if (o.optBoolean("complete")) list else chats.value + list
         }
         if (reload) { msgs.value = emptyMap(); older.value = emptyMap() }
-        o.optJSONArray("messages")?.let { mergeMsgs(objs(it).map(Msg::of)) }
+        // `reset`: chats whose shown branch changed since the cursor. The answer's
+        // messages for them are their newest page, in place of what is held.
+        val resets = o.optJSONArray("reset")?.let { objs(it) }.orEmpty().associate { it.str("chat_id") to it.str("older").takeIf { s -> s.isNotBlank() } }
+        val all = o.optJSONArray("messages")?.let { objs(it).map(Msg::of) }.orEmpty()
+        for ((chat, olderId) in resets) branch(chat, all.filter { it.chatId == chat }, olderId)
+        mergeMsgs(all.filter { it.chatId !in resets })
         o.optJSONArray("approvals")?.let { mergeCards(objs(it).map(Card::of), replacePending = first) }
         o.optJSONArray("working")?.let { setWorking(it) }
         o.optJSONArray("drafts")?.let { a -> drafts.value = objs(a).associate { it.str("chat_id") to it.str("text") }.filterValues { it.isNotEmpty() } }
@@ -107,6 +112,11 @@ class Feed {
             }
             "delta" -> { val c = e.str("chat_id"); val d = e.str("delta"); drafts.update { it + (c to (it[c].orEmpty() + d)) } }
             "chat" -> e.optJSONObject("chat")?.let { putChat(Chat.of(it)) }
+            // Another branch is shown on the desktop: its newest page replaces the transcript.
+            "chat_reset" -> {
+                e.optJSONObject("chat")?.let { putChat(Chat.of(it)) }
+                branch(e.str("chat_id"), objs(e.optJSONArray("messages") ?: JSONArray()).map(Msg::of), e.str("older").takeIf { it.isNotBlank() })
+            }
             "chat_removed" -> { val c = e.str("chat_id"); chats.update { it - c }; msgs.update { it - c }; older.update { it - c } }
             "working" -> {
                 val c = e.str("chat_id")
@@ -159,6 +169,12 @@ class Feed {
         val ids = shown.map { it.id }.toSet()
         val later = msgs.value[chat].orEmpty().filter { it.ts > newest && it.id !in ids && it.id !in gone }
         msgs.update { it + (chat to (shown + later).sortedBy { m -> m.ts }) }
+        older.update { it + (chat to olderId) }
+    }
+
+    /** The chat shows another branch now: nothing held for it stays, also what arrived live on the branch it left. */
+    private fun branch(chat: String, list: List<Msg>, olderId: String?) {
+        msgs.update { it + (chat to list.filter { m -> m.kind != "deleted" }.sortedBy { m -> m.ts }) }
         older.update { it + (chat to olderId) }
     }
 

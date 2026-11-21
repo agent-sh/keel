@@ -94,6 +94,33 @@ class FeedTest {
         assertEquals("m0", f.older.value["c1"])
     }
 
+    @Test fun aBranchPickedOnTheDesktopReplacesTheTranscript() {
+        val f = level()
+        f.frame(message(11, msg("new-1", 2.0), cursor = 11))
+        f.frame(message(12, msg("new-2", 3.0), cursor = 12))
+        // The desktop shows the other branch: no event is stored, the chat's page comes whole.
+        f.frame(frame("chat_reset").put("seq", 13).put("chat_id", "c1").put("older", "m0").put("chat", chat(13.0))
+            .put("messages", JSONArray(listOf(msg("m1", 1.0), msg("old-1", 2.5), msg("new-1", 2.0, kind = "deleted"), msg("new-2", 3.0, kind = "deleted")))))
+        assertEquals(listOf("m1", "old-1"), ids(f))
+        assertEquals("m0", f.older.value["c1"])
+        // What is stored on the chosen branch next is an ordinary message.
+        f.frame(message(14, msg("old-2", 4.0), cursor = 14))
+        assertEquals(listOf("m1", "old-1", "old-2"), ids(f))
+    }
+
+    @Test fun aBranchPickedWhileAwayComesWithTheCatchUp() {
+        val f = level()
+        f.frame(message(11, msg("new-1", 2.0), cursor = 11))
+        f.closed()
+        // Back: the chat's branch changed since the cursor; another chat only got a message.
+        val elsewhere = msg("x1", 1.0).put("chat_id", "c2")
+        f.frame(frame("hello").put("seq", 15).put("cursor", 15).put("sync", sync(15, listOf(msg("m1", 1.0), msg("old-1", 2.5), elsewhere))
+            .put("reset", JSONArray(listOf(JSONObject().put("chat_id", "c1").put("older", JSONObject.NULL))))))
+        assertEquals(listOf("m1", "old-1"), ids(f))
+        assertEquals(null, f.older.value["c1"])
+        assertEquals(listOf("x1"), f.msgs.value["c2"].orEmpty().map { it.id })
+    }
+
     @Test fun aRowThatWaitedBehindACatchUpDoesNotReplaceANewerOne() {
         val f = level()
         f.closed()
