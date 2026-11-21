@@ -196,6 +196,9 @@ export interface Provider {
   // Looks again for a credential last found missing (at least `olderThanMs`
   // ago), so available() can change without a restart.
   recheck?(olderThanMs?: number): Promise<void>;
+  // Looks for a credential nobody has read yet. Until then available() counts
+  // it as there; after it, available() says what was found.
+  look?(): Promise<void>;
   // Which account and endpoint a listing comes from, as a one-way fingerprint
   // (never a credential): a saved listing is offered only to the same identity.
   identity?(): string;

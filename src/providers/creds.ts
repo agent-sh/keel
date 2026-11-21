@@ -94,6 +94,21 @@ export async function recheck(src: KeySource, olderThanMs = 0): Promise<void> {
   if (m !== undefined && Date.now() - m >= olderThanMs) await key(src);
 }
 
+// The first look for a key nobody has read yet (configured() counts it as
+// there until then): after it, whether the source holds a key is known. One
+// look at a time for an entry, however many ask.
+const looking = new Map<string, Promise<void>>();
+export function look(src: KeySource): Promise<void> {
+  if (!src.cred || (src.env && process.env[src.env]) || cache.has(src.cred) || missing.has(src.cred)) return Promise.resolve();
+  const cred = src.cred;
+  let p = looking.get(cred);
+  if (!p) {
+    p = key(src).then(() => {}, () => {}).finally(() => looking.delete(cred));
+    looking.set(cred, p);
+  }
+  return p;
+}
+
 // How long a source found empty is left alone before a request for its provider reads it again.
 export const MISSING_RECHECK_MS = TTL;
 

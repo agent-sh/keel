@@ -1,6 +1,6 @@
 // Drivers that authenticate with an API key: the OpenAI API (Responses) and
 // the Gemini API. Configured endpoints are endpoint.ts.
-import { configured, fingerprint, forget, key, recheck, shown, sourceIdentity, type KeySource } from "./creds.ts";
+import { configured, fingerprint, forget, key, look, recheck, shown, sourceIdentity, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { notChat } from "./family.ts";
 import { allPages, getJson, NoKey } from "./http.ts";
@@ -37,6 +37,10 @@ abstract class KeyedProvider implements Provider {
 
   recheck(olderThanMs?: number) {
     return recheck(this.src, olderThanMs);
+  }
+
+  look() {
+    return look(this.src);
   }
 
   abstract list(): Promise<ListedModel[]>;

@@ -133,6 +133,25 @@ test("a read after a restart knows the window from the saved catalog while a new
   expect(big.efforts).toEqual(["high"]);
 });
 
+// Whether a provider is set up is known before anything slow. A key that was
+// never looked for counts as there (its first read decides), and that read
+// came only after the catalog was fetched: for as long as the fetch took, a
+// daemon with no key at all reported every keyed provider as available.
+test("a key is looked for before the catalog is fetched, and a report waits for the look", async () => {
+  const p = new EndpointProvider({ id: "nokey-early", base_url: "http://127.0.0.1:9/v1", key_env: `KEEL_TEST_NOKEY_EARLY_${process.pid}`, key_cred: `keel-test-absent-early-${process.pid}-${Date.now()}` });
+  const r = new Providers(dir(), { providers: [p], capture: () => {} });
+  const catalog = Promise.withResolvers<void>();
+  r.catalog.load = () => catalog.promise; // a fetch that takes its time
+  expect(p.available()).toBe(true); // not read yet
+  const refreshing = r.refresh();
+  await r.looked();
+  expect(p.available()).toBe(false);
+  expect(r.statuses().find((s) => s.id === "nokey-early")!.available).toBe(false);
+  catalog.resolve();
+  await refreshing;
+  expect(r.listing("nokey-early").state).toBe("never");
+});
+
 test("a provider with no key is not set up: nothing failed and no key was refused", async () => {
   const captured: unknown[] = [];
   const env = `KEEL_TEST_NOKEY_${process.pid}`;

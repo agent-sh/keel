@@ -190,13 +190,25 @@ export class Providers {
     return l;
   }
 
+  // Every provider has looked for its key once: from here on available()
+  // is what was found, not the benefit of the doubt a key gets before its
+  // first read. A report of the providers waits for this.
+  looked(): Promise<void> {
+    return Promise.all(this.all().map((p) => p.look?.())).then(() => {});
+  }
+
   // Asks every available provider (or the one named) for its listing again.
   async refresh(only?: string): Promise<void> {
+    // The keys first, beside the catalog (a fetch that may take seconds): which
+    // providers are set up does not wait for it.
+    void this.looked();
     await this.catalog.load();
     if (!only && !this.fixed) this.plugins.load();
     if (!this.fixed) await this.plugins.settled();
     const asked = this.all().filter((p) => !only || p.id === only);
     await Promise.all(asked.map(async (p) => {
+      // Its first look has ended (it began above), so what follows reads no key twice.
+      if (p.look) await p.look();
       // A key found missing before is looked for again: one saved since makes its provider available.
       await p.recheck?.();
       if (!p.available()) return;

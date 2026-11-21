@@ -32,6 +32,8 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
   });
 
   const report = async () => {
+    // A key nobody has looked for yet counts as there: the report says what was found.
+    await providers.looked();
     await providers.plugins.freshen();
     const models = providers.current();
     const count = new Map<string, number>();

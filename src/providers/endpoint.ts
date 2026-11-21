@@ -4,7 +4,7 @@
 // server says about each model there (window, tools, images, thinking) is
 // read from its own metadata routes, never assumed.
 import type { AuthStyle, EndpointConfig } from "./config.ts";
-import { configured, fingerprint, forget, key, recheck, shown, sourceIdentity, type KeySource } from "./creds.ts";
+import { configured, fingerprint, forget, key, look, recheck, shown, sourceIdentity, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { familyOf, notChat } from "./family.ts";
 import { allPages, getJson, NoKey, ProviderError } from "./http.ts";
@@ -75,6 +75,10 @@ export class EndpointProvider implements Provider {
 
   async recheck(olderThanMs?: number) {
     if (!this.keyless && !this.pastedKey) await recheck(this.src, olderThanMs);
+  }
+
+  async look() {
+    if (!this.keyless && !this.pastedKey) await look(this.src);
   }
 
   identity() {
