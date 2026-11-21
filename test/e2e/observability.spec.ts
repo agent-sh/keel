@@ -57,7 +57,7 @@ test("observability: turn rows, a rating, readers savings, the per-feature view"
   await expect(panel.getByTestId("reg-cost_per_turn")).toContainText(/needs 6 days|ok|regression|good side/);
   await shoot(page, "observability-02-overview");
   await features.getByRole("radio", { name: "Model" }).click();
-  await expect(features.getByTestId("obs-group").filter({ hasText: STAND_IN })).toBeVisible();
+  await expect(features.getByTestId("obs-group").filter({ hasText: STAND_IN }).first()).toBeVisible();
   await features.scrollIntoViewIfNeeded();
   await shoot(page, "observability-03-by-model");
 

@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 
 const turnsDone = (request: APIRequestContext, id: string, n: number) =>
   expect.poll(async () => {
@@ -19,6 +19,7 @@ const results = async (request: APIRequestContext, id: string) =>
 // reaches its folder: appended once to the result of the call that got there,
 // shown on that call's card, and listed in the Profile tab.
 test("nested instruction files load when the work reaches their folder", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to read two files and follow the instructions loaded on the way");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `nested-${Date.now()}`);
   const pkg = join(ws, "packages", "engine");

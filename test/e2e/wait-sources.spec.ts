@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: waits on what lives outside the machine. A pull request's checks
 // (gh with the owner's login, so the gate asks first) wake the session once
@@ -19,6 +19,7 @@ const pr = (repo: string, n: number, v: unknown) => {
 const run = (name: string, status: string, conclusion = "") => ({ __typename: "CheckRun", name, status, conclusion });
 
 test("pull request checks and a socket feed wake the session", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to set the waits with its tools from a plain prompt");
   const n = Date.now() % 1_000_000;
   const repo = "keel-e2e/fixture";
   // Is the daemon's gh the stand-in? A merged pull request fires at the first probe.

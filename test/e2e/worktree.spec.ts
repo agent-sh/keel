@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, openPanel, tabInto } from "./shots.ts";
+import { HAIKU, shoot, openPanel, tabInto, SCRIPTED } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 
@@ -11,6 +11,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 // back to the model as a message; park removes the folder and keeps the work,
 // restore brings it back; the main checkout never changes.
 test("worktree session and branch review", async ({ page, request }) => {
+  test.skip(SCRIPTED, "starts its session on a Haiku picked by name in the model picker");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // This spec needs the gate to ask: set it, whatever an earlier spec left behind.
   const prevMode = (await (await request.get("/api/permissions/settings")).json()).default_mode;

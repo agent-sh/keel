@@ -1,12 +1,13 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the permission gate. A command that changes things asks; "always
 // allow" stores a grant that covers the next one; a grant is revoked from the
 // grants panel; read-only mode refuses; a denial's reason reaches the model.
 test("permission gate", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to try the gated tool calls a plain prompt leads to");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `perm-${Date.now()}`);
   mkdirSync(ws, { recursive: true });

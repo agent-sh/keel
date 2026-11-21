@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 const DEV = process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bun/dev-automation2`;
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -12,6 +12,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 // reports one JSON value that matches it; agents started together on a model
 // the parent has not warmed start behind the first one's answer and read its cache.
 test("agents: own worktree, structured reports, staggered starts", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to start agents that commit in their worktrees and report");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const repo = join(DEV, `repo-${Date.now()}`);
   mkdirSync(repo, { recursive: true });

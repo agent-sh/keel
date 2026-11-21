@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, ask, shoot } from "./shots.ts";
 
 // Feature: Settings > Usage reads the local telemetry of a real turn: spend,
 // cache hit rate, time to first token and failures as tiles, the series as
@@ -10,7 +10,13 @@ test("usage dashboard", async ({ page, request }) => {
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   const s = (await (await request.post("/api/sessions", {
-    data: { model: HAIKU, text: "Run `echo usage-check` with your shell tool, then read the file /nonexistent/keel-usage-check.txt with your file reading tool, then write two sentences about prompt caching." },
+    data: {
+      model: HAIKU,
+      text: ask(
+        "Run `echo usage-check` with your shell tool, then read the file /nonexistent/keel-usage-check.txt with your file reading tool, then write two sentences about prompt caching.",
+        'script:calls [{"name":"Bash","input":{"command":"echo usage-check"}},{"name":"Read","input":{"file_path":"/nonexistent/keel-usage-check.txt"}}]',
+      ),
+    },
   })).json()).session;
   await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 120_000 }).toBe(true);
 
@@ -30,7 +36,8 @@ test("usage dashboard", async ({ page, request }) => {
   await expect(panel).toBeVisible();
   await expect(panel.getByTestId("tile-ttft")).not.toContainText("none");
   await expect(panel.getByTestId("tile-cache")).toContainText("%");
-  await expect(panel.getByTestId("usage-models")).toContainText("Haiku");
+  const name = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === HAIKU).name as string;
+  await expect(panel.getByTestId("usage-models")).toContainText(name);
   await shoot(page, "usage-01-dashboard");
   // How fast the calls were has a view of its own: a whole reply through its retries, beside one try.
   await panel.getByTestId("usage-go-calls").click();

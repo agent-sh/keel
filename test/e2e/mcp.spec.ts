@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 
@@ -19,6 +19,7 @@ test.afterEach(async ({ request }) => {
 });
 
 test("mcp servers", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to find and call the MCP server's tools from a plain prompt");
   await request.delete("/api/mcp/servers/echo").catch(() => {});
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // This feature is the tools, not the approval cards: run them without asking.

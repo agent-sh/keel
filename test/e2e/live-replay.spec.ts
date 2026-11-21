@@ -3,7 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, ask, shoot } from "./shots.ts";
 
 // Feature: the live feed survives a lost socket. On every reconnect the page
 // sends the last seq it holds of each open session; the daemon replays the
@@ -31,7 +31,7 @@ test("a cut socket loses nothing while a reply streams", async ({ page, baseURL 
   const sock = await cuttable(page);
   const s = (await (await fetch(`${baseURL}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: HAIKU, title: "Replay check" }) })).json() as any).session;
   await page.goto(`/s/${s.id}`);
-  await page.getByTestId("composer").fill("Write the numbers from one to four hundred as English words, separated by commas. Nothing else.");
+  await page.getByTestId("composer").fill(ask("Write the numbers from one to four hundred as English words, separated by commas. Nothing else.", "script:count"));
   await page.getByTestId("composer").press("Enter");
 
   // Cut while the reply streams. After each reconnect the draft is the reply so

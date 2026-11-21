@@ -8,7 +8,13 @@
 // The owner's prompt picks the scenario with a word `script:<name>`. What a
 // request gets depends only on the request and how often that exact request
 // was sent before, so a retry sees the next step of the same scenario.
+//
+// Some scenarios stand in for a model that reads or follows a prompt:
+// `script:find` (text the request carries outside the owner's prompts),
+// `script:color` (the newest picture), `script:count` (a long reply that
+// streams for a while) and `script:say` (the reply is the words given).
 import { appendFileSync, existsSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import type { Message } from "../core/types.ts";
 import { imageSize } from "../engine/images.ts";
 import { classify, ProviderError } from "./http.ts";
@@ -62,7 +68,8 @@ export class ScriptedProvider implements Provider {
   async list(): Promise<ListedModel[]> {
     const price = { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 };
     return [
-      { model: "stand-in", name: "Scripted stand-in", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
+      // Reads PDFs (`script:find` looks inside one); says nothing about images.
+      { model: "stand-in", name: "Scripted stand-in", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, pdf: true },
       { model: "stand-in-backup", name: "Scripted backup", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
       // Says it reads no images: the composer holds a new screenshot for it.
       { model: STRICT, name: "Scripted strict window", context: STRICT_WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
@@ -104,14 +111,17 @@ export class ScriptedProvider implements Provider {
       usage.cache_read = total - usage.input;
     }
 
-    const reply = async (text: string, stop = "end_turn", extra: any[] = []): Promise<ProviderResult> => {
-      for (const part of text.match(/.{1,40}/gs) ?? []) {
+    // A reply streamed `size` characters every `ms`.
+    const paced = async (text: string, size: number, ms: number, stop = "end_turn", extra: any[] = []): Promise<ProviderResult> => {
+      // The pause comes first: the first token is never in the request's own millisecond.
+      for (const part of text.match(new RegExp(`.{1,${size}}`, "gs")) ?? []) {
+        await Bun.sleep(ms);
         onDelta({ kind: "text", index: 0, text: part });
-        await Bun.sleep(5);
       }
       usage.output = tokens(text);
       return { blocks: [{ type: "text", text }, ...extra], usage, stop, model: req.model };
     };
+    const reply = (text: string, stop = "end_turn", extra: any[] = []) => paced(text, 40, 5, stop, extra);
 
     // Permission fixture: decide from the proposed action, not other actions
     // named in the owner message. The real judge path still parses the reply.
@@ -209,6 +219,13 @@ export class ScriptedProvider implements Provider {
         // calls a real model cannot be made to send exactly.
         const calls = callsAfter(owner);
         const at = msgs.findLastIndex((m) => m.role === "user" && textOf(m).includes("script:calls"));
+        // keel__new_context replaced the context: the prompt is inside the
+        // summary now and no call is left after it. The turn goes on from the
+        // handoff, the summary's last line, as a model following it does.
+        const head = textOf(msgs[at]);
+        if (head.startsWith("[harness] This conversation was compacted") && calls.some((c) => c.name === "keel__new_context")) {
+          return reply(`Went on in a fresh context. ${head.split("\n\n[")[0]!.trim().split("\n").at(-1)}`);
+        }
         const done = msgs.slice(at + 1).filter((m) => m.role === "assistant").length;
         const next = calls[done];
         if (next) return reply(`Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
@@ -360,17 +377,32 @@ export class ScriptedProvider implements Provider {
         if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");
         if (last?.role === "user" && (last.content as any[]).some((b) => b.type === "tool_result")) return reply("Finished after the tool.");
         return reply("Running a long command.", "tool_use", [{ type: "tool_use", id: `long-${msgs.length}`, name: "Bash", input: { command: "sleep 30; echo slept" } }]);
-      case "render": {
+      case "render":
         // A reply that uses what the transcript renders: a table, code that
         // finishes while the rest streams, math, a file link. Slow enough to
         // read the draft while it streams.
-        const text = RENDER_REPLY;
-        for (const part of text.match(/.{1,24}/gs) ?? []) {
-          onDelta({ kind: "text", index: 0, text: part });
-          await Bun.sleep(40);
-        }
-        usage.output = tokens(text);
-        return { blocks: [{ type: "text", text }], usage, stop: "end_turn", model: req.model };
+        return paced(RENDER_REPLY, 24, 40);
+      case "count":
+        // The numbers from one to four hundred as words: a reply that streams
+        // for about ten seconds, for a spec that cuts the page's socket meanwhile.
+        return paced(Array.from({ length: 400 }, (_, i) => numberWords(i + 1)).join(", "), 32, 30);
+      case "say":
+        // `script:say <words>`: the reply is those words.
+        return reply(owner.match(/script:say[ \t]+([^\n]+)/)?.[1]?.trim() ?? "");
+      case "find": {
+        // `script:find <word> ...`: for each word, the line of the request that
+        // holds it outside the owner's typed prompts (the system prompt, a
+        // harness note, an inlined file, a PDF, a tool result). A word the
+        // request does not carry is not repeated in the reply.
+        const words = (owner.match(/script:find[ \t]+([^\n]+)/)?.[1] ?? "").split(/\s+/).filter(Boolean);
+        const lines = [req.system, ...msgs.flatMap((m) => (m.content as any[]).flatMap(carried))].flatMap((t) => t.split("\n"));
+        return reply(words.map((w: string) => lines.find((l) => l.includes(w))?.trim().slice(0, 240) ?? "Not in the request.").join("\n"));
+      }
+      case "color": {
+        // The color of the newest picture the request carries, by the
+        // strongest channel of its first pixel.
+        const picture = msgs.flatMap((m) => (m.content as any[]).filter((b) => b.type === "image")).at(-1);
+        return reply(picture ? `The picture is ${colorOf(picture.data)}.` : "The request carries no picture.");
       }
       case "grow":
         // About a thousand tokens a turn: with compact_at set near 7,000 the context crosses the preparing share, then the limit.
@@ -385,6 +417,38 @@ export class ScriptedProvider implements Provider {
         return reply(compacted ? "Scripted reply, after a compaction." : "Scripted reply.");
     }
   }
+}
+
+// What a block carries besides the owner's typed prompts: text that names no
+// scenario, the text inside a PDF, a tool result.
+function carried(b: any): string[] {
+  if (b.type === "text") return /script:[a-z-]+/.test(b.text) ? [] : [b.text];
+  if (b.type === "document") return [Buffer.from(b.data, "base64").toString("latin1")];
+  if (b.type === "tool_result") return typeof b.content === "string" ? [b.content] : (b.content as any[]).map((c) => c.text ?? "");
+  return [];
+}
+
+// The first pixel of a PNG (never filtered against a neighbor), by its strongest channel.
+function colorOf(base64: string): string {
+  try {
+    const png = Buffer.from(base64, "base64");
+    const data: Buffer[] = [];
+    for (let at = 8; at + 8 <= png.length; at += 12 + png.readUInt32BE(at)) {
+      if (png.toString("latin1", at + 4, at + 8) === "IDAT") data.push(png.subarray(at + 8, at + 8 + png.readUInt32BE(at)));
+    }
+    const [r, g, b] = inflateSync(Buffer.concat(data)).subarray(1, 4);
+    return r! >= g! && r! >= b! ? "red" : g! >= b! ? "green" : "blue";
+  } catch {
+    return "unreadable";
+  }
+}
+
+const ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" ");
+const TENS = "- - twenty thirty forty fifty sixty seventy eighty ninety".split(" ");
+function numberWords(n: number): string {
+  if (n < 20) return ONES[n]!;
+  if (n < 100) return TENS[Math.floor(n / 10)]! + (n % 10 ? `-${ONES[n % 10]}` : "");
+  return `${ONES[Math.floor(n / 100)]} hundred${n % 100 ? ` ${numberWords(n % 100)}` : ""}`;
 }
 
 // The JSON list that follows `script:calls` (or `word`) in a text.

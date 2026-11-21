@@ -1,10 +1,11 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the working model consults an advisor the owner chose: another
 // model reads the conversation and its guidance comes back as the tool result,
 // naming the advisor and its cost. /advisor off turns it off for one session.
 test("consult: the advisor tool on another model, set in Settings and per session", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: the advisor is a second model of the same provider, asked for an opinion");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const { models } = await (await request.get("/api/models")).json();
   const advisor = models.find((m: any) => /sonnet/i.test(m.id) && m.provider === HAIKU.split(":")[0]);

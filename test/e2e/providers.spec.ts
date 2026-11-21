@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: Settings > Providers shows every provider with its listing state and
 // the plugins; one session moves between providers and model families
@@ -21,6 +21,7 @@ const pick = async (page: Page, m: Listed) => {
 };
 
 test("providers and a cross-family session", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs the listings of real providers, and models of two families");
   // A refresh first: a listing that keeps failing is recorded once, so the
   // refresh in the panel below adds no error.
   const providers = await (await request.post("/api/providers/refresh", { data: {}, timeout: 120_000 })).json();

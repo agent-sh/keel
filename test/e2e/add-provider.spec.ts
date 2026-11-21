@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { FAKE_KEY, FAKE_MODEL, FAKE_TEXT_MODEL, startFake } from "./fixtures/fake-endpoint.ts";
 import { PAGE_ONE, PAGE_TWO, startPaged } from "./fixtures/paged-endpoint.ts";
-import { shoot, choose } from "./shots.ts";
+import { shoot, choose, SCRIPTED } from "./shots.ts";
 
 // Feature: adding a provider by hand in Settings > Providers. A stand-in
 // OpenAI-compatible server that wants a key and keeps its API under /v1: the
@@ -15,6 +15,7 @@ import { shoot, choose } from "./shots.ts";
 // the model can do, a price set by hand prices it, and a session runs a turn
 // on it. Removing it takes its file and its saved key.
 test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs the models.dev catalog for the hosted starting points, and a scripted run may have no network");
   const fake = await startFake();
   const id = "lab-e2e";
   try {
@@ -253,7 +254,9 @@ test("an endpoint with no listing offers its catalog section's models, tested or
   try {
     await request.delete(`/api/providers/endpoints/${id}`);
     const setup = await (await request.get("/api/providers/setup")).json();
-    const section = setup.hosted.find((t: any) => t.models > 0).catalog as string;
+    const hosted = setup.hosted.find((t: any) => t.models > 0);
+    test.skip(!hosted, "needs the models.dev catalog (a hosted starting point with models), and this daemon has none: no network");
+    const section = hosted.catalog as string;
     const config = { label: "Lab no listing", base_url: `${fake.url}/v1`, auth: "none", catalog: section, listing: false };
     const draft = await (await request.post("/api/providers/test", { data: { config: { id, ...config } } })).json();
     expect(draft.steps.map((s: any) => [s.id, s.ok])).toEqual([["address", true], ["key", true], ["listing", true]]);

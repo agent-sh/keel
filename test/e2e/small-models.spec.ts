@@ -29,6 +29,8 @@ test("small models: picked in order, reordered and removed in Settings", async (
     // The second moves up: it reads first now.
     await box.getByTestId("small-model").nth(1).getByRole("button", { name: "Move up" }).click();
     await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.small_models.ids).toEqual([two[1].id, two[0].id]);
+    // The rows show the new order before the first one is removed.
+    await expect(box.getByTestId("small-model").first()).toContainText(two[1].name);
     await box.getByTestId("small-model").first().getByRole("button", { name: /^Remove/ }).click();
     await expect(box.getByTestId("small-model")).toHaveCount(1);
     await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.small_models.ids).toEqual([two[0].id]);

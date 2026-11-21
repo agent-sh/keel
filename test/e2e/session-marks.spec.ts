@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: session marks. Pin (the station and the list), tags (the list and
 // its filter), done (the owner's next message reopens it), the step budget
@@ -7,6 +7,7 @@ import { HAIKU, openPanel, shoot } from "./shots.ts";
 // turns they may start, and an archive that asks before it stops a running
 // background command. Marks are daemon state: the API reads what the UI set.
 test("pin, tags, done, step budget, peer marks, archive with a job", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to pick a tool for a plain prompt and start a background job");
   const word = `mk${Date.now().toString(36)}`;
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });

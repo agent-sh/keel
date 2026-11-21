@@ -1,8 +1,8 @@
-import { expect, test, type APIRequestContext } from "./isolate.ts";
+import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
 
 // Feature: the daemon keeps the machine awake while a turn runs, and a restart
 // from Settings > Daemon lets the running turn finish first; a restart that
@@ -16,6 +16,16 @@ const daemon = async (request: APIRequestContext) => {
 const events = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
 const inhibitors = (pid: number) => execFileSync("systemd-inhibit", ["--list", "--no-pager"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(`daemon pid ${pid})`)).length;
 
+// After a restart the page reloads itself into the new daemon's page at a moment
+// of its own, which cuts a navigation that is under way: that one is made again.
+async function settled(page: Page, nav: () => Promise<unknown>) {
+  try { await nav(); } catch (e) {
+    if (!/ERR_ABORTED|detached/.test(String(e))) throw e;
+    await page.waitForLoadState("load").catch(() => {});
+    await nav();
+  }
+}
+
 test("keep awake, restart after turns, a parked turn continues", async ({ page, request }) => {
   test.setTimeout(360_000);
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
@@ -23,7 +33,7 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   const pid0 = (await daemon(request)).pid;
 
   // A turn that runs for a while.
-  const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Restart waits for me", text: "Run `sleep 12` with your shell tool in the foreground, then reply with the word finished." } })).json()).session;
+  const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Restart waits for me", text: ask("Run `sleep 12` with your shell tool in the foreground, then reply with the word finished.", scriptBash("sleep 12")) } })).json()).session;
   await expect.poll(async () => (await daemon(request))?.running.includes(a.id), { timeout: 60_000 }).toBe(true);
 
   await page.goto("/settings/daemon");
@@ -46,17 +56,17 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   await expect.poll(async () => { const d = await daemon(request); return d && d.pid !== pid0 ? d.pid : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
   const ev = await events(request, a.id);
   expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).not.toContain("restart");
-  expect(ev.some((e) => e.kind === "assistant" && JSON.stringify(e.data.blocks).toLowerCase().includes("finished"))).toBe(true);
+  expect(ev.some((e) => e.kind === "assistant" && JSON.stringify(e.data.blocks).toLowerCase().includes(ask("finished", "done with 1 call")))).toBe(true);
   await expect(panel.getByTestId("daemon-status")).toContainText("pid", { timeout: 30_000 });
   // The page reconnected by itself. It may also reload itself into the page the
   // new daemon serves, at any moment: do that now, so the shot is not cut by it.
-  await page.reload();
+  await settled(page, () => page.reload());
   await expect(panel.getByTestId("daemon-status")).toContainText("pid", { timeout: 30_000 });
   await shoot(page, "daemon-03-back");
 
   // A restart that does not wait: the turn is parked and continues after the start.
   const pid1 = (await daemon(request)).pid;
-  const b = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Parked and continued", text: "Run `sleep 20` with your shell tool in the foreground, then reply with the word continued." } })).json()).session;
+  const b = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Parked and continued", text: ask("Run `sleep 20` with your shell tool in the foreground, then reply with the word continued.", scriptBash("sleep 20")) } })).json()).session;
   await expect.poll(async () => (await events(request, b.id)).some((e) => e.kind === "assistant"), { timeout: 60_000 }).toBe(true);
   await request.post("/api/drain", { data: { restart: true, timeout_seconds: 1 } });
   await expect.poll(async () => { const d = await daemon(request); return d && d.pid !== pid1 ? d.pid : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
@@ -65,7 +75,7 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   await expect.poll(async () => (await (await request.get(`/api/sessions/${b.id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
   if (awake.available) expect(inhibitors(pid1) + inhibitors(pid0)).toBe(0);
 
-  await page.goto(`/s/${b.id}`);
+  await settled(page, () => page.goto(`/s/${b.id}`));
   await expect(page.getByTestId("restart-note")).toBeVisible();
   await shoot(page, "daemon-04-continued");
 

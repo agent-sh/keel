@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
 import { execFileSync } from "node:child_process";
 import { writeSite } from "./fixtures/dev-site.ts";
-import { HAIKU, shoot, openPanel } from "./shots.ts";
+import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
 
 // Feature: the portal. A dev server the session starts shows up in the
 // Preview panel; opened, it runs in a sandboxed frame through the portal
@@ -19,6 +19,7 @@ const site = () => writeSite(SITE);
 const START = `Use the Bash tool once with run_in_background true to run: bun serve.ts ${PORT}. Then reply "started".`;
 
 test("portal: the session's dev server in the preview, assets and fetch inside, picker", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to start the dev server the preview shows");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   site();
   const s = (await (await request.post("/api/sessions", { data: { workspace: SITE, title: "Preview a site", model: HAIKU } })).json()).session;

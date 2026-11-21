@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
 
 // Feature: the command sandbox. In auto-edits mode with the workspace-write
 // profile and the network off, a command runs without asking, can write the
@@ -28,7 +28,7 @@ test("command sandbox", async ({ page, request }) => {
   await expect(page.getByTestId("permission-menu")).toContainText("sandbox");
 
   const cmd = `touch inside.txt; touch ${outside}; getent hosts example.com || echo no-network`;
-  await page.getByTestId("composer").fill(`Run exactly this one Bash command, once, and nothing else: ${cmd}\nThen reply with one word: done.`);
+  await page.getByTestId("composer").fill(ask(`Run exactly this one Bash command, once, and nothing else: ${cmd}\nThen reply with one word: done.`, scriptBash(cmd)));
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
   await expect(page.getByTestId("approval")).toHaveCount(0);

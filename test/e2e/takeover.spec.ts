@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: taking over a session another harness runs. A stand-in agent view
 // runs three stand-in Claude Code sessions, each with its transcript. The
@@ -60,6 +60,7 @@ const turnsDone = (request: APIRequestContext, id: string, n: number) =>
   }, { timeout: 120_000 }).toBe(n);
 
 test("take over a running session: ended where it ran, or copied with the one step", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to load the import tool and take the session over");
   const before = (await (await request.get("/api/fleet/outside/settings")).json()).agent_view;
   const wrapper = seed();
   await request.put("/api/fleet/outside/settings", { data: { agent_view: wrapper } });

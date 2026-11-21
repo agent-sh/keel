@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, remoteHeaders, shoot } from "./shots.ts";
+import { HAIKU, openPanel, remoteHeaders, shoot, SCRIPTED } from "./shots.ts";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
@@ -13,6 +13,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 // folder picker, and /api/open's refusals (opening starts a program on the
 // desktop, so the spec checks only what it refuses).
 test("move to a folder, clone into a worktree, images, repositories, open", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to show an image of the folder in its reply");
   const word = `pl${Date.now().toString(36)}`;
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });

@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, ask, shoot } from "./shots.ts";
 
 // Feature: Settings > Resources shows the daemon and the processes it started,
 // a command a session's tool runs in the background is booked to that session,
@@ -10,19 +10,24 @@ test("resources view", async ({ page, request }) => {
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   const s = (await (await request.post("/api/sessions", {
-    data: { model: HAIKU, title: "Resources check", text: `Start \`${cmd}\` in the background with your shell tool (run_in_background), then reply with the word started.` },
+    data: { model: HAIKU, title: "Resources check", text: ask(`Start \`${cmd}\` in the background with your shell tool (run_in_background), then reply with the word started.`, `script:calls [{"name":"Bash","input":{"command":"${cmd}","run_in_background":true}}]`) },
   })).json()).session;
   await expect.poll(async () => {
     const r = await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json();
     return r.processes.some((p: any) => p.command.includes(cmd) && p.kind === "tool");
   }, { timeout: 120_000 }).toBe(true);
+  // The orphan part needs a cgroup per job: a daemon with no systemd user session to
+  // ask for one (a clean environment, a container) keeps jobs as process groups.
   const orphan = `sleep ${1000 + Math.floor(Math.random() * 800)}`;
-  await request.post(`/api/sessions/${s.id}/terminal/run`, { data: { command: `(setsid ${orphan} &); sleep 900` } });
-  await expect.poll(async () => {
-    const r = await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json();
-    const p = r.processes.find((x: any) => x.name === "sleep" && x.command === orphan);
-    return !!p && r.jobs.some((j: any) => j.contain === "cgroup" && j.pids.includes(p.pid) && j.memory_bytes > 0);
-  }, { timeout: 20_000 }).toBe(true);
+  const jobs = (await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json()).jobs as any[];
+  if (jobs.some((j) => j.contain === "cgroup")) {
+    await request.post(`/api/sessions/${s.id}/terminal/run`, { data: { command: `(setsid ${orphan} &); sleep 900` } });
+    await expect.poll(async () => {
+      const r = await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json();
+      const p = r.processes.find((x: any) => x.name === "sleep" && x.command === orphan);
+      return !!p && r.jobs.some((j: any) => j.contain === "cgroup" && j.pids.includes(p.pid) && j.memory_bytes > 0);
+    }, { timeout: 20_000 }).toBe(true);
+  } else test.info().annotations.push({ type: "not checked", description: "an orphaned descendant counted from the job's cgroup: this daemon has no cgroup per job" });
 
   await page.goto("/settings/resources");
   const panel = page.getByTestId("resources-panel");

@@ -2,7 +2,7 @@ import { expect, test, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, remoteHeaders, shoot } from "./shots.ts";
+import { HAIKU, remoteHeaders, shoot, ask, scriptBash } from "./shots.ts";
 
 const BASE = new URL(process.env.KEEL_URL!);
 // A name that is not the desk but still a secure context: *.localhost is loopback in Chromium.
@@ -54,7 +54,7 @@ test("passkeys for remote approvals", async ({ page, browser, request }) => {
     expect((await loose.json()).presence.action).toBe(`perm:${session.id}`);
 
     // A high-risk card answered from the device: the passkey is asked, then the call runs.
-    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Run exactly this one Bash command and nothing else: git clean -fdx\nThen reply ok." } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: ask("Run exactly this one Bash command and nothing else: git clean -fdx\nThen reply ok.", scriptBash("git clean -fdx")) } });
     await phone.goto(`${REMOTE}/s/${session.id}`);
     // The high-risk card (a model may also run a harmless command first, with its own low card).
     const card = phone.locator('[data-testid="approval"][data-risk="high"]');

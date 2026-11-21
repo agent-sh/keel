@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, ask, shoot } from "./shots.ts";
 
 // Feature: start a session, the model calls tools, the reply streams in, the
 // turn footer shows usage with cache reads; a second message continues it.
@@ -9,12 +9,14 @@ test("chat with tools", async ({ page, request }) => {
   await expect(page.getByTestId("home-watch")).toBeVisible();
   await shoot(page, "01-home");
 
+  // The model of this run (KEEL_TEST_MODEL), found in the picker by its id.
+  const model = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === HAIKU);
   await page.getByTestId("model-picker").click();
-  await page.getByPlaceholder("Search models").fill("haiku 5.5");
-  await page.getByRole("option").first().click();
-  await expect(page.getByTestId("model-picker")).toContainText("Haiku 5.5");
+  await page.getByPlaceholder("Search models").fill(HAIKU);
+  await page.locator('[data-group="exact"] [data-testid="model-option"]').click();
+  await expect(page.getByTestId("model-picker")).toContainText(model.name);
 
-  await page.getByTestId("composer").fill("List the files in the working directory with Bash, then tell me how many there are in one short sentence.");
+  await page.getByTestId("composer").fill(ask("List the files in the working directory with Bash, then tell me how many there are in one short sentence.", 'List the files in the working directory. script:calls [{"name":"Bash","input":{"command":"ls"}}]'));
   await page.keyboard.press("Enter");
 
   await expect(page).toHaveURL(/\/s\//);

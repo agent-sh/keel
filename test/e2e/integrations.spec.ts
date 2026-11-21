@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // One command line to momentum's control socket, one answer.
 function ask(socket: string, cmd: unknown): Promise<any> {
@@ -25,6 +25,7 @@ function ask(socket: string, cmd: unknown): Promise<any> {
 // from the control socket and queues a message, tagged as momentum's.
 // Run the daemon with TACIT_BIN at test/e2e/fixtures/tacit-standin.sh.
 test("tacit and momentum", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to answer from the memory the hook injected");
   const info = await (await request.get("/api/integrations")).json();
   test.skip(!info.tacit.bin?.includes("tacit-standin"), "needs the tacit stand-in (TACIT_BIN)");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;

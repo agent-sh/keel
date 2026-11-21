@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: code mode. The model sends one run_code program that calls two
 // tools. The program is judged like a command (a card), the read inside it runs,
@@ -9,6 +9,7 @@ import { HAIKU, shoot } from "./shots.ts";
 // ToolError in the program, which goes on. The page shows both calls under the
 // program; only what the program printed went back to the model.
 test("code mode", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to call run_code with the code given and repeat what it printed");
   test.setTimeout(240_000);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `code-${Date.now()}`);

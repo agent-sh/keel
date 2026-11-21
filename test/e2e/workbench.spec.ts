@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "./isolate.ts";
+import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { openPanel, shoot } from "./shots.ts";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
@@ -8,7 +8,13 @@ test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 // Feature: the workbench shell. Folder picker, palette, shortcuts, settings,
 // slash commands, @-mentions, a pasted image sent to the model, a highlighted
 // code block with its copy button, and the phone layout with its drawer.
+// The folder routes read inside the daemon's home and workspace only: a daemon with
+// a throwaway home (scripts/smoke.sh) cannot browse the repository these tests open.
+const reach = async (request: APIRequestContext) => process.cwd().startsWith(`${(await (await request.get("/api/workspaces")).json()).home}/`);
+const OUTSIDE = "the repository is outside the daemon's home in this run: its folders cannot be browsed";
+
 test("workbench", async ({ page, request }) => {
+  test.skip(!(await reach(request)), OUTSIDE);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   await page.goto("/");
   await expect(page.getByTestId("home-watch")).toBeVisible();
@@ -186,6 +192,7 @@ test("the reading line holds when content above it grows", async ({ page, reques
 test("the side panel sits beside the conversation when the pane has room, else lies over it", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.skip(!(await reach(request)), OUTSIDE);
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Panel layout", workspace: process.cwd() } })).json();
   try {
     const phase = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase;
@@ -318,6 +325,7 @@ const mentionSession = async (request: import("@playwright/test").APIRequestCont
 test("a file result's Mention by keyboard", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.skip(!(await reach(request)), OUTSIDE);
   const s = await mentionSession(request);
   await page.goto(`/s/${s.id}`);
   await openPanel(page, "files");
@@ -475,6 +483,7 @@ test.describe("on a touch screen", () => {
   test("a file result's Mention shows before a tap", async ({ page, request }) => {
     const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
     test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+    test.skip(!(await reach(request)), OUTSIDE);
     const s = await mentionSession(request);
     await page.goto(`/s/${s.id}`);
     expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
@@ -502,6 +511,7 @@ test.describe("on a touch screen", () => {
 test("the message box names its suggestions and the active one", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.skip(!(await reach(request)), OUTSIDE);
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Suggestions", workspace: process.cwd() } })).json();
   try {
     await page.goto(`/s/${session.id}`);

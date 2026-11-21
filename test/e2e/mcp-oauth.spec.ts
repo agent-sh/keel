@@ -2,13 +2,14 @@ import { expect, test } from "./isolate.ts";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: an HTTP MCP server behind OAuth. Added by its URL it needs sign-in;
 // Sign in opens the server's own page (discovery, client registration, PKCE),
 // the approval comes back to the daemon, the server is ready, its tool works
 // with tokens refreshed as they expire, and sign-out puts it back.
 test("mcp oauth sign-in", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to find the server's tool with ToolSearch and run it");
   const fx = spawn("bun", [join(import.meta.dirname, "fixtures/oauth-mcp.ts")], { stdio: ["ignore", "pipe", "inherit"] });
   try {
     const port = await new Promise<string>((res) => createInterface({ input: fx.stdout! }).once("line", res));

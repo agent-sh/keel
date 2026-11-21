@@ -1,10 +1,11 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the model starts two background subagents in one step; they run as
 // child sessions shown under the parent, live; their reports come back to the
 // parent as one message; a running agent can be stopped from the page.
 test("subagents run in parallel, report back, and stop", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to start two agents and gather their reports");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const r = await request.post("/api/sessions", { data: { model: HAIKU } });
   const { session } = await r.json();

@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const output = async (request: APIRequestContext, id: string) =>
@@ -28,7 +28,7 @@ test("secrets stay out of history and still work", async ({ page, request }) => 
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
 
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("composer").fill(`Run exactly this one Bash command and nothing else: echo ${token} | sha256sum; echo ${token}\nThen reply ok.`);
+  await page.getByTestId("composer").fill(ask(`Run exactly this one Bash command and nothing else: echo ${token} | sha256sum; echo ${token}\nThen reply ok.`, scriptBash(`echo ${token} | sha256sum; echo ${token}`)));
   await page.keyboard.press("Enter");
   const found = page.getByTestId("secret-found");
   await expect(found).toContainText("GitHub token");
@@ -40,13 +40,16 @@ test("secrets stay out of history and still work", async ({ page, request }) => 
   await found.getByTestId("secret-name").fill("E2E_FIXTURE");
   await found.getByTestId("secret-save-name").click();
   await expect(found).toHaveCount(0);
-  await page.getByTestId("composer").fill('Run exactly this one Bash command and nothing else: printf %s "$E2E_FIXTURE" | sha256sum\nThen reply ok.');
+  await page.getByTestId("composer").fill(ask('Run exactly this one Bash command and nothing else: printf %s "$E2E_FIXTURE" | sha256sum\nThen reply ok.', scriptBash('printf %s "$E2E_FIXTURE" | sha256sum')));
   await page.keyboard.press("Enter");
   await turnsDone(request, session.id, 2);
   expect(await output(request, session.id)).toContain(sha(token));
 
   // A secret the model asks for.
-  await page.getByTestId("composer").fill('Call the request_secret tool with name DEPLOY_KEY and purpose "deploy check". After it is given, run exactly this one Bash command: printf %s "$DEPLOY_KEY" | sha256sum\nThen reply ok.');
+  await page.getByTestId("composer").fill(ask(
+    'Call the request_secret tool with name DEPLOY_KEY and purpose "deploy check". After it is given, run exactly this one Bash command: printf %s "$DEPLOY_KEY" | sha256sum\nThen reply ok.',
+    `script:calls ${JSON.stringify([{ name: "request_secret", input: { name: "DEPLOY_KEY", purpose: "deploy check" } }, { name: "Bash", input: { command: 'printf %s "$DEPLOY_KEY" | sha256sum' } }])}`,
+  ));
   await page.keyboard.press("Enter");
   const card = page.getByTestId("secret-request");
   await expect(card).toContainText("DEPLOY_KEY", { timeout: 60_000 });

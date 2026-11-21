@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // The browser resolves rebind.test to 127.0.0.1, the way a DNS-rebinding page
 // reaches the daemon under its own name.
@@ -13,6 +13,7 @@ test.use({ launchOptions: { args: ["--host-resolver-rules=MAP rebind.test 127.0.
 // socket; a page under a foreign Host name (DNS rebinding) is refused; the
 // daemon's own UI still creates a session and streams its turn.
 test("foreign pages cannot drive the daemon", async ({ page, request, baseURL }) => {
+  test.skip(SCRIPTED, "starts its session on a Haiku picked by name in the model picker");
   const target = new URL(baseURL!).origin;
   const tag = `guard-${Date.now().toString(36)}`;
   const fx = spawn("bun", [join(import.meta.dirname, "fixtures/foreign-page.ts")], { stdio: ["ignore", "pipe", "inherit"] });

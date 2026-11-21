@@ -1,12 +1,13 @@
 import { createServer } from "node:http";
 import { expect, test, type APIRequestContext, type Locator } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the model picker over hundreds of listed models. With no query it
 // shows favorites, recent models and one folded group per provider (the
 // default's provider first, then plan providers); a favorite pins a model on
 // top, a hidden model or provider leaves the list and search still finds it.
 test("model picker: favorites, hiding, folded groups, search", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs models of a second provider beside the default one's");
   const { models, default: def } = await (await request.get("/api/models")).json();
   expect(models.length).toBeGreaterThan(0);
   const defProvider = models.find((m: any) => m.id === def).provider;

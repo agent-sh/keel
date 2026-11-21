@@ -1,10 +1,11 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: edit-and-resend makes a branch and the arrows move between the
 // versions; fork from a message opens a new session; rename, archive, restore,
 // search across what sessions said, and delete.
 test("branches, fork, rename, archive, search, delete", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: its replies are searched for the words the prompts ask for");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const tag = `zq${Date.now().toString(36)}`;
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();

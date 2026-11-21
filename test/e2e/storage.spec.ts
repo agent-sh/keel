@@ -2,13 +2,14 @@ import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: Settings > Storage measures what is on disk, lists archived
 // sessions archived long ago and deletes them only after the list is
 // confirmed (one changed in between is skipped), saves the archive policy,
 // makes a checked backup, and lists what is past the retention before it goes.
 test("storage, cleanup and backups", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to write a file from a plain prompt, which makes the checkpoint counted");
   const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: HAIKU, title } })).json()).session;
   const old1 = await mk("Old archived one");
   const old2 = await mk("Old archived two");

@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: readers. The working model hands a folder of logs and one question
 // to the readers tool; the logs are split into parts read side by side by the
@@ -27,6 +27,7 @@ function logs(): { code: string; retry: string } {
 }
 
 test("readers: a folder of logs is read in parts and compiled into one answer", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: the readers and the model that asks them have to read the logs");
   const planted = logs();
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   await page.goto("/");

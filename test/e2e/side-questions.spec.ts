@@ -1,10 +1,11 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: /btw asks a side question answered from the session's context with
 // no tools; it opens the side panel, a follow-up continues the thread, and
 // nothing is added to the conversation. Clear forgets the threads.
 test("side questions stay out of the conversation", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: a side question is answered from what was said before");
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
   await page.goto(`/s/${session.id}`);
   const composer = page.getByTestId("composer");

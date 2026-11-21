@@ -1,13 +1,14 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the Claude tool profile in the UI. A plan checklist, a file
 // written and edited (shown as a diff), a background command with its job in
 // the dock and its end reported to the model, and a question the turn waits
 // on until the owner answers it in the transcript.
 test("claude tools: plan, edit diff, background job, question", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it exercises the tools a Claude model is given, called from plain prompts");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // This feature is the tools, not the approval cards: run them without asking.
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;

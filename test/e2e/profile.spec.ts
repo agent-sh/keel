@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, openPanel } from "./shots.ts";
+import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
 
 // Feature: the session profile. The Profile tab shows the session's model and
 // route, its reasoning and speed against what the model offers, the tools its
@@ -9,6 +9,7 @@ import { HAIKU, shoot, openPanel } from "./shots.ts";
 // session to another model with its reasoning and speed in one step, keeping a
 // speed the new model offers and refusing one it does not.
 test("profile: the panel, and a model pick with reasoning and speed", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it checks the tool profile, reasoning levels and speed of a Claude model");
   const s = (await (await request.post("/api/sessions", { data: { model: HAIKU } })).json()).session;
   const prof = await (await request.get(`/api/sessions/${s.id}/profile`)).json();
   expect(prof.model.id).toBe(HAIKU);

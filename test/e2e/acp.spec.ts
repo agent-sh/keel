@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 
 // An editor's end of ACP: `keel acp` on stdio, JSON-RPC one message a line.
 class Editor {
@@ -47,6 +47,7 @@ class Editor {
 // the tool call and the reply stream, and the same session is in the
 // workbench. Loading it replays the history; cancel ends a turn as cancelled.
 test("acp", async ({ page, baseURL }) => {
+  test.skip(SCRIPTED, "needs a real model: the editor's plain prompts ask it to run a command, ask a question and sleep");
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
   const ed = new Editor(baseURL!);

@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, openPanel } from "./shots.ts";
+import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 const events = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
@@ -27,6 +27,7 @@ function repo(name: string) {
 // the Review panel; the owner sends one back to the working model and
 // dismisses another.
 test("independent review with findings", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: the reviewer has to read the change and write findings");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = repo("review");
   writeFileSync(join(ws, "calc.py"), "def div(a, b):\n    return a // b\n\ndef avg(xs):\n    return sum(xs) / len(xs) + 1\n");
@@ -95,6 +96,7 @@ test("independent review with findings", async ({ page, request }) => {
 // card, one the policy forbids is refused and listed; the owner lets one
 // retry through.
 test("reviewer mode judges calls", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: the reviewer has to judge calls against the owner's policy");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = repo("reviewer-mode");
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();

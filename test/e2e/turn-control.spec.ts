@@ -1,10 +1,11 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: while a turn works, Enter steers (the text joins the turn after the
 // running tool), Ctrl Shift Enter queues for after it; Stop cuts the running tool at once
 // and holds the queue; a queued prompt can be sent now.
 test("steer, queue, stop and send now", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to take a steer into a running turn and answer queued prompts");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const r = await request.post("/api/sessions", { data: { model: HAIKU } });
   const { session } = await r.json();

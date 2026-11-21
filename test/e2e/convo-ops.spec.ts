@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot, choose } from "./shots.ts";
+import { HAIKU, ask, openPanel, shoot, choose } from "./shots.ts";
 
 // Feature: conversation operations. A recap written on demand; summarize from
 // a prompt on (the prompt comes back to the message box) and everything up to
@@ -63,7 +63,7 @@ test("recap, summarize a part, skill mode, the model's context tools", async ({ 
   // Skill mode: the skill's instructions hold on the next turn.
   await choose(page.getByTestId("skill-mode-select"), "sign-off");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.skill_mode).toBe("sign-off");
-  await send("Reply with only the word cherry.", 3);
+  await send(ask("Reply with only the word cherry.", `script:find ${word.toUpperCase()}`), 3);
   await expect(page.getByTestId("assistant-text").last()).toContainText(word.toUpperCase());
   expect((await events()).some((e) => e.kind === "note" && e.data.kind === "skill_mode" && e.data.skill_mode === "sign-off")).toBe(true);
   await expect(page.getByTestId("note").filter({ hasText: "Skill mode: sign-off" })).toBeVisible();
@@ -71,10 +71,10 @@ test("recap, summarize a part, skill mode, the model's context tools", async ({ 
   await shoot(page, "convo-04-skill-mode");
 
   // The model's context tools: it reads its window, then starts fresh with a handoff.
-  await send("Call the keel__context_status tool, then reply with only the context_window number it gave.", 4);
+  await send(ask("Call the keel__context_status tool, then reply with only the context_window number it gave.", 'script:calls [{"name":"keel__context_status","input":{}}]'), 4);
   const status = (await events()).flatMap((e) => (e.kind === "tool_result" ? e.data.results : [])).find((r: any) => /context_window/.test(String(r.content)));
   expect(JSON.parse(status.content).context_used_tokens).toBeGreaterThan(0);
-  await send(`Call the keel__new_context tool with the handoff "Goal: reply with the word ${word}.", then do what the handoff says.`, 5);
+  await send(ask(`Call the keel__new_context tool with the handoff "Goal: reply with the word ${word}.", then do what the handoff says.`, `script:calls [{"name":"keel__new_context","input":{"handoff":"Goal: reply with the word ${word}."}}]`), 5);
   const fresh = (await events()).findLast((e) => e.kind === "compaction");
   // The handoff is the story; the statements of the summary before it carry on in front of it.
   expect(fresh.data).toMatchObject({ trigger: "model" });

@@ -1,10 +1,11 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the reader. WebFetch on a long page hands the page and the
 // model's prompt to the session's reader model; the working model gets the
 // answer and the path of the whole page, not the page.
 test("web reader: a long page is read for the prompt, the page saved whole", async ({ page, request }) => {
+  test.skip(SCRIPTED, "starts its session on a Haiku picked by name in the model picker, and the readers are models");
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   try {

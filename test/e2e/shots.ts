@@ -18,6 +18,14 @@ export async function shoot(page: Page, name: string) {
 }
 
 export const HAIKU = process.env.KEEL_TEST_MODEL ?? "bedrock:global.anthropic.claude-haiku-5-5";
+// A spec written for a real model also runs on the scripted stand-in
+// (KEEL_TEST_MODEL=scripted:stand-in): there it sends the `script:` words of
+// src/providers/scripted.ts that make the stand-in do what the prompt asks a
+// real model for.
+export const SCRIPTED = HAIKU.startsWith("scripted:");
+export const ask = (real: string, scripted: string) => (SCRIPTED ? scripted : real);
+// The stand-in's words for "run this one shell command".
+export const scriptBash = (command: string) => `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`;
 
 // Opens a side panel of the session on screen: from the header when it is at
 // hand, else from the Panels picker. Nothing happens when it is already open.

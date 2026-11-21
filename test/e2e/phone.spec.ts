@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { HAIKU, shoot, openMcp } from "./shots.ts";
+import { HAIKU, shoot, openMcp, SCRIPTED } from "./shots.ts";
 
 // Feature: phone control. A stand-in for the Hermes gateway's phone socket
 // serves the daemon's phone server; with PHONE_ADB=<emulator serial> it acts on
@@ -35,6 +35,7 @@ const lastResult = async (request: APIRequestContext, id: string) => {
 const call = (tool: string, args: object) => `Load mcp__${tool} with ToolSearch (query "select:mcp__${tool}"), then call it exactly once with ${JSON.stringify(args)}. Then reply with the tool's result word for word.`;
 
 test("phone control: read, tap by index, read again; not armed, stopped, turned off", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to load the phone tools and tap what it read");
   const phone = (await (await request.get("/api/mcp/servers")).json()).servers.find((s: any) => s.name === "phone");
   expect(phone?.bundled).toBe("Phone control");
   // The daemon must speak to a scratch socket, never the owner's gateway.

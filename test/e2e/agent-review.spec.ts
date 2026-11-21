@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 const DEV = process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bun/dev-automation2`;
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -12,6 +12,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 // reviewer runs as a listed child of the session, and findings sent to fix go
 // to the agent that did the work, which continues in its own worktree.
 test("reviews of an agent's work go back to that agent", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to start an agent and act on the review");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const repo = join(DEV, `review-${Date.now()}`);
   mkdirSync(repo, { recursive: true });

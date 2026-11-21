@@ -2,7 +2,7 @@ import type { WebSocketRoute } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
 
 // Feature: what a screen reader is told about a running turn. One status
 // region per session changes when the reason changes (working, waiting for an
@@ -23,7 +23,7 @@ test("turn status is announced once per change", async ({ page, request }) => {
     (window as any).said = [];
     new MutationObserver(() => (window as any).said.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
   });
-  await page.getByTestId("composer").fill("Run exactly this Bash command and nothing else: touch status.txt. Then reply with the word ok.");
+  await page.getByTestId("composer").fill(ask("Run exactly this Bash command and nothing else: touch status.txt. Then reply with the word ok.", scriptBash("touch status.txt")));
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("approval")).toBeVisible({ timeout: 60_000 });
   await page.waitForTimeout(2500); // the visible clock ticks meanwhile

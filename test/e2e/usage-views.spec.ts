@@ -9,6 +9,9 @@ import { HAIKU, shoot, choose } from "./shots.ts";
 // one with its trigger, the context before and after, what it kept, its cost
 // and the cache of the requests after it. Compare: two ranges or two models.
 const STAND_IN = "scripted:stand-in";
+// The model the zones and the compaction are measured on: on a scripted run
+// the backup stand-in, so the comparison still has two models.
+const REAL = HAIKU === STAND_IN ? "scripted:stand-in-backup" : HAIKU;
 
 const ended = (request: APIRequestContext, id: string, n: number) =>
   expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 120_000 }).toBeGreaterThanOrEqual(n);
@@ -18,7 +21,7 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
   test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
 
   // A real model, two turns: the second reads the first's prefix from the cache.
-  const real = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Zones check", text: "Name three prime numbers. One line." } })).json()).session;
+  const real = (await (await request.post("/api/sessions", { data: { model: REAL, title: "Zones check", text: "Name three prime numbers. One line." } })).json()).session;
   await ended(request, real.id, 1);
   await request.post(`/api/sessions/${real.id}/messages`, { data: { text: "Now three more. One line." } });
   await ended(request, real.id, 2);
@@ -79,7 +82,7 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
   await panel.getByRole("radio", { name: "Compare" }).click();
   await expect(panel.getByTestId("compare-table")).toContainText("First token, median");
   await panel.getByRole("radio", { name: "Two models" }).click();
-  await choose(panel.getByTestId("compare-model-a"), HAIKU);
+  await choose(panel.getByTestId("compare-model-a"), REAL);
   await choose(panel.getByTestId("compare-model-b"), STAND_IN);
   await expect(panel.getByTestId("compare-table")).toContainText("Rate limited");
   // A count of failures differs by how many, not in rate points.

@@ -2,13 +2,14 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the message box's built-in commands that used to say "not
 // available yet". /permissions sets a mode by name or opens the menu, /review
 // asks the model to review the folder's uncommitted changes, /init has it
 // write an AGENTS.md, /agents shows every session, /export opens the export sheet.
 test("slash commands", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: the commands' prompts need answers a model writes");
   test.setTimeout(300_000);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `slash-${Date.now()}`);

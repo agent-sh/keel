@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the context meter shows tokens against the model's listed window;
 // effort comes from the model's listed efforts; compaction (with a focus)
@@ -7,6 +7,7 @@ import { HAIKU, shoot } from "./shots.ts";
 // own words, and the session goes on; clear starts
 // fresh and can be undone.
 test("context meter, effort, compact and clear", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it checks a real model's window, its efforts and what a summary kept");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
   await page.goto(`/s/${session.id}`);

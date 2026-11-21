@@ -1,12 +1,13 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: SKILL.md skills. A project skill is listed for the folder, the
 // owner runs it from the message box with an argument, and the model loads
 // another one itself with the Skill tool; both follow the skill's body.
 test("skills: listed, run by the owner, loaded by the model", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to follow a skill's instructions and load one by itself");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bun/dev-tools`, `skills-${Date.now()}`);
   const skill = (name: string, body: string, extra = "") => {

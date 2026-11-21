@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, openPanel } from "./shots.ts";
+import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 const lastText = async (request: APIRequestContext, id: string) => {
@@ -35,6 +35,7 @@ const WORD = "What one word do your repository's instructions tell you to answer
 // file runs only once trusted there. A protected file a call creates without the
 // owner's answer is moved to quarantine, and the owner puts it back.
 test("trust, hooks and quarantine", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to follow the project instructions once the folder is trusted");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `trust-${Date.now()}`);
   mkdirSync(ws, { recursive: true });

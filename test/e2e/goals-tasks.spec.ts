@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 
 const DEV = process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bun/dev-automation2`;
 
@@ -12,6 +12,7 @@ const DEV = process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bu
 // owner adds and ticks items in the panel, the model is told and keeps them
 // with its own plan tool, and an item can go to a session of its own.
 test("goals and the shared task list", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to work toward a goal and keep the task list");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const dir = join(DEV, `goal-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
@@ -120,6 +121,7 @@ test("goals and the shared task list", async ({ page, request }) => {
 });
 
 test("goal: a claim the files do not back is not met", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: the goal's verifier is a model that has to read the files");
   const ids = ((await (await request.get("/api/models")).json()).models as any[]).map((m) => m.id);
   test.skip(!ids.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const dir = join(DEV, `goal-liar-${Date.now()}`);

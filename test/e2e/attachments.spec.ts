@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
-import { HAIKU, shoot, tabInto } from "./shots.ts";
+import { HAIKU, ask, shoot, tabInto } from "./shots.ts";
 
 // A one-page PDF with one line of text, offsets computed so readers accept it.
 function pdf(line: string): Buffer {
@@ -53,7 +53,7 @@ test("text, PDF and other files attached to a prompt", async ({ page, request })
   await shoot(page, "attach-01-composer");
 
   const composer = page.getByTestId("composer");
-  await composer.fill("From my attached files: what is the meeting room, what is the budget code, and where is blob.bin saved? One short line each, no tools.");
+  await composer.fill(ask("From my attached files: what is the meeting room, what is the budget code, and where is blob.bin saved? One short line each, no tools.", "script:find Orchid-7 KX-913 attachments/"));
   await composer.press("Enter");
   await expect(page.getByTestId("message-file")).toHaveCount(3);
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
@@ -83,7 +83,7 @@ test("text, PDF and other files attached to a prompt", async ({ page, request })
   await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 90_000 });
   const cp = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.find((e: any) => e.kind === "compaction");
   expect(cp.data.owner_media.flat().map((b: any) => b.type)).toEqual(["attachment", "attachment", "attachment", "image"]);
-  await composer.fill("What single color fills the picture I sent? One word.");
+  await composer.fill(ask("What single color fills the picture I sent? One word.", "script:color"));
   await composer.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 90_000 });
   await expect(page.getByTestId("assistant-text").last()).toContainText(/green/i);

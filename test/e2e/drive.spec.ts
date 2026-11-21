@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { HAIKU, shoot, openPanel } from "./shots.ts";
+import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
 
 // Feature: sessions elsewhere. A stand-in agent view lists four stand-in
 // sessions (Claude Code and Codex, live and ended, one waiting on a prompt).
@@ -50,6 +50,7 @@ const turnsDone = (request: APIRequestContext, id: string, n: number) =>
   }, { timeout: 120_000 }).toBe(n);
 
 test("sessions elsewhere: list, read, send, held while a prompt is open", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to drive another harness's session with the fleet tools");
   const before = (await (await request.get("/api/fleet/outside/settings")).json()).agent_view;
   const wrapper = seed();
   await request.put("/api/fleet/outside/settings", { data: { agent_view: wrapper } });

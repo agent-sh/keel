@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: several sessions on screen at once (the Bridge's panes). The
 // pane worked in has the keys: Alt+M opens only its model menu, a slash
@@ -11,6 +11,7 @@ import { HAIKU, shoot } from "./shots.ts";
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test("keys and drafts per station", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to reply with the exact words and run the checks the stations show");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `stations-${Date.now()}`);
   mkdirSync(ws, { recursive: true });

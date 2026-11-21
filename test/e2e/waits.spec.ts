@@ -1,10 +1,11 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: zero-token waits. The model schedules a timer wait and a monitor;
 // the session is parked (no model calls) until they fire, then woken with the
 // result. The page lists what the session waits on.
 test("waits and monitors wake the session", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to call WaitFor and Monitor from plain prompts");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
   // Commands run without cards here: the gate has its own e2e.

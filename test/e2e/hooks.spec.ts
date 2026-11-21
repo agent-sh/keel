@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 const HOOK = join(import.meta.dirname, "fixtures/hook.sh");
 const file = (groups: Record<string, string>) =>
@@ -14,6 +14,7 @@ const file = (groups: Record<string, string>) =>
 // context to the result, a Stop hook sends the session back to work once.
 // Run the daemon with KEEL_HOOKS at a scratch file: this test writes it.
 test("hooks", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to try the commands the hooks block and change");
   const info = await (await request.get("/api/hooks")).json();
   test.skip(!String(info.owner_path).includes("keel-work"), "needs a scratch owner hooks file (KEEL_HOOKS)");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;

@@ -1,12 +1,13 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, choose } from "./shots.ts";
+import { HAIKU, shoot, choose, SCRIPTED } from "./shots.ts";
 
 // Feature: plan mode. The session reads and plans but changes nothing; the
 // model presents its plan on a card; the owner sends it back once, then
 // approves it and picks the mode the work goes on in, and the work happens.
 test("plan mode and plan approval", async ({ page, request }) => {
+  test.skip(SCRIPTED, "needs a real model: it has to write a plan and carry it out after approval");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `plan-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
