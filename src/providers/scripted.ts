@@ -338,6 +338,14 @@ export class ScriptedProvider implements Provider {
         while (performance.now() < until);
         return reply("Answered after holding the daemon.");
       }
+      case "child": {
+        // `script:child <ms>`: runs a synchronous child that takes that long
+        // (a `sleep`), as code that runs a program without yielding does. The
+        // loop is held and the process uses no processor meanwhile.
+        const ms = Math.min(Number(owner.match(/script:child\s+(\d+)/)?.[1] ?? 1500), 30_000);
+        Bun.spawnSync(["sleep", String(ms / 1000)], { stdout: "ignore", stderr: "ignore" });
+        return reply("Answered after a synchronous child.");
+      }
       case "slow":
         await Bun.sleep(3_000); // no bytes for a while
         return reply("Answered after a slow start.");

@@ -337,6 +337,22 @@ export class Tracer {
     this.waits.set(key, span);
   }
 
+  // The daemon itself did not answer for a while (src/admin/stall.ts): each
+  // turn that ran then gets the stall as a span of its own, with what took
+  // the time, so a trace with a hole in it says whose hole it was.
+  stall(ctx: { ms: number; ended_ms: number; turns?: { session_id: string; turn?: string }[]; cause?: Record<string, unknown> }, what: string, errorId?: string) {
+    for (const t of ctx.turns ?? []) {
+      const s = this.store.session(t.session_id);
+      const turn = s && t.turn ? this.store.db.query<Turn, [string, string]>("SELECT id, ts, seq FROM events WHERE id = ? AND session_id = ? AND kind = 'turn_start'").get(t.turn, s.id) : null;
+      if (!s || !turn) continue;
+      const parent = this.ensureTurn(s, turn);
+      this.store.db.run(
+        "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error_id, attrs) VALUES (?, ?, ?, ?, 'wait', 'daemon stall', ?, ?, 'ok', ?, ?)",
+        [newSpanId(), parent.trace, parent.span, s.id, Math.round(Math.max(turn.ts, ctx.ended_ms - ctx.ms)), Math.round(ctx.ended_ms), errorId ?? null, JSON.stringify({ turn_event: turn.id, ms: ctx.ms, what, ...(ctx.cause ? { cause: ctx.cause } : {}) })],
+      );
+    }
+  }
+
   private endWait(key: string, attrs?: Record<string, unknown>, status: SpanStatus = "ok") {
     const span = this.waits.get(key);
     if (!span) return;

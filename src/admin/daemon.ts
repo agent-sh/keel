@@ -10,7 +10,9 @@ import { flushAll } from "../automation/core.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { addAdmission } from "../server/admission.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
-import { describeStall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
+import { describeStall, type Stall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
+import type { Dirs } from "./stall-cause.ts";
+import { StallWatch } from "./stall-watch.ts";
 
 export { claimState };
 
@@ -148,6 +150,10 @@ const DRAIN_PASSES = new RegExp(
   ")",
 );
 
+// One stall as the Daemon panel lists it: when it ended, how long, and what took the time.
+export type StallRow = { ts_ms: number; ms: number; what: string; kind: string; error_id?: string };
+const STALLS_KEPT = 20;
+
 export class Daemon {
   // `backup_since_ms`: the running turns had their time and the backup the
   // restart waits on is being made.
@@ -161,6 +167,9 @@ export class Daemon {
   private stopping = false;
   private beforeExit: (() => void | Promise<void>)[] = [];
   private beforeRestart: (() => void | Promise<void>)[] = [];
+  // The stalls of this process, the newest first (the Daemon panel lists them).
+  private stalls: StallRow[] = [];
+  private sight?: StallWatch;
 
   constructor(private deps: Deps) {
     // While draining, nothing that would start work is taken.
@@ -187,18 +196,35 @@ export class Daemon {
   // It is started once the server listens (src/server/start.ts): the start-up
   // itself is not a stall of a daemon that was answering. Its timer is the
   // daemon's one periodic timer: the sign of life is written from it.
-  watchStalls(): StallMonitor {
+  // What took the time comes from the watcher's thread (stall-watch.ts),
+  // asked once the loop runs again: the row waits for its answer, never the
+  // loop, and is written without one when none comes.
+  // `onRow`: what else a stall's row becomes (its span in the trace of each turn that ran through it).
+  watchStalls(dirs: Dirs, onRow?: (context: Record<string, unknown>, what: string, errorId?: string) => void): StallMonitor {
     const watch = new TurnWatch();
     this.deps.bus.on((f) => watch.frame(f as any));
+    const G = globalThis as { __keelStallWatch?: StallWatch };
+    G.__keelStallWatch?.stop();
+    const sight = (G.__keelStallWatch = new StallWatch(dirs, (e) => this.deps.errors.capture("server", e, { at: "stall watcher" })));
+    this.sight = sight;
+    sight.start();
+    const told = async (stall: Stall, row: boolean) => {
+      const ended = Date.now();
+      const d = describeStall({ ...stall, cause: await sight.ask(stall.ms, stall.window_ms ?? stall.ms) });
+      if (!row) return console.warn(`[daemon] ${d.message}`);
+      const context = { ...d.context, ended_ms: ended };
+      const rec = this.deps.errors.capture("server", Object.assign(new Error(d.message), { stack: undefined }), context, { group: d.group });
+      try { onRow?.(context, d.what, rec.id || undefined); } catch (e) { console.warn(`[daemon] a stall's span was not written: ${(e as Error).message}`); }
+      this.stalls.unshift({ ts_ms: ended, ms: Math.round(stall.ms), what: d.what, kind: d.kind, ...(rec.id ? { error_id: rec.id } : {}) });
+      this.stalls.length = Math.min(this.stalls.length, STALLS_KEPT);
+      this.emit();
+    };
     const monitor = new StallMonitor({
       turns: (began) => watch.at(began),
       working: () => watch.running(),
       tick: beatLife,
-      report: (stall) => {
-        const d = describeStall(stall);
-        this.deps.errors.capture("server", Object.assign(new Error(d.message), { stack: undefined }), d.context);
-      },
-      note: (stall) => console.warn(`[daemon] ${describeStall(stall).message}`),
+      report: (stall) => void told(stall, true).catch((e) => this.deps.errors.capture("server", e, { at: "stall report" })),
+      note: (stall) => void told(stall, false).catch(() => {}),
     });
     watchWith(monitor);
     return monitor;
@@ -216,6 +242,9 @@ export class Daemon {
       running: this.runningSessions(),
       draining: this.draining,
       restart_failed: this.restartFailed,
+      stalls: this.stalls,
+      // The thread that looks at the main one when the loop is held, or why there is none.
+      stall_watch: this.sight ? { running: this.sight.running, ...(this.sight.tid ? { tid: this.sight.tid } : {}), ...(this.sight.why ? { off: this.sight.why } : {}) } : null,
       // This start: when the daemon before it went down, how (when that is known), and what became of the turns that cut.
       last_start: restarts()?.last() ?? null,
     };

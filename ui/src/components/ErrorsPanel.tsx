@@ -7,6 +7,8 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Seg, tabId } from "./Seg.tsx";
+import type { Cause } from "../../../src/admin/stall-cause.ts";
+import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
 
 // One row per kind of failure (the daemon folds repeats into a count), with
 // where it last happened and a way to mark it fixed. A resolved kind that
@@ -19,6 +21,37 @@ function Wire({ s }: { s: Span }) {
   const w = s.attrs.wire ?? {};
   const bits = [s.attrs.route, s.attrs.attempt ? `attempt ${s.attrs.attempt}` : "", w.status ?? s.attrs.http_status ? `HTTP ${w.status ?? s.attrs.http_status}` : "", w.request_id ? `request ${w.request_id}` : "", s.error_type ?? ""].filter(Boolean);
   return <div className="font-mono text-micro text-muted" data-testid="error-wire">{bits.join("  ·  ")}</div>;
+}
+
+// What took the time of a stall of the daemon: each part the watcher saw,
+// the largest first, and what the machine said meanwhile.
+function StallCause({ c }: { c: Cause }) {
+  const p = c.pressure ?? {};
+  const machine = [
+    c.load !== undefined ? `load ${c.load.toFixed(1)}` : "",
+    p.cpu !== undefined ? `CPU pressure ${Math.round(p.cpu)}%` : "",
+    p.io !== undefined ? `IO pressure ${Math.round(p.io)}%` : "",
+    p.memory !== undefined ? `memory pressure ${Math.round(p.memory)}%` : "",
+    c.suspended_ms ? `suspended ${secs(c.suspended_ms)}` : "",
+  ].filter(Boolean);
+  const total = c.shares.reduce((n, s) => n + s.ms, 0) || 1;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-line bg-raised p-2.5" data-testid="error-cause" data-kind={c.kind}>
+      <div className="flex items-baseline gap-2 text-caption">
+        <span className={cn("font-medium", ownDoing(c.kind) ? "text-warn" : "text-fg")}>{CAUSE_LABEL[c.kind] ?? CAUSE_LABEL.unknown}</span>
+        <span className="text-muted">{ownDoing(c.kind) ? "the daemon's own doing" : c.kind === "unknown" ? c.text : "the machine did not run the daemon"}</span>
+      </div>
+      {c.shares.filter((s) => s.ms >= 50).map((s) => (
+        <div key={s.key} className="grid grid-cols-[3rem_4rem_1fr] items-baseline gap-2 text-caption" data-testid="error-cause-share">
+          <span className="tabular-nums text-fg">{secs(s.ms)}</span>
+          <span className="h-1 self-center overflow-hidden rounded-full bg-sunken"><span className={cn("block h-full rounded-full", ownDoing(s.kind) ? "bg-warn" : "bg-line-strong")} style={{ width: `${Math.max(4, Math.round((s.ms / total) * 100))}%` }} /></span>
+          <span className="min-w-0 break-words text-muted">{s.what}</span>
+        </div>
+      ))}
+      {machine.length > 0 && <div className="text-micro text-faint">Machine then: {machine.join(", ")}</div>}
+      {c.note && <div className="text-micro text-faint">Not named: {c.note}.</div>}
+    </div>
+  );
 }
 
 function Row({ e }: { e: ErrorRecord }) {
@@ -90,6 +123,7 @@ function Row({ e }: { e: ErrorRecord }) {
           {e.resolved_ts && <span>Resolved <span className="tabular-nums text-fg">{when(e.resolved_ts)}</span></span>}
         </div>
         {named && <Wire s={named} />}
+        {e.context?.kind === "stall" && e.context.cause && <StallCause c={e.context.cause as Cause} />}
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"

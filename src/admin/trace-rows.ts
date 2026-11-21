@@ -12,6 +12,7 @@ export function waitLabel(s: SpanLite): string {
   const a = s.attrs;
   if (s.name === "approval wait" && a.tool) return `${name} for ${a.tool}`;
   if (s.name === "retry wait" && a.attempt) return `${name} before attempt ${a.attempt + 1}`;
+  if (s.name === "daemon stall") return "Daemon unresponsive";
   return name;
 }
 

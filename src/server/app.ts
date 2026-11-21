@@ -230,14 +230,19 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // What is answered is read after that, in one piece. A reader that
           // asks for a part has the events brought in without their bodies.
           if (!bare) await store.warm(req.params.id, page <= 0);
-          const s = session(req.params.id);
-          if (!s) return bad("no such session", 404);
-          const events = bare ? undefined : page > 0 ? pageOfLine(store.lineage(s.id), { limit: page }, (parent) => store.versions(s.id, parent), s.head, true).events : store.events(s.id);
-          // `seq`: the session's newest seq on any branch, which a reader that
-          // holds a part of the session resumes from (its own last event may
-          // be far below it: the branch shown is not always the newest).
-          // `paged`: the answer is a part, and the page routes give the rest.
-          return json({ session: s, ...(events ? { events } : {}), seq: store.lastSeq(s.id), ...(page > 0 && !bare ? { paged: true } : {}), running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() });
+          // The rest runs in one piece after that wait, where the handler is no
+          // longer timed as a whole: reading a long branch out and writing it
+          // as JSON is named, should it hold the loop (src/admin/stall.ts).
+          return timed(() => `answering GET /api/sessions/${req.params.id} (reading the session out and writing it as JSON)`, () => {
+            const s = session(req.params.id);
+            if (!s) return bad("no such session", 404);
+            const events = bare ? undefined : page > 0 ? pageOfLine(store.lineage(s.id), { limit: page }, (parent) => store.versions(s.id, parent), s.head, true).events : store.events(s.id);
+            // `seq`: the session's newest seq on any branch, which a reader that
+            // holds a part of the session resumes from (its own last event may
+            // be far below it: the branch shown is not always the newest).
+            // `paged`: the answer is a part, and the page routes give the rest.
+            return json({ session: s, ...(events ? { events } : {}), seq: store.lastSeq(s.id), ...(page > 0 && !bare ? { paged: true } : {}), running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() });
+          });
         }),
         PATCH: wrap(async (req) => {
           const s = session(req.params.id);

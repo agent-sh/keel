@@ -12,7 +12,10 @@ export const errorScope = new AsyncLocalStorage<ErrorScope>();
 // an exporter's timer, maintenance): its timers and callbacks run in no scope.
 export const detached = <T>(f: () => T): T => errorScope.exit(f);
 // Where a failure happened, when its catcher knows better than its surroundings say.
-export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id">;
+// `group`: what repeats of this failure share, when its words do not say (a
+// message that carries what varies: a duration's cause, a child's name). The
+// row is one per group instead of one per message shape.
+export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string };
 export type ErrorCapture = Pick<ErrorRecord, "id" | "source"> & { context: unknown; turnSession?: string };
 
 // Every failure lands in one table and one live frame, whoever caught it.
@@ -51,7 +54,7 @@ export class ErrorTracker {
     // failure into another.
     let rec: ErrorRecord;
     try {
-      rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id });
+      rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id }, at.group);
     } catch (failed) {
       console.error(`[${source}] ${e.message} (not recorded: ${(failed as Error)?.message ?? failed})`);
       const now = Date.now();

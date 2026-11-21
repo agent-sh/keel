@@ -19,6 +19,7 @@ import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, shellText, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { timed } from "../admin/stall.ts";
 
 // An edit is judged by where it sits (its folders' links resolved) and by
 // where it lands (the file's own link followed too): a link inside the
@@ -270,7 +271,7 @@ export class Gate {
     if (hit) return hit;
     // A folder that is gone has no repository to ask (and may come back).
     if (!existsSync(workspace)) return workspace;
-    const r = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: workspace, stdout: "pipe", stderr: "ignore" });
+    const r = timed(() => "running git rev-parse for a workspace's repository", () => Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: workspace, stdout: "pipe", stderr: "ignore" }));
     const out = r.success ? r.stdout.toString().trim() : "";
     const root = out ? (out.endsWith("/.git") ? dirname(out) : out) : workspace;
     this.roots.set(workspace, root);

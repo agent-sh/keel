@@ -30,6 +30,9 @@ import { loadSettings, onSettings, patchSettings, resetSettings, settings, setti
 import { Storage } from "../../admin/storage.ts";
 import { PROPOSED, Retention, retentionOf } from "../../admin/retention.ts";
 import { configDir } from "../../providers/config.ts";
+import { timed } from "../../admin/stall.ts";
+import type { Tracer } from "../../admin/trace.ts";
+import { tracer } from "./observe.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
 import { runMode } from "../../core/runmode.ts";
@@ -70,7 +73,7 @@ export const adminRoutes: RouteModule = (deps) => {
   clearInterval(prev?.hourly);
   const daemon = new Daemon(deps);
   // A command's own short-lived daemon answers nobody else: only a served one is watched.
-  if (!runMode.client) daemon.watchStalls();
+  if (!runMode.client) daemon.watchStalls({ state: store.stateDir, config: configDir() }, (context, what, id) => tracer?.stall(context as Parameters<Tracer["stall"]>[0], what, id));
   const storage = new Storage(store, deps.engine, bus, errors, configDir());
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   const retention = new Retention(store, deps.engine, errors);

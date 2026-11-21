@@ -26,6 +26,7 @@ import { chunks, pumpText } from "../core/proc.ts";
 import { hookSaid } from "../engine/hooks.ts";
 import { shellText } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
+import { timed } from "../admin/stall.ts";
 
 // The events Keel fires, the ones existing hook files use most first. What
 // each carries and what its hooks can answer: README, Hooks.
@@ -244,7 +245,7 @@ export function pinKey(root: string): string {
   // repository here, so its key is the folder.
   let out = "";
   try {
-    const r = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore" });
+    const r = timed(() => "running git rev-parse for a hooks file's repository", () => Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore" }));
     if (r.success) out = r.stdout.toString().trim();
   } catch {}
   const key = out ? (out.endsWith("/.git") ? dirname(out) : out) : root;

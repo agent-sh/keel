@@ -6,12 +6,13 @@ import { contains } from "../core/paths.ts";
 import type { Session } from "../core/types.ts";
 import { gitCall, located, protectedBranch, pushPlan, type RepoFacts } from "./autonomy.ts";
 import { highRisk, lineRisk, splitCommand } from "./shell.ts";
+import { timed } from "../admin/stall.ts";
 
 const KEEP_MS = 5_000;
 const cache = new Map<string, { at: number; f: RepoFacts | null }>();
 
 function git(dir: string, ...args: string[]): { ok: boolean; code: number; out: string } {
-  const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore", timeout: 3_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } });
+  const r = timed(() => `running git ${args[0]} for a repository's facts`, () => Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore", timeout: 3_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } }));
   return { ok: r.success, code: r.exitCode ?? -1, out: r.stdout.toString().trim() };
 }
 

@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { readText } from "../core/proc.ts";
 import { capPatch } from "./patch.ts";
+import { timed } from "../admin/stall.ts";
 
 export type FileChange = { path: string; status: string; added: number; removed: number; outside?: boolean };
 // truncated: the patch was cut at DIFF_CAP bytes after a whole line; partial
@@ -81,7 +82,7 @@ export class Shadow {
     if (this.gitDir || this.inited) return;
     if (!existsSync(join(this.dir, "HEAD"))) {
       mkdirSync(dirname(this.dir), { recursive: true });
-      const r = Bun.spawnSync(["git", "init", "--bare", "-q", this.dir], { stdout: "ignore", stderr: "pipe" });
+      const r = timed(() => "running git init for a checkpoint store", () => Bun.spawnSync(["git", "init", "--bare", "-q", this.dir], { stdout: "ignore", stderr: "pipe" }));
       if (!r.success) throw new Error(`git init failed: ${r.stderr.toString().trim()}`);
       await this.git(["config", "gc.auto", "0"]);
     }

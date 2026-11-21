@@ -81,6 +81,14 @@ under `~/.cache/keel-work/bun/research/`.
   repository's pinned hooks file and every file it covers are read at each
   event. A new write that every step of a turn makes needs a reason to be a
   commit of its own.
+- A stall of the loop says what took the time. A watcher on a thread of its
+  own (`src/admin/stall-watch.ts`) reads one shared number while the loop is
+  well, and samples the main thread from `/proc` while it is held: on a
+  processor, waiting for one, in a system call of its own (which file, which
+  child), stopped. The decision is pure (`src/admin/stall-cause.ts`), and
+  stalls with one cause are one Errors row. The watcher sees no JavaScript
+  frames: synchronous work that can be long is wrapped in `timed`
+  (`src/admin/stall.ts`) so a stall that computed names it.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its
@@ -119,6 +127,7 @@ under `~/.cache/keel-work/bun/research/`.
 | `src/server/app.ts` | HTTP API and WebSocket |
 | `src/server/reads.ts` | the read thread: heavy reads off the loop |
 | `src/core/checkpoint.ts` | the checkpoint thread: the log's syncs off the loop |
+| `src/admin/stall-watch.ts` | the stall watcher's thread: what the main thread did while the loop was held |
 | `ui/` | React 19 UI, bundled by Bun from `ui/index.html` |
 | `test/e2e/` | Playwright e2e per feature |
 

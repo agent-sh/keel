@@ -7,13 +7,15 @@ import { adoptAllBuilds } from "../lib/builtins.ts";
 import { composing } from "../lib/keys.ts";
 import { actions, api, onFeature, reportError, useStore, type BuildPins } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { cn, fmtTokens, when } from "../lib/utils.ts";
+import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { type Restart, restartSummary, restartTurnLine } from "../../../src/admin/life-rows.ts";
+import type { CauseKind } from "../../../src/admin/stall-cause.ts";
+import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
-type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null };
+type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null; stalls?: { ts_ms: number; ms: number; what: string; kind: string; error_id?: string }[] };
 const ENDED: Record<NonNullable<Restart["before"]>["how"] | "unknown", string> = { killed: "Went down", crash: "Failed", restart: "Restarted", stop: "Stopped", unknown: "Not known" };
 const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Resumed", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
@@ -182,6 +184,25 @@ export function DaemonPanel() {
               ))}
             </ul>
           )}
+        </Card>
+      )}
+
+      {!!st.stalls?.length && (
+        <Card>
+          {/* Each time since this start that the daemon answered nothing, with what the watcher saw take the time. */}
+          <SettingRow label="Unresponsive since this start" hint="Times the daemon answered nothing for two seconds or more, and what took the time: its own doing, or a machine that did not run it. Errors holds one row per cause.">
+            <span className="text-ui tabular-nums text-muted" data-testid="daemon-stall-count">{st.stalls.length}</span>
+          </SettingRow>
+          <ul className="flex flex-col py-2" data-testid="daemon-stalls">
+            {st.stalls.map((s) => (
+              <li key={`${s.ts_ms}-${s.ms}`} data-testid="daemon-stall" data-kind={s.kind} className="flex items-baseline gap-3 py-1.5">
+                <span className="w-12 shrink-0 text-ui font-medium tabular-nums">{secs(s.ms)}</span>
+                <span className={cn("w-28 shrink-0 text-caption font-medium", ownDoing(s.kind) ? "text-warn" : "text-muted")}>{CAUSE_LABEL[s.kind as CauseKind] ?? CAUSE_LABEL.unknown}</span>
+                <span className="min-w-0 flex-1 break-words text-ui text-muted">{s.what}</span>
+                <span className="shrink-0 text-caption tabular-nums text-faint" title={when(s.ts_ms)}>{ago(s.ts_ms)}</span>
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
 

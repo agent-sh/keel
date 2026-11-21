@@ -853,11 +853,12 @@ export class Store {
   // or read row that happens again opens again, unread. The row's session,
   // turn and span are this occurrence's, as its catcher gave them: a repeat
   // that names none leaves none of an earlier one's behind.
-  recordError(raw: Omit<ErrorRecord, "id" | "ts">): ErrorRecord {
+  // `group`: what repeats of this failure share, when the message alone does not say (ErrorPlace).
+  recordError(raw: Omit<ErrorRecord, "id" | "ts">, group?: string): ErrorRecord {
     const ts = Date.now();
     // Kept like events: a secret in a failure's text is its placeholder.
     const e = { ...raw, message: this.redact(null, "error", raw.message), stack: raw.stack && this.redact(null, "error", raw.stack), context: raw.context && this.redact(null, "error", raw.context) };
-    const fp = `${e.source}\u0000${fingerprint(e.message)}`;
+    const fp = `${e.source}\u0000${fingerprint(group ?? e.message)}`;
     const session_id = e.session_id ?? sessionOf(e.context);
     const live = session_id ? this.session(session_id) : undefined;
     const sid = live ? live.id : null;

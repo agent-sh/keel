@@ -17,6 +17,7 @@ import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
 import { pumpLines, readText } from "../core/proc.ts";
 import { readsOf } from "../server/reads.ts";
+import { timed } from "./stall.ts";
 
 export { backupConfig, configFiles, HASH_CHUNK, hashFile, verify } from "./backup.ts";
 
@@ -224,7 +225,7 @@ export class Storage {
       const size0 = (await du([dir])).get(dir) ?? 0;
       const trees = db.query<{ id: string; tree: string }, [string]>("SELECT c.id, c.tree FROM checkpoints c JOIN sessions s ON s.id = c.session_id WHERE s.workspace = ?").all(ws);
       const git = (args: string[], input?: string) => {
-        const r = Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_DIR: dir }, stdin: input === undefined ? "ignore" : new TextEncoder().encode(input), stdout: "pipe", stderr: "pipe" });
+        const r = timed(() => `running git ${args[0]} on a checkpoint store`, () => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_DIR: dir }, stdin: input === undefined ? "ignore" : new TextEncoder().encode(input), stdout: "pipe", stderr: "pipe" }));
         if (!r.success) throw new Error(`git ${args[0]} in ${dir}: ${r.stderr.toString().trim().slice(0, 300)}`);
         return r.stdout.toString();
       };
