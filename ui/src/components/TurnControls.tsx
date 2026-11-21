@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
+import { isLive, useAuto } from "../lib/automation.ts";
 import { actions, reportError, useStore, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { seedComposer } from "../lib/ui.ts";
@@ -113,26 +114,34 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
   const all = useStore((s) => s.events[sessionId]);
   const head = useStore((s) => s.sessions[sessionId]?.head ?? null);
   const shown = useMemo(() => new Set(all ? lineage(all, head).map((e) => e.id) : []), [all, head]);
-  if (!q || !q.queue.length) return null;
+  // Reports of this session's agents that wait for it: while it is paused they start no turn.
+  const reports = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === sessionId && a.handback && !isLive(a)).length);
+  // A paused session with nothing queued still shows that it is paused when reports wait for it.
+  if (!q || (!q.queue.length && !(q.held && reports))) return null;
   // Only known when the events are loaded; until then nothing is marked.
   const off = (x: QueueItem) => !!all && !!x.anchor && !shown.has(x.anchor);
-  const nextOff = off(q.queue[0]!);
+  const nextOff = !!q.queue.length && off(q.queue[0]!);
   return (
     <div className="@container/queue mb-2 rounded-lg border border-line bg-raised/80 px-1.5 py-1.5 shadow-2 animate-in" data-testid="queue">
       {q.held && (
         <div className="flex items-center gap-2 px-2 pb-1 text-caption text-muted" data-testid="queue-held">
-          <span className="size-1.5 rounded-full bg-warn" />
-          {nextOff ? "Paused: the next prompt was queued on another branch. Send it here or go back to its branch." : "Paused after the stop. Nothing runs until you send or resume."}
+          <span className="size-1.5 shrink-0 rounded-full bg-warn" />
+          <span>
+            {nextOff ? "Paused: the next prompt was queued on another branch. Send it here or go back to its branch." : "Paused after the stop. Nothing runs until you send or resume."}
+            {reports > 0 && <span data-testid="queue-reports" data-count={reports}> {reports} agent report{reports === 1 ? " is" : "s are"} waiting.</span>}
+          </span>
           {!nextOff && (
-            <button type="button" className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft" onClick={() => actions.queueResume(sessionId).catch((e) => { if (!showArchivedRefusal(e)) failed(e, { at: "queue resume" }); })}>
+            <button type="button" className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft" onClick={() => actions.queueResume(sessionId).catch((e) => { if (!showArchivedRefusal(e)) failed(e, { at: "queue resume" }); })}>
               <Play className="size-3" /> Resume
             </button>
           )}
         </div>
       )}
-      <ul className="flex flex-col">
-        {q.queue.map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} />)}
-      </ul>
+      {q.queue.length > 0 && (
+        <ul className="flex flex-col">
+          {q.queue.map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} />)}
+        </ul>
+      )}
     </div>
   );
 }

@@ -64,6 +64,12 @@ function failuresOf(text: string, meta: Record<string, any>) {
   };
 }
 
+// An input's parts that have cards of their own, and its text without them:
+// what a loop run, a goal's input or another message said in the same input.
+const hasCard = (p: Record<string, any>) => p.kind === "subagent" || p.kind === "wait" || p.kind === "failures" || (p.kind === "harness" && p.status === "waiting");
+const CARDED = /(?:Reports from agents you started follow\.[^\n]*\n)?<subagent_result [^>]*>[\s\S]*?<\/subagent_result>(?:\n(?!\n)[^\n]*)*|<wait_fired [^>]*>[\s\S]*?<\/wait_fired>|<monitor_event [^>]*>[\s\S]*?<\/monitor_event>|^\[harness\] Agent \S+ parked on [^\n]*$/gm;
+const withoutCards = (text: string) => text.replace(CARDED, "").replace(/\n{3,}/g, "\n\n").trim();
+
 // Each wake with its own header: a monitor's note (or short id) beside its batch number.
 function wakes(text: string) {
   const out: { label: string; body: string }[] = [];
@@ -188,7 +194,15 @@ export function InputNotice({ e }: { e: StoredEvent }) {
       </div>
     </Shell>
   );
-  if (reportCards || wakeCard || parkCards.length || (failCard && !fails.rest)) return <div className="flex flex-col gap-2">{reportCards}{wakeCard}{parkCards}{failCard}</div>;
+  if (reportCards || wakeCard || parkCards.length || (failCard && !fails.rest)) {
+    // A part with no card of its own in the same input (a loop run, a goal's
+    // input, a steer that brought reports along): as it reads, first, since it
+    // is what started the turn.
+    const others = ((e.data.parts ?? []) as Record<string, any>[]).filter((p) => !hasCard(p));
+    const rest = others.length ? withoutCards(fails ? fails.rest : text) : "";
+    const own = rest ? <InputNotice e={{ ...e, data: others.length === 1 ? { ...others[0], text: rest } : { ...e.data, text: rest, parts: others } }} /> : null;
+    return <div className="flex flex-col gap-2">{own}{reportCards}{wakeCard}{parkCards}{failCard}</div>;
+  }
   // With another input that has no card of its own: that one as it reads, then the failures.
   if (failCard) {
     const others = ((e.data.parts ?? []) as Record<string, any>[]).filter((p) => p.kind !== "failures");
