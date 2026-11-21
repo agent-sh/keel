@@ -610,13 +610,15 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-setting > div:first-child > div:first-child { font-weight: 600; }
 
 /* ---------- Micro-interactions ---------- */
-/* Streaming: an amber caret after the last word while the reply is written. It stops with the reply. */
+/* Streaming: an amber caret after the last word while the reply is written.
+   It leaves with the reply. Steady, not blinking: the words arriving move it,
+   and a blink ran a style pass on every frame of the screen in each pane that
+   streams, the dearer the more rows the pane holds. */
 .prose-keel[data-live] > :is(p, h1, h2, h3, h4, blockquote):last-child::after,
 .prose-keel[data-live] > :is(ul, ol):last-child > li:last-child::after {
   content: ""; display: inline-block; width: 0.5em; height: 1.05em; margin-left: 0.1875rem; vertical-align: -0.16em;
-  border-radius: 1px; background: var(--st-work); animation: k-blink 1.05s steps(1) infinite;
+  border-radius: 1px; background: var(--st-work);
 }
-@keyframes k-blink { 50% { opacity: 0; } }
 /* Tool rows open and close at their own height (Base UI sets the variable). */
 .k-tool-panel { height: var(--collapsible-panel-height); transition: height 180ms var(--ease-out); }
 .k-tool-panel[data-starting-style], .k-tool-panel[data-ending-style] { height: 0; }
