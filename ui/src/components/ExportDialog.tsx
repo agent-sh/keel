@@ -11,6 +11,7 @@ import { KEEL_FILE_MAX, keelFileBytes, sizeText } from "../../../src/core/keel-f
 import { lineage } from "../../../src/core/tree.ts";
 import type { Session } from "../../../src/core/types.ts";
 import { reportError, failed, useStore } from "../lib/store.ts";
+import { useWholeEvents } from "../lib/whole.ts";
 import { ago, cn } from "../lib/utils.ts";
 
 let current: Session | null = null;
@@ -66,7 +67,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
   const [withFiles, setWithFiles] = useState(false);
   const [tree, setTree] = useState(false);
   // What the Keel file leaves behind: other branches, and messages still waiting to run.
-  const all = useStore((st) => (session ? st.events[session.id] : undefined));
+  const all = useWholeEvents(session?.id);
   const pending = useStore((st) => (session ? st.queues[session.id]?.queue.length ?? 0 : 0));
   // The files the prompts of what is exported name (the branch shown, or every branch), each counted once.
   const head = useStore((st) => (session ? st.sessions[session.id]?.head ?? session.head : null));

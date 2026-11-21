@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
+import { lineage, pageOf } from "../core/tree.ts";
 import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
@@ -203,14 +204,19 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // `events=0`: the session as it is now without its transcript, for a
           // page that holds the events and takes the ones after its cursor
           // from the socket (a reconnect). The transcript is not read at all.
-          const bare = new URL(req.url).searchParams.get("events") === "0";
+          // `page=N`: the newest N events of its branch (see pageOf), for a
+          // reader that takes the older ones as it needs them.
+          const q = new URL(req.url).searchParams;
+          const bare = q.get("events") === "0";
           // A transcript that is not in memory is brought in a part at a time,
           // so a long one does not hold every other session while it is read.
           // What is answered is read after that, in one piece.
           if (!bare) await store.warm(req.params.id);
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
-          return json({ session: s, ...(bare ? {} : { events: store.events(s.id) }), running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() });
+          const page = Number(q.get("page")) || 0;
+          const events = bare ? undefined : page > 0 ? pageOf(store.events(s.id), s.head, { limit: page })?.events ?? [] : store.events(s.id);
+          return json({ session: s, ...(events ? { events } : {}), running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() });
         }),
         PATCH: wrap(async (req) => {
           const s = session(req.params.id);
@@ -274,6 +280,60 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             bus.emit({ t: "session", session: { ...x, archived: true, phase: "idle" }, deleted: true });
           }
           return json({ ok: true });
+        }),
+      },
+
+      // A part of one branch of the session (see pageOf): older or newer than
+      // a seq, or around an event, on the branch `head` ends (default: the session's).
+      "/api/sessions/:id/page": {
+        GET: wrap((req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          const q = new URL(req.url).searchParams;
+          const num = (k: string) => (q.has(k) ? Number(q.get(k)) : undefined);
+          const page = pageOf(store.events(s.id), s.head, { limit: Math.min(Number(q.get("limit")) || 200, 2000), head: q.get("head") || undefined, before: num("before"), after: num("after"), around: q.get("around") || undefined });
+          return page ? json(page) : bad("no such event in this session", 404);
+        }),
+      },
+
+      // The owner-side messages of a branch outside the part a reader holds
+      // (older than `before`, newer than `after`, both seqs), each cut to what
+      // tells a prompt from a note: for counting the prompts of a whole branch.
+      "/api/sessions/:id/users": {
+        GET: wrap((req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          const q = new URL(req.url).searchParams;
+          const line = lineage(store.events(s.id), q.get("head") || s.head).filter((e) => e.kind === "user");
+          const stub = (e: (typeof line)[number]) => ({ id: e.id, seq: e.seq, kind: e.kind, data: { origin: e.data.origin, kind: e.data.kind, text: String(e.data.text ?? "").slice(0, 80) } });
+          const before = q.has("before") ? Number(q.get("before")) : -Infinity;
+          const after = q.has("after") ? Number(q.get("after")) : Infinity;
+          return json({ older: line.filter((e) => e.seq < before).map(stub), newer: line.filter((e) => e.seq > after).map(stub) });
+        }),
+      },
+
+      // The newest call of one of the named tools on the session's branch whose
+      // result was not an error, older than `before` (a seq): what a reader that
+      // holds only the branch's end needs of the rest (the plan in force).
+      "/api/sessions/:id/last-call": {
+        GET: wrap((req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          const q = new URL(req.url).searchParams;
+          const names = new Set((q.get("names") ?? "").split(",").filter(Boolean));
+          const before = Number(q.get("before")) || Infinity;
+          const line = lineage(store.events(s.id), s.head);
+          const ok = new Set<string>();
+          for (const e of line) if (e.kind === "tool_result") for (const r of e.data.results) if (!r.is_error) ok.add(r.tool_use_id);
+          for (let i = line.length - 1; i >= 0; i--) {
+            const e = line[i]!;
+            if (e.kind !== "assistant" || e.seq >= before) continue;
+            for (let k = e.data.blocks.length - 1; k >= 0; k--) {
+              const b = e.data.blocks[k];
+              if (b.type === "tool_use" && names.has(b.name) && ok.has(b.id)) return json({ call: { name: b.name, input: b.input, seq: e.seq } });
+            }
+          }
+          return json({ call: null });
         }),
       },
 

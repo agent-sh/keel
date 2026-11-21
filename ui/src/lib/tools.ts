@@ -14,6 +14,7 @@ const KINDS: Record<string, ToolKind> = {
   Skill: "skill", skill: "skill", activate_skill: "skill", search_tools: "mcp", ToolSearch: "mcp", mcp_call: "mcp", keel__run_on: "shell", keel__session_send: "other", keel__sessions_list: "other", keel__machines_list: "other", keel__send_files: "other",
 };
 export const toolKind = (name: string): ToolKind => KINDS[name] ?? (name.includes("__") ? "mcp" : "other");
+export const PLAN_TOOLS = Object.keys(KINDS).filter((n) => KINDS[n] === "plan");
 
 export type PlanItem = { text: string; status: "pending" | "in_progress" | "completed" | "cancelled"; active?: string };
 

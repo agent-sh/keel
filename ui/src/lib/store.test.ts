@@ -43,7 +43,7 @@ const waiting: { url: string; done: (body: unknown, status?: number) => void }[]
 G.fetch = (url: string) => new Promise<Response>((resolve) => waiting.push({ url: String(url), done: (body, status = 200) => resolve(new Response(JSON.stringify(body), { status })) }));
 afterAll(() => Object.assign(G, kept));
 
-const { actions, connect, getState, setBootLoad } = await import("./store.ts");
+const { actions, connect, getState, PAGE, setBootLoad, trimmed } = await import("./store.ts");
 
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
 const asked = (url: string) => waiting.some((w) => w.url === url);
@@ -73,12 +73,12 @@ const reconnect = async () => {
   sock.onopen!();
   await settle();
 };
-// A session the page has open, read whole once.
+// A session the page has open, read once (its newest page).
 const open = async (s: Session, events: StoredEvent[], rev: number) => {
   listed = [...listed.filter((x) => x.id !== s.id), ...(s.archived ? [] : [s])];
   const p = actions.loadSession(s.id);
   await settle();
-  expect(await answer(`/api/sessions/${s.id}`, snapshot(s, events, rev))).toBe(true);
+  expect(await answer(`/api/sessions/${s.id}?page=${PAGE}`, snapshot(s, events, rev))).toBe(true);
   await p;
 };
 
@@ -111,7 +111,7 @@ test("a head moved back while the page was away stays where the daemon has it", 
   expect(getState().sessions.a!.head).toBe("a-e3");
   // It was asked for only once the replay was through, and the transcript never again.
   expect([early, late, syncedEarly, getState().synced]).toEqual([[false, false, false], true, false, true]);
-  expect(asked("/api/sessions/a")).toBe(false);
+  expect(asked(`/api/sessions/a?page=${PAGE}`)).toBe(false);
 });
 
 test("a reply streaming across the reconnect is whole, in either order of its last delta and the answer", async () => {
@@ -159,7 +159,7 @@ test("a daemon that holds less than the page (a restored backup) has the session
   // A new third event comes live while the whole session is on its way: it is not taken for an old one.
   const third = { ...event("f", 3), id: "f-new3", parent: "f-e2" };
   await frame({ t: "event", event: third, rev: 560 } as Frame);
-  expect(await answer("/api/sessions/f", snapshot(row("f", "f-e2"), [1, 2].map((n) => event("f", n)), 550))).toBe(true);
+  expect(await answer(`/api/sessions/f?page=${PAGE}`, snapshot(row("f", "f-e2"), [1, 2].map((n) => event("f", n)), 550))).toBe(true);
   expect(getState().events.f!.map((e) => e.id)).toEqual(["f-e1", "f-e2", "f-new3"]);
 });
 
@@ -172,7 +172,7 @@ test("after a socket that closed inside its replay the transcripts are read whol
   await reconnect();
   expect(sock.sent[0]).toEqual(expect.objectContaining({ op: "resume" }));
   expect(sock.sent[0].cursors.g).toBe(3);
-  expect(await answer("/api/sessions/g", snapshot(row("g", "g-e4"), [1, 2, 3, 4].map((n) => event("g", n)), 650))).toBe(true);
+  expect(await answer(`/api/sessions/g?page=${PAGE}`, snapshot(row("g", "g-e4"), [1, 2, 3, 4].map((n) => event("g", n)), 650))).toBe(true);
   expect(getState().events.g!.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
   await rest();
   await frame({ t: "replayed", cursors: { g: 4 } });
@@ -182,8 +182,36 @@ test("after a socket that closed inside its replay the transcripts are read whol
   sock = Socket.all.at(-1)!;
   await reconnect();
   await rest();
-  expect(asked("/api/sessions/g")).toBe(false);
+  expect(asked(`/api/sessions/g?page=${PAGE}`)).toBe(false);
   await frame({ t: "replayed", cursors: { g: 4 } });
-  expect(asked("/api/sessions/g")).toBe(false);
+  expect(asked(`/api/sessions/g?page=${PAGE}`)).toBe(false);
   expect(await answer("/api/sessions/g?events=0", snapshot(row("g", "g-e4"), undefined, 700))).toBe(true);
+});
+
+test("a session that outgrew what the page holds keeps its newest part", () => {
+  // Three hundred turns of five events, and a second version of an early prompt on a side branch.
+  const list: StoredEvent[] = [];
+  const add = (kind: StoredEvent["kind"], parent?: string | null) => {
+    const seq = list.length + 1;
+    list.push({ id: `t-e${seq}`, session_id: "t", seq, parent: parent === undefined ? list.at(-1)?.id ?? null : parent, kind, data: {}, ts: seq });
+    return list.at(-1)!;
+  };
+  const side = add("user", null);
+  const main = add("user", null);
+  for (let i = 0; i < 300; i++) {
+    if (i) add("user");
+    add("turn_start"); add("assistant"); add("note"); add("turn_end");
+  }
+  const kept = trimmed(list, list.at(-1)!.id);
+  const line = kept.filter((e) => e.seq > 2);
+  expect(line.length).toBeGreaterThanOrEqual(2 * PAGE);
+  expect(line.length).toBeLessThan(3 * PAGE);
+  expect(line[0]!.kind).toBe("user"); // from a turn's start
+  expect(line.at(-1)).toBe(list.at(-1)!);
+  expect(kept.includes(main)).toBe(false);
+  expect(kept.includes(side)).toBe(false);
+  // The other version of a prompt that stays is kept with it.
+  const first = line[0]!;
+  const twin = { ...first, id: "t-twin", seq: 1.5 };
+  expect(trimmed([list[0]!, twin, ...list.slice(1)], list.at(-1)!.id).includes(twin)).toBe(true);
 });

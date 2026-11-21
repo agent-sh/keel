@@ -2,11 +2,11 @@ import { CopyButton } from "./CopyButton.tsx";
 import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { leafOf, lineage } from "../../../src/core/tree.ts";
+import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
 import { blockKey, buildRows, nextLineage, nextSiblings, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
-import { actions, getState, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
+import { actions, api, forgetEvents, getState, keepEvents, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
@@ -49,7 +49,7 @@ function ActionButton({ label, onClick, children, testid }: { label: string; onC
 // with a selector, so a new event renders the rows it changes and no other.
 // The session is replaced only when something other than its head, last
 // activity and revision changed (those move with every event; no row shows them).
-type Tail = { session: Session; lastEnd?: string; last?: string }; // `last`: the newest event shown
+type Tail = { session: Session; lastEnd?: string; last?: string; reading: boolean }; // `last`: the newest event shown
 const MOVING = new Set(["head", "updated", "rev"]);
 const sameSession = (a: Session, b: Session) => {
   if (a === b) return true;
@@ -64,9 +64,10 @@ function tailStore() {
   return {
     get: () => st!,
     // Called while the transcript renders: rows rendered in the same pass read it at once.
-    put(session: Session, lastEnd?: string, last?: string) {
-      if (st && st.lastEnd === lastEnd && st.last === last && sameSession(st.session, session)) return;
-      st = { session, lastEnd, last };
+    // `reading`: the transcript shows a run away from the end of the session's branch.
+    put(session: Session, lastEnd: string | undefined, last: string | undefined, reading: boolean) {
+      if (st && st.lastEnd === lastEnd && st.last === last && st.reading === reading && sameSession(st.session, session)) return;
+      st = { session, lastEnd, last, reading };
       dirty = true;
     },
     // After the commit: rows that did not render ask their selector again.
@@ -161,7 +162,13 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
   // Only a prompt with versions shows the turn's state (its arrows wait for the turn).
   const working = useTail((t) => vs.length > 1 && isWorking(t));
   const origin: string | undefined = e.data.origin;
-  const pick = (i: number) => actions.setHead(sid, vs[i]!.id).catch(reportError);
+  // The other version's branch may end far from its prompt: when the part the
+  // page holds of it does not reach the prompt, the transcript opens there.
+  const store = useContext(TailContext);
+  const pick = (i: number) => actions.setHead(sid, vs[i]!.id).then((r) => {
+    const to = vs[i]!.id;
+    if (store.get().reading || !lineage(getState().events[sid] ?? [], r.head).some((x) => x.id === to)) setUI({ focusEvent: to, focusStay: to });
+  }).catch(reportError);
   if (editing) return <EditPrompt e={e} sid={sid} onDone={() => setEditing(false)} />;
   return (
     <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
@@ -508,16 +515,17 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
 
 // The streaming reply and the working line. Deltas re-render only this, not
 // the whole transcript above it.
-function Live({ sessionId, working, asking, since, previewing }: { sessionId: string; working: boolean; asking: boolean; since?: number; previewing: boolean }) {
+function Live({ sessionId, working, asking, since, elsewhere }: { sessionId: string; working: boolean; asking: boolean; since?: number; elsewhere: "branch" | "earlier" | null }) {
   const draft = useStore((s) => s.drafts[sessionId]);
   const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
-  // The reply streams on the current branch: under another branch it would read as that branch's.
-  if (previewing) {
+  // The reply streams at the end of the current branch: under another branch,
+  // or under an earlier part of this one, it would read as written there.
+  if (elsewhere) {
     return (
       <>
         {working && (
           <div className="flex items-center gap-2.5 py-1 text-caption text-faint" data-testid="replying-elsewhere">
-            <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /> The current branch is replying. Back to the current one to read it.
+            <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /> {elsewhere === "branch" ? "The current branch is replying. Back to the current one to read it." : "A reply is being written at the end. Latest shows it."}
           </div>
         )}
         <Announcer sessionId={sessionId} working={working} asking={asking} />
@@ -618,11 +626,21 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // A search hit on another branch is read in place: that branch is shown, the
   // session's own branch (where the next reply goes) does not move.
   const preview = useUI((s) => (s.preview?.session === sessionId ? s.preview.event : null));
-  const shownHead = useMemo(() => {
-    if (!all || !preview || !all.some((e) => e.id === preview) || lineage(all, session.head).some((e) => e.id === preview)) return session.head;
-    return leafOf(all, preview);
-  }, [all, preview, session.head]);
-  const previewing = shownHead !== session.head;
+  const focus = useUI((s) => s.focusEvent);
+  // The page holds the session in parts (the store's PAGE): the end of its
+  // branch, and what was read since. Away from that end the transcript shows
+  // one run of a branch: `view` names the event it was opened at, the branch
+  // (its end) and where the run stops short of that end. Another branch is
+  // read while its search hit stays picked; an earlier part of the session's
+  // own branch until Latest.
+  const [view, setView] = useState<{ event: string; head: string | null; end: string | null; other: boolean } | null>(null);
+  const reading = view && (!view.other || preview === view.event) ? view : null;
+  const shownHead = reading ? reading.end ?? reading.head : session.head;
+  const previewing = !!reading?.other;
+  const earlier = !!reading && !reading.other;
+  useEffect(() => { if (view?.other && preview !== view.event) setView(null); }, [preview, view]);
+  const short = useRef(false); // the run shown stops short of its branch's end
+  short.current = !!reading?.end;
   // The branch shown, its prompts' versions and its rows, each from the one
   // before: an event added at the end is read alone (see rows.ts).
   const line = useRef<LineageOf | undefined>(undefined);
@@ -636,6 +654,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const settling = useRef(false);
+  const lastTop = useRef(0);
   const [away, setAway] = useState(false);
   // What the reader looks at when not following the end: the deepest block
   // crossing the top of the view, and its offset there. A
@@ -668,9 +688,32 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     anchor.current = { el: part, top: part.getBoundingClientRect().top - top };
   };
 
+  // The earlier part read leaves with its view: the events the page holds of
+  // the session's own branch are the ones that reach its end.
+  const leave = () => {
+    if (!view || view.other) return;
+    const s = getState().sessions[sessionId];
+    const line = lineage(getState().events[sessionId] ?? [], s?.head ?? null);
+    const kept = new Set(line.map((e) => e.id));
+    // The other versions of the prompts that stay are still counted on them.
+    const versions = new Set(line.filter((e) => e.kind === "user" && !e.data.origin).map((e) => e.parent));
+    forgetEvents(sessionId, (events ?? []).filter((e) => !kept.has(e.id) && !(e.kind === "user" && !e.data.origin && versions.has(e.parent))).map((e) => e.id));
+    setView(null);
+  };
+  const leaving = useRef(leave);
+  leaving.current = leave;
+  useEffect(() => () => leaving.current(), []);
+  // The session went to another branch (a version chosen, a rewind): the
+  // earlier part read was of the branch it left. Events added at the end keep it.
+  useEffect(() => {
+    if (!view || view.other || !all || session.head === view.head || !all.findLast((e) => e.id === session.head)) return;
+    if (!lineage(all, session.head).some((e) => e.id === view.head)) leave();
+  }, [session.head, all, view]);
+
   const toEnd = (smooth = false) => {
     const el = scroller.current;
     if (!el) return;
+    leaving.current();
     stick.current = true;
     setAway(false);
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? scrollMotion() : "instant" });
@@ -678,7 +721,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
 
   // Follow the end while it grows (streaming, a tool row opening), unless the reader scrolled up.
   // The streaming draft grows inside `content`, so the ResizeObserver below follows it.
-  useLayoutEffect(() => { if (stick.current) toEnd(); }, [events]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current && !reading?.end) el.scrollTop = el.scrollHeight;
+  }, [events]);
   useEffect(() => {
     const c = content.current;
     if (!c) return;
@@ -692,10 +738,19 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) box.style.setProperty("--sbw", sbw);
-      if (stick.current) el.scrollTop = el.scrollHeight;
+      if (stick.current && !short.current) el.scrollTop = el.scrollHeight;
       else if (anchor.current?.el.isConnected) {
+        // The anchor stays the one the reader chose by scrolling: after rows
+        // are added above it (an earlier part read), the row now at the top is
+        // one of those, still at its estimated height, and holding on to it
+        // would let the reader's row slide as it takes its real height.
         const moved = anchor.current.el.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.current.top;
-        if (Math.abs(moved) >= 0.5) el.scrollTop += moved;
+        if (Math.abs(moved) >= 0.5) {
+          const was = el.scrollTop;
+          el.scrollTop += moved;
+          settling.current = el.scrollTop !== was; // a scroll event follows only when it moved
+        }
+        return;
       }
       remember();
     });
@@ -706,12 +761,83 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => { ro.disconnect(); removeEventListener("keel:end", onEnd); };
   }, [!!events, sessionId]);
 
+  // History read away from the end stays whole in the store meanwhile.
+  useEffect(() => (away || reading ? keepEvents(sessionId) : undefined), [away, !!reading, sessionId]);
+
+  // Older events of the branch shown load when the reader nears the top, newer
+  // ones of a run that stops short when they near its end.
+  const more = !!events?.length && events[0]!.parent !== null;
+  const busy = useRef({ older: false, later: false });
+  const [loading, setLoading] = useState(false);
+  const older = (): Promise<unknown> | undefined => {
+    if (!more || busy.current.older || !events) return;
+    busy.current.older = true;
+    setLoading(true);
+    return actions.page(sessionId, { head: events.at(-1)!.id, before: events[0]!.seq }).catch(reportError).finally(() => { busy.current.older = false; setLoading(false); });
+  };
+  const later = (): Promise<unknown> | undefined => {
+    if (!reading?.end || busy.current.later || !events) return;
+    busy.current.later = true;
+    const from = reading;
+    return actions.page(sessionId, { head: from.other ? from.head ?? undefined : undefined, after: events.at(-1)!.seq })
+      .then((p) => setView((v) => (v !== from ? v : p.end || !p.last ? (from.other ? { ...from, end: null } : null) : { ...from, end: p.last })))
+      .catch(reportError)
+      .finally(() => { busy.current.later = false; });
+  };
+  // The owner's prompts of the branch outside the part shown, counted once per
+  // part: "Prompt 12 of 44" counts the whole branch, not what the page holds.
+  const outside = useRef<{ key: string; before: number; after: number } | null>(null);
+  const promptsOutside = async (): Promise<{ before: number; after: number }> => {
+    if (!events?.length || (!more && !reading?.end)) return { before: 0, after: 0 };
+    const key = `${events[0]!.id} ${reading?.end ?? ""}`;
+    if (outside.current?.key === key) return outside.current;
+    const q = new URLSearchParams({ head: reading?.end ? (reading.other ? reading.head : session.head) ?? "" : events.at(-1)!.id, before: String(events[0]!.seq) });
+    if (reading?.end) q.set("after", String(events.at(-1)!.seq));
+    const r = await api<{ older: StoredEvent[]; newer: StoredEvent[] }>(`/api/sessions/${sessionId}/users?${q}`);
+    outside.current = { key, before: r.older.filter(isPrompt).length, after: r.newer.filter(isPrompt).length };
+    return outside.current;
+  };
+  // A page that does not fill the view asks for the one before it.
+  useEffect(() => {
+    const el = scroller.current;
+    if (more && el && el.scrollHeight <= el.clientHeight) older();
+  }, [events]);
+
+  // An event to show that is not on the run shown (a search hit, a jump from
+  // the timeline or the branch tree, a link): the part of its branch around
+  // it is read, and the transcript shows that part.
+  const want = focus ?? preview;
+  const reaching = useRef<string | null>(null);
+  useEffect(() => {
+    if (!want || !events || reaching.current === want || events.some((e) => e.id === want)) return;
+    reaching.current = want;
+    const jump = !!focus;
+    actions.page(sessionId, { around: want }, (p) => {
+      // A hit on the session's own branch is not another branch: the message box has nothing to warn about.
+      if (p.on_head && getUI().preview?.event === want) setUI({ preview: null });
+    }).then((p) => {
+      reaching.current = null;
+      if (p.on_head && !jump) return;
+      const head = getState().sessions[sessionId]?.head ?? null;
+      const joined = p.on_head && lineage(getState().events[sessionId] ?? [], head).some((e) => e.id === want);
+      setView(joined ? null : { event: want, head: p.head, end: p.end ? null : p.last, other: !p.on_head });
+    }, (e) => { if ((e as { status?: number }).status !== 404) reportError(e); }); // 404: an event of another session
+  }, [want, events]);
+
+  // A prompt sent while an earlier part is read goes to the end: so does the transcript.
+  const seen = useRef(0);
+  useEffect(() => {
+    const from = seen.current;
+    seen.current = all?.at(-1)?.seq ?? 0;
+    if (!from || !earlier || !all) return;
+    for (let i = all.length - 1; i >= 0 && all[i]!.seq > from; i--) if (all[i]!.kind === "user" && !all[i]!.data.origin) return toEnd();
+  }, [all]);
+
   // A search hit opens the session at its message.
   // The request is checked when the frame runs, before anything moves: one
   // cleared or replaced meanwhile scrolls nothing. The row becomes the
   // keyboard's place too, so the next Tab reaches its actions; a jump that
   // says so (`focusStay`, the branch tree's) leaves the keyboard where it is.
-  const focus = useUI((s) => s.focusEvent);
   useEffect(() => {
     if (!focus || !events?.some((e) => e.id === focus)) return;
     const raf = requestAnimationFrame(() => {
@@ -747,7 +873,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   useEffect(() => setWhole(false), [sessionId]);
   const blocks = built?.blocks ?? [];
   const cut = Math.max(0, blocks.length - TAIL_BLOCKS);
-  const from = whole || (focus && (built?.at.get(focus) ?? 0) < cut) ? 0 : cut;
+  // A jump above the first rows mounts everything at once, and it stays so:
+  // the rows above must not leave again when the jump is done.
+  const jumped = useRef(false);
+  if (focus && (built?.at.get(focus) ?? 0) < cut) jumped.current = true;
+  const from = whole || jumped.current ? 0 : cut;
   useEffect(() => {
     if (from === 0) return;
     const t = setTimeout(() => startTransition(() => setWhole(true)), 0);
@@ -762,12 +892,18 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // branch, not the draft. Each move says where it is, and the ends say so.
   const [at, setAt] = useState<{ id: string; n: number; text: string } | null>(null);
   useEffect(() => {
-    const onPrompt = (ev: Event) => {
-      const { session: target, dir } = (ev as CustomEvent<{ session: string; dir: 1 | -1 }>).detail;
+    const onPrompt = async (ev: Event) => {
+      const detail = (ev as CustomEvent<{ session: string; dir: 1 | -1 }>).detail;
+      const { session: target, dir } = detail;
       const sc = scroller.current;
       if (target !== sessionId || !events || !sc) return;
       const prompts = events.filter(isPrompt);
-      if (!prompts.length) return announce("This conversation has no prompts yet.");
+      // The page may hold a part of the branch: the prompts outside it count
+      // too, and a move past the part's edge reads the part beyond it first.
+      const out = await promptsOutside().catch((e) => { reportError(e, { at: "prompts outside the part" }); return { before: 0, after: 0 }; });
+      const again = (read: Promise<unknown> | undefined) => void read?.then(() => setTimeout(() => dispatchEvent(new CustomEvent("keel:prompt", { detail })), 0));
+      if (!prompts.length) return out.before && dir < 0 ? again(older()) : out.after && dir > 0 ? again(later()) : announce("This conversation has no prompts yet.");
+      const total = out.before + prompts.length + out.after;
       const row = (e: StoredEvent) => document.getElementById(`e-${e.id}`);
       const on = document.activeElement?.closest<HTMLElement>("[data-event-id]")?.dataset.eventId;
       let i = prompts.findIndex((e) => e.id === on);
@@ -779,10 +915,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         i = dir < 0 ? above + 1 : above;
       }
       const to = Math.min(prompts.length - 1, Math.max(0, i + dir));
+      if (to === i && dir < 0 && out.before) return again(older());
+      if (to === i && dir > 0 && out.after) return again(later());
       const edge = to === i ? (dir < 0 ? "This is the first prompt." : "This is the last prompt.") : "";
-      const text = edge || `Prompt ${to + 1} of ${prompts.length}`;
+      const text = edge || `Prompt ${out.before + to + 1} of ${total}`;
       // Leaving the message box for the conversation: the way back is said with the place.
-      announce(`${edge ? `${edge} Prompt ${to + 1} of ${prompts.length}.` : text}${on ? "" : `${edge ? "" : "."} Escape returns to the message box.`}`);
+      announce(`${edge ? `${edge} Prompt ${out.before + to + 1} of ${total}.` : text}${on ? "" : `${edge ? "" : "."} Escape returns to the message box.`}`);
       setWhole(true); // a prompt before the rows rendered first is rendered now
       setAt((cur) => ({ id: prompts[to]!.id, n: (cur?.n ?? 0) + 1, text }));
     };
@@ -814,7 +952,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   if (!events || !built) return <div className="flex-1" />;
   const lastStart = events.findLast((e) => e.kind === "turn_start");
   tail.setImages(events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id);
-  tail.put(session, events.findLast((e) => e.kind === "turn_end")?.id, events.at(-1)?.id);
+  tail.put(session, events.findLast((e) => e.kind === "turn_end")?.id, events.at(-1)?.id, !!reading);
 
   return (
     // A strip of the conversation stays above a tall stack of cards and a long
@@ -836,9 +974,23 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         onScroll={(e) => {
           const el = e.currentTarget;
           const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-          stick.current = near;
-          if (away === near) setAway(!near);
-          remember();
+          // Following the end stops when the reader moves up, not when content
+          // grew since the last scroll (rows mounted above, a reply streaming):
+          // that leaves the scroll where it was, and the size observer puts it
+          // back at the end. A run that stops short of the branch's end is not
+          // followed: its end is not where replies arrive.
+          const up = el.scrollTop < lastTop.current, down = el.scrollTop > lastTop.current;
+          if (near) stick.current = !reading?.end;
+          else if (up) stick.current = false;
+          lastTop.current = el.scrollTop;
+          if (away === stick.current) setAway(!stick.current);
+          // The scroll this transcript made itself to hold the anchor in place is not the reader's.
+          if (settling.current) settling.current = false;
+          else remember();
+          // The reader moving toward an edge reads the part beyond it (not a
+          // scroll that only followed the content changing size).
+          if (!stick.current && up && el.scrollTop < el.clientHeight) older();
+          if (near && down) later();
         }}
       >
         <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
@@ -853,11 +1005,25 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             </div>
           )}
           {events.length === 0 && session.phase !== "working" && <p className="k-empty py-4">No messages yet.</p>}
+          {more && (
+            <div className="flex justify-center" data-testid="earlier-messages" data-pinned="1">
+              <button type="button" data-testid="load-earlier" disabled={loading} onClick={older} className="h-7 rounded-md px-2.5 text-caption font-medium text-muted hover:bg-hover hover:text-fg disabled:opacity-60">
+                {loading ? "Loading earlier messages" : "Load earlier messages"}
+              </button>
+            </div>
+          )}
           <TailContext.Provider value={tail}>
             {(from ? blocks.slice(from) : blocks).map((rows) => <RowBlock key={blockKey(rows)} rows={rows} sid={sessionId} />)}
           </TailContext.Provider>
           {built.pending.length > 0 && <div className="flex" data-testid="pending-notes"><TurnNotes notes={built.pending} working={session.phase === "working"} /></div>}
-          <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} previewing={previewing} />
+          {reading?.end && (
+            <div className="flex items-center justify-center gap-1 py-1 text-caption text-faint" data-testid="later-messages" data-pinned="1">
+              <span>Later messages are not shown here.</span>
+              <button type="button" data-testid="load-later" onClick={later} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Load later messages</button>
+              {earlier && <button type="button" data-testid="window-latest" onClick={() => toEnd(true)} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Latest</button>}
+            </div>
+          )}
+          <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} />
         </div>
       </div>
       {at && (

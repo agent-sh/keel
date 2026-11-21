@@ -3,10 +3,10 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
-import { actions, liveNow, reportError, useStore, type JobView } from "../lib/store.ts";
+import { actions, api, liveNow, reportError, reportUnlessGone, useStore, type JobView } from "../lib/store.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
-import { planItems, toolKind } from "../lib/tools.ts";
+import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
 import { PlanCard } from "./ToolCall.tsx";
 
@@ -48,7 +48,7 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
   const cut = useMemo(() => new Set((events ?? []).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: { content: unknown }) => stopKind(r.content) === "cut").map((r: { tool_use_id: string }) => r.tool_use_id) : []))), [events]);
   // The newest plan the tool accepted on the branch the next reply goes to:
   // a rejected update (or one still on its way) leaves the one before standing.
-  const plan = useMemo(() => {
+  const held = useMemo(() => {
     if (!events) return null;
     const line = lineage(events, head ?? null);
     const accepted = new Set<string>();
@@ -58,11 +58,23 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
       if (e.kind !== "assistant") continue;
       for (let k = e.data.blocks.length - 1; k >= 0; k--) {
         const b = e.data.blocks[k];
-        if (b.type === "tool_use" && toolKind(b.name) === "plan" && accepted.has(b.id)) return planItems(b.name, b.input);
+        if (b.type === "tool_use" && toolKind(b.name) === "plan" && accepted.has(b.id)) return { plan: planItems(b.name, b.input), before: 0 };
       }
     }
-    return null;
+    // The page holds the end of the branch: a plan accepted before that part is asked for.
+    return { plan: null, before: line.length && line[0]!.parent !== null ? line[0]!.seq : 0 };
   }, [events, head]);
+  const [older, setOlder] = useState<{ key: string; plan: ReturnType<typeof planItems> | null } | null>(null);
+  const key = held?.before ? `${sessionId} ${held.before}` : "";
+  useEffect(() => {
+    if (!key) return;
+    let stop = false;
+    api<{ call: { name: string; input: unknown } | null }>(`/api/sessions/${sessionId}/last-call?names=${PLAN_TOOLS.join(",")}&before=${held!.before}`)
+      .then((r) => { if (!stop) setOlder({ key, plan: r.call ? planItems(r.call.name, r.call.input) : null }); })
+      .catch((e) => reportUnlessGone(e, { at: "dock plan" }));
+    return () => { stop = true; };
+  }, [key]);
+  const plan = held?.plan ?? (older?.key === key ? older.plan : null);
   const jobs = useJobs(sessionId, working);
   const active = plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled");
   if (!active && !jobs.length) return null;

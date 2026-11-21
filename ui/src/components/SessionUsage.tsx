@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { useAuto } from "../lib/automation.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
+import { useWholeEvents } from "../lib/whole.ts";
 
 type Turn = { n: number; prompt: string; ts: number; ms?: number; requests: Usage[]; total: Usage; cold: boolean; reused?: { read: number; before: number } };
 
@@ -71,7 +72,9 @@ function Tile({ label, value, sub, testid }: { label: string; value: string; sub
 }
 
 export function SessionUsage({ session }: { session: Session }) {
-  const events = useStore((s) => s.events[session.id]) ?? [];
+  // Every turn of the session, not only the part the page holds (that part shows until the rest is read).
+  const held = useStore((s) => s.events[session.id]);
+  const events = useWholeEvents(session.id) ?? held ?? [];
   const turns = turnsOf(events);
   const total = turns.reduce((a, t) => add(a, t.total), zero());
   const all = sent(total);

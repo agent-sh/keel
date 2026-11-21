@@ -2,6 +2,7 @@
 // errors, fed by REST on load and by the WebSocket after. Components read it
 // with useStore(selector).
 import { useSyncExternalStore } from "react";
+import { lineage, type Page } from "../../../src/core/tree.ts";
 import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
@@ -159,6 +160,9 @@ export const actions = {
   },
   grokSignIn: () => api<any>("/api/providers/grok/sign-in", { method: "POST" }),
   grokSignInState: () => api<any>("/api/providers/grok/sign-in"),
+  // A session is read in pages: its snapshot brings the newest PAGE events of
+  // its branch, and the older ones (or another branch's) come when asked for
+  // (actions.page), so a long session costs what its end costs.
   // `transcript: false` asks for the session as it is now without its events:
   // the page holds them and the socket's replay brings the ones after its
   // cursor (a reconnect of a session of this daemon).
@@ -174,7 +178,7 @@ export const actions = {
     draftLog.set(id, log);
     let r: { session: Session; events?: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number; bytes_per_token?: number };
     try {
-      r = await api(`/api/sessions/${id}${transcript ? "" : "?events=0"}`);
+      r = await api(`/api/sessions/${id}${transcript ? `?page=${PAGE}` : "?events=0"}`);
       // The daemon's learned bytes a token for the session's model: the page's count of its context then agrees with the daemon's.
       if (r.bytes_per_token) setRatio(r.session.model, r.bytes_per_token);
     } catch (e) {
@@ -204,6 +208,20 @@ export const actions = {
       drafts,
     });
     void loadLegacyQuestions(id);
+    // The branch may have changed while the page was away from it (no transcript asked for).
+    if (!transcript) headSoon(id);
+  },
+  // A part of a branch the page does not hold yet (pageOf in src/core/tree.ts):
+  // older or newer than a seq, around an event, or the end of the branch `head`
+  // ends. Its events join the session's. `first` runs before they do.
+  async page(id: string, ask: { head?: string; before?: number; after?: number; around?: string }, first?: (p: Page) => void): Promise<Page> {
+    const q = new URLSearchParams({ limit: String(PAGE) });
+    for (const [k, v] of Object.entries(ask)) if (v !== undefined) q.set(k, String(v));
+    const r = await api<Page>(`/api/sessions/${id}/page?${q}`);
+    const events = splitId(id) ? r.events.map((e) => ({ ...e, session_id: id })) : r.events;
+    first?.(r);
+    if (state.events[id]) set({ events: { ...state.events, [id]: mergeEvents(state.events[id]!, events) } });
+    return { ...r, events };
   },
   async loadArchived() {
     const { sessions } = await api<{ sessions: Session[] }>("/api/sessions?archived=1");
@@ -248,8 +266,12 @@ export const actions = {
   },
   // `leaf`: show the newest end of the branch below the event (a version
   // switch); without it the event itself becomes the head (undo a clear).
-  setHead: (id: string, eventId: string, reveal = false, leaf = true) =>
-    api(`/api/sessions/${id}/head`, { method: "POST", body: JSON.stringify({ head_event_id: eventId, reveal, leaf }) }),
+  // The end of the branch it moved to is read at once when the page does not hold it.
+  setHead: async (id: string, eventId: string, reveal = false, leaf = true) => {
+    const r = await api<{ ok: boolean; head: string }>(`/api/sessions/${id}/head`, { method: "POST", body: JSON.stringify({ head_event_id: eventId, reveal, leaf }) });
+    if (r.head && state.events[id] && !holds(id, r.head)) await actions.page(id, { head: r.head });
+    return r;
+  },
   // `before`: the prompt is left out of the copy and goes back to the new box, words and attachments.
   async fork(id: string, eventId: string, opts: { before?: boolean; title?: string } = {}): Promise<Session> {
     const r = await api<{ session: Session; prompt_text?: string; prompt_images?: PromptBlock[] }>(`/api/sessions/${id}/fork`, {
@@ -284,6 +306,58 @@ export const actions = {
     set({ sessions: rest, events });
   },
 };
+
+// Events of a branch asked for at a time, and how many a session may hold
+// before its oldest are let go (see trimmed).
+export const PAGE = 200;
+const HELD = 6 * PAGE;
+const holds = (id: string, eventId: string) => !!state.events[id]?.findLast((e) => e.id === eventId);
+
+// A session's head that the page does not hold (another branch was shown from
+// another tab, a rewind, an undo): the end of that branch is read. Soon, not
+// at once: the frame of a new event's session comes just before the event.
+const headChecks = new Map<string, ReturnType<typeof setTimeout>>();
+function headSoon(id: string) {
+  const missing = () => { const head = state.sessions[id]?.head; return head && state.events[id] && !holds(id, head) ? head : null; };
+  if (headChecks.has(id) || !missing()) return;
+  headChecks.set(id, setTimeout(() => {
+    headChecks.delete(id);
+    const head = missing();
+    if (head) actions.page(id, { head }).catch(reportUnlessGone);
+  }, 400));
+}
+
+// Views that read a session's history away from its end (scrolled up, another
+// branch, an earlier part) keep it whole meanwhile.
+const keepers = new Map<string, number>();
+export function keepEvents(id: string) {
+  keepers.set(id, (keepers.get(id) ?? 0) + 1);
+  return () => void keepers.set(id, (keepers.get(id) ?? 1) - 1);
+}
+
+// Events a view read and no longer shows (an earlier part of the branch, left).
+export function forgetEvents(id: string, ids: string[]) {
+  const list = state.events[id];
+  if (!list || !ids.length) return;
+  const drop = new Set(ids);
+  set({ events: { ...state.events, [id]: list.filter((e) => !drop.has(e.id)) } });
+}
+
+// A session that grew past HELD events while nobody reads its history keeps
+// what a fresh snapshot would bring: the newest events of its branch from a
+// turn's start, the other versions of their prompts, and the start of the
+// running turn (its clock).
+export function trimmed(list: StoredEvent[], head: string | null): StoredEvent[] {
+  const line = lineage(list, head);
+  let k = Math.max(0, line.length - 2 * PAGE);
+  for (let i = k; i > Math.max(0, k - PAGE); i--) if (line[i - 1]!.kind === "turn_end") { k = i; break; }
+  if (k === 0 && line.length === list.length) return list;
+  const keep = new Set(line.slice(k).map((e) => e.id));
+  const parents = new Set(line.slice(k).filter((e) => e.kind === "user" && !e.data.origin).map((e) => e.parent));
+  const start = line.findLast((e) => e.kind === "turn_start");
+  if (start) keep.add(start.id);
+  return list.filter((e) => keep.has(e.id) || (e.kind === "user" && !e.data.origin && parents.has(e.parent)));
+}
 
 // Feature modules (approvals, checkpoints, worktrees) keep their own client
 // state: they get their frames, and a call after each reconnect to catch up.
@@ -419,6 +493,7 @@ export function apply(f: Frame) {
     }
     if (!state.sessions[s.id] && s.archived) return;
     set({ sessions: { ...state.sessions, [s.id]: s } });
+    headSoon(s.id);
   } else if (f.t === "event") {
     const e = f.event;
     // A finished turn may have moved a window (its answers' headers, a plan's use).
@@ -433,7 +508,8 @@ export function apply(f: Frame) {
     // The new event is the head of its session (the store appends at the head).
     const s = state.sessions[e.session_id];
     if (s && newer(`${s.id}:session`, f.rev)) state = { ...state, sessions: { ...state.sessions, [s.id]: { ...s, head: e.id } } };
-    set({ events: { ...state.events, [e.session_id]: [...list, e] } });
+    const next = [...list, e];
+    set({ events: { ...state.events, [e.session_id]: next.length > HELD && !keepers.get(e.session_id) ? trimmed(next, e.id) : next } });
   } else if (f.t === "delta") {
     // A whole draft taken at this rev or a later one (a snapshot that overtook this frame) holds it already.
     if (f.rev !== undefined && f.rev <= (revs.get(`${f.session_id}:draft`) ?? 0)) return;

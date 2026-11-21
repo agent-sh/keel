@@ -113,13 +113,23 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
   const q = useStore((s) => s.queues[sessionId]);
   const all = useStore((s) => s.events[sessionId]);
   const head = useStore((s) => s.sessions[sessionId]?.head ?? null);
-  const shown = useMemo(() => new Set(all ? lineage(all, head).map((e) => e.id) : []), [all, head]);
+  // The page holds the newest part of the branch: a prompt is marked when the
+  // event it was queued at is held and is not on that part, though it is not
+  // older than it (an older one may be on the branch further up).
+  const branch = useMemo(() => {
+    const line = all ? lineage(all, head) : [];
+    return { ids: new Set(line.map((e) => e.id)), from: line[0]?.seq ?? Infinity, whole: !line.length || line[0]!.parent === null };
+  }, [all, head]);
   // Reports of this session's agents that wait for it: while it is paused they start no turn.
   const reports = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === sessionId && a.handback && !isLive(a)).length);
   // A paused session with nothing queued still shows that it is paused when reports wait for it.
   if (!q || (!q.queue.length && !(q.held && reports))) return null;
   // Only known when the events are loaded; until then nothing is marked.
-  const off = (x: QueueItem) => !!all && !!x.anchor && !shown.has(x.anchor);
+  const off = (x: QueueItem) => {
+    if (!all || !x.anchor || branch.ids.has(x.anchor)) return false;
+    const at = all.find((e) => e.id === x.anchor);
+    return branch.whole || (!!at && at.seq > branch.from);
+  };
   const nextOff = !!q.queue.length && off(q.queue[0]!);
   return (
     <div className="@container/queue mb-2 rounded-lg border border-line bg-raised/80 px-1.5 py-1.5 shadow-2 animate-in" data-testid="queue">
@@ -178,8 +188,23 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
   const model = models.find((m) => m.id === session?.model);
   const window_ = model?.context ?? 0;
   // Counted for the session's model, as the daemon counts it: after a switch another model's reply is a floor, not the count.
-  const est = useMemo(() => (all && session ? contextTokens(lineage(all, session.head), session.model) : null), [all, session?.head, session?.model]);
-  const used = est?.used ?? 0;
+  const line = useMemo(() => (all && session ? lineage(all, session.head) : null), [all, session?.head]);
+  const est = useMemo(() => (line && session ? contextTokens(line, session.model) : null), [line, session?.model]);
+  // The page holds the newest part of a long branch. A reply measured in that
+  // part counted everything before it, so the count is the whole context's.
+  // With none there (an imported history no provider has counted yet), the
+  // bytes of the part are not the context: the daemon, which reads the whole
+  // branch, is asked for its count.
+  const short = !!line?.length && line[0]!.parent !== null && est?.measured === 0;
+  const [counted, setCounted] = useState<{ head: string | null; used: number } | null>(null);
+  useEffect(() => {
+    if (!short || !session) return;
+    let stop = false;
+    const head = session.head;
+    actions.context(sessionId).then((x) => { if (!stop) setCounted({ head, used: x.context_used_tokens }); }).catch(reportError);
+    return () => { stop = true; };
+  }, [short, session?.head, sessionId]);
+  const used = short && counted?.head === session?.head ? counted!.used : est?.used ?? 0;
   // The breakdown follows the conversation while the popup is open: it loads
   // again on each committed event (not on streaming text); only the latest
   // answer is kept.

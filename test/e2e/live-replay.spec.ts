@@ -97,6 +97,7 @@ const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== nul
 
 // A state folder with sessions that already hold a long transcript (plain notes).
 const NOTES = 1200;
+const PAGE = 200; // events of a session's branch the page reads at a time (ui/src/lib/store.ts)
 function seeded(name: string, ...titles: string[]) {
   const state = join(ROOT, `${name}-${Date.now()}`);
   mkdirSync(state, { recursive: true });
@@ -147,10 +148,10 @@ test("the open page catches up across a daemon restart without a reload", async 
     await page.getByTestId("composer").fill("script:long-tool");
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("tool-call")).toHaveCount(1, { timeout: 15_000 });
-    // Opening it read the transcript whole.
+    // Opening it read its newest page, not the 1,200 notes.
     const opening = got.filter((g) => g.id === id).length;
     expect(opening).toBeGreaterThan(0);
-    expect(new Set(got.filter((g) => g.id === id).map((g) => g.events))).toEqual(new Set([NOTES]));
+    expect(new Set(got.filter((g) => g.id === id).map((g) => g.events))).toEqual(new Set([PAGE]));
     d.proc.kill("SIGTERM");
     await exited(d.proc);
     // What the page holds now: the last event its first socket brought (the stop stored some).
@@ -215,12 +216,16 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     const flat = (t: string) => t.replace(/\s+/g, " ").trim();
     // The transcript is long: its length, its end and a digest say whether two are the same.
     // (Without the screen reader's line, which only a page that saw the turn end says.)
+    // A page holds the newest part of the session, more of it the longer it
+    // was open: two pages are compared from a note both hold.
+    const shared = `Generated note ${NOTES - 20} of`;
     const view = async (p: Page) => ({
-      transcript: digest(flat(await p.getByTestId("transcript").evaluate((el) => {
+      transcript: digest(flat(await p.getByTestId("transcript").evaluate((el, from) => {
         const copy = el.cloneNode(true) as HTMLElement;
         copy.querySelector('[data-testid="turn-announcer"]')?.remove();
-        return copy.textContent ?? "";
-      }))),
+        const text = copy.textContent ?? "";
+        return text.slice(Math.max(0, text.indexOf(from)));
+      }, shared))),
       draft: (await p.getByTestId("draft").count()) ? flat(await p.getByTestId("draft").innerText()) : "",
       queue: (await p.getByTestId("queue-item").allInnerTexts()).map(flat),
       word: flat(await p.getByTestId("station-word").innerText()),
@@ -231,7 +236,7 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     const sameAsFresh = async () => {
       const p = await context.newPage();
       await p.routeWebSocket(/\/ws$/, async (ws) => {
-        await expect(p.getByTestId("transcript")).toContainText("Generated note 1 of", { timeout: 30_000 });
+        await expect(p.getByTestId("transcript")).toContainText(shared, { timeout: 30_000 });
         ws.connectToServer();
       });
       await p.goto(`${origin}/s/${id}`);
@@ -247,8 +252,8 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     await row(id!).click();
     await expect(page).toHaveURL(new RegExp(`/s/${id}$`));
     await expect(lastNote).toBeVisible({ timeout: 30_000 });
-    // Opening them read each transcript whole.
-    expect(new Set(got.map((g) => `${g.id} ${g.events}`))).toEqual(new Set([`${doomed} ${NOTES}`, `${id} ${NOTES}`]));
+    // Opening them read the newest page of each.
+    expect(new Set(got.map((g) => `${g.id} ${g.events}`))).toEqual(new Set([`${doomed} ${PAGE}`, `${id} ${PAGE}`]));
     const full = got.find((g) => g.id === id)!.bytes;
 
     // Cut, and kept out. Meanwhile: half a reply, a queued prompt, a deletion.
@@ -305,7 +310,7 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     const again = got.filter((g) => g.id === id);
     expect(again.length).toBeGreaterThan(0);
     expect(again.map((g) => g.events)).toEqual(again.map(() => undefined));
-    for (const g of again) expect(g.bytes).toBeLessThan(full / 50);
+    for (const g of again) expect(g.bytes).toBeLessThan(full / 8);
 
     // A second cut: the head moves to an older branch point meanwhile and
     // nothing new is stored. The page follows the head and is sent no event.
