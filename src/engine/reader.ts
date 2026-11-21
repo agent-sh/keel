@@ -108,8 +108,9 @@ export function materialCap(current: ModelInfo, reader: ModelInfo, listPrice?: (
 // working directory, or the file a page was saved to); `label` what it came
 // from when that differs (the page's URL); `text` the content.
 export type Material = { source: string; text: string; label?: string };
-// A run of lines of one source, numbered from `from` (1-based).
-export type Part = { source: string; label?: string; from: number; to: number; total: number; body: string };
+// A run of lines of one source, numbered from `from` (1-based); `chars` is
+// what the run is in the source, without the numbers a reader sees.
+export type Part = { source: string; label?: string; from: number; to: number; total: number; body: string; chars: number };
 export type Chunk = { parts: Part[]; chars: number };
 
 const HEADER = 80;
@@ -143,7 +144,10 @@ export function chunkMaterial(items: Material[], maxChars: number): Chunk[] {
   const close = () => { if (cur.parts.length) chunks.push(cur); cur = { parts: [], chars: 0 }; };
   const put = (m: Material, r: string[][], from: number, n: number) => {
     const lines = r.slice(from, from + n);
-    cur.parts.push({ source: m.source, label: m.label, from: from + 1, to: from + n, total: r.length, body: lines.flat().join("\n") });
+    // Each line without its number, with its newline (the last line may have none).
+    const chars = lines.reduce((k, x, j) => k + x.reduce((q, y) => q + y.length, 0) - x.length * (String(from + j + 1).length + 1), 0)
+      + n - (from + n === r.length && !m.text.endsWith("\n") ? 1 : 0);
+    cur.parts.push({ source: m.source, label: m.label, from: from + 1, to: from + n, total: r.length, body: lines.flat().join("\n"), chars });
     cur.chars += lines.reduce((k, x) => k + rowSize(x), 0) + HEADER;
   };
   all.forEach(({ m, rows }, idx) => {

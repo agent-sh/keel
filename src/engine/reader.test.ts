@@ -246,3 +246,22 @@ test("parts no reader read are listed in part order, whichever failed first", as
   expect(note.indexOf("- a.log (every reader failed")).toBeGreaterThan(0);
   expect(note.indexOf("- a.log (every reader failed")).toBeLessThan(note.indexOf("- c.log (every reader failed"));
 });
+
+test("the characters a job reports are the ones a reader read: a part that held nothing counts, a part every reader failed on does not", async () => {
+  const files = [{ source: "a.log", text: lines(3_500) }, { source: "b.log", text: lines(3_400) + "\n" }, { source: "c.log", text: lines(3_300) }];
+  const job = (fail: (k: string) => boolean) => readMaterial({
+    models: async () => [big], current: async () => big, capture: () => {},
+    ask: async (_m, prompt) => {
+      const k = /part (\d+) of/.exec(prompt)![1]!;
+      if (fail(k)) throw new Error("throttled");
+      return { text: k === "3" ? NOTHING : "found it at a.log:3", usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } };
+    },
+  }, files, "q", new AbortController().signal);
+  const [a, b, c] = files.map((f) => f.text.length) as [number, number, number];
+  const mixed = await job((k) => k === "2");
+  expect(mixed.parts.map((p) => p.state)).toEqual(["read", "unread", "nothing"]);
+  expect(mixed.chars).toBe(a + c);
+  expect(coverageNote(mixed, 3)).toContain(`(${a + c} chars)`);
+  expect((await job(() => false)).chars).toBe(a + b + c);
+  expect((await job(() => true)).chars).toBe(0);
+});

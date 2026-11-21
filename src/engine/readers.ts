@@ -44,7 +44,7 @@ export type ReadOutcome = {
   models: string[];        // names of the models that read
   parts: PartState[];
   unread: string[];        // what no reader read: parts every choice failed on, material past the cap
-  chars: number;           // material read
+  chars: number;           // material a reader read: the parts read, those that held nothing included
   usage: Usage;            // every reader call of the job
   cost?: number;           // USD, where priced
   plan?: boolean;          // every reader that read is on a subscription: no per-token cost
@@ -209,7 +209,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   // The answer is held against what a reader read, not against a part every reader failed on.
   const readSpans = chunks.flatMap((c, i) => (parts[i]!.state === "read" || parts[i]!.state === "nothing" ? c.parts.map((p) => ({ source: p.source, from: p.from, to: p.to })) : []));
   const rate = readRate(cur, list);
-  const chars = kept.reduce((n, m) => n + m.text.length, 0);
+  const chars = chunks.reduce((n, c, i) => n + (parts[i]!.state === "read" || parts[i]!.state === "nothing" ? c.parts.reduce((k, p) => k + p.chars, 0) : 0), 0);
   const tokens = partTokens || chars / bytesPerToken(cur.id);
   return {
     text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled, ...(uncompiled ? { uncompiled } : {}), ...(text ? { checked: checkAnswer(text, kept, readSpans) } : {}),

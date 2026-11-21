@@ -80,7 +80,7 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
           {shown && (
             <div className="text-caption text-muted" data-testid="readers-summary">
               {shown.sources} source{shown.sources === 1 ? "" : "s"}, {shown.chars.toLocaleString("en-US")} characters
-              {shown.whole ? ", short enough to read whole" : shown.models?.length ? `, read by ${shown.models.join(" and ")}${shown.compiled ? ", findings compiled" : ""}` : ""}
+              {shown.whole ? ", short enough to read whole" : shown.models?.length ? ` read by ${shown.models.join(" and ")}${shown.compiled ? ", findings compiled" : ""}` : " read"}
               {shown.checked && shown.checked.quotes > 0 && (
                 <> · <span className={shown.checked.verbatim < shown.checked.quotes ? "text-danger" : undefined} data-testid="readers-checked">
                   {shown.checked.verbatim} of {shown.checked.quotes} quotes found word for word
