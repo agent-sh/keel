@@ -3,6 +3,8 @@
 // views (the Tokens panel, Settings > Usage) say where the money went with
 // these, so what costs is what looks big.
 import type { StoredEvent, Usage } from "../../../src/core/types.ts";
+import { ownerPrompt } from "../../../src/core/owner.ts";
+import { originOf } from "../../../src/admin/timeline-rows.ts";
 import type { Price } from "../../../src/providers/types.ts";
 
 export type Kind = "read" | "written" | "full" | "output";
@@ -61,7 +63,9 @@ export function turnsOf(events: StoredEvent[]): Turn[] {
   let cur: Turn | null = null;
   const take = (t: Turn, r: Req) => { t.requests.push(r); t.total = addUsage(t.total, r.u); };
   for (const e of events) {
-    if (e.kind === "user") prompt = String(e.data.text ?? "");
+    // A turn is named by the owner's words when they started it, else by what started it (an agent's report, a wake):
+    // a delivered input's text is written for the model, not for a list the owner reads.
+    if (e.kind === "user") prompt = ownerPrompt(e.data) ? String(e.data.text ?? "") : originOf(e.data).lead;
     else if (e.kind === "turn_start") cur = { n: out.length + 1, prompt, ts: e.ts, requests: [], total: zero(), cold: false };
     else if (e.kind === "assistant" && cur && e.data.usage) take(cur, { u: e.data.usage, model: e.data.model });
     else if (e.kind === "compaction" && e.data.usage && (cur ?? out.at(-1))) take((cur ?? out.at(-1))!, { u: e.data.usage, model: e.data.model, what: "compaction" });

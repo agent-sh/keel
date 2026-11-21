@@ -1,6 +1,8 @@
 // The session as a tree of its prompts and summaries (every branch, the shown
 // one marked), and labels on events: named places to come back to.
 import { leafOf, lineage } from "../../core/tree.ts";
+import { ownerPrompt } from "../../core/owner.ts";
+import { originOf } from "../../admin/timeline-rows.ts";
 import type { StoredEvent } from "../../core/types.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -25,8 +27,13 @@ const isNode = (e: StoredEvent) =>
   (e.kind === "user" && (!e.data.origin || e.data.origin === "steer" || e.data.origin === "queued")) ||
   (e.kind === "compaction" && e.data.mode === "summary");
 
+// What a node is listed as: the owner's words for a prompt of theirs. An input
+// Keel delivered (an agent's report, a wake, a loop run) is named as what it
+// is: its text was written for the model, not for a list the owner reads.
 const previewOf = (e: StoredEvent) =>
-  e.kind === "compaction" ? "Summary of the context before it" : String(e.data.text ?? "").replace(/\s+/g, " ").trim().slice(0, 140) || "(image)";
+  e.kind === "compaction" ? "Summary of the context before it"
+    : !ownerPrompt(e.data) ? originOf(e.data).lead
+    : String(e.data.text ?? "").replace(/\s+/g, " ").trim().slice(0, 140) || "(image)";
 
 export const treeRoutes: RouteModule = ({ store }) => {
   store.migrate(SCHEMA);

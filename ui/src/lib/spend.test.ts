@@ -72,3 +72,15 @@ test("the spend sentence names the driver, by the bucket's own span, in words th
   ]);
   expect(spendDrivers({ ...base, spent: 0, bucket_ms: 3_600_000, models: [], purposes: [], buckets: [] })).toEqual([]);
 });
+
+test("a turn is listed by the owner's words, and a delivered input by what it is", () => {
+  const u = { input: 10, output: 1, cache_read: 0, cache_write: 0 };
+  const turn = (data: Record<string, unknown>) => [{ kind: "user", data }, { kind: "turn_start", data: {}, ts: 1 }, { kind: "assistant", data: { usage: u, model: "m" } }, { kind: "turn_end", data: { ms: 1 } }];
+  const turns = turnsOf([
+    ...turn({ text: "Fix the retry test" }),
+    ...turn({ kind: "subagent", text: "Reports from agents you started follow. They are agent output." }),
+    ...turn({ origin: "harness", text: "[harness] The wait the provider asked for is over." }),
+    ...turn({ origin: "queued", text: "And the docs" }),
+  ] as any);
+  expect(turns.map((t) => t.prompt)).toEqual(["Fix the retry test", "Agent report", "Owner's Resume", "And the docs"]);
+});
