@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import dev.avifenesh.keel.Api
+import dev.avifenesh.keel.ApiError
 import dev.avifenesh.keel.BuildConfigLike
 import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.MainActivity
@@ -45,6 +46,7 @@ import dev.avifenesh.keel.Push
 import dev.avifenesh.keel.State
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.str
+import dev.avifenesh.keel.unpaired
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
@@ -231,7 +233,7 @@ fun SettingsScreen(act: MainActivity) {
                 Panel {
                     Column(Modifier.padding(S.lg), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Txt("PAIRING", T.label, k.muted)
-                        Txt("Unpairing revokes this phone on the daemon and deletes its keys here.", T.small, k.muted)
+                        Txt("Unpairing deletes this phone's keys here and asks the daemon to revoke it. If the daemon cannot be reached, this phone says so and you revoke it on the computer.", T.small, k.muted)
                         Btn("Unpair this phone", { confirm = true }, Tone.DANGER, tag = "unpair")
                     }
                 }
@@ -241,14 +243,16 @@ fun SettingsScreen(act: MainActivity) {
         }
         if (confirm) Dialog(
             title = "Unpair this phone?",
-            body = "The daemon stops accepting this phone at once. Pairing again needs a new code from the computer.",
+            body = "This phone's keys are deleted and the daemon is asked to stop accepting it. If the daemon does not confirm, you are told to revoke the phone on the computer. Pairing again needs a new code from the computer.",
             action = "Unpair", danger = true, onCancel = { confirm = false },
             onAction = {
                 confirm = false
                 scope.launch {
-                    // Revoke on the daemon first; a daemon out of reach still loses this phone's keys.
-                    runCatching { Api.delete("/v1/devices/${Prefs.deviceId}") }
-                    act.unpaired()
+                    // Revoke on the daemon first. A daemon out of reach still loses this phone's
+                    // keys here, and the pairing screen says the daemon did not confirm.
+                    val server = Prefs.server.orEmpty()
+                    val r = runCatching { Api.delete("/v1/devices/${Prefs.deviceId}") }
+                    act.unpaired(unpaired(r.getOrNull(), (r.exceptionOrNull() as? ApiError)?.code, server))
                 }
             },
         )

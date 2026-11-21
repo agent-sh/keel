@@ -28,8 +28,10 @@ release builds.
    (`approve2\n<id>\n<choice>\n<sha256(answer)>\n<time>`). The daemon checks
    both and refuses a replay.
 
-Unpairing (Settings, then Unpair) revokes the phone on the daemon and deletes
-its keys. A phone with no screen lock can approve once only.
+Unpairing (Settings, then Unpair) deletes the phone's keys and asks the daemon
+to revoke it. When the daemon does not confirm (it is out of reach), the app
+says so on the pairing screen: revoke the phone in Settings, then Phone, on the
+computer. A phone with no screen lock can approve once only.
 
 ## Push
 

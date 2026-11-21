@@ -129,7 +129,7 @@ fun PairScreen(act: MainActivity) {
     val clip = LocalClipboardManager.current
     val link = Ui.link.value
     fun pair(l: Wire.PairLink) {
-        busy = true; error = ""
+        busy = true; error = ""; Ui.unpaired.value = null
         scope.launch {
             val r = runCatching { Api.pair(l) }
             busy = false
@@ -150,6 +150,11 @@ fun PairScreen(act: MainActivity) {
         Txt("Keel", T.display.copy(fontSize = T.display.fontSize * 1.3f))
         Spacer(Modifier.height(S.sm))
         Txt("Your sessions, approvals and alerts from the Keel daemon you run, on this phone.", T.body, k.muted)
+        // How the unpairing that led here ended: confirmed by the daemon, or only done on this phone.
+        Ui.unpaired.value?.let { u ->
+            Spacer(Modifier.height(S.lg))
+            Notice(u.note, color = if (u.revoked) k.muted else k.danger, modifier = Modifier.semantics { contentDescription = if (u.revoked) "unpaired-confirmed" else "unpaired-local-only" })
+        }
         Spacer(Modifier.height(S.xxl))
         if (link != null) {
             Panel {

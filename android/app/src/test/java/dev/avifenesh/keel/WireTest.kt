@@ -45,6 +45,17 @@ class WireTest {
         assertEquals(Earlier.AGAIN, earlierAfter(null))
     }
 
+    @Test fun unpairingSaysWhetherTheDaemonRevokedThePhone() {
+        // Online: the daemon confirms. A daemon that had revoked the phone already refuses it as unauthorized.
+        assertEquals(Unpaired(true, "Unpaired. desk no longer accepts this phone."), unpaired(JSONObject().put("ok", true), null, "desk"))
+        assertEquals(true, unpaired(null, 401, "desk").revoked)
+        // Offline (no answer, no HTTP code), an error from the daemon, or an answer that does not confirm: local only.
+        for (local in listOf(unpaired(null, null, "desk"), unpaired(null, 503, "desk"), unpaired(JSONObject().put("ok", false), null, "desk"))) {
+            assertEquals(false, local.revoked)
+            assertEquals(true, local.note.contains("did not confirm") && local.note.contains("Settings, then Phone"))
+        }
+    }
+
     @Test fun pairLinks() {
         val l = Wire.parsePair("keel://pair?u=https%3A%2F%2Fkeel.example.test&c=abc123&n=desk%20one")!!
         assertEquals(Wire.PairLink("https://keel.example.test", "abc123", "desk one"), l)

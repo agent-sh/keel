@@ -226,6 +226,22 @@ data class Card(
     }
 }
 
+/** How an unpairing ended: whether the daemon revoked this phone, and what the owner is told. */
+data class Unpaired(val revoked: Boolean, val note: String)
+
+/**
+ * The outcome of asking the daemon to revoke this phone (DELETE /v1/devices/<id>)
+ * before its keys are deleted here. Revoked: the daemon said ok, or refused the
+ * request as unauthorized (it had revoked this phone already). Anything else,
+ * no answer included, leaves the phone listed there: the keys are gone here
+ * all the same, and the owner is told to revoke it on the computer.
+ */
+fun unpaired(answer: JSONObject?, code: Int?, server: String): Unpaired {
+    val name = server.ifBlank { "The daemon" }
+    return if (answer?.optBoolean("ok") == true || code == 401) Unpaired(true, "Unpaired. $name no longer accepts this phone.")
+    else Unpaired(false, "This phone's keys are deleted, but $name did not confirm that it revoked this phone, so it may still list it. On the computer, open Settings, then Phone, and revoke it there.")
+}
+
 /** What a failed read of earlier messages offers: the same read again, or the conversation read anew. */
 enum class Earlier { AGAIN, RELOAD }
 

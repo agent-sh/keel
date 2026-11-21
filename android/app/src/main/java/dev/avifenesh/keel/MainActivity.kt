@@ -42,6 +42,8 @@ object Ui {
     val route = mutableStateOf<Route>(Route.Tabs(0))
     val link = mutableStateOf<Wire.PairLink?>(null)
     val linkError = mutableStateOf("")
+    /** How the last unpairing ended, said on the pairing screen until a new pairing starts. */
+    val unpaired = mutableStateOf<Unpaired?>(null)
     val theme = mutableIntStateOf(0)
     fun open(chat: String) { route.value = Route.Session(chat) }
 }
@@ -101,8 +103,9 @@ class MainActivity : FragmentActivity() {
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
-    /** Forgets this pairing here; the daemon was told first where it could be reached. */
-    fun unpaired() {
+    /** Forgets this pairing here; the daemon was told first, and `how` says whether it confirmed. */
+    fun unpaired(how: Unpaired) {
+        Ui.unpaired.value = how
         Api.generation++
         Hub.reset()
         Push.unschedule(this)

@@ -859,4 +859,16 @@ describe("pairing", () => {
     expect((await pair(code)).status).toBe(403);
     expect((await me(again.body.token)).status).toBe(200);
   });
+
+  test("a phone that unpairs is told the daemon revoked it, and is refused from then on", async () => {
+    const paired = await pair(mobile.createPairCode(600));
+    const id = paired.body.device_id;
+    const gone: Response = await routes["/v1/devices/:did"].DELETE(Object.assign(signedAs(paired.body.token, "DELETE", `/v1/devices/${id}`), { params: { did: id } }), {});
+    // `ok` is what the app takes as the daemon's confirmation.
+    expect([gone.status, await gone.json()]).toEqual([200, { ok: true }]);
+    // Asked again (the answer was lost): unauthorized, which the app also takes as revoked.
+    const again: Response = await routes["/v1/devices/:did"].DELETE(Object.assign(signedAs(paired.body.token, "DELETE", `/v1/devices/${id}`), { params: { did: id } }), {});
+    expect(again.status).toBe(401);
+    expect((await me(paired.body.token)).status).toBe(401);
+  });
 });
