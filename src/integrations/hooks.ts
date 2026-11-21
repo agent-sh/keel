@@ -451,12 +451,16 @@ export class Hooks {
     if (kept?.text !== text) this.projects.set(root, (kept = { text, ...parseHooks(text), bodies: new Map() }));
     const { groups } = kept;
     const problems = [...kept.problems];
-    const files = coveredFiles(root, groups);
-    const digest = pinDigest(text, root, files, kept.bodies);
+    // Every covered file is listed, read and hashed here at each event, in
+    // one piece: named, should it hold the loop (src/admin/stall.ts).
+    const bodies = kept.bodies;
+    const { files, digest, links } = timed(() => "reading a repository's hooks file and the files it covers", () => {
+      const files = coveredFiles(root, groups);
+      return { files, digest: pinDigest(text, root, files, bodies), links: linksOut(root, files) };
+    });
     let active = true;
     if (!pin) { active = false; problems.unshift("not pinned: the owner reads the file and pins it before it runs"); }
     else if (pin !== digest) { active = false; problems.unshift(`changed since it was pinned${files.length ? " (the file or a script it runs)" : ""}: pin it again to run it`); }
-    const links = linksOut(root, files);
     if (links.length) { active = false; problems.unshift(`${links.map((f) => relative(root, f)).join(", ")} ${links.length > 1 ? "are links" : "is a link"} out of .keel/: the pin cannot hold what ${links.length > 1 ? "they run" : "it runs"}`); }
     const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
     return { path, scope: "project", root, text: text.slice(0, SHOWN_MAX + 1), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups };

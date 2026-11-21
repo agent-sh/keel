@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { OtlpExporter } from "./otlp.ts";
+import { OtlpExporter, spanAttrs } from "./otlp.ts";
 import { BOUNDS, Meter, metricInterval, promptEvent, signalEndpoint, signalOn, spanEvent, spanMetrics, toOtlpLogs, toOtlpMetrics, type Point } from "./otlp-signals.ts";
 import type { Span } from "./trace.ts";
 
@@ -81,4 +81,22 @@ test("the exporter posts another signal's batch with that signal's body and name
     out.stop();
     sink.stop(true);
   }
+});
+
+test("a stall of the daemon is a wait: in the traces with the kind of its cause, and in no metric and no event", () => {
+  // One span per turn that ran through the stall: a count of them would count one stall once per turn.
+  const stall: Span = {
+    ...base, span_id: "eeeeeeeeeeeeeeee", parent_id: "ffffffffffffffff", kind: "wait", name: "daemon stall", start_ms: 1_700_000_002_000, end_ms: 1_700_000_005_000, status: "ok", error: null, error_type: null, error_id: "err-1",
+    attrs: { turn_event: "t1", ms: 3000, what: "2.7 s waiting for a child: git rev-parse (pid 4242)", cause: { kind: "child", key: "child git", text: "2.7 s waiting for a child: git rev-parse (pid 4242)", call: { name: "epoll_pwait2", child: { pid: 4242, command: "git rev-parse" } }, shares: [{ kind: "child", key: "child git", what: "waiting for a child: git rev-parse (pid 4242)", ms: 2700 }] } },
+  };
+  const m = new Meter();
+  spanMetrics(m, stall);
+  expect(m.collect()).toEqual([]);
+  expect(spanEvent(stall)).toBeNull();
+  // The trace says that the daemon stalled and the kind of cause: no file, no child, no pid.
+  const attrs = spanAttrs(stall);
+  expect(attrs).toMatchObject({ "keel.wait": "daemon stall", "keel.stall.cause": "child" });
+  expect(JSON.stringify(attrs)).not.toMatch(/git|4242|rev-parse/);
+  // Another wait has no such attribute.
+  expect(spanAttrs({ ...stall, name: "retry wait", attrs: { attempt: 1, max: 3 } })["keel.stall.cause"]).toBeUndefined();
 });

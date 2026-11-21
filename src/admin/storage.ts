@@ -383,13 +383,17 @@ export class Storage {
       const release = await readsOf(this.store).hold(READS_HOLD_MS);
       const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(full ? { full: true as const } : {}), ...(this.config ? { config: resolve(this.config) } : {}) }, { checkpoint, snapped: release }).finally(release);
       if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
-      renameSync(tmp, final);
-      syncPath(this.backupRoot); // the name itself is on disk
+      // What a backup still does on the loop after its worker: its name
+      // (a sync of the folder), and below the removal of older ones.
+      timed(() => "giving a backup its name", () => {
+        renameSync(tmp, final);
+        syncPath(this.backupRoot); // the name itself is on disk
+      });
     } catch (e) {
       rmSync(tmp, { recursive: true, force: true });
       throw e;
     }
-    this.prune();
+    timed(() => "removing older backups", () => this.prune());
     this.diskStale = true;
     return this.backups().find((b) => b.name === basename(final))!;
   }
@@ -580,10 +584,13 @@ function inWorker<T>(job: BackupJob, on: { checkpoint?: () => void; snapped?: ()
     w.onmessage = (e: MessageEvent<{ t: "checkpoint" } | { t: "done"; done: T } | { t: "failed"; error: string }>) => {
       const m = e.data;
       if (m.t === "checkpoint") {
-        checkpoint?.();
-        Atomics.store(gate, 0, 1);
-        Atomics.notify(gate, 0);
-        Atomics.wait(gate, 0, 1, HOLD_MS);
+        // The one part of a backup the loop is held for: named, should it be long (src/admin/stall.ts).
+        timed(() => "emptying the store's log and holding still for a backup's snapshot", () => {
+          checkpoint?.();
+          Atomics.store(gate, 0, 1);
+          Atomics.notify(gate, 0);
+          Atomics.wait(gate, 0, 1, HOLD_MS);
+        });
         if (Atomics.load(gate, 0) === 2) snapped?.();
       } else end(() => (m.t === "done" ? ok(m.done) : fail(new Error(m.error))));
     };
