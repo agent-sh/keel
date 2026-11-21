@@ -89,6 +89,9 @@ export type TurnHooks = {
   execInput?: (s: Session, call: ToolCall) => any;
   // After each call that ran, with its result (checkpoints, audit).
   afterTool?: (s: Session, call: ToolCall, result: ToolResultBlock) => void | Promise<void>;
+  // A call whose tool threw (afterTool does not run for it): the failed result
+  // the model gets, which the hook may add to.
+  toolFailed?: (s: Session, call: ToolCall, result: ToolResultBlock, error: Error) => void | Promise<void>;
   // For measuring only: every call that was dispatched, however it ended,
   // with the time the tool itself took (no approval wait, no afterTool hooks).
   // `error`: what the tool threw, when it threw (a result that only says it failed has none).
@@ -132,7 +135,10 @@ export type TurnHooks = {
   // A drain was called off: what waited for the daemon to stop goes on.
   drainOff?: () => void;
   // Before a compaction summarises the history (a memory tool reads it whole first).
-  beforeCompact?: (s: Session) => void | Promise<void>;
+  // `auto`: Keel started it (the line, the window, idle); else the owner asked, with `focus` as their words.
+  beforeCompact?: (s: Session, why?: { auto: boolean; focus?: string }) => void | Promise<void>;
+  // A summary took the place of the history it covers (`ev` is the stored compaction event).
+  afterCompact?: (s: Session, ev: StoredEvent) => void | Promise<void>;
   // What a summary of this session keeps above all, when the owner named nothing
   // (the helper's summary keeps their decisions and commitments, not files).
   compactFocus?: (s: Session) => string | undefined;

@@ -50,7 +50,7 @@ export default function Hooks() {
 
   return (
     <div data-testid="hooks-settings">
-      <FolderLine global="A hook can block, ask or add context; it never allows anything" tally={[
+      <FolderLine global="A hook can block, ask, change a call or add context; its allow answers only a low-risk ask" tally={[
         { n: (mine ? 1 : 0) + repos.length, label: "files" },
         { n: sources?.filter((s) => s.active).reduce((n, s) => n + events(s), 0) ?? 0, label: "handlers running" },
         ...(repos.some((s) => !s.active) ? [{ n: repos.filter((s) => !s.active).length, label: "wait for a pin", tone: "need" as const }] : []),

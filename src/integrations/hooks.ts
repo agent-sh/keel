@@ -9,22 +9,75 @@
 //
 // What a hook can do: block a call or a prompt, send a call to the owner, add
 // context for the model (with the call's result; after the prompt), keep a turn
-// going (Stop), change a call's input before it is judged, and allow a call:
+// going (Stop), answer a permission request, change a call's input before it
+// is judged, and allow a call:
 // that answers the call's low-risk ask in the owner's place and nothing more
 // (src/safety/gate.ts: no high-risk card, no never-allowed command, nothing in
 // Read only or Plan).
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { contains, realOf } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
 import { configDir } from "../providers/config.ts";
 import { readText } from "../core/proc.ts";
+import { shellText } from "../safety/policy.ts";
+import { splitCommand } from "../safety/shell.ts";
 
-export const EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PreCompact"] as const;
+// The events Keel fires, the ones existing hook files use most first. What
+// each carries and what its hooks can answer: README, Hooks.
+export const EVENTS = [
+  "SessionStart", "Stop", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "UserPromptExpansion", "PreToolUse", "StopFailure",
+  "SubagentStop", "SessionEnd", "PermissionRequest", "PreCompact", "SubagentStart", "PostCompact", "Notification", "PermissionDenied",
+  "PostToolBatch", "Interrupt", "PreModelRequest", "PostModelRequest",
+] as const;
 export type HookEvent = (typeof EVENTS)[number];
-type Handler = { type: "command"; command: string; timeout?: number; onFailure?: "block" | "continue" };
+
+// Events Claude Code documents that Keel has no moment for. A file that names
+// one loads; its hooks never run, and the file's list says why.
+export const NOT_FIRED: Record<string, string> = {
+  Setup: "Keel has no init or maintenance run",
+  InstructionsLoaded: "instruction files are part of the system prompt Keel keeps with the session, and no hook point reads them yet",
+  MessageDisplay: "the page renders the reply as it streams, with no step a hook could take part in",
+  TaskCreated: "the task list is written whole by one tool: a PreToolUse hook on that tool sees it",
+  TaskCompleted: "the task list is written whole by one tool: a PostToolUse hook on that tool sees it",
+  TeammateIdle: "Keel has no agent teams",
+  ConfigChange: "Keel reads its config files when it uses them and watches none for a session",
+  CwdChanged: "a session's folder does not change while it runs: every command starts in it",
+  DirectoryAdded: "no hook point where a folder is added to a session yet",
+  FileChanged: "Keel watches no files for a session",
+  WorktreeCreate: "Keel makes its agents' worktrees itself, and a hook does not replace that",
+  WorktreeRemove: "Keel removes the worktrees it made itself",
+  PreModelSwitch: "no hook point on a model switch yet",
+  PostModelSwitch: "no hook point on a model switch yet",
+  Elicitation: "Keel's MCP client answers no elicitation request",
+  ElicitationResult: "Keel's MCP client answers no elicitation request",
+};
+
+// What an event's hooks can answer. `context`: text for the model; `text`: plain
+// stdout is such text; `block`: exit code 2, decision "block" or continue false
+// refuses the thing; `goOn`: they send the session back to work instead.
+type Can = { context?: true; text?: true; block?: true; goOn?: true };
+const CAN: Record<HookEvent, Can> = {
+  SessionStart: { context: true, text: true },
+  SubagentStart: { context: true, text: true },
+  UserPromptSubmit: { context: true, text: true, block: true },
+  UserPromptExpansion: { context: true, text: true, block: true },
+  PreToolUse: { context: true, text: true, block: true },
+  PostToolUse: { context: true, text: true, block: true },
+  PostToolUseFailure: { context: true, text: true, block: true },
+  PostToolBatch: { context: true, text: true, block: true },
+  PermissionRequest: { block: true },
+  Stop: { goOn: true },
+  // Told only: nothing they answer changes what Keel does.
+  SubagentStop: {}, StopFailure: {}, SessionEnd: {}, PermissionDenied: {}, PreCompact: {}, PostCompact: {}, Notification: {}, Interrupt: {}, PreModelRequest: {}, PostModelRequest: {},
+};
+// Events whose hooks get `if` (a tool and a pattern); on the others a hook with `if` never runs.
+const TOOL_EVENTS = new Set<string>(["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied"]);
+// Seconds a hook gets when it names none: [default, most it may ask for].
+const TIMEOUTS: Partial<Record<HookEvent, [number, number]>> = { UserPromptSubmit: [30, 600], UserPromptExpansion: [30, 600], SessionEnd: [1.5, 60], Interrupt: [1, 3] };
+type Handler = { type: "command"; command: string; timeout?: number; onFailure?: "block" | "continue"; if?: string };
 type Group = { matcher?: string; hooks: Handler[] };
 
 // `covers`: the files under .keel/ the pin covers besides hooks.json (what its commands run).
@@ -168,7 +221,8 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
   let raw: any;
   try { raw = JSON.parse(text); } catch (e) { return { groups, problems: [`not JSON: ${(e as Error).message}`] }; }
   for (const [event, list] of Object.entries<any>(raw?.hooks ?? {})) {
-    if (!(EVENTS as readonly string[]).includes(event)) { problems.push(`${event}: not an event Keel runs`); continue; }
+    if (NOT_FIRED[event]) { problems.push(`${event}: never runs here (${NOT_FIRED[event]})`); continue; }
+    if (!(EVENTS as readonly string[]).includes(event)) { problems.push(`${event}: not an event of Claude Code, Codex or Keel`); continue; }
     if (!Array.isArray(list)) { problems.push(`${event}: must be a list`); continue; }
     const out: Group[] = [];
     for (const g of list) {
@@ -207,7 +261,50 @@ export function namesOf(tool: string, input: any, via?: string): string[] {
 // `allow`: a PreToolUse hook allowed the call, with its reason (a block or an
 // ask from another hook wins). `input`: the input a PreToolUse hook gave the
 // call in place of the model's (the first hook's, in file order).
-export type HookResult = { block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string };
+// `allow`: a PreToolUse hook allowed the call, with its reason (a block or an
+// ask from another hook wins); on PermissionRequest, a hook allowed the request.
+// `input`: the input a PreToolUse hook gave the call in place of the model's
+// (the first hook's, in file order). `continueWith`: a Stop hook sends the
+// session back to work with these words. `ran`: how many hooks ran.
+export type HookResult = { block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string; ran: number };
+
+// A matcher against the values an event is matched on (a tool's names, a
+// start's source, a compaction's trigger). As Claude Code reads it: nothing,
+// "" and "*" match all; letters, digits, _ - space , | are exact alternatives;
+// anything else is a regular expression, tested unanchored.
+export function matches(matcher: string | undefined, values: string[] | undefined): boolean {
+  if (!matcher || matcher === "*" || !values) return true;
+  if (/^[\w\- ,|]*$/.test(matcher)) {
+    const alts = matcher.split(/[|,]/).map((x) => x.trim());
+    return values.some((v) => alts.includes(v));
+  }
+  let re: RegExp;
+  try { re = new RegExp(matcher); } catch { return false; }
+  return values.some((v) => re.test(v));
+}
+
+// A hook's `if`: one permission rule, `Tool` or `Tool(pattern)`, where * in the
+// pattern stands for any text. A shell tool's pattern is tried on each command
+// of the line (leading VAR=value words aside), another tool's on the file it
+// names. What cannot be read runs the hook: the hook decides.
+export function ifHolds(rule: string, names: string[] | undefined, input: any, cwd: string): boolean {
+  const m = /^([\w.-]+)(?:\((.*)\))?$/s.exec(rule.trim());
+  if (!m || !names) return true;
+  if (!names.includes(m[1]!)) return false;
+  if (m[2] === undefined || m[2] === "*" || m[2] === "") return true;
+  // (`npm run:*`, the older way to write a prefix, is `npm run *`.)
+  const glob = new RegExp(`^${m[2].replace(/:\*$/, " *").split("*").map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "s");
+  const command = shellText(input);
+  if (command !== null) {
+    const parts = splitCommand(command);
+    if (!parts) return true;
+    return parts.some((p) => glob.test(p.text.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")) || glob.test(p.words.join(" ")));
+  }
+  const path = input?.file_path ?? input?.path ?? input?.notebook_path;
+  if (typeof path !== "string") return true;
+  const full = resolve(cwd, path);
+  return [path, full, relative(cwd, full), basename(full)].some((x) => glob.test(x));
+}
 
 export class Hooks {
   constructor(private store: Store) {
@@ -295,40 +392,59 @@ export class Hooks {
     return null;
   }
 
+  // The events a folder's active hook files have hooks for.
+  events(cwd: string, srcs = this.sources(cwd, true)): Set<HookEvent> {
+    const out = new Set<HookEvent>();
+    for (const src of srcs) if (src.active) for (const e of Object.keys(src.groups) as HookEvent[]) out.add(e);
+    return out;
+  }
+
   // Every active handler of an event that matches, run at the same time.
-  async run(event: HookEvent, s: Session, payload: Record<string, unknown>, match?: string[]): Promise<HookResult> {
-    const handlers: Handler[] = [];
-    for (const src of this.sources(s.workspace, true)) {
-      if (!src.active) continue;
-      for (const g of src.groups[event] ?? []) {
-        if (match && g.matcher && g.matcher !== "*" && !match.some((n) => new RegExp(`^(?:${g.matcher})$`).test(n))) continue;
-        handlers.push(...g.hooks);
-      }
-    }
-    const res: HookResult = { context: [] };
+  // `payload` is made only when a handler runs. `match`: the values the
+  // event's matcher is tested on (none: the event takes no matcher).
+  async run(event: HookEvent, s: Session, payload: Record<string, unknown> | (() => Record<string, unknown>), match?: string[], srcs = this.sources(s.workspace, true)): Promise<HookResult> {
+    const res: HookResult = { context: [], ran: 0 };
+    const groups: Group[] = [];
+    for (const src of srcs) if (src.active) for (const g of src.groups[event] ?? []) if (matches(g.matcher, match)) groups.push(g);
+    if (!groups.length) return res;
+    const data = { session_id: s.id, transcript_path: null, cwd: s.workspace, hook_event_name: event, model: s.model, ...(typeof payload === "function" ? payload() : payload) } as Record<string, any>;
+    const handlers = groups.flatMap((g) => g.hooks).filter((h) => h.if === undefined || (TOOL_EVENTS.has(event) && ifHolds(h.if, match, data.tool_input, s.workspace)));
     if (!handlers.length) return res;
-    const input = JSON.stringify({ session_id: s.id, cwd: s.workspace, hook_event_name: event, model: s.model, ...payload });
-    const outs = await Promise.all(handlers.map((h) => runHook(h, input, s.workspace, (h.timeout ?? (event === "UserPromptSubmit" ? 30 : 600)) * 1000)));
+    res.ran = handlers.length;
+    const can = CAN[event];
+    const input = JSON.stringify(data);
+    const [normal, most] = TIMEOUTS[event] ?? [600, 3600];
+    const outs = await Promise.all(handlers.map((h) => runHook(h, input, s.workspace, Math.min(h.timeout ?? normal, most) * 1000)));
+    let stop: string | undefined;
     for (const [i, o] of outs.entries()) {
       const h = handlers[i]!;
-      const fails = (why: string) => { if (h.onFailure === "block") res.block ??= `a hook failed (${why})`; };
+      const refuse = (why: string) => { if (can.block) res.block ??= why; };
+      const fails = (why: string) => { if (h.onFailure === "block") refuse(`a hook failed (${why})`); };
       if (o.code === null) { fails("it did not finish in time"); continue; }
-      if (o.code === 2) { res.block ??= o.stderr.trim() || "a hook blocked this"; continue; }
+      if (o.code === 2) {
+        if (can.goOn) res.continueWith ??= o.stderr.trim() || "a hook asked to go on";
+        else refuse(o.stderr.trim() || "a hook blocked this");
+        continue;
+      }
       if (o.code !== 0) { fails(`exit ${o.code}`); continue; }
       const text = o.stdout.trim();
       if (!text) continue;
       let j: any;
       try { j = JSON.parse(text); } catch {
-        if (event === "PreToolUse" || event === "UserPromptSubmit") { if (!text.startsWith("{")) { res.context.push(text); continue; } res.block ??= "a hook answered JSON that cannot be read"; }
-        else res.context.push(text);
+        if (!text.startsWith("{")) { if (can.text) res.context.push(text.slice(0, 10_000)); }
+        else if (event === "PreToolUse" || event === "UserPromptSubmit") refuse("a hook answered JSON that cannot be read");
         continue;
       }
+      if (!j || typeof j !== "object") continue;
       const hso = j.hookSpecificOutput ?? {};
       if (j.decision === "block") {
-        if (event === "Stop") res.continueWith ??= String(j.reason ?? "a hook asked to go on");
-        else res.block ??= String(j.reason ?? "a hook blocked this");
+        if (can.goOn) res.continueWith ??= String(j.reason ?? "a hook asked to go on");
+        else refuse(String(j.reason ?? "a hook blocked this"));
       }
-      if (j.continue === false && event !== "Stop") res.block ??= String(j.stopReason ?? "a hook stopped this");
+      if (j.continue === false) {
+        if (can.goOn) stop ??= String(j.stopReason ?? "");
+        else refuse(String(j.stopReason ?? "a hook stopped this"));
+      }
       if (event === "PreToolUse") {
         // The older top-level form: "approve" is "allow" ("block" is read above).
         const decision = hso.permissionDecision ?? (j.decision === "approve" ? "allow" : undefined);
@@ -341,11 +457,20 @@ export class Hooks {
           else res.block ??= "a hook answered an input for this call that is not an object";
         }
       }
-      if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) res.context.push(hso.additionalContext.trim().slice(0, 10_000));
-      if (typeof j.systemMessage === "string" && j.systemMessage.trim()) res.context.push(j.systemMessage.trim().slice(0, 10_000));
+      if (event === "PermissionRequest") {
+        const d = hso.decision ?? {};
+        if (d.behavior === "deny") res.block ??= String(d.message ?? "a hook denied this request");
+        // An allow that also changes the input or the standing rules is not taken: the owner gets the card.
+        else if (d.behavior === "allow" && d.updatedInput === undefined && d.updatedPermissions === undefined) res.allow ??= "";
+      }
+      if (can.context) {
+        if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) res.context.push(hso.additionalContext.trim().slice(0, 10_000));
+        if (typeof j.systemMessage === "string" && j.systemMessage.trim()) res.context.push(j.systemMessage.trim().slice(0, 10_000));
+      }
     }
-    // Between hooks: a block beats an ask, and an ask beats an allow.
+    // Between hooks: a block beats an ask, and an ask beats an allow; a hook that ends the session's work beats one that sends it back.
     if (res.block || res.ask) delete res.allow;
+    if (stop !== undefined) delete res.continueWith;
     return res;
   }
 }

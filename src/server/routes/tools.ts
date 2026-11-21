@@ -8,6 +8,8 @@ import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts"
 import { conceal } from "../../core/conceal.ts";
 import { ackNotices, adoptJobs, drainNotices, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
+import { hookContext } from "../../integrations/hooks.ts";
+import { promptExpansion } from "./hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
 
@@ -81,7 +83,11 @@ export const toolRoutes: RouteModule = (deps) => {
         const b = (await req.json().catch(() => ({}))) as { name?: string; args?: string };
         const r = renderForOwner(String(b.name ?? ""), String(b.args ?? ""), s.workspace, s.id);
         if ("error" in r) return json({ error: r.error }, 400);
-        const note = deps.store.append(s.id, "note", { text: `<skill name="${r.skill.name}">\n${r.text}\n</skill>`, model: true, skill: r.skill.name });
+        // The owner's UserPromptExpansion hooks see the command and what it expands to: they refuse it, or add to it.
+        const hooked = await promptExpansion?.(s, { name: r.skill.name, args: String(b.args ?? ""), source: r.skill.scope, prompt: r.text });
+        if (hooked?.block) return json({ error: `A hook refused this command: ${hooked.block}` }, 400);
+        const more = hooked?.context.length ? `\n${hookContext("UserPromptExpansion", hooked.context)}` : "";
+        const note = deps.store.append(s.id, "note", { text: `<skill name="${r.skill.name}">\n${r.text}\n</skill>${more}`, model: true, skill: r.skill.name });
         deps.bus.emit({ t: "event", event: note });
         const ev = deps.engine.send(s.id, `/${r.skill.name}${b.args?.trim() ? ` ${b.args.trim()}` : ""}`);
         return json({ event: ev }, 201);

@@ -1645,6 +1645,7 @@ export class Engine {
       this.verdicts.set(r, "denied");
       return told(r);
     };
+    let thrown: Error | undefined;
     try {
       // The owner's hooks first: every gate after them judges the input they left.
       for (const h of allHooks()) {
@@ -1706,10 +1707,17 @@ export class Engine {
       // named itself on the error, so the error row and the span point at each other.
       if (t0 !== undefined) ran(failed, "error", err);
       this.errors.capture("tool", err, { tool: u.name, session: ctx.sessionId });
-      return told(failed);
+      // A call that never ran (a gate threw) ends here; one whose tool threw goes to the hooks below.
+      if (t0 === undefined) return told(failed);
+      result = failed;
+      thrown = err;
     } finally {
       if (preparedInput && t0 === undefined) dropCallEnv(call.id);
       ctx.signal.removeEventListener("abort", onStop);
+    }
+    if (thrown) {
+      for (const h of allHooks()) await (async () => h.toolFailed?.(session, call, result, thrown))().catch((e) => this.errors.capture("server", e, { hook: "toolFailed", tool: u.name, session: session.id }));
+      return told(result);
     }
     // A hook that throws at once is caught like one that rejects.
     for (const h of allHooks()) await (async () => h.afterTool?.(session, call, result))().catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
@@ -1914,8 +1922,10 @@ export class Engine {
       return false;
     }
     this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
-    this.append(id, "compaction", data);
+    const ev = this.append(id, "compaction", data);
     this.emitSession(id);
+    const session = this.store.session(id);
+    if (session) void this.compacted(session, ev);
     return true;
   }
 
@@ -2120,7 +2130,7 @@ export class Engine {
     const gaveUp = opts.auto ? this.summaryGaveUp(id, events, st, over) : undefined;
     if (gaveUp) throw gaveUp;
     const transcript = !!opts.auto && over && !!this.gaveUpFor(id, events, st);
-    for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact", session: id }));
+    for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session, { auto: !!opts.auto, focus: opts.focus })).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact", session: id }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;
@@ -2150,10 +2160,16 @@ export class Engine {
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);
+      await this.compacted(session, ev);
       return ev;
     } finally {
       this.status(id, { kind: "idle" });
     }
+  }
+
+  // A summary is in place: told to the modules that follow compactions.
+  private async compacted(session: Session, ev: StoredEvent) {
+    for (const h of allHooks()) await Promise.resolve().then(() => h.afterCompact?.(session, ev)).catch((e) => this.errors.capture("server", e, { hook: "afterCompact", session: session.id }));
   }
 
   // Before the daemon stops: no new turn starts; running turns get `ms` to end

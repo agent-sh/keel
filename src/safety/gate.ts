@@ -580,6 +580,9 @@ export class Gate {
     return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined }, true);
   }
 
+  // Set by the hooks module: what the owner's PermissionRequest hooks answer for a card about to open.
+  requestHook?: (session: Session, call: ToolCall, name: string, ask: { risk: "high" | "low"; why?: string }) => Promise<{ allow: true } | { deny: string } | void>;
+
   // Calls the owner allowed on a card (the protected-path sweep leaves their work alone).
   ownerAllowed(callId: string | undefined): boolean {
     return !!callId && this.allowedCalls.has(callId);
@@ -590,7 +593,19 @@ export class Gate {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
-    const a: Approval = this.unpark(session.id, call.id, once) ?? {
+    const parked = this.unpark(session.id, call.id, once);
+    // A new card is about to open: the owner's PermissionRequest hooks first.
+    // A deny refuses the call. An allow answers a low-risk card in the owner's
+    // place, as a PreToolUse hook's allow does, and no other card.
+    if (!parked && this.requestHook) {
+      const r = await this.requestHook(session, call, name, { risk: ask.risk, why: ask.why });
+      if (r && "deny" in r) return r;
+      if (r && "allow" in r && ask.risk === "low" && !once && !ask.autoOwner) {
+        call.hook = { ...call.hook, allowed: call.hook?.allowed ?? "", skipped: true };
+        return;
+      }
+    }
+    const a: Approval = parked ?? {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, cut: ask.cut, notice: [ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.

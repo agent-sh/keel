@@ -188,6 +188,77 @@ repository's `.keel/hooks.json` runs only after you read it and pin it in
 Settings, Hooks. The pin holds the file and every script under `.keel/` its
 commands run. A changed file or script runs nothing until you pin it again.
 
+### Events
+
+Every hook gets one JSON object on stdin: `session_id`, `cwd`,
+`hook_event_name`, `model`, `permission_mode` (Keel's mode under Claude Code's
+name, with Keel's own in `keel_permission_mode`), `transcript_path` (always
+`null`: a session is rows in Keel's store, not a file), and the event's own
+fields. Inside a subagent `session_id` is the parent's, and `agent_id`,
+`agent_type` and `agent_session_id` name the agent.
+
+A `matcher` of letters, digits, `_`, `-`, spaces, `,` and `|` is a list of
+exact names. Anything else is a regular expression, tested unanchored. No
+matcher, `""` and `"*"` match all. A hook's `if` (`Bash(rm *)`, `Edit(*.ts)`)
+narrows it further on the tool events; on other events a hook with `if` never
+runs.
+
+These fire, most used first:
+
+| Event | When | Matcher | Own fields | What its hooks can do |
+| --- | --- | --- | --- | --- |
+| `SessionStart` | The first prompt of a session, and the first prompt after its context was cleared or compacted | `source`: `startup`, `clear`, `compact` | `source` | Add context (plain stdout or `additionalContext`) |
+| `Stop` | A turn ends by itself, outside a subagent | none | `stop_hook_active`, `last_assistant_message` | Exit code 2 or `decision: "block"` sends the session back to work with the reason, five times in a row at most. `continue: false` from any hook lets it stop |
+| `UserPromptSubmit` | A prompt is about to reach the model | none | `prompt` | Block the prompt, add context |
+| `PostToolUse` | A call ran and did not fail | tool name | `tool_name`, `tool_input`, `tool_response`, `tool_use_id`, `duration_ms` | Add context to the result. A block is told to the model: the call already ran |
+| `PostToolUseFailure` | A call's result is an error, or its tool threw | tool name | `tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`, `duration_ms` | Add context to the result |
+| `UserPromptExpansion` | You run a slash command, before its prompt is stored | command name | `expansion_type`, `command_name`, `command_args`, `command_source`, `prompt` | Block the command, add context |
+| `PreToolUse` | Before a call, before the permission gate | tool name | `tool_name`, `tool_input`, `tool_use_id` | Block, ask, allow, change the input, add context (see below) |
+| `StopFailure` | A turn ends in an error, or at the output limit | error type: `rate_limit`, `authentication_failed`, `billing_error`, `server_error`, `invalid_request`, `max_output_tokens`, `unknown` | `error`, `error_details`, `last_assistant_message` | Told only |
+| `SubagentStop` | A subagent's turn ends by itself | agent type | `stop_hook_active`, `agent_transcript_path` (`null`), `last_assistant_message` | Told only: the agent's report is already on its way to its parent |
+| `SessionEnd` | A session is archived or deleted, once | `reason`: `other` | `reason`, `keel_reason` (`archived`, `deleted`) | Told only. 1.5 s unless the hook names a timeout, 60 s at most |
+| `PermissionRequest` | An approval card is about to open | tool name | `tool_name`, `tool_input`, `keel_risk`, `keel_reason` | `decision.behavior` `deny` refuses the call. `allow` answers a low-risk card, as a `PreToolUse` allow does. An allow that carries `updatedInput` or `updatedPermissions` is not taken |
+| `PreCompact` | Before a compaction | `trigger`: `manual`, `auto` | `trigger`, `custom_instructions` | The compaction waits for it. It cannot block: a compaction at the window has to happen |
+| `SubagentStart` | A subagent's first prompt | agent type | none | Add context for the subagent |
+| `PostCompact` | A summary took the place of the history | `trigger` | `trigger`, `compact_summary` | Told only |
+| `Notification` | Keel raises an alert for a session | `notification_type`: `permission_prompt`, `agent_needs_input`, `idle_prompt`, or Keel's alert kind | `message`, `title`, `notification_type`, `keel_kind` | Told only |
+| `PermissionDenied` | The judge or the reviewer refuses a call without you | tool name | `tool_name`, `tool_input`, `tool_use_id`, `reason` | Told only: the retry is yours to allow |
+| `PostToolBatch` | All calls of a step returned, before the next model request | none | `tool_calls` | Add context. A block stops the turn as your stop does |
+| `Interrupt` | You stop a running turn | none | none | Told only. 1 s, 3 s at most |
+| `PreModelRequest` | Before every request to a model, a retry too | none | `model`, `purpose` | Told only |
+| `PostModelRequest` | That request ended | none | `model`, `purpose`, `status`, `error`, `token_usage` | Told only |
+
+The last three are Codex's. A hook that is told only runs beside the session:
+nothing waits for it, and nothing it answers changes what Keel does.
+
+These never fire. A file that names one loads, and its list in Settings says
+why the event never runs:
+
+| Event | Why |
+| --- | --- |
+| `Setup` | Keel has no init or maintenance run |
+| `InstructionsLoaded` | Instruction files are part of the system prompt Keel keeps with the session. No hook point reads them yet |
+| `MessageDisplay` | The page renders the reply as it streams |
+| `TaskCreated`, `TaskCompleted` | The task list is written whole by one tool. A `PreToolUse` or `PostToolUse` hook on that tool sees it |
+| `TeammateIdle` | Keel has no agent teams |
+| `ConfigChange` | Keel reads its config files when it uses them and watches none |
+| `CwdChanged` | A session's folder does not change while it runs |
+| `DirectoryAdded` | No hook point where a folder is added to a session yet |
+| `FileChanged` | Keel watches no files for a session |
+| `WorktreeCreate`, `WorktreeRemove` | Keel makes and removes its agents' worktrees itself |
+| `PreModelSwitch`, `PostModelSwitch` | No hook point on a model switch yet |
+| `Elicitation`, `ElicitationResult` | Keel's MCP client answers no elicitation request |
+
+Also not done: `SessionStart` with `resume` or `fork` (a session lives in the
+daemon and a fork copies its history, so neither is a new start),
+`defer`, `updatedToolOutput`, `updatedMCPToolOutput`, `suppressOutput`, and
+`async` (such a hook runs like any other and is waited for).
+
+The event list and fields are from the
+[Claude Code hooks reference](https://code.claude.com/docs/en/hooks) (33
+events) and the [Codex hooks page](https://developers.openai.com/codex/hooks)
+(14 events, three of them its own), read on 2026-11-21.
+
 ### What a PreToolUse hook can do to a call
 
 A `PreToolUse` hook runs before the permission gate. It answers with

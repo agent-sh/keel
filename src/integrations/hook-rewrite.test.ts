@@ -8,9 +8,9 @@ import { join } from "node:path";
 const { Store } = await import("../core/store.ts");
 const { Bus } = await import("../core/bus.ts");
 const { Engine } = await import("../engine/turn.ts");
-const { registerHooks } = await import("../engine/hooks.ts");
+const { allHooks, registerHooks } = await import("../engine/hooks.ts");
 const { Gate } = await import("../safety/gate.ts");
-const { hookRoutes, changedInput } = await import("../server/routes/hooks.ts");
+const { joinHooks, changedInput } = await import("../server/routes/hooks.ts");
 const { Hooks } = await import("./hooks.ts");
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "hk-"));
@@ -53,11 +53,15 @@ const s = store.createSession({ model: "fixture:m", workspace: ws });
 const errors = { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any;
 const engine = new Engine(store, bus, {} as any, errors, join(dir, "spill"));
 const gate = new Gate(store, bus);
-// The order the daemon registers them in: the owner's hooks prepare the call, then the gate judges it.
+// The order the daemon registers them in: the gate, then the owner's hooks (which prepare the call before the gate judges it).
+const registered = allHooks().length;
 registerHooks({ beforeTool: (session, c) => (session.id === s.id ? gate.beforeTool(s, c) : undefined) });
-hookRoutes({ store, bus, engine, errors, workspace: ws } as any);
+joinHooks({ store, bus, engine, errors, workspace: ws } as any, gate);
 const seen: { input: any; hook: any }[] = [];
 registerHooks({ toolRan: (session, c) => { if (session.id === s.id) seen.push({ input: c.input, hook: c.hook }); } });
+// What this file joined to the turn loop leaves with it.
+const mine = allHooks().slice(registered);
+afterAll(() => { for (const h of mine) allHooks().splice(allHooks().indexOf(h), 1); });
 
 const bash = { name: "Bash", description: "", kind: "shell", readOnly: false, input_schema: { type: "object", properties: { command: {} } }, run: async (input: any) => ({ content: `ran: ${input.command}` }) } as any;
 let n = 0;

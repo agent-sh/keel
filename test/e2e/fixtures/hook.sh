@@ -13,6 +13,10 @@ case "$1" in
     if has 'askme'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"askme commands need the owner"}}'; exit 0; fi
     if has 'allowme'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'; exit 0; fi
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"hook-ctx: the owner hook saw this call"}}' ;;
+  log)
+    # Keeps what an event was given, one file each, in the session's folder. Usage: hook.sh log <Event>
+    mkdir -p "$KEEL_PROJECT_DIR/.hook-seen" && printf '%s' "$input" > "$KEEL_PROJECT_DIR/.hook-seen/$2.$$.$RANDOM.json"
+    if [ "$2" = UserPromptSubmit ] && has 'refuse-this-prompt'; then echo '{"decision":"block","reason":"this prompt is refused"}'; fi ;;
   rewrite)
     # A changed input with an allow: a low-risk command the allow answers, and a high-risk one that still asks.
     if has 'asked-by-model-high'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"sudo rm -rf /var/lib/hook-e2e-thing"}}}'; exit 0; fi
