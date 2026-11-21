@@ -131,9 +131,22 @@ export async function set(sessionId: string, input: { objective: string; token_b
   return g;
 }
 
-const resume = (g: Goal) => deliver(g.session_id, `[harness] The goal is back on. Continue toward it:\n${g.objective}`, { kind: "goal", goal: "resume" });
+// A goal's prompt goes only while its goal is the one pursued. Lined up behind
+// a running turn, it is dropped when that turn's end pauses the goal (the owner
+// stopped it, it failed) or the goal was paused, cleared or replaced meanwhile:
+// a stop is not followed by a turn the goal starts.
+function prompt(g: Goal, text: string, goal: "start" | "continue" | "resume") {
+  const mine = instance(g);
+  const part = { text, meta: { kind: "goal", goal } };
+  return deliver(g.session_id, text, part.meta, { refresh: () => { const now = get(g.session_id); return active(now) && instance(now) === mine ? part : undefined; } });
+}
+const bullets = (items?: string[] | null) => (items?.length ? `\n${items.map((e) => `- ${e}`).join("\n")}` : "");
+// What the last check found, when it was not met: the worker goes on from that, not from the objective alone.
+const findings = (g: Goal) =>
+  g.last_verdict === "not_met" && g.last_reason ? `\n\nThe last check found it not met${g.evidence ? " (an independent check of the work)" : ""}: ${g.last_reason}${bullets(g.evidence)}` : "";
+const resume = (g: Goal) => prompt(g, `[harness] The goal is back on. Continue toward it:\n${g.objective}${findings(g)}`, "resume");
 const kickoff = (g: Goal) =>
-  deliver(g.session_id, `${g.objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation, and before it counts as met an independent verifier checks the files and reruns what proves it, so leave evidence it can check: run the test, print the file.)`, { kind: "goal", goal: "start" });
+  prompt(g, `${g.objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation, and before it counts as met an independent verifier checks the files and reruns what proves it, so leave evidence it can check: run the test, print the file.)`, "start");
 
 export async function patch(sessionId: string, p: { status?: "paused" | "pursuing"; objective?: string; token_budget?: number | null; max_turns?: number | null; verifier_model?: string | null }): Promise<Goal> {
   const g = get(sessionId);
@@ -298,7 +311,7 @@ function verified(sessionId: string, ours: (x?: Goal) => boolean, done: (x: Goal
   activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400), undefined, turn);
   next = { ...next, last_verdict: r.verdict, last_reason: r.reason, evidence: r.evidence };
   if (r.verdict === "met") return void done({ ...next, status: "achieved", status_reason: r.reason, verified: true });
-  return { next, reason: `${r.reason}${r.evidence.length ? `\n${r.evidence.map((e) => `- ${e}`).join("\n")}` : ""}` };
+  return { next, reason: `${r.reason}${bullets(r.evidence)}` };
 }
 
 // A goal that is not met goes on with the reason, unless its budget is spent or it stalled.
@@ -306,7 +319,7 @@ function onward(next: Goal, reason: string, done: (x: Goal) => Goal) {
   if (spent(next)) return void done({ ...next, status: "budget", status_reason: next.max_turns != null && next.turns >= next.max_turns ? `ran its ${next.max_turns} turns` : `spent its ${next.token_budget} tokens` });
   if (next.idle_turns >= STALL_TURNS) return void done({ ...next, status: "stalled", status_reason: `${STALL_TURNS} turns in a row used no tool` });
   done(next);
-  deliver(next.session_id, `[harness] The goal is not met yet${next.evidence ? " (an independent check of the work found this)" : ""}: ${reason}\nContinue toward it.`, { kind: "goal", goal: "continue" });
+  prompt(next, `[harness] The goal is not met yet${next.evidence ? " (an independent check of the work found this)" : ""}: ${reason}\nContinue toward it.`, "continue");
 }
 
 // A restart was called off: a turn that ended while the daemon drained was

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { alertHook, dropPending, setDeps } from "./core.ts";
+import { alertHook, dropPending, flush, hasPending, setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
@@ -471,6 +471,50 @@ test("a verifier the engine does not continue pauses the goal and tells the owne
   await quiet();
   expect(goals.get(g.id)).toMatchObject({ status: "paused", verifying: false });
   expect(verifiersOf(g.id)).toEqual([g.child]);
+});
+
+test("a continuation lined up behind a turn the owner stops is dropped, and the resume carries the verifier's findings", async () => {
+  const g = await judgedMet("ship it");
+  // The owner writes in the session while the verifier works: the verdict's continuation waits for that turn.
+  running = true;
+  store.append(g.id, "user", { text: "also update the docs" });
+  store.append(g.id, "turn_start", {});
+  verifierSays(g.child, '{"verdict": "not_met", "reason": "one test fails", "evidence": ["bun test: 1 fail in parse.test.ts"]}');
+  await g.check;
+  expect(hasPending(g.id)).toBe(true);
+  // The owner stops the turn: its end pauses the goal, and what was lined up does not start a turn.
+  store.append(g.id, "turn_end", { reason: "interrupted", usage: usage(2) });
+  running = false;
+  await goals.afterTurn(g.id, "interrupted");
+  flush(g.id);
+  expect(goals.get(g.id)).toMatchObject({ status: "paused", status_reason: "the turn was stopped" });
+  expect(said(g.id, "continue")).toHaveLength(0);
+  expect(hasPending(g.id)).toBe(false);
+  // Resumed: the prompt says what the verifier found.
+  await goals.patch(g.id, { status: "pursuing" });
+  const text = said(g.id, "resume").map((e) => e.data.text as string);
+  expect(text).toHaveLength(1);
+  expect(text[0]).toContain("ship it");
+  expect(text[0]).toContain("an independent check of the work");
+  expect(text[0]).toContain("one test fails\n- bun test: 1 fail in parse.test.ts");
+
+  // A turn that ends by itself still gets what was lined up behind it.
+  const h = await judgedMet("ship it");
+  running = true;
+  store.append(h.id, "user", { text: "also update the docs" });
+  verifierSays(h.child, '{"verdict": "not_met", "reason": "one test fails"}');
+  await h.check;
+  turn(h.id, 3);
+  running = false;
+  await goals.afterTurn(h.id, "end_turn", { judge: false });
+  flush(h.id);
+  expect(said(h.id, "continue")).toHaveLength(1);
+  // A goal with no check behind it resumes with its objective alone.
+  const plain = session();
+  await goals.set(plain.id, { objective: "ship it" });
+  await goals.patch(plain.id, { status: "paused" });
+  await goals.patch(plain.id, { status: "pursuing" });
+  expect(said(plain.id, "resume").map((e) => e.data.text)).toEqual(["[harness] The goal is back on. Continue toward it:\nship it"]);
 });
 
 test("a draining daemon asks no judge and starts no verifier: the check is the next start's", async () => {
