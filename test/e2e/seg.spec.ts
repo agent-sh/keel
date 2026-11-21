@@ -47,6 +47,19 @@ test("tabs and segmented choices share one keyboard", async ({ page, request }) 
     await p.keyboard.press("Home");
   };
 
+  // The pane count is the same control with glyphs for options: each is square, so the
+  // track stays narrow and the rail's fold toggle keeps its place inside the rail.
+  const count = await page.getByTestId("pane-count").evaluate((el) => {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const kids = [...el.children].map((k) => k.getBoundingClientRect());
+    const rail = el.closest(".k-rail")!.getBoundingClientRect(), fold = el.closest(".k-rail")!.querySelector(".k-fold")!.getBoundingClientRect();
+    return { n: kids.length, widest: Math.max(...kids.map((k) => k.width)) / rem, tall: kids[0]!.height / rem, track: el.getBoundingClientRect().width / rem, room: rail.right - fold.right };
+  });
+  console.log(`pane count: ${JSON.stringify(count)}`);
+  expect(count.widest).toBeCloseTo(count.tall, 1);
+  expect(count.track).toBeLessThanOrEqual(count.n * 1.5 + 0.6);
+  expect(count.room).toBeGreaterThanOrEqual(6);
+
   await walk(page, page.getByRole("tablist", { name: "Session list" }), ["Sessions", "Archived"]);
   await shoot(page, "seg-01-session-list");
   await page.getByTestId("errors-button").first().click();
