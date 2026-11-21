@@ -86,13 +86,27 @@ describe("admin commands", () => {
   let stand: ReturnType<typeof Bun.serve>;
   const k = (args: string[]) => keel([...args, "--url", `http://127.0.0.1:${stand.port}`], { state, env: { XDG_CONFIG_HOME: join(SCRATCH, "config") } });
   beforeAll(() => {
-    stand = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => {
+    stand = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (req) => {
       const u = new URL(req.url);
-      asked.push(`${req.method} ${u.pathname}${u.search}`);
+      asked.push(`${req.method} ${u.pathname}${u.search}${req.method === "POST" ? ` ${await req.text()}` : ""}`);
       return Response.json(u.pathname === "/api/health" ? { ok: true, pid: 1 } : answers[u.pathname] ?? {});
     } });
   });
   afterAll(() => stand?.stop(true));
+
+  test("upgrade --help says it restarts the binary in place and installs nothing", async () => {
+    const up = await k(["upgrade", "--help"]);
+    const re = await k(["restart", "--help"]);
+    // The alias still asks for the same drain with a restart.
+    answers = { "/api/daemon": { pid: 1 }, "/api/drain": { running: [] } };
+    asked.length = 0;
+    const ran = await k(["upgrade", "--no-wait", "--timeout", "5"]);
+    expect({ up: [up.code, up.out.split("\n").slice(0, 3)], re: [re.code, re.out], ran: [ran.code, ran.out, asked.at(-1)] }).toEqual({
+      up: [0, ["keel upgrade [--timeout SECONDS] [--no-wait] [--url URL]", "  Restarts the daemon from the binary already at its path, the same as keel restart.", "  It installs nothing: put a new binary there first."]],
+      re: [0, "keel restart [--timeout SECONDS] [--no-wait] [--url URL]\n  Stops new work, lets running turns finish (default 120 s), parks the rest so they continue after the start, then starts the daemon again from its binary.\n"],
+      ran: [0, "draining: 0 turns running, up to 5 s\n", 'POST /api/drain {"timeout_seconds":5,"restart":true}'],
+    });
+  }, 30_000);
 
   test("usage --days takes a number of days above 0, and nothing else", async () => {
     const sinceOf = async (args: string[]) => {
