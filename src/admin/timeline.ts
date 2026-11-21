@@ -257,12 +257,14 @@ export class Timeline {
   }
 
   // The prompt a turn answers: the event before its start, past the notes and
-  // checkpoints between. Only what says who sent it is read off it.
+  // checkpoints between. What says who sent it is read off it, and of a prompt
+  // the owner typed its first words (`about`, for the owner's page only).
   private opener(sessionId: string, parent: string | null): Opener {
     const q = this.store.db.query<{ kind: string; parent: string | null; session_id: string; o: string | null }, [string]>(
       `SELECT kind, parent, session_id, CASE WHEN kind = 'user' THEN json_object('origin', data ->> '$.origin', 'kind', data ->> '$.kind', 'queue_id', data ->> '$.queue_id',
                   'wait_id', data ->> '$.wait_id', 'agent_id', data ->> '$.agent_id', 'loop_id', data ->> '$.loop_id', 'run_id', data ->> '$.run_id', 'from', data ->> '$.from',
-         'outcome', data ->> '$.outcome', 'status', data ->> '$.status') END AS o
+         'outcome', data ->> '$.outcome', 'status', data ->> '$.status',
+         'about', CASE WHEN data ->> '$.kind' IS NULL AND COALESCE(data ->> '$.origin', '') IN ('', 'steer', 'queued', 'voice', 'cli') THEN substr(data ->> '$.text', 1, 240) END) END AS o
        FROM events WHERE id = ?`);
     for (let id = parent, hops = 0; id && hops < 32; hops++) {
       const e = q.get(id);

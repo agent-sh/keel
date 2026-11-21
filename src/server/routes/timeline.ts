@@ -140,7 +140,9 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
         const page = q.get("format") === "text" ? await timeline.settled(s.id, opts) : timeline.page(s.id, opts);
         const headers = { "cache-control": "no-store" };
         if (q.get("format") === "text") return new Response(timelineText(page, { title: s.title, ids: q.get("ids") !== "0" }) + "\n", { headers: { ...headers, "content-type": "text/plain; charset=utf-8" } });
-        return Response.json(page, { headers });
+        // Rows are content-free unless the reader asks for what each turn was about
+        // (the owner's page does): the first words of the owner's own prompts.
+        return Response.json(q.get("about") === "1" ? page : { ...page, rows: page.rows.map(({ about: _about, ...r }) => r) }, { headers });
       },
     },
   };

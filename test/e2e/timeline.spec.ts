@@ -182,6 +182,14 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     // Content-free: the title and the agent's title, never a prompt, a command or a note.
     const body = JSON.stringify(all);
     for (const word of PRIVATE) expect(body).not.toContain(word);
+    // The owner's page asks for what each turn was about: the first words of the owner's own prompts,
+    // and of nothing else (an agent's report, a wake and a restart start turns too).
+    const told = await timeline("?about=1");
+    const about = told.rows.filter((r) => r.about);
+    expect(about.map((r) => r.about)).toContain("script:slow timeline-prompt-marker");
+    expect(about.every((r) => r.kind === "turn" && ["owner", "queued", "steer"].includes(r.turn!.origin))).toBe(true);
+    expect(told.rows.filter((r) => r.turn && !["owner", "queued", "steer"].includes(r.turn.origin)).length).toBeGreaterThan(0);
+    expect(all.rows.some((r) => "about" in r)).toBe(false);
     // The same story as text, for a model; without ids when it only reads.
     const plain = await (await fetch(`${d.url}${base}/timeline?format=text`)).text();
     expect(plain).toContain('Timeline of session "Parser cleanup"');
@@ -231,6 +239,8 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await expect(panel.getByTestId("timeline-state")).toHaveText(/^(Waiting|Idle)$/);
     await expect(panel.getByTestId("timeline-now-line").first()).toHaveText(/Waits on a background command|Nothing is running or waited on\. The last turn finished\./);
     await expect(rows.first()).toContainText("Resumed after a daemon restart, 1 step");
+    // A turn the owner started leads with what they asked; what it took is the line under it.
+    await expect(panel.getByTestId("timeline-about").filter({ hasText: "script:slow timeline-prompt-marker" })).toHaveCount(1);
     await expect(panel.getByTestId("timeline-bad")).toHaveText("1 failed tool");
     // The minute is said once; rows in the same minute show their time to the second, whole: every row has a full time.
     await expect(panel.locator("time").first()).toHaveText(/^\d\d:\d\d$/);

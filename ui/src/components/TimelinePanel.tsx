@@ -373,7 +373,13 @@ function Panel({ session }: { session: Session }) {
                       {stamp}
                     </time>
                     <span className={cn("grid h-5 place-items-center", aside && "opacity-50")} aria-hidden><Mark row={r} /></span>
-                    <span className={cn("text-ui leading-5", ink(r.tone === "live" ? "plain" : r.tone, turn ? "text-fg" : "text-muted"), aside && "text-faint")}><Sentence row={r} /></span>
+                    {/* A turn the owner started reads as their prompt's first words; what it took is the line under it. */}
+                    {r.about ? (
+                      <span className={cn("min-w-0", aside && "opacity-60")}>
+                        <span className="block truncate text-ui leading-5 text-fg" data-testid="timeline-about">{r.about}</span>
+                        <span className={cn("block text-caption leading-5", ink(r.tone === "live" ? "plain" : r.tone, "text-muted"))}><Sentence row={r} /></span>
+                      </span>
+                    ) : <span className={cn("text-ui leading-5", ink(r.tone === "live" ? "plain" : r.tone, turn ? "text-fg" : "text-muted"), aside && "text-faint")}><Sentence row={r} /></span>}
                     <span className="pt-px k-face-figure text-micro leading-5 text-muted">{turn ? (r.open ? <Since ts={r.ts} /> : r.ms ? dur(r.ms) : "") : ""}</span>
                   </button>
                   {isOpen && <Detail row={r} sessionId={id} />}

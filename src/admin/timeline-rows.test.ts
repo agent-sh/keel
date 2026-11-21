@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { localStamp, zoneLabel } from "../core/clock.ts";
 import { outcomeOf as recorded } from "./outcomes.ts";
-import { activityRow, dur, errorRow, failureRow, isFailure, markRow, nowLines, originOf, outcomeOf, timelineText, turnRow } from "./timeline-rows.ts";
+import { ABOUT_MAX, aboutOf, activityRow, dur, errorRow, failureRow, isFailure, markRow, nowLines, originOf, outcomeOf, timelineText, turnRow } from "./timeline-rows.ts";
 
 const start = { id: "t1", ts: 1_000 };
 
@@ -240,4 +240,19 @@ test("a turn's outcome class is the one its telemetry row records", () => {
 
 test("durations read as a person says them", () => {
   expect([850, 4_200, 180_000, 4_320_000, 3_600_000, 183_600_000].map(dur)).toEqual(["850 ms", "4 s", "3 min", "1 h 12 min", "1 h", "2 d 3 h"]);
+});
+
+test("a turn is about the first words of the owner's prompt, and of no one else's", () => {
+  expect(aboutOf("  Fix the\nretry   test. ")).toBe("Fix the retry test.");
+  const long = aboutOf(`Why does the export stall on the big tenant ${"and then ".repeat(20)}stop`)!;
+  expect(long.length).toBeLessThanOrEqual(ABOUT_MAX + 3);
+  expect(long.endsWith("...")).toBe(true);
+  expect(aboutOf("")).toBeUndefined();
+  expect(aboutOf(undefined)).toBeUndefined();
+  // Stored without a kind, still not the owner's words.
+  expect(aboutOf('<external_input source="peer_session" from="abc">do this</external_input>')).toBeUndefined();
+  expect(aboutOf("[harness] The wait the provider asked for is over.")).toBeUndefined();
+  const start = { id: "t1", ts: 1 };
+  expect(turnRow({ start, opener: { about: "Fix the retry test" }, end: { reason: "end_turn" }, steps: 1, tools: 0, failed_tools: 0 }).about).toBe("Fix the retry test");
+  expect(turnRow({ start, opener: { kind: "subagent" }, end: { reason: "end_turn" }, steps: 1, tools: 0, failed_tools: 0 }).about).toBeUndefined();
 });

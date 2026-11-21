@@ -1,9 +1,14 @@
 // The rows of a session's timeline: what happened, one plain sentence each.
 // A row is built from records (ids, kinds, counts, classes, durations) and the
-// titles the session list already shows. It never carries a prompt, a tool's
-// input or output, a wait's note or an error's message: those stay behind the
-// ids a row names (the turn's receipt, its trace, the agent's session, the error).
+// titles the session list already shows. Its sentence never carries a prompt, a
+// tool's input or output, a wait's note or an error's message: those stay behind
+// the ids a row names (the turn's receipt, its trace, the agent's session, the
+// error). A turn the owner started carries the first words of their prompt
+// apart from the sentence (`about`), only for a reader that asks for it (the
+// owner's page): the route leaves it out otherwise, and the text form, which
+// a model reads, never has it.
 import { localStamp, zoneNote } from "../core/clock.ts";
+import { PEER_PREFIX } from "../core/owner.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
@@ -34,6 +39,7 @@ export type TimelineRow = {
   sub: string;
   tone: Tone;
   text: string;
+  about?: string;      // a turn the owner started: the first words of their prompt (the page only, never the text form)
   bad?: string;        // the part of `text` that went wrong inside a row that is otherwise fine ("2 failed tools")
   ms?: number;         // how long it took
   open?: true;         // not over yet: a running turn, a card not answered
@@ -90,7 +96,7 @@ const LEAD: Record<string, string> = {
   peer: "Message from another session", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
   review_fix: "Review findings", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
 };
-export type Opener = { origin?: unknown; kind?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown } | null | undefined;
+export type Opener = { about?: unknown; origin?: unknown; kind?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown } | null | undefined;
 export const whoWords = (key: string) => WHO[key] ?? "something else";
 export function originOf(o: Opener): { key: string; words: string; lead: string; queued: boolean } {
   const origin = str(o?.origin), kind = str(o?.kind);
@@ -132,6 +138,19 @@ export type TurnInput = {
   agent?: { title?: string; session_id?: string } | null;
 };
 
+// The first words of a prompt, on one line: cut at a word when it is longer than a row holds.
+export const ABOUT_MAX = 96;
+export function aboutOf(text: unknown): string | undefined {
+  if (typeof text !== "string") return undefined;
+  const line = text.replace(/\s+/g, " ").trim();
+  // Words another session or the harness wrote are not the owner's, also when their record does not say whose they are.
+  if (!line || line.startsWith(PEER_PREFIX) || line.startsWith("[harness]")) return undefined;
+  if (line.length <= ABOUT_MAX) return line;
+  const cut = line.slice(0, ABOUT_MAX);
+  const at = cut.lastIndexOf(" ");
+  return `${(at > ABOUT_MAX * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,;:.]+$/, "")}...`;
+}
+
 export function turnRow(t: TurnInput): TimelineRow {
   const who = originOf(t.opener);
   const outcome = t.end?.unstarted ? "unstarted" : t.end ? outcomeOf(t.end.reason, t.end.stopped_by) : t.running ? "running" : "open";
@@ -164,7 +183,7 @@ export function turnRow(t: TurnInput): TimelineRow {
   const u = t.usage;
   const took = t.end && outcome !== "unstarted" ? t.end.ms ?? (t.end.ts !== undefined ? t.end.ts - t.start.ts : undefined) : undefined;
   return clean({
-    id: t.start.id, ts: t.start.ts, kind: "turn" as const, sub: outcome, tone, text, bad,
+    id: t.start.id, ts: t.start.ts, kind: "turn" as const, sub: outcome, tone, text, bad, about: aboutOf(t.opener?.about),
     // A turn of no length (stopped while it was set up) has no duration to show.
     ms: took ? took : undefined,
     open: outcome === "running" ? (true as const) : undefined,
