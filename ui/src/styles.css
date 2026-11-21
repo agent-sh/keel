@@ -243,6 +243,31 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
   textarea, input { font-size: max(16px, 1rem) !important; }
 }
 
+/* Conversation dialogs (export, summarize, confirm): one height and scroll
+   contract. The popup never grows past the window: its title and its actions
+   keep their place and the details between them scroll. On a short window
+   the padding gives way first (--k-dialog-pad). */
+.k-dialog {
+  --k-dialog-pad: min(1.25rem, 4.5dvh);
+  --k-dialog-top: max(0.75rem, min(12vh, (100dvh - 34rem) / 2));
+  position: fixed; z-index: 50; left: 50%; top: 50%; translate: -50% -50%;
+  display: flex; flex-direction: column;
+  width: min(var(--k-dialog-w, 30rem), calc(100vw - 2rem));
+  max-height: calc(100dvh - 1.5rem);
+  overflow: hidden;
+  timeline-scope: --k-dialog-scroll;
+}
+/* Hung from the top: a result that arrives below does not move what was read. */
+.k-dialog[data-anchor="top"] { top: var(--k-dialog-top); translate: -50% 0; max-height: calc(100dvh - var(--k-dialog-top) - 0.75rem); }
+.k-dialog > * { flex-shrink: 0; }
+.k-dialog > .k-dialog-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; scroll-timeline: --k-dialog-scroll block; }
+.k-dialog-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; border-top: 1px solid transparent; }
+/* A hairline over the actions while details are still below them. */
+@supports (animation-timeline: scroll()) {
+  .k-dialog-foot { animation: k-dialog-more linear both; animation-timeline: --k-dialog-scroll; }
+}
+@keyframes k-dialog-more { from, 98% { border-top-color: var(--line); } to { border-top-color: transparent; } }
+
 /* Rendered markdown in assistant replies. */
 .prose-keel { font-size: var(--text-read); line-height: 1.7; overflow-wrap: anywhere; }
 .prose-keel > * + * { margin-top: 0.8em; }

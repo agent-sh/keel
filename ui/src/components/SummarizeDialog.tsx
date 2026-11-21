@@ -57,14 +57,16 @@ function Host() {
     <Dialog.Root open={!!ask} onOpenChange={(o) => !o && close()}>
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-50 bg-overlay transition-opacity duration-150 data-starting-style:opacity-0 data-ending-style:opacity-0" />
-        <Dialog.Popup data-testid="summarize-dialog" className="fixed left-1/2 top-1/2 z-50 w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-line bg-raised p-5 shadow-3">
-          <Dialog.Title className="text-[1.0938rem] font-semibold">{t.title}</Dialog.Title>
-          <Dialog.Description className="mt-1.5 text-ui text-muted">{t.body}</Dialog.Description>
-          <label className="mt-4 block text-caption text-muted" htmlFor="summarize-focus">Keep above all (optional)</label>
-          <textarea id="summarize-focus" data-testid="summarize-focus" value={focus} onChange={(e) => setFocus(e.target.value)} rows={2} disabled={busy}
-            className="mt-1 w-full resize-none rounded-md border border-line bg-sunken px-2 py-1.5 text-ui outline-none placeholder:text-faint focus:ring-2 focus:ring-ring" placeholder="The API decisions, the failing test names" />
-          {error && <p className="mt-2 text-caption text-danger" role="alert">{error}</p>}
-          <div className="mt-4 flex justify-end gap-2">
+        <Dialog.Popup data-testid="summarize-dialog" className="k-dialog rounded-xl border border-line bg-raised shadow-3">
+          <Dialog.Title className="px-[var(--k-dialog-pad)] pt-[var(--k-dialog-pad)] text-[1.0938rem] font-semibold">{t.title}</Dialog.Title>
+          <div className="k-dialog-body mt-1.5 px-[var(--k-dialog-pad)] pb-1">
+            <Dialog.Description className="text-ui text-muted">{t.body}</Dialog.Description>
+            <label className="mt-4 block text-caption text-muted" htmlFor="summarize-focus">Keep above all (optional)</label>
+            <textarea id="summarize-focus" data-testid="summarize-focus" value={focus} onChange={(e) => setFocus(e.target.value)} rows={2} disabled={busy}
+              className="mt-1 block w-full resize-none rounded-md border border-line bg-sunken px-2 py-1.5 text-ui outline-none placeholder:text-faint focus:ring-2 focus:ring-ring" placeholder="The API decisions, the failing test names" />
+            {error && <p className="mt-2 text-caption text-danger" role="alert">{error}</p>}
+          </div>
+          <div className="k-dialog-foot px-[var(--k-dialog-pad)] pb-[var(--k-dialog-pad)] pt-3">
             <Dialog.Close disabled={busy} className="h-8 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover">Cancel</Dialog.Close>
             <button type="button" data-testid="summarize-go" onClick={go} disabled={busy}
               className={cn("h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover", busy && "opacity-60")}>

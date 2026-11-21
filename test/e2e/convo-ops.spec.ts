@@ -86,3 +86,118 @@ test("recap, summarize a part, skill mode, the model's context tools", async ({ 
   await request.delete(`/api/sessions/${session.id}`);
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
 });
+
+// The conversation dialogs (export, summarize, confirm) share one height and
+// scroll contract: on a short window at the largest text size the details
+// scroll inside the dialog and Close, Cancel and the main action stay in
+// reach. Escape closes each and the keyboard goes back to what opened it.
+test("export, summarize and confirm dialogs fit a short window", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === "scripted:stand-in"), "requires the scripted provider");
+  const word = `dg${Date.now().toString(36)}`;
+  const title = `Dialogs ${word} ` + "a title that runs on so the confirmation has many lines to show ".repeat(6).trim();
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title } })).json();
+  for (const n of [1, 2]) {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `Prompt ${n} of ${word}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(n);
+  }
+  await page.goto(`/s/${session.id}`);
+  const exportButton = page.getByRole("button", { name: "Export or continue elsewhere" });
+  const summarizeButton = page.getByRole("button", { name: "Summarize from here" }).last();
+  const exported = page.getByTestId("export-dialog");
+  const summarize = page.getByTestId("summarize-dialog");
+  const confirm = page.getByTestId("confirm");
+  const openSummarize = async () => {
+    await page.getByTestId("user-message").nth(1).hover();
+    await summarizeButton.click();
+    await expect(summarize).toBeVisible();
+  };
+  const openConfirm = async () => {
+    await page.getByTestId("session-menu").click();
+    await page.getByTestId("menu-delete").click();
+    await expect(confirm).toBeVisible();
+  };
+  // The whole dialog is on screen, and so is each control named.
+  const fits = async (dialog: typeof confirm, ...controls: (typeof confirm)[]) => {
+    const view = page.viewportSize()!;
+    const box = (await dialog.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(view.height);
+    expect(box.x + box.width).toBeLessThanOrEqual(view.width);
+    for (const c of controls) await expect(c).toBeInViewport({ ratio: 1 });
+  };
+
+  // The usual window: each opens, Escape closes it and the keyboard returns.
+  await exportButton.click();
+  await exported.getByTestId("export-claude").click();
+  await expect(exported.getByTestId("export-command")).toContainText("claude --resume");
+  await fits(exported, exported.getByRole("button", { name: "Close" }), exported.getByTestId("export-written"));
+  await shoot(page, "dialogs-01-export");
+  await page.keyboard.press("Escape");
+  await expect(exported).toBeHidden();
+  await expect(exportButton).toBeFocused();
+  await openSummarize();
+  await fits(summarize, summarize.getByRole("button", { name: "Cancel" }), summarize.getByTestId("summarize-go"));
+  await shoot(page, "dialogs-02-summarize");
+  await page.keyboard.press("Escape");
+  await expect(summarize).toBeHidden();
+  await expect(summarizeButton).toBeFocused();
+  await openConfirm();
+  await fits(confirm, confirm.getByRole("button", { name: "Cancel" }), confirm.getByRole("button", { name: "Delete", exact: true }));
+  await shoot(page, "dialogs-03-confirm");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(page.getByTestId("session-menu")).toBeFocused();
+
+  // A phone on its side at the largest text size. Summarize opens from a
+  // prompt's row, which that window has no room to show: it is opened first.
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.reload();
+  await openSummarize();
+  await page.setViewportSize({ width: 667, height: 375 });
+  const scrolls = (l: typeof confirm) => l.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+  await fits(summarize, summarize.getByRole("button", { name: "Cancel" }), summarize.getByTestId("summarize-go"));
+  await shoot(page, "dialogs-04-summarize-short");
+  // The details scroll inside the dialog; the page behind it stays where it was.
+  expect(await scrolls(summarize.locator(".k-dialog-body"))).toBe(true);
+  await summarize.getByTestId("summarize-focus").scrollIntoViewIfNeeded();
+  await summarize.getByTestId("summarize-focus").fill("the failing test names");
+  await expect(summarize.getByTestId("summarize-focus")).toBeInViewport({ ratio: 1 });
+  await fits(summarize, summarize.getByRole("button", { name: "Cancel" }), summarize.getByTestId("summarize-go"));
+  expect(await page.evaluate(() => document.scrollingElement!.scrollTop)).toBe(0);
+  await page.keyboard.press("Escape");
+  await expect(summarize).toBeHidden();
+
+  await exportButton.click();
+  await fits(exported, exported.getByRole("button", { name: "Close" }));
+  await exported.getByTestId("export-claude").click();
+  await expect(exported.getByTestId("export-command")).toContainText("claude --resume");
+  // What the export wrote is brought into view, under a title bar that stayed.
+  await expect(exported.getByTestId("export-command")).toBeInViewport({ ratio: 1 });
+  await fits(exported, exported.getByRole("button", { name: "Close" }));
+  await shoot(page, "dialogs-05-export-short");
+  await exported.getByTestId("export-md").scrollIntoViewIfNeeded();
+  await expect(exported.getByTestId("export-md")).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press("Escape");
+  await expect(exported).toBeHidden();
+  await expect(exportButton).toBeFocused();
+
+  await openConfirm();
+  const body = confirm.getByRole("paragraph");
+  await fits(confirm, confirm.getByRole("button", { name: "Cancel" }), confirm.getByRole("button", { name: "Delete", exact: true }));
+  expect(await scrolls(body)).toBe(true);
+  await shoot(page, "dialogs-06-confirm-short");
+  // The wheel over the details reaches their last line; the actions stay.
+  await body.hover();
+  await page.mouse.wheel(0, 2000);
+  await expect.poll(() => body.evaluate((el) => Math.ceil(el.scrollTop + el.clientHeight) >= el.scrollHeight)).toBe(true);
+  await fits(confirm, confirm.getByRole("button", { name: "Cancel" }), confirm.getByRole("button", { name: "Delete", exact: true }));
+  expect(await page.evaluate(() => document.scrollingElement!.scrollTop)).toBe(0);
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(page.getByTestId("session-menu")).toBeFocused();
+  expect((await request.get(`/api/sessions/${session.id}`)).ok()).toBe(true);
+
+  await request.delete(`/api/sessions/${session.id}`);
+});
