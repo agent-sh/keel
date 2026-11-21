@@ -1,7 +1,7 @@
 // The form the rail takes, and the measures the bridge lays out by. The rail
 // is the readable list (titles, state, time, by folder) whenever the panes
 // the owner chose still fit beside it. Only when they do not (many panes, a
-// side panel, a narrow window), or when the list was folded by choice, is it
+// side panel beside the helm, a narrow window), or when the list was folded by choice, is it
 // the column of marks; the list is then one press away, laid over the panes
 // until a session is picked. Every measure is a rem, so it follows the text size.
 import { useEffect, useState } from "react";
@@ -33,13 +33,26 @@ export function useWidth() {
   return w;
 }
 
-// The width the panes on screen need at their narrowest; a side panel widens the helm.
+// A side panel beside the conversation: the narrowest each column works at
+// (matches .k-side in bridge.css), and the widest the panel gets.
+const sessionMin = () => rem(440), panelMin = () => rem(384), panelMax = () => rem(640);
+const panes = () => { const st = getStations(); return st.focus ? 1 : st.count; };
+// The room the helm pane can have: the window less the folded rail and the
+// other panes at their narrowest, each with its 1 px divider.
+const helmRoom = (width: number) => width - Math.ceil(railWidth()) - (panes() - 1) * (Math.ceil(paneMin()) + 1);
+// The panel sits beside the conversation when the helm has room for both
+// columns. Otherwise it is a sheet over the pane, which costs no width: no
+// pane changes size and nothing scrolls sideways for it.
+export const panelBeside = (width = innerWidth) => !phone() && helmRoom(width) - sessionMin() >= panelMin();
+// Its width beside the conversation: 44% of the window, within what the helm can give.
+export const panelWidth = (width = innerWidth) => Math.floor(Math.min(panelMax(), 0.44 * width, helmRoom(width) - sessionMin()));
+
+// The width the panes on screen need at their narrowest; a panel beside the helm widens it.
 function needed(width: number): number {
   const ui = getUI();
   if (ui.route.name === "settings") return paneMin();
-  const st = getStations();
-  const panes = st.focus ? 1 : st.count;
-  return panes * paneMin() + (ui.panel && ui.route.name === "session" ? Math.min(0.44 * width, rem(640)) : 0);
+  const beside = ui.panel && ui.route.name === "session" && panelBeside(width);
+  return panes() * paneMin() + (beside ? sessionMin() - paneMin() + panelWidth(width) : 0);
 }
 
 // No room for the list beside the panes.
@@ -67,6 +80,16 @@ export function useRail(): RailForm {
   // The laid-over list does not outlive the squeeze that called for it.
   useEffect(() => { if (!form.tight && getUI().peek) setUI({ peek: false }); }, [form.tight]);
   return form;
+}
+
+// The form the helm's side panel takes now, and its width beside the conversation.
+export function usePanelSide(): { beside: boolean; width: number } {
+  const width = useWidth();
+  useUI((s) => s.scale);
+  useStations((s) => s.count);
+  useStations((s) => s.focus);
+  const beside = panelBeside(width);
+  return { beside, width: beside ? panelWidth(width) : 0 };
 }
 
 // The one control (and Ctrl B): show the list or fold it. With room the

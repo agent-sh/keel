@@ -8,6 +8,7 @@ import { Suspense, useMemo, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { panels, type Panel } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
+import { usePanelSide } from "../lib/rail.ts";
 import { getUI, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { iconButton } from "./ui.tsx";
@@ -164,16 +165,19 @@ export function PanelToggles({ session }: { session: Session }) {
   );
 }
 
-// The panel beside the conversation on a wide screen, a sheet over it on a phone.
+// The panel of the helm. The bridge says which form it takes (rail.ts decides
+// from the room the pane has): beside the conversation, or a sheet over the
+// pane. The same element either way, so what it shows outlives a resize.
 export function SidePanel({ session }: { session: Session }) {
   useSyncExternalStore(panels.subscribe, panels.version);
   const open = useUI((s) => s.panel);
   const list = visible(session);
   const cur = list.find((p) => p.id === open);
+  const { beside } = usePanelSide();
   if (!cur) return null;
   const Body = cur.component;
   return (
-    <aside data-testid="side-panel" data-panel={cur.id} className="k-side flex min-h-0 flex-col border-line bg-panel max-lg:fixed max-lg:inset-0 max-lg:z-40 lg:w-[min(44vw,40rem)] lg:shrink-0 lg:border-l animate-in">
+    <aside data-testid="side-panel" data-panel={cur.id} data-mode={beside ? "beside" : "sheet"} className="k-side flex min-h-0 flex-col bg-panel animate-in">
       <div className="k-side-head">
         <span className="k-side-icon">{cur.icon}</span>
         <h2 className="k-side-title">{cur.label}</h2>

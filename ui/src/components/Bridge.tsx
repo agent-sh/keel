@@ -9,10 +9,10 @@
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
 import { ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, Pin, PinOff, Plus, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent, Fragment } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
-import { paneMin, panesMax, useWidth } from "../lib/rail.ts";
+import { paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { byAttention, getStations, opened, shares, stations, target, useStations } from "../lib/stations.ts";
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
@@ -291,6 +291,8 @@ export function Bridge() {
   const onScreen = phone ? pages.map((s) => s.id) : slots.map((x) => x.id).filter((x): x is string => !!x && !gone(x));
   useEffect(() => stations.setShown(onScreen));
 
+  // The width a panel beside the helm takes: the helm's narrowest grows by it (bridge.css).
+  const side = usePanelSide();
   // The side panel starts closed in every session. One they opened in a
   // session comes back with it (and over a reload); closing it forgets it.
   const panel = useUI((s) => s.panel);
@@ -353,11 +355,10 @@ export function Bridge() {
   );
   return (
     <>
-      <main ref={track} className="k-stations" data-count={phone ? pages.length + (fresh ? 1 : 0) : slots.length} data-focus={focus || undefined} data-testid="bridge">
+      <main ref={track} className="k-stations" style={{ "--k-side-w": `${side.width}px` } as CSSProperties} data-count={phone ? pages.length + (fresh ? 1 : 0) : slots.length} data-focus={focus || undefined} data-testid="bridge">
         {phone && helm && !sessions[helm] && missing(helm)}
-        {phone && pages.map((s) => <Station key={s.id} s={s} helm={s.id === helm} />)}
-        {phone && (fresh || (!helm && pages.length === 0)) && <NewStation />}
-        {slots.flatMap(({ id, i }, n) => {
+        {/* One keyed list for both layouts: a session keeps its pane (and what its panel shows) when the window crosses phone width. */}
+        {[...(phone ? pages.map((s) => <Station key={s.id} s={s} helm={s.id === helm} />) : []), ...slots.flatMap(({ id, i }, n) => {
           const grow = focus ? 1 : weights[i]!;
           const pane = i === startAt ? <NewStation key={`new-${i}`} slot={i} grow={grow} />
             : id && sessions[id] && !gone(id) ? <Station key={id} s={sessions[id]!} helm={id === helm} slot={i} grow={grow} />
@@ -365,7 +366,8 @@ export function Bridge() {
             : <EmptyPane key={`empty-${i}`} slot={i} grow={grow} next={!fresh && target(st) === i} />;
           const before = slots[n - 1];
           return before ? [<Grip key={`grip-${i}`} className="k-split" testid="pane-grip" label={`Width of panes ${before.i + 1} and ${i + 1}`} now={(100 * weights[before.i]!) / (weights[before.i]! + weights[i]!)} {...grip(before.i)} />, pane] : [pane];
-        })}
+        })]}
+        {phone && (fresh || (!helm && pages.length === 0)) && <NewStation />}
       </main>
       {phone && <PhoneDock list={pages} helm={helm} />}
     </>

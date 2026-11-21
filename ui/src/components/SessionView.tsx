@@ -80,7 +80,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   return (
     <>
       {header ?? <SessionHeader session={session} />}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <div className="k-session flex min-w-0 flex-1 flex-col">
           <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
           <div className="k-compose pr-[var(--sbw,0px)]">

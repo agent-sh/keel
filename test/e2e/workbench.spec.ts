@@ -177,3 +177,82 @@ test("the reading line holds when content above it grows", async ({ page, reques
   await shoot(page, "workbench-reading-line");
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// The side panel takes its form from the room the pane has: beside the
+// conversation when both columns fit, else a sheet over the pane, which keeps
+// its width. Crossing between the two keeps what the panel shows.
+test("the side panel sits beside the conversation when the pane has room, else lies over it", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Panel layout", workspace: process.cwd() } })).json();
+  try {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Review the release checklist." } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase, { timeout: 20_000 }).toBe("idle");
+    const station = page.getByTestId("station").and(page.locator(`[data-station="${session.id}"]`));
+    const side = page.getByTestId("side-panel");
+    const close = page.getByRole("button", { name: "Close the panel" });
+    // The pane's width, and how far the panes and the page scroll sideways.
+    const measure = () => page.evaluate((id) => {
+      const pane = document.querySelector(`[data-testid="station"][data-station="${id}"]`)!;
+      const strip = document.querySelector('[data-testid="bridge"]')!;
+      return { pane: Math.round(pane.getBoundingClientRect().width), strip: strip.scrollWidth - strip.clientWidth, page: document.documentElement.scrollWidth - innerWidth };
+    }, session.id);
+    const opened = () => expect(page.getByTestId("file-view").getByTitle("ui/src/styles.css")).toBeVisible();
+
+    // 900 px: no room for two columns. The panel lies over the pane and nothing else moves.
+    await page.setViewportSize({ width: 900, height: 1040 });
+    await page.goto(`/s/${session.id}`);
+    await expect(station.getByTestId("composer")).toBeVisible();
+    const before = await measure();
+    expect(before).toMatchObject({ strip: 0, page: 0 });
+    await page.keyboard.press("Control+Shift+E");
+    await expect(side).toBeVisible();
+    expect(await measure()).toEqual(before);
+    await expect(side).toHaveAttribute("data-mode", "sheet");
+    await page.getByTestId("files-search").fill("styles.css");
+    await page.getByText("ui/src/styles.css").click();
+    await opened();
+    await expect(close).toBeInViewport({ ratio: 1 });
+    await expect(station.getByTestId("session-menu")).toBeInViewport({ ratio: 1 });
+    await shoot(page, "wb-panel-900-sheet");
+
+    // Wider: both columns fit, the same file is still open beside the conversation.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await expect(side).toHaveAttribute("data-mode", "beside");
+    await opened();
+    await expect(station.getByTestId("composer")).toBeInViewport({ ratio: 1 });
+    await expect(close).toBeInViewport({ ratio: 1 });
+    const wide = await measure();
+    expect(wide).toMatchObject({ strip: 0, page: 0 });
+    const box = (await side.boundingBox())!;
+    const text = (await station.getByTestId("transcript").boundingBox())!;
+    expect(text.x + text.width).toBeLessThanOrEqual(box.x + 1);
+    await shoot(page, "wb-panel-1920-beside");
+
+    // Back across the line, then to a phone: the file stays, Close stays in reach.
+    await page.setViewportSize({ width: 900, height: 1040 });
+    await expect(side).toHaveAttribute("data-mode", "sheet");
+    await opened();
+    expect(await measure()).toEqual(before);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(side).toHaveAttribute("data-mode", "sheet");
+    await opened();
+    await expect(close).toBeInViewport({ ratio: 1 });
+    expect((await measure()).page).toBe(0); // a phone's panes are pages: only the page itself must not scroll
+    await shoot(page, "wb-panel-390-sheet");
+    await page.setViewportSize({ width: 900, height: 1040 });
+    await opened();
+    await close.click();
+    await expect(side).toBeHidden();
+    await expect(station.getByTestId("composer")).toBeInViewport({ ratio: 1 });
+    expect(await measure()).toEqual(before);
+
+    // Opened with room, it goes straight beside.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.keyboard.press("Control+Shift+E");
+    await expect(side).toHaveAttribute("data-mode", "beside");
+    expect(await measure()).toMatchObject({ strip: 0, page: 0 });
+    await page.keyboard.press("Control+\\");
+    await expect(side).toBeHidden();
+  } finally { await request.delete(`/api/sessions/${session.id}`); }
+});

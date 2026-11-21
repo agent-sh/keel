@@ -468,8 +468,15 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-picker-row:hover .k-picker-keep, .k-picker-keep:focus-visible, .k-picker-keep[aria-pressed="true"] { opacity: 1; }
 .k-picker-keep[aria-pressed="true"] { color: var(--fg); }
 .k-picker-empty { padding: 0.875rem 0.625rem; font-size: 0.875rem; color: var(--faint); }
-/* The helm with a side panel open keeps a working transcript beside it. */
-@media (min-width: 768px) { .k-station[data-helm]:has([data-testid="side-panel"]) { min-width: calc(27.5rem + min(44vw, 40rem)); } }
+/* Beside the conversation when the helm has room for both columns (rail.ts
+   decides and gives the width): the helm keeps a working transcript next to it. */
+.k-side[data-mode="beside"] { flex: 0 0 var(--k-side-w); min-width: 0; border-left: 1px solid var(--line); }
+.k-station[data-helm]:has(.k-side[data-mode="beside"]) { min-width: calc(27.5rem + var(--k-side-w)); }
+/* No room: a sheet over the pane's conversation. The pane keeps its width and
+   its header, so the panel is switched or closed from either. */
+.k-side[data-mode="sheet"] { position: absolute; inset: 0; z-index: 20; }
+/* A phone gives the sheet the whole screen. */
+@media (max-width: 767px) { .k-side[data-mode="sheet"] { position: fixed; z-index: 40; } }
 .k-panels-btn { display: inline-flex; align-items: center; white-space: nowrap; }
 
 /* ---------- Settings: a station of its own ---------- */
