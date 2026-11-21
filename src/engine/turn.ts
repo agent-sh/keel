@@ -375,7 +375,7 @@ export class Engine {
     this.held = new Set(store.db.query<{ session_id: string }, []>("SELECT session_id FROM queue_holds").all().map((r) => r.session_id));
     // Each model's bytes a token, learned from what its provider counted.
     store.migrate("CREATE TABLE IF NOT EXISTS token_ratios (model TEXT PRIMARY KEY, ratio REAL NOT NULL, ts INTEGER NOT NULL)");
-    for (const r of store.db.query<{ model: string; ratio: number }, []>("SELECT model, ratio FROM token_ratios").all()) setRatio(r.model, r.ratio);
+    for (const r of store.db.query<{ model: string; ratio: number }, []>("SELECT model, ratio FROM token_ratios").all()) { setRatio(r.model, r.ratio); this.ratioKept.set(r.model, r.ratio); }
     // A session that changed (another branch shown, archived, cleared, deleted)
     // may have made the summary being prepared for it obsolete.
     bus.on((f) => { if (f.t === "session") this.dropObsolete(f.session.id); });
@@ -1891,10 +1891,23 @@ export class Engine {
   private learn(id: string, st: Step, events: readonly StoredEvent[], u: Usage) {
     try {
       const ratio = learnRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), u.input + u.cache_read + u.cache_write);
-      if (ratio) this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [st.info.id, ratio, Date.now()]);
+      if (ratio) this.keepRatio(st.info.id, ratio);
     } catch (e) {
       this.errors.capture("server", e, { at: "learning the token ratio", model: st.info.id, session: id });
     }
+  }
+
+  // A model's ratio as last written to the store. Every reply moves the ratio
+  // a little; it is written when it has moved by a hundredth since (or at
+  // once after a refusal). A restart then starts within a hundredth of where
+  // the last daemon was, far below what an estimate from bytes is good for,
+  // and a step of a turn does not pay a write for it.
+  private ratioKept = new Map<string, number>();
+  private keepRatio(model: string, ratio: number, now = false) {
+    const kept = this.ratioKept.get(model);
+    if (!now && kept !== undefined && Math.abs(ratio - kept) < kept / 100) return;
+    this.ratioKept.set(model, ratio);
+    this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [model, ratio, Date.now()]);
   }
 
   // The owner's words kept verbatim through a compaction: OWNER_WORDS_BYTES,
@@ -1910,7 +1923,7 @@ export class Engine {
   // of it was too low, so the model's bytes a token come down to fit the refusal.
   private refused(st: Step, events: readonly StoredEvent[]) {
     const ratio = capRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), st.info.context);
-    if (ratio) this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [st.info.id, ratio, Date.now()]);
+    if (ratio) this.keepRatio(st.info.id, ratio, true);
   }
 
   // The summary of a context. Written on the session's own request (tools and

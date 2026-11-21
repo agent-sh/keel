@@ -11,7 +11,7 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { Message } from "../core/types.ts";
 import { ProviderError } from "../providers/http.ts";
-import { setRatio } from "./compact.ts";
+import { bytesPerToken, setRatio } from "./compact.ts";
 import { allHooks, registerHooks } from "./hooks.ts";
 import { Engine, instructionFilter, toMessages } from "./turn.ts";
 import { lineage } from "../core/tree.ts";
@@ -450,4 +450,25 @@ test("a restart sets the idle timers from kept facts and reads no session's even
     globalThis.setTimeout = real;
     setSystemTime();
   }
+});
+
+// Every reply moves a model's learned bytes a token a little. The store keeps
+// it for the next daemon, written when it moved by a hundredth, not at each step.
+test("a learned ratio is written when it has moved by a hundredth, and at once after a refusal", () => {
+  const r = rig();
+  const e = r.engine as any;
+  const written = () => r.store.db.query<{ ratio: number }, []>("SELECT ratio FROM token_ratios WHERE model = 'ctx:probe'").get()?.ratio;
+  e.keepRatio("ctx:probe", 3);
+  expect(written()).toBe(3);
+  for (const v of [3.01, 2.98, 3.029]) e.keepRatio("ctx:probe", v);
+  expect(written()).toBe(3);
+  e.keepRatio("ctx:probe", 3.031);
+  expect(written()).toBe(3.031);
+  e.keepRatio("ctx:probe", 3.04, true);
+  expect(written()).toBe(3.04);
+  // The next daemon on the store starts from what was written, and holds the same bound.
+  const next = new Engine(r.store, new Bus(), (r.engine as any).providers, (r.engine as any).errors, join(r.dir, "spill")) as any;
+  expect(bytesPerToken("ctx:probe")).toBe(3.04);
+  next.keepRatio("ctx:probe", 3.05);
+  expect(written()).toBe(3.04);
 });
