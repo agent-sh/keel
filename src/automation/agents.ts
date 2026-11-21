@@ -387,21 +387,36 @@ function reserve(parentId: string) {
 }
 
 // Resolves when the agent has ended, or with `parked` also when it parked on a
-// wait (a blocking spawn returns then); else at the timeout or the abort.
+// wait (a blocking spawn returns then); else at the timeout or the abort (at
+// once when the signal is already aborted). However it resolves, nothing of it
+// stays registered: its waiter entry, its timer and its listener on the signal.
 function waitFor(id: string, opts: { parked?: boolean; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<AgentRecord | undefined> {
   const done = (a: AgentRecord) => isEnded(a) || (!!opts.parked && a.status === "waiting");
   return new Promise((res) => {
     const a = get(id);
-    if (!a || done(a)) return res(a);
+    if (!a || done(a) || opts.signal?.aborted) return res(a);
     let settled = false;
-    const finish = (r?: AgentRecord) => { if (!settled) { settled = true; clearTimeout(t); res(r); } };
-    const list = waiters.get(id) ?? [];
-    list.push({ done, resolve: finish });
-    waiters.set(id, list);
-    const t = opts.timeoutMs ? setTimeout(() => finish(get(id)), opts.timeoutMs) : undefined;
-    opts.signal?.addEventListener("abort", () => finish(get(id)), { once: true });
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const finish = (r?: AgentRecord) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t);
+      opts.signal?.removeEventListener("abort", giveUp);
+      const left = (waiters.get(id) ?? []).filter((w) => w !== me);
+      if (left.length) waiters.set(id, left);
+      else waiters.delete(id);
+      res(r);
+    };
+    const giveUp = () => finish(get(id));
+    const me: Waiter = { done, resolve: finish };
+    waiters.set(id, [...(waiters.get(id) ?? []), me]);
+    if (opts.timeoutMs) t = setTimeout(giveUp, opts.timeoutMs);
+    opts.signal?.addEventListener("abort", giveUp, { once: true });
   });
 }
+
+// How many callers are blocked on the agent now.
+export const waitersOn = (id: string) => waiters.get(id)?.length ?? 0;
 
 function wake(id: string) {
   const rec = get(id)!;
@@ -823,7 +838,9 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   if (a.machine) result += remote ? await remote.finished(a) : "";
   else if (a.worktree) result += await worktreeNote(a);
   const silent = !!defOf(a.id)?.silent;
-  const blocked = silent || (!a.background && (waiters.get(a.id)?.length ?? 0) > 0);
+  // A blocking agent's result is held by the call that started it: while that
+  // call waits, and when it stopped the agent with its parent's turn.
+  const blocked = silent || (!a.background && (waitersOn(a.id) > 0 || how.stopped_by === "parent_turn"));
   const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason })!;
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
@@ -906,7 +923,8 @@ export async function waitAll(parentId: string, ids: string[] | undefined, timeo
   if (targets.length && !targets.some((a) => isEnded(get(a.id)!))) {
     const quit = new AbortController();
     const stopAll = () => quit.abort();
-    signal?.addEventListener("abort", stopAll, { once: true });
+    if (signal?.aborted) quit.abort();
+    else signal?.addEventListener("abort", stopAll, { once: true });
     await Promise.race(targets.map((a) => waitFor(a.id, { signal: quit.signal, timeoutMs })));
     quit.abort();
     signal?.removeEventListener("abort", stopAll);

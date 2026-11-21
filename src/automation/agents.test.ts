@@ -456,3 +456,69 @@ test("a blocking spawn cancelled before its task is sent owes its stopped parent
   expect(store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE agent_id = ?").get(b.id)!.n).toBe(0);
   busy.delete(p.id);
 });
+
+// What a signal still holds of the calls it was given to.
+function listenersOf(signal: AbortSignal) {
+  const held = new Set<unknown>();
+  const add = signal.addEventListener.bind(signal), remove = signal.removeEventListener.bind(signal);
+  signal.addEventListener = ((type: string, fn: any, o: any) => (held.add(fn), add(type, fn, o))) as any;
+  signal.removeEventListener = ((type: string, fn: any, o: any) => (held.delete(fn), remove(type, fn, o))) as any;
+  return held;
+}
+
+test("a wait that ends without a result leaves nothing registered on its agent", async () => {
+  const a = await spawn();
+  // A signal aborted before the wait: back at once, not at the timeout.
+  const off = new AbortController();
+  off.abort();
+  const t0 = performance.now();
+  const early = await Promise.race([agents.waitAll(parent.id, [a.id], 10_000, off.signal), Bun.sleep(1000).then(() => undefined)]);
+  expect(early?.map((r) => r.status)).toEqual(["running"]);
+  expect(performance.now() - t0).toBeLessThan(1000);
+  // Waits that time out, one after another, on an agent still running.
+  const ctl = new AbortController();
+  const held = listenersOf(ctl.signal);
+  for (let i = 0; i < 5; i++) expect((await agents.waitAll(parent.id, [a.id], 5, ctl.signal))[0]!.status).toBe("running");
+  expect(agents.waitersOn(a.id)).toBe(0);
+  expect(held.size).toBe(0);
+  // A wait after them still gets the final report.
+  const last = agents.waitAll(parent.id, [a.id], 10_000, ctl.signal);
+  expect(agents.waitersOn(a.id)).toBe(1);
+  end(a, "end_turn", "the final report");
+  expect((await last)[0]).toMatchObject({ status: "completed", result: "the final report" });
+  expect(agents.waitersOn(a.id)).toBe(0);
+  expect(held.size).toBe(0);
+});
+
+test("a blocking spawn leaves no listener on its caller's signal, and a parent turn stopped under it is owed no report", async () => {
+  const done = new AbortController();
+  const held = listenersOf(done.signal);
+  const first = agents.spawn(parent.id, { prompt: "do it", isolation: "none", background: false }, done.signal);
+  await settled();
+  const a = agents.list(parent.id).at(-1)!;
+  expect(agents.waitersOn(a.id)).toBe(1);
+  end(a, "end_turn");
+  expect((await first).status).toBe("completed");
+  expect(agents.waitersOn(a.id)).toBe(0);
+  expect(held.size).toBe(0);
+
+  // The parent's turn stops while the agent's own turn runs: the agent ends a
+  // moment later, after the call that held it has returned.
+  const ctl = new AbortController();
+  const second = agents.spawn(parent.id, { prompt: "do it", isolation: "none", background: false }, ctl.signal);
+  await settled();
+  const b = agents.list(parent.id).at(-1)!;
+  busy.add(b.session_id);
+  const interrupt = engine.interrupt;
+  engine.interrupt = async (id, by) => { await Bun.sleep(1); await interrupt(id, by); };
+  try {
+    ctl.abort();
+    await second;
+    expect(agents.waitersOn(b.id)).toBe(0);
+    await settled();
+  } finally {
+    engine.interrupt = interrupt;
+  }
+  expect(agents.get(b.id)).toMatchObject({ status: "stopped", stopped_by: "parent_turn", handback: false });
+  expect(store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE agent_id = ?").get(b.id)!.n).toBe(0);
+});
