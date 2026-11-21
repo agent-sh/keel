@@ -31,6 +31,7 @@ const engine = {
   isRunning: (id: string) => running || live.has(id),
   isDraining: () => draining,
   isHeld: () => false,
+  ownerResumes: () => {},
   interrupt: async () => {},
   idle: async () => {},
   send: (id: string, text: string, o: any) => {

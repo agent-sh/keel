@@ -562,6 +562,15 @@ export class Engine {
     this.emitQueue(id);
   }
 
+  // The owner acted on the session by other means than a typed prompt (their
+  // speech, a goal set or resumed): after a Stop it releases the held queue as
+  // a prompt they type does. A prompt queued on another branch still waits for
+  // them to say where it goes.
+  ownerResumes(id: string) {
+    const first = this.queued(id)[0];
+    if (this.held.has(id) && !(first && this.offBranch(first))) this.resumeQueue(id);
+  }
+
   // Continue a session whose last turn was stopped, failed or was cut.
   resume(id: string) {
     if (this.running.has(id)) throw Object.assign(new Error("a turn is running"), { status: 409 });
@@ -1030,7 +1039,10 @@ export class Engine {
       }
       for (;;) {
         // Steers sent while the last step ran join here, after its tool results.
-        for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer")) this.emitQueue(id);
+        // The owner's own words (a steer with no meta) release a held queue, as
+        // a prompt typed while idle does: the turn they joined may be one a wait
+        // or a loop started in a session the owner had stopped.
+        for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: !q.meta })) this.emitQueue(id);
         session = this.store.session(id)!;
         // A model or effort chosen while the turn runs takes effect at its next request.
         if (session.model !== st.info.id || effectiveEffort(st.info, session.settings.effort) !== st.effort) st = await this.step(session, session.model);

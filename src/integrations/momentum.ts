@@ -16,7 +16,10 @@ export const MAX_LINE = 256 * 1024;
 
 // draft: whether the owner has an unsent message in the session (its presence
 // only, never its text); without it the answer is unknown (null).
-type Ctx = { store: Store; engine: Engine; transcript?: (s: Session) => string; draft?: (id: string) => boolean };
+// `deliver`: input that is not the owner's, as the daemon's own (a wake, a loop
+// run) goes in: it starts a turn in an idle session and takes along what rides
+// the session's next input (agents' reports held after the owner's Stop).
+type Ctx = { store: Store; engine: Engine; transcript?: (s: Session) => string; draft?: (id: string) => boolean; deliver?: (sessionId: string, text: string, meta: Record<string, unknown>) => boolean };
 
 // The momentum phase of a session: needs_you (an approval is open), working, idle, done.
 export function phaseOf(s: Session, running: boolean, pending: Set<string>) {
@@ -83,7 +86,8 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     // queue: waits for the running turn and what is queued before it. In an idle
     // session it starts a turn, unless the queue is held (a turn was stopped and
     // nothing resumed it): then it waits there for the owner.
-    c.engine.send(s.id, tagged, { mode: action === "steer" ? "steer" : "queue", meta: { origin: "momentum" } });
+    if (action === "steer" && c.deliver && !c.engine.isRunning(s.id)) c.deliver(s.id, tagged, { origin: "momentum" });
+    else c.engine.send(s.id, tagged, { mode: action === "steer" ? "steer" : "queue", meta: { origin: "momentum" } });
     return { ok: true, accepted: action };
   }
   return { ok: false, error: "invalid command json" };

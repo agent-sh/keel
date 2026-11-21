@@ -19,18 +19,24 @@ const failures = await import("./failures.ts");
 const goals = await import("./goals.ts");
 const waits = await import("./waits.ts");
 const activity = await import("./activity.ts");
+const { handleLine } = await import("../integrations/momentum.ts");
+const { Voice } = await import("../integrations/voice.ts");
 
 const store = new Store(join(dir, "state"));
 const bus = new Bus();
 const info = { id: "m:x", model: "x", name: "x", family: "gpt", context: 100_000, output: 64, efforts: [], tools: true };
 const usage = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
-// A parent's request named here hangs until its turn is stopped; an agent's answers at once, or once `gate` opens.
+// A parent's request named here hangs until its turn is stopped, or waits for the promise given for it;
+// an agent's answers at once, or once `gate` opens.
 const hangs = new Set<string>();
+const pauses = new Map<string, Promise<void>>();
 let gate: Promise<void> | undefined;
 const provider = {
   wire: "openai",
   stream: async (req: any) => {
+    const pause = pauses.get(req.sessionKey);
     if (hangs.delete(req.sessionKey)) await new Promise((_r, rej) => req.signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true }));
+    else if (pause) { pauses.delete(req.sessionKey); await pause; }
     else if (store.session(req.sessionKey)?.parent_id) await gate;
     return { blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "x" };
   },
@@ -71,6 +77,24 @@ const lane = async (parentId: string, prompt: string) => {
   const a = await agents.spawn(parentId, { prompt, isolation: "none", background: true });
   return { ...a, ended: () => until(() => agents.isEnded(agents.get(a.id)!)) };
 };
+
+// A parent the owner stopped while its first turn hung, with `n` agents whose reports ride.
+const heldWith = async (title: string, n: number) => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title });
+  engine.send(p.id, "owner: warm"); // a first answer, so its agents do not wait for each other's cache
+  await quiet(p.id);
+  hangs.add(p.id);
+  engine.send(p.id, "owner: start");
+  await until(() => engine.isRunning(p.id));
+  const lanes = [];
+  for (let i = 0; i < n; i++) lanes.push(await lane(p.id, `${title} lane ${i}`));
+  await engine.interrupt(p.id, "owner");
+  for (const l of lanes) await l.ended();
+  await quiet(p.id);
+  expect([engine.isHeld(p.id), owed(p.id), reports(p.id)]).toEqual([true, n, []]);
+  return { p, lanes };
+};
+const wake = (id: string, n = 1) => core.deliver(id, `<wait_fired id="w${n}" kind="timer" outcome="fired">\ntimer\n</wait_fired>`, { kind: "wait", wait_id: `w${n}`, outcome: "fired" });
 
 // The owner stopped a coordinator's turn once. Its agents finish, and it goes
 // on by harness inputs alone (a wait that fires, the goal resumed): it gets
@@ -140,4 +164,61 @@ test("a hold released with no turn sends the held report, and the report ends th
   expect([engine.isHeld(p.id), owed(p.id), reports(p.id)]).toEqual([false, 0, [a.id]]);
   expect(inputs(p.id).at(-1)!.text).toContain(`The timer wait ${timer.id} you set while your agents ran is cancelled`);
   expect(waits.get(timer.id)!.status).toBe("cancelled");
+}, 60_000);
+
+// The owner types while a harness turn runs in the held parent: the words join
+// that turn as a steer. They are the owner's own, so the hold ends with them
+// as it does for a prompt typed while idle, and reports go on as usual.
+test("the owner's steer into a harness turn of a held parent ends the hold", async () => {
+  const { p, lanes } = await heldWith("steered", 1);
+  let open!: () => void;
+  pauses.set(p.id, new Promise<void>((r) => (open = r)));
+  wake(p.id);
+  await until(() => engine.isRunning(p.id));
+  expect(engine.send(p.id, "owner: typed while it runs")).toMatchObject({ steer: true });
+  open();
+  await quiet(p.id);
+  expect(engine.isHeld(p.id)).toBe(false);
+  const b = await lane(p.id, "steered lane b");
+  await b.ended();
+  await quiet(p.id);
+  expect(reports(p.id)).toEqual([lanes[0]!.id, b.id]);
+  expect(owed(p.id)).toBe(0);
+}, 60_000);
+
+// A momentum steer is not the owner's word: it starts a turn in the idle held
+// parent and the hold stays, so the reports that ride go with it. The owner's
+// speech is the owner's word: the hold ends and the next report arrives.
+test("a momentum steer carries a held parent's reports, and the owner's speech ends the hold", async () => {
+  const { p, lanes } = await heldWith("spoken", 2);
+  const sent = handleLine(JSON.stringify({ cmd: "supervise_act", session_id: p.id, action: "steer", text: "look at lane 0" }), { store, engine, deliver: core.deliver });
+  expect(sent).toMatchObject({ ok: true });
+  await quiet(p.id);
+  expect(engine.isHeld(p.id)).toBe(true);
+  expect(inputs(p.id).at(-1)).toMatchObject({ reports: lanes.map((l) => l.id) });
+  expect(inputs(p.id).at(-1)!.text).toStartWith("[momentum] look at lane 0");
+  expect(owed(p.id)).toBe(0);
+
+  const c = await lane(p.id, "spoken lane c");
+  await c.ended();
+  await quiet(p.id);
+  expect(reports(p.id)).toHaveLength(2); // it rides
+  const voice = new Voice("parlar", store, engine, bus, { capture() {} } as any);
+  (voice as any).deliver(p.id, "spoken words");
+  await quiet(p.id);
+  await quiet(p.id);
+  expect(engine.isHeld(p.id)).toBe(false);
+  expect(reports(p.id)).toEqual([...lanes.map((l) => l.id), c.id]);
+  expect(owed(p.id)).toBe(0);
+}, 60_000);
+
+// Setting a goal is the owner's own act, as resuming one is: the hold a Stop
+// left ends, and what rode comes with the goal's first input.
+test("a goal set on a held session ends the hold", async () => {
+  const { p, lanes } = await heldWith("new goal", 1);
+  await goals.set(p.id, { objective: "ship it" });
+  await quiet(p.id);
+  expect(engine.isHeld(p.id)).toBe(false);
+  expect(reports(p.id)).toEqual([lanes[0]!.id]);
+  expect(owed(p.id)).toBe(0);
 }, 60_000);

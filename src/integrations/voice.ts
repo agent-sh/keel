@@ -188,6 +188,8 @@ export class Voice {
     const text = speech.trim();
     if (!text || !this.store.session(id)) return;
     try {
+      // The owner's own words: after a Stop they release the held queue, as typed ones do.
+      this.engine.ownerResumes(id);
       this.engine.send(id, text, { meta: { origin: "voice" } });
     } catch (e) {
       this.errors.capture("server", e, { at: "voice delivery", session: id });

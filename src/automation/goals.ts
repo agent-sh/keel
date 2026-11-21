@@ -126,6 +126,7 @@ export async function set(sessionId: string, input: { objective: string; token_b
     tokens_used: 0, turns: 0, idle_turns: 0, counted: null, checked: null, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, verifier_model: input.verifier_model ?? null, rev: (cur?.rev ?? 0) + 1,
   });
   activity.record("turn", "goal", sessionId, `Goal set: ${objective.slice(0, 200)}`);
+  D().engine.ownerResumes(sessionId); // the owner's own act, as resuming a goal is: a hold left by a Stop ends
   kickoff(g);
   return g;
 }
@@ -168,10 +169,9 @@ export async function patch(sessionId: string, p: { status?: "paused" | "pursuin
     g.status_reason = null;
     g.idle_turns = 0;
     save(g);
-    // The owner's own resume: after a Stop it releases the held queue, as a prompt
-    // they type does. A prompt queued on another branch still waits for them.
+    // The owner's own resume: after a Stop it releases the held queue, as a prompt they type does.
     const { engine } = D();
-    if (engine.isHeld(sessionId) && !engine.queued(sessionId).slice(0, 1).some((q) => engine.offBranch(q))) engine.resumeQueue(sessionId);
+    engine.ownerResumes(sessionId);
     if (!engine.isRunning(sessionId)) resume(g);
     return g;
   } else if (p.status !== undefined) throw new Error("status is paused or pursuing");
