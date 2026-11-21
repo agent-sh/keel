@@ -76,6 +76,9 @@ registerCommand(
   { id: "text-reset", label: "Default text size", group: "View", keys: "mod+0", inInput: true, words: "zoom font size reset letters", run: () => setScale(1) },
   { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => copyText(lastReply(current()!.id)) },
+  // A panel lying over the conversation takes Escape first: it closes, and the
+  // turn working behind it is not stopped by the same press.
+  { id: "panel-leave", label: "Close the panel over the conversation", group: "View", keys: "escape", when: () => !!document.querySelector('.k-side[data-mode="sheet"]'), run: () => savePref("panel", null) },
   // In an agent's session Escape goes back to the session that started it, as
   // leaving a view does; stopping the agent is its own labeled button.
   { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working" && !current()?.parent_id, run: () => void stopHere(current()!) },

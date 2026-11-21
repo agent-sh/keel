@@ -4,7 +4,7 @@
 // side panel beside the helm, a narrow window), or when the list was folded by choice, is it
 // the column of marks; the list is then one press away, laid over the panes
 // until a session is picked. Every measure is a rem, so it follows the text size.
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { getStations, MAX_PANES, useStations } from "./stations.ts";
 import { getUI, savePref, setUI, useUI } from "./ui.ts";
 
@@ -34,7 +34,8 @@ export function useWidth() {
 }
 
 // A side panel beside the conversation: the narrowest each column works at
-// (matches .k-side in bridge.css), and the widest the panel gets.
+// and the widest the panel gets. bridge.css holds only the conversation's
+// minimum (27.5rem, in the helm's min-width); the panel's width comes from here.
 const sessionMin = () => rem(440), panelMin = () => rem(384), panelMax = () => rem(640);
 const panes = () => { const st = getStations(); return st.focus ? 1 : st.count; };
 // The room the helm pane can have: the window less the folded rail and the
@@ -82,7 +83,18 @@ export function useRail(): RailForm {
   return form;
 }
 
-// The form the helm's side panel takes now, and its width beside the conversation.
+// Whether the helm's side panel sits beside the conversation now. It renders
+// again only when the answer changes, not on every resize event.
+const onResize = (f: () => void) => { addEventListener("resize", f); return () => removeEventListener("resize", f); };
+export function usePanelBeside(): boolean {
+  useUI((s) => s.scale);
+  useStations((s) => s.count);
+  useStations((s) => s.focus);
+  return useSyncExternalStore(onResize, () => panelBeside());
+}
+
+// The form the helm's side panel takes now, and its width beside the conversation
+// (for the bridge, which lays the panes out at every width).
 export function usePanelSide(): { beside: boolean; width: number } {
   const width = useWidth();
   useUI((s) => s.scale);

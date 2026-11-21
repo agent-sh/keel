@@ -4,11 +4,11 @@
 // command in the palette. The panel beside the helm is remembered per station.
 import { Popover } from "@base-ui/react/popover";
 import { LayoutPanelLeft, Pin, PinOff, Search, X } from "lucide-react";
-import { Suspense, useMemo, useState, useSyncExternalStore } from "react";
+import { Suspense, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { panels, type Panel } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
-import { usePanelSide } from "../lib/rail.ts";
+import { usePanelBeside } from "../lib/rail.ts";
 import { getUI, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { iconButton } from "./ui.tsx";
@@ -171,6 +171,15 @@ export function PanelsButton({ session }: { session: Session }) {
   return list.length ? <Picker list={list} open={open} /> : null;
 }
 
+// Whether the session's panel lies over its conversation now: the conversation
+// is then out of reach (SessionView makes it inert) until the sheet is closed.
+export function usePanelSheet(session: Session | undefined, on: boolean): boolean {
+  useSyncExternalStore(panels.subscribe, panels.version);
+  const open = useUI((s) => s.panel);
+  const beside = usePanelBeside();
+  return on && !beside && !!session && visible(session).some((p) => p.id === open);
+}
+
 // The panel of the helm. The bridge says which form it takes (rail.ts decides
 // from the room the pane has): beside the conversation, or a sheet over the
 // pane. The same element either way, so what it shows outlives a resize.
@@ -179,11 +188,20 @@ export function SidePanel({ session }: { session: Session }) {
   const open = useUI((s) => s.panel);
   const list = visible(session);
   const cur = list.find((p) => p.id === open);
-  const { beside } = usePanelSide();
+  const beside = usePanelBeside();
   if (!cur) return null;
   const Body = cur.component;
+  // Escape in one of the sheet's own one-line fields (a search box) leaves the
+  // sheet, as it does from its buttons (builtins.ts). A field in a popup, or a
+  // text area with a draft in it, keeps its Escape.
+  const leave = (e: KeyboardEvent<HTMLElement>) => {
+    const t = e.target as HTMLElement;
+    if (beside || e.key !== "Escape" || e.defaultPrevented || t.tagName !== "INPUT" || !e.currentTarget.contains(t)) return;
+    e.preventDefault();
+    openPanel(null);
+  };
   return (
-    <aside data-testid="side-panel" data-panel={cur.id} data-mode={beside ? "beside" : "sheet"} className="k-side flex min-h-0 flex-col bg-panel animate-in">
+    <aside data-testid="side-panel" data-panel={cur.id} data-mode={beside ? "beside" : "sheet"} onKeyDown={leave} className="k-side flex min-h-0 flex-col bg-panel animate-in">
       <div className="k-side-head">
         <span className="k-side-icon">{cur.icon}</span>
         <h2 className="k-side-title">{cur.label}</h2>

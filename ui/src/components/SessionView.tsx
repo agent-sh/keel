@@ -6,7 +6,7 @@ import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { stopHere } from "../lib/automation.ts";
 import { Composer } from "./Composer.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
-import { openPanel, SidePanel } from "./SidePanel.tsx";
+import { openPanel, SidePanel, usePanelSheet } from "./SidePanel.tsx";
 import { LiveSourceBanner } from "./TakeOver.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
@@ -53,6 +53,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   // A session elsewhere says where in the tab's title too.
   const on = useFleet((x) => (session?.machine ? machineName(session.machine) ?? "" : "")) || undefined;
   useEffect(() => { if (focus) setBaseTitle(session?.title ? `${session.title}${on ? ` on ${on}` : ""} - Keel` : "Keel"); }, [session?.title, on, focus]);
+  // A panel lying over the conversation covers it: nothing under it takes focus, text or a press.
+  const covered = usePanelSheet(session, !!panel);
   if (!session && (missing === id || gone)) {
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">
@@ -81,7 +83,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
     <>
       {header ?? <SessionHeader session={session} />}
       <div className="relative flex min-h-0 flex-1">
-        <div className="k-session flex min-w-0 flex-1 flex-col">
+        <div className="k-session flex min-w-0 flex-1 flex-col" inert={covered}>
           <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
           <div className="k-compose pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto w-full max-w-[48rem] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">

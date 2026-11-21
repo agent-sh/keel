@@ -186,8 +186,10 @@ test("the side panel sits beside the conversation when the pane has room, else l
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Panel layout", workspace: process.cwd() } })).json();
   try {
+    const phase = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase;
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Review the release checklist." } });
-    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase, { timeout: 20_000 }).toBe("idle");
+    await expect.poll(phase, { timeout: 20_000 }).toBe("idle");
     const station = page.getByTestId("station").and(page.locator(`[data-station="${session.id}"]`));
     const side = page.getByTestId("side-panel");
     const close = page.getByRole("button", { name: "Close the panel" });
@@ -214,7 +216,21 @@ test("the side panel sits beside the conversation when the pane has room, else l
     await opened();
     await expect(close).toBeInViewport({ ratio: 1 });
     await expect(station.getByTestId("session-menu")).toBeInViewport({ ratio: 1 });
+    // The pane's close, Session actions and the panel's close share one column.
+    const mid = async (l: ReturnType<typeof page.getByTestId>) => { const r = (await l.boundingBox())!; return r.x + r.width / 2; };
+    const column = [await mid(station.getByTestId("station-close")), await mid(station.getByTestId("session-menu")), await mid(close)];
+    expect(Math.max(...column) - Math.min(...column)).toBeLessThanOrEqual(1.5);
+    // The conversation under the sheet is out of reach: nothing there takes focus or text.
+    await expect(station.locator(".k-session")).toHaveAttribute("inert", "");
+    expect(await station.getByTestId("composer").evaluate((el) => { (el as HTMLElement).focus(); return document.activeElement === el; })).toBe(false);
     await shoot(page, "wb-panel-900-sheet");
+    // Escape in a popup of the panel closes that popup, not the panel.
+    await page.getByTestId("panel-switch").click();
+    await expect(page.getByTestId("panel-picker")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("panel-picker")).toBeHidden();
+    await expect(side).toBeVisible();
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
     // Wider: both columns fit, the same file is still open beside the conversation.
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -242,17 +258,51 @@ test("the side panel sits beside the conversation when the pane has room, else l
     await shoot(page, "wb-panel-390-sheet");
     await page.setViewportSize({ width: 900, height: 1040 });
     await opened();
-    await close.click();
+    // Escape leaves the sheet and does not reach the turn working behind it; the next one stops the turn.
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:long-tool" } });
+    await expect.poll(phase).toBe("working");
+    await close.focus();
+    await page.keyboard.press("Escape");
     await expect(side).toBeHidden();
+    await expect(station.locator(".k-session")).not.toHaveAttribute("inert");
     await expect(station.getByTestId("composer")).toBeInViewport({ ratio: 1 });
     expect(await measure()).toEqual(before);
+    await page.waitForTimeout(400);
+    expect(await phase()).toBe("working");
+    await page.keyboard.press("Escape");
+    await expect.poll(phase).toBe("idle");
+    // From the panel's search field too.
+    await page.keyboard.press("Control+Shift+E");
+    await expect(side).toHaveAttribute("data-mode", "sheet");
+    await page.getByTestId("files-search").focus();
+    await page.keyboard.press("Escape");
+    await expect(side).toBeHidden();
 
-    // Opened with room, it goes straight beside.
+    // Opened with room, it goes straight beside. Escape is not its close: the conversation is in reach.
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.keyboard.press("Control+Shift+E");
     await expect(side).toHaveAttribute("data-mode", "beside");
+    await expect(station.locator(".k-session")).not.toHaveAttribute("inert");
     expect(await measure()).toMatchObject({ strip: 0, page: 0 });
+    await close.focus();
+    await page.keyboard.press("Escape");
+    await expect(side).toBeVisible();
+
+    // Four panes at this width leave the helm no room for two columns: a sheet over its pane, and the row of panes does not scroll.
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("4 panes");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("bridge").locator(":scope > [data-slot]")).toHaveCount(4);
+    await expect(side).toHaveAttribute("data-mode", "sheet");
+    const four = await measure();
+    expect(four).toMatchObject({ strip: 0, page: 0 });
+    expect((await side.boundingBox())!.width).toBeLessThanOrEqual(four.pane + 1);
+    await shoot(page, "wb-panel-1920-four-panes");
     await page.keyboard.press("Control+\\");
     await expect(side).toBeHidden();
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("1 pane");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("bridge").locator(":scope > [data-slot]")).toHaveCount(1);
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });

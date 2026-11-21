@@ -512,6 +512,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-side[data-mode="sheet"] { position: absolute; inset: 0; z-index: 20; }
 /* A phone gives the sheet the whole screen. */
 @media (max-width: 767px) { .k-side[data-mode="sheet"] { position: fixed; z-index: 40; } }
+/* In a pane the panel's close sits under the pane's own close and Session actions: one column. */
+@media (min-width: 768px) { .k-side-head { padding-right: 1rem; } }
 .k-panels-btn { display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
 
 /* ---------- Settings: a station of its own ---------- */
