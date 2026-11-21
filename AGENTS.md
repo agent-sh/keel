@@ -136,11 +136,12 @@ under `~/.cache/keel-work/bun/research/`.
 ```bash
 bun install
 scripts/dev.sh <port>          # dev daemon with hot reload on Bedrock, scratch state of its own
-                               # (scripts/dev-watch.ts reloads imported stylesheets and files a rebase brought back; a daemon
-                               #  that restarted itself has no watcher: run dev.sh again)
+                               # (scripts/dev-watch.ts is its launcher: it reloads imported stylesheets and files a rebase
+                               #  brought back, follows a daemon that restarted itself, and stopping it stops the daemon)
 bunx tsc --noEmit -p .          # typecheck
 KEEL_URL=http://127.0.0.1:<port> bunx playwright test   # e2e against that dev daemon (required)
 bun test ./test/cli              # the command line e2e (builds the binary, scripted model)
+bun test ./scripts               # the dev launcher's decisions (scripts/dev-watch.ts)
 bun scripts/build.ts            # dist/keel, one binary (and dist/keel-ui.tar.gz, its page as a bundle)
 bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.tar.gz --url URL
                                # a UI-only change on a running daemon: no restart, turns go on, pages reload;

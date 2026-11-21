@@ -67,7 +67,8 @@ if [ -n "${KEEL_BIN:-}" ]; then
 fi
 # Lanes add dependencies; a stale node_modules breaks the bundle at load.
 bun install --silent
-# Imported stylesheets reload too, and a source file that went missing and came back
-# (see scripts/dev-watch.ts).
-bun scripts/dev-watch.ts "$$" &
-exec bun --hot src/main.ts serve --dev --bind "127.0.0.1:$PORT" --state-dir "$DEV/state" --workspace "$DEV/ws"
+# The launcher starts the daemon and stays with whichever daemon holds the state
+# (one that restarted itself is a new process): imported stylesheets reload too,
+# and a source file that went missing and came back (see scripts/dev-watch.ts).
+# Stopping it stops the daemon.
+exec bun scripts/dev-watch.ts "$DEV/state" -- bun --hot src/main.ts serve --dev --bind "127.0.0.1:$PORT" --state-dir "$DEV/state" --workspace "$DEV/ws"
