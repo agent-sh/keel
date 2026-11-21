@@ -10,7 +10,6 @@ import { ActivityList } from "./ActivityList.tsx";
 import { ALERT_LABEL, ALERT_STATE, AlertIcon, CHANNEL_NAME, Empty } from "./bits.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 
-const tabCls = "h-7 rounded-md px-2.5 text-caption text-muted outline-none hover:text-fg data-[active]:bg-raised data-[active]:text-fg data-[active]:shadow-2 focus-visible:ring-2 focus-visible:ring-accent/30";
 
 
 type Note = { text: string; parent?: string | null };
@@ -62,10 +61,10 @@ function Inbox({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1 px-3 py-2 text-caption">
-        <div className="flex gap-0.5 rounded-lg bg-panel p-0.5" role="group" aria-label="Show">
-          <button type="button" aria-pressed={!onlyUnread} onClick={() => setOnlyUnread(false)} className={cn(filterCls, !onlyUnread && filterOn)}>All</button>
-          <button type="button" data-testid="inbox-unread-filter" aria-pressed={onlyUnread} onClick={() => setOnlyUnread(true)} className={cn(filterCls, onlyUnread && filterOn)}>
-            Unread{unread ? <span className="ml-1 tabular-nums text-faint">{unread}</span> : null}
+        <div className="k-seg" role="group" aria-label="Show">
+          <button type="button" aria-pressed={!onlyUnread} onClick={() => setOnlyUnread(false)}>All</button>
+          <button type="button" data-testid="inbox-unread-filter" aria-pressed={onlyUnread} onClick={() => setOnlyUnread(true)}>
+            Unread{unread ? <span className="tabular-nums text-faint">{unread}</span> : null}
           </button>
         </div>
         <button
@@ -149,8 +148,6 @@ function Inbox({ onClose }: { onClose: () => void }) {
   );
 }
 
-const filterCls = "h-6 rounded-md px-2 text-caption text-muted outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring";
-const filterOn = "bg-raised text-fg shadow-2";
 
 // Where the alert went besides the inbox, channel by channel: handed over,
 // still on its way, or failed. Inbox only says why.
@@ -205,9 +202,9 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
           <Tabs.Root value={tab} onValueChange={(v) => setTab(String(v))} className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center gap-1 border-b border-line px-3 py-2.5">
             <Dialog.Title className="sr-only">Inbox</Dialog.Title>
-            <Tabs.List className="flex gap-0.5 rounded-lg bg-panel p-0.5">
-              <Tabs.Tab value="inbox" className={tabCls} data-testid="tab-inbox">Inbox</Tabs.Tab>
-              <Tabs.Tab value="activity" className={tabCls} data-testid="tab-activity">Activity</Tabs.Tab>
+            <Tabs.List className="k-seg">
+              <Tabs.Tab value="inbox" data-testid="tab-inbox">Inbox</Tabs.Tab>
+              <Tabs.Tab value="activity" data-testid="tab-activity">Activity</Tabs.Tab>
             </Tabs.List>
             <span className="ml-auto" />
             <GlobalSnoozeButton />

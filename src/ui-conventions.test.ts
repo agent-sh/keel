@@ -63,3 +63,11 @@ test("the instrument face is named by its five roles and nowhere else", () => {
   // (lib/fonts.ts loads the face.)
   expect(found(components.filter((f) => !f.endsWith("lib/fonts.ts")), /\bfont-inst\b|--font-inst|Martian/)).toEqual([]);
 });
+
+test("a choice of a few is the one segmented control", () => {
+  // Tabs, a segmented choice and a filter share one track (k-seg in styles.css); no surface draws its own.
+  expect(found(components, /^.*(role="tablist"|<Tabs\.List|<Choices ).*$/, (line) => /\bk-seg\b/.test(line))).toEqual([]);
+  expect(found(sheets, /^\.k-seg \{|^\.k-tabs\b[^{]*\{/m)).toEqual(["styles.css:" + (readFileSync(join(UI, "styles.css"), "utf8").split("\n").findIndex((l) => l.startsWith(".k-seg {")) + 1) + ": .k-seg {"]);
+  // An option's look comes from the track: no component raises the chosen one by hand.
+  expect(found(components, /\? "bg-raised text-fg shadow-[12]"|data-\[active\]:bg-raised|data-checked:bg-raised/)).toEqual([]);
+});

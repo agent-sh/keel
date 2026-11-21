@@ -108,9 +108,9 @@ export function MachineChip({ session }: { session: Session }) {
               <div className="p-1.5">
                 <div className="flex items-center px-2 pb-1.5 pt-1 text-micro font-medium text-faint">
                   Move it to
-                  <span role="radiogroup" aria-label="What travels" className="ml-auto inline-flex rounded-md border border-line bg-sunken p-0.5">
+                  <span role="radiogroup" aria-label="What travels" className="k-seg ml-auto">
                     {(["git", "none"] as const).map((c) => (
-                      <button key={c} type="button" role="radio" aria-checked={carry === c} onClick={() => setCarry(c)} className={cn("h-5 rounded-sm px-2 text-micro", carry === c ? "bg-raised text-fg shadow-1" : "text-muted")}>
+                      <button key={c} type="button" role="radio" aria-checked={carry === c} onClick={() => setCarry(c)}>
                         {c === "git" ? "with its git state" : "place only"}
                       </button>
                     ))}

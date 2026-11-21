@@ -296,13 +296,12 @@ function Panel({ session }: { session: Session }) {
     <div className="flex h-full min-h-0 flex-col" data-testid="timeline-panel">
       <Now now={now} onTurn={(t) => { setApart(null); setAsked(t); }} />
       <div className="flex shrink-0 items-center gap-3 border-b border-line px-3 py-2">
-        <Choices value={only} onValueChange={(v) => setOnly(v as Only)} aria-label="Show" className="inline-flex rounded-md bg-sunken p-0.5 shadow-[inset_0_0_0_1px_var(--line)]">
+        <Choices value={only} onValueChange={(v) => setOnly(v as Only)} aria-label="Show" className="k-seg">
           {FILTERS.map(([v, label]) => (
             <Radio.Root
               key={v}
               value={v}
               data-testid={`timeline-only-${v || "all"}`}
-              className="flex h-6 cursor-default items-center rounded-sm px-2.5 text-caption font-medium text-muted data-checked:bg-raised data-checked:text-fg data-checked:shadow-1"
             >
               {label}
             </Radio.Root>

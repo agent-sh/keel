@@ -28,14 +28,13 @@ export function SettingRow({ label, hint, children }: { label: string; hint?: Re
 // does not: Choices keeps the chosen option in view.
 export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
   return (
-    <Choices aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="inline-flex max-w-full overflow-x-auto rounded-md border border-line bg-sunken p-0.5 [scrollbar-width:none]">
+    <Choices aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="k-seg">
       {options.map((o) => (
         <Radio.Root
           key={o.value}
           value={o.value}
           nativeButton
           render={<button type="button" />}
-          className={cn("h-7 shrink-0 whitespace-nowrap rounded-sm px-3 text-ui text-muted transition-colors", value === o.value ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
         >
           {o.label}
         </Radio.Root>
@@ -54,7 +53,7 @@ export function Card({ children }: { children: ReactNode }) {
 function TextSize() {
   const scale = useUI((s) => s.scale);
   return (
-    <Choices aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="grid w-56 max-w-full grid-cols-6 rounded-md border border-line bg-sunken p-0.5">
+    <Choices aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="k-seg w-56" data-fill>
       {SCALES.map((v, i) => (
         <Radio.Root
           key={v}
@@ -64,7 +63,7 @@ function TextSize() {
           aria-label={`${SCALE_NAMES[i]}, ${Math.round(v * 100)}%`}
           title={`${SCALE_NAMES[i]} (${Math.round(v * 100)}%)`}
           data-testid={`text-size-${Math.round(v * 100)}`}
-          className={cn("grid h-8 min-w-0 place-items-center rounded-sm font-semibold leading-none text-muted transition-colors", scale === v ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
+          className="font-semibold"
           style={{ fontSize: `${Math.round(13 * v * 10) / 10}px` }}
         >
           A

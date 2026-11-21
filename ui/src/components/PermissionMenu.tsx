@@ -76,7 +76,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                   <span className="text-ui font-medium">Sandbox for commands</span>
                   {sandbox && !sandbox.available && <span className="text-micro text-warn" title={sandbox.reason}>unavailable</span>}
                 </div>
-                <div className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg bg-panel p-0.5" role="radiogroup" aria-label="Sandbox">
+                <div className="k-seg mt-1.5" data-fill role="radiogroup" aria-label="Sandbox">
                   {PROFILES.map((p) => (
                     <button
                       key={p.id}
@@ -86,10 +86,6 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                       title={p.hint}
                       disabled={p.id !== "off" && sandbox?.available === false}
                       onClick={() => set({ sandbox: p.id })}
-                      className={cn(
-                        "h-7 rounded-md text-caption text-muted disabled:opacity-40",
-                        perm.sandbox === p.id ? "bg-raised text-fg shadow-2" : "hover:text-fg",
-                      )}
                     >
                       {p.name}
                     </button>

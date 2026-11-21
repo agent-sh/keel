@@ -103,15 +103,14 @@ export function ChangesPanel({ session }: { session: Session }) {
   const fileDiff = (q: string) => async (path: string) => (await api<Diff>(`/api/sessions/${sessionId}/checkpoints/diff?${q}&path=${encodeURIComponent(path)}`)).diff;
 
   const firstTurn = here[0]?.turn;
-  const tabCls = "h-8 rounded-md px-3 text-ui text-muted outline-none hover:text-fg data-[active]:bg-raised data-[active]:text-fg data-[active]:shadow-2 focus-visible:ring-2 focus-visible:ring-accent/30";
 
   return (
     <div data-testid="changes-panel" className="flex h-full min-h-0 flex-col">
       <Tabs.Root value={tab} onValueChange={(v) => setTab(String(v))} className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center gap-3 border-b border-line px-3 py-2">
-          <Tabs.List className="flex gap-0.5 rounded-lg bg-panel p-0.5">
-            <Tabs.Tab value="session" className={tabCls} data-testid="tab-session">Session</Tabs.Tab>
-            <Tabs.Tab value="turns" className={tabCls} data-testid="tab-turns">By turn</Tabs.Tab>
+          <Tabs.List className="k-seg">
+            <Tabs.Tab value="session" data-testid="tab-session">Session</Tabs.Tab>
+            <Tabs.Tab value="turns" data-testid="tab-turns">By turn</Tabs.Tab>
           </Tabs.List>
           {scope.scope === "written" && (
             <span className="truncate text-caption text-warn" title={scope.reason ?? ""}>Only files the tools wrote are tracked: {scope.reason}</span>

@@ -193,9 +193,9 @@ function AddMachine({ offered, preset, onDone }: { offered: Machine[]; preset?: 
   };
   return (
     <form className="py-4" data-testid="machine-add" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-      <div role="radiogroup" aria-label="How it is reached" className="mb-3 inline-flex rounded-md border border-line bg-sunken p-0.5">
+      <div role="radiogroup" aria-label="How it is reached" className="k-seg mb-3">
         {(["daemon", "ssh"] as const).map((v) => (
-          <button key={v} type="button" role="radio" aria-checked={mode === v} onClick={() => setMode(v)} className={cn("h-7 rounded-sm px-3 text-caption", mode === v ? "bg-raised text-fg shadow-1" : "text-muted hover:text-fg")}>
+          <button key={v} type="button" role="radio" aria-checked={mode === v} onClick={() => setMode(v)}>
             {v === "daemon" ? "Daemon on this machine's loopback" : "Daemon behind an ssh host"}
           </button>
         ))}

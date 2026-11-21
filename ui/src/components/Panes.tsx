@@ -30,7 +30,7 @@ export function PaneCount() {
   const max = Math.max(panesMax(width), count);
   const shown = focus ? 1 : count;
   return (
-    <Choices className="k-panes" aria-label="Panes" data-testid="pane-count" title="How many panes are open" value={shown} onValueChange={(n) => setPanes(n as number)}>
+    <Choices className="k-seg k-panes" aria-label="Panes" data-testid="pane-count" title="How many panes are open" value={shown} onValueChange={(n) => setPanes(n as number)}>
       {Array.from({ length: max }, (_, i) => i + 1).map((n) => (
         // The number shown again (one pane while only the helm shows) still sets it.
         <Radio.Root key={n} value={n} nativeButton render={<button type="button" />} aria-label={`${n} pane${n > 1 ? "s" : ""}`} data-testid={`panes-${n}`} onClick={() => { if (n === shown) setPanes(n); }}>

@@ -378,7 +378,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
             <History className="size-4 text-muted" />
             <Dialog.Title className="font-semibold">Import sessions</Dialog.Title>
-            <div className="ml-2 flex rounded-lg bg-panel p-0.5 text-caption" role="tablist">
+            <div className="k-seg ml-2" role="tablist">
               {(harnesses.length ? harnesses : [{ harness: "claude", label: "Claude Code" }, { harness: "codex", label: "Codex" }, { harness: "keel", label: "Keel (Rust)" }] as HarnessState[]).map((h) => (
                 <button
                   key={h.harness}
@@ -387,7 +387,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                   aria-selected={harness === h.harness}
                   data-testid={`import-tab-${h.harness}`}
                   onClick={() => setHarness(h.harness)}
-                  className={cn("rounded-md px-2.5 py-1 text-muted transition-colors", harness === h.harness ? "bg-raised text-fg shadow-1" : "hover:text-fg", h.installed === false && "opacity-50")}
+                  className={cn(h.installed === false && "opacity-50")}
                 >
                   {h.label}
                   {h.interactive !== undefined && <span className="ml-1.5 tabular-nums text-faint">{h.interactive.toLocaleString()}</span>}

@@ -354,7 +354,7 @@ function Index({ current }: { current: string | null }) {
   const sections = useMemo(() => machineRuns(rest), [rest]);
   return (
     <>
-      <div role="tablist" aria-label="Session list" className="k-tabs">
+      <div role="tablist" aria-label="Session list" className="k-seg mx-2.5 mb-1" data-fill>
         {(["active", "archived"] as const).map((t) => (
           <button key={t} type="button" role="tab" aria-selected={tab === t} data-testid={`tab-${t}`} onClick={() => setTab(t)}>
             {t === "active" ? "Sessions" : "Archived"}

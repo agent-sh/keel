@@ -171,19 +171,21 @@ export function TerminalPanel({ session }: { session: Session }) {
     // The filters are tabs of the one list: one Tab stop on the filter
     // chosen, Left and Right move to the next one and show its commands.
     <Tabs.Root value={filter} onValueChange={(v) => setFilter(v as Filter)} className="flex h-full min-h-0 flex-col" data-testid="terminal-panel">
-      <Tabs.List activateOnFocus aria-label="Which commands" className="flex items-center gap-1 border-b border-line px-3 py-2">
+      <div className="flex items-center border-b border-line px-3 py-2">
+      <Tabs.List activateOnFocus aria-label="Which commands" className="k-seg">
         {(["all", "running", "failed"] as Filter[]).map((f) => (
           <Tabs.Tab
             key={f}
             value={f}
             data-testid={`term-filter-${f}`}
-            className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-caption capitalize", filter === f ? "bg-raised text-fg shadow-1" : "text-muted hover:bg-hover hover:text-fg")}
+            className="capitalize"
           >
             {f}
             <span className={cn("tabular-nums text-micro", f === "failed" && counts.failed ? "text-danger" : "text-faint")}>{counts[f]}</span>
           </Tabs.Tab>
         ))}
       </Tabs.List>
+      </div>
       {note && <p className="border-b border-line px-3 py-1.5 text-micro text-warn">{note}</p>}
       {/* The list is no Tab stop of its own: the next Tab goes from the filters to its first row. */}
       <Tabs.Panel value={filter} tabIndex={-1} className="min-h-0 flex-1 overflow-auto outline-none">

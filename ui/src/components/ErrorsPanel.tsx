@@ -173,7 +173,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
             </Dialog.Close>
           </div>
           <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-            <div role="tablist" aria-label="Which errors" className="inline-flex rounded-md border border-line bg-sunken p-0.5">
+            <div role="tablist" aria-label="Which errors" className="k-seg">
               {([["open", "Open", openList.length], ["resolved", "Resolved", resolved.length]] as const).map(([id, label, n]) => (
                 <button
                   key={id}
@@ -181,7 +181,6 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
                   role="tab"
                   aria-selected={tab === id}
                   onClick={() => setTab(id)}
-                  className={cn("flex h-7 items-center gap-1.5 rounded-sm px-3 text-ui text-muted", tab === id ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
                 >
                   {label}<span className="text-micro tabular-nums text-faint">{n}</span>
                 </button>

@@ -191,9 +191,9 @@ function Preview({ a }: { a: Listed }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="artifact-preview" data-kind={a.kind}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2" data-testid="artifact-toolbar">
-        <div className="flex gap-0.5 rounded-md border border-line bg-sunken p-0.5" role="tablist" aria-label="View">
+        <div className="k-seg" role="tablist" aria-label="View">
           {views.map(([v, label]) => (
-            <button key={v} type="button" role="tab" aria-selected={view === v} data-testid={`artifact-view-${v}`} onClick={() => setView(v)} className={cn("h-6 rounded-sm px-2 text-caption", view === v ? "bg-raised text-fg shadow-1" : "text-muted hover:text-fg")}>{label}</button>
+            <button key={v} type="button" role="tab" aria-selected={view === v} data-testid={`artifact-view-${v}`} onClick={() => setView(v)}>{label}</button>
           ))}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
