@@ -41,7 +41,12 @@ test("folders of sessions: make, rename, nest, drag in, fold, reorder, delete", 
   // Drag a session in; a folder inside Work; drag another there.
   await list.locator(`[data-session="${a}"]`).dragTo(head(work));
   await expect.poll(() => folderOf(a)).toBe(work);
+  // With a mouse the head's actions are quiet until it is hovered.
+  await page.mouse.move(900, 500);
+  const quiet = page.getByRole("button", { name: `New folder in Work ${word}` });
+  await expect.poll(() => quiet.evaluate((b) => getComputedStyle(b).opacity)).toBe("0");
   await head(work).hover();
+  await expect.poll(() => quiet.evaluate((b) => getComputedStyle(b).opacity)).toBe("1");
   await page.getByRole("button", { name: `New folder in Work ${word}` }).click();
   await expect.poll(async () => (await fresh()).length).toBe(3);
   const sub = (await fresh()).find((f) => f.parent_id === work)!.id;
@@ -88,4 +93,54 @@ test("folders of sessions: make, rename, nest, drag in, fold, reorder, delete", 
 
   for (const f of await fresh()) await request.delete(`/api/session-folders/${f.id}`);
   for (const id of [a, b, c]) await request.delete(`/api/sessions/${id}`);
+});
+
+// Where nothing hovers, the actions of a folder's or a project's head show
+// before it is touched: New folder inside, Delete, and New session in a project.
+test.describe("on a touch screen", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("folder and project head actions show in the drawer", async ({ page, request }) => {
+    const word = `ft${Date.now().toString(36)}`;
+    const s = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Filed ${word}` } })).json()).session;
+    const folder = (await (await request.post("/api/session-folders", { data: { name: `Field notes ${word}` } })).json()).folder;
+    const project = (await (await request.post("/api/projects", { data: { name: `Atlas ${word}` } })).json()).project;
+    const shown = async (b: ReturnType<typeof page.getByRole>) => {
+      await expect(b).toBeVisible();
+      expect(await b.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
+      const box = (await b.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(390);
+      expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(24);
+    };
+
+    await page.goto(`/s/${s.id}`);
+    expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
+    await page.getByTestId("show-sidebar").tap();
+    await expect(page.getByTestId("sidebar")).toBeInViewport();
+    await page.getByTestId("list-arrange").tap();
+    await page.getByTestId("arrange-group-mine").tap();
+    await page.keyboard.press("Escape");
+    const head = page.locator(`[data-testid="folder-head"][data-folder="${folder.id}"]`);
+    await expect(head).toBeVisible();
+    await shown(head.getByRole("button", { name: `New folder in Field notes ${word}` }));
+    await shown(head.getByRole("button", { name: `Delete Field notes ${word}` }));
+    await shoot(page, "folders-05-touch-head-actions");
+    // The first tap acts: a folder inside.
+    await head.getByRole("button", { name: `New folder in Field notes ${word}` }).tap();
+    await expect.poll(async () => (await (await request.get("/api/session-folders")).json()).folders.filter((f: any) => f.parent_id === folder.id).length).toBe(1);
+
+    await page.getByTestId("list-arrange").tap();
+    await page.getByTestId("arrange-group-project").tap();
+    await page.keyboard.press("Escape");
+    const phead = page.locator(`[data-testid="project-head"][data-project="${project.id}"]`);
+    await expect(phead).toBeVisible();
+    await shown(phead.getByRole("button", { name: `New session in Atlas ${word}` }));
+    await shoot(page, "folders-06-touch-project-head");
+    await phead.getByRole("button", { name: `New session in Atlas ${word}` }).tap();
+    await expect(page.getByTestId("new-project-select")).toContainText(`Atlas ${word}`);
+
+    await request.delete(`/api/projects/${project.id}`);
+    for (const f of (await (await request.get("/api/session-folders")).json()).folders.filter((f: any) => f.id === folder.id || f.parent_id === folder.id)) await request.delete(`/api/session-folders/${f.id}`);
+    await request.delete(`/api/sessions/${s.id}`);
+  });
 });

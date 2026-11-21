@@ -11,7 +11,8 @@ import { cn } from "../lib/utils.ts";
 import { DRAG } from "./Panes.tsx";
 import { Group } from "./Sidebar.tsx";
 
-const headAct = "grid size-6 shrink-0 place-items-center rounded-sm text-faint opacity-0 hover:bg-hover hover:text-fg group-hover/head:opacity-100 focus-visible:opacity-100";
+// Quiet until the head is hovered or holds the keyboard; shown from the start where nothing hovers.
+const headAct = "grid size-6 shrink-0 place-items-center rounded-sm text-faint opacity-0 hover:bg-hover hover:text-fg group-hover/head:opacity-100 group-focus-within/head:opacity-100 focus-visible:opacity-100 touch:size-7 touch:opacity-100";
 
 // Drop target for a session dragged from the list.
 export function useDropSession(onDrop: (id: string) => void) {
