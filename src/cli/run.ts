@@ -112,6 +112,8 @@ export async function watch(w: Watch): Promise<Watched> {
   const r: Watched = { subtype: "success", outcome: null, answer: "", errors: [], turns: 0, usage: { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0 }, pending: 0, refused: 0, held: false };
   let ours = false;
   let ended = false;
+  // A turn is under way since this command's prompt (or since the last end).
+  let began = false;
   let lastAnswer = "";
   // Staying for one turn, what that turn said is final once it ended: a later
   // prompt's turn read in the same batch is not this one's.
@@ -143,9 +145,18 @@ export async function watch(w: Watch): Promise<Watched> {
     if (e.kind === "assistant") {
       const t = assistantText(e).trim();
       if (t) lastAnswer = t;
-    } else if (e.kind === "error") r.errors.push(String(e.data?.message ?? "error"));
-    else if (e.kind === "turn_end") {
+    } else if (e.kind === "error") {
+      r.errors.push(String(e.data?.message ?? "error"));
+      // An error with no turn under way kept the prompt's turn from starting
+      // (no provider, no model): no turn end follows, so this is its end.
+      if (!began && !ended) {
+        ended = true;
+        r.outcome = "failure";
+        if (w.stay === "turn") frozen = true;
+      }
+    } else if (e.kind === "turn_end") {
       ended = true;
+      began = false;
       r.turns++;
       r.outcome = outcomeOf(e.data?.reason);
       const u = e.data?.usage ?? {};
@@ -156,7 +167,10 @@ export async function watch(w: Watch): Promise<Watched> {
       r.usage.cost += u.cost ?? 0;
       r.usage.unpriced += u.unpriced ?? (u.cost === undefined && (u.input || u.output) ? 1 : 0);
       if (w.stay === "turn") frozen = true;
-    } else if (e.kind === "turn_start") ended = false;
+    } else if (e.kind === "turn_start") {
+      ended = false;
+      began = true;
+    }
     // Text streams in line with the events (see Follower): before this prompt's
     // own event it is the reply to another prompt.
   }, (d) => { if (ours && !frozen && !theirs) w.onDelta?.(d); });
