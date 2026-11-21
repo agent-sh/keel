@@ -454,6 +454,14 @@ export class Store {
     return this.held(session_id).all.slice();
   }
 
+  // Whether the session has any event: one index lookup, and nothing of the
+  // session is read or parsed (a frame of a long session asks this).
+  hasEvents(session_id: string): boolean {
+    const k = this.kept.get(session_id);
+    if (k) return k.all.length > 0;
+    return !!this.db.query("SELECT 1 FROM events WHERE session_id = ? LIMIT 1").get(session_id);
+  }
+
   event(id: string): StoredEvent | undefined {
     const r = this.db.query<EventRow, [string]>("SELECT * FROM events WHERE id = ?").get(id);
     return r ? rowToEvent(r) : undefined;

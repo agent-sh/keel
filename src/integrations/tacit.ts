@@ -1056,7 +1056,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         this.forget(f.session.id);
         if (!this.store.session(f.session.id)) return; // deleted: nothing left to dream
         this.preCompact(f.session).catch((e) => this.errors.capture("server", e, { at: "tacit pre-compact" }));
-      } else if (!this.start.has(f.session.id) && this.flags(f.session.id).use_memory && !this.store.events(f.session.id).length) {
+      } else if (!this.start.has(f.session.id) && this.flags(f.session.id).use_memory && !this.store.hasEvents(f.session.id)) {
         this.startCall(f.session);
       }
     });
