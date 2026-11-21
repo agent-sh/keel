@@ -34,10 +34,10 @@
 //   source), so what it gave before the context was replaced can come again;
 // - one call a turn stopped waiting for is one late call, counted and no
 //   more: an outage is a pattern, two such calls of a kind in a row;
-// - before a tool the store is asked unless its answer is known to be
-//   nothing; a call that changes something has its result held for the
-//   answer, and after a read the session's next request waits for it, so a
-//   rule is in the request the model answers by acting (tacit-tools.ts);
+// - before a tool the store is asked, except about a call it never answers;
+//   a call that changes something has its result held for the answer, and
+//   after a read the session's next request waits for it, so a rule is in
+//   the request the model answers by acting (tacit-tools.ts);
 // - a store that often answers late without ever missing twice in a row is
 //   said too: once per session while a quarter of its last calls were late.
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -55,7 +55,7 @@ import { lineage } from "../core/tree.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
 import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
-import { callKey, changesSomething, namesStore, neverAnswered, Nothing, Searches } from "./tacit-tools.ts";
+import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
 
 export function findBin(envVar: string, name: string, env = process.env): string | null {
   const given = env[envVar]?.trim();
@@ -145,9 +145,6 @@ const COMPACT_WAIT_MS = 4000;
 // sooner than the store itself would have it killed. What one answers after
 // its turn stopped waiting is owed, not lost.
 export const STORE_TIMEOUT_MS = 15_000;
-// The store's before-a-tool hook answers within this or prints nothing (its
-// own budget): an empty answer that took longer may be that, not "nothing".
-export const STORE_TOOL_BUDGET_MS = 400;
 // An outage opens after this many calls of a kind in a row that a turn
 // stopped waiting for. One is a slow call (a loaded machine): it is counted,
 // its answer still follows, and nothing else changes.
@@ -325,19 +322,13 @@ export class Tacit {
   private startOwed = new Set<string>();
   // Calls of each kind in a row that a turn stopped waiting for.
   private misses: Record<Kind, number> = { ask: 0, tool: 0 };
-  // Per session, the reads the store had nothing for (tacit-tools.ts), and
-  // a count that moves when they are forgotten: an answer asked for before
-  // that is not remembered after it.
-  private nothing = new SessionMap<Nothing>(256);
-  private forgot = new Map<string, number>();
-  // How long the store's before-a-tool calls take: what tells a search from a fast empty answer.
-  private searches = new Searches();
   // Per session, the answers of one step's reads still on their way: its
   // next request waits for them. One step's late answers are one missed wait.
   private toolAnswers = new Map<string, StepAnswers>();
-  // Whether each kind's last calls were late, newest last; sessions told that it answers slowly.
+  // Whether each kind's last calls were late, newest last; and the sessions
+  // told that a kind answers slowly, until that kind no longer does.
   private recent: Record<Kind, boolean[]> = { ask: [], tool: [] };
-  private slowTold = new Set<string>();
+  private slowTold: Record<Kind, Set<string>> = { ask: new Set(), tool: new Set() };
   // Hook processes alive, and the calls waiting for a place.
   private procs = 0;
   private waiting: (() => void)[] = [];
@@ -364,27 +355,31 @@ export class Tacit {
     processes: { max: 0, limit: 0, not_started: 0, probes: 0 },
     // Lines dropped because more was owed to a session than may wait for it.
     owed_dropped: 0,
-    // Tool calls the store was not asked about (it never answers such a call;
-    // it had nothing for the same call a moment ago), and results not held
-    // for an answer that had not come (the call changed nothing).
-    // `request_waits`: requests that waited for a read's answer still on its
-    // way, and how long in all.
-    tools: { never_answered: 0, known_nothing: 0, not_held: 0, request_waits: 0, request_wait_ms: 0 },
+    // Tool calls the store was not asked about (it never answers such a
+    // call), and results not held for an answer that had not come (the call
+    // changed nothing). `request_waits`: requests that waited for a read's
+    // answer still on its way, and how long in all.
+    tools: { never_answered: 0, not_held: 0, request_waits: 0, request_wait_ms: 0 },
   };
 
-  constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit")) {
+  // `speed`: every wait and deadline is divided by it. 1 in use; the unit
+  // tests run the same rules against a stand-in in a fraction of the time.
+  constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit"), private speed = 1) {
     this.bin = bin;
     this.meter = memoryMeter(store);
     void this.files;
     this.metrics.processes.limit = HOOK_PROCESSES;
     // memory_owed: lines the store gave that have not reached the model yet
     // (a block was full, or the answer came after its request went). They
-    // outlive a restart: the store will not give them again.
+    // outlive a restart: the store will not give them again. `answer` marks
+    // the lines of one answer no block has carried yet: it gets a block of
+    // its own, as it would have had in its tool result.
     // memory_sessions: the checkpoint the store was last told of.
     store.migrate(`CREATE TABLE IF NOT EXISTS memory_flags (session_id TEXT PRIMARY KEY, use_memory INTEGER NOT NULL DEFAULT 1, feed_memory INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS memory_owed (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, hook TEXT NOT NULL, line TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS memory_owed_session ON memory_owed(session_id, id);
 CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, checkpoint TEXT);`);
+    if (!store.db.query<{ name: string }, []>("PRAGMA table_info(memory_owed)").all().some((c) => c.name === "answer")) store.db.exec("ALTER TABLE memory_owed ADD COLUMN answer INTEGER");
   }
 
   // `out`: the kinds of call the store is not answering in time right now;
@@ -502,7 +497,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     const started = performance.now();
     const argv = [this.bin, "hook", hook];
     if (hook !== "pre-compact") argv.push("--mcp");
-    const result = await runBoundedResult(argv, JSON.stringify(payload), STORE_TIMEOUT_MS).finally(() => this.leave());
+    const result = await runBoundedResult(argv, JSON.stringify(payload), STORE_TIMEOUT_MS / this.speed).finally(() => this.leave());
     let outcome: Exclude<HookOutcome, "skipped"> = result.outcome;
     let text = hook === "pre-compact" ? null : result.text;
     if (outcome === "ok" && hook !== "pre-compact") {
@@ -525,8 +520,13 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
       if (text) add(stat.context_bytes, Buffer.byteLength(text.slice(0, MEMORY_CAP)));
     }
     const kind = kindOf(hook);
-    if (kind) this.ended(kind, outcome, ms <= WAIT_OF[hook], session);
+    if (kind) this.ended(kind, outcome, ms <= this.waitOf(hook), session);
     return { outcome, text, ms };
+  }
+
+  // How long a turn waits for a hook's answer.
+  private waitOf(hook: Hook): number {
+    return WAIT_OF[hook] / this.speed;
   }
 
   // A call did not answer within its wait: one late call, counted. Two of a
@@ -536,8 +536,8 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     this.metrics.hooks[hook].late++;
     this.seen(kind, true);
     if (++this.misses[kind] >= SPELL_AFTER) this.markOut(kind);
-    else if (session && this.degraded(kind) && !this.slowTold.has(session)) {
-      this.slowTold.add(session);
+    else if (session && this.degraded(kind) && !this.slowTold[kind].has(session)) {
+      this.slowTold[kind].add(session);
       const late = this.recent[kind].filter(Boolean).length;
       this.bus.emit({ t: "event", event: this.store.append(session, "note", { kind: "memory_slow", text: `Memory is answering slowly: ${late} of its last ${DEGRADED_WINDOW} ${kind === "ask" ? "answers to prompts" : "answers before a tool"} came later than a turn waits. Turns go on without the late ones; what they answer follows.` }) });
     }
@@ -546,7 +546,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     const r = this.recent[kind];
     r.push(late);
     if (r.length > DEGRADED_WINDOW) r.shift();
-    if (!this.degraded(kind)) this.slowTold.clear();
+    if (!this.degraded(kind)) this.slowTold[kind].clear();
   }
   private degraded(kind: Kind): boolean {
     return this.recent[kind].length >= DEGRADED_WINDOW && this.recent[kind].filter(Boolean).length >= DEGRADED_LATE;
@@ -557,10 +557,6 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     if (group.counted) return;
     group.counted = true;
     this.miss("tool", "pre-tool", session);
-  }
-  private forgetNothing(id: string) {
-    this.nothing.delete(id);
-    this.forgot.set(id, (this.forgot.get(id) ?? 0) + 1);
   }
 
   // A kind of call is out: recorded once, and its probe starts.
@@ -610,17 +606,17 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
       const c = running((kind === "ask"
         ? this.hook("prompt", { ...base, prompt: "" }, PROBE_SESSION, false)
         : this.hook("pre-tool", { ...base, tool_name: "", tool_input: {} }, PROBE_SESSION, false)).catch((): HookResult => ({ outcome: "failure", text: null })));
-      await within(c, PROBE_WAIT[kind]);
+      await within(c, PROBE_WAIT[kind] / this.speed);
       this.probing[kind] = null;
       if (!this.out[kind]) return; // answered within the wait (ended() saw it), or a real call did
       const t = setTimeout(() => {
         this.probing[kind] = null;
-        if (this.out[kind] && this.called[kind]) void run(Math.min(PROBE_MAX_MS, next * 2));
+        if (this.out[kind] && this.called[kind]) void run(Math.min(PROBE_MAX_MS / this.speed, next * 2));
       }, next);
       (t as { unref?: () => void }).unref?.();
       this.probing[kind] = t;
     };
-    void run(PROBE_WAIT[kind]);
+    void run(PROBE_WAIT[kind] / this.speed);
   }
 
   // Said in the session once while its calls go unanswered: a line for the
@@ -660,7 +656,6 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     if (p) return p;
     p = this.call(s, "session-start", { source: "startup" });
     if (p === SKIPPED) { this.startOwed.add(s.id); return p; }
-    this.forgetNothing(s.id);
     this.start.set(s.id, p);
     p.done.then((r) => {
       if (r.outcome === "skipped") { this.start.delete(s.id); this.startOwed.add(s.id); } else this.startOwed.delete(s.id);
@@ -670,7 +665,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
 
   // One hook's answer for a session, waited for as a turn waits for it.
   private async answer(c: Running, hook: OwedHook, id: string): Promise<string | null> {
-    await within(c, WAIT_OF[hook]);
+    await within(c, this.waitOf(hook));
     if (c.got) return c.got.text;
     this.miss(kindOf(hook)!, hook);
     this.oweLater(id, hook, c);
@@ -691,7 +686,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   // compaction waits for it so long; the process may go on.
   async preCompact(s: Session) {
     if (!this.bin || !this.flags(s.id).use_memory || !this.flags(s.id).feed_memory) return;
-    await within(running(this.hook("pre-compact", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) })), COMPACT_WAIT_MS);
+    await within(running(this.hook("pre-compact", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) })), this.waitOf("pre-compact"));
   }
 
   // The fact lines the session's context holds: those of the memory notes and
@@ -721,23 +716,30 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   // Lines the store gave that wait for a later request. What may wait is
   // bounded: past it the lines are dropped and one line, owed like the rest,
   // says how many (a store that gives more than ten later requests can carry).
-  private owe(id: string, hook: OwedHook, lines: string[]) {
+  // `whole`: the lines are one answer no block has carried yet.
+  private owe(id: string, hook: OwedHook, lines: string[], whole = false) {
     if (!lines.length || !this.store.session(id)) return;
     const db = this.store.db;
     let have = db.query<{ n: number }, [string]>("SELECT COALESCE(SUM(LENGTH(line)), 0) AS n FROM memory_owed WHERE session_id = ?").get(id)?.n ?? 0;
-    const q = db.query("INSERT INTO memory_owed (session_id, hook, line) VALUES (?, ?, ?)");
+    const q = db.query("INSERT INTO memory_owed (session_id, hook, line, answer) VALUES (?, ?, ?, ?)");
     let dropped = 0;
     db.transaction(() => {
+      // An answer is named by the row of its first line.
+      let answer: number | null = null;
       for (const l of lines) {
         if (have + l.length > OWED_MAX_CHARS) { dropped++; continue; }
-        q.run(id, hook, l);
+        const row: number = Number(q.run(id, hook, l, answer).lastInsertRowid);
+        if (whole && answer === null) {
+          answer = row;
+          db.query("UPDATE memory_owed SET answer = ? WHERE id = ?").run(row, row);
+        }
         have += l.length;
       }
       if (!dropped) return;
       // One line for all that was dropped, last in the queue.
       const old = db.query<{ id: number; line: string }, [string]>(`SELECT id, line FROM memory_owed WHERE session_id = ? AND line LIKE '${DROPPED_LIKE}' ORDER BY id DESC LIMIT 1`).get(id);
       if (old) db.query("DELETE FROM memory_owed WHERE id = ?").run(old.id);
-      q.run(id, hook, droppedLine(dropped + Number(/\d+/.exec(old?.line ?? "")?.[0] ?? 0)));
+      q.run(id, hook, droppedLine(dropped + Number(/\d+/.exec(old?.line ?? "")?.[0] ?? 0)), null);
     })();
     if (dropped) this.metrics.owed_dropped += dropped;
   }
@@ -747,7 +749,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
 
   // A call nothing waited for: what it answers, when it does, is owed.
   private oweLater(id: string, hook: OwedHook, call: Running): Promise<unknown> {
-    return call.done.then((r) => { if (r.text) this.owe(id, hook, r.text.trim().split("\n").filter((l) => l.trim())); }).catch(() => {});
+    return call.done.then((r) => { if (r.text) this.owe(id, hook, r.text.trim().split("\n").filter((l) => l.trim()), true); }).catch(() => {});
   }
 
   // One block as the turn gets it, and its row in the measurements: the lines
@@ -770,45 +772,61 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     return block;
   }
 
-  // What is owed to the session, as blocks for a note: as much as one block's
-  // cap holds, oldest first, under the hook each line came from. The lines
+  // What is owed to the session, as blocks for a note, oldest first, under
+  // the hook each line came from. An answer no block has carried yet gets a
+  // block of its own, as it would have had in its tool result or its note:
+  // nothing waits a step because another answer took the room. The lines
+  // left over from blocks that were full share one block's cap. The lines
   // that went (and those the context holds by now) leave the table; the rest
   // stays for the next request.
   private payOwed(id: string, shown: Set<string>): { hook: OwedHook; block: string }[] {
-    const rows = this.store.db.query<{ id: number; hook: OwedHook; line: string }, [string, number]>("SELECT id, hook, line FROM memory_owed WHERE session_id = ? ORDER BY id LIMIT ?").all(id, OWED_READ);
+    const rows = this.store.db.query<{ id: number; hook: OwedHook; line: string; answer: number | null }, [string, number]>("SELECT id, hook, line, answer FROM memory_owed WHERE session_id = ? ORDER BY id LIMIT ?").all(id, OWED_READ);
     const out: { hook: OwedHook; block: string }[] = [];
     const gone: number[] = [];
-    let room = MEMORY_CAP;
-    for (let at = 0; at < rows.length;) {
-      // A run of lines from one hook is one block.
-      let end = at;
-      while (end < rows.length && rows[end]!.hook === rows[at]!.hook) end++;
+    const parts: { id: number; line: string }[] = [];
+    // The room the left-over lines share, the blocks they made, and whether they have to wait from here.
+    let room = MEMORY_CAP, shared = 0, full = false;
+    for (let at = 0, end = 0; at < rows.length; at = end) {
+      // A run of lines from one hook, and of one answer, is one block.
+      end = at;
+      while (end < rows.length && rows[end]!.hook === rows[at]!.hook && rows[end]!.answer === rows[at]!.answer) end++;
       const run = rows.slice(at, end);
       const hook = run[0]!.hook;
-      const fit = fitMemory(run.map((r) => r.line).join("\n"), shown, room - FRAME);
-      // After the first block, a line that fits no more waits whole for the next note.
-      if (out.length && (room <= FRAME || fit.text?.includes(CUT))) break;
+      const own = run[0]!.answer !== null;
+      if (!own && full) continue;
+      const fit = fitMemory(run.map((r) => r.line).join("\n"), shown, (own ? MEMORY_CAP : room) - FRAME);
+      // After their first block, left-over lines that fit no more wait whole for the next note.
+      if (!own && shared && (room <= FRAME || fit.text?.includes(CUT))) { full = true; continue; }
       // The rows that stay are the ones the fit left owed (matched from the end).
       const stay = new Map<string, number>();
       for (const l of fit.owed) stay.set(l, (stay.get(l) ?? 0) + 1);
+      const went: typeof run = [];
       for (const r of run.toReversed()) {
         const n = stay.get(r.line) ?? 0;
         if (n) stay.set(r.line, n - 1);
-        else gone.push(r.id);
+        else went.unshift(r);
       }
+      // A line longer than the block went in part: its row keeps the rest.
+      const rest = fit.owed.find((l) => l.startsWith(CONTINUED) && (stay.get(l) ?? 0) > 0);
+      const cut = rest ? went.find((r) => r.line.endsWith(rest.slice(CONTINUED.length))) : undefined;
+      if (rest && cut) parts.push({ id: cut.id, line: rest });
+      for (const r of went) if (r !== cut) gone.push(r.id);
       if (fit.text) {
         for (const l of fit.lines) shown.add(l);
         const block = memoryBlock(hook, fit.text);
         out.push({ hook, block });
-        room -= block.length;
+        if (!own) { room -= block.length; shared++; }
         this.meter.record(id, "store_owed", { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length });
       }
-      if (fit.owed.length) break;
-      at = end;
+      if (!own && fit.owed.length) full = true;
     }
-    if (gone.length) {
-      const q = this.store.db.query("DELETE FROM memory_owed WHERE id = ?");
-      this.store.db.transaction(() => { for (const g of gone) q.run(g); })();
+    if (gone.length || parts.length) {
+      const del = this.store.db.query("DELETE FROM memory_owed WHERE id = ?");
+      const upd = this.store.db.query("UPDATE memory_owed SET line = ? WHERE id = ?");
+      this.store.db.transaction(() => {
+        for (const g of gone) del.run(g);
+        for (const p of parts) upd.run(p.line, p.id);
+      })();
     }
     return out;
   }
@@ -830,10 +848,9 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     this.transcriptVersions.delete(id);
     this.told.delete(id);
     this.startOwed.delete(id);
-    this.forgetNothing(id);
-    this.forgot.delete(id);
     this.toolAnswers.delete(id);
-    this.slowTold.delete(id);
+    this.slowTold.ask.delete(id);
+    this.slowTold.tool.delete(id);
     this.meter.forget(id);
   }
 
@@ -873,8 +890,8 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         if (pending) {
           t.toolAnswers.delete(s.id);
           if (!t.out.tool) {
-            const t0 = performance.now();
-            await Promise.all(pending.answers.map((e) => Promise.race([e.owed, Bun.sleep(Math.max(0, TOOL_WAIT_MS - (performance.now() - e.call.at)))])));
+            const t0 = performance.now(), toolWait = t.waitOf("pre-tool");
+            await Promise.all(pending.answers.map((e) => Promise.race([e.owed, Bun.sleep(Math.max(0, toolWait - (performance.now() - e.call.at)))])));
             t.metrics.tools.request_waits++;
             t.metrics.tools.request_wait_ms += performance.now() - t0;
             if (pending.answers.some((e) => !e.call.got)) {
@@ -905,14 +922,12 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
           const source = checkpoint.data.mode === "clear" ? "clear" : "compact";
           again = t.call(s, "session-start", { source });
           if (again !== SKIPPED) {
-            // The store counts nothing as given from here: what it had nothing for may now have something.
-            t.forgetNothing(s.id);
             // Told once the call answered: one that did not is made again with the next request.
             again.done.then((r) => { if (r.outcome === "hit" || r.outcome === "empty") t.setCheckpoint(s.id, checkpoint.id); }).catch(() => {});
             // After a clear the store counts nothing as given and gives it
             // again when asked: what was owed from before is not carried into the fresh context.
             if (source === "clear") t.store.db.query("DELETE FROM memory_owed WHERE session_id = ?").run(s.id);
-            if (waits) await within(again, START_WAIT_MS);
+            if (waits) await within(again, t.waitOf("session-start"));
           }
         }
 
@@ -933,7 +948,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
           if (asksMemory(last.data)) prompt = t.call(s, "prompt", { prompt: last.data.text ?? "" });
           else t.meter.record(s.id, "store_prompt", { outcome: "skipped" });
         }
-        if (waits) await Promise.all([start && within(start, START_WAIT_MS), prompt && within(prompt, PROMPT_WAIT_MS)]);
+        if (waits) await Promise.all([start && within(start, t.waitOf("session-start")), prompt && within(prompt, t.waitOf("prompt"))]);
         const waited = performance.now() - began;
 
         const shown = t.shownIn(s.id, events);
@@ -969,38 +984,20 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         if (!t.bin || !t.flags(s.id).use_memory) return;
         const input = tacitToolCall(call.tool.name, call.input);
         if (!input) return;
-        // A call the store records as a step in itself is always made.
-        const always = namesStore(input);
-        const key = callKey(s.workspace, input);
-        // Whether the call changes something, where that is known now (a
-        // dispatched MCP tool's server says so a moment later: until then it counts as a change).
-        const direct = input.tool_name.startsWith("mcp__") && !call.tool.target;
-        const changes = call.tool.target ? true : direct ? !call.tool.readOnly : changesSomething(input);
-        if (!always) {
-          // Not asked when the answer is known to be nothing: the store never
-          // answers such a call, or it just had nothing for this very read.
-          // A call that changes something is always asked.
-          const never = neverAnswered(s.workspace, input);
-          if (never || (!changes && t.nothing.get(s.id)?.known(key))) {
-            t.metrics.tools[never ? "never_answered" : "known_nothing"]++;
-            return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
-          }
+        // Not asked about a call the store never answers. Every other call is
+        // asked, every time: nothing says when the store last changed, so an
+        // empty answer is not remembered. A call the store records as a step
+        // in itself is always made.
+        if (!namesStore(input) && neverAnswered(s.workspace, input)) {
+          t.metrics.tools.never_answered++;
+          return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
         }
+        // Whether the call changes something, where that is known now (a
+        // dispatched MCP tool's server says so a moment later).
+        const direct = input.tool_name.startsWith("mcp__") && !call.tool.target;
+        const changes = direct ? !call.tool.readOnly : changesSomething(input);
         // Runs beside the tool; its answer joins the result, or the next request.
         const p = t.call(s, "pre-tool", input);
-        const asked = t.forgot.get(s.id) ?? 0;
-        p.done.then((r) => {
-          if (r.ms === undefined || r.outcome === "skipped" || r.outcome === "timeout") return;
-          // A read's empty answer is remembered a while when it came from a
-          // search (not at once from a stale index, not past the store's own
-          // budget for the hook) and nothing was forgotten since it was asked.
-          const searched = t.searches.searched(r.ms) && r.ms < STORE_TOOL_BUDGET_MS;
-          t.searches.add(r.ms);
-          if (always || changes || r.outcome !== "empty" || !searched || asked !== (t.forgot.get(s.id) ?? 0)) return;
-          let known = t.nothing.get(s.id);
-          if (!known) t.nothing.set(s.id, (known = new Nothing()));
-          known.remember(key);
-        }).catch(() => {});
         // Whether the result is held for the answer: only for a call that changes something.
         const holds = call.tool.target ? call.tool.target(call.input).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
         t.preTool.set(call.id, { call: p, holds });
@@ -1019,10 +1016,11 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         const began = performance.now();
         const holds = p.got ? false : await entry.holds;
         const waits = holds && !t.out.tool;
-        if (waits) await within(p, TOOL_WAIT_MS);
+        const toolWait = t.waitOf("pre-tool");
+        if (waits) await within(p, toolWait);
         if (p.got?.outcome === "skipped") return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
         // A call slower than the hook's wait is a late call whoever waited.
-        const slow = (r: HookResult) => r.outcome === "timeout" || (r.outcome !== "skipped" && (r.ms ?? 0) > TOOL_WAIT_MS);
+        const slow = (r: HookResult) => r.outcome === "timeout" || (r.outcome !== "skipped" && (r.ms ?? 0) > toolWait);
         if (!p.got) {
           t.meter.record(s.id, "store_tool", { outcome: waits ? "timeout" : "late", waitMs: performance.now() - began });
           const owed = t.oweLater(s.id, "pre-tool", p);
@@ -1039,7 +1037,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
             group.answers.push({ call: p, owed });
             t.toolAnswers.set(s.id, group);
           }
-          within(p, Math.max(0, TOOL_WAIT_MS - (performance.now() - p.at))).then(() => { if (!p.got || slow(p.got)) t.lateOnce(s.id, group); }).catch(() => {});
+          within(p, Math.max(0, toolWait - (performance.now() - p.at))).then(() => { if (!p.got || slow(p.got)) t.lateOnce(s.id, group); }).catch(() => {});
           return;
         }
         const got = p.got;

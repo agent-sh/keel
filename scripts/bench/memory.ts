@@ -501,6 +501,10 @@ for (const mode of ["slow", "down"]) {
 // scratch files outside any checkout. The stand-in's before-a-tool path
 // takes 0.2 s (the store's own work, not process start) and has a rule for a
 // few commands and files, each given once.
+// What is saved here is only the calls the store never answers: this
+// workload writes one scratch file outside any checkout in each turn, about
+// one call in eight. Every other call is asked, and waited for (its result
+// held, or the next request held) for as long as the store takes beyond the tool.
 {
   const dir = join(root, "store-tools");
   mkdirSync(dir, { recursive: true });
@@ -574,7 +578,7 @@ exit 0
   const held = m?.paths.find((p: any) => p.path === "store_tool")?.wait_ms ?? NaN;
   const waitedReq = st.tools?.request_wait_ms ?? 0;
   console.log(`\nBefore a tool: ${TURNS_T} turns, ${calls} tool calls (${(calls / TURNS_T).toFixed(1)} a turn), a store that takes 0.2 s a call`);
-  console.log(`  calls made to the store: ${made} of ${calls}${st.tools ? ` (not asked: ${st.tools.known_nothing} reads known to get nothing, ${st.tools.never_answered} calls it never answers)` : ""}; store process time ${ms(pre.duration_ms.total)} ms`);
+  console.log(`  calls made to the store: ${made} of ${calls}${st.tools ? ` (not asked: ${st.tools.never_answered} it never answers, ${Math.round((100 * st.tools.never_answered) / calls)}% of the calls)` : ""}; store process time ${ms(pre.duration_ms.total)} ms`);
   console.log(`  time added: ${ms(held + waitedReq)} ms in all, ${ms((held + waitedReq) / calls)} ms a tool call (results held ${ms(held)} ms${st.tools ? `, ${st.tools.request_waits} requests waited ${ms(waitedReq)} ms for a read's answer` : ""}); the session took ${ms(wall)} ms`);
   console.log(`  rules a run that asks about every call gets: ${expected.length}; given by the store: ${given.length}; in a request: ${expected.length - lost}; in the request right after their call: ${inTime}; lost: ${lost}`);
   result.tools = { turns: TURNS_T, calls, made, process_ms: pre.duration_ms.total, held_ms: held, request_wait_ms: waitedReq, wall_ms: wall, expected: expected.length, given: given.length, in_time: inTime, lost, not_asked: st.tools ?? null };

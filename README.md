@@ -338,12 +338,11 @@ gets its new events appended), rebuilds, failures, files removed with their
 session, elapsed milliseconds, and bytes written. Reuse writes no bytes.
 Each hook also counts `late`: calls that did not answer within the hook's
 wait. `tools` counts tool calls the store was not asked about
-(`never_answered`: a call it answers with nothing whatever it holds;
-`known_nothing`: a read it had nothing for in the same session within the
-last 5 s), `not_held`: results of reads not held for an answer that had not
-come, and `request_waits` with `request_wait_ms`: requests that waited for
-such an answer, and how long in all. `degraded` says which kinds of call
-had a quarter of their last 20 answers late.
+(`never_answered`: a call it answers with nothing whatever it holds),
+`not_held`: results of reads not held for an answer that had not come, and
+`request_waits` with `request_wait_ms`: requests that waited for such an
+answer, and how long in all. `degraded` says which kinds of call had a
+quarter of their last 20 answers late.
 `processes` counts hook processes: the most alive at once and their limit,
 calls not made because one of the same session and hook was still out
 unanswered, and probes. `owed_dropped` counts lines dropped because more was
@@ -378,24 +377,22 @@ The probe is asked only while calls of that kind are being made. After a
 summary or a clear the store is told, so what it gave before can come again;
 what was owed from before a clear is not carried into the fresh context.
 
-Before a tool the store is asked unless its answer is known to be nothing,
-and a rule it gives is in the request the model answers by acting. An edit
-of a file in no checkout (by the file's real path) and an empty command are
-never asked about: the store answers them with nothing whatever it holds. A
-call that changes something (an edit, a write, a shell command that is not a
-read or has an output redirect, an MCP tool its server does not call
-read-only) is always asked, and its result is held for the answer, so the
-rule is in that result. A read is asked too, without holding its result: the
-session's next request waits for the answer (what is left of the hook's
-wait), so a rule that came with a read is there before the model acts on
-what it read. A read's empty answer is remembered per session for 5 s (the
-store's follower merges a change within 1 to 5 s) and only when it took as
-long as the store's searches do; a summary, a clear or a new start forgets
-it. Calls the store records as steps in themselves (its own tools, its
-command line in a shell) are always passed to it. A store that is late now
-and then without ever missing twice in a row is said once per session
-("Memory is answering slowly") while a quarter of its last 20 answers of a
-kind were late.
+Before a tool the store is asked, and a rule it gives is in the request the
+model answers by acting. Only a call it never answers is not asked about: an
+edit of a file in no checkout (by the file's real path) and an empty
+command. Nothing in the store's answer says when the store last changed, so
+an empty answer is never remembered: every other call is asked every time.
+A call that changes something (an edit, a write, a shell command the
+permission gate does not read as read-only, an MCP tool its server does not
+call read-only) has its result held for the answer, so the rule is in that
+result. A read's result is not held: the session's next request waits for
+the answer (what is left of the hook's wait), so a rule that came with a
+read is there before the model acts on what it read. Each such answer gets
+a block of its own in that request's note. Calls the store records as steps
+in themselves (its own tools, its command line in a shell) are always
+passed to it. A store that is late now and then without ever missing twice
+in a row is said once per session ("Memory is answering slowly") while a
+quarter of its last 20 answers of a kind were late.
 
 `GET /api/telemetry/memory?since_ms=&until_ms=&session_id=` reports what memory
 cost the turns and whether they used it, kept across restarts for 90 days: per

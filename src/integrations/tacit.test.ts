@@ -202,11 +202,16 @@ esac
 // call's search takes; a file `stale` makes tool calls answer with nothing at
 // once (an index that is being rebuilt).
 // No e2e can hold a store back for one call and release it for the next.
+// The worlds below run the hooks' waits and deadlines at a fraction of their
+// length (the rules are the same), and the stand-in's delays with them.
+const SPEED = 3;
+const T = (ms: number) => ms / SPEED;
+const sec = (s: number) => (s / SPEED).toFixed(2);
 function standIn(dir: string) {
   const sd = join(dir, "standin");
   mkdirSync(sd, { recursive: true });
   const set = (k: string, v: string | number) => writeFileSync(join(sd, k), String(v));
-  set("mode", "ok"); set("len", 40); set("calls", ""); set("hidden", ""); set("toollag", 0);
+  set("mode", "ok"); set("len", 40); set("calls", ""); set("hidden", "");
   const bin = join(sd, "store.sh");
   writeFileSync(bin, `#!/bin/bash
 dir=${JSON.stringify(sd)}
@@ -220,21 +225,20 @@ seen="$dir/seen-$sid"; touch "$seen"
 pad=$(head -c "$len" /dev/zero | tr '\\0' 'x')
 out=""
 give() { grep -qx "$1" "$dir/hidden" && return; grep -qx "$1" "$seen" && return; echo "$1" >> "$seen"; out+="- $1: the text of $1 $pad\\n"; }
-if [ "$sid" != keel-probe ] && [ -f "$dir/slow-once" ] && [ "$(cat "$dir/slow-once")" = "$hook" ]; then rm -f "$dir/slow-once"; sleep 3; fi
+if [ "$sid" != keel-probe ] && [ -f "$dir/slow-once" ] && [ "$(cat "$dir/slow-once")" = "$hook" ]; then rm -f "$dir/slow-once"; sleep ${sec(3)}; fi
 case "$hook" in
   session-start)
-    case "$mode" in slow) exec sleep 8 ;; slowstart) sleep 2.5 ;; slowstart7) sleep 7 ;; esac
+    case "$mode" in slow) exec sleep ${sec(8)} ;; slowstart) sleep ${sec(2.5)} ;; slowstart7) sleep ${sec(7)} ;; esac
     case "$src" in compact|clear) : > "$seen" ;; startup) ;; *) exit 0 ;; esac
     give start-rule; printf '# store: standing rules\\n%b' "$out" ;;
   prompt)
-    case "$mode" in slow) exec sleep 8 ;; esac
+    case "$mode" in slow) exec sleep ${sec(8)} ;; esac
     q=$(sed -n 's/.*"prompt":"\\(.*\\)","transcript_path.*/\\1/p' <<<"$input")
     for w in $(grep -o 'kw[0-9]*' <<<"$q" | sort -u -V); do give "fact-$w"; done
     [ -n "$out" ] && printf '# store: facts matching this request\\n%b' "$out" ;;
   pre-tool)
     [ -f "$dir/stale" ] && exit 0
-    case "$mode" in slow|slowtool) exec sleep 8 ;; lagtool) sleep 0.4 ;; latetool) sleep 1.3 ;; esac
-    lag=$(cat "$dir/toollag"); [ "$lag" != 0 ] && sleep "$lag"
+    case "$mode" in slow|slowtool) exec sleep ${sec(8)} ;; lagtool) sleep ${sec(0.4)} ;; latetool) sleep ${sec(1.3)} ;; esac
     cmd=$(sed -n 's/.*"command":"\\([^"]*\\)".*/\\1/p' <<<"$input")
     file=$(sed -n 's/.*"file_path":"\\([^"]*\\)".*/\\1/p' <<<"$input")
     for w in $(grep -o 'kw[0-9]*' <<<"$cmd $file" | sort -u -V); do give "rule-$w"; done
@@ -272,15 +276,19 @@ function memoryWorld(dir: string, bin: string) {
       const at = req.messages.findLastIndex((m: any) => isPrompt(m) && /tools=/.test(JSON.stringify(m)));
       if (at >= 0 && at === req.messages.findLastIndex(isPrompt)) {
         // The newest list: after a summary one message holds the earlier prompts' words too.
-        const plan = [...JSON.stringify(req.messages[at]).matchAll(/tools=([\w,]+)/g)].at(-1)![1]!.split(",");
+        const plan = [...JSON.stringify(req.messages[at]).matchAll(/tools=([\w,+]+)/g)].at(-1)![1]!.split(",");
         const done = req.messages.slice(at + 1).filter((m: any) => m.role === "assistant").length;
         const step = plan[done];
         if (step) {
-          const k = step.replace(/^\D/, "");
-          const call = step[0] === "w" || step[0] === "g"
-            ? { name: "Write", input: { file_path: join(dir, step[0] === "g" ? "repo" : "out", `kw${k}.txt`), content: "x" } }
-            : { name: "Bash", input: { command: step[0] === "r" ? `echo kw${k}` : `touch kw${k}` } };
-          return { blocks: [{ type: "tool_use", id: `c${++n}`, ...call }], usage, stop: "tool_use", model: "m" };
+          // "r1+r2": the calls of one step, side by side.
+          const blocks = step.split("+").map((one) => {
+            const k = one.replace(/^\D/, "");
+            const call = one[0] === "w" || one[0] === "g"
+              ? { name: "Write", input: { file_path: join(dir, one[0] === "g" ? "repo" : "out", `kw${k}.txt`), content: "x" } }
+              : { name: "Bash", input: { command: one[0] === "r" ? `echo kw${k}` : `touch kw${k}` } };
+            return { type: "tool_use", id: `c${++n}`, ...call };
+          });
+          return { blocks, usage, stop: "tool_use", model: "m" };
         }
       }
       return { blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "m" };
@@ -289,7 +297,7 @@ function memoryWorld(dir: string, bin: string) {
   const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] } as any;
   mkdirSync(join(dir, "repo", ".git"), { recursive: true });
   const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
-  const tacit = new Tacit(store, bus, errors, bin);
+  const tacit = new Tacit(store, bus, errors, bin, SPEED);
   tacit.install();
   const session = () => {
     return store.createSession({ model: "p:m", workspace: dir }).id;
@@ -424,7 +432,7 @@ test("a tool hook that hangs stops the waiting for tool hooks only, after two in
   // The prompt's fact came in its turn; the result of a call that changes
   // something waited the tool hook's wait. One late call: counted, no outage, nothing said.
   expect(w.names(w.last(a))).toContain("fact-kw1");
-  expect(performance.now() - t0).toBeGreaterThan(800);
+  expect(performance.now() - t0).toBeGreaterThan(T(800));
   expect(w.told(a)).toBe(0);
   expect(w.tacit.stats().out).toEqual({ ask: false, tool: false });
   expect(w.tacit.stats().hooks["pre-tool"].late).toBe(1);
@@ -438,10 +446,12 @@ test("a tool hook that hangs stops the waiting for tool hooks only, after two in
   expect(w.names(w.last(b))).toContain("fact-kw2");
   expect(w.told(b)).toBe(0);
   // More turns with tool calls: no wait for the tool hook, prompts in their turn, no second note.
+  const { memoryMeter: meter } = await import("./memory-meter.ts");
+  const held = () => meter(w.store).report({ session: a }).paths.find((p) => p.path === "store_tool")!.wait_ms;
   for (const k of [3, 4, 5]) {
-    const t = performance.now();
+    const before = held();
     await w.say(a, `A kw${k} tools=${52 + k}`);
-    expect(performance.now() - t).toBeLessThan(800);
+    expect(held() - before).toBeLessThan(T(400));
     expect(w.names(w.last(a))).toContain(`fact-kw${k}`);
   }
   expect(w.told(a)).toBe(1);
@@ -464,7 +474,7 @@ test("one slow call is no outage: no error, no note, its answer still follows; a
   // A prompt that takes 3 s once: the turn goes on after its wait.
   st.set("slow-once", "prompt");
   const waited = await w.say(s, "slow kw2");
-  expect(waited).toBeGreaterThan(2_000);
+  expect(waited).toBeGreaterThan(T(2_000));
   expect(w.names(w.last(s))).not.toContain("fact-kw2");
   expect(w.tacit.stats().hooks.prompt.late).toBe(1);
   expect(w.tacit.stats().out).toEqual({ ask: false, tool: false });
@@ -473,7 +483,7 @@ test("one slow call is no outage: no error, no note, its answer still follows; a
   expect(w.tacit.stats().processes.probes).toBe(0);
   // Its answer came after the turn went on: owed, and in the next request.
   await until(() => w.tacit.owed(s) > 0);
-  expect(await w.say(s, "fast kw3 tools=3")).toBeLessThan(1_500); // waited for as ever, and answered
+  await w.say(s, "fast kw3 tools=3"); // waited for as ever, and answered
   expect(w.names(w.last(s))).toEqual(expect.arrayContaining(["fact-kw2", "fact-kw3", "rule-kw3"]));
   // The same for one slow tool call among fast ones.
   st.set("slow-once", "pre-tool");
@@ -499,7 +509,7 @@ test("one slow call is no outage: no error, no note, its answer still follows; a
   expect(w.tacit.stats().out.ask).toBe(false);
   await w.say(s, "hang kw8");
   expect(w.tacit.stats().out.ask).toBe(true);
-  for (const k of [9, 10]) expect(await w.say(s, `hang kw${k}`)).toBeLessThan(1_000);
+  for (const k of [9, 10]) expect(await w.say(s, `hang kw${k}`)).toBeLessThan(T(1_000));
   expect(w.told(s)).toBe(1);
   expect(w.captured.filter((m) => m.includes("did not answer in time"))).toHaveLength(1);
 }), 90_000);
@@ -509,8 +519,8 @@ test("a store that hangs: two waits, then an outage said once and no wait after;
   await w.say(s, "first kw1");
   st.set("mode", "slow");
   const waited = await w.say(s, "third kw3");
-  expect(waited).toBeGreaterThan(2_000);
-  expect(waited).toBeLessThan(4_000);
+  expect(waited).toBeGreaterThan(T(2_000));
+  expect(waited).toBeLessThan(T(4_000));
   const notes = () => w.store.events(s).filter((e) => e.kind === "note" && e.data.kind === "memory_out");
   // One call not answered in time is counted, and measured as a timeout: no outage yet, nothing said.
   expect(notes()).toHaveLength(0);
@@ -518,13 +528,13 @@ test("a store that hangs: two waits, then an outage said once and no wait after;
   const measured = () => memoryMeter(w.store).report({ session: s }).paths.find((p) => p.path === "store_prompt")!;
   expect(measured()).toMatchObject({ timeouts: 1, late: 0 });
   // The second in a row: the outage, said once, in a line for the owner that the model is not sent.
-  expect(await w.say(s, "more kw4 tools=4")).toBeGreaterThan(2_000);
+  expect(await w.say(s, "more kw4 tools=4")).toBeGreaterThan(T(2_000));
   expect(notes()).toHaveLength(1);
   expect(notes()[0]!.data.model).toBeUndefined();
   expect(w.last(s)).not.toContain("Memory did not answer");
   // From here prompts do not wait; the session's calls go out one at a time;
   // one line in the session, though both its prompts and its tool calls hang.
-  for (const k of [5, 6, 7]) expect(await w.say(s, `more kw${k} tools=${k}`)).toBeLessThan(1_000);
+  for (const k of [5, 6, 7]) expect(await w.say(s, `more kw${k} tools=${k}`)).toBeLessThan(T(1_000));
   expect(notes()).toHaveLength(1);
   // Two waited for, then one made and still out, the next two not made while it is.
   expect(measured()).toMatchObject({ timeouts: 2, late: 1, skipped: 2 });
@@ -559,7 +569,7 @@ test("during an outage: the probe stops with nobody asking; a new session's task
   // A new session's task while asking is still counted out: its request does
   // not wait, and both its start call and its prompt go to the store.
   const b = w.session();
-  expect(await w.say(b, "task kw5", { kind: "task", agent_id: "x" })).toBeLessThan(1_000);
+  expect(await w.say(b, "task kw5", { kind: "task", agent_id: "x" })).toBeLessThan(T(1_000));
   expect(w.names(w.last(b))).toEqual([]);
   await until(() => st.calls("prompt").some((l) => l.includes(b)) && st.calls("session-start").some((l) => l.includes(b)));
   // What they answer is owed, in the state; an answer within the wait ends the outage.
@@ -585,7 +595,6 @@ test("before a tool: a change is always asked; a file in no checkout never; a ru
   expect(w.names(w.last(s))).toContain("rule-kw1");
   await w.say(s, "two tools=1,1,1");
   expect(asked()).toBe(4);
-  expect(tools().known_nothing).toBe(0);
   // The store gains a rule for a change it had nothing for: the very next such call gets it, in its result.
   st.set("hidden", "rule-kw7");
   await w.say(s, "three tools=7");
@@ -595,6 +604,16 @@ test("before a tool: a change is always asked; a file in no checkout never; a ru
   expect(w.names(w.last(s))).toContain("rule-kw7");
   const results = () => w.store.events(s).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data.results));
   expect(results().at(-1)).toContain("rule-kw7");
+  // The same for a read: asked every time. The store gains a rule after a
+  // read got nothing; the same read, a moment later, brings it, and it is in
+  // the request the model answers by making the change.
+  st.set("hidden", "rule-kw8");
+  await w.say(s, "read tools=r8");
+  st.set("hidden", "");
+  const from8 = w.asked.filter((r) => r.session === s).length;
+  await w.say(s, "again tools=r8,8");
+  expect(asked()).toBe(9);
+  expect(w.names(w.asked.filter((r) => r.session === s)[from8 + 1]!.messages)).toContain("rule-kw8");
 
   // A file in no checkout: the store answers an edit only from the file's repository. Never asked.
   // (Unless the test's own folder sits in a checkout, where it is asked like any other.)
@@ -640,83 +659,41 @@ test("before a tool: a change is always asked; a file in no checkout never; a ru
   // waits the hook's wait for each, twice in a row is an outage, said once.
   st.set("mode", "latetool");
   const only = w.session();
-  const t0 = performance.now();
+  const t0 = performance.now(), waits0 = tools().request_waits;
   await w.say(only, "reads tools=r70,r71,r72,r73");
   expect(w.tacit.stats().out.tool).toBe(true);
-  // Two waits, then none.
-  expect(performance.now() - t0).toBeGreaterThan(1_600);
-  expect(performance.now() - t0).toBeLessThan(3_200);
+  // Two requests waited, then none.
+  expect(performance.now() - t0).toBeGreaterThan(T(1_600));
+  expect(tools().request_waits - waits0).toBe(2);
   expect(w.told(only)).toBe(1);
   expect(w.captured.filter((m) => m.includes("did not answer a tool call in time"))).toHaveLength(1);
 }), 120_000);
 
-// A read's empty answer is remembered for a few seconds, for that very read
-// of that session, once it is known how long the store's searches take.
-// (What is asserted is what Keel knows and skips, not how many calls the
-// stand-in logged by a given moment: on a loaded machine one of its answers
-// can take longer than the store's budget, and is then rightly not remembered.)
-test("a read the store had nothing for is not asked again for a few seconds, unless the answer came too fast to be a search", () => inWorld("reads", async (w, st, dir) => {
-  st.set("toollag", 0.05);
+// What reaches a request from owed lines. On its own tool result each answer
+// would have had a block to itself, so in the note of the next request each
+// has one too; and a line longer than a block comes through in parts, whole.
+test("the answers of one step's reads each get a block of their own; a line longer than two blocks comes through whole", () => inWorld("blocks", async (w, st) => {
   const s = w.session();
-  const { callKey } = await import("./tacit-tools.ts");
-  const tools = () => w.tacit.stats().tools;
-  const nothing = () => (w.tacit as any).nothing.get(s) as { known(key: string): boolean; until: Map<string, number> } | undefined;
-  const known = (k: number) => !!nothing()?.known(callKey(dir, { tool_name: "Bash", tool_input: { command: `echo kw${k}` } }));
-  // Reads kwN until its empty answer is remembered (an answer slower than the store's budget is not).
-  const settle = async (k: number) => { for (let i = 0; i < 6 && !known(k); i++) await w.say(s, `read tools=r${k}`); expect(known(k)).toBe(true); };
-  const elapse = () => { for (const k of nothing()?.until.keys() ?? []) nothing()!.until.set(k, 0); };
-  // Nothing is remembered before enough of the store's calls were seen.
-  await w.say(s, "one tools=r1,r1,r1");
-  expect(known(1)).toBe(false);
-  expect(tools().known_nothing).toBe(0);
-  await w.say(s, `warm tools=${seq(101, 120).map((k) => `r${k}`).join(",")}`);
-  // From here an empty answer to a read is remembered: the same read is not asked again.
-  await settle(1);
-  let skipped = tools().known_nothing;
-  let made = w.tacit.stats().hooks["pre-tool"];
-  let calls = Object.values(made.outcomes).reduce((a, b) => a + b, 0);
-  await w.say(s, "three tools=r1,r1");
-  expect(tools().known_nothing).toBe(skipped + 2);
-  expect(Object.values(w.tacit.stats().hooks["pre-tool"].outcomes).reduce((a, b) => a + b, 0)).toBe(calls);
-  // The same command line is asked when it is another read, and always when it changes something.
-  expect(known(2)).toBe(false);
-  calls = Object.values(w.tacit.stats().hooks["pre-tool"].outcomes).reduce((a, b) => a + b, 0);
-  await w.say(s, "four tools=1,1");
-  expect(Object.values(w.tacit.stats().hooks["pre-tool"].outcomes).reduce((a, b) => a + b, 0)).toBe(calls + 2);
-
-  // The store gains a rule for a read it had nothing for. While "nothing" is
-  // believed the read is not asked; once the few seconds have passed it is, and the rule arrives.
-  st.set("hidden", "rule-kw5");
-  await settle(5);
-  st.set("hidden", "");
-  skipped = tools().known_nothing;
-  await w.say(s, "six tools=r5");
-  expect(tools().known_nothing).toBe(skipped + 1);
-  expect(w.names(w.last(s))).not.toContain("rule-kw5");
-  elapse();
-  await w.say(s, "seven tools=r5");
-  expect(w.names(w.last(s))).toContain("rule-kw5");
-
-  // An index being rebuilt answers with nothing at once. That is no "nothing": the read is asked again.
-  st.set("stale", "1");
-  st.set("hidden", "rule-kw6");
-  await w.say(s, "eight tools=r6,r6");
-  expect(known(6)).toBe(false);
-  rmSync(join(st.bin, "..", "stale"));
-  st.set("hidden", "");
-  await w.say(s, "nine tools=r6");
-  expect(w.names(w.last(s))).toContain("rule-kw6");
-
-  // A summary: the store counts nothing as given and gives again, so what was remembered is forgotten.
-  await settle(1);
-  await w.engine.compactNow(s, { trigger: "owner" });
-  expect(known(1)).toBe(true); // until the store is told, with the next request
-  await w.say(s, "eleven tools=r1");
-  expect(w.copies(s, "rule-kw1")).toBe(1);
-  // An answer asked for before the summary and arriving after it is not remembered (it is from before the store forgot).
-  const t = w.tacit as any;
-  expect(t.forgot.get(s)).toBeGreaterThan(0);
-}), 120_000);
+  await w.say(s, "start");
+  // Three reads in one step, each with a rule of 6,000 characters, from a
+  // store that answers after the reads are done: none is in a result.
+  st.set("len", 6000);
+  st.set("mode", "lagtool");
+  const from = w.asked.filter((r) => r.session === s).length;
+  await w.say(s, "reads tools=r1+r2+r3");
+  st.set("mode", "ok");
+  const next = w.asked.filter((r) => r.session === s)[from + 1]!.messages;
+  expect(w.store.events(s).filter((e) => e.kind === "tool_result").some((e) => JSON.stringify(e.data.results).includes("rule-kw"))).toBe(false);
+  expect(w.names(next)).toEqual(expect.arrayContaining(["rule-kw1", "rule-kw2", "rule-kw3"]));
+  expect(w.tacit.owed(s)).toBe(0);
+  // A fact of 25,000 characters: its start in the prompt's block, the rest with the next requests, all of it.
+  st.set("len", 25000);
+  await w.say(s, "long kw9");
+  for (let i = 0; i < 4 && w.tacit.owed(s); i++) await w.say(s, "go on");
+  expect(w.tacit.owed(s)).toBe(0);
+  const xs = (w.last(s).match(/x{100,}/g) ?? []).reduce((n, m) => n + m.length, 0);
+  expect(xs).toBe(3 * 6000 + 25000);
+}), 60_000);
 
 // A store that is late now and then never misses twice in a row. It is said
 // all the same, once per session, while a quarter of its last calls were late.
@@ -742,7 +719,8 @@ test("a store that is slow every few calls opens no outage and is said once per 
   expect(slow()).toHaveLength(1);
   expect(slow()[0]!.data.model).toBeUndefined();
   expect(String(slow()[0]!.data.text)).toContain("5 of its last 20");
-  answered(); late(); answered(); late();
+  // Not said again while it lasts, whatever the other kind of call does meanwhile.
+  answered(); late(); t.ended("ask", "hit", true, s); answered(); late();
   expect(slow()).toHaveLength(1);
   expect(w.told(s)).toBe(0);
   // It answers again for a while: no longer said to be slow, and said anew if it comes back.
@@ -760,18 +738,18 @@ test("a session's first prompt waits for the start block; a start slower than th
   const s = w.session();
   // An agent's task, sent at once: the standing rules are in its first request.
   const waited = await w.say(s, "the task: kw1", { kind: "task", agent_id: "x" });
-  expect(waited).toBeGreaterThan(2_300);
-  expect(waited).toBeLessThan(START_WAIT_MS);
+  expect(waited).toBeGreaterThan(T(2_300));
+  expect(waited).toBeLessThan(T(START_WAIT_MS));
   expect(w.names(w.asked.find((r) => r.session === s)!.messages)).toEqual(["start-rule", "fact-kw1"]);
   expect(w.told(s)).toBe(0);
 
-  // A start that takes 7 s (a slow sync): the request goes after the wait
+  // A start that takes longer than the wait (a slow sync): the request goes after the wait
   // without the block, and the process is left to finish.
   st.set("mode", "slowstart7");
   const slow = w.session();
   const held = await w.say(slow, "another task: kw2", { kind: "task", agent_id: "y" });
-  expect(held).toBeGreaterThanOrEqual(START_WAIT_MS - 50);
-  expect(held).toBeLessThan(7_000);
+  expect(held).toBeGreaterThanOrEqual(T(START_WAIT_MS) - 50);
+  expect(held).toBeLessThan(T(7_000));
   expect(w.names(w.last(slow))).toEqual(["fact-kw2"]);
   // One late call: counted, not an outage, nothing said.
   expect(w.tacit.stats().hooks["session-start"].late).toBe(1);
