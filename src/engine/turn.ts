@@ -598,6 +598,10 @@ export class Engine {
     try {
       this.emitQueue(id);
       await this.interrupt(id);
+      // Another Send now of the same stop got there first and its turn runs:
+      // this row is the next prompt, at the head of the queue, and starts no
+      // second turn beside that one.
+      if (this.running.has(id)) return void this.nextUp(q, here);
       if (!this.deliver(qid, "queued", { release: true, turn: true })) throw gone();
       this.start(id);
     } finally {
@@ -605,6 +609,15 @@ export class Engine {
       // Also when it failed: the row is queued again, and open pages show it again.
       this.emitQueue(id);
     }
+  }
+
+  // A queued row becomes the session's next prompt: first in the queue, with
+  // the queue's hold off, so it starts when the running turn ends (`here`: on
+  // the branch shown now).
+  private nextUp(q: QueueItem, here: boolean) {
+    const first = this.store.queue(q.session_id).filter((x) => x.id !== q.id).reduce((min, x) => Math.min(min, x.pos), q.pos);
+    this.store.updateQueueItem(q.id, { steer: false, pos: first - 1, ...(here ? { anchor: this.store.session(q.session_id)?.head ?? null } : {}) });
+    this.release(q.session_id);
   }
 
   // `here`: the next prompt goes on the branch shown now even when it was

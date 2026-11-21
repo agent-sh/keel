@@ -374,3 +374,42 @@ test("a turn parked in setup whose setup then fails is run by the next start", a
   expect(next.requests.map((r) => r.filter((t) => t === SENT.text).length)).toEqual([1]);
   expect(next.engine.lineage(s.id).filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
 });
+
+// Send now on two queued rows while one stop is still under way: the first
+// starts its turn and the second is the next prompt, after that turn. Before,
+// both started a turn, and the two ran side by side in one session.
+test("two Send now calls on different rows during one stop start one turn, then the other", async () => {
+  let queued!: () => void;
+  const waiting = new Promise<void>((r) => (queued = r));
+  let live = 0, most = 0;
+  const { store, engine, requests, session } = rig(scratch("send-now-twice"), {
+    request: async (req) => {
+      if (!requests.slice(0, -1).length) {
+        engine.send(s.id, "row A", { mode: "queue" });
+        engine.send(s.id, "row B", { mode: "queue" });
+        engine.send(s.id, "row C", { mode: "queue" });
+        queued();
+        await untilStopped(req);
+      }
+      most = Math.max(most, ++live);
+      await Bun.sleep(20);
+      live--;
+    },
+  });
+  const s = session();
+  engine.send(s.id, "first");
+  await waiting;
+  const [a, b, c] = store.queue(s.id);
+  // B first, then A, both before the stop has ended.
+  await Promise.all([engine.sendNow(s.id, b!.id), engine.sendNow(s.id, a!.id)]);
+  expect(store.queue(s.id).map((x) => x.text)).toEqual(["row A", "row C"]);
+  expect(engine.isHeld(s.id)).toBe(false);
+  for (let i = 0; i < 200 && (engine.isRunning(s.id) || store.queue(s.id).length); i++) await engine.idle(s.id).then(() => Bun.sleep(1));
+  expect(most).toBe(1);
+  const line = engine.lineage(s.id);
+  // Each turn ends before the next prompt is stored.
+  expect(line.filter((e) => e.kind !== "assistant").map((e) => (e.kind === "user" ? e.data.text : e.kind === "turn_end" ? e.data.reason : e.kind))).toEqual([
+    "first", "turn_start", "interrupted", "row B", "turn_start", "end_turn", "row A", "turn_start", "end_turn", "row C", "turn_start", "end_turn",
+  ]);
+  for (const q of [a!, b!, c!]) expect(promptsOf(store, s.id, q.id)).toHaveLength(1);
+});
