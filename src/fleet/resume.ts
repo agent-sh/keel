@@ -24,6 +24,13 @@
 // it is gone (ended, with what the owner was shown as the work in flight).
 // The note in the copy and the receipt's removal are one write: one copy,
 // told once.
+//
+// A wait the owner authorized is stored too (fleet_resume_waits), with its
+// deadline and the process it was given for: a daemon that restarts goes on
+// waiting until that same deadline, for that same process. A wait past its
+// deadline, or whose process was replaced, ends without a stop. From the
+// moment the stop is sent the wait is "finishing": before it a cancel means no
+// stop, after it a cancel is refused and said to be finishing.
 import type { Bus } from "../core/bus.ts";
 import { contains } from "../core/paths.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -43,11 +50,14 @@ type EndedJob = { label: string; command?: string; pid?: number; pgid?: number; 
 type Ended = { ended: boolean; deferred?: boolean; in_flight?: InFlight[]; was_running?: boolean; why?: string; how?: string; took_ms?: number; jobs: EndedJob[]; calls: EndedJob[] };
 export type Wait = {
   machine_id: string; harness: Harness; id: string; jobs: "keep" | "end"; model?: string;
-  state: "waiting" | "resumed" | "expired" | "failed" | "cancelled";
+  // "finishing": idle was seen and the stop was sent; the copy is being made.
+  state: "waiting" | "finishing" | "resumed" | "expired" | "failed" | "cancelled";
   started_ms: number; deadline_ms: number; ended_ms?: number;
   last?: { state: Activity["state"]; why: string; checked_ms: number };
   session_id?: string; error?: string; process?: Seen["process"];
 };
+type Waiting = Wait & { timer?: Timer };
+const open = (w: Wait) => w.state === "waiting" || w.state === "finishing";
 // The original is ended and its copy is not made yet: what the copy will be told.
 type EndReceipt = {
   machine_id: string; harness: Harness; id: string; model?: string; waited_ms?: number;
@@ -93,7 +103,9 @@ export function inFlightLines(items: InFlight[], ended: Pick<Ended, "jobs" | "ca
 }
 
 export class Resumes {
-  private waits = new Map<string, Wait & { timer?: Timer }>();
+  private waits = new Map<string, Waiting>();
+  // How often a wait looks (a test looks faster).
+  poll = POLL_MS;
   private ends = new Map<string, EndReceipt>();
   // The conversations a resume works on now: one at a time each, so one copy.
   private busy = new Set<string>();
@@ -103,13 +115,23 @@ export class Resumes {
   constructor(private d: { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker }, private fleet: Fleet, private imports: Imports) {
     d.store.migrate("CREATE TABLE IF NOT EXISTS fleet_resume_ends (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
     for (const r of d.store.db.query<{ key: string; data: string }, []>("SELECT key, data FROM fleet_resume_ends").all()) this.ends.set(r.key, JSON.parse(r.data));
+    d.store.migrate("CREATE TABLE IF NOT EXISTS fleet_resume_waits (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
+    for (const r of d.store.db.query<{ key: string; data: string }, []>("SELECT key, data FROM fleet_resume_waits").all()) this.waits.set(r.key, JSON.parse(r.data));
   }
 
   // What the last daemon left: an original it ended (or was ending) whose copy
   // is not made. The copy is made now; a machine that does not answer is asked
   // again for a while, then the receipt waits for the owner (the card shows it).
+  // And the waits it held: each goes on until its own deadline, for its own
+  // process. One whose stop had been sent follows its receipt: the copy when
+  // the original is gone, waiting again when it still runs.
   recover(delayMs = 2000) {
     for (const k of this.ends.keys()) this.later(() => void this.recoverOne(k, 0), delayMs);
+    for (const [k, w] of this.waits) {
+      if (!open(w)) continue;
+      if (w.state === "finishing" && !this.ends.has(k)) this.setWait(w, "waiting");
+      if (w.state === "waiting") w.timer = this.later(() => void this.tick(w), delayMs);
+    }
   }
 
   // A hot reload builds a new one: this one's timers end.
@@ -145,8 +167,11 @@ export class Resumes {
       if (owed) await this.complete(m, r.harness, r.id, owed, owed.model);
     } catch (e) {
       const link = e instanceof LinkError || (e instanceof ResumeError && e.more.link === true);
-      if (link && n + 1 < RECOVER_TRIES) this.later(() => void this.recoverOne(k, n + 1), RECOVER_MS);
-      else if (link) this.d.errors.capture("server", e, { at: "resume copy owed", machine: r.machine_id });
+      if (link && n + 1 < RECOVER_TRIES) return void this.later(() => void this.recoverOne(k, n + 1), RECOVER_MS);
+      if (link) this.d.errors.capture("server", e, { at: "resume copy owed", machine: r.machine_id });
+      // The wait that sent the stop ends here; the receipt stays for the owner.
+      const w = this.waits.get(k);
+      if (w?.state === "finishing") this.end(w, "failed", { error: (e as Error).message });
     } finally {
       this.busy.delete(k);
     }
@@ -164,7 +189,13 @@ export class Resumes {
   private async settle(m: MachineRow, r: EndReceipt): Promise<EndReceipt | undefined> {
     const k = this.key(r.machine_id, r.harness, r.id);
     const seen = await this.activity(m, r.harness, r.id);
-    if (seen.process) return void this.dropEnd(k);
+    if (seen.process) {
+      this.dropEnd(k);
+      // A wait that had sent it waits again, until its deadline.
+      const w = this.waits.get(k);
+      if (w?.state === "finishing") { this.setWait(w, "waiting"); w.timer ??= this.later(() => void this.tick(w), this.poll); }
+      return undefined;
+    }
     const jobs = r.in_flight.filter((i) => i.kind === "job").map((j) => ({ label: j.label, command: j.command, pid: j.pid, pgid: j.pgid, since_ms: j.since_ms, running: r.jobs === "keep" }));
     const stopped: EndReceipt = { ...r, state: "stopped", unconfirmed: true, stopped_ms: Date.now(), ended: { ended: true, was_running: true, how: "SIGTERM", in_flight: r.in_flight, jobs, calls: [] } };
     this.saveEnd(k, stopped);
@@ -182,7 +213,11 @@ export class Resumes {
   waitOf(machine: string, harness: string, id: string): Wait | undefined {
     const w = this.waits.get(this.key(machine, harness, id));
     if (!w) return undefined;
-    if (w.ended_ms && Date.now() - w.ended_ms > KEEP_MS) { this.waits.delete(this.key(machine, harness, id)); return undefined; }
+    if (w.ended_ms && Date.now() - w.ended_ms > KEEP_MS) {
+      this.waits.delete(this.key(machine, harness, id));
+      this.d.store.db.query("DELETE FROM fleet_resume_waits WHERE key = ?").run(this.key(machine, harness, id));
+      return undefined;
+    }
     const { timer: _, ...view } = w;
     return view;
   }
@@ -260,15 +295,20 @@ export class Resumes {
   }
 
   // Ends the original and makes the copy. `seen`: the state the owner acted on.
-  private async finish(m: MachineRow, harness: Harness, id: string, seen: Seen, o: { jobs: "keep" | "end"; model?: string; waited_ms?: number; idle_ms?: number }): Promise<Resumed | null> {
+  // `wait`: the wait this stop is for. It is looked at again right before the
+  // stop leaves (a cancel may have come while the checks ran) and is
+  // "finishing" from then on.
+  private async finish(m: MachineRow, harness: Harness, id: string, seen: Seen, o: { jobs: "keep" | "end"; model?: string; waited_ms?: number; idle_ms?: number; wait?: Waiting }): Promise<Resumed | null> {
     const k = this.key(m.id, harness, id);
     const owed = await this.owed(m, k);
     if (owed) return this.complete(m, harness, id, owed, o.model ?? owed.model);
     await this.preflight(m, harness, id, o.model);
     let receipt: EndReceipt | undefined;
     if (seen.process) {
+      if (o.wait && o.wait.state !== "waiting") return null;
       // Stored before the stop leaves: a stop whose answer is lost (the link, or
       // this daemon going down) is settled from it, never sent blind again.
+      if (o.wait) this.setWait(o.wait, "finishing");
       this.saveEnd(k, { machine_id: m.id, harness, id, model: o.model, waited_ms: o.waited_ms, state: "stopping", process: seen.process, jobs: o.jobs, in_flight: seen.in_flight });
       const ended = await this.fleet.handsJson<Ended>(m.id, "/api/fleet/hands/harness/end", {
         method: "POST", timeout: 60_000,
@@ -276,6 +316,7 @@ export class Resumes {
       });
       // An answer: nothing was ended, or it was and the copy is owed from here.
       if (!ended.ended || !ended.was_running) this.dropEnd(k);
+      if (!ended.ended && o.wait?.state === "finishing") this.setWait(o.wait, "waiting");
       if (ended.deferred) return null;
       if (!ended.ended) throw new ResumeError(409, `Keel did not end the original on ${m.name}: ${ended.why ?? "no reason given"}. Nothing was copied; end it there, or look again.`);
       if (ended.was_running) {
@@ -319,6 +360,9 @@ export class Resumes {
       return e;
     });
     if (told) this.d.bus.emit({ t: "event", event: told });
+    // The wait that was for it is over, whoever made the copy.
+    const w = this.waits.get(k);
+    if (w && open(w)) this.end(w, "resumed", { session_id: c.session.id });
     return {
       action: "taken_over", session: this.d.store.session(c.session.id)!, imported_events: c.imported_events, counts: c.read.counts, notes: c.read.notes,
       stopped: !!ended.was_running, was_running: !!ended.was_running, how: how ?? undefined, in_flight: flight, jobs: ended.jobs, not_copied: c.gap,
@@ -347,7 +391,7 @@ export class Resumes {
   private async choose(m: MachineRow, harness: Harness, id: string, o: { when: "now" | "idle"; jobs: "keep" | "end"; wait_ms?: number; model?: string; revision?: string }): Promise<Resumed | { action: "waiting"; wait: Wait }> {
     const k = this.key(m.id, harness, id);
     const had = this.waits.get(k);
-    if (had?.state === "waiting") {
+    if (had && open(had)) {
       if (o.when === "idle") throw new ResumeError(409, "Keel already waits for it to be idle", { wait: this.waitOf(m.id, harness, id) });
       this.end(had, "cancelled");
     }
@@ -359,66 +403,89 @@ export class Resumes {
       if (r) return r;
     }
     if (!(o.wait_ms && o.wait_ms > 0)) throw new ResumeError(400, "give wait_ms: how long Keel waits for it to be idle");
-    const w: Wait & { timer?: Timer } = { machine_id: m.id, harness, id, jobs: o.jobs, model: o.model, state: "waiting", process: seen.process, started_ms: Date.now(), deadline_ms: Date.now() + o.wait_ms, last: { state: seen.state, why: seen.why, checked_ms: seen.checked_ms } };
+    const w: Waiting = { machine_id: m.id, harness, id, jobs: o.jobs, model: o.model, state: "waiting", process: seen.process, started_ms: Date.now(), deadline_ms: Date.now() + o.wait_ms, last: { state: seen.state, why: seen.why, checked_ms: seen.checked_ms } };
     this.waits.set(k, w);
+    this.saveWait(w);
     this.emit(w);
-    w.timer = setTimeout(() => void this.tick(w), POLL_MS);
+    w.timer = this.later(() => void this.tick(w), this.poll);
     return { action: "waiting", wait: this.waitOf(m.id, harness, id)! };
   }
 
-  cancel(machine: string, harness: string, id: string): boolean {
+  // Before the stop is sent a cancel means no stop. Once it is sent the wait
+  // is finishing: that is said, not a cancel that did not happen.
+  cancel(machine: string, harness: string, id: string): { cancelled: boolean; finishing?: boolean } {
     const w = this.waits.get(this.key(machine, harness, id));
-    if (w?.state !== "waiting") return false;
+    if (w?.state === "finishing") return { cancelled: false, finishing: true };
+    if (w?.state !== "waiting") return { cancelled: false };
     this.end(w, "cancelled");
-    return true;
+    return { cancelled: true };
   }
 
-  private end(w: Wait & { timer?: Timer }, state: Wait["state"], more: Partial<Wait> = {}) {
-    clearTimeout(w.timer);
-    Object.assign(w, more, { state, ended_ms: Date.now() });
+  private saveWait(w: Waiting) {
+    const { timer: _, ...wait } = w;
+    this.d.store.db.query("INSERT OR REPLACE INTO fleet_resume_waits (key, data) VALUES (?, ?)").run(this.key(w.machine_id, w.harness, w.id), JSON.stringify(wait));
+  }
+
+  private setWait(w: Waiting, state: "waiting" | "finishing") {
+    w.state = state;
+    this.saveWait(w);
     this.emit(w);
   }
 
-  private emit(w: Wait & { timer?: Timer }) {
+  private end(w: Waiting, state: Wait["state"], more: Partial<Wait> = {}) {
+    clearTimeout(w.timer);
+    w.timer = undefined;
+    Object.assign(w, more, { state, ended_ms: Date.now() });
+    this.saveWait(w);
+    this.emit(w);
+  }
+
+  private emit(w: Waiting) {
     const { timer: _, ...wait } = w;
     this.d.bus.emit({ t: "feature", name: "fleet_resume", data: { wait } });
   }
 
-  private async tick(w: Wait & { timer?: Timer }) {
-    if (w.state !== "waiting") return;
-    const expired = () => this.end(w, "expired", { error: `Keel could not confirm it was idle by ${clock(w.deadline_ms)}: ${w.last?.why ?? "no answer"}` });
+  private async tick(w: Waiting) {
+    w.timer = undefined;
+    if (!open(w)) return;
+    const k = this.key(w.machine_id, w.harness, w.id);
+    // Past the deadline nothing is stopped. A stop already sent is not undone by it: its copy is still owed.
+    const expired = () => (this.ends.has(k)
+      ? this.end(w, "failed", { error: `The original was being ended when the wait reached its deadline (${clock(w.deadline_ms)}); its copy is not made yet. Finish the copy from its card.` })
+      : this.end(w, "expired", { error: `Keel could not confirm it was idle by ${clock(w.deadline_ms)}: ${w.last?.why ?? "no answer"}` }));
     if (Date.now() >= w.deadline_ms) return expired();
     const m = this.fleet.row(w.machine_id);
     if (!m?.workspace_root) return this.end(w, "failed", { error: "the machine is no longer enabled with a granted directory" });
     try {
       const seen = await this.activity(m, w.harness, w.id);
-      if (w.state !== "waiting") return;
+      if (!open(w)) return;
+      // Only the process the owner was shown is ever ended for this wait.
       if (seen.process && (w.process?.pid !== seen.process.pid || w.process?.started_ms !== seen.process.started_ms)) return this.end(w, "failed", { error: "Another process runs this session now. Review it again." });
       const changed = w.last?.state !== seen.state || w.last?.why !== seen.why;
       w.last = { state: seen.state, why: seen.why, checked_ms: seen.checked_ms };
       const idle_ms = w.deadline_ms - Date.now();
       if (idle_ms <= 0) return expired();
-      const k = this.key(w.machine_id, w.harness, w.id);
       if (!atWork(seen) && !this.busy.has(k)) {
         this.busy.add(k);
         try {
-          const r = await this.finish(m, w.harness, w.id, seen, { jobs: w.jobs, model: w.model, waited_ms: Date.now() - w.started_ms, idle_ms });
-          if (r) return this.end(w, "resumed", { session_id: r.session.id });
+          const r = await this.finish(m, w.harness, w.id, seen, { jobs: w.jobs, model: w.model, waited_ms: Date.now() - w.started_ms, idle_ms, wait: w });
+          if (r) return; // the copy is made: the wait ended with it
         } finally {
           this.busy.delete(k);
         }
       }
-      if (changed) this.emit(w);
+      if (changed && open(w)) this.emit(w);
     } catch (e) {
       // A machine that does not answer is asked again until the deadline; anything else ends the wait.
       if (!(e instanceof LinkError)) {
         if (!(e instanceof ResumeError)) this.d.errors.capture("server", e, { at: "resume wait", machine: w.machine_id });
-        return this.end(w, "failed", { error: (e as Error).message });
+        return void (open(w) && this.end(w, "failed", { error: (e as Error).message }));
       }
       w.last = { state: "active", why: `${m.name} did not answer: ${(e as Error).message}`, checked_ms: Date.now() };
       this.emit(w);
     }
+    if (!open(w)) return; // cancelled while the checks ran
     if (Date.now() >= w.deadline_ms) return expired();
-    w.timer = setTimeout(() => void this.tick(w), Math.min(POLL_MS, Math.max(100, w.deadline_ms - Date.now())));
+    w.timer = this.later(() => void this.tick(w), Math.min(this.poll, Math.max(100, w.deadline_ms - Date.now())));
   }
 }

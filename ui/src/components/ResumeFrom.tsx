@@ -18,7 +18,8 @@ import { Select } from "./Select.tsx";
 export type Original = { state: "active" | "idle"; why: string; brief?: string; in_flight: number; jobs?: number };
 export type Wait = {
   machine_id: string; harness: string; id: string; jobs: "keep" | "end";
-  state: "waiting" | "resumed" | "expired" | "failed" | "cancelled";
+  // "finishing": it was seen idle and the stop was sent; the copy is being made.
+  state: "waiting" | "finishing" | "resumed" | "expired" | "failed" | "cancelled";
   started_ms: number; deadline_ms: number; ended_ms?: number;
   last?: { state: string; why: string; checked_ms: number };
   session_id?: string; error?: string;
@@ -71,7 +72,10 @@ function useNow(on: boolean) {
   return now;
 }
 
-const cancelWait = (t: Target) => api(`/api/fleet/machines/${t.machine}/transcripts/resume?harness=${t.harness}&id=${encodeURIComponent(t.id)}`, { method: "DELETE" });
+// A wait whose stop is already sent is not cancelled: the daemon says it is finishing, and so does the row.
+const cancelWait = (t: Target) =>
+  api<{ cancelled: boolean; finishing?: boolean }>(`/api/fleet/machines/${t.machine}/transcripts/resume?harness=${t.harness}&id=${encodeURIComponent(t.id)}`, { method: "DELETE" }).catch((e) => void failed(e, { at: "ResumeFrom" }));
+const FINISHING = "It is idle: Keel is ending it there and making the copy. This can no longer be cancelled.";
 
 // The second line of a conversation's row: what its original does, and the choices.
 export function OriginalStrip({ target, tool, onPick, onOpen }: { target: Target; tool: string; onPick: (intent: Intent) => void; onOpen: (sessionId: string) => void }) {
@@ -81,8 +85,13 @@ export function OriginalStrip({ target, tool, onPick, onOpen }: { target: Target
   if (!k.original && !w) return null;
   const pick = "h-6 shrink-0 rounded-md px-2 text-micro font-medium text-accent hover:bg-accent-soft";
   return (
-    <div data-testid="original-strip" data-state={w?.state === "waiting" ? "waiting" : w?.state === "resumed" ? "resumed" : k.original?.state ?? "ended"} className="flex items-center gap-2 px-3 pb-2 text-micro text-muted">
-      {w?.state === "waiting" ? (
+    <div data-testid="original-strip" data-state={w?.state === "waiting" || w?.state === "finishing" ? w.state : w?.state === "resumed" ? "resumed" : k.original?.state ?? "ended"} className="flex items-center gap-2 px-3 pb-2 text-micro text-muted">
+      {w?.state === "finishing" ? (
+        <>
+          <Hourglass className="size-3 shrink-0 text-st-work" />
+          <span className="min-w-0 flex-1 truncate" title={FINISHING}>Idle now · ending it and making the copy</span>
+        </>
+      ) : w?.state === "waiting" ? (
         <>
           <Hourglass className="size-3 shrink-0 text-st-work" />
           <span className="min-w-0 flex-1 truncate">Waiting until it is idle · gives up at {clock(w.deadline_ms)} ({fmtWait(w.deadline_ms - now)})</span>
@@ -129,6 +138,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
   const [again, setAgain] = useState(0); // looked at again after a resume that stopped it and did not finish
   const wait = useKnown(target).wait;
   const waiting = wait?.state === "waiting";
+  const finishing = wait?.state === "finishing";
   const now = useNow(waiting || intent === "wait");
   const k = keyOf(target);
   const lastKey = useRef(k);
@@ -155,11 +165,11 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
   // A wait that ends in a resume while this is on screen opens the session it made.
   const was = useRef(wait?.state);
   useEffect(() => {
-    if (was.current === "waiting" && wait?.state === "resumed" && wait.session_id) { onDone(); navigate({ name: "session", id: wait.session_id }); }
+    if ((was.current === "waiting" || was.current === "finishing") && wait?.state === "resumed" && wait.session_id) { onDone(); navigate({ name: "session", id: wait.session_id }); }
     was.current = wait?.state;
   }, [wait?.state, wait?.session_id]);
 
-  if (!seen || (seen.state === "ended" && !seen.pending)) return null;
+  if (!seen || (seen.state === "ended" && !seen.pending && !finishing)) return null;
   const go = async (when: "now" | "idle" | "copy") => {
     setBusy(true);
     setErr("");
@@ -209,15 +219,15 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
   }
 
   return (
-    <section data-testid="resume-card" data-state={waiting ? "waiting" : seen.state} className={cn("rounded-xl border border-line bg-raised text-left", ctl.onIntent ? "mb-5" : "mb-2")}>
+    <section data-testid="resume-card" data-state={finishing ? "finishing" : waiting ? "waiting" : seen.state} className={cn("rounded-xl border border-line bg-raised text-left", ctl.onIntent ? "mb-5" : "mb-2")}>
       <div className="flex items-start gap-2.5 px-4 pt-3.5 pb-3">
         <span className="mt-1.5"><StateDot state={seen.state} /></span>
         <div className="min-w-0 flex-1">
           <p className="text-ui font-medium" data-testid="resume-state">
-            {active ? `${tool} is still working on this on ${machineName}` : `${tool} has this open on ${machineName}, idle`}
+            {finishing ? `${tool} is being ended on ${machineName}` : active ? `${tool} is still working on this on ${machineName}` : `${tool} has this open on ${machineName}, idle`}
           </p>
           <p className="mt-0.5 text-caption text-muted">
-            {active ? (waitable ? `${seen.why}. Resuming ends it there: wait until it is idle, or resume now and the copy redoes what was in flight.` : `${seen.why}. Its turn is over. Resuming ends it there, and you choose what becomes of ${jobList.length === 1 ? "the job" : "the jobs"}.`) : "Resuming ends it there the way a closed terminal does, and goes on here from what it wrote last."}
+            {finishing ? FINISHING : active ? (waitable ? `${seen.why}. Resuming ends it there: wait until it is idle, or resume now and the copy redoes what was in flight.` : `${seen.why}. Its turn is over. Resuming ends it there, and you choose what becomes of ${jobList.length === 1 ? "the job" : "the jobs"}.`) : "Resuming ends it there the way a closed terminal does, and goes on here from what it wrote last."}
           </p>
         </div>
       </div>
@@ -258,7 +268,12 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
             </RadioGroup>
           </div>
         )}
-        {waiting ? (
+        {finishing ? (
+          <div className="flex items-center gap-3" data-testid="resume-finishing">
+            <Hourglass className="size-4 shrink-0 text-st-work" />
+            <p className="min-w-0 flex-1 text-ui">Ending it and making the copy</p>
+          </div>
+        ) : waiting ? (
           <div className="flex items-center gap-3" data-testid="resume-waiting">
             <Hourglass className="size-4 shrink-0 text-st-work" />
             <div className="min-w-0 flex-1">
@@ -289,7 +304,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
             <button type="button" data-testid="resume-now" onClick={() => onIntent("now")} className={plain}><CircleStop className="size-3.5" /> Resume now</button>
           </div>
         )}
-        {intent === "now" && (active || waiting) && (
+        {intent === "now" && !finishing && (active || waiting) && (
           <div data-testid="resume-now-form" className={cn(waiting && "mt-3 border-t border-line pt-3")}>
             <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 text-caption text-muted">

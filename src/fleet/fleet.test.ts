@@ -819,10 +819,17 @@ async function takeoverRig() {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-takeover-"));
   const root = join(dir, "work");
   mkdirSync(root);
-  const process_ = { pid: 4242, started_ms: 1_700_000_000_000 };
+  let process_ = { pid: 4242, started_ms: 1_700_000_000_000 };
   const flight = [{ kind: "job", label: "bench.sh", command: "sh bench.sh", pid: 51, pgid: 51 }, { kind: "tool", label: "Run the slow check", pid: 52 }];
   const rig = {
     alive: true, stops: 0, copies: 0, reads: 0,
+    // Whether the original is in the middle of a call (a wait is for that), and a
+    // later process with the same session; `hold`: a request that waits for the test.
+    working: true, replace() { process_ = { pid: 4343, started_ms: 1_700_000_999_000 }; },
+    hold: {} as { check?: Promise<void>; stop?: Promise<void> },
+    wait: () => rig.resumes.waitOf("s1", "claude", "c1"),
+    idle: (ms: number) => rig.resumes.resume(rig.m, "claude", "c1", { when: "idle", jobs: "keep", wait_ms: ms } as any),
+    async until(f: () => boolean) { for (let i = 0; i < 300 && !f(); i++) await Bun.sleep(10); return f(); },
     // What the helper does when asked: "lost" ends the original and the answer never arrives.
     stop: "answer" as "answer" | "lost" | "unsent",
     read: "ok" as "ok" | "fail",
@@ -849,20 +856,26 @@ async function takeoverRig() {
       const fleet: any = {
         row: (id: string) => (id === "s1" ? rig.m : undefined),
         async handsJson(_id: string, path: string) {
-          if (path.includes("/activity")) return rig.alive ? { state: "active", why: "a call runs", in_flight: flight, helpers: [], process: process_, revision: "r1", checked_ms: Date.now() } : { state: "ended", why: "", in_flight: [], helpers: [], checked_ms: Date.now() };
+          if (path.includes("/activity")) {
+            if (!rig.alive) return { state: "ended", why: "", in_flight: [], helpers: [], checked_ms: Date.now() };
+            return rig.working ? { state: "active", why: "a call runs", in_flight: flight, helpers: [], process: process_, revision: "r1", checked_ms: Date.now() } : { state: "idle", why: "at its prompt", in_flight: [], helpers: [], process: process_, revision: "r0", checked_ms: Date.now() };
+          }
           if (path.includes("/harness/end")) {
             if (rig.stop === "unsent") throw new LinkError("the link dropped");
             rig.stops++;
             rig.alive = false;
+            await rig.hold.stop;
             if (rig.stop === "lost") throw new LinkError("no answer");
             return { ended: true, was_running: true, how: "SIGTERM", in_flight: flight, jobs: [{ ...flight[0], running: true }], calls: [{ ...flight[1], running: false }] };
           }
           if (path.includes("full=1") && (rig.reads++, rig.read === "fail")) throw new LinkError("the transcript could not be read");
+          if (!path.includes("full=1")) await rig.hold.check;
           return { session: { harness: "claude", id: "c1", path: "/t.jsonl", cwd: root, cwd_exists: true }, read: { events: [], counts: {}, notes: [] } };
         },
       };
       const providers: any = { resolve: async () => ({}), models: async () => [], defaultModel: async () => "fixture:m" };
       rig.resumes = new Resumes({ store: rig.store, bus: new Bus(), engine: { isRunning: () => false } as any, providers, errors: { capture: () => ({}) } as any }, fleet, imports);
+      if ("poll" in rig.resumes) (rig.resumes as any).poll = 10;
     },
     async settled() { for (let i = 0; i < 200 && (rig.resumes as any).ends.size; i++) await Bun.sleep(10); },
     // The daemon's start: what the last one still owed is made good.
@@ -957,5 +970,107 @@ test("a stop whose answer never came is settled by looking, never sent again", a
     expect((other.resumes as any).ends.size).toBe(0);
   } finally {
     other.close();
+  }
+});
+
+test("an idle wait survives a restart with its deadline and its process, and ends the original once it is idle", async () => {
+  const rig = await takeoverRig();
+  try {
+    const started: any = await rig.idle(60_000);
+    expect(started).toMatchObject({ action: "waiting", wait: { state: "waiting", process: { pid: 4242 } } });
+    const { deadline_ms, process } = started.wait;
+    rig.boot();
+    expect(rig.wait()).toMatchObject({ state: "waiting", deadline_ms, process, jobs: "keep" });
+    rig.recover();
+    await Bun.sleep(60);
+    expect(rig.stops).toBe(0); // it still works: nothing is ended
+    rig.working = false;
+    expect(await rig.until(() => rig.wait()?.state === "resumed")).toBe(true);
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    expect(rig.wait()!.session_id).toBe(rig.copy()!.id);
+    expect(rig.notes().filter((t) => t.includes("once it was idle"))).toHaveLength(1);
+  } finally {
+    rig.close();
+  }
+});
+
+test("a wait past its deadline or whose process was replaced never ends anything", async () => {
+  const rig = await takeoverRig();
+  try {
+    // The deadline passes while the daemon is down; the original is idle when it is back.
+    await rig.idle(40);
+    rig.boot();
+    await Bun.sleep(60);
+    rig.working = false;
+    rig.recover();
+    expect(await rig.until(() => rig.wait()?.state === "expired")).toBe(true);
+    expect([rig.stops, rig.copies]).toEqual([0, 0]);
+  } finally {
+    rig.close();
+  }
+  const other = await takeoverRig();
+  try {
+    // Another process holds the session when the daemon is back, and it is idle.
+    await other.idle(60_000);
+    other.boot();
+    other.replace();
+    other.working = false;
+    other.recover();
+    expect(await other.until(() => other.wait()?.state === "failed")).toBe(true);
+    expect(other.wait()!.error).toContain("Another process runs this session now");
+    expect([other.alive, other.stops, other.copies]).toEqual([true, 0, 0]);
+  } finally {
+    other.close();
+  }
+});
+
+test("a wait cancelled before its stop is sent ends nothing; after it, the cancel is refused as finishing", async () => {
+  const rig = await takeoverRig();
+  try {
+    // Cancelled while the checks before the stop still run: the stop is never sent.
+    await rig.idle(60_000);
+    const check = Promise.withResolvers<void>();
+    rig.hold.check = check.promise;
+    rig.working = false;
+    await Bun.sleep(60); // the wait saw it idle and is checking what the copy needs
+    expect(rig.resumes.cancel("s1", "claude", "c1")).toEqual({ cancelled: true });
+    check.resolve();
+    rig.hold.check = undefined;
+    await Bun.sleep(60);
+    expect(rig.wait()).toMatchObject({ state: "cancelled" });
+    expect([rig.alive, rig.stops, rig.copies]).toEqual([true, 0, 0]);
+
+    // The stop is out: a cancel now says finishing, and the copy is made.
+    rig.working = true;
+    await rig.idle(60_000);
+    const stop = Promise.withResolvers<void>();
+    rig.hold.stop = stop.promise;
+    rig.working = false;
+    expect(await rig.until(() => rig.wait()?.state === "finishing")).toBe(true);
+    expect(rig.resumes.cancel("s1", "claude", "c1")).toEqual({ cancelled: false, finishing: true });
+    stop.resolve();
+    expect(await rig.until(() => rig.wait()?.state === "resumed")).toBe(true);
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+  } finally {
+    rig.close();
+  }
+});
+
+test("a wait whose stop was out when the daemon went down follows what happened to the original", async () => {
+  const rig = await takeoverRig();
+  try {
+    // The original is ended and the answer is lost; the daemon goes down with the wait finishing.
+    await rig.idle(60_000);
+    rig.stop = "lost";
+    rig.working = false;
+    expect(await rig.until(() => rig.stops === 1)).toBe(true);
+    rig.boot();
+    expect(rig.wait()).toMatchObject({ state: "finishing" });
+    rig.recover();
+    expect(await rig.until(() => rig.wait()?.state === "resumed")).toBe(true);
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    expect(rig.wait()!.session_id).toBe(rig.copy()!.id);
+  } finally {
+    rig.close();
   }
 });

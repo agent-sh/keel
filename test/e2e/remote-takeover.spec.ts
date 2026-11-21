@@ -350,3 +350,74 @@ test("resume from an ssh machine: checked before the stop, and a copy that fails
     rmSync(proj, { recursive: true, force: true });
   }
 });
+
+// A wait the owner authorized is the daemon's to keep: the daemon restarts
+// while the original still works, and the wait is there again with the same
+// deadline, shown on the row; once the original is idle it is ended and the
+// copy opens, as it would have without the restart.
+test("resume from an ssh machine: a wait until idle survives a daemon restart", async ({ page, request }) => {
+  test.setTimeout(300_000);
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const machines = (await (await request.get("/api/fleet/machines")).json()).machines as any[];
+  test.skip(!machines.some((m) => m.ssh_host === HOST), `the daemon's ssh configuration has no stand-in host ${HOST} (scripts/dev.sh adds it)`);
+  let m = machines.find((x) => x.ssh_host === HOST && x.enabled);
+  const enabledHere = !m;
+  if (!m) {
+    const r = await (await request.post("/api/fleet/machines", { data: { ssh_host: HOST } })).json();
+    m = r.machines.find((x: any) => x.id === r.id);
+  }
+  const home = m.facts.home as string;
+  expect(home).toContain("keel-work");
+  const root = join(home, "work");
+  const proj = join(root, `proj-wait-${tag}`);
+  mkdirSync(proj, { recursive: true });
+  await request.patch(`/api/fleet/machines/${m.id}`, { data: { workspace_root: root } });
+  const file = join(home, ".claude", "projects", proj.replace(/[^A-Za-z0-9]/g, "-"), `${sid(8)}.jsonl`);
+  const base = `/api/fleet/machines/${m.id}/transcripts`;
+  const look = async () => (await (await request.get(`${base}/activity?harness=claude&id=${sid(8)}`)).json()) as any;
+  const pid = async () => (await (await request.get("/api/daemon", { timeout: 3000 }).catch(() => null))?.json().catch(() => null))?.pid as number | undefined;
+  const procs: number[] = [];
+  let copy = "";
+  try {
+    const original = harness(home, proj, sid(8), `Waited across a restart ${tag}`, 45, 0);
+    procs.push(original);
+    await expect.poll(async () => (await look()).in_flight?.map((i: any) => i.kind), { timeout: 30_000 }).toEqual(["tool"]);
+    const asked = await request.post(`${base}/resume`, { data: { harness: "claude", id: sid(8), when: "idle", wait_ms: 10 * 60_000 } });
+    expect(asked.status()).toBe(202);
+    const wait = (await asked.json()).wait;
+    expect(wait).toMatchObject({ state: "waiting", process: { pid: original } });
+
+    // The daemon restarts while the original still works.
+    const before = await pid();
+    await request.post("/api/drain", { data: { restart: true, timeout_seconds: 0 } });
+    await expect.poll(async () => { const now = await pid(); return now && now !== before ? now : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
+    expect(alive(original)).toBe(true);
+    await expect.poll(async () => (await look().catch(() => ({}))).wait, { timeout: 60_000 }).toMatchObject({ state: "waiting", deadline_ms: wait.deadline_ms, started_ms: wait.started_ms, process: wait.process });
+
+    // The row shows the wait, with the deadline it was given.
+    await page.goto("/");
+    const sheet = await openSheet(page, m.name);
+    const strip = sheet.locator("div").filter({ has: page.locator(`[data-testid="import-row"][data-id="${sid(8)}"]`) }).last().getByTestId("original-strip");
+    await expect(strip).toHaveAttribute("data-state", "waiting", { timeout: 30_000 });
+    await expect(strip).toContainText(/gives up at \d\d:\d\d/);
+    await shoot(page, "resume-09-waiting-after-restart");
+    await sheet.locator(`[data-testid="import-row"][data-id="${sid(8)}"]`).click();
+    await expect(sheet.getByTestId("resume-deadline")).toContainText(/Gives up at \d\d:\d\d/);
+
+    // Idle: ended once, and the copy opens with its last words.
+    await page.waitForURL((u) => u.pathname.startsWith("/s/"), { timeout: 120_000 });
+    copy = page.url().split("/s/")[1]!.split(/[/?#]/)[0]!;
+    await expect(page.getByTestId("assistant-text").last()).toContainText("The slow check passed.");
+    await expect.poll(() => alive(original), { timeout: 10_000 }).toBe(false);
+    expect((await notes(request, copy)).filter((t) => t.includes("once it was idle"))).toHaveLength(1);
+    expect((await look()).wait).toMatchObject({ state: "resumed", session_id: copy });
+  } finally {
+    for (const p of procs) { try { process.kill(-p, "SIGKILL"); } catch {} try { process.kill(p, "SIGKILL"); } catch {} }
+    await request.delete(`${base}/resume?harness=claude&id=${sid(8)}`).catch(() => {});
+    if (copy) await request.delete(`/api/sessions/${copy}`);
+    if (enabledHere) await request.delete(`/api/fleet/machines/${m.id}`);
+    rmSync(file, { force: true });
+    rmSync(proj, { recursive: true, force: true });
+  }
+});
