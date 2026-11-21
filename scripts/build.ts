@@ -65,6 +65,10 @@ const handsJs = await hands.outputs[0]!.text();
 const reads = await Bun.build({ entrypoints: [join(root, "src/server/reads-worker.ts")], target: "bun", minify: true, define });
 if (!reads.success) fail(reads);
 const readsJs = await reads.outputs[0]!.text();
+// The checkpoint thread (src/core/checkpoint.ts), carried the same way.
+const checkpoint = await Bun.build({ entrypoints: [join(root, "src/core/checkpoint-worker.ts")], target: "bun", minify: true, define });
+if (!checkpoint.success) fail(checkpoint);
+const checkpointJs = await checkpoint.outputs[0]!.text();
 const res = await Bun.build({
   entrypoints: [join(root, "src/main.ts")],
   compile: target ? { outfile: out, target } : { outfile: out },
@@ -72,7 +76,7 @@ const res = await Bun.build({
   splitting: true,
   sourcemap: "none",
   plugins: [tailwind],
-  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs) },
+  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs), __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs) },
 });
 if (!res.success) fail(res);
 await uiBundle(`${out}-ui.tar.gz`);

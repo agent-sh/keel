@@ -9,6 +9,7 @@ import { parseBind } from "../core/bind.ts";
 import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { runMode } from "../core/runmode.ts";
+import { Checkpointer } from "../core/checkpoint.ts";
 import { Store } from "../core/store.ts";
 import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
@@ -53,6 +54,11 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);
   errors.installGlobal();
+  // The log is synced and checkpointed on a thread, not in the commit that
+  // fills it (a hot reload's old store gives its thread up first).
+  const threads = globalThis as { __keelCheckpointer?: Checkpointer };
+  threads.__keelCheckpointer?.stop();
+  (threads.__keelCheckpointer = new Checkpointer(store, (e) => errors.capture("server", e, { at: "checkpoint thread" }))).start();
   const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
   engine.wentDown = life?.before?.down_ms;
