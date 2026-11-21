@@ -49,6 +49,7 @@ const NEW_SRC = "(SELECT NEW.id AS id, NEW.session_id AS session_id, NEW.kind AS
 const KINDS = "('user', 'assistant', 'tool_result', 'compaction', 'note')";
 
 // Bumped when what is indexed changes: the index is made again from the events once.
+// The next bump that changes what is indexed must drop the kept-rows path below (UNMAPPED_VERSION).
 const INDEX_VERSION = 4;
 // The same rows without the map: they are kept and mapped, not made again.
 const UNMAPPED_VERSION = 3;
@@ -92,9 +93,14 @@ export function initSearchIndex(db: Database) {
   const had = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE name = 'search_meta'").get()
     ? db.query<{ version: number }, []>("SELECT version FROM search_meta").get()?.version
     : undefined;
-  if (had === INDEX_VERSION) return;
+  // The recorded version is trusted only with its objects in place (an older
+  // binary cut while it rebuilt its own layout leaves the version without them).
+  const OBJECTS = ["search_idx", "search_docs", "search_in", "search_in_ins", "search_docs_del", "search_idx_ins", "search_idx_del"];
+  const present = new Set(db.query<{ name: string }, string[]>(`SELECT name FROM sqlite_master WHERE name IN (${OBJECTS.map(() => "?").join(", ")})`).all(...OBJECTS).map((r) => r.name));
+  if (had === INDEX_VERSION && present.size === OBJECTS.length) return;
+  const whole = had === UNMAPPED_VERSION && present.has(OBJECTS[0]!);
   db.transaction(() => {
-    const keep = had === UNMAPPED_VERSION;
+    const keep = whole;
     db.exec(`${DROP_LAYOUT}${keep ? "" : "DROP TABLE IF EXISTS search_idx;"}`);
     db.exec(SCHEMA);
     // One read of the rows already indexed (no words are indexed again).
@@ -103,7 +109,7 @@ export function initSearchIndex(db: Database) {
     // rows was never filled: that version recorded itself before its fill.
     if (!keep || !db.query("SELECT 1 FROM search_docs LIMIT 1").get()) for (const r of ROWS(`events e`)) db.run(`${COLS} ${r}`);
     db.run("INSERT INTO search_meta (version) VALUES (?)", [INDEX_VERSION]);
-  })();
+  }).immediate(); // the write lock from the start: another process cannot commit in between
 }
 
 type Hit = {

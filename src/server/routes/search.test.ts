@@ -184,3 +184,17 @@ test("a later start reads the recorded version and nothing of the index, even an
     next.store.db.close();
   }
 });
+
+test("a recorded version whose index objects are gone is made again", async () => {
+  const first = open();
+  const s = talk(first.store, "quokka");
+  expect((await first.hits(first.start(), "quokka")).length).toBe(6);
+  const done = version(first.store);
+  // An older binary cut while it rebuilt its own layout: the version stays, the index does not.
+  first.store.db.exec("DROP TRIGGER search_idx_ins; DROP TRIGGER search_idx_del; DROP TABLE search_idx;");
+  first.store.db.close();
+  const next = open(first.dir);
+  expect((await next.hits(next.start(), "quokka")).map((h) => h.session_id)).toEqual(Array(6).fill(s));
+  expect(version(next.store)).toBe(done);
+  next.store.db.close();
+});
