@@ -453,6 +453,15 @@ Keel never restarts the daemon for a UI install. Idle pages reload, and a page
 with a draft offers a reload and keeps the draft. `keel ui rollback` switches
 back to the previous bundle, or to the embedded page.
 
+## Backup and restore
+
+`keel backup` makes a checked copy of the sessions database, the daemon's
+settings files and uploaded attachments; `keel restore` puts one back with the
+daemon stopped and keeps the replaced files in `before-restore-<time>`. A
+backup does not hold workspace files, the config folder, credentials or the
+rest of the state folder. The steps, with a restore to try on a scratch
+folder, are in [docs/backup-and-restore.md](docs/backup-and-restore.md).
+
 ## Package and check a release
 
 ```bash
