@@ -612,6 +612,12 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    little past its box, so the focus ring of a control on its edge is whole. */
 .row-cv { content-visibility: auto; contain-intrinsic-size: auto 7.5rem; overflow-clip-margin: 0.375rem; }
 
+/* Each row of a transcript lays out by itself: what a streamed reply changes
+   stays in its row instead of the whole pane being laid out again. Layout
+   and style only, so nothing a row shows past its box is cut (a focus ring,
+   a menu, a tip). */
+.k-transcript > * { contain: layout style; }
+
 /* What a row offers only between turns is put away by the list's own state,
    in one write, instead of each row being rendered again. */
 .k-transcript[data-working] [data-idle-only] { display: none; }
