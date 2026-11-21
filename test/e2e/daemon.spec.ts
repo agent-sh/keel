@@ -79,11 +79,12 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
 });
 
 // A drain turns new work away and nothing else. Its own daemon on a scratch
-// state and the scripted stand-in, drained while a turn waits for the owner's
-// approval: the open page still asks which paths of a reply are files (a read,
-// sent as a POST) and links them, a prompt the daemon turns away is said in
-// the composer without becoming a record in Errors, and the approval given
-// from the page lets the turn finish, which ends the drain.
+// state and the scripted stand-in, drained while one turn is at work and
+// another waits for the owner's approval (a card alone does not hold a
+// drain): the open page still asks which paths of a reply are files (a read,
+// sent as a POST) and links them, a prompt the daemon turns away waits above
+// the box without becoming a record in Errors, the approval given from the
+// page lets its turn finish, and the drain ends with the turn at work.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 function ownDaemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
@@ -118,6 +119,10 @@ test("a draining daemon still answers reads and the answers its running turns wa
     await expect.poll(async () => (await get(`/api/sessions/${session.id}`)).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
     await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch made.txt" } }])}` });
     await expect.poll(async () => (await get(`/api/sessions/${session.id}/approvals`)).approvals.length, { timeout: 30_000 }).toBe(1);
+    // A card that only waits on the owner does not hold a drain. A turn at work does: another session's reply, until its gate opens.
+    const gate = join(state, "gate");
+    const busy = ((await (await call("/api/sessions", { model: "scripted:stand-in", title: "At work while draining", workspace: join(state, "work"), text: `script:hold ${gate}` })).json()) as any).session;
+    await expect.poll(async () => (await get(`/api/sessions/${busy.id}`)).running, { timeout: 30_000 }).toBe(true);
     expect((await call("/api/drain", { timeout_seconds: 120 })).status).toBe(200);
     expect((await get("/api/daemon")).draining).toBeTruthy();
 
@@ -137,12 +142,15 @@ test("a draining daemon still answers reads and the answers its running turns wa
     await expect(page.locator('code.k-fileref[data-rel="notes/plan.md"]')).toHaveAttribute("role", "link");
     await expect(page.locator('code.k-fileref[data-path="src/parse.ts"]').first()).toHaveAttribute("data-checked", "1");
 
-    // A prompt sent now is not taken: the composer says why and keeps the text.
+    // A prompt sent now is not taken yet: it waits above the box, to go out by itself when Keel takes work again.
+    await expect(page.getByTestId("admin-band-note")).toHaveText("New work waits.");
     await page.getByTestId("composer").fill("more work");
     await page.getByTestId("composer").press("Enter");
-    await expect(page.getByTestId("composer-notice")).toContainText("stopping and takes no new work");
-    await expect(page.getByTestId("admin-band-note")).toHaveText("Not taken: new work waits.");
-    await expect(page.getByTestId("composer")).toHaveValue("more work");
+    const kept = page.getByTestId("saved-draft");
+    await expect(kept).toHaveAttribute("data-state", "waiting");
+    await expect(kept).toContainText("more work");
+    await expect(kept.getByTestId("saved-waiting")).toContainText("goes out by itself, once");
+    await expect(page.getByTestId("composer")).toHaveValue("");
     // The band is a row of its own: it covers nothing of the message box.
     const band = (await page.getByTestId("admin-band").boundingBox())!;
     const box = (await page.getByTestId("composer").boundingBox())!;
@@ -160,10 +168,17 @@ test("a draining daemon still answers reads and the answers its running turns wa
     expect(tracked.filter((t) => t.includes("no new work"))).toEqual([]);
     expect((await get("/api/errors")).errors.filter((e: any) => /no new work/.test(e.message))).toEqual([]);
 
-    // The approval is taken: the turn runs its command and ends, and the drain with it.
+    // The approval is taken: the turn runs its command and ends, while the daemon still waits for the turn at work.
     await page.getByTestId("approval").getByTestId("allow-once").click();
+    await expect.poll(() => existsSync(join(state, "work/made.txt")), { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => (await get(`/api/sessions/${session.id}`)).running, { timeout: 30_000 }).toBe(false);
+    expect(d.proc.exitCode).toBeNull();
+    // The message is still kept, and was posted once: the page asks whether Keel takes work before it sends again.
+    await expect(kept).toHaveAttribute("data-state", "waiting");
+    expect(refused).toEqual(["POST /api/sessions/:id/messages"]);
+    // That turn ends, and the drain with it.
+    writeFileSync(gate, "");
     await expect.poll(() => d.proc.exitCode, { timeout: 30_000 }).toBe(0);
-    expect(existsSync(join(state, "work/made.txt"))).toBe(true);
   } finally {
     d.proc.kill("SIGKILL");
   }
