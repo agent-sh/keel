@@ -94,10 +94,19 @@ async function exaSearch(query: string, count: number, signal?: AbortSignal): Pr
 
 // `whole`: the page uncut (for the reader), else long pages are spilled.
 // `budget` (with `whole`): the characters the job this page is fetched for may
-// still keep, shared by its fetches. A body is read only while the budget
-// lasts, the page takes what it keeps, and `cut` says it did not fit.
+// still keep, shared by its fetches. A body that comes back as it is (plain
+// text, raw extraction, a PDF's text) is read only while the budget lasts and
+// takes from it as it streams: `took` says how much. A page of markup takes
+// nothing while it is read (its text is a fraction of it, so it is read
+// against a bound of its own), and neither does a page the fetch CLI returns:
+// the caller charges the page it gets. `cut`: the body was longer than what
+// was read.
 export type FetchOpts = { method?: string; body?: string; headers?: Record<string, string>; extract?: string; spillDir: string; whole?: boolean; budget?: { left: number } };
-export type Fetched = { text: string; error?: boolean; cut?: boolean };
+export type Fetched = { text: string; error?: boolean; cut?: boolean; took?: number };
+
+// The most markup read for one page when a budget is given: the fetch CLI's
+// own hard cap for a response (10 MB), which the built-in path stands in for.
+const MARKUP_MAX = 10 * 1024 * 1024;
 
 // A body as text. With a budget each chunk takes from it as it comes and the
 // reading stops when it is spent, so a long body is never held whole.
@@ -115,17 +124,6 @@ async function bodyText(body: ReadableStream<Uint8Array> | null | undefined, poo
     if (n < t.length) return { text, taken, cut: true };
   }
   return { text, taken, cut: false };
-}
-
-// A whole page charged to its job's budget: what the body took while it was
-// read goes back, and the page takes what it keeps.
-function charge(page: string, o: FetchOpts, taken = 0, cut = false): { text: string; cut?: boolean } {
-  const pool = o.budget;
-  if (!pool) return { text: page };
-  pool.left += taken;
-  const keep = Math.min(page.length, Math.max(0, pool.left));
-  pool.left -= keep;
-  return cut || keep < page.length ? { text: page.slice(0, keep), cut: true } : { text: page };
 }
 
 const PRIVATE_HOST = /^(localhost|.*\.localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?$|\[?f[cd])/i;
@@ -154,7 +152,7 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     // The page itself, without the request echo: the model knows the URL.
     const body = typeof r.body_markdown === "string" && o.extract !== "raw" ? r.body_markdown : String(r.output ?? "");
     const final = r.meta?.final_url && r.meta.final_url !== u.href ? `Final URL: ${r.meta.final_url}\n\n` : "";
-    return { ...(o.whole ? charge(final + body, o) : { text: await spill(final + body, o.spillDir, "webfetch") }), error: r.kind !== "ok" };
+    return { text: o.whole ? final + body : await spill(final + body, o.spillDir, "webfetch"), error: r.kind !== "ok" };
   }
   return plainFetch(u, o, signal);
 }
@@ -171,10 +169,12 @@ export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal): Pr
     return webFetch(to, o, signal);
   }
   const type = res.headers.get("content-type") ?? "";
-  const raw = await bodyText(res.body, o.whole ? o.budget : undefined);
-  const text = /html/.test(type) && o.extract !== "raw" ? htmlToText(raw.text) : raw.text;
-  const page = `HTTP ${res.status}\n\n${text}`;
-  return { ...(o.whole ? charge(page, o, raw.taken, raw.cut) : { text: await spill(page, o.spillDir, "webfetch") }), error: !res.ok };
+  const markup = /html/.test(type) && o.extract !== "raw";
+  const pool = o.whole ? o.budget : undefined;
+  const raw = await bodyText(res.body, pool && markup ? { left: MARKUP_MAX } : pool);
+  const page = `HTTP ${res.status}\n\n${markup ? htmlToText(raw.text) : raw.text}`;
+  if (!o.whole) return { text: await spill(page, o.spillDir, "webfetch"), error: !res.ok };
+  return { text: page, error: !res.ok, ...(raw.cut ? { cut: true } : {}), ...(pool && !markup ? { took: raw.taken } : {}) };
 }
 
 async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal): Promise<Fetched> {
@@ -183,10 +183,12 @@ async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal): Promise
   const path = join(o.spillDir, "web", `${Bun.hash(url).toString(36)}.pdf`);
   await Bun.write(path, res);
   const p = Bun.spawn(["pdftotext", "-layout", "-enc", "UTF-8", path, "-"], { stdout: "pipe", stderr: "ignore" });
-  const text = await bodyText(p.stdout, o.whole ? o.budget : undefined);
+  const pool = o.whole ? o.budget : undefined;
+  const text = await bodyText(p.stdout, pool);
   if (text.cut) p.kill();
   const page = `PDF saved to ${path}\n\n${text.text}`;
-  return o.whole ? charge(page, o, text.taken, text.cut) : { text: await spill(page, o.spillDir, "webfetch-pdf") };
+  if (!o.whole) return { text: await spill(page, o.spillDir, "webfetch-pdf") };
+  return { text: page, ...(text.cut ? { cut: true } : {}), ...(pool ? { took: text.taken } : {}) };
 }
 
 // A page fetched for a request (the prompt of WebFetch and web_fetch): a long
@@ -214,6 +216,9 @@ export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContex
 export function htmlToText(html: string): string {
   return html
     .replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, "")
+    // A page cut inside a script or a tag: what is left of it is not text.
+    .replace(/<(script|style|noscript|svg)\b[\s\S]*$/i, "")
+    .replace(/<[^>]*$/, "")
     .replace(/<h([1-6])[^>]*>/gi, (_m, n) => "\n\n" + "#".repeat(Number(n)) + " ")
     .replace(/<li[^>]*>/gi, "\n- ")
     .replace(/<a [^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)")

@@ -169,3 +169,82 @@ test("material is short when what would come back is: numbered lines and file he
   expect(short.content).toContain("20\ts line 20");
   expect(short.content).toContain("no reader was used");
 });
+
+// A docs page: about 420,000 characters of markup and scripts around 22,000 of text.
+const paragraphs = Array.from({ length: 400 }, (_, i) => `<p>Paragraph ${i + 1} of the page says something useful here.</p>`).join("\n");
+const docs = `<html><head><title>t</title><script>${"var a=1;".repeat(20_000)}</script></head><body>${paragraphs}<script>${"var b=2;".repeat(30_000)}</script></body></html>`;
+
+test("a page of markup is charged for its text, not its markup: six fetched at once all come back whole", async () => {
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(docs, { headers: { "content-type": "text/html" } }) });
+  try {
+    const url = (p: string) => `http://127.0.0.1:${server.port}${p}`;
+    const one = await plainFetch(new URL(url("/one")), { spillDir: join(DIR, "spill"), whole: true });
+    expect(one.text).toContain("Paragraph 400 of the page");
+    expect(one.text.length).toBeLessThan(30_000);
+    const six = await gather({ urls: [1, 2, 3, 4, 5, 6].map((i) => url(`/p${i}`)) }, ctxOf(), { budget: 700_000, atOnce: 6, fetch: local });
+    expect(six.skipped).toEqual([]);
+    expect(six.items.map((m) => m.text.length)).toEqual(Array(6).fill(one.text.length));
+    expect(six.items.every((m) => m.text === one.text)).toBe(true);
+    // One page whose markup alone is past the budget.
+    const small = await gather({ urls: [url("/small")] }, ctxOf(), { budget: 100_000, fetch: local });
+    expect(small.skipped).toEqual([]);
+    expect(small.items[0]!.text).toBe(one.text);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("pages are charged in the order named, whichever came back first, and a page that failed takes nothing", async () => {
+  const page = (tag: string) => `<html><body>${Array.from({ length: 30 }, (_, i) => `<p>${`${tag} line ${i + 1} `.padEnd(92, "x")}</p>`).join("\n")}</body></html>`;
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    async fetch(req) {
+      const path = new URL(req.url).pathname;
+      await Bun.sleep(path === "/slow-1" ? 150 : 10);
+      return new Response(page(path), { headers: { "content-type": "text/html" } });
+    },
+  });
+  try {
+    const urls = ["/slow-1", "/page-2", "/page-3"].map((p) => `http://127.0.0.1:${server.port}${p}`);
+    const whole = (await plainFetch(new URL(urls[0]!), { spillDir: join(DIR, "spill"), whole: true })).text.length;
+    const { items, skipped } = await gather({ urls }, ctxOf(), { budget: whole * 2 + 1_000, atOnce: 3, fetch: local });
+    // The first two named are whole; the third, which came back before the first, is the one cut.
+    expect(items.map((m) => [m.label, m.text.length >= whole - 1])).toEqual([[urls[0], true], [urls[1], true], [urls[2], false]]);
+    expect(skipped).toEqual([expect.stringMatching(/\/page-3 after line \d+ \(past what one job reads/)]);
+
+    // A fetch that fails gives back only what it took: nothing here, so the budget does not grow by its message.
+    const bad = async (url: string, o: any, signal?: AbortSignal) => (url.endsWith("/bad") ? { text: "x".repeat(5_000), error: true } : local(url, o, signal));
+    const after = await gather({ urls: [`http://127.0.0.1:${server.port}/bad`, urls[1]!, urls[2]!] }, ctxOf(), { budget: whole + 1_000, atOnce: 1, fetch: bad });
+    expect(size(after.items)).toBeLessThanOrEqual(whole + 1_000);
+    expect(after.skipped.length).toBe(2);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("sources past the budget are counted by folder with the list in a file, so the result stays short", async () => {
+  const root = join(DIR, "tree");
+  for (let d = 1; d <= 12; d++) {
+    mkdirSync(join(root, `pkg-${String(d).padStart(2, "0")}`), { recursive: true });
+    for (let f = 1; f <= 25; f++) writeFileSync(join(root, `pkg-${String(d).padStart(2, "0")}`, `file-${String(f).padStart(2, "0")}.txt`), rows(4, `p${d}f${f}`));
+  }
+  const ctx = ctxOf();
+  ctx.readBudget = async () => 12_100;
+  const reader: ReaderHost = { ...noCompile, ask: async () => ({ text: "Nothing stands out (tree/pkg-01/file-01.txt:1).", usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } }) };
+  ctx.readMaterial = (items, q) => readMaterial(reader, items, q, ctx.signal);
+  const out = await AskReaders.run({ question: "what stands out?", paths: ["tree"] }, ctx);
+  const text = out.content as string;
+  const shown = (out.shown as any).readers;
+  const left = 300 - shown.sources;
+  expect(left).toBeGreaterThan(250);
+  expect(text.split("\n").length).toBeLessThan(20);
+  expect(text.length).toBeLessThan(3_000);
+  expect(shown.unread.length).toBeLessThan(5);
+  // The source the budget cut is named; the rest are counted, and all of them are in the file the note names.
+  expect(text).toMatch(/tree\/pkg-\d+\/file-\d+\.txt after line \d+ \(past what one job reads, 12100 characters\)/);
+  const m = /(\d+) sources \(past what one job reads, 12100 characters\): 25 in tree\/pkg-\d+\/.* All of them are listed in (\S+\.txt)/.exec(text);
+  expect(Number(m?.[1])).toBe(left);
+  const listed = readFileSync(m![2]!, "utf8").trim().split("\n");
+  expect(listed.length).toBe(left);
+  expect(listed.at(-1)).toBe("tree/pkg-12/file-25.txt");
+});

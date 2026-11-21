@@ -30,6 +30,8 @@ async function filesIn(dir: string, signal: AbortSignal): Promise<string[]> {
     const [out, code] = await Promise.all([readText(p.stdout), p.exited]);
     if (code === 0) return out.split("\0").filter(Boolean).map((f) => join(dir, f)).sort();
   } catch {}
+  // A stop killed the listing: no scan in its place.
+  if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
   const out: string[] = [];
   for await (const f of new Bun.Glob("**/*").scan({ cwd: dir, absolute: true, onlyFiles: true })) if (!skipDir(f)) out.push(f);
   return out.sort();
@@ -74,9 +76,13 @@ function wholeLines(text: string): { text: string; after: string } {
 export type GatherOpts = { budget?: number; atOnce?: number; fetch?: (url: string, o: FetchOpts, signal?: AbortSignal) => Promise<Fetched> };
 
 // The material of one job, files first, then pages, each in the order named.
-// It keeps at most the budget: a file is read up to what is left of it, a page
-// body only while it lasts, and what did not fit is named (the rest of a
-// source from a line on, or the whole source), never read first and dropped.
+// It keeps at most the budget: a file is read up to what is left of it, and
+// what did not fit is named (the rest of a source from a line on, or the
+// whole source), never read first and dropped. Pages are fetched a few at a
+// time and none is started once the pages that came back spend the budget;
+// they are then charged in the order named, so which page is cut does not
+// depend on which came back first (a body that streams as it is, under a
+// budget shorter than the bodies in flight, is the one case that can).
 export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: ToolContext, o: GatherOpts = {}): Promise<{ items: Material[]; skipped: string[]; saved?: string }> {
   const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === "string" && v ? [v] : []).map(String).map((s) => s.trim()).filter(Boolean);
   const stop = () => { if (ctx.signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" }); };
@@ -125,14 +131,15 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
     saved = join(ctx.spillDir, "readers");
     mkdirSync(saved, { recursive: true });
     const fetchPage = o.fetch ?? webFetch;
-    const pages: (Material | undefined)[] = [];
+    const got: (Fetched | undefined)[] = [];
     const notes: (string | undefined)[] = [];
+    const base = pool.left;
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(o.atOnce ?? readersAtOnce(), urls.length) }, async () => {
       while (next < urls.length) {
         const i = next++, url = urls[i]!;
         stop();
-        if (pool.left <= 0) { notes[i] = `${url} (${past})`; continue; }
+        if (pool.left <= 0) continue;
         let r: Fetched;
         try { r = await fetchPage(url, { spillDir: ctx.spillDir, whole: true, budget: pool }, ctx.signal); } catch (e) {
           if (ctx.signal.aborted) throw e;
@@ -140,26 +147,73 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
           continue;
         }
         stop();
-        // A page that failed is not kept: what it took goes back.
-        if (r.error) { pool.left += r.text.length; notes[i] = `${url} (${r.text.slice(0, 200)})`; continue; }
-        let text = r.text;
-        if (r.cut) {
-          const w = wholeLines(text);
-          text = w.text;
-          notes[i] = text ? `${url} after ${w.after} (${past})` : `${url} (${past})`;
-        }
-        if (!text) continue;
-        const path = join(saved!, `${Date.now()}-${i}-${Bun.hash(url).toString(36)}.md`);
-        await Bun.write(path, text);
-        pages[i] = { source: path, label: url, text };
+        // A page that failed is not kept: what its body took goes back, and no more.
+        if (r.error) { pool.left += r.took ?? 0; notes[i] = `${url} (${r.text.slice(0, 200)})`; continue; }
+        // For now the page takes what it did not take while it streamed, so no
+        // page is started once the budget is spent.
+        pool.left -= r.text.length - (r.took ?? 0);
+        got[i] = r;
       }
     }));
-    urls.forEach((_, i) => {
-      if (pages[i]) items.push(pages[i]!);
-      if (notes[i]) skipped.push(notes[i]!);
-    });
+    // The pages charged in the order named.
+    let left = base;
+    for (const [i, url] of urls.entries()) {
+      if (notes[i]) { skipped.push(notes[i]!); continue; }
+      const r = got[i];
+      const keep = r ? Math.min(r.text.length, Math.max(0, left)) : 0;
+      if (!r || !keep) { skipped.push(`${url} (${past})`); continue; }
+      left -= keep;
+      let text = r.text;
+      if (r.cut || keep < text.length) {
+        const w = wholeLines(text.slice(0, keep));
+        text = w.text;
+        skipped.push(`${url} after ${w.after} (${past})`);
+      }
+      const path = join(saved, `${Date.now()}-${i}-${Bun.hash(url).toString(36)}.md`);
+      await Bun.write(path, text);
+      items.push({ source: path, label: url, text });
+    }
   }
   return { items, skipped, saved };
+}
+
+// Sources named one by one for a reason they share; more than this are one
+// line that counts them by folder, with the full list in a file.
+const NAMED = 10;
+const FOLDERS = 5;
+const folderOf = (name: string) => { try { if (/^https?:/.test(name)) return new URL(name).origin; } catch {} return name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "./"; };
+
+// What was not read, as the note names it. Each line is "source (reason)".
+// The rest of a source from a line on is always named, and so are a few
+// sources; a reason many whole sources share (a folder past the budget, a
+// folder of images) is one line, so the result stays short however much the
+// call named.
+async function unreadLines(list: string[], spillDir: string): Promise<string[]> {
+  const byReason = new Map<string, string[]>();
+  const order: (string | { why: string })[] = [];
+  for (const line of list) {
+    const m = /^(.*) \(([^()]*)\)$/.exec(line);
+    if (!m || / after (line \d+|its first \d+ characters)$/.test(m[1]!)) { order.push(line); continue; }
+    if (!byReason.has(m[2]!)) { byReason.set(m[2]!, []); order.push({ why: m[2]! }); }
+    byReason.get(m[2]!)!.push(m[1]!);
+  }
+  const lines: string[] = [];
+  for (const x of order) {
+    if (typeof x === "string") { lines.push(x); continue; }
+    const names = byReason.get(x.why)!;
+    if (names.length <= NAMED) { lines.push(...names.map((n) => `${n} (${x.why})`)); continue; }
+    const count = new Map<string, number>();
+    for (const n of names) count.set(folderOf(n), (count.get(folderOf(n)) ?? 0) + 1);
+    const folders = [...count].sort((a, b) => b[1] - a[1]);
+    const top = folders.slice(0, FOLDERS).map(([f, n]) => `${n} in ${f}`);
+    const rest = folders.slice(FOLDERS);
+    if (rest.length) top.push(`${rest.reduce((n, f) => n + f[1], 0)} in ${rest.length} other folder${rest.length === 1 ? "" : "s"}`);
+    const path = join(spillDir, "readers", `${Date.now()}-not-read-${lines.length}.txt`);
+    mkdirSync(join(spillDir, "readers"), { recursive: true });
+    await Bun.write(path, names.join("\n") + "\n");
+    lines.push(`${names.length} sources (${x.why}): ${top.join(", ")}. All of them are listed in ${path}`);
+  }
+  return lines;
 }
 
 async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
@@ -167,17 +221,18 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
   if (!question) return fail("Give the question: what to find or answer in the material. The readers see only it and the material.");
   if (!ctx.readMaterial) return fail("Readers are not available for this call: read the material with your own tools.");
   const { items, skipped, saved } = await gather(input ?? {}, ctx);
-  if (!items.length) return fail(`Nothing to read${skipped.length ? `: ${skipped.join("; ")}` : ": name paths or urls"}.`);
+  if (!items.length) return fail(`Nothing to read${skipped.length ? `: ${(await unreadLines(skipped, ctx.spillDir)).join("; ")}` : ": name paths or urls"}.`);
   const chars = items.reduce((n, m) => n + m.text.length, 0);
-  const skippedNote = skipped.length ? `\n[Not read, so not covered:\n- ${skipped.join("\n- ")}]` : "";
   // Short is what comes back, with its line numbers and file headers: many
   // short lines or small files can be several times their own size.
   const whole = chars <= READ_WHOLE_CHARS ? wholeText(items) : "";
   if (whole && whole.length <= READ_WHOLE_CHARS) {
-    return { content: `${whole}\n\n[Short enough to read whole (${chars} chars): no reader was used.]${skippedNote}`, shown: { readers: { question, whole: true, sources: items.length, chars, skipped } } };
+    const not = await unreadLines(skipped, ctx.spillDir);
+    const skippedNote = not.length ? `\n[Not read, so not covered:\n- ${not.join("\n- ")}]` : "";
+    return { content: `${whole}\n\n[Short enough to read whole (${chars} chars): no reader was used.]${skippedNote}`, shown: { readers: { question, whole: true, sources: items.length, chars, skipped: not } } };
   }
   const o = await ctx.readMaterial(items, question, ctx.callId);
-  o.unread.push(...skipped);
+  o.unread = await unreadLines([...o.unread, ...skipped], ctx.spillDir);
   const shown = { readers: { question, sources: items.length, chars: o.chars, parts: o.parts, models: o.models, usage: o.usage, cost: o.cost, plan: o.plan, working: o.working, unread: o.unread, compiled: o.compiled, checked: o.checked } };
   if (!o.text) {
     // No reader read anything: the material as a long output, saved whole.

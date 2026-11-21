@@ -2,8 +2,8 @@
 // session's provider and family that holds the text, never a dearer one.
 import { expect, test } from "bun:test";
 import type { ModelInfo } from "../providers/types.ts";
-import { checkAnswer, checkedNote, chunkChars, chunkMaterial, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices, READERS_AT_ONCE } from "./reader.ts";
-import { coverageNote, readMaterial, type ReaderHost } from "./readers.ts";
+import { checkAnswer, checkedNote, chunkChars, chunkMaterial, materialCap, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices, READERS_AT_ONCE } from "./reader.ts";
+import { coverageNote, readBudget, readMaterial, type ReaderHost } from "./readers.ts";
 
 const m = (id: string, input: number | undefined, o: Partial<ModelInfo> = {}): ModelInfo => ({
   id: `p:${id}`, provider: "p", model: id, name: id, family: "claude", context: 200_000, output: 8_000, efforts: [],
@@ -299,4 +299,13 @@ test("readers at once: the default unless the override is a positive whole numbe
   for (const bad of [undefined, "Infinity", "2.5", "0", "-3", "many", "1e400"]) expect(`${bad}: ${await most(bad)}`).toBe(`${bad}: ${READERS_AT_ONCE}`);
   expect(await most("3")).toBe(3);
   expect(await most("1")).toBe(1);
+});
+
+test("the budget a job gathers to is the cap of the reader that reads it, not the largest cap any choice has", async () => {
+  // The owner's reader is 5 times cheaper than the session's model; a listed model is 100 times cheaper.
+  const own = m("own", 1), cheap = m("cheap", 0.05);
+  const h = { models: async () => [big, own, cheap], current: async () => big, env: { KEEL_READER_MODEL: "p:own" } };
+  expect(readerChoices([big, own, cheap], big, 50_000, h.env).map((x) => x.id)).toEqual(["p:own", "p:cheap", "p:big"]);
+  expect(await readBudget(h)).toBe(materialCap(big, own));
+  expect(await readBudget(h)).toBe(200_000 * 5 * 2.5);
 });

@@ -59,13 +59,19 @@ export type ReadOutcome = {
 
 const short = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 200);
 
+// Tokens a reader holds to be a choice for `chars` of material: one full part
+// and the room around it.
+const needFor = (chars: number, cur: ModelInfo) => Math.ceil(Math.min(chars, READ_CHUNK_CHARS) / bytesPerToken(cur.id)) + 10_000;
+
 // The most characters one job of this host reads, known before any material
-// is: the largest cap among its reader choices (a job's own cap is that of the
-// choice that reads it). The readers tool gathers no more than this.
+// is: the cap of the reader that reads material longer than one part, the
+// same one the job then picks. The readers tool gathers no more than this.
+// (Material under one part may go to a smaller reader with a cap of its own,
+// which the job applies and names.)
 export async function readBudget(host: Pick<ReaderHost, "models" | "current" | "listPrice" | "env">): Promise<number> {
   const [models, cur] = await Promise.all([host.models(), host.current()]);
   const list = (m: ModelInfo) => host.listPrice?.(m);
-  return Math.max(...readerChoices(models, cur, 0, host.env ?? process.env, list, smallModels()).map((r) => materialCap(cur, r, list)));
+  return materialCap(cur, readerChoices(models, cur, needFor(READ_CHUNK_CHARS, cur), host.env ?? process.env, list, smallModels())[0]!, list);
 }
 
 export async function readMaterial(host: ReaderHost, items: Material[], question: string, signal: AbortSignal): Promise<ReadOutcome> {
@@ -74,8 +80,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const list = (m: ModelInfo) => host.listPrice?.(m);
   const total = items.reduce((n, m) => n + m.text.length, 0);
   // Choices that hold one full part; the first one sizes the parts.
-  const need = Math.ceil(Math.min(total, READ_CHUNK_CHARS) / bytesPerToken(cur.id)) + 10_000;
-  const choices = readerChoices(models, cur, need, env, list, smallModels());
+  const choices = readerChoices(models, cur, needFor(total, cur), env, list, smallModels());
   const first = choices[0]!;
   const unread: string[] = [];
   // Past the cap the material is not read: named, so the working model knows.
