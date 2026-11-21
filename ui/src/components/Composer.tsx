@@ -969,6 +969,8 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
       const held = cards.find((card) => card.contains(document.activeElement));
       if (!held && el.contains(document.activeElement)) return; // in use on another card: nothing moves under the hand
       requestAnimationFrame(() => requestAnimationFrame(() => {
+        // The pane may be gone by now (the owner went on as the card came): nothing is left to place.
+        if (!el.isConnected || !ref.current) return;
         if (keepFocus()) return mark();
         // A new request for the owner: the region goes to the oldest one waiting. Any other
         // new card is shown, unless a request waits: then the region stays on that.
