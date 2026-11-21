@@ -253,6 +253,10 @@ export class Engine {
   private sending = new Set<string>();
   // Who asked a running turn to stop (the owner, the parent agent), kept on its turn_end.
   private stoppedBy = new Map<string, string>();
+  // Sessions whose accepted prompt is still being set up for its turn, and
+  // those of them a stop has already closed (interrupt).
+  private setting = new Set<string>();
+  private stoppedEarly = new Set<string>();
   // What a finished call left for the transcript (ToolOutput.shown), until its step is stored.
   private shown = new Map<string, unknown>();
   // Turns being parked for a daemon stop: their end reason is "restart".
@@ -394,6 +398,22 @@ export class Engine {
     if (!r) return;
     if (by) this.stoppedBy.set(id, by);
     this.hold(id);
+    // Stopped while its provider and system prompt are still set up: the turn
+    // is closed as stopped here, at once and in one write, not when the setup
+    // settles. A daemon killed in between then finds a stopped turn with its
+    // Continue, not a prompt it still owes a turn (closeCut).
+    if (this.setting.has(id) && !this.stoppedEarly.has(id)) {
+      const session = this.store.session(id);
+      if (session) {
+        this.stoppedEarly.add(id);
+        this.stoppedBy.delete(id);
+        const closing = this.store.atomic(id, () => [
+          this.store.append(id, "turn_start", { model: session.model }),
+          this.store.append(id, "turn_end", { reason: "interrupted", usage: emptyUsage(), ms: 0, ...(by ? { stopped_by: by } : {}) }),
+        ]);
+        for (const e of closing) this.emitEvent(e);
+      }
+    }
     r.abort.abort();
     await r.done;
     for (const q of this.store.queue(id)) if (q.steer) this.store.updateQueueItem(q.id, { steer: false });
@@ -830,7 +850,16 @@ export class Engine {
       const run = h.external?.(session);
       if (run) return this.external(id, session, run, signal);
     }
-    let st = await this.step(session, session.model);
+    this.setting.add(id);
+    const ready = await this.step(session, session.model)
+      .finally(() => this.setting.delete(id))
+      // A setup that fails after the stop has nothing left to say: the turn is closed.
+      .catch((e) => { if (this.stoppedEarly.has(id)) return undefined; throw e; });
+    if (this.stoppedEarly.delete(id) || !ready) {
+      for (const h of allHooks()) await (async () => h.turnEnd?.(session, "interrupted"))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
+      return;
+    }
+    let st = ready;
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);
     const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id),
@@ -1360,14 +1389,26 @@ export class Engine {
   // and its Continue. A session with an owner of its own (an agent's, through
   // the cutTurn hook) may say otherwise.
   async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
+    this.closeCut(openAtBoot);
+    return this.continueCut(waitModel);
+  }
+
+  // The closing half of recover, on its own so a start can run it before
+  // anything of its own is delivered (a monitor's wake, an agent's report):
+  // what the last daemon left open is closed first, and a prompt this start
+  // stores is not mistaken for one the last daemon owed a turn. `openAtBoot`
+  // are the sessions that carried the working mark when the store was opened;
+  // one that no longer does (closed already, or its turn was parked since) or
+  // that runs a turn now is left alone. Safe to call again.
+  closeCut(openAtBoot: string[]) {
     for (const id of openAtBoot) {
       const session = this.store.session(id);
-      if (!session) continue;
+      if (!session || session.phase !== "working" || this.running.has(id)) continue;
       const line = this.lineage(id);
       const lastStart = line.findLastIndex((e) => e.kind === "turn_start");
       const lastEnd = line.findLastIndex((e) => e.kind === "turn_end");
-      // Closed in the write that takes the session off the list of open ones:
-      // a daemon killed here closes it at its next start, once.
+      // Closed in the write that takes the working mark off the session: a
+      // daemon killed here closes it at its next start, once.
       const closing: StoredEvent[] = [];
       this.store.atomic(id, () => {
         if (lastStart > lastEnd) {
@@ -1383,7 +1424,11 @@ export class Engine {
         this.store.bootSettled(id);
       });
       for (const e of closing) this.emitEvent(e);
+      this.emitSession(id);
     }
+  }
+
+  private async continueCut(waitModel: (model: string) => Promise<void>) {
     // Each session on its own: a provider still starting holds only its sessions.
     // The continued turns start a few at a time, the newest first, spaced out,
     // so a restart with many open sessions does not send every replayed context
@@ -1499,9 +1544,14 @@ export class Engine {
 
 
 // What follows a session's last ended turn when a prompt was accepted and the
-// daemon went down before its turn started: the prompt, and no turn. A turn
-// that failed while it was set up said so (an error) and is not owed.
-const owedTurn = (tail: StoredEvent[]) => tail.some((e) => e.kind === "user") && !tail.some((e) => e.kind === "error" || e.kind === "turn_start");
+// daemon went down before its turn started: the prompt, and no turn after it.
+// A turn that failed while it was set up said so (an error) and is not owed;
+// only what follows the last prompt counts, so a prompt sent after such a
+// failure is.
+function owedTurn(tail: StoredEvent[]): boolean {
+  const prompt = tail.findLastIndex((e) => e.kind === "user");
+  return prompt >= 0 && !tail.slice(prompt).some((e) => e.kind === "error" || e.kind === "turn_start");
+}
 
 // A session continued this many times in a row, each continuation cut by the
 // next restart before it finished a step, is not continued again: something

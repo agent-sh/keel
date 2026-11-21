@@ -3,6 +3,7 @@
 // between two writes), so it is driven here on the real engine and database
 // with the scripted stand-in as the model.
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { promptsOf, QUEUED, rig, SENT, untilStopped } from "./delivery.fixture.ts";
@@ -210,3 +211,112 @@ test("an accepted prompt that cannot be continued is held with Continue", async 
   for (let i = 0; i < STALLED_MAX; i++) await killedDaemon(dying, "recover", "setup");
   await held(dying, b.session, noRecover, `${STALLED_MAX} times in a row`);
 }, 60_000);
+
+// Only the working mark makes a session a candidate, and the mark is cleared
+// by whichever build starts next. A prompt that was stored and never run on
+// old data (an import, a stop before the turn, a build without this
+// recovery) is not run by a later start: that would be a model call nobody
+// asked for.
+test("a stored prompt in a session that is not marked as working is never run at a start", async () => {
+  const dir = scratch("idle-prompt");
+  const a = rig(dir);
+  const s = a.session();
+  a.store.append(s.id, "user", { text: "stored long ago, never run" });
+  const { store, engine, requests } = rig(dir);
+  expect(store.bootWorking).toEqual([]);
+  await engine.recover(store.bootWorking, noRecover);
+  await engine.idle(s.id);
+  expect(requests).toEqual([]);
+  expect(store.events(s.id).map((e) => e.kind)).toEqual(["user"]);
+});
+
+// A rollback: this build opens the store and dies before it recovers
+// anything, the build before it starts (its start sets every working session
+// idle and knows nothing of unstarted prompts), then this build starts again.
+// Nothing is left over from the first start for the last one to act on.
+for (const [scenario, point, shape] of [["send", "setup", "a prompt whose turn never started"], ["steer", "claimed", "a turn left open"]] as const) {
+  test(`after a rollback to a build that only resets the marks, a later start runs nothing for ${shape}`, async () => {
+    const dir = scratch(`rollback-${scenario}`);
+    const { session: sid } = await killedDaemon(dir, scenario, point);
+    await killedDaemon(dir, "recover", "boot");
+    const old = new Database(join(dir, "keel.db"));
+    old.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
+    old.close();
+
+    const { store, engine, requests } = rig(dir);
+    const stored = store.events(sid).length;
+    expect(store.bootWorking).toEqual([]);
+    await engine.recover(store.bootWorking, noRecover);
+    await engine.idle(sid);
+    expect(requests).toEqual([]);
+    expect(store.events(sid).length).toBe(stored);
+    expect(store.session(sid)!.phase).toBe("idle");
+  }, 30_000);
+}
+
+// An earlier prompt whose setup failed (it said so, and is not owed a turn)
+// does not hide the prompt sent after it.
+test("a prompt accepted after a failed setup is still run when the daemon dies in its setup", async () => {
+  const dir = scratch("after-error");
+  const a = rig(dir);
+  const s = a.session();
+  a.store.append(s.id, "user", { text: "first try" });
+  a.store.append(s.id, "error", { message: "the provider is down" });
+  a.store.append(s.id, "user", { text: "second try" });
+  a.store.updateSession(s.id, { phase: "working" });
+
+  const { store, engine, requests } = rig(dir);
+  await engine.recover(store.bootWorking, noRecover);
+  await engine.idle(s.id);
+  expect(requests.map((r) => r.filter((t) => t === "second try").length)).toEqual([1]);
+  expect(engine.lineage(s.id).at(-1)).toMatchObject({ kind: "turn_end", data: { reason: "end_turn" } });
+});
+
+// A session that runs a turn of this start (a monitor's wake delivered while
+// the daemon starts) is not a leftover of the last daemon, also when it was
+// listed at the start.
+test("recovery leaves a session alone whose turn of this start is still in setup", async () => {
+  let ready!: () => void;
+  const gate = new Promise<void>((r) => (ready = r));
+  const { store, engine, requests, session } = rig(scratch("running-at-recover"), { setup: () => gate });
+  const s = session();
+  engine.send(s.id, "delivered while the daemon starts");
+  await engine.recover([s.id], noRecover);
+  expect(store.events(s.id).map((e) => e.kind)).toEqual(["user"]);
+  ready();
+  await engine.idle(s.id);
+  expect(store.events(s.id).map((e) => e.kind)).toEqual(["user", "turn_start", "assistant", "turn_end"]);
+  expect(requests.length).toBe(1);
+});
+
+// Stop while the turn is still being set up closes the turn at once, as
+// stopped: the stop is stored before the setup settles, so a daemon killed in
+// between does not run the prompt at its next start. Continue runs it.
+test("a stop during setup closes the turn at once", async () => {
+  // Closed when Stop is pressed, and nothing is asked of the model.
+  let ready!: () => void;
+  const gate = new Promise<void>((r) => (ready = r));
+  const one = rig(scratch("stop-in-setup"), { setup: () => gate });
+  const s = one.session();
+  one.engine.send(s.id, SENT.text);
+  const stopped = one.engine.interrupt(s.id, "owner");
+  expect(one.store.events(s.id).map((e) => [e.kind, e.data.reason, e.data.stopped_by])).toEqual([["user", undefined, undefined], ["turn_start", undefined, undefined], ["turn_end", "interrupted", "owner"]]);
+  ready();
+  await stopped;
+  expect(one.store.events(s.id).length).toBe(3);
+  expect([one.requests.length, one.store.session(s.id)!.phase, one.engine.isHeld(s.id)]).toEqual([0, "idle", true]);
+});
+
+test("a daemon killed right after a stop during setup does not run the prompt at its next start", async () => {
+  const dir = scratch("stop-in-setup-kill");
+  const { session: sid } = await killedDaemon(dir, "stop", "stopping");
+  const { store, engine, requests } = rig(dir);
+  await engine.recover(store.bootWorking, noRecover);
+  await engine.idle(sid);
+  expect(requests).toEqual([]);
+  expect(engine.lineage(sid).map((e) => [e.kind, e.data.reason])).toEqual([["user", undefined], ["turn_start", undefined], ["turn_end", "interrupted"]]);
+  expect([store.session(sid)!.phase, engine.isHeld(sid)]).toEqual(["idle", true]);
+  engine.resume(sid);
+  await engine.idle(sid);
+  expect(requests.map((r) => r.filter((t) => t === SENT.text).length)).toEqual([1]);
+}, 30_000);

@@ -5,8 +5,9 @@
 //
 // Cases: `dequeue` (the queue's next prompt after a turn), `steer` (a steer
 // joining the running turn), `send-now` (the owner's Send now on a queued row),
-// `send` (a prompt sent to an idle session), `recover` (the next daemon's
-// start on a state folder an earlier case left).
+// `send` (a prompt sent to an idle session), `stop` (that prompt, stopped by
+// the owner while its turn is still being set up), `recover` (the next
+// daemon's start on a state folder an earlier case left).
 // Kill points: `stopping` (Send now has asked the running turn to stop),
 // `claimed` (the row was just removed from the queue), `stored` (its prompt
 // was just written), `delivered` (the engine has finished moving the row and
@@ -38,6 +39,8 @@ const { store, engine, session } = rig(stateDir, {
   setup: async () => {
     await Promise.resolve();
     at("setup");
+    // A setup that does not settle: a provider that is still starting.
+    if (scenario === "stop") await new Promise(() => {});
   },
   // The first turn is held open until the test has queued its prompt.
   request: async (req) => {
@@ -90,6 +93,14 @@ engine.emitQueue = (id) => {
 };
 
 const s = session();
+if (scenario === "stop") {
+  const accepted = engine.send(s.id, SENT.text, { images: SENT.images });
+  say({ session: s.id, prompt: accepted.event!.id });
+  await Bun.sleep(5); // the turn is in setup
+  armed = true;
+  void engine.interrupt(s.id, "owner");
+  survived();
+}
 if (scenario === "send") {
   armed = true;
   const accepted = engine.send(s.id, SENT.text, { images: SENT.images });

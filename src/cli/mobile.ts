@@ -13,7 +13,7 @@ import { defaultStateDir } from "../core/paths.ts";
 
 const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
 // The daemon may be running: open the database without the daemon's start-up
-// work (which resets the phase of working sessions).
+// work (its schema changes, its list of the sessions left working).
 function open(dir?: string): MobileStore {
   const path = join(stateDirOf(dir), "keel.db");
   if (!existsSync(path)) return new MobileStore(new Store(stateDirOf(dir)));

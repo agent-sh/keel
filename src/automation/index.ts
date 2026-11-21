@@ -183,6 +183,10 @@ function init(deps: Deps) {
   if (!g.__keelAutomationRecovered && !runMode.client) {
     g.__keelAutomationRecovered = true;
     try {
+      // Before anything of this start is delivered to a session: the turn the
+      // last daemon left open there is closed (after the gate's hooks, which
+      // say what became of a cut call, were registered above this module).
+      deps.engine.closeCut(deps.store.bootWorking);
       waits.recover();
       loops.recover();
       agents.recover();

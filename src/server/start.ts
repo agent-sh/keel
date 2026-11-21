@@ -61,6 +61,9 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   );
   const url = server.url.href.replace(/\/+$/, "");
   recordUrl(stateDir, url, !!opts.client);
+  // A client's daemon recovers nothing; the sessions the last daemon left
+  // working are idle again, as no turn runs in them.
+  if (opts.client) for (const id of store.bootWorking) store.bootSettled(id);
   if (!opts.client) {
     providers.models().catch((e) => errors.capture("provider", e, { at: "startup listing" }));
     // Turns the last daemon left open or parked continue; a model whose provider is

@@ -150,6 +150,7 @@ test("a restart cut: questions expire, approval outcomes are kept, only a call t
   const store = new Store(dir);
   const bus = new Bus();
   const s = store.createSession({ model: "x:y", workspace: dir });
+  store.updateSession(s.id, { phase: "working" }); // the turn was running when the daemon went down
   store.append(s.id, "user", { text: "go" });
   store.append(s.id, "turn_start", {});
   const bash = (id: string) => ({ type: "tool_use", id, name: "Bash", input: { command: `touch ${id}` } });

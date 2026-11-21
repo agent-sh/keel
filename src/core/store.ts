@@ -48,9 +48,6 @@ CREATE TABLE IF NOT EXISTS queue (
   pos REAL NOT NULL,
   created INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS boot_open (
-  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
-);
 `;
 
 type EventRow = Omit<StoredEvent, "data"> & { data: string };
@@ -163,20 +160,19 @@ export class Store {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS errors_fp ON errors(fingerprint)");
-    // Sessions left "working" by a crash or restart are idle now: no turn runs.
-    // The engine closes and resumes their cut turns (Engine.recover). Each
-    // stays listed until the engine has closed its turn (bootSettled), so a
-    // daemon killed during its own start leaves them for the next one.
-    this.db.transaction(() => {
-      this.db.run("INSERT OR IGNORE INTO boot_open (session_id) SELECT id FROM sessions WHERE phase = 'working'");
-      this.db.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
-    })();
-    this.bootWorking = this.db.query<{ id: string }, []>("SELECT session_id AS id FROM boot_open").all().map((r) => r.id);
+    // Sessions left "working" by a crash or restart: no turn runs in them now.
+    // The mark itself is the list. It stays until the engine has closed the
+    // session's cut turn (Engine.closeCut, then bootSettled), so a daemon
+    // killed during its own start leaves it for the next one; and whichever
+    // build starts next clears it, so a mark is never older than one start.
+    this.bootWorking = this.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE phase = 'working'").all().map((r) => r.id);
   }
 
-  // The engine has closed what the last daemon left open in this session.
-  bootSettled(session_id: string) {
-    this.db.query("DELETE FROM boot_open WHERE session_id = ?").run(session_id);
+  // What the last daemon left open in this session is closed (or is not
+  // looked at: a client's daemon recovers nothing): it is idle. False when it
+  // no longer carried the mark.
+  bootSettled(session_id: string): boolean {
+    return this.db.query("UPDATE sessions SET phase = 'idle', rev = rev + 1 WHERE id = ? AND phase = 'working'").run(session_id).changes > 0;
   }
 
   // A feature module's tables: run once per start, statements must be idempotent
