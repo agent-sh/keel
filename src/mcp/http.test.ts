@@ -1,5 +1,6 @@
-// The legacy Streamable HTTP paths, against a local stand-in server over real
-// HTTP: what the client and the manager do when the server ends the session.
+// What no e2e can time, against local stand-in servers over real HTTP and
+// stdio: the standalone stream's reconnects, and what a request leaves
+// behind and tells the server when it times out or is cancelled.
 import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -154,5 +155,24 @@ test("a request that times out aborts its POST and leaves nothing waiting", asyn
   } finally {
     c.close();
     s.stop();
+  }
+});
+
+// On stdio there is no response to close: a modern server is told too (2026-07-28 Cancellation).
+test("a modern stdio server is told when a request times out or is cancelled", async () => {
+  const c = await McpClient.connect({ kind: "stdio", command: "bun", args: [join(import.meta.dir, "../../test/e2e/fixtures/modern-stdio-mcp.ts")], env: process.env as Record<string, string> }, 5000);
+  try {
+    expect(c.era).toBe("modern");
+    await expect(c.callTool("hang", {}, undefined, 150)).rejects.toThrow("tools/call timed out");
+    const caller = new AbortController();
+    const call = c.callTool("hang", {}, caller.signal);
+    caller.abort();
+    await expect(call).rejects.toThrow("cancelled");
+    const told = JSON.parse(((await c.callTool("cancelled", {})).content![0] as { text: string }).text) as { requestId: number; reason: string }[];
+    // The probe (request 1) is not among them: only the two requests given up.
+    expect(told).toEqual([{ requestId: 2, reason: "timed out" }, { requestId: 3, reason: "cancelled" }]);
+    expect(c.inflight).toBe(0);
+  } finally {
+    c.close();
   }
 });

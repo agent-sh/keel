@@ -438,14 +438,16 @@ export class McpClient {
         this.settled();
       };
       const fail = done(reject);
-      // Stop waiting. A legacy server is told (lifecycle: Timeouts, and
-      // Cancellation; initialize is never cancelled, and the probe runs
-      // before a session exists). For a modern one the closed response is
-      // the cancellation.
+      // Stop waiting, and tell the server. Over stdio there is no response to
+      // close, so the notification is the only cancellation, in both eras; a
+      // legacy HTTP server is sent it too (lifecycle: Timeouts). For a modern
+      // HTTP server the closed response is the cancellation. initialize is
+      // never cancelled, and the probe runs before the era is known.
       const giveUp = (why: string, reason: string) => {
         if (!this.pending.has(id)) return;
         fail(new Error(why));
-        if (this.era === "legacy" && !opt.modern && method !== "initialize" && !this.closed) this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason } });
+        const told = this.t.kind === "stdio" || this.era === "legacy";
+        if (told && !opt.modern && method !== "initialize" && !this.closed) this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason } });
       };
       const onAbort = () => giveUp("cancelled", "cancelled");
       this.pending.set(id, { resolve: done(resolve), reject: fail });
