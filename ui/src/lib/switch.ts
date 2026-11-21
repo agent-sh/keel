@@ -40,7 +40,8 @@ export async function switchSession(id: string, change: { model?: string; effort
     const alt = change.model && !running && (over || warning?.cause === "model") ? "Compact first" : undefined;
     if (alt) parts.push(`Compact first: ${curName} summarizes the conversation${warning?.cause === "model" ? " from its warm cache" : ""}, and ${name} starts from the summary.`);
     const body = parts.join("\n\n");
-    const pick = alt ? await choose({ title, body, action, alt }) : (await confirmAction({ title, body, action })) && "ok";
+    // Careful: the dialog is here to stop an unmeant re-read of the whole context, so a key typed ahead must not answer it.
+    const pick = alt ? await choose({ title, body, action, alt, careful: true }) : (await confirmAction({ title, body, action, careful: true })) && "ok";
     if (!pick) return false;
     if (pick === "alt") await api(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ for_model: change.model }) });
   }
