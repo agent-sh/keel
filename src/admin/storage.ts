@@ -5,7 +5,7 @@
 // the durable state that are checked when written and can be restored.
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { closeSync, copyFileSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -326,7 +326,7 @@ export class Storage {
       if (check.sessions !== counts.sessions || check.events < counts.events) throw new Error(`the backup holds ${check.sessions} sessions and ${check.events} events, the store ${counts.sessions} and ${counts.events}`);
       const manifest = {
         created_ms: Date.now(), reason, sessions: check.sessions, events: check.events,
-        files: files.map((f) => ({ name: f, bytes: statSync(join(tmp, f)).size, sha256: createHash("sha256").update(readFileSync(join(tmp, f))).digest("hex") })),
+        files: files.map((f) => ({ name: f, bytes: statSync(join(tmp, f)).size, sha256: hashFile(join(tmp, f)) })),
       };
       writeFileSync(join(tmp, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
       renameSync(tmp, final);
@@ -389,6 +389,21 @@ const stampMs = (name: string) => {
 export const shadowDir = (stateDir: string, workspace: string) =>
   join(stateDir, "checkpoints", createHash("sha256").update(workspace).digest("hex").slice(0, 16) + ".git");
 
+// A file's SHA-256, read a megabyte at a time into one buffer: the database
+// of a backup can be gigabytes, and so can an upload.
+export const HASH_CHUNK = 1024 * 1024;
+export function hashFile(path: string, read: typeof readSync = readSync): string {
+  const hash = createHash("sha256");
+  const buf = Buffer.allocUnsafe(HASH_CHUNK);
+  const fd = openSync(path, "r");
+  try {
+    for (let n = read(fd, buf, 0, buf.length, null); n > 0; n = read(fd, buf, 0, buf.length, null)) hash.update(buf.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
 // Opens a backup's database read-only and checks it: SQLite's integrity check,
 // the files against the manifest, and what it holds.
 export function verify(dir: string): { ok: true; sessions: number; events: number } | { ok: false; why: string } {
@@ -399,7 +414,7 @@ export function verify(dir: string): { ok: true; sessions: number; events: numbe
     const m = JSON.parse(readFileSync(mf, "utf8"));
     for (const f of m.files as { name: string; sha256: string }[]) {
       if (!existsSync(join(dir, f.name))) return { ok: false, why: `${f.name} is missing` };
-      const sha = createHash("sha256").update(readFileSync(join(dir, f.name))).digest("hex");
+      const sha = hashFile(join(dir, f.name));
       if (sha !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
       // An attachment's folder is named by its content's hash.
       const a = /^attachments\/([0-9a-f]{64})\//.exec(f.name);

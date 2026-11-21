@@ -5,14 +5,14 @@ import { Database } from "bun:sqlite";
 import { expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/attachments.ts";
 import { mobileCommands } from "../cli/mobile.ts";
-import { restore, Storage, undoCutRestore, verify } from "./storage.ts";
+import { HASH_CHUNK, hashFile, restore, Storage, undoCutRestore, verify } from "./storage.ts";
 
 test("a backup restores into an empty state folder", () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
@@ -69,6 +69,56 @@ test("a backup carries uploaded files and a restore reads as the backup did", ()
 
     writeFileSync(join(b.path, "attachments", ref.id, "note.txt"), "other");
     expect(verify(b.path).ok).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A file of several chunks: the same hash as reading it whole gives, no read
+// larger than a chunk; a backup carries it, and a byte changed at its very end
+// (in the last chunk) fails the check.
+test("a large file is hashed a chunk at a time, and a change at its end is caught", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const bytes = Buffer.alloc(3 * HASH_CHUNK + 4321);
+    for (let i = 0; i + 4 <= bytes.length; i += 4) bytes.writeUInt32LE((i * 2654435761) >>> 0, i);
+    const whole = createHash("sha256").update(bytes).digest("hex");
+    const file = join(root, "big.bin");
+    writeFileSync(file, bytes);
+    const reads: number[] = [];
+    const counted = ((fd: number, buf: Uint8Array, off: number, len: number, pos: null) => { const n = readSync(fd, buf, off, len, pos); reads.push(len); return n; }) as typeof readSync;
+    expect(hashFile(file, counted)).toBe(whole);
+    expect(Math.max(...reads)).toBe(HASH_CHUNK);
+    expect(reads.length).toBe(5); // four chunks and the read that finds the end
+    writeFileSync(join(root, "empty"), "");
+    expect(hashFile(join(root, "empty"))).toBe(createHash("sha256").update("").digest("hex"));
+
+    const src = new Store(join(root, "src"));
+    setAttachmentsRoot(src.stateDir);
+    const ref = saveAttachment(bytes, "big.bin", "application/octet-stream");
+    expect(ref.id).toBe(whole);
+    const s = src.createSession({ model: "p:m", workspace: root });
+    src.append(s.id, "user", { text: "read it", attachments: [ref] });
+    const b = new Storage(src, {} as any, new Bus(), {} as any).backup("test");
+    const m = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8")) as { files: { name: string; sha256: string; bytes: number }[] };
+    expect(m.files.find((f) => f.name === `attachments/${whole}/big.bin`)).toEqual({ name: `attachments/${whole}/big.bin`, bytes: bytes.length, sha256: whole });
+    expect(m.files.find((f) => f.name === "keel.db")!.sha256).toBe(createHash("sha256").update(readFileSync(join(b.path, "keel.db"))).digest("hex"));
+    expect(verify(b.path).ok).toBe(true);
+    src.db.close();
+    const dst = join(root, "dst");
+    expect(restore(dst, b.path).ok).toBe(true);
+    setAttachmentsRoot(dst);
+    expect(hashFile(attachmentPath(ref.id)!)).toBe(whole);
+
+    // The last byte of the copy changes (its own file: the backup's is a hard link of the store's).
+    const kept = join(b.path, "attachments", whole, "big.bin");
+    const changed = Buffer.from(bytes);
+    changed[changed.length - 1]! ^= 1;
+    rmSync(kept);
+    writeFileSync(kept, changed);
+    const bad = verify(b.path);
+    expect(bad).toEqual({ ok: false, why: `attachments/${whole}/big.bin changed since the backup was made` });
+    expect(() => restore(join(root, "dst2"), b.path)).toThrow("changed since the backup was made");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
