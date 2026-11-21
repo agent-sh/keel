@@ -25,27 +25,49 @@ const daemon = read(import.meta.dir, /\.ts$/);
 // ---------- Reading the source ----------
 
 // The text with its comments blanked (line and block, in CSS, TypeScript and
-// JSX), every other character and every line break in its place. Strings and
-// templates are kept: a `//` inside one is not a comment.
+// JSX), every other character and every line break in its place. Strings,
+// templates and regular expressions are kept: a `//` inside one is not a
+// comment. A quote opens a string only when it closes on its line, so an
+// apostrophe in JSX text does not swallow what follows it.
 function code(text: string, css = false): string {
   const out = text.split("");
-  let i = 0, quote = "";
+  let i = 0;
   const blank = (to: number) => { for (; i < to; i++) if (out[i] !== "\n") out[i] = " "; };
+  // The end of a quoted run that starts at `from` (its quote), or -1 when it does not close.
+  const closes = (from: number, quote: string, lines: boolean) => {
+    for (let j = from + 1; j < text.length; j++) {
+      if (text[j] === "\\") j++;
+      else if (text[j] === quote) return j;
+      else if (text[j] === "\n" && !lines) return -1;
+    }
+    return -1;
+  };
+  // A slash opens a regular expression where a value may begin; it ends on its line.
+  const regex = (from: number) => {
+    const before = text.slice(0, from).trimEnd();
+    if (!/[(,=:[!&|?{;]$|\breturn$|^$/.test(before)) return -1;
+    let set = false;
+    for (let j = from + 1; j < text.length && text[j] !== "\n"; j++) {
+      if (text[j] === "\\") j++;
+      else if (text[j] === "[") set = true;
+      else if (text[j] === "]") set = false;
+      else if (text[j] === "/" && !set) return j;
+    }
+    return -1;
+  };
   while (i < text.length) {
     const c = text[i]!, two = text.slice(i, i + 2);
-    if (quote) {
-      if (c === "\\") i += 2;
-      else { if (c === quote) quote = ""; i++; }
-    } else if (two === "/*") {
-      const end = text.indexOf("*/", i + 2);
+    let end = -1;
+    if (two === "/*") {
+      end = text.indexOf("*/", i + 2);
       blank(end < 0 ? text.length : end + 2);
     } else if (!css && two === "//" && text[i - 1] !== ":") {
-      const end = text.indexOf("\n", i);
+      end = text.indexOf("\n", i);
       blank(end < 0 ? text.length : end);
-    } else {
-      if (c === '"' || c === "'" || (!css && c === "`")) quote = c;
-      i++;
-    }
+    } else if ((c === '"' || c === "'") && (end = closes(i, c, css)) > 0) i = end + 1;
+    else if (!css && c === "`" && (end = closes(i, c, true)) > 0) i = end + 1;
+    else if (!css && c === "/" && (end = regex(i)) > 0) i = end + 1;
+    else i++;
   }
   return out.join("");
 }
@@ -92,8 +114,27 @@ function strings(text: string): { value: string; line: number }[] {
   }
   return out;
 }
-// Every class named in a module: the words of its string literals.
-const classes = (text: string) => strings(text).flatMap((s) => s.value.split(/\s+/).filter(Boolean).map((c) => ({ c, line: s.line })));
+// A string is a class list when every word of it could be a class: prose (a
+// capital, a full stop, a comma) is not, so a sentence that names a utility is
+// not a use of it.
+const classList = (value: string) => { const w = value.split(/\s+/).filter(Boolean); return w.length > 0 && w.every((c) => /^[a-z0-9@!*&[-](\S*[^\s.,;?])?$/.test(c)) ? w : []; };
+// Every class named in a module: the words of its class lists.
+const classes = (text: string) => strings(text).flatMap((s) => classList(s.value).map((c) => ({ c, line: s.line })));
+
+// The opening tag around a position, wherever its lines break: where a
+// component says what an element is and which classes it carries.
+function tag(src: string, pos: number): string {
+  let a = pos;
+  do { a = src.lastIndexOf("<", a - 1); } while (a >= 0 && !(/^<[A-Za-z]/.test(src.slice(a, a + 2)) && src.slice(a, pos).split("{").length === src.slice(a, pos).split("}").length));
+  if (a < 0) return "";
+  let depth = 0, b = a;
+  for (; b < src.length; b++) {
+    if (src[b] === "{") depth++;
+    else if (src[b] === "}") depth--;
+    else if (src[b] === ">" && !depth && src[b - 1] !== "=") break;
+  }
+  return src.slice(a, b + 1);
+}
 
 // The calls of a method in a module, with their whole argument text wherever it breaks.
 function calls(text: string, name: RegExp): { args: string; line: number; before: string }[] {
@@ -137,7 +178,7 @@ function pageSizes(list: Src[]): string[] {
       else if (/^text-\[(length:)?[\d.]/.test(c.replace(/^([a-z-]+:)*/, "")) || /\[font-size:(?!var\(--text-[a-z]+\)\])/.test(c) || /\[font:/.test(c)) out.push(at(s, line, c));
     }
     const src = code(s.text);
-    for (const m of src.matchAll(/\bfontSize\s*:\s*([^,}\n]+)/g)) {
+    for (const m of src.matchAll(/\bfontSize\s*[:=]\s*([^,;}\n]+)/g)) {
       const value = m[1]!.trim();
       if (!/^["'`]var\(--text-[a-z]+\)["'`]$/.test(value) && s.file !== "components/Settings.tsx") out.push(at(s, lineOf(src, m.index!), `fontSize: ${value}`));
     }
@@ -171,11 +212,13 @@ function segmented(pageList: Src[], sheetList: Src[]): string[] {
     if (s.file === "components/Seg.tsx") continue;
     const src = code(s.text);
     for (const { c, line } of classes(s.text)) if (c === "k-seg") out.push(at(s, line, "k-seg"));
-    for (const m of src.matchAll(/role=\{?["'](tablist|tab|radio)["']\}?|<Tabs\.(List|Tab)\b/g)) out.push(at(s, lineOf(src, m.index!), m[0]));
+    // An attribute of an element (not a selector in a string), written out or by an expression.
+    // (A question card's options are its answer: one or several of a list, by the question.)
+    if (s.file !== "components/ToolCall.tsx") for (const m of src.matchAll(/(?<![[\w-])role=(["'](tablist|tab|radio)["']|\{[^}]*["'](tablist|tab|radio)["'][^}]*\})|<Tabs\.(List|Tab)\b/g)) out.push(at(s, lineOf(src, m.index!), m[0].slice(0, 40)));
   }
   for (const s of sheetList) for (const r of rules(s.text)) {
-    if (/^\.k-seg$|\.k-tabs\b/.test(r.selector) && s.file !== "styles.css") out.push(at(s, r.line, r.selector));
-    if (/\.k-seg(\[[^\]]*\])? > (\*|:)/.test(r.selector)) out.push(at(s, r.line, r.selector));
+    if (/\.k-tabs\b/.test(r.selector) || (/\.k-seg\b/.test(r.selector) && s.file !== "styles.css" && !/\.k-seg\.k-[\w-]+ > button$/.test(r.selector))) out.push(at(s, r.line, r.selector));
+    for (const part of r.selector.split(",")) if (/\.k-seg(\.[\w-]+)?(\[[^\]]*\])? > (?!button\b)/.test(part)) out.push(at(s, r.line, r.selector));
   }
   return out;
 }
@@ -197,9 +240,11 @@ function empties(pageList: Src[], sheetList: Src[]): string[] {
   const out: string[] = [];
   for (const s of pageList) {
     if (s.file === "components/Chart.tsx" || s.file === "components/Transcript.tsx") continue;
-    for (const { value, line } of strings(s.text)) {
-      const c = new Set(value.split(/\s+/));
-      if (c.has("text-center") && (c.has("text-ui") || c.has("text-caption")) && (c.has("text-faint") || c.has("text-muted")) && !c.has("k-empty")) out.push(at(s, line, value.slice(0, 60)));
+    // One class list, or the lists one cn() joins.
+    const lists = [...strings(s.text).map((x) => ({ words: classList(x.value), line: x.line })), ...calls(s.text, /\bcn/).map((c) => ({ words: strings(c.args).flatMap((x) => classList(x.value)), line: c.line }))];
+    for (const { words, line } of lists) {
+      const c = new Set(words);
+      if (c.has("text-center") && (c.has("text-ui") || c.has("text-caption") || c.has("text-micro")) && (c.has("text-faint") || c.has("text-muted")) && !c.has("k-empty")) out.push(at(s, line, words.join(" ").slice(0, 60)));
     }
   }
   for (const s of sheetList) for (const r of rules(s.text)) if (/\.k-(blank|picker-empty|ledger-empty)\b/.test(r.selector)) out.push(at(s, r.line, r.selector));
@@ -215,7 +260,7 @@ function pageTimes(list: Src[]): string[] {
     if (s.file === "lib/utils.ts") continue;
     for (const c of calls(s.text, /\.toLocaleTimeString/)) out.push(at(s, c.line, "toLocaleTimeString"));
     for (const c of calls(s.text, /\.toLocaleString/)) if (/\b(hour|timeStyle)\b/.test(c.args) || (!c.args.trim() && /Date\([^()]*\)\s*$/.test(c.before))) out.push(at(s, c.line, "toLocaleString with a time"));
-    for (const c of calls(s.text, /Intl\.DateTimeFormat/)) out.push(at(s, c.line, "Intl.DateTimeFormat"));
+    for (const c of calls(s.text, /Intl\.DateTimeFormat/)) if (/\b(hour|minute|second|timeStyle)\b/.test(c.args)) out.push(at(s, c.line, "Intl.DateTimeFormat with a time"));
   }
   return out;
 }
@@ -230,20 +275,46 @@ function daemonTimes(list: Src[]): string[] {
 }
 
 // A stylesheet names a part by its own class. Own classes begin with k-, or
-// are one of the few named here; any other class in a selector is a utility a
-// component happens to carry (or would collide with one). It never reaches an
-// element by its test id or by the words of its title or label.
+// are one of the few named here. Any other class that a component carries is
+// a utility (or would be taken for one), and a selector may not lean on it; a
+// class no component writes belongs to a library's markup and may be styled.
+// A selector never reaches an element by its test id or by the words of its
+// title or label.
 const OWN = /^(k-[\w-]+|prose-keel|code-(block|head|lang|copy)|th-[a-z-]+|flash|row-cv|dark|theme-switch|math|sr-only|list-none|text-display|text-title|font-mono|animate-pulse-dot)$/;
-function selectors(list: Src[]): string[] {
+function selectors(list: Src[], pageList: Src[] = []): string[] {
   const out: string[] = [];
+  const carried = new Set(pageList.flatMap((s) => classes(s.text).map((x) => x.c.split(":").at(-1)!)));
   for (const s of list) for (const r of rules(s.text)) {
     if (r.selector.startsWith("@") || r.within.some((w) => w.startsWith("@keyframes"))) continue;
     for (const m of r.selector.matchAll(/\[(data-testid|title|aria-label)[^\]]*\]/g)) out.push(at(s, r.line, `${m[0]} in ${r.selector}`));
     for (const m of r.selector.matchAll(/(svg)?\.((?:\\.|[\w-])+)/g)) {
       const name = m[2]!.replace(/\\/g, "");
       // An icon in a state color keeps the fill: the one rule on a utility.
-      if (!OWN.test(name) && !(m[1] && /^text-[a-z-]+$/.test(name))) out.push(at(s, r.line, `.${name} in ${r.selector}`));
+      if (OWN.test(name) || (m[1] && /^text-[a-z-]+$/.test(name)) || (pageList.length && !carried.has(name))) continue;
+      out.push(at(s, r.line, `.${name} in ${r.selector}: name the part k-${name.replace(/[^\w-]/g, "")} (a bare class is a utility's name, or would be taken for one)`));
     }
+  }
+  return out;
+}
+
+// A section's label is k-label, the picked row of a list is k-picked and a
+// switch is k-switch: none is drawn out again. (The rail's own rows and the
+// branch tree mark the current one their own way.)
+function shared(list: Src[]): string[] {
+  const out: string[] = [];
+  const rail = new Set(["components/Sidebar.tsx", "components/SidebarProjects.tsx", "components/Bridge.tsx", "components/BranchTree.tsx"]);
+  for (const s of list) {
+    const src = code(s.text);
+    for (const { value, line } of strings(s.text)) {
+      const c = new Set(classList(value));
+      const quiet = c.has("text-faint") || c.has("text-muted"), small = c.has("text-micro") || c.has("text-caption");
+      const chip = [...c].some((x) => /^(bg-|rounded)/.test(x));
+      if (quiet && small && !chip && !c.has("k-label") && (c.has("uppercase") || c.has("font-medium") || c.has("font-semibold"))) out.push(at(s, line, `a label written out: ${value.slice(0, 50)}`));
+      if (c.has("before:bg-accent") && [...c].some((x) => x.startsWith("before:w-"))) out.push(at(s, line, "a picked row's bar drawn by hand"));
+    }
+    // (A button that reads as a chip and says its state in words is pressed, not switched: it carries no thumb.)
+    for (const m of src.matchAll(/(?<![[\w-])role=["']switch["']|<Switch\.Root\b/g)) { const t = tag(src, m.index! + 1); if (!/\bk-switch\b/.test(t) && !/data-testid="start-in-worktree"/.test(t)) out.push(at(s, lineOf(src, m.index!), "a switch without k-switch")); }
+    if (!rail.has(s.file)) for (const m of src.matchAll(/(?<![[\w-])aria-current=/g)) if (!/\bk-picked\b/.test(tag(src, m.index!))) out.push(at(s, lineOf(src, m.index!), "a current row without k-picked"));
   }
   return out;
 }
@@ -266,7 +337,8 @@ test("every time is on the 24-hour clock", () => {
   expect(pageTimes(page)).toEqual([]);
   expect(daemonTimes(daemon)).toEqual([]);
 });
-test("the look is set by components and tokens, not by test ids or utility names", () => expect(selectors(sheets)).toEqual([]));
+test("the look is set by components and tokens, not by test ids or utility names", () => expect(selectors(sheets, page)).toEqual([]));
+test("a label, a picked row and a switch are their shared class", () => expect(shared(page)).toEqual([]));
 
 // ---------- The checks themselves ----------
 
@@ -297,6 +369,16 @@ test("each check refuses what it is for", () => {
   expect(selectors(css('[data-testid="composer"] { color: red; }'))).toHaveLength(1);
   expect(selectors(css('.k-thing button[title*="Copy"] { color: red; }'))).toHaveLength(1);
   expect(selectors(css(".k-plan .bg-accent { color: red; }\n.k-new .md\\:mt-\\[18vh\\] { margin: 0; }\n.k-user > .rounded-xl { margin: 0; }"))).toHaveLength(3);
+  // What the line-by-line reader let through.
+  expect(segmented(tsx('<div role={tabs ? "tablist" : "group"} />'), [])).toHaveLength(1);
+  expect(segmented([], css(".k-thing .k-seg > button { height: 1rem; }"))).toHaveLength(1);
+  expect(segmented([], css(".k-seg > [role=tab] { height: 1rem; }", "styles.css"))).toHaveLength(1);
+  expect(pageSizes(tsx('el.style.fontSize = "13px";'))).toHaveLength(1);
+  expect(empties(tsx('<p className="py-6 text-center text-micro text-faint">Nothing.</p>\n<p className={cn("text-center text-ui", quiet && "text-faint")}>Nothing.</p>'), [])).toHaveLength(2);
+  expect(pageSizes(tsx('const rx = /a\\/\\//; const st = { fontSize: "13px" };'))).toHaveLength(1);
+  expect(shared(tsx('<h3 className="mt-2 text-micro font-medium uppercase tracking-wide text-faint">Tools</h3>'))).toHaveLength(1);
+  expect(shared(tsx('<button role="switch" aria-checked={on} className="relative h-5 w-9 rounded-full" />'))).toHaveLength(1);
+  expect(shared(tsx('<button aria-current={on ? "true" : undefined} className={cn("flex", on && "bg-hover")} />'))).toHaveLength(1);
 });
 
 test("each check lets ordinary edits through", () => {
@@ -309,5 +391,12 @@ test("each check lets ordinary edits through", () => {
   expect(selectors(css(".k-thing[data-open] > .k-part:hover, .dark .k-thing { color: red; }\nsvg.text-warn { color: var(--warn); }\n@keyframes k-x { from { opacity: 0; } }\n@media (max-width: 767px) { .k-thing { color: red; } }"))).toEqual([]);
   // An own class is named k-: a bare .grid would be the utility of that name.
   expect(selectors(css(".k-chart .k-grid line { stroke: var(--line); }"))).toEqual([]);
-  expect(selectors(css(".k-chart .grid line { stroke: var(--line); }"))).toEqual(["bridge.css:1: .grid in .k-chart .grid line"]);
+  expect(selectors(css(".k-chart .grid line { stroke: var(--line); }"))).toEqual(["bridge.css:1: .grid in .k-chart .grid line: name the part k-grid (a bare class is a utility's name, or would be taken for one)"]);
+  // A library's own markup may be styled: no component of ours writes its class.
+  expect(selectors(css(".katex-display { margin: 0; }\n.k-plan .bg-accent { color: red; }"), tsx('<i className="bg-accent" />'))).toHaveLength(1);
+  // A sentence that names a utility is not a use of it, in a string or in JSX text after an apostrophe.
+  expect(pageSizes(tsx('const hint = "Tailwind\'s text-sm is not used here.";\nconst el = <p>the session\'s size {/* "text-lg" */}</p>;'))).toEqual([]);
+  expect(pageTimes(tsx("const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;\nconst rx = /^https?:\\/\\//; const after = new Date(ts).toLocaleDateString();"))).toEqual([]);
+  expect(segmented(tsx('const first = el.querySelector(\'[role="radio"]\');'), [])).toEqual([]);
+  expect(shared(tsx('<Switch.Root\n  checked={on}\n  className="k-switch"><Switch.Thumb className="k-switch-thumb" /></Switch.Root>\n<h3 className="k-label mt-2">Tools</h3>\n<span className="rounded-xs bg-sunken px-1 text-micro font-medium text-muted">tag</span>'))).toEqual([]);
 });

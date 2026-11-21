@@ -24,7 +24,7 @@ export function SettingRow({ label, hint, children }: { label: string; hint?: Re
 // One choice of a few: a radio group with one Tab stop, on the option chosen;
 // the arrows move to the next option and choose it. Wider than its place (a
 // phone, a large text size), it scrolls sideways inside itself and the page
-// does not: Choices keeps the chosen option in view.
+// does not: the control (Seg.tsx) keeps the chosen option in view.
 export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
   return (
     <Seg label={label} value={value} onChange={onChange} options={options} />

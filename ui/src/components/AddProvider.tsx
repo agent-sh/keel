@@ -90,7 +90,7 @@ export function AddProviderHost() {
 }
 
 const field = "h-8 w-full rounded-md border border-line-strong bg-raised px-2.5 text-ui outline-none placeholder:text-faint focus:border-accent";
-const label = "mb-1 block text-caption font-medium text-muted";
+const label = "k-label mb-1 block";
 
 function Label({ text, hint, children }: { text: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -175,7 +175,7 @@ function Steps({ r, onUse }: { r: TestResult; onUse: (url: string) => void }) {
         <div key={s.id} className="flex gap-2.5 border-b border-line px-3 py-2 last:border-0" data-testid="provider-test-step" data-step={s.id} data-ok={s.ok}>
           {s.ok ? <Check className="mt-0.5 size-3.5 shrink-0 text-ok" /> : <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-danger" />}
           <div className="min-w-0 text-ui">
-            <span className="mr-2 text-micro uppercase tracking-wide text-faint">{s.id}</span>
+            <span className="k-label mr-2">{s.id}</span>
             <span className="break-words text-fg">{s.detail}</span>
             {!s.ok && s.problem && <div className="mt-0.5 text-danger">{s.problem}</div>}
             {!s.ok && s.fix && <div className="mt-0.5 text-muted">{s.fix}</div>}
