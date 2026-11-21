@@ -383,6 +383,20 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Inside a station the transcript fills it, a little tighter than reading width. */
 .k-station [data-testid="transcript"] { max-width: 46rem; padding-top: 1.375rem; gap: 0.875rem; }
 .k-station .k-compose-in { max-width: 46rem; }
+/* The reading size fits the pane. A pane among four is too narrow for 18 px
+   text at a readable measure (38 characters a line): under 28rem, where the
+   reading size holds fewer than 55 characters a line, the reply is set one
+   step down with less margin. */
+.k-reading { container: reading / inline-size; }
+@container reading (max-width: 28rem) {
+  .k-transcript { padding-inline: 0.875rem; }
+  .k-transcript .prose-keel { font-size: var(--text-base); line-height: 1.6; }
+  .k-transcript .prose-keel :not(pre) > code { font-size: var(--text-ui); }
+  .k-transcript .prose-keel h1 { font-size: var(--text-head); }
+  .k-transcript .prose-keel h2 { font-size: var(--text-read); }
+  .k-transcript .prose-keel :is(h3, h4), .k-transcript .prose-keel table { font-size: var(--text-base); }
+  .k-transcript .code-block pre { font-size: var(--text-caption); }
+}
 .k-stations[data-focus] [data-testid="transcript"], .k-stations[data-focus] .k-compose-in { max-width: 56rem; }
 .k-station:not([data-helm]) [data-testid="composer-box"] { background: transparent; }
 

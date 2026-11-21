@@ -700,7 +700,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     <div className="relative min-h-[clamp(0px,calc((100%-24rem)/2),6rem)] flex-1">
       <div
         ref={scroller}
-        className="relative h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
+        className="k-reading relative h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
         // A row that holds the keyboard itself (reached by Previous or Next prompt, or from a
         // search hit) gives it back to the pane's message box on Escape. The press ends
         // there: it does not also stop the turn or leave an agent's session.
@@ -719,7 +719,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           remember();
         }}
       >
-        <div ref={content} className="mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
+        <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
           {previewing && (
             <div className="sticky top-2 z-10 flex items-center gap-2 rounded-lg border border-brass/50 bg-raised px-3.5 py-2 text-ui shadow-2" data-testid="branch-preview" data-pinned="1">
               <GitBranch className="size-4 shrink-0 text-brass" />
