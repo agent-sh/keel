@@ -41,7 +41,7 @@ test("a queued turn has a content-free receipt linked to its exact events and sp
     });
     expect(body.inputs).toHaveLength(1);
     expect(body.requests.map((s: any) => s.span_id)).toEqual(spans.filter((s: any) => s.kind === "request").map((s: any) => s.span_id));
-    expect(body.requests.map((s: any) => s.status)).toEqual(["ok", "ok"]);
+    expect(body.requests.map((s: any) => [s.purpose, s.status])).toEqual([["turn", "ok"], ["turn", "ok"]]);
     const tool = spans.find((s: any) => s.kind === "tool");
     expect(tool.error).toContain("receipt-tool-payload");
     const results = stored.filter((e) => e.kind === "tool_result");
@@ -73,7 +73,7 @@ test("a queued turn has a content-free receipt linked to its exact events and sp
     const err = (await events()).findLast((e) => e.kind === "error")!;
     const failure = await (await receipt(failed.id)).json();
     expect(failure.end.reason).toBe("error");
-    expect(failure.requests[0]).toMatchObject({ status: "error", error_id: err.data.error_id });
+    expect(failure.requests[0]).toMatchObject({ purpose: "turn", status: "error", error_id: err.data.error_id });
     expect(JSON.stringify(failure)).not.toContain("credit balance");
     expect(await (await receipt(start.id)).json()).toEqual(body);
   } finally {
