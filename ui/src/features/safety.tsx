@@ -66,8 +66,8 @@ async function move(to: "worktree" | "main") {
   const s = current();
   if (!s) return;
   const ok = await confirmAction(to === "worktree"
-    ? { title: "Move this session to a new worktree?", body: "It goes on a new branch in its own folder. Uncommitted work moves with it, and the main checkout goes back to its last commit (the work is also kept on a ref).", action: "Move" }
-    : { title: "Move this session to the main checkout?", body: "The main checkout switches to the session's branch and gets its uncommitted work; the worktree folder is removed. The main checkout must have no changes of its own.", action: "Move" });
+    ? { title: "Move this session to a new worktree?", body: "It goes on a new branch in its own folder. Uncommitted work moves with it, and the main checkout goes back to its last commit (the work is also kept on a ref).", action: "Move", careful: true }
+    : { title: "Move this session to the main checkout?", body: "The main checkout switches to the session's branch and gets its uncommitted work; the worktree folder is removed. The main checkout must have no changes of its own.", action: "Move", careful: true });
   if (!ok) return;
   try {
     await handoff(s.id, to);

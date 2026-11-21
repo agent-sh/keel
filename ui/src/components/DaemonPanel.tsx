@@ -112,6 +112,7 @@ export function DaemonPanel() {
       title: "Restart Keel?",
       body: n ? `${n} turn${n > 1 ? "s are" : " is"} running. New work waits; running turns get two minutes to finish, and any still running then resume after the restart.` : "No turn is running. The page reconnects by itself.",
       action: "Restart",
+      careful: true,
     });
     if (ok) await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true }) });
   };

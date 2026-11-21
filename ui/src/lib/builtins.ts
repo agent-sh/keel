@@ -88,7 +88,7 @@ export const adoptAllBuilds = async () => {
     p.sessions.length ? `${n(p.sessions.length)} carr${p.sessions.length === 1 ? "ies" : "y"} an earlier build's tools or prompt. Taking this build's rewrites about ${fmtTokens(p.tokens)} tokens of cached context at their next requests.` : "",
     p.unknown ? `${n(p.unknown)} ${p.unknown === 1 ? "has" : "have"} not been compared with this build yet: what differs there is rewritten too.` : "",
   ].filter(Boolean).join("\n\n");
-  if (!(await confirmAction({ title: "Use this build's tools and prompt in every session?", body, action: "Use this build's" }))) return;
+  if (!(await confirmAction({ title: "Use this build's tools and prompt in every session?", body, action: "Use this build's", careful: true }))) return;
   const { asked } = await actions.adoptAllBuilds();
   say(`${n(asked)} take${asked === 1 ? "s" : ""} this build's tools and prompt at the next request.`);
 };
