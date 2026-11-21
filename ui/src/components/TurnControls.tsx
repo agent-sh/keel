@@ -176,7 +176,8 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState("");
   const model = models.find((m) => m.id === session?.model);
   const window_ = model?.context ?? 0;
-  const est = useMemo(() => (all && session ? contextTokens(lineage(all, session.head)) : null), [all, session?.head]);
+  // Counted for the session's model, as the daemon counts it: after a switch another model's reply is a floor, not the count.
+  const est = useMemo(() => (all && session ? contextTokens(lineage(all, session.head), session.model) : null), [all, session?.head, session?.model]);
   const used = est?.used ?? 0;
   // The breakdown follows the conversation while the popup is open: it loads
   // again on each committed event (not on streaming text); only the latest

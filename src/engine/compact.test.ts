@@ -306,3 +306,32 @@ test("utf8Bytes counts what UTF-8 encoding writes, also for malformed UTF-16", (
     expect([s, utf8Bytes(s)]).toEqual([s, Buffer.byteLength(s)]);
   }
 });
+
+// The count after a session moved to another model, and after a reply that
+// measured nothing.
+test("another model's reply is a floor, not the count; an interrupted reply with no usage is passed over", () => {
+  const usage = (n: number) => ({ input: 10, cache_read: n, cache_write: 0, output: 0 });
+  const reply = (model: string, n: number, text = "ok") => ev("assistant", { blocks: [{ type: "text", text }], model, stop: "end_turn", usage: usage(n) });
+  // 100 KB of history that q:other measured at 62,000 tokens (its count holds its system prompt and tools).
+  const line = [ev("user", { text: "x".repeat(50_000) }), reply("q:other", 62_000 - 10, "y".repeat(50_000)), ev("user", { text: "next" })];
+  const bytes = Math.round(100_004 / BYTES_PER_TOKEN);
+  // For the model that measured it: its own count plus what came since.
+  expect(contextTokens(line, "q:other")).toMatchObject({ used: 62_000 + 2, measured: 62_000 });
+  // For another model: never lower than that, though its own bytes count comes to less.
+  expect(contextTokens(line, "lab:moved")).toMatchObject({ used: 62_000 + 2, measured: 62_000 });
+  expect(bytes).toBeLessThan(62_000);
+  // When the bytes come to more than the other model measured, the bytes stand.
+  const low = [line[0]!, reply("q:other", 20_000, "y".repeat(50_000)), line[2]!];
+  expect(contextTokens(low, "lab:moved")).toMatchObject({ used: bytes, measured: 0 });
+  // With what every request carries before the conversation: added to a count that is bytes alone, not to a measured one.
+  expect(contextTokens(low, "lab:moved", 21_000).used).toBe(bytes + 21_000);
+  expect(contextTokens(line, "lab:moved", 21_000).used).toBe(Math.max(62_002, bytes + 21_000));
+  expect(contextTokens(line, "q:other", 21_000).used).toBe(62_002);
+  // Once the new model has replied, its own count is the count.
+  const own = [...line, reply("lab:moved", 30_000), ev("user", { text: "more" })];
+  expect(contextTokens(own, "lab:moved")).toMatchObject({ used: 30_010 + 2, measured: 30_010 });
+  // A reply the owner interrupted is stored with no usage: the count before it stands, its words on top.
+  const cut = [...own, ev("assistant", { blocks: [{ type: "text", text: "half" }], model: "lab:moved", stop: "interrupted", usage: { input: 0, cache_read: 0, cache_write: 0, output: 0 } }), ev("user", { text: "again" })];
+  expect(contextTokens(cut, "lab:moved")).toMatchObject({ used: 30_010 + Math.round((4 + 4 + 5) / BYTES_PER_TOKEN), measured: 30_010 });
+  expect(contextTokens(cut).measured).toBe(30_010);
+});

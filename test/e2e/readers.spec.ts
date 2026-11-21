@@ -78,8 +78,8 @@ test("readers: a folder of logs is read in parts and compiled into one answer", 
   rmSync(DIR, { recursive: true, force: true });
 });
 
-// The job's budget comes from the model listing. On the scripted stand-in (a
-// small window, no paid model) a long log is gathered only up to that budget:
+// The job's budget comes from the model listing. On the scripted stand-in (no
+// paid model) a log several times that budget is gathered only up to it:
 // its tail and the file after it are named in the answer, never read first.
 test("readers: material past the job's budget is named, not gathered", async ({ page, request }) => {
   const ids = ((await (await request.get("/api/models")).json()).models as any[]).map((m) => m.id);
@@ -88,10 +88,12 @@ test("readers: material past the job's budget is named, not gathered", async ({ 
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const rows = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `2026-11-20T10:00:00Z INFO ${tag} request ${i + 1} served`).join("\n") + "\n";
+  // About 1.5 MB: more than four times what one job reads on the stand-in's window.
+  const BIG_ROWS = 30_000;
   writeFileSync(join(dir, "a.log"), rows(60, "api"));
-  writeFileSync(join(dir, "big.log"), rows(8_000, "worker"));
+  writeFileSync(join(dir, "big.log"), rows(BIG_ROWS, "worker"));
   writeFileSync(join(dir, "c.log"), rows(60, "cron"));
-  const whole = rows(60, "api").length + rows(8_000, "worker").length + rows(60, "cron").length;
+  const whole = rows(60, "api").length + rows(BIG_ROWS, "worker").length + rows(60, "cron").length;
 
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
@@ -123,8 +125,12 @@ test("readers: material past the job's budget is named, not gathered", async ({ 
   await expect(card).toContainText("2 unread");
   await expect(card.getByTestId("readers-notes")).toContainText("big.log after line");
   // The card leads with the count the note leads with: quotes at the lines cited, not quotes found anywhere.
-  await expect(card.getByTestId("readers-checked")).toHaveText("2 of 4 quotes at the lines cited");
-  await expect(card.getByTestId("readers-notes")).toContainText("2 of 4 quotes are word for word at the lines they cite; 2 more are word for word in the material but not on a line cited for them");
+  // Each part's reader gave two quotes, one of them four lines off: half are at the lines cited.
+  const checked = (await card.getByTestId("readers-checked").textContent())!.match(/^(\d+) of (\d+) quotes at the lines cited$/)!;
+  const [at, all] = [Number(checked[1]), Number(checked[2])];
+  expect(at).toBeGreaterThan(0);
+  expect(all).toBe(at * 2);
+  await expect(card.getByTestId("readers-notes")).toContainText(`${at} of ${all} quotes are word for word at the lines they cite; ${at} more are word for word in the material but not on a line cited for them`);
   await card.scrollIntoViewIfNeeded();
   await shoot(page, "readers-02-past-budget");
   rmSync(dir, { recursive: true, force: true });

@@ -79,7 +79,9 @@ test("a switch to a smaller window offers to compact first", async ({ page, requ
   test.skip(!small || !models.some((m) => m.id === "scripted:stand-in-strict"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1700, height: 980 });
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in-strict" } })).json();
-  const long = Array.from({ length: 600 }, (_, i) => `Line ${i}: the quick brown fox jumps over the lazy dog near the river bank.`).join("\n");
+  // About 110 KB: with the system prompt and tools the strict model counts it
+  // past where the smaller stand-in compacts, and under its own window.
+  const long = Array.from({ length: 1_500 }, (_, i) => `Line ${i}: the quick brown fox jumps over the lazy dog near the river bank.`).join("\n");
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `Keep this in mind.\n${long}` } });
   await page.goto(`/s/${session.id}`);
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });

@@ -254,9 +254,21 @@ const SUMMARY_RETRIES = 2;
 type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
 
 // What the caller counted for a request before it is built: the tokens of the
-// context it carries (Engine.used), and the bytes of the messages that count
-// covered when the request holds more than them (a side question's words).
-type Fit = { tokens: number; bytes?: number };
+// request that carries its context (Engine.whole), and the messages that
+// count covered when the request holds more than them (a side question's
+// words, a summary's prompt). Without `base` the messages given to call().
+type Fit = { tokens: number; base?: readonly Message[] };
+
+// The bytes the built messages hold beyond the counted ones. A message that
+// is the same object in both cancels out, so only what a hook, a side
+// question or the files and images resolved for the model added, replaced or
+// took out is measured, not the whole request again.
+function gainedBytes(base: readonly Message[], built: readonly Message[], model: string): number {
+  if (base === built) return 0;
+  const had = new Set(base);
+  const added = built.filter((m) => !had.delete(m));
+  return messagesBytes(added, model) - messagesBytes([...had], model);
+}
 
 // Bytes of the tool definitions a request carries in its prompt: a deferred
 // tool is not in the prompt until a call loads it.
@@ -782,7 +794,7 @@ export class Engine {
   // resolved for this model) is counted against the model's window from it,
   // and one over the window is refused here instead of sent.
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn", fit?: Fit): Promise<ProviderResult> {
-    const counted = fit ? { messages: fit.bytes ?? messagesBytes(messages, st.info.id), tools: toolsBytes(st.tools) } : undefined;
+    const counted = fit ? { messages: fit.base ?? messages, tools: toolsBytes(st.tools) } : undefined;
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
     if (st.native && purpose !== "reader") st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c));
@@ -812,7 +824,7 @@ export class Engine {
     // The caller's count plus what the request gained since, at the model's bytes a token.
     const fits = () => {
       if (!fit || !counted) return;
-      const gained = messagesBytes(req.messages, st.info.id) - counted.messages + toolsBytes(req.tools) - counted.tools;
+      const gained = gainedBytes(counted.messages, req.messages, st.info.id) + toolsBytes(req.tools) - counted.tools;
       const tokens = fit.tokens + Math.round(gained / bytesPerToken(st.info.id));
       if (tokens >= st.info.context) throw overWindow(st.info, tokens);
     };
@@ -1103,21 +1115,25 @@ export class Engine {
         let events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
         const used = this.used(events, st);
+        // The whole request against the window: the same count for a context
+        // a reply has measured, the system prompt and tools on top for one
+        // that is only its bytes.
+        const over = this.whole(events, st) >= st.info.context;
         // A history with no reply of its own yet (one long first message) is
         // summarized only when it cannot be sent as it is.
         // (The prompts that opened a turn with no reply yet are not summarized: they follow the summary whole.)
-        if (used >= limit && !summaryFailed && (used >= st.info.context || events.some((e) => e.kind === "assistant")) && worthSummarizing(summarizable(events))) {
+        if ((used >= limit || over) && !summaryFailed && (over || events.some((e) => e.kind === "assistant")) && worthSummarizing(summarizable(events))) {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
           // One that fails while the context still fits is said, and the turn goes on whole.
           if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
-            if (signal.aborted || used >= st.info.context) throw e;
+            if (signal.aborted || over) throw e;
             summaryFailed = true;
             const rec = this.errors.capture("provider", e, { session: id, at: "threshold compaction" });
             this.append(id, "note", { kind: "compaction_failed", text: `The context was not compacted (${rec.message}); this turn goes on with it whole.` });
           });
           events = this.lineage(id);
           // A request counted over the window is never sent.
-          const now = this.used(events, st);
+          const now = this.whole(events, st);
           if (now >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): continue on a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
         } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events)) {
           // Back after the cache expired: the summary written while idle (or
@@ -1130,7 +1146,7 @@ export class Engine {
         const messages = toMessages(events);
         let res: ProviderResult;
         try {
-          res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.used(events, st) });
+          res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.whole(events, st) });
         } catch (e) {
           // The request no longer fits the window: compact once and go on.
           // (A context that is a fresh summary, or only the prompts that opened
@@ -1449,12 +1465,23 @@ export class Engine {
   }
 
   // Tokens the next request of this context carries, as this model counts
-  // them. A context no reply of this model has measured (an imported history,
-  // a fresh checkpoint, a session just moved from another model) is estimated
-  // whole from its bytes; the system prompt and the
-  // tools are not in that estimate (they fit in the room the compaction share leaves).
+  // them: what the compaction line is held against. A context no reply has
+  // measured (an imported history, a fresh checkpoint) is estimated whole from
+  // its bytes, without the system prompt and the tools (they fit in the room
+  // the compaction share leaves; whole() counts them against the window). A
+  // session just moved from another model is never counted lower than that
+  // model measured it (contextTokens).
   private used(events: readonly StoredEvent[], st: Step): number {
     return contextTokens(events, st.info.id).used;
+  }
+
+  // Tokens of the whole request that carries this context, held against the
+  // model's window. A count a reply measured already holds the system prompt
+  // and the tools; a context that is only its bytes (no reply with a count
+  // yet) gets them on top. The compaction line stays on the conversation
+  // alone (used): the room above it is for this.
+  private whole(events: readonly StoredEvent[], st: Step): number {
+    return contextTokens(events, st.info.id, Math.ceil(this.prefixBytes(st) / bytesPerToken(st.info.id))).used;
   }
 
   // What the provider counted for a request against the bytes Keel counted
@@ -1512,9 +1539,9 @@ export class Engine {
     };
     const messages = toMessages(events);
     let over: unknown;
-    if (!(this.used(events, st) >= st.info.context)) {
+    if (!(this.whole(events, st) >= st.info.context)) {
       try {
-        return { summary: await one([...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(focus) }] }], { tokens: this.used(events, st), bytes: messagesBytes(messages, st.info.id) }), usage };
+        return { summary: await one([...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(focus) }] }], { tokens: this.whole(events, st), base: messages }), usage };
       } catch (e) {
         if (signal.aborted || (e as any)?.kind !== "context") throw e;
         over = e;
@@ -1530,6 +1557,8 @@ export class Engine {
     const words = utf8Bytes(partPrompt("", 0, 2, " ", 1, focus));
     const carry = SUMMARY_ROOM_BYTES(st);
     const text = (t: string): Message[] => [{ role: "user", content: [{ type: "text", text: t }] }];
+    // A request of one message and no history: the system prompt and tools, then what the message holds.
+    const alone: Fit = { tokens: Math.ceil(this.prefixBytes(st) / bytesPerToken(st.info.id)), base: [] };
     for (const share of SHRINK_STEPS) {
       // Never less than the prompt, a summary and one smallest part.
       const budget = Math.max(Math.floor(room * share), words + carry + MIN_PART_BYTES);
@@ -1539,7 +1568,7 @@ export class Engine {
       try {
         let summary = "";
         for (let k = 0; k < parts.length; k++) {
-          summary = await one(text(partPrompt(parts[k]!, k, parts.length, summary, clipped, focus)), { tokens: 0, bytes: 0 });
+          summary = await one(text(partPrompt(parts[k]!, k, parts.length, summary, clipped, focus)), alone);
           if (!summary) return { summary, usage };
           if (k + 1 === parts.length) break;
           // The next request carries this summary. One that leaves no room for
@@ -1547,7 +1576,7 @@ export class Engine {
           let left = budget - words - utf8Bytes(summary);
           const most = budget - words - MIN_PART_BYTES;
           while (left < MIN_PART_BYTES && retries-- > 0 && utf8Bytes(summary) + words <= budget) {
-            summary = await one(text(condensePrompt(summary, most)), { tokens: 0, bytes: 0 });
+            summary = await one(text(condensePrompt(summary, most)), alone);
             if (!summary) return { summary, usage };
             left = budget - words - utf8Bytes(summary);
           }
@@ -1769,7 +1798,7 @@ export class Engine {
     const line = this.lineage(id);
     const messages = toMessages(line);
     // The stored branch is what the count below covers; the question's words come on top.
-    const fit: Fit = { tokens: this.used(line, st), bytes: messagesBytes(messages, st.info.id) };
+    const fit: Fit = { tokens: this.whole(line, st), base: [...messages] };
     if (pending) for (const m of messages) for (const b of m.content as any[]) if (b.type === "tool_result" && b.tool_use_id === pending.id) { b.content = pending.text; b.is_error = false; }
     const last = messages.at(-1);
     for (const m of extra) {

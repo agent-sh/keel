@@ -17,8 +17,14 @@ import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } fr
 export const SCRIPTED_ENV = "KEEL_SCRIPTED_PROVIDER";
 export const scriptedEnabled = () => process.env[SCRIPTED_ENV] === "1";
 
-// A small window, so a few long replies reach the compaction threshold.
-const WINDOW = 8_000;
+// The lenient stand-ins count little of what they are sent (no tools, an
+// eighth of the system prompt) and refuse nothing by size. Their window holds
+// the system prompt and tools as the engine counts them, with room for a
+// conversation, as a real model's does (and stays under the strict one's, so
+// the strict stand-in is still the largest scripted model); a spec that wants
+// a context to reach its compaction line after a few long replies sets the
+// session's compact_at.
+const WINDOW = 64_000;
 const OUTPUT = 2_000;
 // The strict stand-in counts like a real provider: the whole request (system,
 // tools and messages) at 2.5 bytes a token, the ratio of long tool-heavy
@@ -246,7 +252,7 @@ export class ScriptedProvider implements Provider {
         return { ...r, stop: "refusal", stop_details: { category: "cyber", explanation: "Scripted refusal for the test." } };
       }
       case "overflow":
-        if (!compacted) throw new ProviderError("context", "Scripted: prompt is too long: 9000 tokens > 8000 maximum", 400);
+        if (!compacted) throw new ProviderError("context", `Scripted: prompt is too long: ${WINDOW + 1_000} tokens > ${WINDOW} maximum`, 400);
         return reply("Answered after compacting to fit.");
       case "deaf":
         // A stream that does not honor the stop for 12 s (a driver or hook that
@@ -292,7 +298,7 @@ export class ScriptedProvider implements Provider {
         return { blocks: [{ type: "text", text }], usage, stop: "end_turn", model: req.model };
       }
       case "grow":
-        // About a thousand tokens a turn: the context crosses the preparing share, then the limit.
+        // About a thousand tokens a turn: with compact_at set near 7,000 the context crosses the preparing share, then the limit.
         return reply(`Growing. ${"dolor sit amet ".repeat(280)}`.trim());
       case "fill":
         return reply(`Filling the context. ${"lorem ipsum dolor sit amet ".repeat(1_100)}`.trim());

@@ -1,7 +1,9 @@
-// The request as it is finally built is held to the window of the model it
-// goes to. A counting stand-in takes the provider's place: it counts each
-// request it is sent (system and messages at 2.5 bytes a token) and refuses
-// one over its window, so a test can show that none reached it oversized.
+// What the e2e of the context window (test/e2e/context-over-window.spec.ts)
+// cannot reach: a hook that adds to a request while it is built, a summary
+// that keeps failing inside a turn, the budget of a transcript read in parts,
+// and cache warmth on a fake clock. A counting stand-in takes the provider's
+// place: it counts each request it is sent (system and messages at 2.5 bytes
+// a token) and refuses one over its window.
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -68,51 +70,6 @@ function rig(reply?: (req: any, sent: Sent[]) => any) {
 }
 
 const words = (n: number, w = "lorem ") => w.repeat(Math.ceil(n / w.length)).slice(0, n);
-
-test("an oversized first input is refused before it is sent, as context_over_window", async () => {
-  const r = rig();
-  const id = r.session(SMALL.id);
-  r.engine.send(id, words(40_000)); // 16,000 tokens for a window of 10,000, and nothing to compact
-  await r.idle(id);
-  // No turn request went out; the summary prepared after the turn is read in parts that fit.
-  expect(r.sent.filter((s) => s.purpose === "turn" || s.refused)).toEqual([]);
-  expect(r.failures.map((e) => e.code)).toEqual(["context_over_window"]);
-  const events = r.store.events(id);
-  expect(events.find((e) => e.kind === "error")?.data.message).toContain("was not sent");
-  expect(events.findLast((e) => e.kind === "turn_end")?.data.reason).toBe("error");
-});
-
-test("a session moved to a smaller model compacts on that model's count and goes on", async () => {
-  const r = rig();
-  const id = r.session(BIG.id);
-  // 45 KB of history the big model measured in its own tokens (a third of what the small one counts).
-  for (let n = 0; n < 3; n++) {
-    r.store.append(id, "user", { text: `step ${n}` });
-    r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000) }], model: BIG.id, stop: "end_turn", usage: { input: 10, cache_read: (n + 1) * 2_000, cache_write: 0, output: 2_000 } });
-  }
-  r.store.updateSession(id, { model: SMALL.id });
-  r.engine.send(id, "and now?");
-  await r.idle(id);
-  expect(r.sent.filter((s) => s.refused)).toEqual([]);
-  expect(Math.max(...r.sent.map((s) => s.tokens))).toBeLessThanOrEqual(SMALL.context);
-  const events = r.store.events(id);
-  expect(events.filter((e) => e.kind === "compaction").map((e) => e.data.trigger)).toEqual(["threshold"]);
-  expect(events.at(-1)?.data.reason).toBe("end_turn");
-  expect(JSON.stringify(r.sent.findLast((s) => s.purpose === "turn")!.messages)).toContain("and now?");
-});
-
-test("a side question whose words overflow the window is refused, and one that fits is answered", async () => {
-  const r = rig();
-  const id = r.session(SMALL.id);
-  r.engine.send(id, "hello");
-  await r.idle(id);
-  r.sent.length = 0;
-  const ask = (text: string) => r.engine.ask(id, [{ role: "user", content: [{ type: "text", text }] }], new AbortController().signal);
-  await expect(ask(words(30_000))).rejects.toMatchObject({ code: "context_over_window", status: 409 });
-  expect(r.sent).toEqual([]);
-  expect((await ask("a short one")).model_id).toBe(SMALL.id);
-  expect(r.sent.map((s) => [s.purpose, s.refused])).toEqual([["side", false]]);
-});
 
 // A hook adds a note for the model while the request is built, after the turn counted its context.
 const noteHook = (r: ReturnType<typeof rig>, id: string, bytes: number) => {

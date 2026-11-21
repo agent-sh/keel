@@ -538,30 +538,47 @@ export function setRatio(model: string, ratio: number) {
 // Tokens the next request will carry: what the provider counted on the last
 // response of this context, plus the bytes appended since at the model's
 // bytes a token. A context with no counted reply (an imported history) is
-// estimated whole. With `model` given, only a reply of that model counts as
-// measured: another model's tokens are not this one's, so after a switch the
-// context is estimated from its bytes until the new model has replied.
-export function contextTokens(lineage: readonly StoredEvent[], model?: string): { used: number; measured: number; estimated: number; last?: Usage } {
+// estimated whole. A reply stored with no input counted (one the owner
+// interrupted) measured nothing and is passed over.
+// With `model` given, the count is that model's: its own newest reply plus
+// the bytes since, or its bytes alone when it has not replied here. A newer
+// reply of another model (the session was moved) is not this model's count,
+// but it is a floor: what that provider counted for the same context, its
+// system prompt and tools included, plus the bytes since. The larger of the
+// two is used, so a context is never counted lower after a switch than the
+// model before it measured.
+// `prefix`: the tokens of what every request carries before the conversation
+// (system prompt, tools), added to a count that is bytes alone: for holding
+// the whole request against the window (a measured count already has them).
+export function contextTokens(lineage: readonly StoredEvent[], model?: string, prefix = 0): { used: number; measured: number; estimated: number; last?: Usage } {
   const cp = checkpointAt(lineage);
   const per = bytesPerToken(model);
-  let measured = 0;
-  let last: Usage | undefined;
-  // A reply measured before the checkpoint counted the history it replaced.
-  let after = Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at);
+  let own = -1, other = -1;
   for (let i = lineage.length - 1; i > cp.at; i--) {
     const e = lineage[i]!;
-    if (e.kind === "assistant" && e.data.usage && e.data.stop !== "refusal") {
-      if (model && e.data.model && e.data.model !== model) continue;
-      last = e.data.usage;
-      measured = last!.input + last!.cache_read + last!.cache_write + last!.output;
-      after = i + 1;
-      break;
-    }
+    if (e.kind !== "assistant" || !e.data.usage || e.data.stop === "refusal") continue;
+    const u = e.data.usage;
+    if (u.input + u.cache_read + u.cache_write <= 0) continue;
+    if (model && e.data.model && e.data.model !== model) { if (other < 0) other = i; continue; }
+    own = i;
+    break;
   }
-  let bytes = 0;
-  for (let i = after; i < lineage.length; i++) bytes += tailBytes(lineage[i]!, per);
-  const estimated = Math.round(bytes / per);
-  return { used: measured + estimated, measured, estimated, last };
+  const tail = (from: number) => {
+    let bytes = 0;
+    for (let i = from; i < lineage.length; i++) bytes += tailBytes(lineage[i]!, per);
+    return Math.round(bytes / per);
+  };
+  const from = (at: number) => {
+    const last: Usage = lineage[at]!.data.usage;
+    const measured = last.input + last.cache_read + last.cache_write + last.output, estimated = tail(at + 1);
+    return { used: measured + estimated, measured, estimated, last };
+  };
+  // A reply measured before the checkpoint counted the history it replaced.
+  const whole = () => { const estimated = tail(Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at)); return { used: estimated + prefix, measured: 0, estimated }; };
+  const mine = own >= 0 ? from(own) : whole();
+  if (other < 0) return mine;
+  const floor = from(other);
+  return floor.used > mine.used ? floor : mine;
 }
 
 // The bytes of the context as the next request carries it (the checkpoint's
