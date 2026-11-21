@@ -93,12 +93,28 @@ export class Storage {
 
   get dir() { return this.store.stateDir; }
 
-  // Something outside this class changed what is on disk: the next report is measured.
-  stale() { this.last = undefined; }
+  // Something changed what is on disk (a backup, a retention's removal): the sizes of the next report are measured.
+  stale() { this.diskStale = true; }
+  private diskStale = false;
 
+  // The report. Its sizes on disk (the total and every folder's) are
+  // measured again when they are a minute old: one du run, off the loop.
+  // What is read from the database (each session's transcript and
+  // attachments: every event's length) is read once, and again when asked
+  // for with `refresh` or after sessions were deleted; on a large store
+  // that read takes seconds.
   report(refresh = false): Promise<StorageReport> {
-    if (this.last && !refresh && Date.now() - this.last.measured_ms < REPORT_MAX_AGE_MS) return Promise.resolve(this.last);
-    return (this.measuring ??= this.measure().then((r) => (this.last = r)).finally(() => (this.measuring = undefined)));
+    if (this.last && !refresh && !this.diskStale && Date.now() - this.last.measured_ms < REPORT_MAX_AGE_MS) return Promise.resolve(this.last);
+    const prev = refresh ? undefined : this.last;
+    return (this.measuring ??= (prev ? this.measureDisk(prev) : this.measure()).then((r) => ((this.diskStale = false), (this.last = r))).finally(() => (this.measuring = undefined)));
+  }
+
+  // The sizes on disk of a report, measured again; the rest of it as it was.
+  private async measureDisk(prev: StorageReport): Promise<StorageReport> {
+    const top = await duTop(this.dir);
+    const dbBytes = ["keel.db", "keel.db-wal", "keel.db-shm"].reduce((n, f) => n + (existsSync(join(this.dir, f)) ? statSync(join(this.dir, f)).size : 0), 0);
+    const dirs = Object.fromEntries(Object.entries(DIRS).map(([k, d]) => [k, top.dirs.get(d) ?? 0])) as Record<keyof typeof DIRS, number>;
+    return { ...prev, measured_ms: Date.now(), database_bytes: dbBytes, total_bytes: top.total, other_bytes: Math.max(0, top.total - dbBytes - Object.values(dirs).reduce((n, b) => n + b, 0)), ...dirs };
   }
 
   private async measure() {
@@ -361,7 +377,7 @@ export class Storage {
       throw e;
     }
     this.prune();
-    this.last = undefined;
+    this.diskStale = true;
     return this.backups().find((b) => b.name === basename(final))!;
   }
 
@@ -394,7 +410,7 @@ export class Storage {
         this.errors.capture?.("server", new Error(`the backup ${basename(r.dir)} does not read back: ${r.why}. The next backup is a full one.`), { at: "backup check" });
       }
       if (done.store && !done.store.ok) this.errors.capture?.("server", new Error(`the database did not pass SQLite's integrity check: ${done.store.why}. Backups made since the last full one may hold the damage.`), { at: "backup check" });
-      this.last = undefined;
+      this.diskStale = true;
       return { checked: done.backups.length, failed, store_ok: done.store?.ok ?? null };
     });
     this.backing = run.catch(() => {});

@@ -547,13 +547,25 @@ test("the storage report adds up to du of the state folder and is measured again
     const kinds = r.spilled_output_bytes + r.checkpoints_bytes + r.worktrees_bytes + r.reports_bytes + r.backups_bytes + r.plugins_bytes + r.memory_transcripts_bytes + r.uploads_bytes + r.artifacts_bytes + r.logs_bytes;
     expect(r.database_bytes + kinds + r.other_bytes).toBe(r.total_bytes);
 
-    // Asked again at once: the same report. A minute later: what is there now.
+    // Asked again at once: the same report. A minute later: what is on disk
+    // now, with one du run and no read of the events (that read takes seconds
+    // on a large store, and is made again only when asked for).
     put(`transcripts/${s.id}-2.jsonl`, 100_000);
+    src.append(s.id, "user", { text: "z".repeat(30_000) });
     expect((await storage.report()).total_bytes).toBe(r.total_bytes);
     (storage as any).last.measured_ms -= REPORT_MAX_AGE_MS;
+    const sql: string[] = [];
+    const query = src.db.query.bind(src.db);
+    src.db.query = ((q: string) => (sql.push(q), query(q))) as typeof src.db.query;
     const later = await storage.report();
+    expect(sql.filter((q) => q.includes("FROM events"))).toEqual([]);
     expect(near(later.memory_transcripts_bytes, 400_000)).toBe(true);
     expect(Math.abs(later.total_bytes - du()) / du()).toBeLessThan(0.01);
+    expect(later.sessions.transcript_bytes).toBe(r.sessions.transcript_bytes);
+    const asked = await storage.report(true);
+    expect(sql.filter((q) => q.includes("FROM events")).length).toBeGreaterThan(0);
+    expect(asked.sessions.transcript_bytes).toBeGreaterThan(r.sessions.transcript_bytes + 30_000);
+    src.db.query = query as typeof src.db.query;
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
